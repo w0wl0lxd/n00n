@@ -44,7 +44,6 @@ struct SessionState {
     handle: InteractiveHandle,
     current_mode: AgentMode,
     plan_path: Option<PathBuf>,
-    current_model: String,
     pending_prompt: PendingPrompt,
     _daemon: Option<crate::SessionDaemonGuard>,
 }
@@ -185,7 +184,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let handle = spawn_session(params, model, req.cwd, None, Vec::new());
             let resp = methods::new_session_response(handle.session_id.as_str())
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec, AgentMode::Build, None, params);
+            install_session(srv, handle, &spec, AgentMode::Build, None, params);
             AgentResponse::NewSessionResponse(resp)
         }),
         "session/load" => parse_params::<LoadSessionRequest>(raw).and_then(|req| {
@@ -213,7 +212,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let handle = spawn_session(params, model, req.cwd, Some(session_ref), history);
             let resp = methods::load_session_response()
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec, current_mode, plan_path, params);
+            install_session(srv, handle, &spec, current_mode, plan_path, params);
             Ok(AgentResponse::LoadSessionResponse(resp))
         }),
         "session/prompt" => match handle_prompt(srv, raw, &id) {
@@ -221,7 +220,10 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             Err(e) => Err(e),
         },
         "session/set_mode" => handle_set_mode(srv, raw),
-        "session/set_config_option" => handle_set_config(srv, raw),
+        "session/set_config_option" => match handle_set_config(srv, raw, id.clone()) {
+            Ok(()) => return,
+            Err(error) => Err(error),
+        },
         _ => Err(AcpError::method_not_found()),
     };
     srv.respond(id, result);
@@ -257,7 +259,7 @@ fn spawn_session(
 fn install_session(
     srv: &mut Server,
     handle: InteractiveHandle,
-    current_model: String,
+    current_model: &str,
     current_mode: AgentMode,
     plan_path: Option<PathBuf>,
     params: &AcpParams,
@@ -272,13 +274,12 @@ fn install_session(
     let daemon = params.session_daemon_register.and_then(|register| {
         n00n_storage::StateDir::resolve()
             .ok()
-            .and_then(|storage| register(storage.path(), &handle, &current_model))
+            .and_then(|storage| register(storage.path(), &handle, current_model))
     });
     srv.session = Some(SessionState {
         handle,
         current_mode,
         plan_path,
-        current_model,
         pending_prompt: pending,
         _daemon: daemon,
     });
@@ -360,7 +361,7 @@ fn handle_set_mode(srv: &mut Server, raw: &Value) -> Result<AgentResponse, AcpEr
     ))
 }
 
-fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, AcpError> {
+fn handle_set_config(srv: &mut Server, raw: &Value, id: RequestId) -> Result<(), AcpError> {
     let req: SetSessionConfigOptionRequest = parse_params(raw)?;
     if req.config_id.0.as_ref() != methods::MODEL_CONFIG_ID {
         let detail = format!("unknown config option: {}", req.config_id);
@@ -372,22 +373,37 @@ fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, Acp
         .model_catalog
         .resolve(&spec)
         .map_err(|e| AcpError::invalid_params().data(json_str(&e)))?;
-    let spec = model.spec();
-
-    let session = srv.session.as_mut().ok_or_else(no_session)?;
-    session
+    let acknowledgement = srv
+        .session
+        .as_ref()
+        .ok_or_else(no_session)?
         .handle
-        .model_tx
-        .send(model)
-        .map_err(|_| AcpError::new(-32603, "session ended"))?;
-    session.current_model.clone_from(&spec);
+        .request_model_change(model)
+        .map_err(|error| AcpError::new(-32603, error))?;
+    let out_tx = srv.out_tx.clone();
+    let model_specs = srv.model_specs.clone();
+    smol::spawn(async move {
+        let result = acknowledgement
+            .recv_async()
+            .await
+            .map_err(|_| {
+                AcpError::new(
+                    -32603,
+                    "session ended before the model change was confirmed",
+                )
+            })
+            .and_then(|result| result.map_err(|error| AcpError::new(-32603, error)))
+            .map(|applied| {
+                let applied_spec = applied.model.spec();
+                AgentResponse::SetSessionConfigOptionResponse(SetSessionConfigOptionResponse::new(
+                    vec![methods::model_config_option(&applied_spec, &model_specs)],
+                ))
+            });
+        send(&out_tx, Response::new(id, result));
+    })
+    .detach();
 
-    Ok(AgentResponse::SetSessionConfigOptionResponse(
-        SetSessionConfigOptionResponse::new(vec![methods::model_config_option(
-            &spec,
-            &srv.model_specs,
-        )]),
-    ))
+    Ok(())
 }
 
 fn handle_notification(srv: &Server, method: &str) {

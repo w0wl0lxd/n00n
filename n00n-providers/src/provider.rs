@@ -8,6 +8,7 @@ use serde_json::Value;
 use strum::{Display, EnumIter, EnumString};
 use tracing::{debug, info, warn};
 
+use n00n_config::providers::ProvidersConfig;
 use n00n_storage::id::SessionRef;
 
 use crate::model::{Model, ModelFamily, ModelInfo};
@@ -312,6 +313,10 @@ pub trait Provider: Send + Sync {
     }
 
     fn adjust_model(&self, _model: &mut Model) {}
+
+    fn suppress_discovery_error(&self) -> bool {
+        false
+    }
 }
 
 /// Create a provider for the given slug.
@@ -333,17 +338,29 @@ pub fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provi
 
 #[must_use]
 pub fn provider_available(slug: &str) -> bool {
+    provider_available_with_config(slug, None)
+}
+
+fn provider_available_with_config(slug: &str, config: Option<&ProvidersConfig>) -> bool {
+    let loaded_config;
+    let config = if let Some(config) = config {
+        config
+    } else {
+        loaded_config = ProvidersConfig::load();
+        &loaded_config
+    };
+
     if matches!(slug, "ollama" | "llama-cpp") {
-        return local_provider_configured(slug);
+        return true;
     }
     if slug == "cursor" {
-        return crate::providers::cursor::Cursor::has_credentials();
+        return crate::providers::cursor::Cursor::has_credentials()
+            && crate::providers::cursor::Cursor::has_required_settings();
     }
     if slug == "devin" {
         return crate::providers::devin::has_credentials();
     }
     if slug == "opencode" {
-        let config = n00n_config::providers::ProvidersConfig::load();
         let has_key = crate::providers::KeyPool::resolve(
             slug,
             &n00n_config::providers::resolve_api_key_env(slug, config.get(slug)),
@@ -356,21 +373,6 @@ pub fn provider_available(slug: &str) -> bool {
         return (has_key || free_enabled) && provider_for_slug(slug, Timeouts::default()).is_ok();
     }
     provider_for_slug(slug, Timeouts::default()).is_ok()
-}
-
-fn local_provider_configured(slug: &str) -> bool {
-    let config = n00n_config::providers::ProvidersConfig::load();
-    let def = config.get(slug);
-    let host_env = match slug {
-        "ollama" => "OLLAMA_HOST",
-        "llama-cpp" => "LLAMA_CPP_HOST",
-        _ => return false,
-    };
-    let has_host = n00n_config::providers::resolve_base_url(slug, def).is_some()
-        || std::env::var(host_env).is_ok_and(|value| !value.trim().is_empty());
-    let env = n00n_config::providers::resolve_api_key_env(slug, def);
-    let has_key = !env.is_empty() && crate::providers::KeyPool::resolve(slug, &env).is_ok();
-    has_host || has_key
 }
 
 /// Create a provider for a resolved model, applying provider-specific adjustments.
@@ -476,44 +478,79 @@ pub struct ModelBatch {
     pub warnings: Vec<String>,
 }
 
-/// Offline version of model discovery: returns specs from static tables
-/// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
-#[must_use]
-pub fn available_model_specs() -> Vec<String> {
-    let mut specs: Vec<String> = crate::manifest::ManifestRegistry::builtins()
-        .iter()
-        .filter(|m| provider_available(m.slug))
-        .flat_map(|m| {
-            m.models
-                .iter()
-                .flat_map(|entry| entry.prefixes.iter())
-                .map(move |p| format!("{}/{}", m.slug, p))
-        })
-        .collect();
-    for slug in dynamic::discovered_slugs() {
-        if provider_available(slug) {
-            specs.extend(dynamic::dynamic_model_specs_for(slug));
-        }
+fn static_builtin_specs(manifest: &crate::manifest::ProviderManifest) -> Vec<String> {
+    if matches!(manifest.slug, "ollama" | "llama-cpp") {
+        return Vec::new();
     }
-    for spec in crate::providers::custom::declared_model_specs() {
-        let configured = spec
-            .split_once('/')
-            .is_some_and(|(slug, _)| provider_available(slug));
-        if configured && !specs.contains(&spec) {
+    manifest
+        .models
+        .iter()
+        .flat_map(|entry| entry.prefixes.iter())
+        .map(|prefix| format!("{}/{prefix}", manifest.slug))
+        .collect()
+}
+
+fn discovered_builtin_specs(
+    manifest: &crate::manifest::ProviderManifest,
+    models: &[ModelInfo],
+) -> Vec<String> {
+    let mut specs: Vec<String> = models
+        .iter()
+        .map(|model| format!("{}/{}", manifest.slug, model.id))
+        .collect();
+    for spec in static_builtin_specs(manifest) {
+        if !specs.contains(&spec) {
             specs.push(spec);
         }
     }
     specs
 }
 
-#[cfg(test)]
-fn ollama_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
-    has_host || has_api_key || has_provider_config
+fn failed_builtin_discovery(
+    manifest: &crate::manifest::ProviderManifest,
+    error: &str,
+    suppress_warning: bool,
+) -> ModelBatch {
+    let warnings = if suppress_warning {
+        Vec::new()
+    } else if matches!(manifest.slug, "ollama" | "llama-cpp") {
+        vec![format!("{}: {error}", manifest.display_name)]
+    } else {
+        vec![format!(
+            "{}: {error} (using static fallback)",
+            manifest.display_name
+        )]
+    };
+    ModelBatch {
+        models: static_builtin_specs(manifest),
+        warnings,
+    }
 }
 
-#[cfg(test)]
-fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
-    has_host || has_api_key || has_provider_config
+/// Offline version of model discovery: returns specs from static tables
+/// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
+#[must_use]
+pub fn available_model_specs() -> Vec<String> {
+    let providers_config = ProvidersConfig::load();
+    let mut specs: Vec<String> = crate::manifest::ManifestRegistry::builtins()
+        .iter()
+        .filter(|m| provider_available_with_config(m.slug, Some(&providers_config)))
+        .flat_map(static_builtin_specs)
+        .collect();
+    for slug in dynamic::discovered_slugs() {
+        if provider_available_with_config(slug, Some(&providers_config)) {
+            specs.extend(dynamic::dynamic_model_specs_for(slug));
+        }
+    }
+    for spec in crate::providers::custom::declared_model_specs() {
+        let configured = spec
+            .split_once('/')
+            .is_some_and(|(slug, _)| provider_available_with_config(slug, Some(&providers_config)));
+        if configured && !specs.contains(&spec) {
+            specs.push(spec);
+        }
+    }
+    specs
 }
 
 /// Fetches all available models from all providers asynchronously.
@@ -524,9 +561,17 @@ pub async fn fetch_all_models(
 ) {
     let (tx, rx) = flume::unbounded();
     let timeouts = Timeouts::default();
+    let providers_config = ProvidersConfig::load();
 
     for manifest in crate::manifest::ManifestRegistry::builtins() {
         let slug = manifest.slug;
+        if !provider_available_with_config(slug, Some(&providers_config)) {
+            debug!(
+                provider = slug,
+                "provider not available, skipping discovery"
+            );
+            continue;
+        }
         let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
             Ok(provider) => provider,
             Err(crate::AgentError::Config { message }) => {
@@ -538,7 +583,7 @@ pub async fn fetch_all_models(
                 continue;
             }
         };
-        let display_name = manifest.display_name;
+        let suppress_discovery_error = provider.suppress_discovery_error();
         let tx = tx.clone();
         smol::spawn(async move {
             let batch = match provider.list_models().await {
@@ -550,35 +595,24 @@ pub async fn fetch_all_models(
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .set_known_models(&slug, models.clone());
                     }
-                    let mut specs: Vec<String> =
-                        models.iter().map(|m| format!("{slug}/{}", m.id)).collect();
-                    for entry in manifest.models {
-                        for prefix in entry.prefixes {
-                            let spec = format!("{slug}/{prefix}");
-                            if !specs.contains(&spec) {
-                                specs.push(spec);
-                            }
-                        }
-                    }
                     ModelBatch {
-                        models: specs,
+                        models: discovered_builtin_specs(manifest, &models),
                         warnings: Vec::new(),
                     }
                 }
-                Err(e) => {
-                    info!(provider = slug, error = %e, "failed to list models, using static fallback");
-                    let fallback: Vec<String> = manifest
-                        .models
-                        .iter()
-                        .flat_map(|entry| entry.prefixes.iter())
-                        .map(|p| format!("{slug}/{p}"))
-                        .collect();
-                    ModelBatch {
-                        models: fallback,
-                        warnings: vec![format!(
-                            "{display_name}: {e} (using static fallback)"
-                        )],
+                Err(error) => {
+                    if suppress_discovery_error {
+                        debug!(provider = slug, %error, "default local provider is not running");
+                    } else if matches!(slug, "ollama" | "llama-cpp") {
+                        info!(provider = slug, %error, "failed to list local models");
+                    } else {
+                        info!(provider = slug, %error, "failed to list models, using static fallback");
                     }
+                    failed_builtin_discovery(
+                        manifest,
+                        &error.to_string(),
+                        suppress_discovery_error,
+                    )
                 }
             };
             let _ = tx.send_async(batch).await;
@@ -587,6 +621,13 @@ pub async fn fetch_all_models(
     }
 
     for slug in dynamic::discovered_slugs() {
+        if !provider_available_with_config(slug, Some(&providers_config)) {
+            debug!(
+                provider = slug,
+                "dynamic provider not available, skipping discovery"
+            );
+            continue;
+        }
         let tx = tx.clone();
         let slug = slug.to_string();
         smol::spawn(async move {
@@ -619,7 +660,14 @@ pub async fn fetch_all_models(
     let custom_timeouts = timeouts;
     let tx_custom = tx.clone();
     smol::spawn(async move {
-        let declared = crate::providers::custom::declared_model_specs();
+        let config = ProvidersConfig::load();
+        let declared: Vec<String> = crate::providers::custom::declared_model_specs()
+            .into_iter()
+            .filter(|spec| {
+                spec.split_once('/')
+                    .is_some_and(|(slug, _)| provider_available_with_config(slug, Some(&config)))
+            })
+            .collect();
         if !declared.is_empty() {
             let _ = tx_custom
                 .send_async(ModelBatch {
@@ -653,31 +701,24 @@ pub async fn fetch_all_models(
 
 #[cfg(test)]
 mod tests {
-    use super::{llama_cpp_is_configured, ollama_is_configured};
+    use super::{
+        discovered_builtin_specs, failed_builtin_discovery, provider_available_with_config,
+        static_builtin_specs,
+    };
+    use n00n_config::providers::ProvidersConfig;
 
-    #[test_case::test_case(false, false, false => false; "unconfigured")]
-    #[test_case::test_case(true, false, false => true; "host")]
-    #[test_case::test_case(false, true, false => true; "api_key")]
-    #[test_case::test_case(false, false, true => true; "provider_config")]
-    fn llama_cpp_configuration_sources(
-        has_host: bool,
-        has_api_key: bool,
-        has_provider_config: bool,
-    ) -> bool {
-        // Keep this pure rather than mutating process environment variables, whose values are
-        // shared with concurrently running tests.
-        llama_cpp_is_configured(has_host, has_api_key, has_provider_config)
-    }
+    #[test_case::test_case("ollama")]
+    #[test_case::test_case("llama-cpp")]
+    fn default_local_provider_is_probed_without_static_fallback(slug: &str) {
+        let config = ProvidersConfig::default();
+        let manifest = crate::manifest::ManifestRegistry::for_slug(slug)
+            .expect("local provider manifest must exist");
 
-    #[test_case::test_case(false, false, false => false; "unconfigured")]
-    #[test_case::test_case(true, false, false => true; "host")]
-    #[test_case::test_case(false, true, false => true; "api_key")]
-    #[test_case::test_case(false, false, true => true; "provider_config")]
-    fn ollama_configuration_sources(
-        has_host: bool,
-        has_api_key: bool,
-        has_provider_config: bool,
-    ) -> bool {
-        ollama_is_configured(has_host, has_api_key, has_provider_config)
+        assert!(provider_available_with_config(slug, Some(&config)));
+        assert!(discovered_builtin_specs(manifest, &[]).is_empty());
+        assert!(static_builtin_specs(manifest).is_empty());
+        let failure = failed_builtin_discovery(manifest, "connection refused", true);
+        assert!(failure.models.is_empty());
+        assert!(failure.warnings.is_empty());
     }
 }

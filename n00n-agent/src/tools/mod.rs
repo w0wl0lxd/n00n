@@ -58,10 +58,22 @@ pub enum ToolFilter {
 impl ToolFilter {
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
+        self.matches_names(&std::iter::once(name))
+    }
+
+    pub(crate) fn matches_registered(&self, tool: &RegisteredTool) -> bool {
+        self.matches_names(&std::iter::once(tool.name()).chain(tool.tool.aliases()))
+    }
+
+    fn matches_names<'a>(&self, names: &(impl Iterator<Item = &'a str> + Clone)) -> bool {
         match self {
             Self::All => true,
-            Self::Only(allowed) => allowed.iter().any(|candidate| same_tool(candidate, name)),
-            Self::AllExcept(blocked) => !blocked.iter().any(|candidate| same_tool(candidate, name)),
+            Self::Only(allowed) => allowed
+                .iter()
+                .any(|candidate| names.clone().any(|name| same_tool(candidate, name))),
+            Self::AllExcept(blocked) => !blocked
+                .iter()
+                .any(|candidate| names.clone().any(|name| same_tool(candidate, name))),
         }
     }
 
@@ -235,51 +247,16 @@ pub const QUESTION_TOOL_NAME: &str = "ask_user";
 pub const READ_TOOL_NAME: &str = "read_file";
 pub const TASK_TOOL_NAME: &str = "run_task";
 pub const TODOWRITE_TOOL_NAME: &str = "update_todo";
+pub const TOOL_SEARCH_TOOL_NAME: &str = "search_tools";
+pub const TOOL_SEARCH_TOOL_ALIAS: &str = "tool_search";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
 pub const WRITE_TOOL_NAME: &str = "write_file";
 
-pub const TOOL_ALIASES: &[(&str, &str)] = &[
-    ("agent_control", AGENT_CONTROL_TOOL_NAME),
-    ("agent_list", "list_agents"),
-    ("agent_status", "get_agent"),
-    ("arbor", "map_code"),
-    ("batch", BATCH_TOOL_NAME),
-    ("bash", BASH_TOOL_NAME),
-    ("blackboard", "use_blackboard"),
-    ("code_execution", CODE_EXECUTION_TOOL_NAME),
-    ("codegraph", "map_codegraph"),
-    ("edit", EDIT_TOOL_NAME),
-    ("edit_lines", "edit_file_lines"),
-    ("explore", "explore_code"),
-    ("fusion_delegate", "delegate_fusion"),
-    ("glob", GLOB_TOOL_NAME),
-    ("grep", GREP_TOOL_NAME),
-    ("index", "index_file"),
-    ("insert_lines", "insert_file_lines"),
-    ("load_namespace", "load_toolset"),
-    ("memory", "use_memory"),
-    ("multi_edit", MULTIEDIT_TOOL_NAME),
-    ("multiedit", MULTIEDIT_TOOL_NAME),
-    ("question", QUESTION_TOOL_NAME),
-    ("read", READ_TOOL_NAME),
-    ("semblem", "search_text"),
-    ("skill", "load_skill"),
-    ("task", TASK_TOOL_NAME),
-    ("team", "run_team"),
-    ("todo_write", TODOWRITE_TOOL_NAME),
-    ("tool_search", "search_tools"),
-    ("webfetch", "fetch_url"),
-    ("websearch", "search_web"),
-    ("workflow", "run_workflow"),
-    ("write", WRITE_TOOL_NAME),
-];
+pub use n00n_config::TOOL_ALIASES;
 
 #[must_use]
 pub fn canonical_tool_name(name: &str) -> &str {
-    TOOL_ALIASES
-        .iter()
-        .find_map(|(alias, canonical)| (*alias == name).then_some(*canonical))
-        .map_or(name, |canonical| canonical)
+    n00n_config::canonical_tool_name(name)
 }
 
 fn same_tool(left: &str, right: &str) -> bool {
@@ -1259,6 +1236,35 @@ mod tests {
             assert_eq!(canonical_tool_name(name), *name);
             assert!(name.len() <= 32, "builtin tool name is too long: {name}");
         }
+    }
+
+    #[test_case::test_case("edit_lines")]
+    #[test_case::test_case("insert_lines")]
+    #[test_case::test_case("multiedit")]
+    fn legacy_edit_aliases_are_builtin(tool_name: &str) {
+        assert!(is_builtin_tool(tool_name));
+    }
+
+    #[test]
+    fn lua_policy_aliases_exactly_match_rust_aliases() {
+        const POLICY: &str = include_str!("../../../plugins/lib/n00n/policy.lua");
+
+        let lua_aliases = POLICY
+            .lines()
+            .skip_while(|line| line.trim() != "local TOOL_ALIASES = {")
+            .skip(1)
+            .take_while(|line| line.trim() != "}")
+            .map(|line| {
+                let (alias, canonical) = line
+                    .trim()
+                    .trim_end_matches(',')
+                    .split_once(" = ")
+                    .expect("policy alias entry");
+                (alias, canonical.trim_matches('"'))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(lua_aliases.as_slice(), TOOL_ALIASES);
     }
 
     #[test]

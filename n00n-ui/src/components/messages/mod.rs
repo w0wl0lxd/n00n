@@ -69,6 +69,7 @@ pub struct MessagesPanel {
     streaming_thinking: StreamingContent,
     streaming_text: StreamingContent,
     started_at: Instant,
+    activity_started_at: Option<Instant>,
     scroll_top: u16,
     auto_scroll: bool,
     viewport_height: u16,
@@ -163,6 +164,7 @@ impl MessagesPanel {
                 ms,
             ),
             started_at: Instant::now(),
+            activity_started_at: None,
             scroll_top: u16::MAX,
             auto_scroll: true,
             viewport_height: 24,
@@ -355,12 +357,18 @@ impl MessagesPanel {
     }
 
     pub fn thinking_delta(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.start_activity_if_idle();
+        }
         self.thinking_started.get_or_insert_with(Instant::now);
         self.thinking_collapsed = false;
         self.streaming_thinking.push(text);
     }
 
     pub fn text_delta(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.start_activity_if_idle();
+        }
         // Visible assistant text is a model-response boundary: preserve the
         // preceding reasoning as its own disclosure before streaming it.
         self.flush_thinking();
@@ -388,6 +396,7 @@ impl MessagesPanel {
     }
 
     pub fn tool_pending(&mut self, id: String, name: &str) {
+        self.start_activity_if_idle();
         self.flush();
         let role = DisplayRole::Tool(Box::new(ToolRole {
             id,
@@ -400,6 +409,7 @@ impl MessagesPanel {
     }
 
     pub fn tool_start(&mut self, event: ToolStartEvent) {
+        self.start_activity_if_idle();
         if let Some(msg) = self.find_tool_msg_mut(&event.id) {
             if let DisplayRole::Tool(t) = &mut msg.role {
                 t.name = Arc::clone(&event.tool);
@@ -667,7 +677,14 @@ impl MessagesPanel {
     }
 
     pub(crate) fn activity_elapsed(&self) -> Duration {
-        self.started_at.elapsed()
+        self.activity_started_at
+            .map_or(Duration::ZERO, |started_at| started_at.elapsed())
+    }
+
+    fn start_activity_if_idle(&mut self) {
+        if !self.is_working() {
+            self.activity_started_at = Some(Instant::now());
+        }
     }
 
     pub(crate) fn activity_detail(&self) -> Option<&str> {
@@ -1524,6 +1541,7 @@ impl MessagesPanel {
     }
 
     pub fn register_live_buf(&mut self, id: String, body: Arc<SharedBuf>) {
+        self.start_activity_if_idle();
         self.live_bufs.insert(id, body);
     }
 

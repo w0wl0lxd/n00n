@@ -242,6 +242,7 @@ impl PermissionManager {
     fn check_inner(
         &self,
         tool: &ToolKey,
+        aliases: &[&str],
         scopes: &[&str],
         force_prompt: bool,
         plan_path: Option<&Path>,
@@ -263,7 +264,7 @@ impl PermissionManager {
                 .chain(self.config_rules.iter())
                 .chain(self.builtin_rules.iter())
             {
-                if !matches_rule(&r.tool, tool) || !rule_matches_scope(r, scope) {
+                if !matches_rule(&r.tool, tool, aliases) || !rule_matches_scope(r, scope) {
                     continue;
                 }
                 match r.effect {
@@ -304,39 +305,19 @@ impl PermissionManager {
         // A single non-plan scope means we must prompt for the rest.
         if !force_prompt && !pending.is_empty() {
             let is_plan_write = plan_path.is_some_and(|pp| {
-                matches!(tool, ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()))
-                    && {
-                        let normalized_plan = normalize_scope_path(&pp.display().to_string());
-                        pending
-                            .iter()
-                            .all(|s| normalize_scope_path(s) == normalized_plan)
-                    }
+                matches!(tool, ToolKey::Native(name) if is_file_write_tool(name)) && {
+                    let normalized_plan = normalize_scope_path(&pp.display().to_string());
+                    pending
+                        .iter()
+                        .all(|s| normalize_scope_path(s) == normalized_plan)
+                }
             });
             if is_plan_write {
                 return PermissionCheck::Allowed;
             }
         }
 
-        let eff = self
-            .tool_defaults
-            .get(tool)
-            .copied()
-            .or_else(|| {
-                // McpTool falls back to McpServer-level default (Arc clone, ~2ns)
-                let ToolKey::McpTool { server, .. } = tool else {
-                    return None;
-                };
-                self.tool_defaults
-                    .get(&ToolKey::McpServer {
-                        server: Arc::clone(server),
-                    })
-                    .copied()
-            })
-            .or_else(|| {
-                self.tool_defaults
-                    .iter()
-                    .find_map(|(key, effect)| matches_rule(key, tool).then_some(*effect))
-            })
+        let eff = resolve_tool_default(&self.tool_defaults, tool, aliases)
             .unwrap_or_else(|| self.default);
         match eff {
             DefaultEffect::Deny => {
@@ -356,7 +337,7 @@ impl PermissionManager {
     }
 
     pub fn check(&self, tool: &ToolKey, scope: &str, plan_path: Option<&Path>) -> PermissionCheck {
-        self.check_inner(tool, &[scope], false, plan_path)
+        self.check_inner(tool, &[], &[scope], false, plan_path)
     }
 
     pub fn check_multi(
@@ -366,7 +347,7 @@ impl PermissionManager {
         force_prompt: bool,
         plan_path: Option<&Path>,
     ) -> PermissionCheck {
-        self.check_inner(tool, scopes, force_prompt, plan_path)
+        self.check_inner(tool, &[], scopes, force_prompt, plan_path)
     }
 
     pub fn add_session_rule(&self, rule: PermissionRule) {
@@ -472,6 +453,20 @@ impl PermissionManager {
     ///
     /// Returns `PermissionError` if the tool is not allowed.
     pub async fn enforce(&self, ctx: PermissionCheckContext<'_>) -> Result<(), PermissionError> {
+        self.enforce_with_aliases(ctx, &[]).await
+    }
+
+    /// Enforces permission rules while treating runtime-registered aliases as
+    /// equivalent to the canonical tool name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PermissionError` if the tool is not allowed.
+    pub(crate) async fn enforce_with_aliases(
+        &self,
+        ctx: PermissionCheckContext<'_>,
+        aliases: &[&str],
+    ) -> Result<(), PermissionError> {
         let scope_refs: Vec<&str> = ctx
             .scopes
             .scopes
@@ -487,6 +482,7 @@ impl PermissionManager {
 
         let (pt, ps, force_prompt) = match self.check_inner(
             ctx.tool,
+            aliases,
             &scope_refs,
             ctx.scopes.force_prompt,
             ctx.plan_path,
@@ -507,7 +503,7 @@ impl PermissionManager {
 
         let guard = rx.lock().await;
         let refs: Vec<&str> = ps.iter().map(std::string::String::as_str).collect();
-        let (t2, s2) = match self.check_inner(&pt, &refs, force_prompt, ctx.plan_path) {
+        let (t2, s2) = match self.check_inner(&pt, aliases, &refs, force_prompt, ctx.plan_path) {
             PermissionCheck::Allowed => return Ok(()),
             PermissionCheck::Denied => return Err(deny(None)),
             PermissionCheck::NeedsPrompt { tool, scopes, .. } => (tool, scopes),
@@ -542,11 +538,64 @@ impl PermissionManager {
     }
 }
 
-fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
+const fn default_effect_restriction(effect: DefaultEffect) -> u8 {
+    match effect {
+        DefaultEffect::Allow => 0,
+        DefaultEffect::Prompt => 1,
+        DefaultEffect::Deny => 2,
+    }
+}
+
+fn resolve_tool_default(
+    defaults: &HashMap<ToolKey, DefaultEffect>,
+    tool: &ToolKey,
+    aliases: &[&str],
+) -> Option<DefaultEffect> {
+    match tool {
+        ToolKey::Native(actual) => {
+            let canonical = canonical_tool_name(actual);
+            defaults
+                .iter()
+                .filter_map(|(key, effect)| match key {
+                    ToolKey::Native(name)
+                        if canonical_tool_name(name) == canonical
+                            || aliases.iter().any(|alias| {
+                                canonical_tool_name(name) == canonical_tool_name(alias)
+                            }) =>
+                    {
+                        Some(*effect)
+                    }
+                    _ => None,
+                })
+                .max_by_key(|effect| default_effect_restriction(*effect))
+                .or_else(|| defaults.get(&ToolKey::Wildcard).copied())
+        }
+        ToolKey::McpTool { server, .. } => defaults
+            .get(tool)
+            .copied()
+            .or_else(|| {
+                defaults
+                    .get(&ToolKey::McpServer {
+                        server: Arc::clone(server),
+                    })
+                    .copied()
+            })
+            .or_else(|| defaults.get(&ToolKey::Wildcard).copied()),
+        ToolKey::McpServer { .. } | ToolKey::Wildcard => defaults
+            .get(tool)
+            .copied()
+            .or_else(|| defaults.get(&ToolKey::Wildcard).copied()),
+    }
+}
+
+fn matches_rule(rule_key: &ToolKey, actual: &ToolKey, aliases: &[&str]) -> bool {
     match (rule_key, actual) {
         (ToolKey::Wildcard, _) => true,
         (ToolKey::Native(a), ToolKey::Native(b)) => {
             canonical_tool_name(a) == canonical_tool_name(b)
+                || aliases
+                    .iter()
+                    .any(|alias| canonical_tool_name(a) == canonical_tool_name(alias))
         }
         (
             ToolKey::McpServer { server: rs },
@@ -659,12 +708,19 @@ pub fn generalized_scopes(tool: &ToolKey, scopes: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn is_file_write_tool(name: &str) -> bool {
+    let canonical = canonical_tool_name(name);
+    FILE_WRITE_TOOLS
+        .iter()
+        .any(|candidate| canonical_tool_name(candidate) == canonical)
+}
+
 fn generalize_scope(tool: &ToolKey, scope: &str) -> String {
     match tool {
         ToolKey::Native(name) if canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME => {
             generalize_bash_segment(scope)
         }
-        ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()) => {
+        ToolKey::Native(name) if is_file_write_tool(name) => {
             let p = Path::new(scope);
             match p.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => {
@@ -1116,9 +1172,10 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn generalize_edit_uses_parent_dir() {
-        let result = generalize_scope(&ToolKey::native("edit"), "/home/user/project/src/main.rs");
+    #[test_case("edit"; "public_alias")]
+    #[test_case("multi_edit"; "secondary_alias")]
+    fn generalize_edit_uses_parent_dir(tool: &str) {
+        let result = generalize_scope(&ToolKey::native(tool), "/home/user/project/src/main.rs");
         let expected = format!(
             "{}/**",
             Path::new("/home/user/project/src/main.rs")
@@ -1405,6 +1462,162 @@ mod tests {
     }
 
     #[test]
+    fn native_aliases_share_one_default_key() {
+        let alias = ToolKey::native("read");
+        let canonical = ToolKey::native("read_file");
+        assert_eq!(alias, canonical);
+
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Prompt,
+                tool_defaults: HashMap::from([(canonical, DefaultEffect::Deny)]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check(&alias, "/tmp/file", None),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
+    fn alias_equivalent_default_precedes_opposite_wildcard_default() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Prompt,
+                tool_defaults: HashMap::from([
+                    (ToolKey::native("read_file"), DefaultEffect::Allow),
+                    (ToolKey::Wildcard, DefaultEffect::Deny),
+                ]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check(&ToolKey::native("read"), "/tmp/file", None),
+            PermissionCheck::Allowed
+        ));
+    }
+
+    #[test]
+    fn runtime_alias_permission_default_matches_canonical_dispatch_name() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Allow,
+                tool_defaults: HashMap::from([(
+                    ToolKey::native("mock_alias"),
+                    DefaultEffect::Deny,
+                )]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["scope"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
+    fn conflicting_runtime_alias_defaults_fail_closed() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Allow,
+                tool_defaults: HashMap::from([
+                    (ToolKey::native("allow_alias"), DefaultEffect::Allow),
+                    (ToolKey::native("deny_alias"), DefaultEffect::Deny),
+                ]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["allow_alias", "deny_alias"],
+                &["scope"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
+    fn conflicting_canonical_and_runtime_alias_defaults_fail_closed() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Prompt,
+                tool_defaults: HashMap::from([
+                    (ToolKey::native("mock_canonical"), DefaultEffect::Allow),
+                    (ToolKey::native("mock_alias"), DefaultEffect::Deny),
+                ]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["scope"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
+    fn runtime_alias_permission_rule_matches_canonical_dispatch_name() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Deny,
+                rules: vec![PermissionRule {
+                    tool: ToolKey::native("mock_alias"),
+                    scope: Some("safe/**".into()),
+                    effect: Effect::Allow,
+                }],
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["safe/file"],
+                false,
+                None,
+            ),
+            PermissionCheck::Allowed
+        ));
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["unsafe/file"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
     fn per_tool_default_overrides_global() {
         let mgr = PermissionManager::new(
             PermissionsConfig {
@@ -1427,6 +1640,7 @@ mod tests {
 
     #[test_case("write", true ; "write_tool_allowed")]
     #[test_case("edit", true ; "edit_tool_allowed")]
+    #[test_case("multi_edit", true ; "secondary_alias_allowed")]
     #[test_case("bash", false ; "non_write_tool_prompts")]
     fn plan_path_auto_allows_file_write_tools_only(tool: &str, expect_allowed: bool) {
         let plan = "/home/user/.local/state/n00n/plans/test.md";

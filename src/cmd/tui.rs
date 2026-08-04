@@ -182,15 +182,26 @@ fn build_stack(
                     warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
                     (model, false)
                 }
-                Err(_) => return Err(e),
+                Err(fallback_error) => {
+                    tracing::warn!(
+                        error = %fallback_error,
+                        model = %last_model.spec(),
+                        "failed to resolve saved fallback model"
+                    );
+                    return Err(e);
+                }
             }
         }
         (Err(e), None) if !cli.run_flags.print => {
-            let resolver = ModelResolver::current();
-            let placeholder = resolver
-                .resolve(FALLBACK_MODEL_SPEC)
-                .or_else(|_| resolver.resolve("anthropic/claude-sonnet-4-20250514"))
-                .map_err(|_| e)?;
+            let placeholder =
+                Model::from_spec(FALLBACK_MODEL_SPEC).map_err(|placeholder_error| {
+                    tracing::warn!(
+                        error = %placeholder_error,
+                        model = FALLBACK_MODEL_SPEC,
+                        "failed to construct login placeholder model"
+                    );
+                    e
+                })?;
             (placeholder, true)
         }
         (Err(e), None) => return Err(e),
@@ -359,7 +370,15 @@ fn run_ui_loop(
         } else {
             ModelResolver::current()
                 .resolve(&focused_tab.model)
-                .unwrap_or_else(|_| stack.model.clone())
+                .unwrap_or_else(|error| {
+                    tracing::warn!(
+                        error = %error,
+                        saved_model = %focused_tab.model,
+                        fallback_model = %stack.model.spec(),
+                        "failed to resolve focused tab model; using current model"
+                    );
+                    stack.model.clone()
+                })
         };
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`

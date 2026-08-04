@@ -405,6 +405,14 @@ impl ToolRegistry {
         self.tools.load().has(name)
     }
 
+    #[must_use]
+    pub fn matches_filter(&self, name: &str, filter: &crate::tools::ToolFilter) -> bool {
+        self.tools.load().get(name).map_or_else(
+            || filter.matches(name),
+            |entry| filter.matches_registered(&entry),
+        )
+    }
+
     /// Register a tool with the registry.
     ///
     /// # Errors
@@ -535,6 +543,13 @@ impl ToolRegistry {
                 )
                 .cloned()
                 .collect();
+            let mut existing_sources = HashMap::new();
+            for existing in &next_tools {
+                existing_sources.insert(existing.name().to_owned(), existing.source.clone());
+                for alias in existing.tool.aliases() {
+                    existing_sources.insert(alias.to_owned(), existing.source.clone());
+                }
+            }
             let mut new_sources: HashMap<String, ToolSource> =
                 HashMap::with_capacity(new_entries.len());
             for (tool, source) in new_entries {
@@ -556,13 +571,10 @@ impl ToolRegistry {
                         });
                         return Arc::clone(current);
                     }
-                    if let Some(existing) = next_tools
-                        .iter()
-                        .find(|t| t.name() == name || t.tool.aliases().contains(&name.as_str()))
-                    {
+                    if let Some(existing_source) = existing_sources.get(&name) {
                         conflict = Some(RegistryError::NameConflict {
                             name,
-                            existing: existing.source.as_log_field().into_owned(),
+                            existing: existing_source.as_log_field().into_owned(),
                         });
                         return Arc::clone(current);
                     }
@@ -638,7 +650,7 @@ impl ToolRegistry {
             if !entry.tool.audience().contains(ctx.audience) {
                 continue;
             }
-            if !ctx.filter.matches(entry.name()) {
+            if !ctx.filter.matches_registered(entry) {
                 continue;
             }
             let description = vars.apply(&entry.tool.description(ctx)).into_owned();
@@ -715,7 +727,7 @@ impl ToolRegistry {
             if !entry.tool.audience().contains(ctx.audience) {
                 continue;
             }
-            if !ctx.filter.matches(entry.name()) {
+            if !ctx.filter.matches_registered(entry) {
                 continue;
             }
             if entry.defer_loading {
@@ -921,6 +933,62 @@ mod tests {
     }
 
     #[test]
+    fn runtime_aliases_obey_allow_and_deny_filters() {
+        let reg = ToolRegistry::new();
+        let tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "mock_canonical".into(),
+            aliases: vec!["mock_alias".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        reg.register(&tool, &lua_source("p")).unwrap();
+
+        for (filter, visible) in [
+            (
+                crate::tools::ToolFilter::Only(vec!["mock_alias".into()]),
+                true,
+            ),
+            (
+                crate::tools::ToolFilter::AllExcept(vec!["mock_alias".into()]),
+                false,
+            ),
+        ] {
+            let defs = reg.definitions(
+                &Vars::new(),
+                &DescriptionContext {
+                    filter: &filter,
+                    audience: ToolAudience::MAIN,
+                    workflow: false,
+                },
+                false,
+            );
+            assert_eq!(defs.as_array().expect("definitions").len() == 1, visible);
+            assert_eq!(reg.matches_filter("mock_canonical", &filter), visible);
+            assert_eq!(reg.matches_filter("mock_alias", &filter), visible);
+        }
+    }
+
+    #[test]
+    fn runtime_alias_filtering_leaves_unknown_mcp_names_static() {
+        let reg = ToolRegistry::new();
+        let tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "mock_canonical".into(),
+            aliases: vec!["mock_alias".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        reg.register(&tool, &lua_source("p")).unwrap();
+        let filter =
+            crate::tools::ToolFilter::Only(vec!["mock_alias".into(), "server__visible".into()]);
+
+        assert!(reg.matches_filter("mock_canonical", &filter));
+        assert!(reg.matches_filter("server__visible", &filter));
+        assert!(!reg.matches_filter("server__hidden", &filter));
+    }
+
+    #[test]
     fn alias_collisions_are_rejected_deterministically() {
         let reg = ToolRegistry::new();
         let first: Arc<dyn Tool> = Arc::new(MockTool {
@@ -1110,6 +1178,35 @@ mod tests {
         let entries = vec![(Arc::clone(&shared), lua_source)];
         let err = reg.replace_plugin("myplugin", &entries).unwrap_err();
         assert!(matches!(err, RegistryError::NameConflict { .. }));
+    }
+    #[test]
+    fn replace_plugin_alias_conflict_preserves_previous_tools() {
+        let reg = ToolRegistry::new();
+        let original = mock("original");
+        let original_source = lua_source("myplugin");
+        reg.register(&original, &original_source).unwrap();
+
+        let external = mock("external");
+        reg.register(&external, &lua_source("other")).unwrap();
+        let replacement: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "replacement".into(),
+            aliases: vec!["external".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+
+        let error = reg
+            .replace_plugin("myplugin", &[(replacement, original_source)])
+            .expect_err("alias conflict must reject replacement");
+
+        assert!(matches!(error, RegistryError::NameConflict { name, .. } if name == "external"));
+        assert!(reg.has("original"));
+        assert!(!reg.has("replacement"));
+        assert_eq!(
+            reg.get("external").expect("external tool").name(),
+            "external"
+        );
     }
 
     #[test]

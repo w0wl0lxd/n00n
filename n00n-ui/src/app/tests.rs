@@ -25,6 +25,7 @@ use tempfile::TempDir;
 use test_case::test_case;
 
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const WELCOME_MARKER: &str = "welcome-seen";
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone {
@@ -44,8 +45,7 @@ fn build_app_with_mcp(
     mcp_reader: McpSnapshotReader,
 ) -> App {
     let model = test_model();
-    n00n_storage::atomic_write(&dir.path().join("welcome-seen"), b"test\n")
-        .expect("mark welcome guide seen for app tests");
+    Onboarding::mark_seen(&dir).expect("mark welcome guide seen for app tests");
     App::new(AppInit {
         model,
         session: AppSession::new("test-model", "/tmp/test"),
@@ -113,6 +113,33 @@ fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let app = build_app(dir.clone(), Arc::clone(&writer));
     (tmp, dir, writer, app)
+}
+
+#[test]
+fn close_all_overlays_persists_onboarding_dismissal() {
+    let mut app = test_app();
+    let marker = app.storage.path().join(WELCOME_MARKER);
+    std::fs::remove_file(&marker).expect("remove existing onboarding marker");
+    app.onboarding.open();
+
+    app.close_all_overlays();
+
+    assert!(!app.onboarding.is_open());
+    assert!(marker.is_file());
+}
+
+#[test]
+fn close_all_overlays_closes_onboarding_when_persistence_fails() {
+    let mut app = test_app();
+    let marker = app.storage.path().join(WELCOME_MARKER);
+    std::fs::remove_file(&marker).expect("remove existing onboarding marker");
+    std::fs::create_dir(&marker).expect("block marker file with a directory");
+    app.onboarding.open();
+
+    app.close_all_overlays();
+
+    assert!(!app.onboarding.is_open());
+    assert!(marker.is_dir());
 }
 
 fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {
@@ -1506,6 +1533,32 @@ fn agent_picker_exposes_names_models_and_status() {
     assert_eq!(agent.label(), "Agent: research");
     assert_eq!(agent.suffix(), Some("openai/test-model"));
     assert_eq!(agent.detail(), Some(TASK_RUNNING_DETAIL));
+}
+
+#[test]
+fn tasks_picker_refreshes_live_entries_and_status() {
+    let mut app = app_with_subagent_id("task1");
+    open_tasks_picker(&mut app);
+    assert_eq!(
+        app.task_picker.item(1).unwrap().detail(),
+        Some(TASK_RUNNING_DETAIL)
+    );
+
+    app.update(subagent_msg(
+        AgentEvent::TextDelta { text: "y".into() },
+        "task2",
+        Some("build"),
+    ));
+    finish_subagent(&mut app, "task1", false);
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.view(frame)).unwrap();
+
+    assert_eq!(
+        app.task_picker.item(1).unwrap().detail(),
+        Some(TASK_DONE_DETAIL)
+    );
+    assert_eq!(app.task_picker.item(2).unwrap().label(), "Agent: build");
 }
 
 #[test]
@@ -4544,6 +4597,50 @@ fn closing_split_restores_layout() {
 
     let after = app.layout_geometry(TEST_AREA);
     assert_eq!(after, before, "closing the split restores the layout");
+}
+
+#[test]
+fn onboarding_footer_context_precedes_permission_context() {
+    let mut app = test_app();
+    app.onboarding.open();
+    app.permission_prompt.open(
+        n00n_config::ToolKey::native("bash"),
+        vec!["ls".into()],
+        None,
+    );
+
+    assert_eq!(
+        app.footer_context(),
+        crate::components::footer::FooterContext::Welcome
+    );
+}
+
+#[test]
+fn activity_shelf_excludes_current_main_chat() {
+    let mut app = test_app();
+    app.chats[0].shell_tool_start(ToolStartEvent {
+        id: "main-tool".into(),
+        tool: "bash".into(),
+        summary: "running".into(),
+        annotation: None,
+        input: None,
+        raw_input: None,
+        output: None,
+        render_header: None,
+    });
+
+    assert_eq!(app.activity_shelf_height(TEST_AREA), 0);
+}
+
+#[test]
+fn activity_shelf_only_reserves_rows_on_main_chat() {
+    let mut app = app_with_subagent();
+
+    assert_eq!(app.activity_shelf_height(TEST_AREA), 1);
+
+    app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+
+    assert_eq!(app.activity_shelf_height(TEST_AREA), 0);
 }
 
 #[test]

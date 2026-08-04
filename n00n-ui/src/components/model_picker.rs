@@ -12,7 +12,9 @@ use n00n_providers::model_registry;
 use n00n_providers::provider::ProviderKind;
 
 use crate::components::Overlay;
-use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
+use crate::components::list_picker::{
+    ListPicker, PICKER_FOOTER_BREAKPOINT, PickerAction, PickerItem,
+};
 use crate::theme;
 
 const TITLE: &str = " Models ";
@@ -20,32 +22,32 @@ const RECENT_SECTION: &str = "Recent";
 
 fn footer_line(width: u16) -> Line<'static> {
     let t = theme::current();
-    if width < 72 {
+    if width < PICKER_FOOTER_BREAKPOINT {
         return Line::from(vec![
             Span::styled("  Enter", t.keybind_key),
             Span::styled(" select", t.tool_dim),
-            Span::styled("  1–4", t.keybind_key),
+            Span::styled("  Shift+1–4", t.keybind_key),
             Span::styled(" tier", t.tool_dim),
         ]);
     }
     Line::from(vec![
         Span::styled("  Enter", t.keybind_key),
         Span::styled(" select", t.tool_dim),
-        Span::styled("  1", t.keybind_key),
+        Span::styled("  Shift+1", t.keybind_key),
         Span::styled(" Strong", t.tool_dim),
-        Span::styled("  2", t.keybind_key),
+        Span::styled("  Shift+2", t.keybind_key),
         Span::styled(" Medium", t.tool_dim),
-        Span::styled("  3", t.keybind_key),
+        Span::styled("  Shift+3", t.keybind_key),
         Span::styled(" Weak", t.tool_dim),
-        Span::styled("  4", t.keybind_key),
+        Span::styled("  Shift+4", t.keybind_key),
         Span::styled(" Compaction", t.tool_dim),
     ])
 }
 
 fn tier_for_shortcut(key: KeyEvent) -> Option<ModelTier> {
     let digit = match (key.code, key.modifiers.contains(KeyModifiers::SHIFT)) {
-        // Kitty and modern terminals report number keys as digits.
-        (KeyCode::Char(c @ '1'..='4'), _) => c,
+        // Kitty and modern terminals report Shift+number as a digit plus SHIFT.
+        (KeyCode::Char(c @ '1'..='4'), true) => c,
         // Legacy terminals report Shift+number as the resulting character.
         (KeyCode::Char('!' | '¡'), false) => '1', // US, ES
         (KeyCode::Char('@' | '"' | '™'), false) => '2', // US, UK/DE
@@ -136,7 +138,7 @@ impl ModelPicker {
         current_spec.clone_into(&mut self.current_spec);
         let (entries, idx) = self.load_entries();
         self.picker.open(entries, TITLE);
-        self.picker.select(idx);
+        self.picker.select_item_index(idx);
     }
 
     fn try_refresh(&mut self) {
@@ -144,18 +146,18 @@ impl ModelPicker {
             return;
         }
         let catalog = self.models.load_full();
-        let unchanged = self
-            .last_catalog
-            .as_ref()
-            .zip(catalog.as_ref())
-            .is_some_and(|(last, current)| Arc::ptr_eq(last, current));
+        let unchanged = match (&self.last_catalog, &catalog) {
+            (None, None) => true,
+            (Some(last), Some(current)) => Arc::ptr_eq(last, current),
+            _ => false,
+        };
         if unchanged && !self.dirty {
             return;
         }
         self.dirty = false;
         let (entries, idx) = self.load_entries();
         self.picker.replace_items(entries);
-        self.picker.select(idx);
+        self.picker.select_item_index(idx);
     }
 
     fn load_entries(&mut self) -> (Vec<ModelEntry>, usize) {
@@ -203,7 +205,8 @@ impl ModelPicker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ModelPickerAction {
-        if let Some(tier) = tier_for_shortcut(key)
+        if !self.picker.has_active_filter()
+            && let Some(tier) = tier_for_shortcut(key)
             && let Some(entry) = self.picker.selected_item()
         {
             let spec = entry.spec.clone();
@@ -299,24 +302,21 @@ mod tests {
         models
     }
 
-    #[test]
-    fn number_keys_assign_named_tiers() {
-        assert_eq!(
-            tier_for_shortcut(key(KeyCode::Char('1'))),
-            Some(ModelTier::Strong)
-        );
-        assert_eq!(
-            tier_for_shortcut(key(KeyCode::Char('2'))),
-            Some(ModelTier::Medium)
-        );
-        assert_eq!(
-            tier_for_shortcut(key(KeyCode::Char('3'))),
-            Some(ModelTier::Weak)
-        );
-        assert_eq!(
-            tier_for_shortcut(key(KeyCode::Char('4'))),
-            Some(ModelTier::Compaction)
-        );
+    #[test_case('1', ModelTier::Strong ; "strong")]
+    #[test_case('2', ModelTier::Medium ; "medium")]
+    #[test_case('3', ModelTier::Weak ; "weak")]
+    #[test_case('4', ModelTier::Compaction ; "compaction")]
+    fn number_keys_assign_named_tiers(digit: char, expected: ModelTier) {
+        let shortcut = KeyEvent::new(KeyCode::Char(digit), KeyModifiers::SHIFT);
+        assert_eq!(tier_for_shortcut(shortcut), Some(expected));
+    }
+
+    #[test_case('1'; "one")]
+    #[test_case('2'; "two")]
+    #[test_case('3'; "three")]
+    #[test_case('4'; "four")]
+    fn plain_number_keys_remain_search_input(digit: char) {
+        assert_eq!(tier_for_shortcut(key(KeyCode::Char(digit))), None);
     }
 
     #[test_case(key(KeyCode::Esc)          ; "esc_closes")]
@@ -355,6 +355,20 @@ mod tests {
     }
 
     #[test]
+    fn none_catalog_stays_unchanged_during_refresh() {
+        let models = Arc::new(ArcSwapOption::empty());
+        let mut picker = ModelPicker::new(models);
+        picker.set_recents(vec!["zai/glm-5".into(), "openai/gpt-5".into()]);
+        picker.open("openai/gpt-5");
+        picker.dirty = false;
+        picker.picker.select(0);
+
+        picker.try_refresh();
+
+        assert_eq!(picker.picker.selected_index(), Some(0));
+    }
+
+    #[test]
     fn refresh_detects_same_length_catalog_replacement() {
         let models = test_models();
         let mut picker = ModelPicker::new(Arc::clone(&models));
@@ -388,6 +402,22 @@ mod tests {
     #[test]
     fn parse_model_entry_no_slash() {
         assert!(parse_model_entry("no-slash").is_none());
+    }
+
+    #[test]
+    fn tier_digit_filters_when_search_is_active() {
+        let mut picker = ModelPicker::new(test_models());
+        picker.open("");
+        assert!(matches!(
+            picker.handle_key(key(KeyCode::Char('o'))),
+            ModelPickerAction::Consumed
+        ));
+
+        assert!(matches!(
+            picker.handle_key(key(KeyCode::Char('1'))),
+            ModelPickerAction::Consumed
+        ));
+        assert!(picker.picker.has_active_filter());
     }
 
     #[test_case(key(KeyCode::Char('!')),           ModelTier::Strong     ; "legacy_bang_strong")]

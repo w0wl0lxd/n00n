@@ -163,11 +163,11 @@ pub struct Cli {
     pub plugin_flags: PluginFlags,
 
     /// Pre-approve tools (comma-separated). Accepts `PascalCase` (Claude Code) or `snake_case`.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, alias = "allowedTools", value_delimiter = ',')]
     pub allowed_tools: Vec<String>,
 
     /// Disallowed tools (comma-separated).
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, alias = "disallowedTools", value_delimiter = ',')]
     pub disallowed_tools: Vec<String>,
 
     /// Session ID for SDK mode
@@ -302,15 +302,8 @@ impl Cli {
         if legacy_yes {
             warnings.push("a legacy destructive flag is deprecated; use --no-confirm".to_owned());
         }
-        let mut legacy_tool_names = self
-            .allowed_tools
-            .iter()
-            .chain(&self.disallowed_tools)
-            .filter(|name| canonical_tool_name(name) != name.as_str())
-            .cloned()
-            .collect::<Vec<_>>();
-        legacy_tool_names.sort_unstable();
-        legacy_tool_names.dedup();
+        let legacy_tool_names =
+            legacy_tool_names(self.allowed_tools.iter().chain(&self.disallowed_tools));
         if !legacy_tool_names.is_empty() {
             warnings.push(format!(
                 "legacy tool names are deprecated: {}; use canonical names",
@@ -552,6 +545,18 @@ pub enum AuthAction {
     Status,
 }
 
+fn legacy_tool_names<'a>(names: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let mut legacy_names = names
+        .filter(|name| {
+            normalize_tool_name(name).is_ok_and(|normalized| normalized != name.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    legacy_names.sort_unstable();
+    legacy_names.dedup();
+    legacy_names
+}
+
 pub fn normalize_tool_name(name: &str) -> Result<String> {
     let mut result = String::with_capacity(name.len() + 4);
     for (i, c) in name.chars().enumerate() {
@@ -586,6 +591,35 @@ mod tests {
     #[test_case("MultiEdit", "edit_file_bulk"; "pascal_case_alias")]
     fn normalize_tool_name_valid_inputs(input: &str, expected: &str) {
         assert_eq!(normalize_tool_name(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn sdk_tool_flag_aliases_remain_compatible() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "--allowedTools",
+            "Read,Bash",
+            "--disallowedTools",
+            "MultiEdit",
+        ]);
+        assert_eq!(cli.allowed_tools, ["Read", "Bash"]);
+        assert_eq!(cli.disallowed_tools, ["MultiEdit"]);
+    }
+
+    #[test]
+    fn consolidated_warning_detects_snake_pascal_and_camel_aliases() {
+        let names = [
+            "read_file".to_owned(),
+            "read".to_owned(),
+            "Read".to_owned(),
+            "multiEdit".to_owned(),
+            "unknownTool".to_owned(),
+        ];
+
+        assert_eq!(
+            legacy_tool_names(names.iter()),
+            vec!["Read", "multiEdit", "read"]
+        );
     }
 
     #[test]

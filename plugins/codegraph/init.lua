@@ -8,7 +8,7 @@ local CG_TIMEOUT_SECS = 30
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **codegraph** for cross-file structural queries, call paths, and impact analysis before editing. Use **index** for single-file skeletons before read.",
+  content = "- Use **explore_code** to route structural questions to **map_code** or **map_codegraph**. Use **index_file** for single-file skeletons before read.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))

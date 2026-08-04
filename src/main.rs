@@ -28,6 +28,12 @@ fn print_error(e: &color_eyre::Report, format: print::OutputFormat) {
     const DIM: &str = "\x1b[2m";
     const RESET: &str = "\x1b[0m";
 
+    if e.chain()
+        .any(|cause| cause.downcast_ref::<print::CommandCancelled>().is_some())
+    {
+        return;
+    }
+
     if matches!(
         format,
         print::OutputFormat::Json | print::OutputFormat::StreamJson

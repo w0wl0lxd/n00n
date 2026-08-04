@@ -99,6 +99,7 @@ pub const FILE_WRITE_TOOLS: &[&str] = &[
     "edit_file",
     "edit",
     "edit_file_bulk",
+    "multi_edit",
     "multiedit",
     "edit_file_lines",
     "edit_lines",
@@ -726,6 +727,50 @@ pub enum PermissionTarget {
 
 use std::sync::Arc;
 
+pub const TOOL_ALIASES: &[(&str, &str)] = &[
+    ("agent_control", "control_agent"),
+    ("agent_list", "list_agents"),
+    ("agent_status", "get_agent"),
+    ("arbor", "map_code"),
+    ("batch", "run_batch"),
+    ("bash", "run_shell"),
+    ("blackboard", "use_blackboard"),
+    ("code_execution", "run_python"),
+    ("codegraph", "map_codegraph"),
+    ("edit", "edit_file"),
+    ("edit_lines", "edit_file_lines"),
+    ("explore", "explore_code"),
+    ("fusion_delegate", "delegate_fusion"),
+    ("glob", "search_files"),
+    ("grep", "search_code"),
+    ("index", "index_file"),
+    ("insert_lines", "insert_file_lines"),
+    ("load_namespace", "load_toolset"),
+    ("memory", "use_memory"),
+    ("multi_edit", "edit_file_bulk"),
+    ("multiedit", "edit_file_bulk"),
+    ("question", "ask_user"),
+    ("read", "read_file"),
+    ("semblem", "search_text"),
+    ("skill", "load_skill"),
+    ("task", "run_task"),
+    ("team", "run_team"),
+    ("todo_write", "update_todo"),
+    ("tool_search", "search_tools"),
+    ("webfetch", "fetch_url"),
+    ("websearch", "search_web"),
+    ("workflow", "run_workflow"),
+    ("write", "write_file"),
+];
+
+#[must_use]
+pub fn canonical_tool_name(name: &str) -> &str {
+    TOOL_ALIASES
+        .iter()
+        .find_map(|(alias, canonical)| (*alias == name).then_some(*canonical))
+        .map_or(name, |canonical| canonical)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolKey {
     Wildcard,
@@ -806,7 +851,7 @@ impl ToolKey {
                 if !is_valid_wire_name(name) {
                     return Err(ToolKeyParseError::InvalidToolName(name.to_string()));
                 }
-                Ok(Self::Native(name.into()))
+                Ok(Self::Native(canonical_tool_name(name).into()))
             }
         }
     }
@@ -827,7 +872,7 @@ impl ToolKey {
                 !name.contains('.'),
                 "native tool name must not contain dots: {name:?} - use ToolKey::parse for MCP tools"
             );
-            Self::Native(name.into())
+            Self::Native(canonical_tool_name(name).into())
         }
     }
 
@@ -1098,7 +1143,9 @@ impl ToolOutputLines {
             "task" | "run_task" => self.task,
             "workflow" | "run_workflow" => self.workflow,
             "index" | "index_file" => self.index,
-            "grep" | "glob" | "search_code" | "search_files" | "search_text" => self.grep,
+            "grep" | "glob" | "semblem" | "search_code" | "search_files" | "search_text" => {
+                self.grep
+            }
             "arbor" | "codegraph" | "explore" | "map_code" | "map_codegraph" | "explore_code" => {
                 self.explore
             }
@@ -2218,6 +2265,23 @@ mod tests {
         dir.join(".config/n00n")
     }
 
+    #[test]
+    fn tool_aliases_are_unique_disjoint_and_idempotent() {
+        let aliases: std::collections::HashSet<_> =
+            TOOL_ALIASES.iter().map(|(alias, _)| *alias).collect();
+        let canonical_names: std::collections::HashSet<_> = TOOL_ALIASES
+            .iter()
+            .map(|(_, canonical)| *canonical)
+            .collect();
+
+        assert_eq!(aliases.len(), TOOL_ALIASES.len());
+        assert!(aliases.is_disjoint(&canonical_names));
+        for (alias, canonical) in TOOL_ALIASES {
+            assert_eq!(canonical_tool_name(alias), *canonical);
+            assert_eq!(canonical_tool_name(canonical), *canonical);
+        }
+    }
+
     #[test_case("12000", CompactionBuffer::Tokens(12_000) ; "tokens_number")]
     #[test_case("\"20%\"", CompactionBuffer::Percent(20) ; "percent_string")]
     #[test_case("\" 5 %\"", CompactionBuffer::Percent(5) ; "percent_with_spaces")]
@@ -2626,7 +2690,7 @@ mod tests {
     }
 
     #[test]
-    fn append_permission_rule_writes_to_permissions_file() {
+    fn append_permission_rule_writes_canonical_tool_name() {
         let dir = TempDir::new().unwrap();
         let global = global_config_dir(dir.path());
         fs::create_dir_all(&global).unwrap();
@@ -2649,7 +2713,8 @@ mod tests {
         .unwrap();
 
         let content = fs::read_to_string(global.join("permissions.toml")).unwrap();
-        assert!(content.contains("[bash]"));
+        assert!(content.contains("[run_shell]"));
+        assert!(!content.contains("[bash]"));
         assert!(content.contains("cargo *"));
         assert!(content.contains("rm -rf *"));
         assert!(!content.contains("[permissions]"));
@@ -2731,7 +2796,7 @@ mod tests {
     fn permissions_default_merge_project_overrides_global_per_tool() {
         let dir = TempDir::new().unwrap();
         let global = global_config_dir(dir.path());
-        write_global_permissions(dir.path(), "[bash]\ndefault = \"allow\"\n");
+        write_global_permissions(dir.path(), "[run_shell]\ndefault = \"allow\"\n");
         let n00n_dir = dir.path().join(".n00n");
         fs::create_dir_all(&n00n_dir).unwrap();
         fs::write(
@@ -2742,9 +2807,13 @@ mod tests {
 
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert_eq!(
-            perms.tool_defaults.get(&ToolKey::native("bash")).copied(),
+            perms
+                .tool_defaults
+                .get(&ToolKey::native("run_shell"))
+                .copied(),
             Some(DefaultEffect::Deny)
         );
+        assert_eq!(ToolKey::native("bash"), ToolKey::native("run_shell"));
     }
 
     #[test]
@@ -3360,6 +3429,19 @@ mod tests {
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert!(perms.rules.is_empty());
         assert!(perms.tool_defaults.is_empty());
+    }
+
+    #[test]
+    fn legacy_write_and_search_tools_use_expected_output_buckets() {
+        let lines = ToolOutputLines {
+            grep: 7,
+            write: 9,
+            ..ToolOutputLines::DEFAULT
+        };
+
+        assert!(FILE_WRITE_TOOLS.contains(&"multi_edit"));
+        assert_eq!(lines.get("multi_edit"), 9);
+        assert_eq!(lines.get("semblem"), 7);
     }
 
     #[cfg(unix)]

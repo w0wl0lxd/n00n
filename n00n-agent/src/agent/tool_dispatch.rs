@@ -370,9 +370,10 @@ async fn run_authorized(
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or(name, |value| value);
     let entry = registry.get(name);
-    let canonical_name = entry
-        .as_ref()
-        .map_or_else(|| name.to_owned(), |entry| entry.name().to_owned());
+    let canonical_name = entry.as_ref().map_or_else(
+        || crate::tools::canonical_tool_name(name).to_owned(),
+        |entry| entry.name().to_owned(),
+    );
     if canonical_name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
         return tool_done_error(
             id,
@@ -380,7 +381,11 @@ async fn run_authorized(
             FUSION_DELEGATE_BLOCKED.into(),
         );
     }
-    if !ctx.tool_filter.matches(&canonical_name) {
+    let filter_matches = entry.as_ref().map_or_else(
+        || ctx.tool_filter.matches(&canonical_name),
+        |entry| ctx.tool_filter.matches_registered(entry),
+    );
+    if !filter_matches {
         return tool_done_error(id, Arc::from(canonical_name), TOOL_FILTER_DENIED.into());
     }
     if ctx.mode.plan_path().is_some() && canonical_name == crate::tools::CODE_EXECUTION_TOOL_NAME {
@@ -501,7 +506,10 @@ async fn run_authorized(
 
         invocation.start(ctx).await;
 
-        if let Err(e) = enforce_permission(invocation.as_ref(), &canonical_name, ctx, &id).await {
+        let aliases = entry.tool.aliases();
+        if let Err(e) =
+            enforce_permission(invocation.as_ref(), &canonical_name, &aliases, ctx, &id).await
+        {
             return tool_done_error(id.clone(), Arc::clone(&tool_id), e);
         }
 
@@ -671,6 +679,7 @@ fn tool_done_plain(id: String, tool_id: Arc<str>, text: String) -> ToolDoneEvent
 async fn enforce_permission(
     inv: &dyn ToolInvocation,
     name: &str,
+    aliases: &[&str],
     ctx: &ToolContext,
     id: &str,
 ) -> Result<(), String> {
@@ -682,15 +691,18 @@ async fn enforce_permission(
     if let Some(scopes) = inv.permission_scopes().await {
         let tool_key = ToolKey::native(name);
         ctx.permissions
-            .enforce(PermissionCheckContext {
-                tool: &tool_key,
-                scopes: &scopes,
-                event_tx: &ctx.event_tx,
-                user_response_rx: ctx.user_response_rx.as_deref(),
-                request_id: id,
-                cancel: &ctx.cancel,
-                plan_path: ctx.mode.plan_path(),
-            })
+            .enforce_with_aliases(
+                PermissionCheckContext {
+                    tool: &tool_key,
+                    scopes: &scopes,
+                    event_tx: &ctx.event_tx,
+                    user_response_rx: ctx.user_response_rx.as_deref(),
+                    request_id: id,
+                    cancel: &ctx.cancel,
+                    plan_path: ctx.mode.plan_path(),
+                },
+                aliases,
+            )
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -1008,10 +1020,10 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
-    use crate::AgentMode;
     use crate::permissions::{PERMISSION_DENIED_PREFIX, PermissionManager};
     use crate::tools::registry::ToolSource;
     use crate::tools::test_support::{GUARDED_TOOL_NAME, GuardedMock};
+    use crate::{AgentMode, ToolFilter};
 
     fn recent_calls(entries: &[(&str, Value)]) -> RecentCalls {
         let mut rc = RecentCalls::new();
@@ -1046,6 +1058,50 @@ mod tests {
         ctx
     }
 
+    const RUNTIME_CANONICAL: &str = "runtime_canonical";
+    const RUNTIME_ALIAS: &str = "runtime_alias";
+
+    struct RuntimeAliasTool;
+    struct RuntimeAliasInvocation;
+
+    impl ToolInvocation for RuntimeAliasInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("runtime alias".into()))
+        }
+
+        fn permission_scopes(&self) -> BoxFuture<'_, Option<PermissionScopes>> {
+            Box::pin(std::future::ready(Some(PermissionScopes::single(
+                "safe/file".into(),
+            ))))
+        }
+
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            Box::pin(async { Ok(ToolOutput::Plain("ok".into())).into() })
+        }
+    }
+
+    impl Tool for RuntimeAliasTool {
+        fn name(&self) -> &str {
+            RUNTIME_CANONICAL
+        }
+
+        fn aliases(&self) -> Vec<&str> {
+            vec![RUNTIME_ALIAS]
+        }
+
+        fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
+            "runtime alias tool".into()
+        }
+
+        fn schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(RuntimeAliasInvocation))
+        }
+    }
+
     fn response_with_tool_uses(calls: &[(&str, &str, Value)]) -> StreamResponse {
         StreamResponse {
             message: Message {
@@ -1063,6 +1119,65 @@ mod tests {
             usage: TokenUsage::default(),
             stop_reason: Some(StopReason::ToolUse),
         }
+    }
+
+    #[test]
+    fn runtime_alias_filter_and_permission_apply_to_canonical_dispatch() {
+        smol::block_on(async {
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(RuntimeAliasTool);
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "test".into(),
+                    },
+                )
+                .unwrap();
+            let permissions = Arc::new(PermissionManager::new(
+                PermissionsConfig {
+                    default: n00n_config::DefaultEffect::Deny,
+                    rules: vec![PermissionRule {
+                        tool: ToolKey::native(RUNTIME_ALIAS),
+                        scope: Some("safe/**".into()),
+                        effect: Effect::Allow,
+                    }],
+                    ..Default::default()
+                },
+                PathBuf::from("/tmp"),
+            ));
+            let mut ctx = crate::tools::test_support::stub_ctx_with_permissions(
+                &Arc::new(AgentMode::Build),
+                permissions,
+            );
+            ctx.tool_filter = ToolFilter::Only(vec![RUNTIME_ALIAS.into()]);
+
+            let allowed = run(
+                &registry,
+                None,
+                "allowed".into(),
+                RUNTIME_CANONICAL,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(!allowed.is_error, "{}", allowed.output.as_text());
+
+            ctx.tool_filter = ToolFilter::AllExcept(vec![RUNTIME_ALIAS.into()]);
+            let denied = run(
+                &registry,
+                None,
+                "denied".into(),
+                RUNTIME_CANONICAL,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(denied.is_error);
+            assert_eq!(denied.output.as_text(), TOOL_FILTER_DENIED);
+        });
     }
 
     #[test]

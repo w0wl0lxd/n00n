@@ -99,7 +99,7 @@ fn write_sessions(out: &mut String) {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (Working, Needs input, Idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar."
+        "Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (Working, Waiting for your input, Idle) so you can jump between them. When a background session finishes or is waiting for your input, n00n flashes a note in the status bar."
     );
 }
 

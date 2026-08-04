@@ -167,15 +167,16 @@ impl PermissionPrompt {
     }
 
     fn action_hint(tool: &ToolKey) -> &'static str {
-        let name = tool.to_string();
-        if name.contains("write") || name.contains("edit") {
-            "change files"
-        } else if name.contains("bash") || name.contains("shell") {
-            "run a command"
-        } else if name.contains("web") || name.contains("http") {
-            "access the network"
-        } else {
-            "use an external tool"
+        let ToolKey::Native(name) = tool else {
+            return "use an external tool";
+        };
+        match name.as_ref() {
+            "write_file" | "edit_file" | "edit_file_bulk" | "edit_file_lines"
+            | "insert_file_lines" => "change files",
+            "run_shell" | "run_python" | "run_batch" => "run a command",
+            "fetch_url" | "search_web" => "access the network",
+            "update_todo" => "update the task list",
+            _ => "use an external tool",
         }
     }
 
@@ -411,6 +412,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use n00n_agent::permissions::PermissionAnswer;
     use n00n_config::ToolKey;
+    use test_case::test_case;
 
     use super::{PermissionPrompt, PromptState};
 
@@ -510,6 +512,28 @@ mod tests {
         } else {
             panic!("expected Open");
         }
+    }
+
+    #[test_case("write_file", "change files" ; "write_file")]
+    #[test_case("edit_file_bulk", "change files" ; "edit_file_bulk")]
+    #[test_case("run_shell", "run a command" ; "run_shell")]
+    #[test_case("run_python", "run a command" ; "run_python")]
+    #[test_case("fetch_url", "access the network" ; "fetch_url")]
+    #[test_case("search_web", "access the network" ; "search_web")]
+    #[test_case("update_todo", "update the task list" ; "update_todo")]
+    #[test_case("mcp_web_fetch", "use an external tool" ; "unknown_native_name")]
+    fn native_action_hints_use_canonical_names(name: &str, expected: &str) {
+        assert_eq!(
+            PermissionPrompt::action_hint(&ToolKey::native(name)),
+            expected
+        );
+    }
+
+    #[test_case("web.search", "use an external tool" ; "network_like_tool")]
+    #[test_case("shell.write_file", "use an external tool" ; "file_like_tool")]
+    fn mcp_action_hints_never_infer_from_names(name: &str, expected: &str) {
+        let tool = ToolKey::parse(name).expect("valid MCP tool key");
+        assert_eq!(PermissionPrompt::action_hint(&tool), expected);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
+use unicode_truncate::UnicodeTruncateStr;
 use unicode_width::UnicodeWidthStr;
 
 use n00n_providers::{ModelPricing, TokenUsage};
@@ -41,6 +42,8 @@ pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
 
 const CODE_OUTPUT_DIVIDER: &str = "    ────────────";
+const TOOL_HEADER_SEPARATOR_WIDTH: usize = 2;
+const TOOL_HEADER_INDICATOR_WIDTH: usize = 10;
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -411,7 +414,25 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         render_header: Option<&BufferSnapshot>,
     ) {
-        let label = tool_name.to_owned();
+        let header_width = render_header
+            .and_then(|snapshot| snapshot.lines.first())
+            .map_or_else(
+                || UnicodeWidthStr::width(header),
+                |line| {
+                    line.spans
+                        .iter()
+                        .map(|span| UnicodeWidthStr::width(span.text.as_str()))
+                        .sum()
+                },
+            );
+        let annotation_width = annotation.map_or(0, |text| UnicodeWidthStr::width(text) + 3);
+        let label_width = usize::from(self.width).saturating_sub(
+            TOOL_HEADER_INDICATOR_WIDTH
+                + TOOL_HEADER_SEPARATOR_WIDTH
+                + header_width
+                + annotation_width,
+        );
+        let label = truncate_tool_label(tool_name, label_width);
         let mut spans = vec![
             Span::styled(label, theme::current().tool_prefix),
             Span::styled("  ", theme::current().tool_dim),
@@ -633,6 +654,17 @@ impl ToolLineBuilder {
     }
 }
 
+fn truncate_tool_label(label: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(label) <= max_width {
+        return label.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let (prefix, _) = label.unicode_truncate(max_width.saturating_sub(1));
+    format!("{prefix}…")
+}
+
 fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &'static str) {
     let style = theme::current().tool;
     for line in text.lines() {
@@ -704,12 +736,20 @@ pub(crate) fn bake_snapshot_tail(
 }
 
 pub(crate) fn resolve_span_style(style: &SpanStyle) -> Style {
+    resolve_span_style_with_accessibility(style, theme::no_color(), theme::high_contrast())
+}
+
+fn resolve_span_style_with_accessibility(
+    style: &SpanStyle,
+    no_color: bool,
+    high_contrast: bool,
+) -> Style {
     match style {
         SpanStyle::Default => theme::current().tool,
         SpanStyle::Named(name) => theme::style_by_name(name),
         SpanStyle::Inline(inline) => {
-            let accessible = theme::no_color() || theme::high_contrast();
-            let mut s = if theme::high_contrast() {
+            let accessible = no_color || high_contrast;
+            let mut s = if high_contrast {
                 theme::current().tool
             } else {
                 Style::default()
@@ -1561,6 +1601,37 @@ mod tests {
         assert_eq!(tl.snapshot_base, None);
     }
 
+    #[test_case("very_long_tool_name", 20, "very_…" ; "ascii")]
+    #[test_case("工具工具工具", 24, "工具工具…" ; "wide_unicode")]
+    fn narrow_header_truncates_visible_tool_name_but_preserves_search(
+        tool_name: &str,
+        width: u16,
+        expected_label: &str,
+    ) {
+        let mut msg = bash_msg("ok", ToolStatus::InProgress, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::InProgress,
+            name: tool_name.into(),
+        }));
+
+        let lines = build_tool_lines(
+            &msg,
+            ToolStatus::InProgress,
+            &test_rctx(width),
+            SectionFlags::default(),
+        );
+
+        assert_eq!(lines.lines[0].spans[1].content, expected_label);
+        assert!(lines.lines[0].width() <= usize::from(width));
+        assert!(lines.search_text.starts_with(tool_name));
+    }
+
+    #[test]
+    fn tool_label_truncation_preserves_emoji_graphemes() {
+        assert_eq!(truncate_tool_label("👩‍💻tool", 3), "👩‍💻…");
+    }
+
     #[test]
     fn header_spinner_span_bakes_and_shifts_with_indicator() {
         let header = make_snapshot(vec![vec![
@@ -2105,7 +2176,7 @@ mod tests {
             strikethrough: true,
             reversed: true,
         });
-        let resolved = resolve_span_style(&style);
+        let resolved = resolve_span_style_with_accessibility(&style, false, false);
         assert_eq!(resolved.fg, Some(Color::Rgb(10, 20, 30)));
         assert_eq!(resolved.bg, Some(Color::Rgb(40, 50, 60)));
         assert!(resolved.add_modifier.contains(Modifier::BOLD));
@@ -2114,6 +2185,33 @@ mod tests {
         assert!(resolved.add_modifier.contains(Modifier::DIM));
         assert!(resolved.add_modifier.contains(Modifier::CROSSED_OUT));
         assert!(resolved.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn inline_span_ignores_rgb_in_no_color_mode() {
+        use n00n_agent::types::InlineStyle;
+        let style = SpanStyle::Inline(InlineStyle {
+            fg: Some((10, 20, 30)),
+            bg: Some((40, 50, 60)),
+            ..InlineStyle::default()
+        });
+
+        let resolved = resolve_span_style_with_accessibility(&style, true, false);
+        assert_eq!(resolved.fg, None);
+        assert_eq!(resolved.bg, None);
+    }
+
+    #[test]
+    fn inline_span_uses_theme_style_in_high_contrast_mode() {
+        use n00n_agent::types::InlineStyle;
+        let style = SpanStyle::Inline(InlineStyle {
+            fg: Some((10, 20, 30)),
+            bg: Some((40, 50, 60)),
+            ..InlineStyle::default()
+        });
+
+        let resolved = resolve_span_style_with_accessibility(&style, false, true);
+        assert_eq!(resolved, theme::current().tool);
     }
 
     #[test]

@@ -101,6 +101,9 @@ impl ColorTransition {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
+        if crate::animation::reduced_motion() {
+            return false;
+        }
         Instant::now()
             .saturating_duration_since(self.start)
             .as_secs_f32()
@@ -114,6 +117,9 @@ impl ColorTransition {
     }
 
     fn resolve_rgb(&self, now: Instant) -> (u8, u8, u8) {
+        if crate::animation::reduced_motion() {
+            return self.to;
+        }
         let t = (now.saturating_duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS)
             .min(1.0);
         let p = ease_out_cubic(t);
@@ -584,6 +590,9 @@ mod tests {
 
     #[test]
     fn interpolation_over_time() {
+        let _guard = crate::animation::REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let start = transition_at((0, 0, 0), (200, 200, 200), Duration::ZERO);
         assert_eq!(start, (0, 0, 0));
 
@@ -600,6 +609,9 @@ mod tests {
 
     #[test]
     fn chained_set_restarts_toward_new_target() {
+        let _guard = crate::animation::REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut ct = ColorTransition::new(Color::Rgb(0, 0, 0));
         ct.set(Color::Rgb(200, 100, 50));
         ct.set(Color::Rgb(10, 20, 30));
@@ -610,6 +622,9 @@ mod tests {
 
     #[test]
     fn is_animating_lifecycle() {
+        let _guard = crate::animation::REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ct = ColorTransition::new(Color::Rgb(0, 0, 0));
         assert!(!ct.is_animating(), "settled on construction");
 
@@ -620,10 +635,27 @@ mod tests {
 
     #[test]
     fn non_rgb_color_uses_fallback() {
+        let _guard = crate::animation::REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ct = ColorTransition::new(Color::Blue);
         assert_eq!(
             ct.resolve_rgb(ct.start + Duration::from_secs(1)),
             (100, 140, 255)
         );
+    }
+
+    #[test]
+    fn reduced_motion_resolves_color_transition_immediately() {
+        let _guard = crate::animation::REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::animation::set_reduced_motion(true);
+        let mut transition = ColorTransition::new(Color::Rgb(0, 0, 0));
+        transition.set(Color::Rgb(200, 100, 50));
+
+        assert_eq!(transition.resolve(), Color::Rgb(200, 100, 50));
+        assert!(!transition.is_animating());
+        crate::animation::set_reduced_motion(false);
     }
 }

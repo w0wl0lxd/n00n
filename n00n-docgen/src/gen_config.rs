@@ -149,7 +149,7 @@ fn write_tool_output_section(out: &mut String) {
         out,
         "Legacy runtime names are grouped into these buckets: `bash`/`run_shell`, \
          `code_execution`/`run_python`, `task`/`run_task`, `workflow`/`run_workflow`, \
-         `index`/`index_file`, `grep`/`search_code`/`search_files`/`search_text`, \
+         `index`/`index_file`, `grep`/`semblem`/`search_code`/`search_files`/`search_text`, \
          `explore`/`explore_code`/`map_code`/`map_codegraph`, `read`/`read_file`, \
          `write`/`write_file`, and `web`/`fetch_url`/`search_web`. Use the short \
          bucket keys in `init.lua`; canonical tool names are listed in the tool reference."
@@ -280,15 +280,13 @@ n00n.setup({{
 
     write_plugin_options(&mut out, &collect_plugin_options());
 
-    writeln!(out, "## Accessibility\n").unwrap();
-    writeln!(
-        out,
+    out.push_str("## Accessibility\n\n");
+    out.push_str(
         "Set `NO_COLOR` to any value to disable terminal colors. Set \
          `N00N_HIGH_CONTRAST=1` to use high-contrast semantic colors and stronger \
          selection emphasis. Both modes retain text and glyph indicators so status \
-         never depends on color alone.\n"
-    )
-    .unwrap();
+         never depends on color alone.\n\n",
+    );
 
     writeln!(out, "## Validation\n").unwrap();
     writeln!(

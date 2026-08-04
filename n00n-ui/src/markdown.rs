@@ -528,6 +528,9 @@ mod tests {
 
     #[test]
     fn code_block_highlight_spans_have_rgb_color() {
+        if theme::no_color() || theme::high_contrast() {
+            return;
+        }
         let style = Style::default();
         let lines = text_to_lines("```rust\nfn x() {}\n```", "", style, style, TEST_WIDTH);
         let code_spans: Vec<_> = lines

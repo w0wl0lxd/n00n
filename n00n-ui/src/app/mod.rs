@@ -339,7 +339,6 @@ impl App {
             custom_commands,
             picker,
         } = init;
-        crate::animation::set_reduced_motion(ui_config.reduced_motion);
         scrollbar::set_enabled(ui_config.scrollbar);
         let state = SessionState::from_session(session, &model, &storage);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
@@ -652,9 +651,8 @@ impl App {
         }
     }
 
-    fn open_tasks(&mut self) {
-        let entries: Vec<TaskEntry> = self
-            .chats
+    fn task_entries(&self) -> Vec<TaskEntry> {
+        self.chats
             .iter()
             .enumerate()
             .map(|(i, c)| {
@@ -688,7 +686,17 @@ impl App {
                     usage,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    fn refresh_tasks(&mut self) {
+        if self.task_picker.is_open() {
+            self.task_picker.replace_items(self.task_entries());
+        }
+    }
+
+    fn open_tasks(&mut self) {
+        let entries = self.task_entries();
         self.task_picker_original = Some(self.active_chat);
         self.task_picker.set_footer(TASK_PANEL_FOOTER);
         self.task_picker.open(entries, " Agents & Teams ");
@@ -2160,7 +2168,11 @@ impl App {
     }
 
     pub fn close_all_overlays(&mut self) {
+        let dismiss_onboarding = self.onboarding.is_open();
         self.overlays_mut().iter_mut().for_each(|o| o.close());
+        if dismiss_onboarding && let Err(error) = Onboarding::mark_seen(&self.storage) {
+            tracing::warn!(error = %error, "failed to persist welcome guide dismissal");
+        }
     }
 
     #[must_use]

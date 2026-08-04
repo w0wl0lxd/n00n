@@ -101,7 +101,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `web` | 2 |
 | `other` | 2 |
 
-Legacy runtime names are grouped into these buckets: `bash`/`run_shell`, `code_execution`/`run_python`, `task`/`run_task`, `workflow`/`run_workflow`, `index`/`index_file`, `grep`/`search_code`/`search_files`/`search_text`, `explore`/`explore_code`/`map_code`/`map_codegraph`, `read`/`read_file`, `write`/`write_file`, and `web`/`fetch_url`/`search_web`. Use the short bucket keys in `init.lua`; canonical tool names are listed in the tool reference.
+Legacy runtime names are grouped into these buckets: `bash`/`run_shell`, `code_execution`/`run_python`, `task`/`run_task`, `workflow`/`run_workflow`, `index`/`index_file`, `grep`/`semblem`/`search_code`/`search_files`/`search_text`, `explore`/`explore_code`/`map_code`/`map_codegraph`, `read`/`read_file`, `write`/`write_file`, and `web`/`fetch_url`/`search_web`. Use the short bucket keys in `init.lua`; canonical tool names are listed in the tool reference.
 ### `agent`
 
 | Field | Type | Default | Min | Description |

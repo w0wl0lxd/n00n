@@ -266,6 +266,9 @@ static THEME: LazyLock<ArcSwap<Theme>> =
     LazyLock::new(|| ArcSwap::from_pointee(Theme::load_or_bundled()));
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+static NO_COLOR: LazyLock<bool> = LazyLock::new(|| env::var_os("NO_COLOR").is_some());
+static HIGH_CONTRAST: LazyLock<bool> =
+    LazyLock::new(|| env::var_os("N00N_HIGH_CONTRAST").is_some_and(|value| value != "0"));
 
 pub fn current() -> Guard<Arc<Theme>> {
     THEME.load()
@@ -286,7 +289,7 @@ pub fn generation() -> u64 {
 pub fn load_by_name(name: &str) -> Result<Theme, String> {
     BUNDLED_THEMES.iter().find(|e| e.name == name).map_or_else(
         || Err(format!("unknown theme: {name}")),
-        |e| Theme::from_toml(e.toml),
+        |e| Theme::from_toml(e.toml).map(Theme::with_current_accessibility),
     )
 }
 
@@ -317,12 +320,12 @@ pub enum SemanticRole {
 
 #[must_use]
 pub fn no_color() -> bool {
-    env::var_os("NO_COLOR").is_some()
+    *NO_COLOR
 }
 
 #[must_use]
 pub fn high_contrast() -> bool {
-    env::var_os("N00N_HIGH_CONTRAST").is_some_and(|value| value != "0")
+    *HIGH_CONTRAST
 }
 
 #[must_use]
@@ -698,7 +701,7 @@ impl Theme {
             Modifier::BOLD,
         );
 
-        let mut theme = Self::build_theme(
+        Ok(Self::build_theme(
             &style,
             &derived_color,
             &derived_style,
@@ -707,16 +710,16 @@ impl Theme {
             &ui,
             &palette,
             syntax,
-        );
-        theme.apply_accessibility(no_color(), high_contrast());
-        Ok(theme)
+        ))
     }
 
-    fn apply_accessibility(&mut self, no_color: bool, high_contrast: bool) {
-        if !no_color && !high_contrast {
-            return;
-        }
-        let styles = [
+    fn with_current_accessibility(mut self) -> Self {
+        self.apply_accessibility(no_color(), high_contrast());
+        self
+    }
+
+    fn styles_mut(&mut self) -> [&mut Style; 64] {
+        [
             &mut self.user,
             &mut self.control,
             &mut self.assistant,
@@ -781,8 +784,14 @@ impl Theme {
             &mut self.index_keyword,
             &mut self.shell_prefix,
             &mut self.progress_bar,
-        ];
-        for style in styles {
+        ]
+    }
+
+    fn apply_accessibility(&mut self, no_color: bool, high_contrast: bool) {
+        if !no_color && !high_contrast {
+            return;
+        }
+        for style in self.styles_mut() {
             if no_color {
                 style.fg = None;
                 style.bg = None;
@@ -815,6 +824,14 @@ impl Theme {
             self.tool_success.fg = Some(Color::Green);
             self.tool_error.fg = Some(Color::LightRed);
             self.error.fg = Some(Color::LightRed);
+            self.diff_old.fg = Some(Color::LightRed);
+            self.diff_new.fg = Some(Color::LightGreen);
+            self.diff_old_emphasis.fg = Some(Color::Red);
+            self.diff_new_emphasis.fg = Some(Color::Green);
+            self.todo_completed.fg = Some(Color::Green);
+            self.todo_in_progress.fg = Some(Color::Yellow);
+            self.todo_pending.fg = Some(Color::Cyan);
+            self.todo_cancelled.fg = Some(Color::LightRed);
             self.mode_build = Color::Yellow;
             self.mode_plan = Color::Cyan;
             self.mode_bash = Color::Magenta;
@@ -864,7 +881,7 @@ impl Theme {
         let mut last_error = String::new();
         for entry in BUNDLED_THEMES {
             match Self::from_toml(entry.toml) {
-                Ok(theme) => return theme,
+                Ok(theme) => return theme.with_current_accessibility(),
                 Err(e) => last_error = e,
             }
         }
@@ -1114,6 +1131,12 @@ mod tests {
         assert_eq!(theme.foreground, Color::White);
         assert_eq!(theme.accent.fg, Some(Color::Yellow));
         assert_eq!(theme.tool_error.fg, Some(Color::LightRed));
+        assert_eq!(theme.diff_old.fg, Some(Color::LightRed));
+        assert_eq!(theme.diff_new.fg, Some(Color::LightGreen));
+        assert_eq!(theme.todo_completed.fg, Some(Color::Green));
+        assert_eq!(theme.todo_in_progress.fg, Some(Color::Yellow));
+        assert_eq!(theme.todo_pending.fg, Some(Color::Cyan));
+        assert_eq!(theme.todo_cancelled.fg, Some(Color::LightRed));
         assert_eq!(theme.syntax.settings.foreground, Some(SYN_WHITE));
         assert_eq!(theme.syntax.settings.background, Some(SYN_BLACK));
         assert_eq!(theme.syntax.settings.caret, Some(SYN_WHITE));
@@ -1122,6 +1145,23 @@ mod tests {
         assert!(theme.syntax.scopes.iter().all(|item| {
             item.style.foreground == Some(SYN_WHITE) && item.style.background.is_none()
         }));
+    }
+
+    #[test]
+    fn accessibility_style_list_covers_every_theme_style_field() {
+        let mut theme = dracula();
+        let listed = theme.styles_mut().len();
+        let declared = include_str!("theme.rs")
+            .lines()
+            .skip_while(|line| !line.starts_with("pub struct Theme {"))
+            .skip(1)
+            .take_while(|line| *line != "}")
+            .filter(|line| {
+                line.trim_start().starts_with("pub ") && line.trim_end().ends_with(": Style,")
+            })
+            .count();
+
+        assert_eq!(listed, declared);
     }
 
     #[test]

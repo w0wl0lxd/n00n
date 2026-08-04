@@ -25,7 +25,7 @@ use n00n_storage::auth::{
 };
 use n00n_storage::model::persist_model;
 
-use crate::print::{OutputFormat, confirm_destructive, emit_command_result};
+use crate::print::{CommandCancelled, OutputFormat, confirm_destructive, emit_command_result};
 
 fn env_key_populated(var: &str) -> bool {
     env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
@@ -460,7 +460,7 @@ pub fn auth_logout(
         return Ok(());
     }
     if !no_confirm && !confirm_destructive(format, "auth logout", &slug)? {
-        return Ok(());
+        return Err(CommandCancelled.into());
     }
     let mut message = format!("no stored credentials for '{slug}'");
     match provider {
@@ -692,7 +692,7 @@ pub fn mcp_logout(
         return Ok(());
     }
     if !no_confirm && !confirm_destructive(format, "mcp logout", server)? {
-        return Ok(());
+        return Err(CommandCancelled.into());
     }
     let deleted = n00n_storage::auth::delete_mcp_auth(storage, server)?;
     let message = if deleted {

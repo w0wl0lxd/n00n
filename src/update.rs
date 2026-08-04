@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use n00n_storage::version::{self, VersionError};
 use n00n_storage::{StateDir, StorageError};
 
-use crate::print::{OutputFormat, confirm_destructive, emit_command_result};
+use crate::print::{CommandCancelled, OutputFormat, confirm_destructive, emit_command_result};
 
 const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/n00n/main/install.sh";
 const BACKUP_FILENAME: &str = "n00n_backup";
@@ -58,6 +58,9 @@ pub enum UpdateError {
 
     #[error("failed to read confirmation: {0}")]
     Prompt(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Cancelled(#[from] CommandCancelled),
 }
 
 fn fetch_script() -> Result<String, UpdateError> {
@@ -208,7 +211,7 @@ pub fn update(
 
     if !skip_confirm && !confirm_destructive(format, "update", &install_dir.display().to_string())?
     {
-        return Ok(());
+        return Err(CommandCancelled.into());
     }
 
     let backup_path = backup_binary(&exe_path, &storage)?;
@@ -254,7 +257,7 @@ pub fn rollback(
         return Ok(());
     }
     if !skip_confirm && !confirm_destructive(format, "rollback", &exe_path.display().to_string())? {
-        return Ok(());
+        return Err(CommandCancelled.into());
     }
 
     restore_backup(&backup_path, &exe_path)?;

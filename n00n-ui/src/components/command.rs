@@ -474,6 +474,7 @@ impl CommandPalette {
         for (i, cmd) in custom_commands.iter().enumerate() {
             let name = cmd.display_name();
             if conflicts_with_builtin(&name) || !reserved.insert(name.clone()) {
+                tracing::debug!(command = %name, command_type = "custom", "skipped reserved command");
                 continue;
             }
             let item = CommandItem {
@@ -489,6 +490,7 @@ impl CommandPalette {
         for (i, prompt) in mcp_prompts.iter().enumerate() {
             let name = format!("/{}", prompt.display_name);
             if conflicts_with_builtin(&name) || !reserved.insert(name.clone()) {
+                tracing::debug!(command = %name, command_type = "mcp_prompt", "skipped reserved command");
                 continue;
             }
             let item = CommandItem {
@@ -507,6 +509,7 @@ impl CommandPalette {
 
         for (i, cmd) in lua_commands.iter().enumerate() {
             if conflicts_with_builtin(&cmd.name) || !reserved.insert(cmd.name.to_string()) {
+                tracing::debug!(command = %cmd.name, plugin = %cmd.plugin, command_type = "lua", "skipped reserved command");
                 continue;
             }
             let item = CommandItem {
@@ -1415,7 +1418,17 @@ mod tests {
             .iter()
             .filter(|f| matches!(f.command_type, CommandType::Lua(_)))
             .count();
-        assert_eq!(lua_count, 1);
+        assert_eq!(
+            lua_count, 1,
+            "/memory is reserved by the /view:memory built-in"
+        );
+        let names = p
+            .filtered
+            .iter()
+            .filter(|item| matches!(item.command_type, CommandType::Lua(_)))
+            .map(|item| p.item_name(item))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["/deploy"]);
     }
 
     #[test]

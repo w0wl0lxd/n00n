@@ -49,7 +49,7 @@ use serde_json::json;
 use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
-use crate::print::{OutputFormat, confirm_destructive, emit_command_result};
+use crate::print::{CommandCancelled, OutputFormat, confirm_destructive, emit_command_result};
 use crate::setup;
 
 fn status_label(status: &str) -> &str {
@@ -1204,7 +1204,7 @@ pub fn stop_client(
         return Ok(());
     }
     if !no_confirm && !confirm_destructive(format, "agent stop", id)? {
-        return Ok(());
+        return Err(CommandCancelled.into());
     }
     let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(

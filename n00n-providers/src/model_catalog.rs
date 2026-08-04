@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::manifest::ManifestRegistry;
 use crate::model::Model;
-use crate::provider::{available_model_specs, provider_available};
+use crate::provider::available_model_specs;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ModelCatalogError {
@@ -19,6 +19,7 @@ pub enum ModelCatalogError {
 pub struct ModelCatalog {
     specs: Arc<[String]>,
     aliases: Arc<HashMap<String, String>>,
+    allow_live_discovery_only: bool,
 }
 
 impl ModelCatalog {
@@ -34,12 +35,22 @@ impl ModelCatalog {
 
     #[must_use]
     pub fn from_specs(specs: impl IntoIterator<Item = String>) -> Self {
+        Self::build(specs, true)
+    }
+
+    #[must_use]
+    pub fn from_discovered_specs(specs: impl IntoIterator<Item = String>) -> Self {
+        Self::build(specs, false)
+    }
+
+    fn build(specs: impl IntoIterator<Item = String>, allow_live_discovery_only: bool) -> Self {
         let mut unique: Vec<String> = specs.into_iter().filter(|s| is_spec(s)).collect();
         unique.sort();
         unique.dedup();
         Self {
             specs: unique.into(),
             aliases: Arc::new(HashMap::new()),
+            allow_live_discovery_only,
         }
     }
 
@@ -83,10 +94,6 @@ impl ModelCatalog {
     /// Returns an error when the identifier is malformed, unavailable, or has invalid metadata.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         let spec = self.canonical_spec(input)?;
-        let (provider, _) = spec.split_once('/').ok_or(ModelCatalogError::InvalidSpec)?;
-        if !provider_available(provider) {
-            return Err(ModelCatalogError::Unavailable(spec));
-        }
         Model::from_spec(&spec).map_err(|error| {
             tracing::warn!(error = %error, "configured model metadata failed validation");
             ModelCatalogError::InvalidModel
@@ -101,7 +108,7 @@ impl ModelCatalog {
             .specs
             .iter()
             .any(|candidate| is_compatible_spec(input, candidate))
-            || is_live_discovery_only_spec(input)
+            || (self.allow_live_discovery_only && is_live_discovery_only_spec(input))
         {
             return Ok(input.to_string());
         }
@@ -176,9 +183,11 @@ fn is_spec(spec: &str) -> bool {
 
 fn is_compatible_spec(input: &str, catalogued: &str) -> bool {
     input == catalogued
-        || input
-            .strip_prefix(catalogued)
-            .is_some_and(|suffix| suffix.starts_with('-'))
+        || input.strip_prefix(catalogued).is_some_and(|suffix| {
+            suffix.len() == 9
+                && suffix.starts_with('-')
+                && suffix[1..].bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn is_live_discovery_only_spec(spec: &str) -> bool {
@@ -203,6 +212,15 @@ mod tests {
             catalog.resolve("test/unknown"),
             Err(ModelCatalogError::Unavailable(_))
         ));
+    }
+
+    #[test]
+    fn explicit_catalog_resolves_without_process_configuration() {
+        let catalog = ModelCatalog::from_specs(["ollama/live-only-model".to_string()]);
+        assert_eq!(
+            catalog.resolve("ollama/live-only-model").unwrap().spec(),
+            "ollama/live-only-model"
+        );
     }
 
     #[test]
@@ -257,12 +275,33 @@ mod tests {
     }
 
     #[test]
+    fn compatible_suffix_rejects_non_date_versions() {
+        let catalog = ModelCatalog::from_specs(["openai/gpt-4".to_string()]);
+
+        for spec in [
+            "openai/gpt-4-0613",
+            "openai/gpt-4-2025010",
+            "openai/gpt-4-202501011",
+            "openai/gpt-4-2025abcd",
+            "openai/gpt-4-20250101-preview",
+        ] {
+            assert!(
+                matches!(
+                    catalog.canonical_spec(spec),
+                    Err(ModelCatalogError::Unavailable(_))
+                ),
+                "unexpectedly accepted {spec}"
+            );
+        }
+    }
+
+    #[test]
     fn prefix_compatibility_requires_version_boundary() {
         let catalog = ModelCatalog::from_specs(["openai/gpt-4".to_string()]);
 
         assert_eq!(
-            catalog.canonical_spec("openai/gpt-4-0613").unwrap(),
-            "openai/gpt-4-0613"
+            catalog.canonical_spec("openai/gpt-4-20250101").unwrap(),
+            "openai/gpt-4-20250101"
         );
         assert!(matches!(
             catalog.canonical_spec("openai/gpt-4o"),
@@ -308,6 +347,16 @@ mod tests {
             "provider/model".to_string(),
         ]);
         assert_eq!(catalog.specs(), &["provider/model".to_string()]);
+    }
+
+    #[test]
+    fn discovered_catalog_rejects_models_missing_from_discovery() {
+        let catalog = ModelCatalog::from_discovered_specs([]);
+
+        assert!(matches!(
+            catalog.canonical_spec("ollama/not-discovered"),
+            Err(ModelCatalogError::Unavailable(_))
+        ));
     }
 
     #[test]

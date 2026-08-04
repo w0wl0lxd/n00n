@@ -52,6 +52,10 @@ pub enum OutputFormat {
     StreamJson,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("command cancelled")]
+pub struct CommandCancelled;
+
 #[must_use]
 pub fn command_result_value(action: &str, status: &str, message: &str) -> Value {
     serde_json::json!({

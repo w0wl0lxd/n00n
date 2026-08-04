@@ -7,7 +7,7 @@ local cwd = n00n.uv.cwd() or "."
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **search_text** for BM25 code search across the repo; use **explore_code** for structural graph questions.",
+  content = "- Use **search_text** for BM25 repo search, **map_code** for graph relationships, **map_codegraph** for cross-file structure or impact, and **index_file** for single-file skeletons.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))
@@ -20,7 +20,7 @@ n00n.api.register_tool({
   name = "search_text",
   aliases = { "semblem" },
   kind = "read",
-  description = [[Search indexed source code with BM25 keyword ranking. Use for natural-language or ranked code search after the index is available. Do not use for exact regex matches or call relationships; use `search_code` or `map_codegraph` instead. Builds a `.n00n/search/` index on first use.
+  description = [[Search indexed source code with BM25 keyword ranking. Use for natural-language or ranked code search after the index is available. Do not use for exact regex matches, call relationships, or cross-file structure and impact; use `search_code`, `map_code`, or `map_codegraph` respectively. Builds a `.n00n/search/` index on first use.
 
 Commands:
 - `search`: ranked snippets for a natural-language or keyword query

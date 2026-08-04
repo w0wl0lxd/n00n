@@ -190,8 +190,10 @@ discarded.
 **Parameters:**
 
 - `{spec}` (`table`) Tool specification:
-  - `name` (`string`) Required canonical ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
+  - `name` (`string`) Required canonical ASCII identifier, up to 64 chars (`[a-zA-Z_][a-zA-Z0-9_]*`).
   - `aliases` (`string[]`) Optional deprecated names accepted for compatibility but never shown to the model.
+    Each alias must be a valid ASCII identifier, differ from the canonical name, be unique
+    in this list, and not collide globally with any registered canonical name or alias.
   - `description` (`string`) Required. Non-empty description shown to the model.
   - `schema` (`table`) Required. JSON Schema object describing the tool's input parameters.
   - `handler` (`function`) Required. Called with `(input, ctx)` when the tool is invoked.

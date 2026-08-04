@@ -20,7 +20,7 @@ use n00n_agent::tools::schema::{ParamSchema, to_json_schema, try_from_json, vali
 use n00n_agent::tools::{
     BoxFuture, Deadline, DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError,
     PermissionScopes, ToolAudience, ToolContext, ToolExecResult, ToolFilter, ToolInvocation,
-    is_tool_enabled, timeout_annotation,
+    timeout_annotation,
 };
 use n00n_agent::{
     AgentEvent, BufferSnapshot, ImageMediaType, ImageSource, InstructionBlock, SharedBuf,
@@ -39,7 +39,7 @@ use crate::api::util::convert::{json_to_lua, lua_to_json};
 use crate::api::util::ctx::LuaCtx;
 use crate::runtime::{HintContent, LiveCtx, PromptHintCallbacks, PromptHintRegistration, Request};
 
-const TOOL_NAME_MAX: usize = 32;
+const TOOL_NAME_MAX: usize = 64;
 const TOOL_HANDLER_RETURN_ERR: &str =
     "tool handler must return string or {output=string, is_error?=bool}";
 const TIMEOUT_PARSE_ERR: &str = "register_tool: 'timeout' must be a positive number, 0, or false";
@@ -622,8 +622,10 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 /// discarded.
 ///
 /// @param spec table Tool specification:
-///   name            (string)   Required canonical ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
+///   name            (string)   Required canonical ASCII identifier, up to 64 chars (`[a-zA-Z_][a-zA-Z0-9_]*`).
 ///   aliases         (string[]) Optional deprecated names accepted for compatibility but never shown to the model.
+///                              Each alias must be a valid ASCII identifier, differ from the canonical name, be unique
+///                              in this list, and not collide globally with any registered canonical name or alias.
 ///   description     (string)   Required. Non-empty description shown to the model.
 ///   schema          (table)    Required. JSON Schema object describing the tool's input parameters.
 ///   handler         (function) Required. Called with `(input, ctx)` when the tool is invoked.
@@ -824,10 +826,11 @@ fn get_tools(lua: &Lua, opts: Option<Table>) -> LuaResult<Table> {
             .unwrap_or_else(Vec::new);
     }
 
+    let filter = ToolFilter::AllExcept(disabled);
     let out = lua.create_table()?;
     for (i, entry) in registry.snapshot().iter().enumerate() {
         let t = tool_entry_to_lua(lua, entry)?;
-        t.set("enabled", is_tool_enabled(&disabled, entry.name()))?;
+        t.set("enabled", registry.matches_filter(entry.name(), &filter))?;
         out.set(i + 1, t)?;
     }
     Ok(out)
@@ -1656,7 +1659,7 @@ mod tests {
     #[test_case::test_case("_leading", true ; "leading_underscore")]
     #[test_case::test_case("_", true ; "single_underscore")]
     #[test_case::test_case("snake_case_123", true ; "snake_with_digits")]
-    #[test_case::test_case(&"a".repeat(TOOL_NAME_MAX), true ; "max_length_ok")]
+    #[test_case::test_case(&"a".repeat(64), true ; "legacy_64_char_name")]
     #[test_case::test_case("", false ; "empty")]
     #[test_case::test_case("../../bash", false ; "path_traversal")]
     #[test_case::test_case("foo bar", false ; "space")]
@@ -1665,9 +1668,62 @@ mod tests {
     #[test_case::test_case("foo.bar", false ; "dot")]
     #[test_case::test_case("foo@bar", false ; "at_sign")]
     #[test_case::test_case("café", false ; "non_ascii")]
-    #[test_case::test_case(&"a".repeat(TOOL_NAME_MAX + 1), false ; "too_long")]
+    #[test_case::test_case(&"a".repeat(65), false ; "over_legacy_limit")]
     fn tool_name_validation(name: &str, expected: bool) {
         assert_eq!(is_valid_tool_name(name), expected);
+    }
+    fn tool_spec(lua: &Lua, aliases: &str) -> Table {
+        lua.load(format!(
+            r#"return {{
+                name = "canonical",
+                aliases = {aliases},
+                description = "test",
+                schema = {{ type = "object", properties = {{}} }},
+                handler = function() return "ok" end,
+            }}"#
+        ))
+        .eval()
+        .unwrap()
+    }
+
+    #[test]
+    fn register_tool_rejects_invalid_and_duplicate_aliases() {
+        for aliases in [
+            r#"{ "canonical" }"#,
+            r#"{ "invalid-alias" }"#,
+            r#"{ "legacy", "legacy" }"#,
+        ] {
+            let lua = Lua::new();
+            let pending = Arc::new(Mutex::new(Vec::new()));
+            let error =
+                register_tool_from_lua(&lua, &tool_spec(&lua, aliases), Arc::clone(&pending))
+                    .expect_err("invalid aliases must be rejected");
+            assert!(error.to_string().contains("alias"));
+            assert!(pending.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn register_tool_preserves_valid_aliases() {
+        let lua = Lua::new();
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        register_tool_from_lua(
+            &lua,
+            &tool_spec(&lua, r#"{ "legacy", "older" }"#),
+            Arc::clone(&pending),
+        )
+        .unwrap();
+
+        let pending = pending.lock().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0]
+                .aliases
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>(),
+            ["legacy", "older"]
+        );
     }
 
     #[test_case::test_case(
