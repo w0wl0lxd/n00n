@@ -62,6 +62,7 @@ pub enum RunOutcome {
 ///
 /// Returns an error if the terminal or event loop cannot be initialized.
 pub fn run(params: EventLoopParams, initial_prompt: Option<String>) -> Result<RunOutcome> {
+    animation::set_reduced_motion(params.ui_config.reduced_motion);
     let report = {
         let (_guard, mut terminal) = terminal::TerminalGuard::init()?;
         color_compat::init();

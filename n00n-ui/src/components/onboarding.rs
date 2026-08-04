@@ -69,17 +69,18 @@ impl Onboarding {
                 Line::raw(""),
                 Line::from(Span::styled("  Safe, clear tool use", t.foreground)),
                 Line::raw(""),
+                Line::from(Span::styled("  Enter  start or select", t.tool_dim)),
+                Line::from(Span::styled("  Esc    close", t.tool_dim)),
+                Line::from(Span::styled("  /      open commands", t.tool_dim)),
+                Line::from(Span::styled("  Ctrl+H help", t.tool_dim)),
+                Line::from(Span::styled("  Ctrl+C exit", t.tool_dim)),
+                Line::raw(""),
+                Line::from(Span::styled("  Type to filter pickers.", t.tool_dim)),
                 Line::from(Span::styled(
                     "  Prompts show scope before tools run.",
                     t.tool_dim,
                 )),
-                Line::from(Span::styled("  Type to search pickers.", t.tool_dim)),
-                Line::from(Span::styled("  Enter selects. Esc closes.", t.tool_dim)),
-                Line::raw(""),
-                Line::from(Span::styled(
-                    "  Enter to start · /welcome to reopen",
-                    t.accent,
-                )),
+                Line::from(Span::styled("  More keys: /help · /welcome", t.accent)),
                 Line::raw(""),
             ]
         } else {
@@ -100,7 +101,7 @@ impl Onboarding {
                 Line::from(vec![
                     Span::styled("  Pickers              ", t.keybind_section),
                     Span::styled(
-                        "accept typing to search; Enter selects; Esc closes.",
+                        "accept typing to filter; Enter selects; Esc closes.",
                         t.tool_dim,
                     ),
                 ]),
@@ -113,7 +114,11 @@ impl Onboarding {
                 ]),
                 Line::raw(""),
                 Line::from(Span::styled(
-                    "  Press Enter or Space to start. Reopen this guide with /welcome.",
+                    "  Five useful keys: Enter, Esc, /, Ctrl+H, Ctrl+C.",
+                    t.keybind_section,
+                )),
+                Line::from(Span::styled(
+                    "  Press Enter or Space to start. Use /help for every key; /welcome reopens this guide.",
                     t.accent,
                 )),
                 Line::raw(""),
@@ -212,6 +217,8 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("/welcome"));
+        assert!(rendered.contains("/help"));
+        assert!(rendered.contains("Ctrl+H"));
     }
 
     #[test]

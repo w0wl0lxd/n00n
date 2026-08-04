@@ -339,6 +339,7 @@ impl App {
             custom_commands,
             picker,
         } = init;
+        crate::animation::set_reduced_motion(ui_config.reduced_motion);
         scrollbar::set_enabled(ui_config.scrollbar);
         let state = SessionState::from_session(session, &model, &storage);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));

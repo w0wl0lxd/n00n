@@ -150,7 +150,7 @@ impl Splash {
         Self {
             start: Instant::now(),
             field_offset,
-            animate,
+            animate: animate && !crate::animation::reduced_motion(),
             tip_idx,
         }
     }
@@ -164,7 +164,11 @@ impl Splash {
         if area.width < 20 || area.height < 5 {
             return;
         }
-        let t = self.start.elapsed().as_secs_f32();
+        let t = if crate::animation::reduced_motion() {
+            FADE_DURATION
+        } else {
+            self.start.elapsed().as_secs_f32()
+        };
         let fade = if t >= FADE_DURATION {
             1.0
         } else {
@@ -180,7 +184,11 @@ impl Splash {
             return;
         }
 
-        let t = self.start.elapsed().as_secs_f32();
+        let t = if crate::animation::reduced_motion() {
+            FADE_DURATION
+        } else {
+            self.start.elapsed().as_secs_f32()
+        };
         let fade = if t >= FADE_DURATION {
             1.0
         } else {
@@ -372,14 +380,23 @@ impl Splash {
                 .saturating_sub(crate::cast::usize_to_u16(LOGO.len())))
                 / 2;
         let alpha = 0.85 * ease_out_cubic(((t - LOGO_DELAY) / LOGO_RAMP).clamp(0.0, 1.0)) * fade;
-        let style = Style::new()
-            .fg(Color::Rgb(
-                lerp_u8(bg_r, ac_r, alpha),
-                lerp_u8(bg_g, ac_g, alpha),
-                lerp_u8(bg_b, ac_b.saturating_add(15), alpha),
-            ))
-            .bg(bg)
-            .add_modifier(Modifier::BOLD);
+        let style = if theme::no_color() {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else if theme::high_contrast() {
+            Style::new()
+                .fg(Color::White)
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+                .fg(Color::Rgb(
+                    lerp_u8(bg_r, ac_r, alpha),
+                    lerp_u8(bg_g, ac_g, alpha),
+                    lerp_u8(bg_b, ac_b.saturating_add(15), alpha),
+                ))
+                .bg(bg)
+                .add_modifier(Modifier::BOLD)
+        };
 
         for (col, ch) in LOGO.chars().enumerate() {
             let x = logo_x + crate::cast::usize_to_u16(col);
@@ -512,13 +529,25 @@ fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
 }
 
 fn faded_style(bg: (u8, u8, u8), fg: (u8, u8, u8), alpha: f32, bg_color: Color) -> Style {
-    Style::new()
-        .fg(Color::Rgb(
-            lerp_u8(bg.0, fg.0, alpha),
-            lerp_u8(bg.1, fg.1, alpha),
-            lerp_u8(bg.2, fg.2, alpha),
-        ))
-        .bg(bg_color)
+    if theme::no_color() {
+        return Style::default();
+    }
+    let style = if theme::high_contrast() {
+        Style::new().fg(Color::White).bg(Color::Black)
+    } else {
+        Style::new()
+            .fg(Color::Rgb(
+                lerp_u8(bg.0, fg.0, alpha),
+                lerp_u8(bg.1, fg.1, alpha),
+                lerp_u8(bg.2, fg.2, alpha),
+            ))
+            .bg(bg_color)
+    };
+    if theme::high_contrast() {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
 }
 
 fn render_segments(area: Rect, buf: &mut Buffer, y: u16, x_start: u16, segments: &[(&str, Style)]) {
