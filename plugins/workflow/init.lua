@@ -44,7 +44,6 @@ local DEFAULT_CONCURRENT_WORKFLOWS = 2
 local HARD_MAX_CONCURRENT_AGENTS = 8
 local HARD_MAX_CONCURRENT_WORKFLOWS = 4
 local HARD_MAX_AGGREGATE_AGENTS = 12
-local MAX_PARALLEL_BRANCHES = 64
 local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, no path separators)"
 local RUN_ID_PATTERN = "^[%x]+$"
 local DEFAULT_TIMEOUT_SECS = 600
@@ -54,7 +53,7 @@ local description = [[Run sandboxed Lua workflow for multi-stage agent orchestra
 
 Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum), 64 branches per parallel/pipeline call, and a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
+`inputs` is `{}` when omitted. Lua tables have no `.map`; use `pipeline(items, stages)` or `ipairs`. No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
 
 local schema = {
   type = "object",
@@ -63,10 +62,10 @@ local schema = {
   properties = {
     script = {
       type = "string",
-      description = "Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string.",
+      description = "Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs.",
     },
     inputs = {
-      description = "Free-form object exposed as global `inputs`.",
+      description = "Free-form object exposed as global `inputs`; defaults to `{}` when omitted.",
     },
     resume = {
       type = "string",
@@ -391,9 +390,6 @@ local function parallel(fns, popts)
   if type(fns) ~= "table" then
     error("parallel: fns must be an array of functions", 0)
   end
-  if #fns > MAX_PARALLEL_BRANCHES then
-    error("parallel: maximum of " .. MAX_PARALLEL_BRANCHES .. " branches", 0)
-  end
   popts = popts or {}
   local concurrency = max_concurrent_agents
   if type(popts.concurrency) == "number" then
@@ -437,9 +433,6 @@ end
 local function pipeline(items, stages, popts)
   if type(items) ~= "table" then
     error("pipeline: items must be an array", 0)
-  end
-  if #items > MAX_PARALLEL_BRANCHES then
-    error("pipeline: maximum of " .. MAX_PARALLEL_BRANCHES .. " items", 0)
   end
   if type(stages) ~= "table" then
     error("pipeline: stages must be an array of functions", 0)
