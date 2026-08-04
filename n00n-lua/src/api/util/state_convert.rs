@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn unmarked_tables_are_objects_with_string_keys_only() {
+    fn unmarked_tables_detect_objects_and_sequences() {
         let lua = Lua::new();
         let object = lua.create_table().unwrap();
         object.raw_set("name", "plugin").unwrap();
@@ -405,11 +405,11 @@ mod tests {
             json!({"name": "plugin"})
         );
 
-        let invalid = lua.create_table().unwrap();
-        invalid.raw_set(1, "item").unwrap();
+        let sequence = lua.create_table().unwrap();
+        sequence.raw_set(1, "item").unwrap();
         assert_eq!(
-            lua_to_json(&lua, &Value::Table(invalid)).unwrap_err(),
-            StateConvertError::NonStringObjectKey
+            lua_to_json(&lua, &Value::Table(sequence)).unwrap(),
+            json!(["item"])
         );
     }
 
