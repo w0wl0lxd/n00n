@@ -25,6 +25,11 @@ use crate::state::{PluginStateIdentity, PluginStateScope, PluginStateStore};
 
 const CONTEXT_INACTIVE_MSG: &str = "state context is no longer active";
 const DEADLINE_ALREADY_SET_MSG: &str = "ctx:set_deadline() already called";
+const INVALID_STATE_SCOPE_MSG: &str = "state scope must be 'session' or 'root'";
+
+fn parse_state_scope(scope: &str) -> Result<PluginStateScope, &'static str> {
+    PluginStateScope::parse(scope).ok_or(INVALID_STATE_SCOPE_MSG)
+}
 
 fn send_live_buf(lua: &mlua::Lua, buf: &mlua::AnyUserData) -> mlua::Result<()> {
     let shared = buf.borrow::<BufHandle>().map(|h| Arc::clone(&h.buf))?;
@@ -373,11 +378,9 @@ impl UserData for LuaCtx {
             }
         });
         methods.add_method("state_get", |lua, this, scope: String| {
-            let Some(scope) = PluginStateScope::parse(&scope) else {
-                return Ok((
-                    LuaValue::Nil,
-                    Some("state scope must be 'session' or 'root'".to_owned()),
-                ));
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
             };
             let access = match this.plugin_state("state_get") {
                 Ok(access) => access,
@@ -409,47 +412,45 @@ impl UserData for LuaCtx {
                     Ok(value) => value,
                     Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
                 };
-                let previous = access.store.get(&access.plugin, scope, &access.identity);
-                let previous = match previous.as_ref() {
-                    Some(previous) => match state_json_to_lua(lua, previous) {
+                let previous =
+                    match access
+                        .store
+                        .replace(&access.plugin, scope, &access.identity, value)
+                    {
+                        Ok(previous) => previous,
+                        Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
+                    };
+                let previous = match previous {
+                    Some(previous) => match state_json_to_lua(lua, &previous) {
                         Ok(previous) => previous,
                         Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
                     },
                     None => LuaValue::Nil,
                 };
-                if let Err(error) =
-                    access
-                        .store
-                        .replace(&access.plugin, scope, &access.identity, value)
-                {
-                    return Ok((LuaValue::Nil, Some(error.to_string())));
-                }
                 Ok((previous, None))
             },
         );
 
         methods.add_method("state_remove", |lua, this, scope: String| {
-            let Some(scope) = PluginStateScope::parse(&scope) else {
-                return Ok((
-                    LuaValue::Nil,
-                    Some("state scope must be 'session' or 'root'".to_owned()),
-                ));
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
             };
             let access = match this.plugin_state("state_remove") {
                 Ok(access) => access,
                 Err(error) => return Ok((LuaValue::Nil, Some(error))),
             };
-            let previous = access.store.get(&access.plugin, scope, &access.identity);
-            let previous = match previous.as_ref() {
-                Some(previous) => match state_json_to_lua(lua, previous) {
+            let previous = match access.store.remove(&access.plugin, scope, &access.identity) {
+                Ok(previous) => previous,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
+            };
+            let previous = match previous {
+                Some(previous) => match state_json_to_lua(lua, &previous) {
                     Ok(previous) => previous,
                     Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
                 },
                 None => LuaValue::Nil,
             };
-            if let Err(error) = access.store.remove(&access.plugin, scope, &access.identity) {
-                return Ok((LuaValue::Nil, Some(error.to_string())));
-            }
             Ok((previous, None))
         });
 

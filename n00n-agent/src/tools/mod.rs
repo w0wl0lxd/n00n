@@ -302,13 +302,13 @@ pub type LocalTools = Arc<HashMap<String, LocalToolFn>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionIdentity {
-    session_id: n00n_storage::id::SessionRef,
-    root_session_id: n00n_storage::id::SessionRef,
+    session_id: SessionRef,
+    root_session_id: SessionRef,
 }
 
 impl SessionIdentity {
     #[must_use]
-    pub fn root(session_id: n00n_storage::id::SessionRef) -> Self {
+    pub fn root(session_id: SessionRef) -> Self {
         Self {
             root_session_id: session_id.clone(),
             session_id,
@@ -316,10 +316,7 @@ impl SessionIdentity {
     }
 
     #[must_use]
-    pub fn child(
-        session_id: n00n_storage::id::SessionRef,
-        root_session_id: n00n_storage::id::SessionRef,
-    ) -> Self {
+    pub fn child(session_id: SessionRef, root_session_id: n00n_storage::id::SessionRef) -> Self {
         Self {
             session_id,
             root_session_id,
@@ -327,12 +324,12 @@ impl SessionIdentity {
     }
 
     #[must_use]
-    pub fn session_id(&self) -> &n00n_storage::id::SessionRef {
+    pub fn session_id(&self) -> &SessionRef {
         &self.session_id
     }
 
     #[must_use]
-    pub fn root_session_id(&self) -> &n00n_storage::id::SessionRef {
+    pub fn root_session_id(&self) -> &SessionRef {
         &self.root_session_id
     }
 }
