@@ -6,7 +6,7 @@ use std::sync::Arc;
 use flume::Sender;
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use n00n_storage::id::SessionRef;
 
@@ -125,7 +125,7 @@ impl ProviderKind {
             Self::Synthetic => "https://api.synthetic.new/openai/v1",
             Self::TensorX => "https://api.tensorx.ai/v1",
             Self::Opencode => "https://opencode.ai/zen/v1",
-            Self::Devin => "devin acp subprocess (Agent Client Protocol)",
+            Self::Devin => "https://server.codeium.com (native Connect/gRPC-Web)",
             Self::Cursor => "cursor-agent subprocess (Cursor Agent CLI)",
         }
     }
@@ -156,7 +156,9 @@ impl ProviderKind {
             Self::Opencode => Some(
                 "Dynamically discovered models via [models.dev](https://models.dev/) + all the models provided by Opencode Zen API",
             ),
-            Self::Devin => Some("Agent Client Protocol via devin acp subprocess"),
+            Self::Devin => Some(
+                "Native Connect/gRPC-Web transport with streamed text, thinking, and tool calls",
+            ),
             Self::Cursor => Some(
                 "Cursor Agent CLI subprocess with stream-json parsing, session resume, and tool-call passthrough",
             ),
@@ -268,7 +270,7 @@ impl ProviderKind {
             Self::Synthetic => Ok(Box::new(Synthetic::new(timeouts)?)),
             Self::TensorX => Ok(Box::new(TensorX::new(timeouts)?)),
             Self::Opencode => Ok(Box::new(Opencode::new(timeouts)?)),
-            Self::Devin => Ok(Box::new(Devin::new(timeouts))),
+            Self::Devin => Ok(Box::new(Devin::new(timeouts)?)),
             Self::Cursor => Ok(Box::new(Cursor::new(timeouts)?)),
         }
     }
@@ -483,9 +485,16 @@ pub async fn fetch_all_models(
 
     for manifest in crate::manifest::ManifestRegistry::builtins() {
         let slug = manifest.slug;
-        let Ok(provider) = smol::unblock(move || provider_for_slug(slug, timeouts)).await else {
-            warn!(provider = slug, "failed to create provider, skipping");
-            continue;
+        let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
+            Ok(provider) => provider,
+            Err(crate::AgentError::Config { message }) => {
+                debug!(provider = slug, %message, "provider not configured, skipping");
+                continue;
+            }
+            Err(error) => {
+                warn!(provider = slug, %error, "failed to create provider, skipping");
+                continue;
+            }
         };
         let display_name = manifest.display_name;
         let tx = tx.clone();
@@ -515,7 +524,7 @@ pub async fn fetch_all_models(
                     }
                 }
                 Err(e) => {
-                    warn!(provider = slug, error = %e, "failed to list models, using static fallback");
+                    info!(provider = slug, error = %e, "failed to list models, using static fallback");
                     let fallback: Vec<String> = manifest
                         .models
                         .iter()

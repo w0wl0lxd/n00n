@@ -75,6 +75,14 @@ fn main() -> ExitCode {
             .await
         });
 
+    let providers = match providers {
+        Ok(providers) => providers,
+        Err(error) => {
+            eprintln!("Error generating provider docs: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let outputs = [
         (page_path("tools"), tools),
         (page_path("providers"), providers),

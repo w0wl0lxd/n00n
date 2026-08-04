@@ -7,13 +7,20 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+# Targets CodeGraph 1.5.0 CLI for command expansion (callers, callees, impact, affected, node, query, sync, files)
+# Falls back to CLI when native SQLite queries are not available
+
 [lints]
 workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+tracing = { workspace = true }
 wait-timeout = { workspace = true }
 rusqlite = { workspace = true }
+
+[target.'cfg(all(unix, not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))))'.dependencies]
+rustix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

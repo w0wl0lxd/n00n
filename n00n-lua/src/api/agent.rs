@@ -2,6 +2,7 @@
 //! validation, concurrency) lives in the task plugin, not here.
 
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
+use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -16,8 +17,8 @@ use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
 use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
-    ToolContext, ToolFilter, ToolLive,
+    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, SessionIdentity,
+    ToolAudience, ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -33,8 +34,9 @@ use serde_json::Value as JsonValue;
 use tracing::info;
 
 use crate::api::ui::buf::BufHandle;
-use crate::api::util::convert::{json_to_lua, lua_to_json, lua_tool_result};
+use crate::api::util::convert::{JSON_ARRAY_META_FIELD, json_to_lua, lua_to_json, lua_tool_result};
 use crate::api::util::ctx::{AgentContext, LuaCtx};
+use crate::state::PluginStateStore;
 
 const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
@@ -59,6 +61,7 @@ const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
 ];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
 const STEERING_QUEUE_CAPACITY: usize = 32;
+const TOOL_EXCLUSIONS_META_FIELD: &str = "__n00n_tool_exclusions";
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
     let Some(tier_str) = tier else {
@@ -91,13 +94,130 @@ fn model_to_lua_table(lua: &Lua, model: &Model) -> LuaResult<Table> {
 }
 
 fn dispatch_ctx<'a>(ctx: &'a LuaCtx, method: &str) -> Result<&'a AgentContext, String> {
-    ctx.agent()
-        .ok_or_else(|| ctx.cap_err(&format!("n00n.agent.{method}")))
+    ctx.dispatch_agent(method)
 }
 
+fn parse_session_mode(
+    mode: Option<&str>,
+    plan_path: Option<String>,
+    inherited: &AgentMode,
+) -> Result<AgentMode, String> {
+    match mode {
+        Some("build" | "general") => Ok(AgentMode::Build),
+        Some("research") => Ok(AgentMode::Research),
+        Some("plan") => plan_path
+            .map(PathBuf::from)
+            .map(AgentMode::Plan)
+            .ok_or_else(|| "plan mode requires plan_path".to_string()),
+        Some(other) => Err(format!("unknown mode: {other}")),
+        None => Ok(inherited.clone()),
+    }
+}
 type Pair<T> = (Option<T>, Option<String>);
 
 #[allow(clippy::needless_pass_by_value)]
+fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
+    let definitions = tools
+        .as_array()
+        .ok_or_else(|| "tools must be an array".to_owned())?;
+    let names = definitions
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| {
+            definition
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("tools[{index}].name must be a string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ToolFilter::Only(names))
+}
+
+fn inherited_mcp(
+    parent: Option<&n00n_agent::mcp::McpSession>,
+    include_mcp: bool,
+    excluded: &[String],
+) -> Option<n00n_agent::mcp::McpSession> {
+    if include_mcp {
+        parent.map(|mcp| mcp.fresh_excluding(excluded))
+    } else {
+        None
+    }
+}
+
+fn attach_tool_exclusions(lua: &Lua, tools: &LuaValue, exclusions: &[String]) -> LuaResult<()> {
+    if exclusions.is_empty() {
+        return Ok(());
+    }
+    let LuaValue::Table(tools) = tools else {
+        return Err(mlua::Error::runtime("tools must be an array"));
+    };
+    let metadata = lua.create_table_with_capacity(0, 2)?;
+    metadata.raw_set(JSON_ARRAY_META_FIELD, true)?;
+    metadata.raw_set(TOOL_EXCLUSIONS_META_FIELD, exclusions.to_vec())?;
+    tools.set_metatable(Some(metadata))
+}
+
+fn merged_tool_exclusions(
+    tools: Option<&LuaValue>,
+    mut explicit: Option<Vec<String>>,
+) -> LuaResult<Option<Vec<String>>> {
+    let inherited = match tools {
+        Some(LuaValue::Table(tools)) => match tools.metatable() {
+            Some(metadata) => {
+                metadata.raw_get::<Option<Vec<String>>>(TOOL_EXCLUSIONS_META_FIELD)?
+            }
+            None => None,
+        },
+        _ => None,
+    };
+    if let Some(inherited) = inherited {
+        let exclusions = explicit.get_or_insert_with(Vec::new);
+        for name in inherited {
+            if !exclusions.contains(&name) {
+                exclusions.push(name);
+            }
+        }
+    }
+    Ok(explicit)
+}
+
+fn session_config(
+    parent: &Arc<n00n_agent::AgentConfig>,
+    excluded_tools: Option<Vec<String>>,
+) -> Arc<n00n_agent::AgentConfig> {
+    let Some(excluded_tools) = excluded_tools else {
+        return Arc::clone(parent);
+    };
+    let mut config = parent.as_ref().clone();
+    for name in excluded_tools {
+        if !config.disabled_tools.contains(&name) {
+            config.disabled_tools.push(name);
+        }
+    }
+    Arc::new(config)
+}
+
+fn filter_appended_definitions(
+    definitions: &mut JsonValue,
+    base_count: usize,
+    filter: &ToolFilter,
+) {
+    let Some(all_definitions) = definitions.as_array_mut() else {
+        return;
+    };
+    if base_count > all_definitions.len() {
+        return;
+    }
+    let appended = all_definitions.split_off(base_count);
+    let mut appended = JsonValue::Array(appended);
+    n00n_agent::tools::filter_definitions(&mut appended, filter);
+    if let JsonValue::Array(appended) = appended {
+        all_definitions.extend(appended);
+    }
+}
+
 fn err_pair<T>(err: impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
@@ -342,6 +462,7 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
 
     let only: Option<Vec<String>> = opts.get("only")?;
     let except: Option<Vec<String>> = opts.get("except")?;
+    let tool_exclusions = except.clone();
     let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.map_or(true, |v| v);
     let workflow: bool = opts.get::<Option<bool>>("workflow")?.map_or(false, |v| v);
     let spec_str: Option<String> = opts.get("spec")?;
@@ -355,9 +476,14 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         &agent.model
     };
 
+    let mcp_base = match (&only, &except) {
+        (Some(included), _) => ToolFilter::Only(included.clone()),
+        (_, Some(excluded)) => ToolFilter::AllExcept(excluded.clone()),
+        _ => ToolFilter::All,
+    };
     let base = match (only, except) {
-        (Some(o), _) => ToolFilter::Only(o),
-        (_, Some(e)) => ToolFilter::AllExcept(e),
+        (Some(included), _) => ToolFilter::Only(included),
+        (_, Some(excluded)) => ToolFilter::AllExcept(excluded),
         _ => ToolFilter::All,
     };
     let disabled: Vec<&str> = agent
@@ -366,9 +492,11 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         .iter()
         .map(String::as_str)
         .collect();
-    let filter = base
+    let capability_exclusions = n00n_agent::tools::capability_exclusions(model);
+    let filter = base.excluding(&disabled).excluding(capability_exclusions);
+    let mcp_filter = mcp_base
         .excluding(&disabled)
-        .excluding(n00n_agent::tools::capability_exclusions(model));
+        .excluding(capability_exclusions);
 
     let vars = n00n_agent::template::env_vars();
     let ctx_desc = DescriptionContext {
@@ -379,11 +507,18 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     let mut defs =
         ToolRegistry::global().definitions(&vars, &ctx_desc, model.supports_tool_examples());
 
+    n00n_agent::tools::filter_definitions(&mut defs, &filter);
+    let base_count = defs.as_array().map_or(0, Vec::len);
     if include_mcp && let Some(ref mcp) = agent.mcp {
         mcp.extend_tools(&mut defs);
+        filter_appended_definitions(&mut defs, base_count, &mcp_filter);
     }
 
-    Ok((Some(json_to_lua(lua, &defs)?), None))
+    let definitions = json_to_lua(lua, &defs)?;
+    if let Some(exclusions) = tool_exclusions.as_deref() {
+        attach_tool_exclusions(lua, &definitions, exclusions)?;
+    }
+    Ok((Some(definitions), None))
 }
 
 /// Run a tool by name and wait for the result. This is how you call built-in
@@ -476,11 +611,16 @@ async fn call_tool(
 ///     `(string)` or `(nil, err)`.
 ///   `name` (string?) - display name for logs and UI.
 ///   `audience` (string?) - tool audience for capability gating. Default: `"general_sub"`.
+///   `mode` (string?) - agent operating mode: `"build"` (default), `"research"`, `"plan"`, or the
+///   alias `"general"` (build). Plan mode requires `plan_path`.
+///   `plan_path` (string?) - required when `mode` is `"plan"`; path to the approved plan file.
 ///   `thinking` (string|integer?) - thinking mode: `"off"`, `"adaptive"`, an
 ///     effort level (`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`,
 ///     `"max"`), or a budget integer (token count). Inherits parent setting
 ///     if omitted.
 ///   `fast` (boolean?) - use fast mode. Inherits parent setting if omitted.
+///   `include_mcp` (boolean?) - inherit the parent MCP handle. Default: `true`.
+///   `except` (string[]?) - tool names that remain unavailable if loaded later.
 /// @return (Session?, string?) Session handle, or `(nil, err)` on failure.
 /// @example
 /// local tools = n00n.agent.tools(ctx, { audience = "general_sub" })
@@ -502,13 +642,33 @@ async fn session(
     opts: Table,
 ) -> LuaResult<Pair<mlua::AnyUserData>> {
     let agent_ctx = try_pair!(dispatch_ctx(&ctx, "session")).clone();
+    let Some(parent_identity) = agent_ctx.identity.clone() else {
+        return Ok(err_pair("session identity is unavailable"));
+    };
+    let plugin_state_store = try_pair!(ctx.plugin_state_store());
     drop(ctx);
     let model_spec: Option<String> = opts.get("model_spec")?;
     let system: Option<String> = opts.get("system")?;
     let tools_val: Option<LuaValue> = opts.get("tools")?;
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
+    let include_mcp = opts
+        .get::<Option<bool>>("include_mcp")?
+        .map_or(true, |value| value);
+    let excluded_tools = merged_tool_exclusions(
+        tools_val.as_ref(),
+        opts.get::<Option<Vec<String>>>("except")?,
+    )?;
     let name: Option<String> = opts.get("name")?;
     let thinking_val: Option<LuaValue> = opts.get("thinking")?;
+    let plan_path: Option<String> = opts.get("plan_path")?;
+    let mode = match parse_session_mode(
+        opts.get::<Option<String>>("mode")?.as_deref(),
+        plan_path,
+        &agent_ctx.mode,
+    ) {
+        Ok(mode) => mode,
+        Err(error) => return Ok(err_pair(error)),
+    };
     let audience = match opts.get::<Option<String>>("audience")? {
         Some(s) => {
             try_pair!(ToolAudience::parse_name(&s).ok_or_else(|| format!("unknown audience: {s}")))
@@ -541,8 +701,13 @@ async fn session(
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
 
-    let (mut tools_json, tool_filter) = if let Some(val) = tools_val {
-        let tools = lua_to_json(&lua, &val)?;
+    let explicit_tools = tools_val.is_some();
+    let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
+        let empty_lua_table = matches!(&val, LuaValue::Table(table) if table.is_empty());
+        let mut tools = lua_to_json(&lua, &val)?;
+        if empty_lua_table && matches!(&tools, JsonValue::Object(object) if object.is_empty()) {
+            tools = JsonValue::Array(Vec::new());
+        }
         if !tools.is_array() {
             return Err(mlua::Error::runtime("tools must be an array"));
         }
@@ -555,14 +720,20 @@ async fn session(
             audience,
             workflow: false,
         };
-        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+        let tools = agent_ctx.registry.definitions_active(
             &vars,
             &ctx,
             model.supports_tool_examples(),
-            &n00n_agent::tools::ActiveTools::default(),
+            &n00n_agent::tools::default_active_tools(),
         );
-        (tools, filter)
+        let tools_json =
+            serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        (tools_json, filter)
     };
+
+    if explicit_tools {
+        tool_filter = ToolFilter::All;
+    }
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
@@ -593,6 +764,12 @@ async fn session(
             );
         }
     }
+    if explicit_tools {
+        tool_filter = try_pair!(explicit_tool_filter(&tools_json));
+    }
+    let allow_dynamic_mcp_tools = explicit_tools
+        && include_mcp
+        && tool_filter.matches(n00n_agent::mcp::TOOL_SEARCH_TOOL_NAME);
 
     let thinking = match thinking_val {
         Some(LuaValue::String(s)) => match StoredThinking::parse_setting(&s.to_str()?) {
@@ -672,25 +849,36 @@ async fn session(
         params: AgentParams {
             provider,
             model,
-            config: Arc::clone(&agent_ctx.config),
+            config: session_config(&agent_ctx.config, excluded_tools.clone()),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
-            session_id: Some(session_id.into()),
+            identity: Some(SessionIdentity::child(
+                session_id.into(),
+                parent_identity.root_session_id().clone(),
+            )),
             timeouts: agent_ctx.timeouts,
             openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
-            registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
+            registry: Arc::clone(&agent_ctx.registry),
             audience,
         },
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
+        allow_dynamic_mcp_tools,
         thinking,
         fast,
-        mode: (*agent_ctx.mode).clone(),
-        mcp: agent_ctx.mcp.clone(),
+        mode,
+        mcp: inherited_mcp(
+            agent_ctx.mcp.as_ref(),
+            include_mcp,
+            match excluded_tools.as_deref() {
+                Some(excluded) => excluded,
+                None => &[],
+            },
+        ),
         history: History::new(Vec::new()),
         sub_event_tx,
         child_cancel,
@@ -699,6 +887,8 @@ async fn session(
         prompt_rx,
         prompt_tx: Some(prompt_tx),
         parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
+        plugin_state_store,
+        child_state_owner: session_id,
         child_id,
         parent_tool_use_id,
         parent_event_tx: parent_tx,
@@ -1187,6 +1377,7 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
+    allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
     mode: AgentMode,
@@ -1199,6 +1390,8 @@ struct SessionState {
     prompt_rx: flume::Receiver<SubagentPrompt>,
     prompt_tx: Option<flume::Sender<SubagentPrompt>>,
     parent_cancels: Arc<CancelMap<String>>,
+    plugin_state_store: Arc<PluginStateStore>,
+    child_state_owner: n00nId,
     child_id: String,
     parent_tool_use_id: String,
     parent_event_tx: EventSender,
@@ -1222,6 +1415,7 @@ impl SessionState {
         self.closed = true;
         self.progress.set_current_done();
         self.parent_cancels.remove(&self.child_id);
+        self.plugin_state_store.drop_owner(self.child_state_owner);
         let messages = std::mem::replace(&mut self.history, History::new(Vec::new())).into_vec();
         let _ = self.parent_event_tx.send(AgentEvent::SubagentHistory {
             tool_use_id: self.child_id.clone(),
@@ -1264,6 +1458,7 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
                     workflow: false,
                     control: false,
                     prompt: None,
+                    plan_path: self.mode.plan_path().map(std::path::PathBuf::from),
                 },
                 0,
             )
@@ -1362,6 +1557,7 @@ async fn prompt(
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
+        .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {
@@ -1374,6 +1570,7 @@ async fn prompt(
             workflow: false,
             control: false,
             prompt: None,
+            plan_path: s.mode.plan_path().map(std::path::PathBuf::from),
         };
         let barrier_target = s.progress.next_forwarder_barrier();
         let result = agent.run(input).await;
@@ -1537,6 +1734,7 @@ fn call_local_tool(
 mod tests {
     use n00n_agent::ToolOutput;
     use serde_json::json;
+    use test_case::test_case;
 
     use super::*;
     use n00n_agent::{ExtractedCommand, InterruptPoint, InterruptSource};
@@ -1545,6 +1743,88 @@ mod tests {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
         call_local_tool(&lua.weak(), &f, input)
+    }
+
+    #[test]
+    fn only_filter_restricts_separately_appended_mcp_definitions() {
+        let only = ToolFilter::Only(vec!["read".into()]);
+        let mut definitions = json!([
+            {"name": "read"},
+            {"name": "write"},
+        ]);
+        n00n_agent::tools::filter_definitions(&mut definitions, &only);
+        let base_count = definitions.as_array().unwrap().len();
+        definitions.as_array_mut().unwrap().extend([
+            json!({"name": "stub__read_file"}),
+            json!({"name": "tool_search"}),
+        ]);
+
+        filter_appended_definitions(&mut definitions, base_count, &only);
+
+        assert_eq!(definitions, json!([{"name": "read"}]));
+    }
+
+    #[test]
+    fn explicit_session_filter_uses_final_definition_names() {
+        let tools = json!([
+            {"name": "read"},
+            {"name": "local_result"},
+        ]);
+
+        assert_eq!(
+            explicit_tool_filter(&tools).unwrap(),
+            ToolFilter::Only(vec!["read".into(), "local_result".into()])
+        );
+    }
+
+    #[test]
+    fn session_exclusions_extend_child_disabled_tools_only() {
+        let parent = Arc::new(n00n_agent::AgentConfig::default());
+        let child = session_config(
+            &parent,
+            Some(vec!["srv__dangerous".into(), "srv__dangerous".into()]),
+        );
+
+        assert!(parent.disabled_tools.is_empty());
+        assert_eq!(child.disabled_tools, ["srv__dangerous"]);
+    }
+
+    #[test]
+    fn tool_definition_exclusions_follow_explicit_tools_into_sessions() {
+        let lua = Lua::new();
+        let tools = json_to_lua(&lua, &json!([{"name":"read"}])).unwrap();
+        attach_tool_exclusions(&lua, &tools, &["srv__dangerous".into()]).unwrap();
+
+        let exclusions = merged_tool_exclusions(Some(&tools), Some(vec!["write".into()])).unwrap();
+
+        assert_eq!(lua_to_json(&lua, &tools).unwrap(), json!([{"name":"read"}]));
+        assert_eq!(
+            exclusions,
+            Some(vec!["write".into(), "srv__dangerous".into()])
+        );
+    }
+
+    #[test]
+    fn session_include_mcp_false_removes_parent_handle() {
+        smol::block_on(async {
+            let config = serde_json::from_value(json!({
+                "mcp": {
+                    "disabled": {
+                        "enabled": false,
+                        "command": ["unused"]
+                    }
+                }
+            }))
+            .unwrap();
+            let handle = n00n_agent::mcp::start_with_config(config, 1_000)
+                .await
+                .unwrap();
+            let parent = n00n_agent::mcp::McpSession::new(handle, &[]);
+
+            assert!(inherited_mcp(Some(&parent), false, &[]).is_none());
+            assert!(inherited_mcp(Some(&parent), true, &[]).is_some());
+            parent.shutdown().await;
+        });
     }
 
     fn progress_start(id: &str, summary: &str) -> ToolStartEvent {
@@ -1941,6 +2221,34 @@ mod tests {
         assert!(raised.contains("boom"), "got: {raised}");
         let wrong = call("function() return 42 end", &input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
+    }
+
+    #[test_case(Some("build"), None, AgentMode::Build ; "build")]
+    #[test_case(Some("general"), None, AgentMode::Build ; "general_alias")]
+    #[test_case(Some("research"), None, AgentMode::Research ; "research")]
+    #[test_case(Some("plan"), Some("plan.md"), AgentMode::Plan(PathBuf::from("plan.md")) ; "plan")]
+    fn parse_session_mode_accepts_supported_modes(
+        mode: Option<&str>,
+        plan_path: Option<&str>,
+        expected: AgentMode,
+    ) {
+        assert_eq!(
+            parse_session_mode(mode, plan_path.map(String::from), &AgentMode::Research),
+            Ok(expected)
+        );
+    }
+
+    #[test_case(Some("plan"), None, "plan mode requires plan_path" ; "plan_requires_path")]
+    #[test_case(Some("invalid"), None, "unknown mode: invalid" ; "unknown")]
+    fn parse_session_mode_rejects_invalid_modes(
+        mode: Option<&str>,
+        plan_path: Option<&str>,
+        expected: &str,
+    ) {
+        assert_eq!(
+            parse_session_mode(mode, plan_path.map(String::from), &AgentMode::Build),
+            Err(expected.to_string())
+        );
     }
 
     #[test]

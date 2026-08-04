@@ -432,6 +432,16 @@ local function rtk_rewrite(command, ctx)
 
   local cmd = normalize_command(command:match("^%s*(.-)%s*$"))
 
+  -- jq and yq must pass through unchanged (FR-018)
+  local normalized = strip_leading_assignments(cmd)
+  local first_word = normalized:match("^(%S+)")
+  if not first_word then
+    return nil
+  end
+  if first_word == "jq" or first_word == "yq" or first_word:match("/jq$") or first_word:match("/yq$") then
+    return nil
+  end
+
   -- rtk rewrite does not know about `cargo nextest run`, but `rtk cargo nextest` exists.
   if cmd:match("^cargo%s+nextest$") or cmd:match("^cargo%s+nextest%s+run") then
     return "rtk " .. cmd
@@ -604,13 +614,13 @@ local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
-- Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, find, ls, cat, head, tail).
+- Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, cat, head, tail).
 - Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
-- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`.
+- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`; the tool fails without it.
 - Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `bash` for system CLI (git, cargo, rg, grep, gh, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Do NOT use `bash` for file modifications.",
+  content = "- Reserve `bash` for system CLI (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Use rtk-wrapped bash for verbose commands. Do NOT use `bash` for file modifications.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({
@@ -634,7 +644,7 @@ n00n.api.register_tool({
       description = { type = "string", description = "Short description (3-5 words) of what the command does" },
       justification = {
         type = "string",
-        description = "Required when command is broad/unbounded. Explain scope and bound assumptions.",
+        description = "Required for unbounded commands. Explain scope and bounds.",
       },
     },
   },

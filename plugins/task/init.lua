@@ -6,6 +6,7 @@
 -- `n00n.async.semaphore`).
 
 local ActivityPreview = require("n00n.activity_preview")
+local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
 local route_tier = require("n00n.route_tier").route_tier
 local structured_output = require("n00n.structured_output")
@@ -242,6 +243,7 @@ local function handler(input, ctx)
           audience = audience,
           name = input.description,
           thinking = input.thinking,
+          mode = subagent_type,
         })
         if sess_err then
           return { llm_output = sess_err, is_error = true }
