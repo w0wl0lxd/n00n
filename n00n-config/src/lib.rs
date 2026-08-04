@@ -77,6 +77,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "skill",
     "task",
     "team",
+    "tmux",
     "todo_write",
     "view_image",
     "webfetch",
@@ -185,6 +186,10 @@ pub enum ConfigError {
          (bundled plugins: {valid})"
     )]
     UnknownPlugin { plugin: String, valid: String },
+    #[error(
+        "invalid config: agent.fusion.sidekick_tier must be weak, medium, or strong, got {tier:?}"
+    )]
+    InvalidFusionSidekickTier { tier: crate::providers::Tier },
 }
 
 fn check(
@@ -1378,6 +1383,11 @@ impl Config {
         self.agent.validate()?;
         self.provider.validate()?;
         self.provider.validate_openai_coding_plan_slots()?;
+        if self.agent.fusion.sidekick_tier == crate::providers::Tier::Compaction {
+            return Err(ConfigError::InvalidFusionSidekickTier {
+                tier: self.agent.fusion.sidekick_tier,
+            });
+        }
         self.storage.validate()?;
         Ok(())
     }
@@ -2245,6 +2255,55 @@ mod tests {
             config.storage.max_log_bytes,
             DEFAULT_MAX_LOG_BYTES_MB * 1024 * 1024
         );
+        assert!(!config.always_fusion, "Fusion must be opt-in");
+        assert!(
+            !config.agent.fusion.enabled,
+            "agent Fusion must default off independently"
+        );
+    }
+
+    #[test]
+    fn fusion_opt_ins_parse_independently() {
+        let agent_only: RawConfig = toml::from_str("[agent.fusion]\nenabled = true\n").unwrap();
+        let agent_only = agent_only.into_config(false).unwrap();
+        assert!(agent_only.agent.fusion.enabled);
+        assert!(!agent_only.always_fusion);
+
+        let always_only: RawConfig = toml::from_str("always_fusion = true\n").unwrap();
+        let always_only = always_only.into_config(false).unwrap();
+        assert!(always_only.always_fusion);
+        assert!(!always_only.agent.fusion.enabled);
+    }
+
+    #[test]
+    fn fusion_overlay_merges_fields_without_enabling_by_presence() {
+        let mut base: RawConfig =
+            toml::from_str("[agent.fusion]\nenabled = false\nsidekick_tier = \"medium\"\n")
+                .unwrap();
+        let overlay: RawConfig = toml::from_str("[agent.fusion]\nenabled = true\n").unwrap();
+        base.merge(overlay);
+        let merged = base.into_config(false).unwrap();
+
+        assert!(merged.agent.fusion.enabled);
+        assert_eq!(
+            merged.agent.fusion.sidekick_tier,
+            crate::providers::Tier::Medium
+        );
+        assert!(!merged.always_fusion);
+    }
+
+    #[test]
+    fn fusion_unknown_fields_are_rejected() {
+        let error = toml::from_str::<RawConfig>(
+            "[agent.fusion]\nenabled = true\nimplicit_model_switch = true\n",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `implicit_model_switch`"),
+            "unexpected parse error: {error}"
+        );
     }
 
     #[test]
@@ -2375,6 +2434,15 @@ mod tests {
         }
         let err = config.validate().unwrap_err();
         assert!(matches!(err, ConfigError::BelowMinimum { field: f, .. } if f == field));
+    }
+    #[test]
+    fn validate_rejects_compaction_as_fusion_sidekick_tier() {
+        let mut config = RawConfig::default().into_config(false).unwrap();
+        config.agent.fusion.sidekick_tier = crate::providers::Tier::Compaction;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickTier { .. })
+        ));
     }
 
     #[test]

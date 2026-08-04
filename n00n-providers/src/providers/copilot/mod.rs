@@ -300,8 +300,13 @@ impl Copilot {
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
         let system = System::from(system);
+        let opts = crate::RequestOptions {
+            thinking,
+            message_cache_breakpoints: 0,
+            ..Default::default()
+        };
         let mut body = responses::build_body(
-            model, messages, &system, tools, None, None, false, thinking, true,
+            model, messages, &system, tools, None, None, false, &opts, true,
         );
         if let Some(info) = self.reasoning_info_for(model) {
             apply_responses_reasoning(&mut body, thinking, model, &effort_dialect(&info));
@@ -342,6 +347,7 @@ impl Copilot {
             "stream": true,
         });
         thinking.apply_to_body(&mut body, model);
+        super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
         let request = Self::build_post(&auth, MESSAGES_PATH, Some("conversation-agent"), &body)?
             .header("anthropic-version", "2023-06-01")

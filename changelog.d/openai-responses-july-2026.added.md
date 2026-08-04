@@ -1,0 +1,1 @@
+Extended non-Codex OpenAI Responses API with July 2026 model features: explicit prompt-cache options and breakpoints, reasoning mode and context, service-tier fast, safety identifiers, moderation, built-in tool conversion, and output item parsing for gpt-5.5/5.6.

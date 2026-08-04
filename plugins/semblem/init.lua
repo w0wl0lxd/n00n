@@ -24,8 +24,9 @@ n00n.api.register_tool({
 Commands:
 - `search`: ranked snippets for a natural-language or keyword query
 - `find_related`: related chunks for a file location
+- `savings`: show token savings from using semantic search (requires semble CLI; no native fallback)
 
-`mode` defaults to `bm25`. `hybrid` and `semantic` require a configured embedder; n00n nags with setup options and falls back to BM25.]],
+`mode` defaults to `bm25`. `hybrid` and `semantic` try the upstream semble CLI first and fall back to BM25 with an embedder nag if unavailable.]],
 
   schema = {
     type = "object",
@@ -33,7 +34,7 @@ Commands:
     properties = {
       command = {
         type = "string",
-        enum = { "search", "find_related" },
+        enum = { "search", "find_related", "savings" },
       },
       repo = { type = "string", description = "Project root (defaults to cwd)" },
       query = { type = "string" },
@@ -45,6 +46,11 @@ Commands:
         default = "bm25",
       },
       top_k = { type = "integer", default = 5 },
+      content = {
+        type = "string",
+        enum = { "docs", "config", "code", "all" },
+        description = "Content filter for search (docs, config, code, or all)",
+      },
     },
   },
 
@@ -75,23 +81,29 @@ Commands:
       return { llm_output = "error: failed to publish semblem results: " .. tostring(live_err), is_error = true }
     end
 
-    local ok, output
+    local ok, output, err
     if command == "search" then
       if not input.query or input.query:match("^%s*$") then
         return { llm_output = "error: query is required for search", is_error = true }
       end
-      ok, output = pcall(semblem.search, repo, input.query, input.mode or "bm25", input.top_k or 5)
+      local content = input.content
+      ok, output = pcall(semblem.search, repo, input.query, input.mode or "bm25", input.top_k or 5, content)
     elseif command == "find_related" then
       if not input.file_path or not input.line then
         return { llm_output = "error: file_path and line are required for find_related", is_error = true }
       end
       ok, output = pcall(semblem.find_related, repo, input.file_path, input.line, input.top_k or 5)
+    elseif command == "savings" then
+      ok, output, err = true, semblem.savings(repo)
     else
       return { llm_output = "error: unsupported command: " .. tostring(command), is_error = true }
     end
 
     if not ok then
       return { llm_output = "error: semblem failed: " .. tostring(output), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: semblem failed: " .. tostring(err), is_error = true }
     end
 
     output = (output or ""):gsub("\n+$", "")
