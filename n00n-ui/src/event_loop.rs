@@ -368,6 +368,7 @@ fn spawn_model_fetch(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     timeouts: Timeouts,
     openai_options: OpenAiOptions,
+    needs_login: bool,
 ) -> BackgroundModels {
     let available: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
     let bg = Arc::clone(&available);
@@ -385,6 +386,13 @@ fn spawn_model_fetch(
                     return;
                 }
             };
+            if needs_login {
+                model_slot.store(Arc::new(ModelSlot {
+                    model: resolved,
+                    provider: Arc::clone(&model_slot.load().provider),
+                }));
+                return;
+            }
             let provider = match from_model_with_openai_options(
                 &mut resolved,
                 timeouts,
@@ -479,7 +487,7 @@ impl<'t> EventLoop<'t> {
             model: model.clone(),
             provider,
         }));
-        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options);
+        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options, needs_login);
 
         let picker = Arc::new(terminal_image::picker());
 
@@ -1635,6 +1643,31 @@ mod tests {
 
         assert_eq!(calls.get(), 0);
         assert!(warning.is_none());
+    }
+
+    #[test]
+    fn spawn_model_fetch_preserves_unconfigured_provider_while_login_is_required() {
+        use crate::agent::ModelSlot;
+        use n00n_providers::provider::unconfigured_provider;
+        use std::sync::Arc;
+
+        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let provider = Arc::from(unconfigured_provider());
+        let model_slot = Arc::new(ArcSwap::from_pointee(ModelSlot {
+            model: model.clone(),
+            provider: Arc::clone(&provider),
+        }));
+
+        let _bg = spawn_model_fetch(
+            &model_slot,
+            Timeouts::default(),
+            OpenAiOptions::default(),
+            true,
+        );
+
+        let stored = model_slot.load();
+        assert_eq!(stored.model.spec(), model.spec());
+        assert!(Arc::ptr_eq(&stored.provider, &provider));
     }
 
     #[test]
