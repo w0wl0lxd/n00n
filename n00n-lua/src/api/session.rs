@@ -140,7 +140,7 @@ async fn new(
         Some(opts) => (
             opts.get("prompt")?,
             opts.get("title")?,
-            opts.get::<Option<bool>>("focus")?.unwrap_or(false),
+            opts.get::<Option<bool>>("focus")?.unwrap_or_else(|| false),
             opts.get("parent_id")?,
         ),
         None => (None, None, false, None),

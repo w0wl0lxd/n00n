@@ -518,8 +518,16 @@ impl TaskScope {
 /// job output, like Neovim firing callbacks from its idle event loop.
 ///
 /// [detached]: TaskScope::detached
-pub(crate) async fn run_detached<F: std::future::Future>(lua: &Lua, fut: F) -> F::Output {
+pub(crate) async fn run_detached<F: std::future::Future>(
+    lua: &Lua,
+    fut: F,
+    caller_tool: Option<Arc<str>>,
+) -> F::Output {
     let scope = TaskScope::detached(lua);
+    if let Some(tool) = caller_tool {
+        let mut cell = lock_cell(scope.handle());
+        cell.caller_tool = Some(tool);
+    }
     let handle = Arc::clone(scope.handle());
     let pump = async {
         let mut event_buf = Vec::new();
@@ -1157,10 +1165,14 @@ impl LuaRuntime {
     }
 
     async fn run_hint_callback(&self, plugin: &str, func: Function) -> Option<String> {
-        let result: mlua::Result<LuaValue> = run_detached(&self.lua, async {
-            let thread = self.lua.create_thread(func)?;
-            thread.into_async::<LuaValue>(())?.await
-        })
+        let result: mlua::Result<LuaValue> = run_detached(
+            &self.lua,
+            async {
+                let thread = self.lua.create_thread(func)?;
+                thread.into_async::<LuaValue>(())?.await
+            },
+            None,
+        )
         .await;
         match result {
             Ok(LuaValue::String(s)) => Some(s.to_string_lossy()),
@@ -1600,7 +1612,8 @@ impl LuaRuntime {
             |tk| tk.permission_scopes.as_ref(),
             &input,
         )?;
-        let result: LuaValue = match run_detached(&self.lua, func.call_async(lua_input)).await {
+        let result: LuaValue = match run_detached(&self.lua, func.call_async(lua_input), None).await
+        {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(plugin, tool, error = %e, "permission_scopes callback failed");
@@ -1704,7 +1717,7 @@ async fn compute_header(
         return HeaderResult::plain(tool.to_string());
     };
 
-    let result = run_detached(lua, func.call_async::<LuaValue>(input_lua)).await;
+    let result = run_detached(lua, func.call_async::<LuaValue>(input_lua), None).await;
 
     match result {
         Ok(LuaValue::String(s)) => match s.to_str() {
@@ -2379,7 +2392,7 @@ pub fn spawn(
                                         let thread = lua.create_thread(func)?;
                                         thread.into_async::<()>(args)?.await
                                     };
-                                    if let Err(e) = run_detached(&lua, run).await {
+                                    if let Err(e) = run_detached(&lua, run, Some(Arc::clone(&plugin))).await {
                                         tracing::warn!(plugin = %plugin, command = %command, error = %e, "command handler failed");
                                     }
                                 })
@@ -2553,7 +2566,7 @@ pub fn spawn(
                             if let Some(func) = func {
                                 let lua = rt.lua.clone();
                                 ex.spawn(async move {
-                                    if let Err(e) = run_detached(&lua, func.call_async::<()>(())).await {
+                                    if let Err(e) = run_detached(&lua, func.call_async::<()>(()), None).await {
                                         tracing::warn!(keybind_id = id, error = %e, "keybind callback failed");
                                     }
                                 }).detach();

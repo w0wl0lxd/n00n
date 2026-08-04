@@ -5016,7 +5016,7 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
         panic!("expected a prompt request");
     };
     assert!(caller.is_agent(), "caller should be an agent");
-    assert_eq!(caller.session_id(), Some(&session_id));
+    assert_eq!(caller.session_id(), None);
     assert_eq!(caller.tool(), Some("team"));
     assert!(
         text.contains("model: anthropic/claude-sonnet-4-6"),
