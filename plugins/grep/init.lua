@@ -279,6 +279,7 @@ n00n.api.register_tool({
     local path_type = type(path)
     local all_entries = {}
     local all_errors = {}
+    local success_count = 0
 
     local function search_single_path(p)
       local entries, err = n00n.fs.grep(pattern, {
@@ -290,6 +291,7 @@ n00n.api.register_tool({
         max_line_bytes = max_line_bytes,
       })
       if entries then
+        success_count = success_count + 1
         for _, entry in ipairs(entries) do
           table.insert(all_entries, entry)
         end
@@ -304,11 +306,13 @@ n00n.api.register_tool({
       for _, p in ipairs(path) do
         search_single_path(p)
       end
-    elseif path ~= nil then
+    elseif path == nil then
+      search_single_path(nil)
+    else
       return { llm_output = "error: path must be a string or array of strings, got " .. path_type, is_error = true }
     end
 
-    if #all_entries == 0 and #all_errors > 0 then
+    if success_count == 0 and #all_errors > 0 then
       -- If all paths failed, return the first error
       return { llm_output = "error: " .. all_errors[1], is_error = true }
     end
@@ -317,8 +321,13 @@ n00n.api.register_tool({
       return { llm_output = NO_MATCHES }
     end
 
-    -- Sort by modification time (n00n.fs.grep already does this per path, but we need to re-sort across paths)
-    -- For now, just keep the order from the searches
+    -- Sort by modification time across all paths
+    table.sort(all_entries, function(a, b)
+      local mtime_a = a.mtime or 0
+      local mtime_b = b.mtime or 0
+      return mtime_a > mtime_b
+    end)
+
     for _, entry in ipairs(all_entries) do
       ctx:record_read(entry.path)
     end
