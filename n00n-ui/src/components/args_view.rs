@@ -90,6 +90,16 @@ fn redact_display_value(value: &serde_json::Value) -> serde_json::Value {
         serde_json::Value::String(text) if looks_like_secret_value(text) => {
             serde_json::Value::String(REDACTED.to_owned())
         }
+        serde_json::Value::String(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(inner) => {
+                let redacted_inner = redact_display_value(&inner);
+                match serde_json::to_string(&redacted_inner) {
+                    Ok(text) => serde_json::Value::String(text),
+                    Err(_) => serde_json::Value::String(REDACTED.to_owned()),
+                }
+            }
+            Err(_) => value.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -504,6 +514,27 @@ mod tests {
             "secret value leaked: {text}"
         );
         assert!(text.contains(REDACTED), "value should be redacted: {text}");
+    }
+
+    #[test]
+    fn secret_keys_redacted_inside_stringified_json() {
+        let view = render(&json!({
+            "payload": "{\"user\":\"bob\",\"api_key\":\"sk-live-0123456789abcdef0123456789ab\"}"
+        }));
+        let text = lines_text(&view);
+        assert!(
+            !text.contains("sk-live-0123456789abcdef0123456789ab"),
+            "secret value leaked through stringified JSON: {text}"
+        );
+        assert!(text.contains("bob"));
+        assert!(text.contains(REDACTED));
+    }
+
+    #[test]
+    fn malformed_stringified_json_is_left_untouched() {
+        let view = render(&json!({ "payload": "{not valid json" }));
+        let text = lines_text(&view);
+        assert!(text.contains("{not valid json"));
     }
 
     #[test]
