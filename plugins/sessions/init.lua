@@ -167,12 +167,14 @@ end
 
 local function has_word(text, word)
   text = string.lower(text or "")
+  word = string.lower(word)
   -- Escape word for safe pattern matching
   local escaped = word:gsub("([^%w])", "%%%1")
+  local boundary = "[^%a%d]"
   return text == word
-    or text:match("^" .. escaped .. "%W")
-    or text:match("%W" .. escaped .. "%W")
-    or text:match("%W" .. escaped .. "$")
+    or text:match("^" .. escaped .. boundary)
+    or text:match(boundary .. escaped .. boundary)
+    or text:match(boundary .. escaped .. "$")
 end
 
 local function descendant_category(session)
