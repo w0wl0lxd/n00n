@@ -163,10 +163,10 @@ mod tests {
     use test_case::test_case;
 
     #[test_case(false, false, false, false ; "default off")]
-    #[test_case(true, false, false, true ; "cli flag")]
-    #[test_case(false, true, false, true ; "always fusion")]
-    #[test_case(false, false, true, true ; "agent fusion")]
-    #[test_case(true, true, true, true ; "all opt ins")]
+    #[test_case(true,  false, false, true  ; "cli flag")]
+    #[test_case(false, true,  false, true  ; "always fusion")]
+    #[test_case(false, false, true,  true  ; "agent fusion")]
+    #[test_case(true,  true,  true,  true  ; "all opt ins")]
     #[allow(clippy::fn_params_excessive_bools)]
     fn fusion_opt_in_is_additive(
         cli_flag: bool,

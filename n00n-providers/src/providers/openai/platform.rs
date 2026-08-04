@@ -17,7 +17,7 @@ use n00n_storage::sessions::{
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
@@ -2049,7 +2049,7 @@ impl Provider for OpenAi {
                         reason: HistoryReplayReason::ContinuationNotFound,
                     });
                 }
-                warn!(
+                info!(
                     chain_reset = true,
                     full_history_fallback = true,
                     "OpenAI Responses chain was not found; replaying approved full history"
@@ -2113,8 +2113,13 @@ impl Provider for OpenAi {
                 opts.message_cache_breakpoints,
                 opts.fast,
             );
-            opts.thinking
-                .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
+            opts.thinking.apply_thinking(
+                &mut body,
+                model,
+                &dialect::STANDARD,
+                &super::super::reasoning_effort_fields(),
+            );
+            super::super::apply_body_overrides(&mut body, model, &[super::super::MESSAGES_FIELD]);
             self.with_oauth_retry(|| async {
                 let auth = self.current_auth();
                 self.compat
