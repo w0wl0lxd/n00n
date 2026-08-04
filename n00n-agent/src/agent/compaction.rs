@@ -5,16 +5,18 @@ use n00n_config::CompactionBuffer;
 use n00n_providers::{
     ContentBlock, Message, Model, RequestOptions, Role, StreamResponse, System, TokenUsage,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use super::compaction_hooks::{CompactionTrigger, run_postcompact_hooks, run_precompact_hooks};
 use super::history::History;
+use super::run::estimate_message_tokens;
 use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
 pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue with next steps, ask if unsure, restore todos with todo_write, and persist durable notes via memory.";
 
+const COMPACTION_INPUT_SAFETY_MARGIN: u32 = 4096;
 const MINIMAL_CONTEXT_RATIO: f64 = 0.2;
 const AGGRESSIVE_CONTEXT_RATIO: f64 = 0.4;
 struct BudgetRatio {
@@ -89,7 +91,23 @@ pub(super) async fn compact_history(
     strip_old_tool_results(&mut compaction_history);
 
     let context_window = model.context_window;
-    let current_usage = crate::agent::run::estimate_message_tokens(&compaction_history, &model.id);
+
+    // Pre-truncate to fit within the model's context window before streaming
+    let current_usage = estimate_message_tokens(&compaction_history, &model.id);
+    let remaining = context_window.saturating_sub(current_usage);
+    let tier = CompactionTier::from_remaining_context(remaining, context_window);
+    let budget = tier.token_budget(context_window);
+    let target = context_window
+        .saturating_sub(budget)
+        .saturating_sub(COMPACTION_INPUT_SAFETY_MARGIN);
+
+    let mut current_usage = current_usage;
+    while current_usage > target && compaction_history.len() > 1 {
+        truncate_oldest_round(&mut compaction_history);
+        current_usage = estimate_message_tokens(&compaction_history, &model.id);
+    }
+
+    // Recompute tier/budget/remaining after pre-truncation
     let remaining = context_window.saturating_sub(current_usage);
     let tier = CompactionTier::from_remaining_context(remaining, context_window);
     let budget = tier.token_budget(context_window);
@@ -122,6 +140,19 @@ pub(super) async fn compact_history(
         {
             Ok(response) => break response,
             Err(e) if e.is_context_overflow() => {
+                if compaction_history.len() <= 1 {
+                    return Err(e);
+                }
+                truncate_oldest_round(&mut compaction_history);
+            }
+            Err(e) if e.is_server_overloaded() => {
+                warn!(
+                    error = %e,
+                    "server_is_overloaded during compaction, truncating history"
+                );
+                if compaction_history.len() <= 1 {
+                    return Err(e);
+                }
                 truncate_oldest_round(&mut compaction_history);
             }
             Err(e) => return Err(e),
@@ -135,28 +166,27 @@ pub(super) async fn compact_history(
 
     run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
 
-    let usage = finish_compact(response, history, event_tx, compact_start, model);
+    let usage = finish_compact(response, history, compact_start, model);
     Ok((usage, summary))
 }
 
 fn finish_compact(
     response: StreamResponse,
     history: &mut History,
-    event_tx: &EventSender,
     compact_start: std::time::Instant,
     model: &Model,
 ) -> TokenUsage {
-    let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-        message: response.message.clone(),
-        usage: response.usage,
-        model: model.id.clone(),
-        context_size: Some(response.usage.output),
-    })));
+    let StreamResponse {
+        message: summary,
+        usage,
+        stop_reason: _,
+    } = response;
 
-    history.compact_boundary(
-        Message::user("What did we do so far?".into()),
-        response.message,
-    );
+    // Update the history before computing the post-compaction context size
+    // so the UI meter reflects the compacted conversation, not just the
+    // summary output tokens. Callers pass continue-prompt/tool-definition
+    // tokens that are part of the agent's full post-compact context.
+    history.compact_boundary(Message::user("What did we do so far?".into()), summary);
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(
@@ -165,7 +195,7 @@ fn finish_compact(
         "compaction completed"
     );
 
-    response.usage
+    usage
 }
 
 /// Compacts the conversation history using the provider.
@@ -180,7 +210,7 @@ pub async fn compact(
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let (usage, _summary) = compact_history(
+    let (usage, summary) = compact_history(
         provider,
         model,
         history,
@@ -192,6 +222,13 @@ pub async fn compact(
         None,
     )
     .await?;
+    let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
+    event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+        message: Message::assistant(summary),
+        usage,
+        model: model.id.clone(),
+        context_size: Some(context_size),
+    })))?;
     event_tx.send(AgentEvent::CompactionDone)?;
 
     event_tx.send(AgentEvent::Done {
@@ -374,12 +411,19 @@ mod tests {
     use super::*;
     use crate::AgentConfig;
 
+    #[test]
+    fn compaction_summary_is_an_assistant_message() {
+        let summary = Message::assistant("summary".into());
+        assert!(matches!(summary.role, Role::Assistant));
+        assert_eq!(summary.first_text_content(), Some("summary"));
+    }
+
     struct MockProvider {
-        responses: Mutex<Vec<StreamResponse>>,
+        responses: Mutex<Vec<Result<StreamResponse, AgentError>>>,
     }
 
     impl MockProvider {
-        fn new(responses: Vec<StreamResponse>) -> Self {
+        fn new(responses: Vec<Result<StreamResponse, AgentError>>) -> Self {
             Self {
                 responses: Mutex::new(responses),
             }
@@ -400,7 +444,7 @@ mod tests {
             Box::pin(async {
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
-                Ok(responses.remove(0))
+                responses.remove(0)
             })
         }
 
@@ -472,10 +516,27 @@ mod tests {
     }
 
     #[test]
+    fn finish_compact_updates_history_before_metering() {
+        let compact_model = default_model();
+        let mut history = History::new(vec![Message::user("before".into())]);
+
+        let usage = finish_compact(
+            text_response(StopReason::EndTurn),
+            &mut history,
+            std::time::Instant::now(),
+            &compact_model,
+        );
+
+        assert_eq!(usage, TokenUsage::default());
+        assert!(history.len() > 1);
+    }
+
+    #[test]
     fn compact_replaces_history_with_summary() {
         smol::block_on(async {
-            let provider: std::sync::Arc<dyn Provider> =
-                std::sync::Arc::new(MockProvider::new(vec![text_response(StopReason::EndTurn)]));
+            let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(MockProvider::new(
+                vec![Ok(text_response(StopReason::EndTurn))],
+            ));
             let model = default_model();
             let (raw_tx, _rx) = flume::unbounded();
             let mut history = History::new(vec![
@@ -769,8 +830,9 @@ mod tests {
     #[test]
     fn compact_produces_user_assistant_pair() {
         smol::block_on(async {
-            let provider: std::sync::Arc<dyn Provider> =
-                std::sync::Arc::new(MockProvider::new(vec![text_response(StopReason::EndTurn)]));
+            let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(MockProvider::new(
+                vec![Ok(text_response(StopReason::EndTurn))],
+            ));
             let model = default_model();
             let (raw_tx, _rx) = flume::unbounded();
             let mut history = History::new(vec![
@@ -1125,5 +1187,114 @@ mod tests {
         } else {
             panic!("Expected ToolUse block");
         }
+    }
+
+    #[test]
+    fn compact_history_truncates_on_server_overloaded() {
+        smol::block_on(async {
+            let mut model = default_model();
+            model.context_window = 1000;
+
+            let summary_response = text_response(StopReason::EndTurn);
+            let provider: std::sync::Arc<dyn Provider> =
+                std::sync::Arc::new(MockProvider::new(vec![
+                    Err(AgentError::Api {
+                        status: 400,
+                        message: "server_is_overloaded: Our servers are currently overloaded"
+                            .into(),
+                    }),
+                    Ok(summary_response),
+                ]));
+
+            let (raw_tx, _rx) = flume::unbounded();
+            let mut history = History::new(vec![
+                Message::user("first message".into()),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "first reply".into(),
+                    }],
+                    ..Default::default()
+                },
+                Message::user("second message".into()),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "second reply".into(),
+                    }],
+                    ..Default::default()
+                },
+            ]);
+
+            let result = compact_history(
+                &*provider,
+                &model,
+                &mut history,
+                &EventSender::new(raw_tx, 0),
+                &CancelToken::none(),
+                CompactionTrigger::Manual,
+                None,
+                &std::env::current_dir().unwrap(),
+                None,
+            )
+            .await;
+
+            assert!(
+                result.is_ok(),
+                "compact_history should succeed after truncation"
+            );
+            let (_, summary) = result.unwrap();
+            assert_eq!(summary, "response");
+        });
+    }
+
+    #[test]
+    fn compact_history_pre_truncates_large_context() {
+        smol::block_on(async {
+            let mut model = default_model();
+            model.context_window = 100;
+
+            let summary_response = text_response(StopReason::EndTurn);
+            let provider: std::sync::Arc<dyn Provider> =
+                std::sync::Arc::new(MockProvider::new(vec![Ok(summary_response)]));
+
+            let (raw_tx, _rx) = flume::unbounded();
+            let mut history = History::new(vec![
+                Message::user("first message".into()),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "first reply".into(),
+                    }],
+                    ..Default::default()
+                },
+                Message::user("second message".into()),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "second reply".into(),
+                    }],
+                    ..Default::default()
+                },
+            ]);
+
+            let result = compact_history(
+                &*provider,
+                &model,
+                &mut history,
+                &EventSender::new(raw_tx, 0),
+                &CancelToken::none(),
+                CompactionTrigger::Manual,
+                None,
+                &std::env::current_dir().unwrap(),
+                None,
+            )
+            .await;
+
+            assert!(
+                result.is_ok(),
+                "compact_history should succeed with pre-truncation"
+            );
+        });
     }
 }

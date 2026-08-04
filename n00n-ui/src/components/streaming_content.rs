@@ -145,16 +145,14 @@ impl PlainState {
         self.snapshot.push(line);
     }
 
-    fn current_text_span(&mut self) -> &mut Span<'static> {
+    fn current_text_span(&mut self) -> Option<&mut Span<'static>> {
         self.ensure_current();
-        let line_index = self.snapshot.len() - 1;
-        if self.snapshot[line_index].spans.is_empty() {
-            self.snapshot[line_index]
-                .spans
+        let line = self.snapshot.last_mut()?;
+        if line.spans.is_empty() {
+            line.spans
                 .push(Span::styled(String::new(), self.text_style));
         }
-        let span_index = self.snapshot[line_index].spans.len() - 1;
-        &mut self.snapshot[line_index].spans[span_index]
+        line.spans.last_mut()
     }
 
     fn finalize_current(&mut self) {
@@ -176,8 +174,8 @@ impl PlainState {
             for c in visible[new_start..new_end].chars() {
                 if c == '\n' {
                     self.finalize_current();
-                } else {
-                    self.current_text_span().content.to_mut().push(c);
+                } else if let Some(span) = self.current_text_span() {
+                    span.content.to_mut().push(c);
                 }
             }
         }

@@ -25,12 +25,15 @@ pub use providers::copilot::auth as copilot_auth;
 pub use providers::dynamic;
 pub use providers::openai::OpenAiOptions;
 pub use providers::openai::auth as openai_auth;
+pub use providers::openai::websocket::ensure_rustls_crypto_provider;
 pub use providers::opencode::{
     ProviderData, catalog_provider, catalog_providers, catalog_providers_if_available,
 };
 pub use types::{
-    CacheControl, CacheHealth, CacheKind, ContentBlock, Effort, EffortDialect, IMAGE_OMITTED_NOTE,
-    ImageMediaType, ImageSource, Message, ProviderEvent, ProviderUsage, RequestOptions, Role,
-    StopReason, StreamResponse, System, SystemBlock, ThinkingConfig, UsageLimit,
-    adapt_images_for_model, dialect,
+    BodyOverride, CacheControl, CacheHealth, CacheKind, ContentBlock, Effort, EffortDialect,
+    EffortDialectId, FILE_OMITTED_NOTE, FileSource, IMAGE_OMITTED_NOTE, ImageDetail,
+    ImageMediaType, ImageSource, Message, ProviderEvent, ProviderUsage, ReasoningContext,
+    ReasoningMode, RequestOptions, Role, StopReason, StreamResponse, System, SystemBlock,
+    ThinkingConfig, ThinkingExtras, ThinkingFieldConfig, ToggleEntry, UsageLimit,
+    adapt_files_for_model, adapt_images_for_model, dialect, effort_dialect_for,
 };
