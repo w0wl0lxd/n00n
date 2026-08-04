@@ -541,6 +541,16 @@ mod tests {
     }
 
     #[test]
+    fn malformed_stringified_json_redacts_embedded_credentials() {
+        let view = render(&json!({ "payload": r#"{"user":"bob","api_key":"short"}"# }));
+        let text = lines_text(&view);
+        assert!(text.contains("user"));
+        assert!(text.contains("bob"));
+        assert!(text.contains(REDACTED));
+        assert!(!text.contains("short"));
+    }
+
+    #[test]
     fn keys_use_annotation_style() {
         let view = render(&json!({ "query": "x" }));
         let span = view.lines[0]
