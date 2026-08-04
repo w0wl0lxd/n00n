@@ -639,6 +639,16 @@ impl Message {
     }
 
     #[must_use]
+    pub fn assistant(text: String) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text }],
+            display_text: Some(String::new()),
+            control: false,
+        }
+    }
+
+    #[must_use]
     pub fn user_text(&self) -> Option<&str> {
         match &self.display_text {
             Some(t) if t.is_empty() => None,
