@@ -5,6 +5,11 @@ use serde_json::Value;
 pub const SKILL_TOOL_NAME: &str = "skill";
 pub const SKILL_POLICY_DENIED_PREFIX: &str = "tool blocked by active skill policy";
 
+fn canonical_tool_name(name: &str) -> std::borrow::Cow<'_, str> {
+    let normalized = name.replace('-', "_").to_ascii_lowercase();
+    std::borrow::Cow::Owned(crate::tools::canonical_tool_name(&normalized).to_owned())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveSkillPolicy {
     pub name: String,
@@ -19,9 +24,17 @@ pub struct SkillPolicyDecision {
 }
 
 impl ActiveSkillPolicy {
+    fn matches_policy(entry: &str, tool_name: &str) -> bool {
+        let canonical_tool = canonical_tool_name(tool_name);
+        let canonical_entry = canonical_tool_name(entry);
+        tool_names_match(canonical_entry.as_ref(), canonical_tool.as_ref())
+            || tool_names_match(entry, tool_name)
+    }
+
     #[must_use]
     pub fn evaluate(&self, tool_name: &str) -> SkillPolicyDecision {
-        if tool_name == SKILL_TOOL_NAME {
+        let canonical_tool = canonical_tool_name(tool_name);
+        if canonical_tool.as_ref() == canonical_tool_name(SKILL_TOOL_NAME).as_ref() {
             return SkillPolicyDecision {
                 allowed: true,
                 reason: None,
@@ -30,7 +43,7 @@ impl ActiveSkillPolicy {
 
         if let Some(disallowed) = &self.disallowed_tools {
             for denied in disallowed {
-                if tool_names_match(denied, tool_name) {
+                if Self::matches_policy(denied, tool_name) {
                     return SkillPolicyDecision {
                         allowed: false,
                         reason: Some(format!(
@@ -47,7 +60,7 @@ impl ActiveSkillPolicy {
         {
             let permitted = allowed
                 .iter()
-                .any(|entry| tool_names_match(entry, tool_name));
+                .any(|entry| Self::matches_policy(entry, tool_name));
             if !permitted {
                 return SkillPolicyDecision {
                     allowed: false,
@@ -123,7 +136,8 @@ pub fn normalize_tool_name(tool_name: &str) -> String {
 
 fn bare_tool_name(normalized: &str) -> Option<&str> {
     normalized
-        .split_once('.')
+        .split_once("__")
+        .or_else(|| normalized.split_once('.'))
         .map(|(_, rest)| rest)
         .filter(|rest| !rest.is_empty())
 }

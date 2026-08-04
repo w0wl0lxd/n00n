@@ -277,7 +277,13 @@ fn resolve_model(
         .and_then(|t| t.get::<Option<String>>("spec").ok().flatten());
 
     let model = match spec_str {
-        Some(ref spec) => try_pair!(ModelResolver::current().resolve(spec)),
+        Some(ref spec) => match ModelResolver::current().resolve(spec) {
+            Ok(model) => model,
+            Err(n00n_providers::model_catalog::ModelCatalogError::Unavailable(_)) => {
+                try_pair!(Model::from_spec(spec))
+            }
+            Err(e) => return Ok(err_pair(e.to_string())),
+        },
         None => try_pair!(resolve_model_from_ctx(agent, tier_str.as_deref())),
     };
     Ok((Some(model_to_lua_table(lua, &model)?), None))
@@ -687,7 +693,13 @@ async fn session(
 
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
-        let mut m = try_pair!(ModelResolver::current().resolve(spec));
+        let mut m = match ModelResolver::current().resolve(spec) {
+            Ok(model) => model,
+            Err(n00n_providers::model_catalog::ModelCatalogError::Unavailable(_)) => {
+                try_pair!(Model::from_spec(spec))
+            }
+            Err(e) => return Ok(err_pair(e)),
+        };
         let p = provider::from_model_fallback_with_openai_options(
             &mut m,
             agent_ctx.timeouts,

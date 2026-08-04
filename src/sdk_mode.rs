@@ -1279,7 +1279,6 @@ mod tests {
     #[test_case("use_memory", "Memory")]
     #[test_case("ask_user", "Question")]
     #[test_case("load_skill", "Skill")]
-    #[test_case("skill", "Skill")]
     fn n00n_to_claude_roundtrip(n00n: &str, claude: &str) {
         assert_eq!(n00n_to_claude_tool_name(n00n), claude);
         assert_eq!(claude_to_n00n_tool_name(claude), n00n);

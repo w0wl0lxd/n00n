@@ -500,7 +500,7 @@ impl ToolRegistry {
                 for name in [tool.name()]
                     .iter()
                     .chain(tool.aliases().iter())
-                    .map(|s| s.to_string())
+                    .map(ToString::to_string)
                 {
                     new_sources.insert(name, source.clone());
                 }
@@ -582,7 +582,7 @@ impl ToolRegistry {
                 for name in [tool.name()]
                     .iter()
                     .chain(tool.aliases().iter())
-                    .map(|s| s.to_string())
+                    .map(ToString::to_string)
                 {
                     new_sources.insert(name, source.clone());
                 }

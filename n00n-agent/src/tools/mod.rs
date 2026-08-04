@@ -1320,12 +1320,12 @@ mod tests {
     fn tool_aliases_are_unique_and_no_canonical_is_alias() {
         let mut seen_aliases = std::collections::HashSet::new();
         let mut canonical_names = std::collections::HashSet::new();
-        for (alias, _canonical) in TOOL_ALIASES {
+        for (alias, canonical) in TOOL_ALIASES {
             assert!(
                 seen_aliases.insert(alias),
                 "duplicate alias in TOOL_ALIASES: {alias}"
             );
-            canonical_names.insert(*_canonical);
+            canonical_names.insert(*canonical);
         }
         for (alias, _canonical) in TOOL_ALIASES {
             assert!(

@@ -260,8 +260,8 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
 }
 
 fn is_skill_tool_call(name: &str) -> bool {
-    name.strip_prefix("functions.").map_or(name, |value| value)
-        == crate::skill_policy::SKILL_TOOL_NAME
+    let canonical = crate::tools::canonical_tool_name(name);
+    canonical == crate::tools::canonical_tool_name(crate::skill_policy::SKILL_TOOL_NAME)
 }
 
 fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
@@ -354,17 +354,18 @@ async fn run_authorized(
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or(name, |value| value);
-    if !ctx.tool_filter.matches(name) {
-        return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
+    let canonical_name = crate::tools::canonical_tool_name(name);
+    if !ctx.tool_filter.matches(canonical_name) {
+        return tool_done_error(id, Arc::from(canonical_name), TOOL_FILTER_DENIED.into());
     }
-    if name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
+    if canonical_name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
         return tool_done_error(
             id,
             Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
             crate::fusion::FUSION_DELEGATE_BLOCKED.into(),
         );
     }
-    if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+    if ctx.mode.plan_path().is_some() && canonical_name == crate::tools::CODE_EXECUTION_TOOL_NAME {
         return tool_done_error(
             id,
             Arc::from(crate::tools::CODE_EXECUTION_TOOL_NAME),
@@ -372,7 +373,7 @@ async fn run_authorized(
         );
     }
     if ctx.mode.plan_path().is_some()
-        && name == crate::tools::BASH_TOOL_NAME
+        && canonical_name == crate::tools::BASH_TOOL_NAME
         && !plan_bash_is_read_only(input)
     {
         return tool_done_error(
@@ -382,10 +383,14 @@ async fn run_authorized(
         );
     }
     if let Some(reason) = skill_policy_denied(name, ctx) {
-        return tool_done_error(id.clone(), Arc::from(name), reason);
+        return tool_done_error(id.clone(), Arc::from(canonical_name), reason);
     }
-    if let Some(local) = ctx.local_tools.get(name) {
-        return run_local_tool(local, id, name, input, ctx, emit);
+    if let Some(local) = ctx
+        .local_tools
+        .get(name)
+        .or_else(|| ctx.local_tools.get(canonical_name))
+    {
+        return run_local_tool(local, id, canonical_name, input, ctx, emit);
     }
     let entry = registry.get(name);
     // LLM providers send tool names in wire format (server__tool) but our
@@ -404,7 +409,7 @@ async fn run_authorized(
     let started = Instant::now();
 
     if ctx.mode.plan_path().is_some()
-        && name != crate::tools::BASH_TOOL_NAME
+        && canonical_name != crate::tools::BASH_TOOL_NAME
         && entry
             .as_ref()
             .is_some_and(|entry| entry.tool.tool_kind() == Some("execute"))
@@ -432,7 +437,8 @@ async fn run_authorized(
             Ok(inv) => inv,
             Err(e) => {
                 warn!(
-                    tool = %name,
+                    has_tool_name = !canonical_name.is_empty(),
+                    tool_name_length = canonical_name.len(),
                     source = %entry.source.as_log_field(),
                     input_preview = %crate::tools::schema::preview(&input.to_string()),
                     error = %e,
@@ -450,7 +456,8 @@ async fn run_authorized(
             if !is_plan_target {
                 if ctx.mode.plan_path().is_some() {
                     warn!(
-                        tool = %name,
+                        has_tool_name = !canonical_name.is_empty(),
+                        tool_name_length = canonical_name.len(),
                         target = %target.display(),
                         "blocked write in plan mode"
                     );
@@ -483,7 +490,7 @@ async fn run_authorized(
 
         invocation.start(ctx).await;
 
-        if let Err(e) = enforce_permission(invocation.as_ref(), name, ctx, &id).await {
+        if let Err(e) = enforce_permission(invocation.as_ref(), canonical_name, ctx, &id).await {
             return tool_done_error(id.clone(), Arc::clone(&tool_id), e);
         }
 
@@ -493,7 +500,8 @@ async fn run_authorized(
         match result.output {
             Ok(output) => {
                 debug!(
-                    tool = %name,
+                    has_tool_name = !canonical_name.is_empty(),
+                    tool_name_length = canonical_name.len(),
                     source = %entry.source.as_log_field(),
                     elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     "tool ok"
@@ -513,7 +521,8 @@ async fn run_authorized(
             }
             Err(message) => {
                 warn!(
-                    tool = %name,
+                    has_tool_name = !canonical_name.is_empty(),
+                    tool_name_length = canonical_name.len(),
                     source = %entry.source.as_log_field(),
                     elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     error = %message,
@@ -534,13 +543,17 @@ async fn run_authorized(
                 }
             }
         }
-    } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
+    } else if let Some(mcp) = mcp.filter(|_| canonical_name == TOOL_SEARCH_TOOL_NAME) {
         run_tool_search(mcp, id, input, ctx, emit)
     } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
         execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
-        warn!(tool = %mcp_lookup, "unknown tool");
+        warn!(
+            has_tool_name = !canonical_name.is_empty(),
+            tool_name_length = canonical_name.len(),
+            "unknown tool"
+        );
         tool_done_error(id, tool_id, msg)
     }
 }
@@ -610,7 +623,13 @@ fn run_local_tool(
     let (output, is_error) = match local(input) {
         Ok(output) => (output, false),
         Err(e) => {
-            warn!(tool = %name, error = %e, "local tool failed");
+            warn!(
+                has_tool_name = !name.is_empty(),
+                tool_name_length = name.len(),
+                source = "local",
+                error = %e,
+                "local tool failed"
+            );
             (e, true)
         }
     };
@@ -830,17 +849,20 @@ pub(super) async fn process_tool_calls(
     });
 
     for (position, id, name, mut input) in tool_uses {
+        let input_preview = crate::tools::schema::preview(&input.to_string());
+        let name_len = name.len();
         debug!(
-            tool = %name,
+            has_tool_name = !name.is_empty(),
+            tool_name_length = name_len,
             id = %id,
-            input_preview = %crate::tools::schema::preview(&input.to_string()),
+            input_preview = %input_preview,
             "parsing tool call"
         );
-        let normalized_name = name
-            .strip_prefix("functions.")
-            .map_or(name.as_str(), |value| value);
-        let is_fusion_delegate = crate::tools::canonical_tool_name(normalized_name)
-            == crate::fusion::FUSION_DELEGATE_TOOL;
+        let canonical_name = name.strip_prefix("functions.").map_or(
+            crate::tools::canonical_tool_name(name.as_str()).to_owned(),
+            |value| crate::tools::canonical_tool_name(value).to_owned(),
+        );
+        let is_fusion_delegate = canonical_name == crate::fusion::FUSION_DELEGATE_TOOL;
         if is_fusion_delegate
             && ctx.config.fusion.enabled
             && let Value::Object(arguments) = &mut input
@@ -876,8 +898,12 @@ pub(super) async fn process_tool_calls(
                     crate::fusion::FUSION_DELEGATE_BLOCKED.into(),
                 ),
             ));
-        } else if recent_calls.is_doom_loop(&name, &input) {
-            warn!(tool = %name, "doom loop detected, skipping execution");
+        } else if recent_calls.is_doom_loop(&canonical_name, &input) {
+            warn!(
+                has_tool_name = !canonical_name.is_empty(),
+                tool_name_length = canonical_name.len(),
+                "doom loop detected, skipping execution"
+            );
             immediate_errors.push((
                 position,
                 ToolDoneEvent::error(id.clone(), DOOM_LOOP_MESSAGE),
@@ -886,17 +912,17 @@ pub(super) async fn process_tool_calls(
             let call = PendingToolCall {
                 position,
                 id,
-                name: name.clone(),
+                name,
                 input: input.clone(),
                 fusion_delegate_authorized,
             };
-            if is_skill_tool_call(&name) {
+            if is_skill_tool_call(&canonical_name) {
                 skill_calls.push(call);
             } else {
                 non_skill_calls.push(call);
             }
         }
-        recent_calls.record(name, &input);
+        recent_calls.record(canonical_name, &input);
     }
 
     for (_, err) in &immediate_errors {
@@ -1063,7 +1089,10 @@ mod tests {
     ) -> ToolContext {
         let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
         let mut map = std::collections::HashMap::new();
-        map.insert(name.to_owned(), Arc::new(f) as LocalToolFn);
+        map.insert(
+            crate::tools::canonical_tool_name(name).to_owned(),
+            Arc::new(f) as LocalToolFn,
+        );
         ctx.local_tools = Arc::new(map);
         ctx
     }

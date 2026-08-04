@@ -1142,7 +1142,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
     }
     let aliases = spec
         .get::<Option<Vec<String>>>("aliases")?
-        .unwrap_or_default()
+        .unwrap_or_else(Vec::new)
         .into_iter()
         .map(|alias| {
             if !is_valid_tool_name(&alias) || alias == name {
