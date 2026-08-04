@@ -1,7 +1,6 @@
-use super::status_bar::format_tokens;
-use super::{DisplayMessage, ToolStatus};
-
 use super::code_view;
+use super::status_bar::format_tokens;
+use super::{DisplayMessage, ToolStatus, args_view};
 use crate::animation::{spinner_frame, spinner_str};
 use crate::cast;
 use crate::theme;
@@ -286,7 +285,7 @@ fn format_text_output(t: &TextOutput) -> Cow<'_, str> {
     let mut out = ToolOutput::Plain(t.clone()).as_text();
     if let Some(state) = &t.state {
         out.push_str("\n\nState:\n");
-        out.push_str(&code_view::json_text(state));
+        out.push_str(&args_view::redacted_json_text(state));
     }
     if let Some(tel) = &t.telemetry {
         out.push_str("\n\nTelemetry: ");
@@ -411,26 +410,52 @@ impl ToolLineBuilder {
             Span::styled(label, theme::current().tool_prefix),
             Span::styled("  ", theme::current().tool_dim),
         ];
+        let mut continuation: Vec<Line<'static>> = Vec::new();
         if let Some(snapshot) = render_header {
-            if let Some(first_line) = snapshot.lines.first() {
-                let line_idx = self.lines.len();
+            let base = self.lines.len();
+            for (i, sline) in snapshot.lines.iter().enumerate() {
                 let spinners = &mut self.spinner_lines;
-                bake_spans(&first_line.spans, &mut spans, spinner_str(0), |span_idx| {
-                    spinners.push((line_idx, span_idx));
-                });
+                if i == 0 {
+                    bake_spans(&sline.spans, &mut spans, spinner_str(0), |span_idx| {
+                        spinners.push((base, span_idx));
+                    });
+                } else {
+                    let mut line_spans = Vec::new();
+                    bake_spans(&sline.spans, &mut line_spans, spinner_str(0), |span_idx| {
+                        spinners.push((base + i, span_idx));
+                    });
+                    let mut line = Line::from(line_spans);
+                    line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
+                    continuation.push(line);
+                }
             }
         } else {
             spans.push(Span::styled(header.to_owned(), theme::current().tool));
         }
-        let mut copy = format!("{tool_name}> {header}");
         if let Some(ann) = annotation {
             spans.push(Span::styled(
                 format!(" ({ann})"),
                 theme::current().tool_annotation,
             ));
-            let _ = write!(copy, " ({ann})");
         }
         self.lines.push(Line::from(spans));
+        self.lines.extend(continuation);
+        let mut copy = format!("{tool_name}> {header}");
+        if let Some(ann) = annotation {
+            let _ = write!(copy, " ({ann})");
+        }
+        if let Some(snapshot) = render_header {
+            let rest: Vec<String> = snapshot
+                .lines
+                .iter()
+                .skip(1)
+                .map(|line| line.spans.iter().map(|span| span.text.as_str()).collect())
+                .collect();
+            if !rest.is_empty() {
+                copy.push('\n');
+                copy.push_str(&rest.join("\n"));
+            }
+        }
         self.search_text = copy;
     }
 
@@ -464,13 +489,8 @@ impl ToolLineBuilder {
         self.lines[0].spans.insert(0, Span::styled(text, style));
     }
 
-    fn push_code_content(
-        &mut self,
-        input: Option<&ToolInput>,
-        raw_input: Option<&serde_json::Value>,
-        output: Option<&ToolOutput>,
-    ) {
-        let content = code_view::render_tool_content(input, raw_input, output, false, self.limits);
+    fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
+        let content = code_view::render_tool_content(input, output, false, self.limits);
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
         self.truncation.details |= content.truncation.details;
@@ -708,13 +728,39 @@ pub fn build_tool_lines(
     let has_snapshot = msg.render_snapshot.is_some();
     b.push_code_content(
         msg.tool_input.as_deref(),
-        msg.tool_raw_input.as_deref(),
         if has_snapshot {
             None
         } else {
             msg.tool_output.as_deref()
         },
     );
+    if msg.tool_input.is_none()
+        && msg.render_header.is_none()
+        && let Some(input) = msg.tool_raw_input.as_deref()
+    {
+        let search = args_view::arg_search_text(input);
+        if !search.is_empty() {
+            b.push_search_text(&search);
+        }
+        let view = args_view::render_args(
+            input,
+            rctx.tool_output_lines.get(tool_name),
+            b.limits.output,
+            b.limits.is_output_expanded(),
+        );
+        let show_args = view.lines.len() >= 2 || view.hidden > 0;
+        if show_args {
+            b.lines.push(Line::from(vec![
+                Span::raw(TOOL_BODY_INDENT),
+                Span::styled("Arguments:", theme::current().tool_annotation),
+            ]));
+            for mut line in view.lines {
+                line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
+                b.lines.push(line);
+            }
+            b.push_truncation_count(view.hidden);
+        }
+    }
     let show_output = if let Some(ref snapshot) = msg.render_snapshot {
         let search_text = msg
             .tool_output
@@ -963,6 +1009,200 @@ mod tests {
         let text = lines_text(&tl);
         assert!(text.contains("line1"));
         assert!(text.contains("line2"));
+    }
+
+    #[test]
+    fn generic_tool_arguments_are_rendered_without_json() {
+        let mut msg = bash_msg("Search src\n2 matches", ToolStatus::Success, None, None);
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "query": "secret needle",
+            "path": "src"
+        })));
+
+        let lines = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&lines);
+
+        assert!(text.contains("Search src"));
+        assert!(text.contains("2 matches"));
+        assert!(text.contains("Arguments:"));
+        assert!(text.contains("query: secret needle"));
+        assert!(text.contains("path: src"));
+        assert!(!text.contains("\"query\""));
+    }
+
+    #[test]
+    fn purpose_built_header_does_not_duplicate_arguments() {
+        let mut msg = bash_msg("fallback header", ToolStatus::Success, None, None);
+        msg.render_header = Some(make_snapshot(vec![vec![SnapshotSpan {
+            text: "Purpose-built header".into(),
+            style: SpanStyle::Default,
+        }]]));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "query": "secret needle",
+        })));
+
+        let lines = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&lines);
+
+        assert!(text.contains("Purpose-built header"));
+        assert!(!text.contains("Arguments:"));
+        assert!(!text.contains("secret needle"));
+    }
+
+    #[test]
+    fn single_line_args_suppress_arguments_block() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({ "query": "needle" })));
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&tl);
+        assert!(!text.contains("Arguments:"));
+        assert!(!text.contains("needle"));
+        assert!(
+            tl.search_text.contains("needle"),
+            "suppressed args must stay searchable"
+        );
+    }
+
+    #[test]
+    fn collapsed_args_truncation_notice_renders_once() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+            "e": 5,
+        })));
+        let tol = ToolOutputLines { other: 2, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+        let tl = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let text = lines_text(&tl);
+        assert!(text.contains("Arguments:"));
+        assert_eq!(
+            text.matches(TRUNCATION_PREFIX).count(),
+            1,
+            "truncation notice must render exactly once: {text}"
+        );
+    }
+
+    #[test]
+    fn one_line_cap_keeps_args_and_expand_notice_visible() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+        })));
+        let tol = ToolOutputLines { other: 1, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+
+        let tl = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let text = lines_text(&tl);
+        assert!(text.contains("Arguments:"));
+        assert!(text.contains("a: 1"));
+        assert!(text.contains(TRUNCATION_PREFIX));
+    }
+
+    #[test]
+    fn expanded_args_reveal_lines_beyond_collapsed_cap() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+        })));
+        let tol = ToolOutputLines { other: 2, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+
+        let collapsed = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let expanded = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &rctx,
+            SectionFlags {
+                output: true,
+                ..SectionFlags::default()
+            },
+        );
+        let collapsed_text = lines_text(&collapsed);
+        let expanded_text = lines_text(&expanded);
+        assert!(!collapsed_text.contains("d: 4"));
+        assert!(expanded_text.contains("d: 4"));
+        assert!(!expanded_text.contains(TRUNCATION_PREFIX));
+    }
+
+    #[test]
+    fn multi_line_header_renders_all_lines_indented() {
+        let mut msg = bash_msg("first line", ToolStatus::Success, None, None);
+        msg.render_header = Some(make_snapshot(vec![
+            vec![SnapshotSpan {
+                text: "first line".into(),
+                style: SpanStyle::Default,
+            }],
+            vec![SnapshotSpan {
+                text: "second line".into(),
+                style: SpanStyle::Default,
+            }],
+        ]));
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        assert_eq!(tl.lines.len(), 2);
+        assert!(lines_text(&tl).contains("first line"));
+        let second: String = tl.lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(second, "    second line");
+        assert!(tl.search_text.contains("first line"));
+        assert!(tl.search_text.contains("second line"));
     }
 
     fn line_has_styled(tl: &ToolLines, text: &str, style: Style) -> bool {

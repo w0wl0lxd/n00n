@@ -5,7 +5,7 @@ Tracked in Linear: **[N00N-69](https://linear.app/n00n/issue/N00N-69/native-fusi
 ## Research basis (Cognition Devin Fusion, June–July 2026)
 
 1. **Sidekick pattern**: two parallel fully-capable agents (frontier lead + cheap sidekick), each with own persistent cached context.
-2. **Dynamic mid-session routing**: lightweight classifiers escalate/de-escalate; model switches at compaction (cache miss already happening).
+2. **Dynamic mid-session routing**: planned for a later phase; the beta keeps the lead model stable and does not switch the main model at compaction.
 3. **Lead tuning**: minimal actions; delegate early with spec-quality briefs; own plan, ambiguity, final review, commit.
 4. **When delegation fails**: short tasks, serial debugging chains.
 
@@ -13,7 +13,7 @@ Tracked in Linear: **[N00N-69](https://linear.app/n00n/issue/N00N-69/native-fusi
 
 | Cognition | n00n twist |
 |-----------|------------|
-| Fixed sidekick model | `ModelTier` routing + `auto_tier` on delegate |
+| Configuration-only sidekick tier | `[agent.fusion].sidekick_tier` with optional trusted plugin auto-tier |
 | Proprietary classifiers | Lexical `classify_delegation` + `route_tier` in Lua |
 | Devin-only harness | Works with any provider via `task`/`fusion_delegate` infra |
 | Hidden routing | `--fusion` CLI + `[agent.fusion]` config + per-session toggle |
@@ -25,7 +25,7 @@ Tracked in Linear: **[N00N-69](https://linear.app/n00n/issue/N00N-69/native-fusi
 - [x] `n00n-agent/src/fusion/` routing core + tests
 - [x] `FusionConfig` in `n00n-config`
 - [x] `plugins/fusion/init.lua` — `fusion_delegate` tool
-- [x] Compaction-boundary model switch in `run.rs`
+- [x] Compaction preserves the lead model and bounded review or fallback context in `run.rs`
 - [x] `--fusion` / `always_fusion` CLI + config
 - [x] Devin `list_models` uses cached ACP config_options
 - [ ] Docs (`just gen-docs`) — [N00N-75](https://linear.app/n00n/issue/N00N-75/fusion-mode-docs-gen-docs)

@@ -13,6 +13,7 @@ use cli::Cli;
 
 fn main() {
     color_eyre::install().ok();
+    n00n_providers::ensure_rustls_crypto_provider();
     if let Err(e) = cmd::dispatch(Cli::parse()) {
         print_error(&e);
         std::process::exit(1);

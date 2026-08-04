@@ -178,6 +178,22 @@ impl Chat {
                     self.messages_panel.flush();
                 }
             }
+            AgentEvent::FusionPhase { phase, label } => {
+                let phase = match phase {
+                    n00n_agent::FusionPhase::Idle => "Idle",
+                    n00n_agent::FusionPhase::Planning => "Planning",
+                    n00n_agent::FusionPhase::Executing => "Executing",
+                    n00n_agent::FusionPhase::Reviewing => "Reviewing",
+                    n00n_agent::FusionPhase::LeadFallback => "Lead fallback",
+                    n00n_agent::FusionPhase::Complete => "Complete",
+                    n00n_agent::FusionPhase::Cancelled => "Cancelled",
+                    n00n_agent::FusionPhase::Failed => "Failed",
+                };
+                let text =
+                    label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
+                self.messages_panel
+                    .push(DisplayMessage::new(DisplayRole::Control, text));
+            }
             AgentEvent::QueueItemConsumed {
                 text,
                 image_count,
@@ -876,8 +892,17 @@ fn build_loaded_tool(
     tool_output_lines: &ToolOutputLines,
 ) -> (String, usize, Option<Arc<ToolOutput>>, Option<String>) {
     if let Some(output) = reconstructed {
+        let (text, skipped) = match &output {
+            ToolOutput::Plain(t) | ToolOutput::Markdown(t) | ToolOutput::ReadDir(t)
+                if !t.text.is_empty() =>
+            {
+                let tr = truncate_output(&t.text, tool_output_lines.get(tool));
+                (format!("{}\n{}", summary, tr.kept), tr.skipped)
+            }
+            _ => (summary.to_owned(), 0),
+        };
         let annotation = output.annotation();
-        (summary.to_owned(), 0, Some(Arc::new(output)), annotation)
+        (text, skipped, Some(Arc::new(output)), annotation)
     } else {
         let result = result_text.unwrap_or_else(|| "");
         let annotation = if result.is_empty() {
@@ -980,6 +1005,53 @@ mod tests {
         HashMap::new()
     }
 
+    #[test_case(n00n_agent::FusionPhase::Planning, None, "Planning" ; "planning")]
+    #[test_case(n00n_agent::FusionPhase::Executing, Some("brief label"), "Executing: brief label" ; "executing")]
+    #[test_case(n00n_agent::FusionPhase::Reviewing, None, "Reviewing" ; "reviewing")]
+    #[test_case(n00n_agent::FusionPhase::LeadFallback, None, "Lead fallback" ; "lead fallback")]
+    #[test_case(n00n_agent::FusionPhase::Complete, None, "Complete" ; "complete")]
+    #[test_case(n00n_agent::FusionPhase::Cancelled, None, "Cancelled" ; "cancelled")]
+    #[test_case(n00n_agent::FusionPhase::Failed, None, "Failed" ; "failed")]
+    fn fusion_phase_renders_typed_control_text(
+        phase: n00n_agent::FusionPhase,
+        label: Option<&str>,
+        expected: &str,
+    ) {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(
+            AgentEvent::FusionPhase {
+                phase,
+                label: label.map(str::to_owned),
+            },
+            None,
+        );
+        assert_eq!(chat.last_message_text(), expected);
+    }
+
+    #[test]
+    fn fusion_phase_does_not_disturb_streaming_or_compaction_cards() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(AgentEvent::AutoCompacting, None);
+        chat.handle_event(
+            AgentEvent::TextDelta {
+                text: "partial".into(),
+            },
+            None,
+        );
+        let cards_before = chat.compaction_card_count();
+
+        chat.handle_event(
+            AgentEvent::FusionPhase {
+                phase: n00n_agent::FusionPhase::Executing,
+                label: Some("brief label".into()),
+            },
+            None,
+        );
+
+        assert_eq!(chat.compaction_card_count(), cards_before);
+        assert!(!chat.streaming_text_is_empty());
+        assert_eq!(chat.last_message_text(), "Executing: brief label");
+    }
     #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());

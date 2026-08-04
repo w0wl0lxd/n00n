@@ -505,9 +505,16 @@ impl Opencode {
             tools,
             session_id.map(n00n_storage::id::SessionRef::as_str),
             self.system_prefix.as_deref(),
+            opts.message_cache_breakpoints,
+            opts.fast,
         );
-        opts.thinking
-            .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
+        opts.thinking.apply_thinking(
+            &mut body,
+            model,
+            &dialect::PREFER_HIGH,
+            &super::reasoning_effort_fields(),
+        );
+        super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
         self.chat_compat
             .do_stream(model, &[], &body, event_tx, auth)
             .await

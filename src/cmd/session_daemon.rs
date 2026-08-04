@@ -1,19 +1,23 @@
 //! In-process session registration for headless modes (print, ACP).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use n00n_agent::headless::InteractiveHandle;
-use n00n_agent::{AgentInput, AgentMode};
+use n00n_agent::{AgentInput, mode_and_plan_from_stored};
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::error::{ControlError, ControlResult};
 use n00n_daemon::lock::DaemonRole;
 use n00n_daemon::protocol::{AgentRecord, BackendKind, MessageOpts};
 use n00n_daemon::registry::{ControlPlane, TuiCallbackBackend};
 use n00n_daemon::server;
+use n00n_providers::Message;
 use n00n_providers::ThinkingConfig;
+use n00n_providers::TokenUsage;
+use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::{Session, StoredMode};
 use serde_json::Value;
 
 const STATUS_WORKING: &str = "working";
@@ -56,7 +60,10 @@ pub fn register_acp_session(
         {
             let input_tx = handle.input_tx.clone();
             let session_id = session_id.clone();
-            move |id, text, opts| message_interactive(&input_tx, id, &session_id, text, opts)
+            let state_dir = state_dir.to_path_buf();
+            move |id, text, opts| {
+                message_interactive(&input_tx, id, &session_id, text, opts, &state_dir)
+            }
         },
         {
             let cancel_tx = handle.cancel_tx.clone();
@@ -165,7 +172,14 @@ fn spawn(
             if let Err(e) =
                 smol::block_on(server::serve(&dir, plane, cancel_rx, DaemonRole::Headless))
             {
-                tracing::warn!(error = %e, "session daemon listener stopped");
+                match e {
+                    ControlError::Unavailable(_) => {
+                        tracing::debug!(error = %e, "session daemon listener stopped");
+                    }
+                    _ => {
+                        tracing::warn!(error = %e, "session daemon listener stopped");
+                    }
+                }
             }
         })
         .map_err(ControlError::io)?;
@@ -227,14 +241,27 @@ fn message_interactive(
     session_id: &str,
     text: &str,
     opts: &MessageOpts,
+    state_dir: &Path,
 ) -> ControlResult<Value> {
     if id != session_id {
         return Err(ControlError::NotFound(id.to_owned()));
     }
+    let (mode, plan_path) = {
+        let session_ref = session_id
+            .parse::<SessionRef>()
+            .map_err(|_| ControlError::InvalidId(session_id.to_owned()))?;
+        let storage = StateDir::from_path(state_dir.to_path_buf());
+        let mut session = Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(
+            session_ref.id(),
+            &storage,
+        )
+        .map_err(|error| ControlError::Unavailable(error.to_string()))?;
+        mode_and_plan_for_daemon(&storage, &mut session)?
+    };
     input_tx
         .try_send(AgentInput {
             message: text.to_owned(),
-            mode: AgentMode::Build,
+            mode,
             images: Vec::new(),
             preamble: Vec::new(),
             thinking: ThinkingConfig::default(),
@@ -242,9 +269,28 @@ fn message_interactive(
             workflow: false,
             prompt: None,
             control: opts.control,
+            plan_path,
         })
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
     Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))
+}
+
+fn mode_and_plan_for_daemon(
+    storage: &StateDir,
+    session: &mut Session<Message, TokenUsage, n00n_agent::ToolOutput>,
+) -> ControlResult<(n00n_agent::AgentMode, Option<PathBuf>)> {
+    let (mode, plan_path) = mode_and_plan_from_stored(storage, &session.meta)
+        .map_err(|error| ControlError::Unavailable(error.to_string()))?;
+    if session.meta.mode == Some(StoredMode::Plan) && session.meta.plan_path.is_none() {
+        let plan_path = plan_path
+            .as_ref()
+            .ok_or_else(|| ControlError::Unavailable("missing generated plan path".into()))?;
+        session.meta.plan_path = Some(plan_path.display().to_string());
+        session
+            .save(storage)
+            .map_err(|error| ControlError::Unavailable(error.to_string()))?;
+    }
+    Ok((mode, plan_path))
 }
 
 fn stop_interactive(
@@ -259,4 +305,106 @@ fn stop_interactive(
         .try_send(())
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use n00n_agent::AgentMode;
+
+    use super::*;
+
+    fn assert_restore_failure_does_not_dispatch(
+        state_dir: &Path,
+        session_id: &str,
+    ) -> ControlError {
+        let (input_tx, input_rx) = flume::bounded(1);
+        let error = message_interactive(
+            &input_tx,
+            session_id,
+            session_id,
+            "do work",
+            &MessageOpts::default(),
+            state_dir,
+        )
+        .expect_err("session restoration should fail");
+        assert!(matches!(
+            input_rx.try_recv(),
+            Err(flume::TryRecvError::Empty)
+        ));
+        error
+    }
+
+    #[test_case::test_case(())]
+    fn malformed_session_id_does_not_dispatch(_case: ()) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), "not-a-session-id");
+        assert!(matches!(error, ControlError::InvalidId(_)));
+    }
+
+    #[test_case::test_case(())]
+    fn missing_session_does_not_dispatch(_case: ()) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionRef::generate().to_string();
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), &session_id);
+        assert!(matches!(error, ControlError::Unavailable(_)));
+    }
+
+    #[test_case::test_case(())]
+    fn restores_current_build_mode_and_plan_path(_case: ()) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let mut session =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/project");
+        session.meta.mode = Some(StoredMode::Build);
+        session.meta.plan_path = Some("approved-plan.md".into());
+
+        assert_eq!(
+            mode_and_plan_for_daemon(&storage, &mut session).expect("stored mode should restore"),
+            (AgentMode::Build, Some(PathBuf::from("approved-plan.md")))
+        );
+    }
+
+    #[test_case::test_case(())]
+    fn unreadable_session_does_not_dispatch(_case: ()) {
+        const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session_ref = SessionRef::generate();
+        let sessions_dir = temp.path().join("sessions");
+        std::fs::create_dir(&sessions_dir).expect("sessions directory");
+        std::fs::write(
+            sessions_dir.join(format!("{}.jsonl", session_ref.id())),
+            ZSTD_MAGIC,
+        )
+        .expect("corrupt session fixture");
+
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), session_ref.as_str());
+        assert!(matches!(error, ControlError::Unavailable(_)));
+    }
+
+    #[test_case::test_case(())]
+    fn legacy_plan_session_persists_generated_path(_case: ()) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let mut session =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/tmp");
+        session.meta.mode = Some(StoredMode::Plan);
+        session.save(&storage).expect("session fixture");
+
+        let (mode, plan_path) =
+            mode_and_plan_for_daemon(&storage, &mut session).expect("mode restoration");
+        let plan_path = plan_path.expect("generated plan path");
+        assert!(matches!(mode, AgentMode::Plan(_)));
+
+        let mut persisted =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session.id, &storage)
+                .expect("persisted session");
+        assert_eq!(persisted.meta.plan_path.as_deref(), plan_path.to_str());
+        assert_eq!(
+            mode_and_plan_for_daemon(&storage, &mut persisted)
+                .expect("persisted mode restoration")
+                .1,
+            Some(plan_path)
+        );
+    }
 }
