@@ -210,13 +210,6 @@ impl App {
         );
     }
 
-    pub(crate) fn checkpoint_session(&mut self) {
-        let snapshot = self.session_snapshot();
-        if session_has_content(&snapshot) {
-            self.storage_writer.send(Box::new(snapshot));
-        }
-    }
-
     pub(crate) fn hydrate_plugin_state(&mut self) {
         let Some(handle) = &self.lua_event_handle else {
             return;
