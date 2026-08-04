@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785818770610,
+  "lastUpdate": 1785822734937,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -13927,6 +13927,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 168120,
             "range": "± 12950",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b410177c0e156ebe5d92763adad3a424d9ed4a5e",
+          "message": "feat(tools): add native tmux management (#243)\n\n* docs(specs): add 010 native tmux tool spec, research, plan, and tasks\n\n* feat(tmux): add native tmux tool\n\n* docs(specs): add missing research.md for tmux\n\nfix(tmux): resolve schema property and run_command safety\n\n* fix(tmux): correct output_limits resolve target, use OS env for platform check\n\n* fix(workspace): add tmux to docgen sections, trim tmux schema, update token baseline\n\n* fix(tmux): address review feedback\n\n* fix(tmux): return actual session name when creating unnamed session\n\n* fix(tmux): confirm injected pane input\n\n* chore: merge origin/main into 010-native-tmux-tool",
+          "timestamp": "2026-08-04T05:36:05Z",
+          "tree_id": "af3d705c64f2ef8bfdb99cd0f8872845d55da4c2",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b410177c0e156ebe5d92763adad3a424d9ed4a5e"
+        },
+        "date": 1785822733909,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6607876,
+            "range": "± 51908",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2274093,
+            "range": "± 7091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2284221,
+            "range": "± 7134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8255638,
+            "range": "± 165188",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4282445,
+            "range": "± 14857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4281581,
+            "range": "± 11552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 591495,
+            "range": "± 1019",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191674,
+            "range": "± 390",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191573,
+            "range": "± 473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045972,
+            "range": "± 4101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582832,
+            "range": "± 1611",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582539,
+            "range": "± 2212",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 69291,
+            "range": "± 7203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 159835,
+            "range": "± 13085",
             "unit": "ns/iter"
           }
         ]
