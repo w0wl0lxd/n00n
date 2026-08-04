@@ -5787,7 +5787,7 @@ Estimate token savings from using a hybrid/semantic embedder. Requires the sembl
 
 ## n00n.smell {#n00n-smell}
 
-Persistent code-smell and comment index. Stores conflict markers, TODO/FIXME/HACK comments, and placeholder phrases in a local `.n00n/smells` Tantivy index.
+Persistent code-smell and comment index. Stores conflict markers, TODO/FIXME/HACK comments, and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.
 
 ---
 
@@ -5813,7 +5813,7 @@ Returns true when `.n00n/smells/metadata.json` exists in the project root.
 n00n.smell.index({project})
 ```
 
-Build or rebuild the smell index for a repository.
+Build or rebuild the smell index for a repository by invoking n00n-smell.
 
 **Parameters:**
 

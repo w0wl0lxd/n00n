@@ -29,6 +29,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "view_image",
             "codegraph",
             "semblem",
+            "smell",
             "arbor",
         ],
     ),
@@ -423,7 +424,7 @@ mod tests {
     }
 
     // Room for fusion_delegate + skill-system + memory-system + explore-stack tools; keep definitions lean.
-    const MAX_TOOL_DEFINITION_BYTES: usize = 46_000;
+    const MAX_TOOL_DEFINITION_BYTES: usize = 47_000;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {

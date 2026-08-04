@@ -19,29 +19,14 @@ end
 n00n.api.register_tool({
   name = "smell",
   kind = "read",
-  description = [[Persistent code-smell and comment index.
-
-Commands:
-- `index`: build or rebuild the `.n00n/smells` index for a repo
-- `search`: keyword search over indexed smells, with optional `kind` filter
-
-Kinds: conflict, todo, fixme, hack, placeholder.]],
+  description = "Code-smell index. index, search.",
 
   schema = {
     type = "object",
     required = { "command" },
     properties = {
-      command = {
-        type = "string",
-        enum = { "index", "search" },
-      },
-      repo = { type = "string", description = "Project root (defaults to cwd)" },
+      command = { type = "string" },
       query = { type = "string" },
-      kind = {
-        type = "string",
-        description = "Optional kind filter: conflict, todo, fixme, hack, placeholder",
-      },
-      top_k = { type = "integer", default = 5 },
     },
   },
 

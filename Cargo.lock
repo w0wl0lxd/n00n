@@ -4257,7 +4257,6 @@ dependencies = [
  "n00n-markdown",
  "n00n-providers",
  "n00n-semble",
- "n00n-smell",
  "n00n-storage",
  "pin-project-lite",
  "regex",
