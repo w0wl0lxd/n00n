@@ -540,6 +540,11 @@ impl McpSession {
 }
 
 impl McpHandle {
+    /// Send an MCP command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command channel is full or disconnected.
     pub fn send(&self, cmd: McpCommand) -> Result<(), flume::TrySendError<McpCommand>> {
         self.cmd_tx.try_send(cmd)
     }

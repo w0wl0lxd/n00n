@@ -9,7 +9,7 @@ use crate::REDACTED;
 /// an HTTP authentication credential. Shorter or non-base64-ish values are
 /// left alone to avoid over-redacting common prose (`the basic idea`,
 /// `the bearer of bad news`).
-const AUTH_CREDENTIAL_MIN_CHARS: usize = 8;
+const AUTH_CREDENTIAL_MIN_CHARS: usize = 9;
 
 /// Substring-matched secret key fragments for free text, deliberately shorter
 /// than the exact-match `SECRET_KEYS` list: free text has no key position to
@@ -286,9 +286,8 @@ fn is_basic_auth_credential(value: &str) -> bool {
     let has_base64_specific = trimmed
         .chars()
         .any(|character| character.is_ascii_digit() || "+/=".contains(character));
-    trimmed.len() >= AUTH_CREDENTIAL_MIN_CHARS
-        && has_mixed_case
-        && has_base64_specific
+    trimmed.len() > AUTH_CREDENTIAL_MIN_CHARS
+        && (has_mixed_case || has_base64_specific)
         && trimmed.chars().all(|character| {
             character.is_ascii_alphanumeric()
                 || character == '+'
