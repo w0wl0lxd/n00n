@@ -118,13 +118,14 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         };
 
         let id = match raw.get("id") {
-            Some(v) => match request_id(v) {
-                Ok(id) => Some(id),
-                Err(()) => {
+            Some(v) => {
+                if let Ok(id) = request_id(v) {
+                    Some(id)
+                } else {
                     server.respond(RequestId::Null, Err(AcpError::invalid_request()));
                     continue;
                 }
-            },
+            }
             None => None,
         };
 
@@ -607,6 +608,6 @@ mod tests {
         assert!(request_id(&json!([])).is_err());
         assert!(request_id(&json!(true)).is_err());
         // Use a valid u64 value that serde_json will reject as a RequestId
-        assert!(request_id(&json!(18446744073709551615_u64)).is_err());
+        assert!(request_id(&json!(18_446_744_073_709_551_615_u64)).is_err());
     }
 }
