@@ -35,7 +35,7 @@ const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
 const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
-const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers"];
+const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers", "model_tier"];
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
