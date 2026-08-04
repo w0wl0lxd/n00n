@@ -4,6 +4,7 @@ use n00n_storage::id::n00nId;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct LineageLimits {
     pub(crate) max_depth: usize,
     pub(crate) max_total_descendants: usize,
@@ -253,7 +254,10 @@ impl SessionLineageGuard {
     ) -> Result<NewReservation, LineageError> {
         self.validate_graph()?;
         let caller_lineage = self.lineage(caller)?;
-        let parent = explicit_parent.unwrap_or(caller);
+        let parent = match explicit_parent {
+            Some(p) => p,
+            None => caller,
+        };
         if parent != caller {
             return Err(LineageError::ParentMismatch);
         }
@@ -380,7 +384,10 @@ impl SessionLineageGuard {
     ) -> Result<n00nId, LineageError> {
         self.validate_graph()?;
         let caller_lineage = self.lineage(caller)?;
-        let target = explicit_target.unwrap_or(caller);
+        let target = match explicit_target {
+            Some(t) => t,
+            None => caller,
+        };
         let target_node = self
             .sessions
             .get(&target)
@@ -504,7 +511,10 @@ mod tests {
     fn session(id: n00nId, parent_id: Option<n00nId>) -> LiveSession {
         LiveSession {
             id,
-            root_session_id: parent_id.unwrap_or(id),
+            root_session_id: match parent_id {
+                Some(p) => p,
+                None => id,
+            },
             parent_id,
             runtime_present: true,
             execution_active: parent_id.is_some(),
