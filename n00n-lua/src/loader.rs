@@ -6,8 +6,10 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use include_dir::{Dir, include_dir};
-use n00n_agent::tools::ToolRegistry;
+use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_config::{PluginsConfig, RawConfig};
+use n00n_storage::id::n00nId;
+use n00n_storage::sessions::StoredSessionStateSnapshot;
 
 use crate::api::keymap::KeymapReader;
 use crate::api::options::{PluginOptionSpecs, PluginOpts};
@@ -15,6 +17,7 @@ use crate::api::util::command::{HintReader, LuaCommandReader, UiAction};
 use crate::error::PluginError;
 use crate::plugin_permissions::{PluginPermissions, load_plugin_permissions};
 use crate::runtime::{self, ClickFallback, LuaThread, Request, RestoreItem};
+use crate::state::PluginStateIdentity;
 use n00n_agent::prompt::ResolvedSlots;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -608,6 +611,76 @@ impl EventHandle {
         rx.recv_async()
             .await
             .unwrap_or_else(|_| ResolvedSlots::default())
+    }
+    /// Hydrates host-owned plugin state after all in-flight Lua work drains.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable or the snapshot cannot be applied.
+    pub fn hydrate_state(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+    ) -> Result<(), PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::HydrateState {
+                identity: PluginStateIdentity::from(identity),
+                snapshot,
+                reply,
+            })
+            .map_err(|_| PluginError::HostDead)?;
+        recv.recv()
+            .map_err(|_| PluginError::HostDead)?
+            .map_err(|message| PluginError::State { message })
+    }
+
+    /// Captures host-owned plugin state after all in-flight Lua work drains.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable or capture validation fails.
+    pub fn capture_state(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+    ) -> Result<StoredSessionStateSnapshot, PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::CaptureState {
+                identity: PluginStateIdentity::from(identity),
+                revision,
+                reply,
+            })
+            .map_err(|_| PluginError::HostDead)?;
+        recv.recv()
+            .map_err(|_| PluginError::HostDead)?
+            .map_err(|message| PluginError::State { message })
+    }
+
+    /// Clears both scopes for an identity and records removals for the next capture.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn reset_state(&self, identity: &SessionIdentity) -> Result<(), PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::ResetState {
+                identity: PluginStateIdentity::from(identity),
+                reply,
+            })
+            .map_err(|_| PluginError::HostDead)?;
+        recv.recv().map_err(|_| PluginError::HostDead)
+    }
+
+    /// Drops in-memory state for one canonical owner without persisting removals.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn drop_state_owner(&self, owner: n00nId) -> Result<(), PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::DropStateOwner { owner, reply })
+            .map_err(|_| PluginError::HostDead)?;
+        recv.recv().map_err(|_| PluginError::HostDead)
     }
 
     pub fn request_restore(&self, item: RestoreItem, event_tx: n00n_agent::EventSender) {
