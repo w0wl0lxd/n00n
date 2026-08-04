@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785792740340,
+  "lastUpdate": 1785808818160,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -13603,6 +13603,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 149400,
             "range": "± 22243",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "85788fe4adc238026653c8166d9da138db3aa006",
+          "message": "fix(providers,agent): share devin model list, validate auth URL, fix token tracking (#226)\n\n* fix: document live task progress fixes\n\n* fix(task): retain restore view dependency\n\n* feat(fusion): add guarded sidekick orchestration\n\n* test: refine router classification test and add auto-detection patterns\n\n- Update router test to load queries from fixture file\n- Add auto-detection patterns for search, skeleton, and trace intents\n- Expand fixture with 30 labeled queries for better coverage\n\n* fix(providers,agent): share devin model list, validate auth URL, fix token tracking\n\n- Register the `swe-1-7-max` alias for `swe-1-7` and correct its\n  context window to 262_144 tokens in the Devin model catalog.\n- Validate the devin `base_url` before building auth requests, falling back\n  to the configured API server when it is not an http/https URL.  This fixes\n  `failed to build auth request: invalid format` for `devin2`.\n- Convert Devin `ModelUsageStats` to `TokenUsage` correctly, treating\n  `input_tokens` as the total prompt and cache fields as additive details,\n  with a safe fallback when the server already reports input as non-cached.\n- Report the post-compaction conversation size in `TurnComplete` instead of\n  the summary output token count, so the TUI context meter no longer resets\n  after compaction.\n\n* fix(providers): make swe-1-7-max the canonical max variant with dot aliases\n\nThe two available SWE-1.7 variants are `-max` and `-medium`; `-max` is now\nthe canonical id and `swe-1-7`, `swe-1.7`, and `swe-1.7-max` are aliases\nfor it.  Dot-prefixed aliases are also added for `-medium` and\n`-lightning` to match the names the Devin API recognizes.\n\nThe Devin provider now picks the first catalog prefix that is present in\nthe server-side CLI model-config map before looking up the wire uid, so\naliases resolve to the correct server model regardless of which form is\ncanonical in the catalog.\n\n* fix(providers): default devin model to canonical swe-1-7-max\n\nUse the explicit canonical SWE-1.7 Max id in the provider manifest so the\ndefault model spec is unambiguous.\n\n* fix(agent): apply_fusion_route honors the lane in Switch and Stay routes\n\n`apply_fusion_route` was collapsing `Switch(Sidekick)` and `EscalateToLead`\ninto `FusionLane::Lead`, so `route_after_compact` could return a sidekick\nroute but the main agent never actually entered the sidekick lane.  The\nfunction now extracts the lane from the route, updates the Fusion state, and\napplies the matching lane context.  Updated the unit test to assert the\nexpected sidekick lane while still checking that the lead model and provider\nare not replaced.\n\n* fix(agent): close Fusion dispatch gaps and compaction meter undercount\n\nCharge main-agent API usage to the lead lane, include continue/tool tokens\nin post-compact TurnComplete context_size, and enforce FusionDispatchGuard\nplus Planning/Lead lifecycle checks in live tool dispatch so extra or\nsidekick-lane delegates cannot bypass review/fallback follow-up.\n\n* fix(agent,providers,ui,plugins): review fixes for fusion guard, devin tokens, and ui tests\n\n* fix(providers,agent): validate devin base_url with url crate and clarify token usage format\n\n* merge: origin/main into fix/devin-model-auth-tokens\n\n* docs: regenerate provider index for swe-1-7 canonical ids\n\n* fix: finish PR 226 review fixes\n\n* fix(agent,ui,lua): repair post-merge compile and test failures\n\n* docs: regenerate tools and configuration index\n\n* fix(agent): complete fusion lifecycle and context accounting\n\n* fix(agent): complete fusion lifecycle and context accounting\n\n* fix(fusion): restore dispatch security boundaries\n\n* fix(agent): preserve replay and compaction semantics\n\n* fix(fusion): restore sidekick security boundaries\n\n* fix(agent): restore missing replay reset constant and moderation field after main merge\n\n* fix(agent,providers): restore replay error handling and devin token mapping after main merge\n\n* docs: regenerate generated docs\n\n---------\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>",
+          "timestamp": "2026-08-04T01:36:29Z",
+          "tree_id": "5bf664a48fe155a18b628a53544774d6854108a9",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/85788fe4adc238026653c8166d9da138db3aa006"
+        },
+        "date": 1785808817070,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6449569,
+            "range": "± 150630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2445576,
+            "range": "± 7006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2456614,
+            "range": "± 7807",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7597814,
+            "range": "± 33414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3866238,
+            "range": "± 80063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3766700,
+            "range": "± 82952",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554478,
+            "range": "± 1724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167914,
+            "range": "± 253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167950,
+            "range": "± 635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1050245,
+            "range": "± 9415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 615666,
+            "range": "± 9517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 615345,
+            "range": "± 32005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 69990,
+            "range": "± 6126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 140362,
+            "range": "± 18432",
             "unit": "ns/iter"
           }
         ]
