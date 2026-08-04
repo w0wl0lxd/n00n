@@ -32,6 +32,7 @@ const FUSION_SRC: &str = include_str!("../../plugins/fusion/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
 const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
+const TMUX_SRC: &str = include_str!("../../plugins/tmux/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -793,6 +794,28 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
         !text.contains("3 + n1"),
         "added lines get a blank gutter: {text}"
     );
+}
+
+/// The only built-in tools without purpose-built views get a plain header fn
+/// so the start line reads as prose instead of raw JSON args.
+#[test]
+fn tmux_restore_renders_real_view() {
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    host.load_source("tmux", TMUX_SRC).unwrap();
+    let r = restore(
+        &host,
+        "tmux",
+        json!({ "command": "list_sessions" }),
+        r#"{"sessions":[],"count":0}"#,
+        None,
+        Vec::new(),
+    );
+    assert!(
+        r.body.contains("sessions"),
+        "real view renders the JSON output; the fallback body is raw output only: {}",
+        r.body
+    );
+    assert!(r.header.contains("list_sessions"), "header: {}", r.header);
 }
 
 /// The only built-in tools without purpose-built views get a plain header fn
