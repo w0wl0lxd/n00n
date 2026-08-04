@@ -97,7 +97,23 @@ If your provider serves models not in the base catalog, add a `models` subcomman
 [{{"id": "my-model-v2", "tier": "strong", "context_window": 200000, "max_output_tokens": 16384}}]
 ```
 
-Only `id` is required. Optional fields: `tier` (default `medium`), `context_window` (128K), `max_output_tokens` (16K), `pricing` (`{{input, output, cache_write, cache_read}}`, all per 1M tokens), `supports_tool_examples` (defaults to the base provider's setting), `supports_thinking` (defaults to the base provider's setting), `supports_vision` (defaults to the base provider's setting; when false, image input and the `view_image` tool are disabled). The first model listed per tier is used for sub-agents. Without this subcommand, the base provider's models are used.
+Only `id` is required. Optional fields: `tier` (default `medium`), `context_window` (128K), `max_output_tokens` (16K), `pricing` (`{{input, output, cache_write, cache_read}}`, all per 1M tokens), `supports_tool_examples` (defaults to the base provider's setting), `supports_thinking` (defaults to the base provider's setting), `supports_vision` (defaults to the base provider's setting; when false, image input and the `view_image` tool are disabled), `thinking_dialect` (overrides the base provider's effort level mapping; one of `standard`, `openai-extended`, `prefer-high`, `high-only`, `glm`, `deep-seek`, `anthropic-adaptive`, `tensor-x`), `thinking_fields` (overrides where thinking values go in the body), `body_override` (per-model body manipulation). The first model listed per tier is used for sub-agents. Without this subcommand, the base provider's models are used.
+
+`thinking_fields` controls where thinking values land: `effort_path` (dot-path for the effort string), `budget_path` (dot-path for a budget integer), `budget_max` (cap), and `toggles` (objects with `path`, `on`, `off`, `adaptive`, and `budget_key`). Fields left unset fall back to the base provider's layout.
+
+`body_override` is the escape hatch for a field the base provider does not set, or one it always sets that this model rejects. Its three operations run after the typed thinking setup: `defaults` fills absent keys, `replace` overwrites existing ones, and `filter` strips keys. Each provider guards its conversation field (`messages`, `input`, or `contents`) from all three.
+
+```json
+[{{"id": "my-model", "tier": "strong", "body_override": {{"defaults": {{"chat_template_kwargs": {{"enable_thinking": true}}}}, "filter": ["some_base_key"]}}}}]
+```
+
+Provider-wide shaping goes in the `info` subcommand as `model_filters`, where each entry applies its `body_override` to every model id matching its `match` glob (`*` and `?`). A model's own `body_override` wins on conflicting keys.
+
+```json
+{{"display_name": "My Proxy", "base": "openai", "has_auth": true, "model_filters": [{{"match": "gpt-*", "body_override": {{"filter": ["context_management"]}}}}]}}
+```
+
+The same three fields are accepted per model in `providers.toml` for custom providers.
 
 Dynamic provider models are namespaced as `{{slug}}/{{model_id}}` (e.g. `myproxy/claude-sonnet-4-6`).
 
