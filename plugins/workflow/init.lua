@@ -281,9 +281,6 @@ local function load_journal(run_id, required)
   if type(text) ~= "string" then
     return nil, path, nil, "failed to read workflow journal: " .. tostring(read_err)
   end
-  if #text > MAX_JOURNAL_BYTES then
-    return nil, path, nil, "workflow journal exceeds the 4 MiB limit"
-  end
   if text == "" then
     return cache, path, ""
   end
@@ -317,6 +314,9 @@ local function load_journal(run_id, required)
     lines[#lines + 1] = encoded
   end
   local compact_text = table.concat(lines, "\n") .. "\n"
+  if #compact_text > MAX_JOURNAL_BYTES then
+    return nil, path, nil, "workflow journal exceeds the 4 MiB limit"
+  end
   if compact_text ~= text then
     local write_ok, write_err = n00n.fs.write(path, compact_text)
     if not write_ok then

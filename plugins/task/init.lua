@@ -87,7 +87,7 @@ local function handler(input, ctx)
     end
     local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
       .. forwarded_json
-    local title = (input.description or input.prompt or "background task"):sub(1, 80)
+    local title = n00n.ui.truncate_text(input.description or input.prompt or "background task", 80).head
     local id, err = n00n.session.new({ prompt = prompt, title = title, focus = false })
     if not id then
       return { llm_output = err, is_error = true }

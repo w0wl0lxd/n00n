@@ -2161,6 +2161,7 @@ fn insert_permission_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Tier as ProviderTier;
     use n00n_storage::sessions::Effort;
     use std::fs;
     use tempfile::TempDir;
@@ -2285,10 +2286,7 @@ mod tests {
         let merged = base.into_config(false).unwrap();
 
         assert!(merged.agent.fusion.enabled);
-        assert_eq!(
-            merged.agent.fusion.sidekick_tier,
-            crate::providers::Tier::Medium
-        );
+        assert_eq!(merged.agent.fusion.sidekick_tier, ProviderTier::Medium);
         assert!(!merged.always_fusion);
     }
 
@@ -2303,6 +2301,24 @@ mod tests {
                 .to_string()
                 .contains("unknown field `implicit_model_switch`"),
             "unexpected parse error: {error}"
+        );
+    }
+
+    #[test]
+    fn fusion_compaction_sidekick_tier_is_rejected() {
+        let raw: RawConfig =
+            toml::from_str("[agent.fusion]\nenabled = true\nsidekick_tier = \"compaction\"\n")
+                .unwrap();
+        let config = raw.into_config(false).unwrap();
+        let error = config.validate();
+        assert!(
+            matches!(
+                error,
+                Err(ConfigError::InvalidFusionSidekickTier {
+                    tier: ProviderTier::Compaction
+                })
+            ),
+            "expected InvalidFusionSidekickTier for Compaction tier, got: {error:?}"
         );
     }
 

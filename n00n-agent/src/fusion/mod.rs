@@ -114,7 +114,7 @@ pub enum FusionDispatchError {
     AlreadyDispatched,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct FusionDispatchGuard {
     enabled: bool,
     classification: DelegationKind,

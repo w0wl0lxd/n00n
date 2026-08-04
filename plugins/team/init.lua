@@ -803,14 +803,11 @@ local function run_team(input, ctx)
     end
     forwarded.background = false
     local prompt = "Use the team tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
-    local title = (input.goal or "background team"):sub(1, 80)
+    local title = n00n.ui.truncate_text(input.goal or "background team", 80).head
     local id, err = n00n.session.new({ prompt = prompt, title = title, focus = false })
     if not id then
       return { llm_output = err, is_error = true }
     end
-    pcall(function()
-      n00n.session.set_title({ id = id, title = title })
-    end)
     return n00n.json.encode({ agent_id = id, status = "started", title = title })
   end
 

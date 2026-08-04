@@ -146,7 +146,7 @@ local function handler(input, ctx)
 end
 
 local function header(input)
-  return "Executing: " .. (input.description or ""):sub(1, 40)
+  return "Executing: " .. n00n.ui.truncate_text(input.description or "", 40).head
 end
 
 n00n.api.register_tool({
