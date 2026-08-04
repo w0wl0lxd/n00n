@@ -394,7 +394,7 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 ### `fusion_delegate` *(lua plugin)*
 
-Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
