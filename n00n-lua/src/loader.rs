@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use include_dir::{Dir, include_dir};
@@ -160,6 +160,13 @@ static BUNDLED_DIRS: LazyLock<&'static [&'static Dir<'static>]> = LazyLock::new(
 
 pub struct PluginHost {
     inner: Option<LuaThread>,
+    state_leases: Arc<StateLeases>,
+}
+
+#[derive(Default)]
+struct StateLeases {
+    next: AtomicU64,
+    current: Mutex<HashMap<n00nId, u64>>,
 }
 
 impl Drop for PluginHost {
@@ -201,12 +208,18 @@ impl PluginHost {
     /// Returns an error if the Lua runtime cannot be spawned.
     pub fn with_jit(registry: Arc<ToolRegistry>, jit: bool) -> Result<Self, PluginError> {
         let lua = runtime::spawn(registry, *BUNDLED_DIRS, jit)?;
-        Ok(Self { inner: Some(lua) })
+        Ok(Self {
+            inner: Some(lua),
+            state_leases: Arc::new(StateLeases::default()),
+        })
     }
 
     #[must_use]
     pub fn disabled() -> Self {
-        Self { inner: None }
+        Self {
+            inner: None,
+            state_leases: Arc::new(StateLeases::default()),
+        }
     }
 
     /// Stop the Lua thread from taking new work without joining it, so the
@@ -521,6 +534,7 @@ impl PluginHost {
         self.inner.as_ref().map(|t| EventHandle {
             tx: t.tx.clone(),
             prio_tx: t.prio_tx.clone(),
+            state_leases: Arc::clone(&self.state_leases),
         })
     }
 
@@ -560,6 +574,7 @@ pub struct EventHandle {
     tx: flume::Sender<Request>,
     /// User-initiated requests bypass queued bulk work (session restores).
     prio_tx: flume::Sender<Request>,
+    state_leases: Arc<StateLeases>,
 }
 
 impl SessionStatePersistence for EventHandle {
@@ -567,11 +582,22 @@ impl SessionStatePersistence for EventHandle {
         &self,
         identity: &SessionIdentity,
         snapshot: Option<StoredSessionStateSnapshot>,
-    ) -> Result<(), String> {
-        self.drop_state_owner(identity.session_id().id())
+    ) -> Result<u64, String> {
+        let owner = identity.session_id().id();
+        let mut current = self
+            .state_leases
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.drop_state_owner(owner)
             .map_err(|error| error.to_string())?;
-        self.hydrate_state(identity, snapshot)
-            .map_err(|error| error.to_string())
+        let lease = self.state_leases.next.fetch_add(1, Ordering::Relaxed);
+        current.insert(owner, lease);
+        if let Err(error) = self.hydrate_state(identity, snapshot) {
+            current.remove(&owner);
+            return Err(error.to_string());
+        }
+        Ok(lease)
     }
 
     fn capture(
@@ -583,7 +609,16 @@ impl SessionStatePersistence for EventHandle {
             .map_err(|error| error.to_string())
     }
 
-    fn drop_owner(&self, owner: n00nId) -> Result<(), String> {
+    fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String> {
+        let mut current = self
+            .state_leases
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.get(&owner) != Some(&lease) {
+            return Ok(());
+        }
+        current.remove(&owner);
         self.drop_state_owner(owner)
             .map_err(|error| error.to_string())
     }
@@ -594,6 +629,7 @@ impl EventHandle {
         Self {
             tx,
             prio_tx: flume::unbounded().0,
+            state_leases: Arc::new(StateLeases::default()),
         }
     }
 
@@ -611,6 +647,7 @@ impl EventHandle {
         Self {
             tx: shared.clone(),
             prio_tx: shared,
+            state_leases: Arc::new(StateLeases::default()),
         }
     }
 
@@ -925,7 +962,11 @@ mod tests {
     fn run_command_sends_correct_request() {
         let (prio_tx, prio_rx) = flume::bounded(8);
         let (tx, _rx) = flume::bounded(8);
-        let handle = EventHandle { tx, prio_tx };
+        let handle = EventHandle {
+            tx,
+            prio_tx,
+            state_leases: Arc::new(StateLeases::default()),
+        };
         handle.run_command(Arc::from("myplugin"), Arc::from("/greet"), "world".into());
         let req = prio_rx.try_recv().unwrap();
         match req {

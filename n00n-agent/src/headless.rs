@@ -42,7 +42,7 @@ pub trait SessionStatePersistence: Send + Sync {
         &self,
         identity: &SessionIdentity,
         snapshot: Option<StoredSessionStateSnapshot>,
-    ) -> Result<(), String>;
+    ) -> Result<u64, String>;
 
     /// # Errors
     /// Returns an error when the runtime cannot capture its current state.
@@ -54,7 +54,7 @@ pub trait SessionStatePersistence: Send + Sync {
 
     /// # Errors
     /// Returns an error when the runtime cannot remove the owner state.
-    fn drop_owner(&self, owner: n00nId) -> Result<(), String>;
+    fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String>;
 }
 fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u64 {
     let Some(snapshot) = snapshot else {
@@ -71,6 +71,7 @@ struct SessionStore {
     session: StoredSession,
     state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     identity: SessionIdentity,
+    state_lease: Option<u64>,
 }
 
 impl SessionStore {
@@ -128,6 +129,7 @@ impl SessionStore {
             session,
             state_persistence,
             identity,
+            state_lease: None,
         };
         store.hydrate_plugin_state();
         if is_new {
@@ -140,14 +142,15 @@ impl SessionStore {
         store
     }
 
-    fn hydrate_plugin_state(&self) {
+    fn hydrate_plugin_state(&mut self) {
         let Some(state_persistence) = &self.state_persistence else {
             return;
         };
-        if let Err(error) =
-            state_persistence.hydrate(&self.identity, self.session.meta.state_snapshot.clone())
-        {
-            warn!(session_id = %self.session.id, %error, "failed to restore plugin session state");
+        match state_persistence.hydrate(&self.identity, self.session.meta.state_snapshot.clone()) {
+            Ok(lease) => self.state_lease = Some(lease),
+            Err(error) => {
+                warn!(session_id = %self.session.id, %error, "failed to restore plugin session state");
+            }
         }
     }
 
@@ -228,10 +231,11 @@ impl SessionStore {
 
 impl Drop for SessionStore {
     fn drop(&mut self) {
-        let Some(state_persistence) = &self.state_persistence else {
+        let (Some(state_persistence), Some(lease)) = (&self.state_persistence, self.state_lease)
+        else {
             return;
         };
-        if let Err(error) = state_persistence.drop_owner(self.session.id) {
+        if let Err(error) = state_persistence.drop_owner(self.session.id, lease) {
             warn!(session_id = %self.session.id, %error, "failed to drop plugin session state");
         }
     }
@@ -737,7 +741,8 @@ mod tests {
     struct StatePersistenceProbe {
         hydrated_revisions: std::sync::Mutex<Vec<Option<u64>>>,
         captured_revisions: std::sync::Mutex<Vec<u64>>,
-        dropped_owners: std::sync::Mutex<Vec<n00nId>>,
+        dropped_owners: std::sync::Mutex<Vec<(n00nId, u64)>>,
+        next_lease: std::sync::atomic::AtomicU64,
         fail_capture: std::sync::atomic::AtomicBool,
     }
 
@@ -746,13 +751,15 @@ mod tests {
             &self,
             _identity: &SessionIdentity,
             snapshot: Option<StoredSessionStateSnapshot>,
-        ) -> Result<(), String> {
+        ) -> Result<u64, String> {
             self.hydrated_revisions.lock().unwrap().push(
                 snapshot
                     .as_ref()
                     .and_then(StoredSessionStateSnapshot::state_revision),
             );
-            Ok(())
+            Ok(self
+                .next_lease
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed))
         }
 
         fn capture(
@@ -776,8 +783,8 @@ mod tests {
             Ok(snapshot)
         }
 
-        fn drop_owner(&self, owner: n00nId) -> Result<(), String> {
-            self.dropped_owners.lock().unwrap().push(owner);
+        fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String> {
+            self.dropped_owners.lock().unwrap().push((owner, lease));
             Ok(())
         }
     }
@@ -957,7 +964,10 @@ mod tests {
             Some(8)
         );
         drop(store);
-        assert_eq!(*probe.dropped_owners.lock().unwrap(), vec![session_id()]);
+        assert_eq!(
+            *probe.dropped_owners.lock().unwrap(),
+            vec![(session_id(), 0)]
+        );
     }
 
     #[test]

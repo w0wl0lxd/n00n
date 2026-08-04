@@ -529,6 +529,7 @@ impl<'t> EventLoop<'t> {
         for w in startup_warnings {
             app.flash(w);
         }
+        app.fire_session_focus_autocmd();
 
         let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
         Ok(Self {
@@ -1069,6 +1070,7 @@ impl<'t> EventLoop<'t> {
         }
         self.sessions[self.focused].app.save_session();
         self.focused = idx;
+        self.sessions[self.focused].app.fire_session_focus_autocmd();
     }
 
     /// Focus a live session, or bring a stored one up: in place when the

@@ -191,6 +191,24 @@ impl App {
         snapshot
     }
 
+    pub(crate) fn fire_session_focus_autocmd(&mut self) {
+        self.capture_plugin_state();
+        let state_snapshot = match self.state.session.meta.state_snapshot.as_ref() {
+            Some(snapshot) => match serde_json::to_value(snapshot) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to encode focused plugin session state");
+                    serde_json::Value::Null
+                }
+            },
+            None => serde_json::Value::Null,
+        };
+        self.fire_session_autocmd(
+            "SessionFocus",
+            serde_json::json!({ "state_snapshot": state_snapshot }),
+        );
+    }
+
     pub(crate) fn checkpoint_session(&mut self) {
         let snapshot = self.session_snapshot();
         if session_has_content(&snapshot) {
@@ -421,6 +439,7 @@ impl App {
         self.state.session = AppSession::new(&self.state.session.model, &self.state.session.cwd);
         self.hydrate_plugin_state();
         self.fire_session_autocmd("SessionReset", serde_json::json!({}));
+        self.fire_session_focus_autocmd();
         vec![Action::NewSession]
     }
 
@@ -486,6 +505,7 @@ impl App {
         }
         self.reset_ui_chrome();
         self.restore_display();
+        self.fire_session_focus_autocmd();
 
         self.enqueue_save();
         self.loaded_session_snapshot()
