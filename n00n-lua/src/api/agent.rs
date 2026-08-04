@@ -655,11 +655,6 @@ async fn session(
     opts: Table,
 ) -> LuaResult<Pair<mlua::AnyUserData>> {
     let agent_ctx = try_pair!(dispatch_ctx(&ctx, "session")).clone();
-    let Some(parent_identity) = agent_ctx.identity.clone() else {
-        return Ok(err_pair("session identity is unavailable"));
-    };
-    let plugin_state_store = try_pair!(ctx.plugin_state_store());
-    drop(ctx);
     let model_spec: Option<String> = opts.get("model_spec")?;
     let system: Option<String> = opts.get("system")?;
     let tools_val: Option<LuaValue> = opts.get("tools")?;
@@ -716,7 +711,8 @@ async fn session(
 
     let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
-        let tools = try_pair!(normalize_tool_definitions(lua_to_json(&lua, &val)?));
+        let tools =
+            normalize_tool_definitions(lua_to_json(&lua, &val)?).map_err(mlua::Error::runtime)?;
         (tools, ToolFilter::All)
     } else {
         let vars = n00n_agent::template::Vars::new();
@@ -797,6 +793,12 @@ async fn session(
         Some(_) => return Err(mlua::Error::runtime("thinking must be string or number")),
         None => agent_ctx.opts.thinking,
     };
+
+    let Some(parent_identity) = agent_ctx.identity.clone() else {
+        return Ok(err_pair("session identity is unavailable"));
+    };
+    let plugin_state_store = try_pair!(ctx.plugin_state_store());
+    drop(ctx);
 
     let session_id = n00nId::generate();
     let child_id = session_id.to_string();
