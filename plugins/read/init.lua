@@ -212,6 +212,7 @@ n00n.api.register_tool({
 
   schema = {
     type = "object",
+    required = { "path" },
     properties = {
       path = {
         type = "string",
