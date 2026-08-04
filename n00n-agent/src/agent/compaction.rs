@@ -163,28 +163,27 @@ pub(super) async fn compact_history(
 
     run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
 
-    let usage = finish_compact(response, history, event_tx, compact_start, model);
+    let usage = finish_compact(response, history, compact_start, model);
     Ok((usage, summary))
 }
 
 fn finish_compact(
     response: StreamResponse,
     history: &mut History,
-    event_tx: &EventSender,
     compact_start: std::time::Instant,
     model: &Model,
 ) -> TokenUsage {
-    let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-        message: response.message.clone(),
-        usage: response.usage,
-        model: model.id.clone(),
-        context_size: Some(response.usage.output),
-    })));
+    let StreamResponse {
+        message: summary,
+        usage,
+        stop_reason: _,
+    } = response;
 
-    history.compact_boundary(
-        Message::user("What did we do so far?".into()),
-        response.message,
-    );
+    // Update the history before computing the post-compaction context size
+    // so the UI meter reflects the compacted conversation, not just the
+    // summary output tokens. Callers pass continue-prompt/tool-definition
+    // tokens that are part of the agent's full post-compact context.
+    history.compact_boundary(Message::user("What did we do so far?".into()), summary);
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(
@@ -193,7 +192,7 @@ fn finish_compact(
         "compaction completed"
     );
 
-    response.usage
+    usage
 }
 
 /// Compacts the conversation history using the provider.
@@ -208,7 +207,7 @@ pub async fn compact(
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let (usage, _summary) = compact_history(
+    let (usage, summary) = compact_history(
         provider,
         model,
         history,
@@ -220,6 +219,13 @@ pub async fn compact(
         None,
     )
     .await?;
+    let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
+    event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+        message: Message::assistant(summary),
+        usage,
+        model: model.id.clone(),
+        context_size: Some(context_size),
+    })))?;
     event_tx.send(AgentEvent::CompactionDone)?;
 
     event_tx.send(AgentEvent::Done {
@@ -402,6 +408,13 @@ mod tests {
     use super::*;
     use crate::AgentConfig;
 
+    #[test]
+    fn compaction_summary_is_an_assistant_message() {
+        let summary = Message::assistant("summary".into());
+        assert!(matches!(summary.role, Role::Assistant));
+        assert_eq!(summary.first_text_content(), Some("summary"));
+    }
+
     struct MockProvider {
         responses: Mutex<Vec<Result<StreamResponse, AgentError>>>,
     }
@@ -497,6 +510,22 @@ mod tests {
             usage: TokenUsage::default(),
             stop_reason: Some(stop_reason),
         }
+    }
+
+    #[test]
+    fn finish_compact_updates_history_before_metering() {
+        let compact_model = default_model();
+        let mut history = History::new(vec![Message::user("before".into())]);
+
+        let usage = finish_compact(
+            text_response(StopReason::EndTurn),
+            &mut history,
+            std::time::Instant::now(),
+            &compact_model,
+        );
+
+        assert_eq!(usage, TokenUsage::default());
+        assert!(history.len() > 1);
     }
 
     #[test]
