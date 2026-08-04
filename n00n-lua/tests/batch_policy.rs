@@ -463,6 +463,70 @@ fn lines_text(lines: &[Vec<(String, SpanStyle)>]) -> String {
         .join("\n")
 }
 
+/// History stores the model's raw JSON, so restore/header must accept the
+/// schema alias `tool_uses` the same way live `parse`/`validate` does.
+#[test]
+fn restore_accepts_tool_uses_alias_with_state() {
+    let (_reg, host) = load_batch_host();
+    let lines = restore_snapshot_lines(
+        &host,
+        json!({ "tool_uses": [{ "tool": "hdrtool", "parameters": { "x": "A" } }] }),
+        "irrelevant",
+        Some(json!({ "children": [
+            { "tool": "hdrtool", "status": "success", "output": "line one\nline two", "annotation": "12 lines" }
+        ] })),
+    );
+    let header = &lines[0];
+    assert_eq!(
+        header[2].0, "H:A",
+        "child header must be built from alias-parsed parameters: {header:?}"
+    );
+    let text = lines_text(&lines);
+    assert!(text.contains("line one"), "body from state: {text}");
+}
+
+#[test]
+fn restore_accepts_tool_uses_alias_without_state() {
+    let (_reg, host) = load_batch_host();
+    let output = format!("## hdrtool\nline one\nline two\n\n\n{}", summary_all_ok(1));
+    let lines = restore_snapshot_lines(
+        &host,
+        json!({ "tool_uses": [{ "tool": "hdrtool", "parameters": { "x": "A" } }] }),
+        &output,
+        None,
+    );
+    let header = &lines[0];
+    assert_eq!(
+        header[2].0, "H:A",
+        "child header must come from alias-parsed input: {header:?}"
+    );
+    let text = lines_text(&lines);
+    assert!(
+        text.contains("line one"),
+        "body rebuilt from llm output: {text}"
+    );
+}
+
+#[test]
+fn restore_falls_back_for_malformed_tool_uses() {
+    let (_reg, host) = load_batch_host();
+    let lines = restore_snapshot_lines(
+        &host,
+        json!({ "tool_uses": [{ "not_a_tool_key": "hdrtool" }] }),
+        "fallback body",
+        None,
+    );
+    let text = lines_text(&lines);
+    assert!(
+        text.contains("fallback body"),
+        "malformed alias should fall back to plain view: {text}"
+    );
+    assert!(
+        !text.contains("H:A"),
+        "malformed alias should not produce a child header: {text}"
+    );
+}
+
 /// Pins the child header contract: indicator span, `{tool}> ` prefix in
 /// `tool_prefix` style, the child's own header spans, then the persisted
 /// annotation like standalone (`push_header` in `tool_display.rs`).
