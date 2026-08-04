@@ -60,11 +60,12 @@ impl FusionLane {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DelegationKind {
     /// Trivial conversational input that does not need delegation policy.
     Bypass,
     /// Ambiguity, design, review, or serial debugging — keep on lead.
+    #[default]
     LeadOnly,
     /// Mechanical exploration, edits, tests, lint — delegate to sidekick.
     Delegate,
@@ -569,7 +570,7 @@ pub fn route_after_compact(
 
     let summary_kind = classify_delegation(compact_summary);
     let summary = compact_summary.to_ascii_lowercase();
-    let requests_mutation = MUTATION_SIGNALS
+    let _requests_mutation = MUTATION_SIGNALS
         .iter()
         .any(|signal| summary.contains(signal));
 

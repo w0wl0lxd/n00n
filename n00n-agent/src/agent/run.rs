@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestOptions, Role,
+    StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -398,8 +398,7 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = self.mcp.as_ref() {
             mcp.extend_tools(&mut self.tools);
         }
-        let tool_filter = self.effective_tool_filter();
-        crate::tools::filter_definitions(&mut self.tools, &tool_filter);
+        crate::tools::filter_definitions(&mut self.tools, &self.tool_filter);
         filter_tools_for_mode(&mut self.tools, &self.mode);
         let fusion_visible = self.fusion_delegate_visible();
         filter_fusion_delegate(
@@ -556,11 +555,11 @@ impl<'h> Agent<'h> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let initial = self.stream_response(self.opts).await;
+        let initial = self.stream_response(self.opts.clone()).await;
         let response = match initial {
             Err(AgentError::HistoryReplayRequired { reason }) => {
                 self.approve_history_replay(reason).await?;
-                let mut approved_opts = self.opts;
+                let mut approved_opts = self.opts.clone();
                 approved_opts.allow_history_replay = true;
                 self.stream_response(approved_opts).await
             }
@@ -920,6 +919,8 @@ impl<'h> Agent<'h> {
                 },
                 self.audience,
             ))),
+            identity: None,
+            tool_filter: self.tool_filter,
             local_tools: Arc::clone(&self.local_tools),
             active_skill_policy: self.active_skill_policy.clone(),
             live_sink: None,
@@ -1242,6 +1243,7 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
             }
             ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::File { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
     u32_from_usize_saturating(total)
