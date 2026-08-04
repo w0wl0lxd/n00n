@@ -540,18 +540,34 @@ mod tests {
 
     #[test]
     fn finish_compact_updates_history_before_metering() {
-        let compact_model = default_model();
-        let mut history = History::new(vec![Message::user("before".into())]);
+        smol::block_on(async {
+            let compact_model = default_model();
+            let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(MockProvider::new(
+                vec![Ok(text_response(StopReason::EndTurn))],
+            ));
+            let (event_tx, event_rx) = flume::unbounded();
+            let mut history = History::new(vec![Message::user("before".into())]);
 
-        let usage = finish_compact(
-            text_response(StopReason::EndTurn),
-            &mut history,
-            Instant::now(),
-            &compact_model,
-        );
+            compact(
+                &*provider,
+                &compact_model,
+                &mut history,
+                &EventSender::new(event_tx, 0),
+            )
+            .await
+            .expect("compact should succeed");
 
-        assert_eq!(usage, TokenUsage::default());
-        assert!(history.len() > 1);
+            let turn_complete: TurnCompleteEvent = event_rx
+                .try_iter()
+                .find_map(|envelope| match envelope.event {
+                    AgentEvent::TurnComplete(event) => Some(*event),
+                    _ => None,
+                })
+                .expect("TurnComplete event should be emitted");
+            assert!(matches!(turn_complete.message.role, Role::Assistant));
+            assert!(turn_complete.context_size.is_some());
+            assert!(history.len() > 1);
+        });
     }
 
     #[test]
