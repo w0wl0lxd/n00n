@@ -1048,7 +1048,8 @@ pub enum AgentEvent {
     },
     AutoCompacting,
     CompactionDone,
-    FusionPhaseChanged {
+    #[serde(rename = "FusionPhaseChanged")]
+    FusionPhase {
         phase: crate::fusion::FusionPhase,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
