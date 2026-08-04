@@ -10,8 +10,10 @@ use isahc::{HttpClient, Request};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
-use crate::providers::{DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, ResolvedAuth, trim_tool_description};
-use crate::types::{ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX};
+use crate::providers::ResolvedAuth;
+use crate::types::{
+    ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX, ThinkingFieldConfig,
+};
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
     RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
@@ -25,6 +27,8 @@ const PROMPT_CACHE_TTL: &str = "30m";
 const MAX_SAFETY_IDENTIFIER_CHARS: usize = 64;
 pub(super) const MODERATION_MODEL: &str = "omni-moderation-latest";
 const OPENAI_BUILTIN_ORIGIN: &str = "openai";
+const INPUT_FIELD: &str = "input";
+const REASONING_EFFORT_PATH: &str = "reasoning.effort";
 
 pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
     stream_timeout
@@ -99,9 +103,16 @@ pub(crate) fn build_body(
 
     // Reasoning effort with extended dialect for xhigh/max
     let extras = opts.thinking.extras();
-    if let Some(effort) = opts.thinking.effort_str(&dialect::OPENAI_EXTENDED, model) {
-        body["reasoning"]["effort"] = json!(effort);
-    }
+    let reasoning_fields = ThinkingFieldConfig {
+        effort_path: Some(REASONING_EFFORT_PATH.into()),
+        ..Default::default()
+    };
+    opts.thinking.apply_thinking(
+        &mut body,
+        model,
+        &dialect::OPENAI_EXTENDED,
+        &reasoning_fields,
+    );
 
     // Reasoning mode and context from extras
     if let Some(mode) = extras.reasoning_mode {
@@ -125,6 +136,7 @@ pub(crate) fn build_body(
         }
     }
 
+    super::super::apply_body_overrides(&mut body, model, &[INPUT_FIELD]);
     body
 }
 
@@ -447,15 +459,12 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
                     return Some(built_in);
                 }
                 // Regular function tool
-                let description = t.get("description").and_then(Value::as_str).map(|d| {
-                    trim_tool_description(d, DEFAULT_TOOL_DESCRIPTION_MAX_CHARS).into_owned()
-                })?;
                 Some(json!({
                     "type": "function",
                     "name": name,
-                    "description": description,
+                    "description": t.get("description")?,
                     "parameters": t.get("input_schema")?,
-                    "strict": t.get("strict").and_then(Value::as_bool) == Some(true),
+                    "strict": false,
                 }))
             })
             .collect(),

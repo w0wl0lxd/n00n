@@ -597,6 +597,9 @@ fn fallback_model() -> Model {
         pricing: ModelPricing::ZERO,
         max_output_tokens: None,
         context_window: FALLBACK_CONTEXT_WINDOW,
+        thinking_dialect: None,
+        thinking_fields: None,
+        body_override: None,
     }
 }
 

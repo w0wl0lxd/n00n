@@ -308,10 +308,15 @@ impl Provider for Zai {
                 opts.fast,
             );
             if model.supports_thinking() {
-                opts.thinking
-                    .apply_reasoning_effort(&mut body, &dialect::GLM, model);
+                opts.thinking.apply_thinking(
+                    &mut body,
+                    model,
+                    &dialect::GLM,
+                    &super::reasoning_effort_fields(),
+                );
             }
-            let response = match self
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
+            match self
                 .compat
                 .do_stream(model, &[], &body, event_tx, &auth)
                 .await
@@ -321,19 +326,13 @@ impl Provider for Zai {
                         && (message.contains("1113") || message.contains("nsufficien")) =>
                 {
                     warn!(status, "insufficient funds, bailing out");
-                    return Err(AgentError::Api {
+                    Err(AgentError::Api {
                         status: 402,
                         message,
-                    });
+                    })
                 }
-                result => result?,
-            };
-
-            self.compat
-                .emit_cache_health(&response.usage, event_tx)
-                .await;
-
-            Ok(response)
+                result => result,
+            }
         })
     }
 

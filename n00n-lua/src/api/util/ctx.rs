@@ -1,6 +1,9 @@
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue};
@@ -14,9 +17,19 @@ use n00n_config::{AgentConfig, ToolOutputLines};
 use crate::api::tool::ToolCallReply;
 use crate::api::ui::buf::BufHandle;
 use crate::api::util::convert::json_to_lua;
+use crate::api::util::state_convert::{
+    json_to_lua as state_json_to_lua, lua_to_json as state_lua_to_json,
+};
 use crate::runtime::{active_task, lock_cell};
+use crate::state::{PluginStateIdentity, PluginStateScope, PluginStateStore};
 
+const CONTEXT_INACTIVE_MSG: &str = "state context is no longer active";
 const DEADLINE_ALREADY_SET_MSG: &str = "ctx:set_deadline() already called";
+const INVALID_STATE_SCOPE_MSG: &str = "state scope must be 'session' or 'root'";
+
+fn parse_state_scope(scope: &str) -> Result<PluginStateScope, &'static str> {
+    PluginStateScope::parse(scope).ok_or(INVALID_STATE_SCOPE_MSG)
+}
 
 fn send_live_buf(lua: &mlua::Lua, buf: &mlua::AnyUserData) -> mlua::Result<()> {
     let shared = buf.borrow::<BufHandle>().map(|h| Arc::clone(&h.buf))?;
@@ -82,6 +95,14 @@ pub(crate) struct LuaCtx {
     pub(crate) cancel: CancelToken,
     tool_output_lines: ToolOutputLines,
     pub(crate) finish_tx: Option<flume::Sender<ToolCallReply>>,
+    active: Arc<AtomicBool>,
+    plugin_state: Option<PluginStateAccess>,
+}
+
+struct PluginStateAccess {
+    plugin: Arc<str>,
+    identity: PluginStateIdentity,
+    store: Arc<PluginStateStore>,
 }
 
 enum Caps {
@@ -110,6 +131,8 @@ impl LuaCtx {
             cancel: ctx.cancel.clone(),
             tool_output_lines: ctx.tool_output_lines,
             finish_tx: None,
+            active: Arc::new(AtomicBool::new(true)),
+            plugin_state: None,
         }
     }
 
@@ -143,6 +166,8 @@ impl LuaCtx {
             cancel: CancelToken::none(),
             tool_output_lines,
             finish_tx: None,
+            active: Arc::new(AtomicBool::new(true)),
+            plugin_state: None,
         }
     }
 
@@ -207,6 +232,62 @@ impl LuaCtx {
         }
     }
 
+    pub(crate) fn attach_plugin_state(&mut self, plugin: Arc<str>, store: Arc<PluginStateStore>) {
+        self.plugin_state = self
+            .agent()
+            .and_then(|agent| agent.identity.as_ref())
+            .map(PluginStateIdentity::from)
+            .map(|identity| PluginStateAccess {
+                plugin,
+                identity,
+                store,
+            });
+    }
+
+    pub(crate) fn context_liveness(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.active)
+    }
+
+    fn ensure_active(&self) -> Result<(), String> {
+        if self.active.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(CONTEXT_INACTIVE_MSG.to_owned())
+        }
+    }
+
+    fn inactive_pair(&self) -> Option<(LuaValue, Option<String>)> {
+        self.ensure_active()
+            .err()
+            .map(|error| (LuaValue::Nil, Some(error)))
+    }
+
+    pub(crate) fn plugin_state_store(&self) -> Result<Arc<PluginStateStore>, String> {
+        self.plugin_state("n00n.agent.session")
+            .map(|access| Arc::clone(&access.store))
+    }
+
+    pub(crate) fn dispatch_agent(&self, method: &str) -> Result<&AgentContext, String> {
+        let agent = self
+            .agent()
+            .ok_or_else(|| self.cap_err(&format!("n00n.agent.{method}")))?;
+        self.ensure_active()?;
+        Ok(agent)
+    }
+
+    fn plugin_state(&self, method: &str) -> Result<&PluginStateAccess, String> {
+        if !matches!(self.caps, Caps::Handler { .. }) {
+            return Err(self.cap_err(method));
+        }
+
+        let access = self
+            .plugin_state
+            .as_ref()
+            .ok_or_else(|| "session identity is unavailable".to_owned())?;
+        self.ensure_active()?;
+        Ok(access)
+    }
+
     pub(crate) fn cap_err(&self, method: &str) -> String {
         format!("{method} not available in {} ctx", self.kind())
     }
@@ -219,9 +300,15 @@ impl LuaCtx {
 #[allow(clippy::too_many_lines)]
 impl UserData for LuaCtx {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("cancelled", |_, this, ()| Ok(this.cancel.is_cancelled()));
+        methods.add_method("cancelled", |_, this, ()| {
+            this.ensure_active().map_err(mlua::Error::runtime)?;
+            Ok(this.cancel.is_cancelled())
+        });
 
         methods.add_method("workflow", |_, this, ()| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             let Some(workflow) = this.workflow() else {
                 return Ok(this.cap_err_pair("workflow"));
             };
@@ -230,6 +317,9 @@ impl UserData for LuaCtx {
 
         methods.add_method("audience", |lua, this, ()| {
             const DEFAULT_AUDIENCE: &str = "main";
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             let Some(audience) = this.audience() else {
                 return Ok(this.cap_err_pair("audience"));
             };
@@ -238,6 +328,9 @@ impl UserData for LuaCtx {
         });
 
         methods.add_method("live_buf", |lua, this, buf: mlua::AnyUserData| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             if matches!(this.caps, Caps::Restore { .. }) {
                 return Ok(this.cap_err_pair("live_buf"));
             }
@@ -246,6 +339,9 @@ impl UserData for LuaCtx {
         });
 
         methods.add_method("config", |lua, this, args: MultiValue| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             let Some(config) = this.config() else {
                 return Ok(this.cap_err_pair("config"));
             };
@@ -270,15 +366,96 @@ impl UserData for LuaCtx {
         });
 
         methods.add_method("tool_output_lines", |lua, this, ()| {
+            this.ensure_active().map_err(mlua::Error::runtime)?;
             lua.to_value(&this.tool_output_lines)
         });
 
-        methods.add_method("state", |lua, this, ()| match this.state() {
-            Some(v) => json_to_lua(lua, v),
-            None => Ok(LuaValue::Nil),
+        methods.add_method("state", |lua, this, ()| {
+            this.ensure_active().map_err(mlua::Error::runtime)?;
+            match this.state() {
+                Some(v) => json_to_lua(lua, v),
+                None => Ok(LuaValue::Nil),
+            }
+        });
+        methods.add_method("state_get", |lua, this, scope: String| {
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
+            };
+            let access = match this.plugin_state("state_get") {
+                Ok(access) => access,
+                Err(error) => return Ok((LuaValue::Nil, Some(error))),
+            };
+            let Some(value) = access.store.get(&access.plugin, scope, &access.identity) else {
+                return Ok((LuaValue::Nil, None));
+            };
+            match state_json_to_lua(lua, &value) {
+                Ok(value) => Ok((value, None)),
+                Err(error) => Ok((LuaValue::Nil, Some(error.to_string()))),
+            }
+        });
+
+        methods.add_method(
+            "state_replace",
+            |lua, this, (scope, value): (String, LuaValue)| {
+                let scope = match parse_state_scope(&scope) {
+                    Ok(scope) => scope,
+                    Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
+                };
+                let access = match this.plugin_state("state_replace") {
+                    Ok(access) => access,
+                    Err(error) => return Ok((LuaValue::Nil, Some(error))),
+                };
+                let value = match state_lua_to_json(lua, &value) {
+                    Ok(value) => value,
+                    Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
+                };
+                let previous =
+                    match access
+                        .store
+                        .replace(&access.plugin, scope, &access.identity, value)
+                    {
+                        Ok(previous) => previous,
+                        Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
+                    };
+                let previous = match previous {
+                    Some(previous) => match state_json_to_lua(lua, &previous) {
+                        Ok(previous) => previous,
+                        Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
+                    },
+                    None => LuaValue::Nil,
+                };
+                Ok((previous, None))
+            },
+        );
+
+        methods.add_method("state_remove", |lua, this, scope: String| {
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
+            };
+            let access = match this.plugin_state("state_remove") {
+                Ok(access) => access,
+                Err(error) => return Ok((LuaValue::Nil, Some(error))),
+            };
+            let previous = match access.store.remove(&access.plugin, scope, &access.identity) {
+                Ok(previous) => previous,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
+            };
+            let previous = match previous {
+                Some(previous) => match state_json_to_lua(lua, &previous) {
+                    Ok(previous) => previous,
+                    Err(error) => return Ok((LuaValue::Nil, Some(error.to_string()))),
+                },
+                None => LuaValue::Nil,
+            };
+            Ok((previous, None))
         });
 
         methods.add_method("set_deadline", |lua, this, secs: Option<u64>| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             if !matches!(this.caps, Caps::Handler { .. }) {
                 return Ok(this.cap_err_pair("set_deadline"));
             }
@@ -301,6 +478,9 @@ impl UserData for LuaCtx {
         });
 
         methods.add_method("record_read", |_, this, path: String| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             let Some(tracker) = this.file_tracker() else {
                 return Ok(this.cap_err_pair("record_read"));
             };
@@ -309,6 +489,9 @@ impl UserData for LuaCtx {
         });
 
         methods.add_method("check_before_edit", |_, this, path: String| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             let Some(tracker) = this.file_tracker() else {
                 return Ok(this.cap_err_pair("check_before_edit"));
             };
@@ -321,6 +504,9 @@ impl UserData for LuaCtx {
         methods.add_async_method(
             "find_instructions",
             |lua, this, dir_path: String| async move {
+                if let Some(error) = this.inactive_pair() {
+                    return Ok(error);
+                }
                 let Some(loaded) = this.loaded_instructions().cloned() else {
                     return Ok(this.cap_err_pair("find_instructions"));
                 };
@@ -350,6 +536,9 @@ impl UserData for LuaCtx {
         });
 
         methods.add_method_mut("finish", |lua, this, val: LuaValue| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
             if !matches!(this.caps, Caps::Handler { .. }) {
                 return Ok(this.cap_err_pair("finish"));
             }
