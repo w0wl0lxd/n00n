@@ -723,7 +723,12 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    if let Ok(Some(op)) = parse_kv_server_message(&payload) {
+    let bad_frame = |message| AgentError::Api {
+        status: 502,
+        message,
+    };
+
+    if let Some(op) = parse_kv_server_message(&payload).map_err(bad_frame)? {
         queue_checkpoint_reply(op, checkpoints, outbound)?;
         return Ok(FrameHandleOutcome {
             exec_skipped: false,
@@ -731,7 +736,7 @@ fn handle_data_frame(
             kv_op: true,
         });
     }
-    if let Ok(true) = has_exec_server_message(&payload) {
+    if has_exec_server_message(&payload).map_err(bad_frame)? {
         // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
         // Aborting the whole turn drops text deltas that often follow.
         return Ok(FrameHandleOutcome {
@@ -741,16 +746,12 @@ fn handle_data_frame(
         });
     }
     let mut deltas = 0u32;
-    if let Ok(text_deltas) = extract_text_deltas(&payload) {
-        for delta in text_deltas {
-            text.push_str(&delta);
-            deltas = deltas.saturating_add(1);
-        }
+    for delta in extract_text_deltas(&payload).map_err(bad_frame)? {
+        text.push_str(&delta);
+        deltas = deltas.saturating_add(1);
     }
-    if let Ok(thinking_deltas) = extract_thinking_deltas(&payload) {
-        for delta in thinking_deltas {
-            thinking.push_str(&delta);
-        }
+    for delta in extract_thinking_deltas(&payload).map_err(bad_frame)? {
+        thinking.push_str(&delta);
     }
     Ok(FrameHandleOutcome {
         exec_skipped: false,
@@ -842,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_data_frame_ignores_unknown_wire_type_three_payload() {
+    fn handle_data_frame_rejects_unknown_wire_type_three_payload() {
         let frame = ConnectFrame {
             end_stream: false,
             compressed: false,
@@ -853,14 +854,12 @@ mod tests {
         let mut text = String::new();
         let mut thinking = String::new();
 
-        let outcome = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
-            .expect("unknown protobuf variants should be ignored");
+        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
+        else {
+            panic!("unknown protobuf wire types must fail the frame");
+        };
 
-        assert!(text.is_empty());
-        assert!(thinking.is_empty());
-        assert!(!outcome.exec_skipped);
-        assert_eq!(outcome.text_deltas, 0);
-        assert!(!outcome.kv_op);
+        assert!(error.to_string().contains("wire type 3"));
     }
 
     #[test]
