@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785848696962,
+  "lastUpdate": 1785876065685,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -14143,6 +14143,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 112231,
             "range": "± 3354",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b3bc68606f1f5e5859617b3244d542aa93ce982",
+          "message": "fix(cleanup): fix workflow-script-diagnostics dirty follow-up (#316)\n\n* fix(cleanup): fix workflow-script-diagnostics dirty follow-up\n\n* docs: regenerate tool docs\n\n* test(docgen): bump tool definition byte budget for new tools\n\n* chore: add changelog fragment\n\n* test(docgen): raise tool definition byte budget for new tools",
+          "timestamp": "2026-08-04T20:19:13Z",
+          "tree_id": "d6329832ed944f463e88f98e525ccc877f8c3e32",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/1b3bc68606f1f5e5859617b3244d542aa93ce982"
+        },
+        "date": 1785876063785,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6628733,
+            "range": "± 86431",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2226717,
+            "range": "± 19758",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2254120,
+            "range": "± 85186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8206415,
+            "range": "± 40916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4323241,
+            "range": "± 85124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4331679,
+            "range": "± 31861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 579585,
+            "range": "± 1912",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192203,
+            "range": "± 586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191894,
+            "range": "± 623",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1047758,
+            "range": "± 17667",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582678,
+            "range": "± 1397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581913,
+            "range": "± 1629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 61270,
+            "range": "± 8574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 128212,
+            "range": "± 27285",
             "unit": "ns/iter"
           }
         ]
