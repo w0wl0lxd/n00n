@@ -8,6 +8,7 @@ use std::str::FromStr;
 use tracing::debug;
 
 use n00n_storage::paths;
+use n00n_storage::sessions::{BodyOverride, EffortDialectId, ThinkingFieldConfig};
 
 const PROVIDERS_FILE: &str = "providers.toml";
 const BAD_CONFIG_EXIT_CODE: i32 = 2;
@@ -52,6 +53,18 @@ pub struct ModelDef {
     pub pricing_fast_input: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing_fast_output: Option<f64>,
+    /// Effort dialect override. `None` keeps the base provider's dialect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_dialect: Option<EffortDialectId>,
+    /// Request-body layout override for thinking values. `None` keeps the base
+    /// provider's hardcoded layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_fields: Option<ThinkingFieldConfig>,
+    /// Body overrides applied after thinking setup: `defaults` fills absent
+    /// keys, `replace` overwrites, `filter` strips. Each provider guards its
+    /// conversation field from all three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_override: Option<BodyOverride>,
 }
 
 impl ModelDef {
@@ -414,6 +427,37 @@ tier = "mediums"
     fn model_def_tier_defaults_to_medium() {
         let m: ModelDef = toml::from_str(r#"id = "x""#).unwrap();
         assert_eq!(m.tier, Tier::Medium);
+    }
+
+    const THINKING_MODEL_TOML: &str = r#"id = "my-model"
+tier = "strong"
+thinking_dialect = "glm"
+thinking_fields = { effort_path = "reasoning.effort" }
+body_override = { defaults = { chat_template_kwargs = { enable_thinking = true } }, filter = ["context_management"] }
+"#;
+
+    #[test]
+    fn model_def_parses_thinking_and_body_override() {
+        let m: ModelDef = toml::from_str(THINKING_MODEL_TOML).unwrap();
+        assert_eq!(m.thinking_dialect, Some(EffortDialectId::Glm));
+        assert_eq!(
+            m.thinking_fields.unwrap().effort_path.as_deref(),
+            Some("reasoning.effort")
+        );
+        let body_override = m.body_override.unwrap();
+        assert_eq!(
+            body_override.defaults.unwrap()["chat_template_kwargs"]["enable_thinking"],
+            true
+        );
+        assert_eq!(body_override.filter, vec!["context_management".to_string()]);
+    }
+
+    #[test]
+    fn model_def_thinking_fields_default_to_none() {
+        let m: ModelDef = toml::from_str(r#"id = "x""#).unwrap();
+        assert!(m.thinking_dialect.is_none());
+        assert!(m.thinking_fields.is_none());
+        assert!(m.body_override.is_none());
     }
 
     #[test_case("weak", Tier::Weak ; "weak")]

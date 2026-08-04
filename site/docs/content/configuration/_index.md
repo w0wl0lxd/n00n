@@ -114,8 +114,10 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable Fusion dual-lane routing (lead + sidekick) for this session |
-| `sidekick_tier` | string | - | Model tier for the sidekick lane (e.g. "haiku", "sonnet", "opus") |
+| `enabled` | bool | `false` | Enable beta Fusion planning, sidekick execution, and lead review for this session |
+| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |
+
+Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. `sidekick_tier` selects a conservative sidekick model. Optional `plugins.fusion.auto_tier` lets trusted configuration choose the tier from the brief.
 
 ### `provider`
 
@@ -189,7 +191,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `auto_tier` | boolean | `true` | - | Route sidekick tier from the brief. |
+| `auto_tier` | boolean | `true` | - | Allow trusted configuration to route the sidekick tier. |
 | `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`
@@ -242,6 +244,14 @@ n00n.setup({
 | `auto_tier` | boolean | `false` | - | Route each subagent's model tier from its prompt (opt-in, off by default). |
 | `max_concurrent` | integer | `4` | 1 | Concurrent subagents (hard max 8). |
 
+### `plugins.tmux`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+| `timeout_secs` | integer | `30` | 1 | Kill the tmux command after this many seconds. |
+
 ### `plugins.webfetch`
 
 | Field | Type | Default | Min | Description |
@@ -265,7 +275,7 @@ n00n.setup({
 | `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (default 24, no hard maximum). |
 | `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (default 4, hard max 8). |
 | `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (default 2, hard max 4). |
-| `timeout_secs` | integer | `600` | 1 | Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog). |
+| `timeout_secs` | integer | `600` | 60 | Maximum deadline for one workflow run; per-run timeout_secs may only shorten it. |
 
 ## Validation
 

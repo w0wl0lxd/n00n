@@ -49,9 +49,10 @@ fn default_handler_type() -> String {
 }
 
 fn default_timeout() -> u64 {
-    // 30 seconds is a reasonable default for compaction hooks; they should
-    // be fast, and a stuck hook blocks the conversation.
-    30
+    // 60 seconds is the default for compaction hooks: they are often I/O bound
+    // (e.g. git diff or file scans) and only warn on timeout, so a slightly
+    // longer default avoids missing side-effect-only snapshots on large repos.
+    60
 }
 
 #[derive(Debug, Deserialize)]
@@ -453,6 +454,13 @@ pub async fn run_precompact_hooks(
                 Err(e) => {
                     if e.to_string().contains("compaction hook command not found:") {
                         debug!(hook = %handler.command, "PreCompact hook command not found; skipping");
+                    } else if e.to_string().contains("hook command timed out after") {
+                        warn!(
+                            hook = %handler.command,
+                            timeout = handler.timeout,
+                            error = %e,
+                            "PreCompact hook timed out; continuing without snapshot. Set a larger `timeout` in the hooks settings if this is expected."
+                        );
                     } else {
                         warn!(hook = %handler.command, error = %e, "PreCompact hook failed");
                     }
@@ -677,8 +685,8 @@ mod tests {
     }
 
     #[test]
-    fn default_timeout_is_30_seconds() {
-        assert_eq!(default_timeout(), 30);
+    fn default_timeout_is_60_seconds() {
+        assert_eq!(default_timeout(), 60);
     }
 
     #[test]
