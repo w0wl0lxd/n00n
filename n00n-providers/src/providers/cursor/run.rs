@@ -908,6 +908,45 @@ mod tests {
     }
 
     #[test]
+    fn handle_data_frame_ignores_non_protobuf_end_stream() {
+        let frame = ConnectFrame {
+            end_stream: true,
+            compressed: false,
+            payload: b"{}".to_vec(),
+        };
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let outcome =
+            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
+        assert!(!outcome.exec_skipped);
+        assert_eq!(outcome.text_deltas, 0);
+        assert!(text.is_empty());
+        assert!(thinking.is_empty());
+    }
+
+    #[test]
+    fn handle_data_frame_rejects_corrupt_compression() {
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: true,
+            payload: b"not-gzip".to_vec(),
+        };
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = String::new();
+        let mut thinking = String::new();
+
+        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
+        else {
+            panic!("corrupt compression must fail");
+        };
+
+        assert!(matches!(error, AgentError::Api { status: 502, .. }));
+    }
+
+    #[test]
     fn paced_body_flushes_outbound_during_pace_wait() {
         smol::block_on(async {
             let frame = encode_frame(0, b"a").expect("frame");

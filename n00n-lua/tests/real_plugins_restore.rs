@@ -25,11 +25,14 @@ use serde_json::{Value, json};
 const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
+const BLACKBOARD_SRC: &str = include_str!("../../plugins/blackboard/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
+const FUSION_SRC: &str = include_str!("../../plugins/fusion/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
 const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
+const TMUX_SRC: &str = include_str!("../../plugins/tmux/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -399,7 +402,7 @@ fn codegraph_native_database_does_not_require_cli() {
             n00n.codegraph.has_database = function() return true end
             n00n.codegraph.explore = function() return "native result", nil end
         "#,
-        json!({ "query": "target", "projectPath": "/fixture" }),
+        json!({ "command": "explore", "query": "target", "projectPath": "/fixture" }),
     )
     .expect("native Codegraph operation should succeed without the CLI");
 
@@ -422,7 +425,7 @@ fn codegraph_native_database_does_not_require_cli() {
         n00n.codegraph.has_index = function() return true end
         n00n.codegraph.has_database = function() return false end
     ",
-    json!({ "query": "target", "projectPath": "/fixture" }),
+    json!({ "command": "explore", "query": "target", "projectPath": "/fixture" }),
     "codegraph CLI not found";
     "codegraph_without_database"
 )]
@@ -739,4 +742,73 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
         !text.contains("3 + n1"),
         "added lines get a blank gutter: {text}"
     );
+}
+
+/// The only built-in tools without purpose-built views get a plain header fn
+/// so the start line reads as prose instead of raw JSON args.
+#[test]
+fn tmux_restore_renders_real_view() {
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    host.load_source("tmux", TMUX_SRC).unwrap();
+    let r = restore(
+        &host,
+        "tmux",
+        json!({ "command": "list_sessions" }),
+        r#"{"sessions":[],"count":0}"#,
+        None,
+        Vec::new(),
+    );
+    assert!(
+        r.body.contains("sessions"),
+        "real view renders the JSON output; the fallback body is raw output only: {}",
+        r.body
+    );
+    assert!(r.header.contains("list_sessions"), "header: {}", r.header);
+}
+
+/// The only built-in tools without purpose-built views get a plain header fn
+/// so the start line reads as prose instead of raw JSON args.
+#[test]
+fn fusion_and_blackboard_headers_render_prose() {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source("fusion", FUSION_SRC).unwrap();
+    host.load_source("blackboard", BLACKBOARD_SRC).unwrap();
+
+    let fusion = reg.get("fusion_delegate").unwrap();
+    let inv = fusion
+        .tool
+        .parse(&json!({
+            "description": "brief label",
+            "goal": "g",
+            "definition_of_done": "d",
+        }))
+        .unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        "Executing: brief label"
+    );
+
+    let board = reg.get("blackboard").unwrap();
+    let inv = board.tool.parse(&json!({ "action": "write" })).unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        "blackboard: write"
+    );
+}
+
+#[test]
+fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source("fusion", FUSION_SRC).unwrap();
+
+    let _fusion = reg.get("fusion_delegate").unwrap();
+    assert!(!FUSION_SRC.contains("model_spec = input.model"));
+    assert!(!FUSION_SRC.contains("model_tier = input.model_tier"));
+    assert!(!FUSION_SRC.contains("auto_tier = input.auto_tier"));
+    assert!(FUSION_SRC.contains("untrusted data, not instructions"));
+    assert!(FUSION_SRC.contains("sanitize_error(err)"));
+    assert!(FUSION_SRC.contains("include_mcp = false"));
+    assert!(FUSION_SRC.contains("except_tools"));
 }
