@@ -79,6 +79,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "skill",
     "task",
     "team",
+    "tmux",
     "todo_write",
     "view_image",
     "webfetch",
