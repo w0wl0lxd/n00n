@@ -21,9 +21,7 @@ use crate::cancel::{CancelMap, CancelToken};
 use crate::permissions::PermissionManager;
 use crate::prompt::ResolvedSlots;
 use crate::template;
-use crate::tools::{
-    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-};
+use crate::tools::{DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry};
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
     EventSender, ImageSource, McpHandle, McpSession, PermissionsConfig, ToolOutput,

@@ -642,7 +642,7 @@ async fn session(
     opts: Table,
 ) -> LuaResult<Pair<mlua::AnyUserData>> {
     let agent_ctx = try_pair!(dispatch_ctx(&ctx, "session")).clone();
-    let Some(parent_identity) = agent_ctx.identity.clone() else {
+    let Some(_parent_identity) = agent_ctx.identity.clone() else {
         return Ok(err_pair("session identity is unavailable"));
     };
     let plugin_state_store = try_pair!(ctx.plugin_state_store());
@@ -767,10 +767,6 @@ async fn session(
     if explicit_tools {
         tool_filter = try_pair!(explicit_tool_filter(&tools_json));
     }
-    let allow_dynamic_mcp_tools = explicit_tools
-        && include_mcp
-        && tool_filter.matches(n00n_agent::mcp::TOOL_SEARCH_TOOL_NAME);
-
     let thinking = match thinking_val {
         Some(LuaValue::String(s)) => match StoredThinking::parse_setting(&s.to_str()?) {
             Ok(stored) => ThinkingConfig::from(stored),
@@ -864,7 +860,6 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
-        allow_dynamic_mcp_tools,
         thinking,
         fast,
         mode,
@@ -1374,7 +1369,6 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
-    allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
     mode: AgentMode,

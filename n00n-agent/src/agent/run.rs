@@ -54,12 +54,6 @@ const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
 
-const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
-const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
-const AMBIGUOUS_REPLAY_RESET_MESSAGE: &str = "Resetting partial output before approved replay";
-const HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "History replay approval channel closed";
-const AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "Ambiguous replay approval channel closed";
-
 fn filter_fusion_delegate(
     tools: &mut Value,
     visible: bool,
@@ -1242,8 +1236,7 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
                 count_tokens_with_tokenizer(tokenizer, content)
             }
             ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
-            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
-            ContentBlock::File { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::Image { .. } | ContentBlock::File { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
     u32_from_usize_saturating(total)
