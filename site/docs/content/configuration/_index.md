@@ -244,6 +244,14 @@ n00n.setup({
 | `auto_tier` | boolean | `false` | - | Route each subagent's model tier from its prompt (opt-in, off by default). |
 | `max_concurrent` | integer | `4` | 1 | Concurrent subagents (hard max 8). |
 
+### `plugins.tmux`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+| `timeout_secs` | integer | `30` | 1 | Kill the tmux command after this many seconds. |
+
 ### `plugins.webfetch`
 
 | Field | Type | Default | Min | Description |
