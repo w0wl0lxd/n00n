@@ -4995,13 +4995,17 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
     let n00n_lua::UiAction::Session {
-        caller: _,
+        caller,
         req,
         reply_tx,
     } = action
     else {
         panic!("expected Team session prompt");
     };
+    assert!(
+        caller.is_some(),
+        "team tool must carry the invoking session"
+    );
     let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
         panic!("expected a prompt request");
     };
@@ -5044,13 +5048,17 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
     let n00n_lua::UiAction::Session {
-        caller: _,
+        caller,
         req,
         reply_tx,
     } = action
     else {
         panic!("expected Team session prompt");
     };
+    assert!(
+        caller.is_some(),
+        "team tool must carry the invoking session"
+    );
     let n00n_lua::SessionRequest::Prompt { id, text, .. } = req else {
         panic!("expected a prompt request");
     };

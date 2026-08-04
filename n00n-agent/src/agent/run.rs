@@ -896,7 +896,7 @@ impl<'h> Agent<'h> {
             opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             registry: Arc::clone(&self.registry),
-            delegation_policy: self.delegation_policy,
+            delegation_policy: self.delegation_policy.clone(),
             workflow: self.workflow,
             audience: self.audience,
             tool_filter: self.effective_tool_filter(),

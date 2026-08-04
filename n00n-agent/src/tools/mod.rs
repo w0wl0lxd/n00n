@@ -300,7 +300,7 @@ pub fn timeout_annotation(secs: u64) -> String {
 pub type LocalToolFn = Arc<dyn Fn(&Value) -> Result<String, String> + Send + Sync>;
 pub type LocalTools = Arc<HashMap<String, LocalToolFn>>;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum DelegationPolicy {
     #[default]
     Configured,

@@ -2240,8 +2240,18 @@ struct ZstHeader {
 struct MetaScan {
     title: String,
     updated_at: u64,
-    #[serde(default, flatten)]
-    meta: SessionMeta,
+    #[serde(default)]
+    root_id: Option<n00nId>,
+    #[serde(default)]
+    lifecycle: SessionLifecycle,
+}
+
+struct ScannedMeta {
+    title: String,
+    updated_at: u64,
+    first_message: Option<String>,
+    root_id: Option<n00nId>,
+    lifecycle: SessionLifecycle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2396,16 +2406,7 @@ fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
     }
 }
 
-fn try_decode_last_meta_at<M>(
-    path: &Path,
-    offset: u64,
-) -> Option<(
-    String,
-    u64,
-    Option<String>,
-    Option<n00nId>,
-    SessionLifecycle,
-)>
+fn try_decode_last_meta_at<M>(path: &Path, offset: u64) -> Option<ScannedMeta>
 where
     M: TitleSource + DeserializeOwned + Default,
 {
@@ -2435,13 +2436,14 @@ where
             && let Ok(MetaScan {
                 title: t,
                 updated_at: u,
-                meta,
+                root_id: r,
+                lifecycle: l,
             }) = serde_json::from_str(trimmed)
         {
             title = t;
             updated_at = u;
-            root_id = meta.root_id;
-            lifecycle = meta.lifecycle;
+            root_id = r;
+            lifecycle = l;
         }
         if offset == 0
             && first_message.is_none()
@@ -2457,7 +2459,13 @@ where
     if updated_at == 0 && title.is_empty() {
         return None;
     }
-    Some((title, updated_at, first_message, root_id, lifecycle))
+    Some(ScannedMeta {
+        title,
+        updated_at,
+        first_message,
+        root_id,
+        lifecycle,
+    })
 }
 
 fn try_decode_first_message_at<M>(path: &Path, offset: u64) -> Option<String>
@@ -2493,15 +2501,7 @@ where
     }
 }
 
-fn find_last_frame_meta<M>(
-    path: &Path,
-) -> Option<(
-    String,
-    u64,
-    Option<String>,
-    Option<n00nId>,
-    SessionLifecycle,
-)>
+fn find_last_frame_meta<M>(path: &Path) -> Option<ScannedMeta>
 where
     M: TitleSource + DeserializeOwned + Default,
 {
@@ -2558,42 +2558,53 @@ where
         return None;
     }
 
-    let (meta_title, updated_at, first_message, root_id, lifecycle) =
-        find_last_frame_meta::<M>(path).unwrap_or_else(|| {
-            let mut title = String::new();
-            let mut updated_at = 0u64;
-            let mut first_message = None;
-            let mut root_id = None;
-            let mut lifecycle = SessionLifecycle::Idle;
-            let _ = visit_zstd_lines(path, |line| {
-                if !line.is_empty() {
-                    if line.starts_with(META_RECORD_PREFIX)
-                        && let Ok(MetaScan {
-                            title: t,
-                            updated_at: u,
-                            meta,
-                        }) = serde_json::from_str(line)
-                    {
-                        title = t;
-                        updated_at = u;
-                        root_id = meta.root_id;
-                        lifecycle = meta.lifecycle;
-                    }
-                    if first_message.is_none()
-                        && line.starts_with(MSG_RECORD_PREFIX)
-                        && line.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
-                        && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
-                            serde_json::from_str(line)
-                        && let Some(text) =
-                            d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
-                    {
-                        first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
-                    }
+    let ScannedMeta {
+        title: meta_title,
+        updated_at,
+        first_message,
+        root_id,
+        lifecycle,
+    } = find_last_frame_meta::<M>(path).unwrap_or_else(|| {
+        let mut title = String::new();
+        let mut updated_at = 0u64;
+        let mut first_message = None;
+        let mut root_id = None;
+        let mut lifecycle = SessionLifecycle::Idle;
+        let _ = visit_zstd_lines(path, |line| {
+            if !line.is_empty() {
+                if line.starts_with(META_RECORD_PREFIX)
+                    && let Ok(MetaScan {
+                        title: t,
+                        updated_at: u,
+                        root_id: r,
+                        lifecycle: l,
+                    }) = serde_json::from_str(line)
+                {
+                    title = t;
+                    updated_at = u;
+                    root_id = r;
+                    lifecycle = l;
                 }
-                Ok(())
-            });
-            (title, updated_at, first_message, root_id, lifecycle)
+                if first_message.is_none()
+                    && line.starts_with(MSG_RECORD_PREFIX)
+                    && line.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
+                    && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
+                        serde_json::from_str(line)
+                    && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
+                {
+                    first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+                }
+            }
+            Ok(())
         });
+        ScannedMeta {
+            title,
+            updated_at,
+            first_message,
+            root_id,
+            lifecycle,
+        }
+    });
 
     let first_message = first_message.or_else(|| try_decode_first_message_at::<M>(path, 0));
 
@@ -4554,6 +4565,12 @@ mod tests {
         assert_eq!(summaries[0].parent_id, Some(parent_id));
         assert_eq!(summaries[0].root_id, Some(root_id));
         assert_eq!(summaries[0].lifecycle, SessionLifecycle::Paused);
+
+        let cached_summaries = TestSession::list_in("/project", temp.path()).unwrap();
+        assert_eq!(cached_summaries.len(), 1);
+        assert_eq!(cached_summaries[0].parent_id, Some(parent_id));
+        assert_eq!(cached_summaries[0].root_id, Some(root_id));
+        assert_eq!(cached_summaries[0].lifecycle, SessionLifecycle::Paused);
     }
 
     #[test]
@@ -4568,5 +4585,17 @@ mod tests {
         let encoded = serde_json::to_string(&meta).unwrap();
         let decoded: SessionMeta = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.lifecycle, SessionLifecycle::Failed);
+
+        let idle_meta = SessionMeta {
+            lifecycle: SessionLifecycle::Idle,
+            ..SessionMeta::default()
+        };
+        let idle_encoded = serde_json::to_string(&idle_meta).unwrap();
+        assert!(
+            !idle_encoded.contains("lifecycle"),
+            "Idle lifecycle should be omitted"
+        );
+        let idle_decoded: SessionMeta = serde_json::from_str(&idle_encoded).unwrap();
+        assert_eq!(idle_decoded.lifecycle, SessionLifecycle::Idle);
     }
 }

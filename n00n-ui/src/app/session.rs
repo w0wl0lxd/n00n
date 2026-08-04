@@ -24,6 +24,17 @@ use super::session_state::{SessionState, stored_to_rules};
 use super::{App, Mode, PendingInput, PlanState};
 use crate::agent::{Delivery, QueuedMessage};
 
+/// Validates that a team tool output represents a paused run.
+pub(crate) fn is_paused_team_output(output: &str) -> bool {
+    serde_json::from_str::<Value>(output).is_ok_and(|value| {
+        value.get("paused").and_then(Value::as_bool) == Some(true)
+            && value
+                .get("run_id")
+                .and_then(Value::as_str)
+                .is_some_and(|run_id| !run_id.is_empty())
+    })
+}
+
 /// The single content predicate: `App::save_session` persists a session
 /// iff this holds, and the shutdown path reuses it to tell which tabs were
 /// saved, so the report and the disk can never disagree. Sync the session
@@ -59,12 +70,7 @@ pub(crate) fn paused_team_run(history: &[Message]) -> Option<Value> {
                 continue;
             }
         };
-        let paused = payload.get("paused").and_then(Value::as_bool) == Some(true);
-        let has_run_id = payload
-            .get("run_id")
-            .and_then(Value::as_str)
-            .is_some_and(|run_id| !run_id.is_empty());
-        if paused && has_run_id {
+        if is_paused_team_output(content) {
             return Some(payload);
         }
     }

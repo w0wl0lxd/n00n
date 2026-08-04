@@ -30,8 +30,7 @@ use tracing::{error, warn};
 use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
 use super::shared_queue::{QueueItem, QueueReceiver};
-
-const TEAM_TOOL_NAME: &str = "team";
+use crate::app::session::{TEAM_TOOL_NAME, is_paused_team_output};
 
 fn build_plan_path<'a>(
     mode: &n00n_agent::AgentMode,
@@ -40,16 +39,6 @@ fn build_plan_path<'a>(
     matches!(mode, n00n_agent::AgentMode::Build)
         .then_some(plan_path)
         .flatten()
-}
-
-fn is_paused_team_output(output: &str) -> bool {
-    serde_json::from_str::<Value>(output).is_ok_and(|value| {
-        value.get("paused").and_then(Value::as_bool) == Some(true)
-            && value
-                .get("run_id")
-                .and_then(Value::as_str)
-                .is_some_and(|run_id| !run_id.is_empty())
-    })
 }
 
 pub(super) struct AgentLoop {
@@ -652,7 +641,8 @@ mod tests {
 
     use n00n_agent::AgentMode;
 
-    use super::{build_plan_path, is_paused_team_output};
+    use super::build_plan_path;
+    use crate::app::session::is_paused_team_output;
 
     #[test]
     fn paused_team_output_requires_flag_and_run_id() {
