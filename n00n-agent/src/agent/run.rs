@@ -856,7 +856,11 @@ impl<'h> Agent<'h> {
         // Always include tool_search when MCP is present so agents with
         // ToolFilter::Only can still discover and run MCP tools via search.
         let mut filter = self.tool_filter.clone();
-        if !filter.matches(crate::mcp::TOOL_SEARCH_TOOL_NAME) {
+        if crate::tools::is_tool_enabled(
+            &self.config.disabled_tools,
+            crate::mcp::TOOL_SEARCH_TOOL_NAME,
+        ) && !filter.matches(crate::mcp::TOOL_SEARCH_TOOL_NAME)
+        {
             filter = filter.including([crate::mcp::TOOL_SEARCH_TOOL_NAME.to_string()]);
         }
         if !self.allow_dynamic_mcp_tools {
@@ -1458,6 +1462,22 @@ mod tests {
         assert!(effective_filter.matches("read"));
         assert!(!effective_filter.matches("write"));
         assert!(!effective_filter.matches("srv__fetch_issue"));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_keeps_disabled_tool_search_blocked() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        let mut config = (*agent.config).clone();
+        config
+            .disabled_tools
+            .push(crate::mcp::TOOL_SEARCH_TOOL_NAME.into());
+        agent.config = Arc::new(config);
+        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+        agent = agent.with_mcp(Some(mcp)).with_dynamic_mcp_tools(true);
+
+        assert!(!agent.effective_tool_filter().matches("tool_search"));
     }
 
     #[test]
