@@ -877,6 +877,7 @@ pub(super) async fn process_tool_calls(
                 n00n_config::providers::Tier::Medium => "medium",
                 n00n_config::providers::Tier::Strong => "strong",
             };
+            // Always overwrite provider-supplied model_tier to enforce policy
             arguments.insert("model_tier".into(), Value::String(tier.into()));
         }
         let fusion_brief_authorized = is_fusion_delegate && fusion_brief_is_authorized(&input);
@@ -2532,5 +2533,47 @@ mod tests {
                 .authorize(crate::fusion::FusionInvocationOrigin::Direct)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn fusion_delegate_overrides_provider_supplied_model_tier() {
+        smol::block_on(async {
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |input| {
+                // Verify the tier was overridden to "weak" from config
+                let tier = input
+                    .get("model_tier")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none");
+                assert_eq!(tier, "weak", "model_tier should be overridden to weak");
+                Ok("ran".into())
+            });
+            let mut config = (*ctx.config).clone();
+            config.fusion.enabled = true;
+            config.fusion.sidekick_tier = n00n_config::providers::Tier::Weak;
+            ctx.config = Arc::new(config);
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut history = crate::agent::History::new(Vec::new());
+            let mut recent_calls = RecentCalls::new();
+
+            // Provider supplies "strong" tier, but config is "weak"
+            let mut brief = fusion_brief();
+            brief["model_tier"] = Value::String("strong".into());
+
+            let results = process_tool_calls(
+                response_with_tool_uses(&[("d1", crate::fusion::FUSION_DELEGATE_TOOL, brief)]),
+                &mut recent_calls,
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+                Some(eligible_fusion_auth()),
+            )
+            .await
+            .expect("process batch");
+
+            assert_eq!(results.len(), 1);
+            assert!(!results[0].is_error);
+        });
     }
 }
