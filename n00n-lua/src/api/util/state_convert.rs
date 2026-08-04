@@ -167,16 +167,42 @@ fn table_to_json(
         return Err(StateConvertError::Cycle);
     }
 
-    let result = if table
-        .metatable()
-        .is_some_and(|metatable| metatable == lua.array_metatable())
-    {
+    let result = if is_array_table(lua, table)? {
         array_to_json(lua, table, depth, active_tables, budget)
     } else {
         object_to_json(lua, table, depth, active_tables, budget)
     };
     active_tables.remove(&pointer);
     result
+}
+
+fn is_array_table(lua: &Lua, table: &Table) -> Result<bool, StateConvertError> {
+    if table
+        .metatable()
+        .is_some_and(|metatable| metatable == lua.array_metatable())
+    {
+        return Ok(true);
+    }
+
+    let length = table.raw_len();
+    if length == 0 {
+        return Ok(false);
+    }
+    let mut entries = 0;
+    for pair in table.clone().pairs::<Value, Value>() {
+        let (key, _) = pair?;
+        let Value::Integer(key) = key else {
+            return Ok(false);
+        };
+        let Ok(index) = usize::try_from(key) else {
+            return Ok(false);
+        };
+        if !(1..=length).contains(&index) {
+            return Ok(false);
+        }
+        entries += 1;
+    }
+    Ok(entries == length)
 }
 
 fn array_to_json(
@@ -288,6 +314,27 @@ mod tests {
 
         assert!(first.is_null());
         assert_eq!(lua_to_json(&lua, &lua_value).unwrap(), input);
+    }
+
+    #[test]
+    fn ordinary_lua_sequence_converts_to_json_array() {
+        let lua = Lua::new();
+        let value = lua.load("return { items = { 'a', 'b' } }").eval().unwrap();
+
+        assert_eq!(
+            lua_to_json(&lua, &value).unwrap(),
+            json!({"items": ["a", "b"]})
+        );
+    }
+
+    #[test]
+    fn round_trip_preserves_empty_array_shape() {
+        let lua = Lua::new();
+        let input = json!({"items": []});
+
+        let value = json_to_lua(&lua, &input).unwrap();
+
+        assert_eq!(lua_to_json(&lua, &value).unwrap(), input);
     }
 
     #[test_case(f64::NAN ; "nan")]
