@@ -100,7 +100,6 @@ local function handler(input, ctx)
     model_spec = input.model,
     model_tier = input.model_tier,
     auto_tier = auto_tier,
-    audience = "general_sub",
   })
 
   if err then
@@ -124,5 +123,7 @@ n00n.api.register_tool({
   name = "fusion_delegate",
   description = description,
   schema = schema,
+  audiences = { "main" },
+  kind = "execute",
   handler = handler,
 })

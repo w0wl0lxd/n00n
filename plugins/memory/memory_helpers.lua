@@ -101,25 +101,67 @@ function M.project_id(path)
   return base .. "-" .. M.fnv1a_64(path)
 end
 
-function M.safe_resolve(memories_dir, relative)
+function M.safe_relative(relative)
   if not relative or relative == "" then
     return nil, "path is required"
   end
   local first = relative:sub(1, 1)
-  if relative:find("\0") or first == "/" or first == "\\" then
+  if relative:find("\0") or first == "/" or first == "\\" or relative:match("^%a:") then
     return nil, "path must be relative"
   end
-  if relative:match("^%a:") then
-    return nil, "path must be relative"
+  local components = {}
+  for component in relative:gmatch("[^/\\]+") do
+    if component == ".." then
+      return nil, "path traversal outside memories directory is not allowed"
+    end
+    if component ~= "." then
+      components[#components + 1] = component
+    end
   end
-  local resolved = n00n.fs.normalize(n00n.fs.joinpath(memories_dir, relative))
-  local norm_base = n00n.fs.normalize(memories_dir)
-  local sep = norm_base:find("\\") and "\\" or "/"
-  local prefix = norm_base .. sep
-  if resolved:sub(1, #prefix) ~= prefix then
-    return nil, "path traversal outside memories directory is not allowed"
+  if #components == 0 then
+    return nil, "path is required"
   end
-  return resolved
+  return table.concat(components, "/")
+end
+
+function M.safe_resolve(memories_dir, relative)
+  local normalized, err = M.safe_relative(relative)
+  if not normalized then
+    return nil, err
+  end
+  return n00n.fs.joinpath(memories_dir, normalized)
+end
+
+function M.read_file(memories_dir, relative)
+  local normalized, err = M.safe_relative(relative)
+  if not normalized then
+    return nil, err
+  end
+  return n00n.fs.read_within(memories_dir, normalized)
+end
+
+function M.metadata_file(memories_dir, relative)
+  local normalized, err = M.safe_relative(relative)
+  if not normalized then
+    return nil, err
+  end
+  return n00n.fs.metadata_within(memories_dir, normalized)
+end
+
+function M.write_file(memories_dir, relative, content)
+  local normalized, err = M.safe_relative(relative)
+  if not normalized then
+    return nil, err
+  end
+  return n00n.fs.write_within(memories_dir, normalized, content)
+end
+
+function M.delete_file(memories_dir, relative)
+  local normalized, err = M.safe_relative(relative)
+  if not normalized then
+    return nil, err
+  end
+  return n00n.fs.rm_within(memories_dir, normalized)
 end
 
 function M.collect_file_entries(dir)
@@ -130,7 +172,7 @@ function M.collect_file_entries(dir)
   local files = {}
   for _, entry in ipairs(entries) do
     if entry[2] == "file" then
-      local meta = n00n.fs.metadata(n00n.fs.joinpath(dir, entry[1]))
+      local meta = M.metadata_file(dir, entry[1])
       if meta then
         files[#files + 1] = { entry[1], meta.size, meta.mtime or 0 }
       end
@@ -465,8 +507,7 @@ function M.load_entries(dir)
   local entries = {}
   for _, f in ipairs(M.collect_file_entries(dir)) do
     local rel = f[1]
-    local file_path = n00n.fs.joinpath(dir, rel)
-    local raw = n00n.fs.read(file_path)
+    local raw = M.read_file(dir, rel)
     if raw then
       local entry = M.parse_memory_file(rel, raw)
       if entry then

@@ -26,6 +26,14 @@ local function resolve_dir()
   return n00n.fs.joinpath(state, memories_path_suffix())
 end
 
+local function ensure_dir()
+  local state = n00n.env.state_dir()
+  if not state then
+    return nil, "cannot resolve state dir"
+  end
+  return n00n.fs.mkdir_within(state, memories_path_suffix())
+end
+
 local function parse_tag_filter(tags)
   if type(tags) ~= "string" or tags == "" then
     return nil
@@ -113,11 +121,7 @@ local function cmd_view(path, query, focus_path, dir, ctx)
     end
     return { llm_output = format_list(entries, nil) }
   end
-  local file_path, err = helpers.safe_resolve(dir, path)
-  if not file_path then
-    return nil, err
-  end
-  local content, read_err = n00n.fs.read(file_path)
+  local content, read_err = helpers.read_file(dir, path)
   if not content then
     return nil, "read error: " .. tostring(read_err)
   end
@@ -153,14 +157,13 @@ local function cmd_search(query, tags, focus_path, limit, dir)
 end
 
 local function cmd_write(path, content, metadata, dir, ctx, input)
-  local file_path, err = helpers.safe_resolve(dir, path)
-  if not file_path then
-    return nil, err
+  local meta, metadata_err = helpers.metadata_file(dir, path)
+  if metadata_err then
+    return nil, "metadata error: " .. tostring(metadata_err)
   end
-  local meta = n00n.fs.metadata(file_path)
   local existing_size = meta and meta.size or 0
   if meta then
-    local text, read_err = n00n.fs.read(file_path)
+    local text, read_err = helpers.read_file(dir, path)
     if not text then
       return nil, "read error: " .. tostring(read_err)
     end
@@ -181,8 +184,11 @@ local function cmd_write(path, content, metadata, dir, ctx, input)
   if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
     return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
   end
-  n00n.fs.mkdir(dir, { parents = true })
-  local ok, write_err = n00n.fs.write(file_path, payload)
+  local mkdir_ok, mkdir_err = ensure_dir()
+  if not mkdir_ok then
+    return nil, "mkdir error: " .. tostring(mkdir_err)
+  end
+  local ok, write_err = helpers.write_file(dir, path, payload)
   if not ok then
     return nil, "write error: " .. tostring(write_err)
   end
@@ -199,14 +205,13 @@ local function cmd_append(path, content, dir, ctx)
   if not content then
     return nil, "'content' is required for append"
   end
-  local file_path, err = helpers.safe_resolve(dir, path)
-  if not file_path then
-    return nil, err
-  end
   local existing = ""
-  local meta = n00n.fs.metadata(file_path)
+  local meta, metadata_err = helpers.metadata_file(dir, path)
+  if metadata_err then
+    return nil, "metadata error: " .. tostring(metadata_err)
+  end
   if meta then
-    local text, read_err = n00n.fs.read(file_path)
+    local text, read_err = helpers.read_file(dir, path)
     if not text then
       return nil, "read error: " .. tostring(read_err)
     end
@@ -224,8 +229,11 @@ local function cmd_append(path, content, dir, ctx)
   if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
     return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
   end
-  n00n.fs.mkdir(dir, { parents = true })
-  local ok, write_err = n00n.fs.write(file_path, payload)
+  local mkdir_ok, mkdir_err = ensure_dir()
+  if not mkdir_ok then
+    return nil, "mkdir error: " .. tostring(mkdir_err)
+  end
+  local ok, write_err = helpers.write_file(dir, path, payload)
   if not ok then
     return nil, "write error: " .. tostring(write_err)
   end
@@ -240,14 +248,14 @@ local function cmd_append(path, content, dir, ctx)
 end
 
 local function cmd_delete(path, dir)
-  local file_path, err = helpers.safe_resolve(dir, path)
-  if not file_path then
-    return nil, err
+  local meta, metadata_err = helpers.metadata_file(dir, path)
+  if metadata_err then
+    return nil, "metadata error: " .. tostring(metadata_err)
   end
-  if not n00n.fs.metadata(file_path) then
+  if not meta then
     return nil, "'" .. path .. "' does not exist"
   end
-  local ok, rm_err = n00n.fs.rm(file_path)
+  local ok, rm_err = helpers.delete_file(dir, path)
   if not ok then
     return nil, "delete error: " .. tostring(rm_err)
   end
@@ -304,7 +312,7 @@ n00n.api.register_tool({
       if dir then
         local file_path, resolve_err = helpers.safe_resolve(dir, input.path)
         if file_path then
-          local raw, read_err = n00n.fs.read(file_path)
+          local raw, read_err = helpers.read_file(dir, input.path)
           if raw then
             local entry = helpers.parse_memory_file(input.path, raw)
             return render_content(entry.body, input.path, ctx)
@@ -415,7 +423,7 @@ n00n.api.register_command({
           local path = n00n.fs.joinpath(dir, item[1])
           local code = n00n.ui.open_editor(path)
           if code == 0 then
-            local meta = n00n.fs.metadata(path)
+            local meta = helpers.metadata_file(dir, item[1])
             if meta then
               item[2] = meta.size
             end
@@ -423,7 +431,7 @@ n00n.api.register_command({
         end
       elseif event.type == "delete" then
         local item = entries[event.index]
-        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item[1]))
+        local ok, err = helpers.delete_file(dir, item[1])
         if ok then
           n00n.ui.flash("Deleted " .. item[1])
           table.remove(entries, event.index)

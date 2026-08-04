@@ -1299,26 +1299,6 @@ impl OpenAi {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
         let store = self.stores_responses(auth);
-        let mut opts = opts;
-        if !store {
-            opts.allow_history_replay = true;
-        }
-        let admission = match self
-            .acquire_coding_plan_admission(auth, attempt_nonce)
-            .await
-        {
-            Ok(admission) => admission,
-            Err(error) => {
-                return CodexAttempt {
-                    previous_response_id: None,
-                    store,
-                    emitted_event: false,
-                    definitive_rejection: false,
-                    delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
-                    result: Err(error),
-                };
-            }
-        };
         let response_chain_lock = if durable_chain {
             match self.lock_response_chain(session_id).await {
                 Ok(lock) => lock,
@@ -1393,6 +1373,22 @@ impl OpenAi {
                 }),
             };
         }
+        let admission = match self
+            .acquire_coding_plan_admission(auth, attempt_nonce)
+            .await
+        {
+            Ok(admission) => admission,
+            Err(error) => {
+                return CodexAttempt {
+                    previous_response_id: None,
+                    store,
+                    emitted_event: false,
+                    definitive_rejection: false,
+                    delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
+                    result: Err(error),
+                };
+            }
+        };
         self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
             .await;
         let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
@@ -4095,6 +4091,68 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn coding_plan_history_replay_requires_approval_before_network() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let provider = OpenAi::with_auth_options(
+                Arc::new(Mutex::new(auth)),
+                crate::providers::Timeouts {
+                    connect: Duration::from_millis(100),
+                    stream: Duration::from_millis(100),
+                    low_speed: Duration::from_millis(100),
+                },
+                OpenAiOptions::codex(),
+            )
+            .unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let messages = vec![
+                Message::user("restored".into()),
+                Message::user("new".into()),
+            ];
+            let (event_tx, _event_rx) = flume::unbounded();
+
+            let result = provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::from(""),
+                    &serde_json::json!([]),
+                    &event_tx,
+                    RequestOptions {
+                        protect_history_replay: true,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await;
+
+            assert!(matches!(
+                result,
+                Err(AgentError::HistoryReplayRequired {
+                    reason: HistoryReplayReason::ContinuationUnavailable
+                })
+            ));
+            let accepted = futures_lite::future::race(
+                async {
+                    let _ = listener.accept().await;
+                    true
+                },
+                async {
+                    smol::Timer::after(Duration::from_millis(50)).await;
+                    false
+                },
+            )
+            .await;
+            assert!(!accepted, "provider sent a request before replay approval");
+        });
     }
 
     #[test]

@@ -119,6 +119,22 @@ fn err_pair<T>(err: impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
 
+fn filter_child_tools(
+    tools: &mut JsonValue,
+    filter: &ToolFilter,
+    policy: Option<&n00n_agent::skill_policy::ActiveSkillPolicy>,
+) {
+    let Some(definitions) = tools.as_array_mut() else {
+        return;
+    };
+    definitions.retain(|definition| {
+        let Some(name) = definition.get("name").and_then(JsonValue::as_str) else {
+            return true;
+        };
+        filter.matches(name) && policy.is_none_or(|active| active.evaluate(name).allowed)
+    });
+}
+
 /// `n00n.agent.*` convention: wrong argument types throw; every value or
 /// runtime failure (including a ctx without dispatch capability) returns
 /// `(nil, err)`.
@@ -570,28 +586,33 @@ async fn session(
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
 
-    let (mut tools_json, tool_filter) = if let Some(val) = tools_val {
+    let tool_filter = ToolFilter::from_config(&agent_ctx.config, &agent_ctx.model, &[])
+        .excluding(n00n_agent::tools::capability_exclusions(&model));
+    let mut tools_json = if let Some(val) = tools_val {
         let tools = lua_to_json(&lua, &val)?;
         if !tools.is_array() {
             return Err(mlua::Error::runtime("tools must be an array"));
         }
-        (tools, ToolFilter::All)
+        tools
     } else {
         let vars = n00n_agent::template::Vars::new();
-        let filter = ToolFilter::from_config(&agent_ctx.config, &model, &[]);
         let ctx = DescriptionContext {
-            filter: &filter,
+            filter: &tool_filter,
             audience,
             workflow: false,
         };
-        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+        n00n_agent::tools::ToolRegistry::global().definitions_active(
             &vars,
             &ctx,
             model.supports_tool_examples(),
             &n00n_agent::tools::default_active_tools(),
-        );
-        (tools, filter)
+        )
     };
+    filter_child_tools(
+        &mut tools_json,
+        &tool_filter,
+        agent_ctx.active_skill_policy.as_ref(),
+    );
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
@@ -716,6 +737,7 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
+        skill_policy: agent_ctx.active_skill_policy.clone(),
         thinking,
         fast,
         mode,
@@ -1216,6 +1238,7 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
+    skill_policy: Option<n00n_agent::skill_policy::ActiveSkillPolicy>,
     thinking: ThinkingConfig,
     fast: bool,
     mode: AgentMode,
@@ -1392,7 +1415,8 @@ async fn prompt(
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
-        .with_local_tools(Arc::clone(&s.local_tools));
+        .with_local_tools(Arc::clone(&s.local_tools))
+        .with_skill_policy_ceiling(s.skill_policy.clone());
 
         let input = AgentInput {
             message: message.text,
@@ -1973,6 +1997,40 @@ mod tests {
         assert!(raised.contains("boom"), "got: {raised}");
         let wrong = call("function() return 42 end", &input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
+    }
+
+    #[test]
+    fn fusion_delegate_preserves_research_audience_and_is_execute_only() {
+        let fusion = include_str!("../../../plugins/fusion/init.lua");
+
+        assert!(fusion.contains("audiences = { \"main\" }"));
+        assert!(fusion.contains("kind = \"execute\""));
+        assert!(
+            !fusion.contains("audience = \"general_sub\""),
+            "research Fusion delegates must retain the research_sub audience"
+        );
+    }
+
+    #[test]
+    fn child_tool_filter_cannot_expand_parent_filter_or_skill_policy() {
+        let policy = n00n_agent::skill_policy::ActiveSkillPolicy {
+            name: "read-only".to_owned(),
+            allowed_tools: Some(vec!["read".to_owned()]),
+            disallowed_tools: None,
+        };
+        let mut tools = json!([
+            {"name": "read"},
+            {"name": "bash"},
+            {"name": "write"}
+        ]);
+
+        filter_child_tools(
+            &mut tools,
+            &ToolFilter::Only(vec!["read".to_owned(), "bash".to_owned()]),
+            Some(&policy),
+        );
+
+        assert_eq!(tools, json!([{"name": "read"}]));
     }
 
     #[test_case(Some("build"), None, AgentMode::Build ; "build")]
