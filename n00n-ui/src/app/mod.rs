@@ -464,12 +464,10 @@ impl App {
         }
     }
 
-    pub fn tick_error_expiry(&mut self) -> bool {
-        if !self.status.is_error_expired() {
-            return false;
+    pub fn tick_error_expiry(&mut self) {
+        if self.status.is_error_expired() {
+            self.status = Status::Idle;
         }
-        self.status = Status::Idle;
-        true
     }
 
     fn active_chat(&mut self) -> &mut Chat {
@@ -1647,7 +1645,7 @@ impl App {
 
         if chat_idx == 0 {
             match &envelope.event {
-                AgentEvent::FusionPhaseChanged { phase, .. } => {
+                AgentEvent::FusionPhase { phase, .. } => {
                     self.fusion_phase = match phase {
                         FusionPhase::Idle
                         | FusionPhase::Complete

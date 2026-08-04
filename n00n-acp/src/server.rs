@@ -23,7 +23,7 @@ use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
 use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::{Session, TranscriptEntry};
+use n00n_storage::sessions::Session;
 use serde::Serialize;
 use serde_json::Value;
 use smol::io::AsyncBufReadExt;
@@ -101,29 +101,26 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             continue;
         }
 
-        let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
-        for result in &mut stream {
-            let raw = match result {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(error = %e, "invalid JSON on stdin");
-                    server.respond(RequestId::Null, Err(AcpError::parse_error()));
-                    break;
-                }
-            };
-
-            let id = raw.get("id").map(request_id);
-
-            if raw.get("result").is_some() || raw.get("error").is_some() {
-                handle_incoming_response(&server, &raw);
-            } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
-                match id {
-                    Some(id) => handle_request(&mut server, method, id, &raw, &params),
-                    None => handle_notification(&server, method),
-                }
-            } else if let Some(id) = id {
-                server.respond(id, Err(AcpError::invalid_request()));
+        let raw: Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "invalid JSON on stdin");
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
             }
+        };
+
+        let id = raw.get("id").map(request_id);
+
+        if raw.get("result").is_some() || raw.get("error").is_some() {
+            handle_incoming_response(&server, &raw);
+        } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
+            match id {
+                Some(id) => handle_request(&mut server, method, id, &raw, &params),
+                None => handle_notification(&server, method),
+            }
+        } else if let Some(id) = id {
+            server.respond(id, Err(AcpError::invalid_request()));
         }
     }
 
@@ -143,7 +140,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             methods::initialize_response(),
         )),
         "session/new" => parse_params::<NewSessionRequest>(raw).map(|req| {
-            let handle = spawn_session(params, req.cwd, None, Vec::new(), Vec::new());
+            let handle = spawn_session(params, req.cwd, None, Vec::new());
             let spec = params.model.spec();
             let resp = methods::new_session_response(handle.session_id.as_str())
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
@@ -161,12 +158,11 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
                 .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
             let history = stored.messages;
-            let transcript = stored.transcript;
             let sid = SessionId::from(session_ref.to_string());
             for update in translate::replay_history(&history) {
                 session_update(&srv.out_tx, &sid, update);
             }
-            let handle = spawn_session(params, req.cwd, Some(session_ref), history, transcript);
+            let handle = spawn_session(params, req.cwd, Some(session_ref), history);
             let spec = params.model.spec();
             let resp = methods::load_session_response()
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
@@ -189,7 +185,6 @@ fn spawn_session(
     cwd: PathBuf,
     session_id: Option<SessionRef>,
     history: Vec<Message>,
-    transcript: Vec<TranscriptEntry<Message>>,
 ) -> InteractiveHandle {
     headless::spawn_interactive(InteractiveParams {
         model: params.model.clone(),
@@ -203,7 +198,6 @@ fn spawn_session(
         initial_wd: cwd,
         session_id,
         initial_history: history,
-        initial_transcript: transcript,
         yolo: params.yolo,
         system_prompt_override: None,
         append_system_prompt: None,

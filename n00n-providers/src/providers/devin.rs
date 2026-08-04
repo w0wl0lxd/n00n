@@ -60,7 +60,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     protocol: n00n_config::providers::Protocol::Devin,
     default_base_url: DEVIN_API_URL,
     default_api_key_env: "DEVIN_API_KEY",
-    default_model: "devin/swe-1-7",
+    default_model: "devin/swe-1-7-max",
     plans: None,
     login_url: None,
     needs_url: false,
@@ -155,8 +155,19 @@ fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
     }
 }
 
-fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
-    explicit.map_or(configured, str::to_string)
+fn resolve_api_server_url(configured: String, base_url: Option<&str>) -> String {
+    let Some(url) = base_url.map(str::trim).filter(|s| !s.is_empty()) else {
+        return configured;
+    };
+    match url::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") && parsed.host().is_some() => {
+            url.to_string()
+        }
+        Ok(_) | Err(_) => {
+            warn!("ignoring invalid devin base_url; using configured API server");
+            configured
+        }
+    }
 }
 
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
@@ -202,14 +213,24 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
 }
 
 fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
-    // Devin responses use both total and non-cached interpretations of
-    // input_tokens. Preserve the reported value rather than guessing from
-    // magnitudes, which can silently undercount fresh input.
+    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
+    let (input, cache_read, cache_creation) = u.input_tokens.checked_sub(cached).map_or_else(
+        || {
+            warn!(
+                input_tokens = u.input_tokens,
+                cache_read_tokens = u.cache_read_tokens,
+                cache_write_tokens = u.cache_write_tokens,
+                "Devin usage categories exceed total input; ignoring cache breakdown"
+            );
+            (u.input_tokens, 0, 0)
+        },
+        |input| (input, u.cache_read_tokens, u.cache_write_tokens),
+    );
     TokenUsage {
-        input: clamp_tokens("input", u.input_tokens),
+        input: clamp_tokens("input", input),
         output: clamp_tokens("output", u.output_tokens),
-        cache_creation: clamp_tokens("cache_write", u.cache_write_tokens),
-        cache_read: clamp_tokens("cache_read", u.cache_read_tokens),
+        cache_creation: clamp_tokens("cache_write", cache_creation),
+        cache_read: clamp_tokens("cache_read", cache_read),
     }
 }
 
@@ -284,9 +305,9 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
             .and_then(serde_json::Value::as_bool)
             .map_or(false, std::convert::identity);
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
-            name: name.to_string(),
-            description: description.map_or(String::new(), std::string::ToString::to_string),
-            json_schema_string: schema_string,
+            name,
+            description: description.map_or("", std::convert::identity),
+            json_schema_string: &schema_string,
             strict,
         }));
     }
@@ -319,14 +340,10 @@ fn ordered_tool_call_blocks(
             status: 0,
             message: "Devin tool-call ordering state is inconsistent".to_string(),
         })?;
-        let input = if arguments_json.is_empty() {
-            serde_json::Value::Object(serde_json::Map::new())
-        } else {
-            serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
-                status: 0,
-                message: format!("invalid Devin tool arguments for {name}: {error}"),
-            })?
-        };
+        let input = serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
+            status: 0,
+            message: format!("invalid Devin tool arguments for {name}: {error}"),
+        })?;
         blocks.push(ContentBlock::ToolUse { id, name, input });
     }
     Ok(blocks)
@@ -347,12 +364,16 @@ fn encode_devin_chat_message_prompts(
                     match block {
                         ContentBlock::Text { text } => prompt_text.push_str(text),
                         ContentBlock::Image { source } => images.push(ImageData {
-                            base64_data: source.data.to_string(),
-                            mime_type: source.media_type.mime().to_string(),
-                            caption: String::new(),
+                            base64_data: source.data.as_ref(),
+                            mime_type: source.media_type.mime(),
+                            caption: "",
                         }),
                         ContentBlock::File { source } => {
-                            let identifier = source.identifier().unwrap_or_else(|| "unknown");
+                            let identifier = source
+                                .file_id
+                                .as_deref()
+                                .or(source.filename.as_deref())
+                                .map_or("unnamed", |identifier| identifier);
                             prompt_text.push_str("[file omitted: ");
                             prompt_text.push_str(identifier);
                             prompt_text.push(']');
@@ -687,12 +708,23 @@ impl Devin {
             .split('/')
             .next_back()
             .unwrap_or_else(|| model.id.as_str());
-        // Resolve aliases (e.g. "opus") to the canonical model uid before
-        // looking up the server-side wire id.
-        let canonical_id =
-            crate::model::lookup_entry(crate::providers::devin::models(), model_router_uid)
-                .map_or(model_router_uid, |entry| entry.prefixes[0]);
         let cli_configs = self.get_cli_model_configs(&base_url).await?;
+        // Resolve aliases (e.g. "opus") to a canonical model uid that the
+        // server recognizes.  Prefer the first catalog prefix that is present
+        // in the CLI model-config map, so that names like `swe-1-7` and
+        // `swe-1-7-max` both map to the server's wire id.
+        let canonical_id = crate::model::lookup_entry(
+            crate::providers::devin::models(),
+            model_router_uid,
+        )
+        .map_or(model_router_uid, |entry| {
+            entry
+                .prefixes
+                .iter()
+                .find(|p| cli_configs.contains_key::<str>(**p))
+                .copied()
+                .unwrap_or_else(|| entry.prefixes[0])
+        });
         let chat_model_uid = cli_configs
             .get(canonical_id)
             .map_or(canonical_id, |wire| wire.as_str());
@@ -900,19 +932,12 @@ impl Devin {
                     }
                 }
 
-                if response.stop_reason != u64::from(STOP_REASON_UNSPECIFIED) {
-                    stop_reason = match u32::try_from(response.stop_reason) {
-                        Ok(STOP_REASON_MAX_TOKENS) => StopReason::MaxTokens,
-                        Ok(STOP_REASON_TOOL_USE) => StopReason::ToolUse,
-                        Ok(unknown) => {
+                if response.stop_reason != STOP_REASON_UNSPECIFIED {
+                    stop_reason = match response.stop_reason {
+                        STOP_REASON_MAX_TOKENS => StopReason::MaxTokens,
+                        STOP_REASON_TOOL_USE => StopReason::ToolUse,
+                        unknown => {
                             debug!(stop_reason = unknown, "unknown Devin stop reason");
-                            StopReason::EndTurn
-                        }
-                        Err(_) => {
-                            debug!(
-                                stop_reason = response.stop_reason,
-                                "Devin stop reason exceeds supported range"
-                            );
                             StopReason::EndTurn
                         }
                     };
@@ -1003,7 +1028,6 @@ impl Provider for Devin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prost::Message as ProstMessage;
 
     #[test]
     fn normalize_session_token_adds_prefix() {
@@ -1019,55 +1043,6 @@ mod tests {
             normalize_session_token("devin-session-token$abc123"),
             "devin-session-token$abc123"
         );
-    }
-
-    #[test]
-    fn devin_usage_preserves_reported_input() {
-        let stats = ModelUsageStats {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_tokens: 30,
-            cache_write_tokens: 20,
-        };
-        let usage = devin_usage_to_token_usage(&stats);
-        assert_eq!(usage.input, 100);
-        assert_eq!(usage.output, 50);
-        assert_eq!(usage.cache_read, 30);
-        assert_eq!(usage.cache_creation, 20);
-        assert_eq!(usage.total_input(), 150);
-    }
-
-    #[test]
-    fn devin_usage_preserves_input_when_cache_exceeds_total() {
-        // Some responses report input_tokens as the non-cached remainder.
-        // Keep the reported value instead of saturating to zero.
-        let stats = ModelUsageStats {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_tokens: 100,
-            cache_write_tokens: 50,
-        };
-        let usage = devin_usage_to_token_usage(&stats);
-        assert_eq!(usage.input, 10);
-        assert_eq!(usage.cache_read, 100);
-        assert_eq!(usage.cache_creation, 50);
-        assert_eq!(usage.total_input(), 160);
-    }
-
-    #[test]
-    fn devin_usage_with_no_cache() {
-        let stats = ModelUsageStats {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-        };
-        let usage = devin_usage_to_token_usage(&stats);
-        assert_eq!(usage.input, 100);
-        assert_eq!(usage.output, 50);
-        assert_eq!(usage.cache_read, 0);
-        assert_eq!(usage.cache_creation, 0);
-        assert_eq!(usage.total_input(), 100);
     }
 
     #[test]
@@ -1116,37 +1091,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ordered_tool_call_blocks_treats_empty_args_as_empty_object() {
-        let mut tool_calls = std::collections::HashMap::new();
-        tool_calls.insert("call-1".to_string(), ("bash".to_string(), String::new()));
-        let blocks = ordered_tool_call_blocks(tool_calls, vec!["call-1".to_string()])
-            .expect("empty args parse");
-
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(
-            &blocks[0],
-            ContentBlock::ToolUse {
-                name,
-                input,
-                ..
-            } if name == "bash" && input.as_object().is_some_and(serde_json::Map::is_empty)
-        ));
-    }
-
     const CASCADE_ID: &str = "cascade-1";
     const TRAILER_ERROR: &str = "Devin stream failed with trailer code unavailable";
     const TRAILER_JSON_ERROR: &str = "invalid Devin end-stream trailer JSON";
 
     fn prompt_string_field(prompt: &[u8], field_number: u64) -> Option<String> {
-        let msg = crate::providers::devin_proto::ChatMessagePrompt::decode(prompt)
-            .expect("invalid Devin ChatMessagePrompt data");
-        match field_number {
-            1 => Some(msg.message_id),
-            3 => Some(msg.prompt),
-            7 => Some(msg.tool_call_id),
-            _ => None,
-        }
+        crate::providers::devin_proto::iter_fields(prompt)
+            .map(|field| field.expect("valid prompt field"))
+            .find(|(field, wire, _)| *field == field_number && *wire == 2)
+            .map(|(_, _, value)| String::from_utf8(value.to_vec()).expect("UTF-8 prompt field"))
     }
 
     #[test]
@@ -1189,6 +1142,76 @@ mod tests {
             resolve_api_server_url("https://configured.example".to_string(), None),
             "https://configured.example"
         );
+    }
+
+    #[test]
+    fn non_url_base_url_falls_back_to_configured() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("devin2")),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn empty_base_url_falls_back_to_configured() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("  ")),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn malformed_url_with_scheme_but_no_host_falls_back() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("https://")),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn devin_usage_maps_total_input_to_non_cached() {
+        let stats = ModelUsageStats {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 50);
+        assert_eq!(usage.output, 50);
+        assert_eq!(usage.cache_read, 30);
+        assert_eq!(usage.cache_creation, 20);
+        assert_eq!(usage.total_input(), 100);
+    }
+
+    #[test]
+    fn devin_usage_ignores_nonconserving_cache_breakdown() {
+        let stats = ModelUsageStats {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 100,
+            cache_write_tokens: 50,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 10);
+        assert_eq!(usage.cache_read, 0);
+        assert_eq!(usage.cache_creation, 0);
+        assert_eq!(usage.total_input(), 10);
+    }
+
+    #[test]
+    fn devin_usage_handles_cache_equal_to_total_input() {
+        let stats = ModelUsageStats {
+            input_tokens: 50,
+            output_tokens: 10,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 0);
+        assert_eq!(usage.cache_read, 30);
+        assert_eq!(usage.cache_creation, 20);
+        assert_eq!(usage.total_input(), 50);
     }
 
     #[test]
@@ -1325,6 +1348,30 @@ mod tests {
             prompt_string_field(&prompts[0], 3).as_deref(),
             Some("[file omitted: file-123]")
         );
+    }
+
+    #[test]
+    fn file_reference_never_uses_signed_url_as_identifier() {
+        let messages = [Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: crate::types::FileSource {
+                    file_id: None,
+                    file_url: Some("https://files.example/signed?token=secret".into()),
+                    file_data: None,
+                    filename: None,
+                    detail: None,
+                },
+            }],
+            ..Default::default()
+        }];
+
+        let prompts = encode_devin_chat_message_prompts(&messages, CASCADE_ID)
+            .expect("encode message prompts");
+        let prompt = prompt_string_field(&prompts[0], 3).expect("file marker prompt");
+        assert_eq!(prompt, "[file omitted: unnamed]");
+        assert!(!prompt.contains("signed"));
+        assert!(!prompt.contains("secret"));
     }
 
     #[test]
