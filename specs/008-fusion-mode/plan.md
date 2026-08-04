@@ -25,7 +25,7 @@ Tracked in Linear: **[N00N-69](https://linear.app/n00n/issue/N00N-69/native-fusi
 - [x] `n00n-agent/src/fusion/` routing core + tests
 - [x] `FusionConfig` in `n00n-config`
 - [x] `plugins/fusion/init.lua` — `fusion_delegate` tool
-- [x] Compaction-boundary model switch in `run.rs`
+- [x] Compaction preserves the lead model and bounded review or fallback context in `run.rs`
 - [x] `--fusion` / `always_fusion` CLI + config
 - [x] Devin `list_models` uses cached ACP config_options
 - [ ] Docs (`just gen-docs`) — [N00N-75](https://linear.app/n00n/issue/N00N-75/fusion-mode-docs-gen-docs)

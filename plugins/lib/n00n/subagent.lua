@@ -45,6 +45,9 @@ function M.launch(ctx, opts)
   if not ctx then
     return nil, "ctx is required", nil, nil, nil
   end
+  if opts.system_append ~= nil and type(opts.system_append) ~= "string" then
+    return nil, "opts.system_append must be a string", nil, nil, nil
+  end
 
   local function guard_check(prompt)
     if not opts.budget then
@@ -174,6 +177,8 @@ function M.launch(ctx, opts)
     name = opts.description,
     thinking = opts.thinking,
     mode = subagent_type,
+    include_mcp = opts.include_mcp,
+    except = opts.except_tools,
   })
   if sess_err then
     return nil, sess_err, nil, nil, model_spec
@@ -200,7 +205,8 @@ function M.launch(ctx, opts)
   local record_ok, record_err = guard_record(opts.prompt, err)
   if not record_ok then
     sess:close()
-    return nil, record_err, nil, usage.normalize(result), model_spec
+    local charged_usage, charged_cost = usage.price(model_spec, result)
+    return nil, record_err, charged_cost, charged_usage, model_spec
   end
   local retries = 0
   while not err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
@@ -214,21 +220,19 @@ function M.launch(ctx, opts)
 
   sess:close()
 
-  -- Normalize usage from raw result for error paths
-  local measured_usage, _ = usage.normalize(result)
+  local priced_usage, cost, metrics_err = usage.price(model_spec, result)
 
   if err then
-    return nil, "sub-agent error: " .. err, nil, measured_usage, model_spec
+    return nil, "sub-agent error: " .. err, cost, priced_usage, model_spec
   end
 
   if validator and not captured then
     local msg = (last_errors and (structured_output.STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors))
       or structured_output.STRUCTURED_MISSING_ERROR
-    return nil, msg, nil, measured_usage, model_spec
+    return nil, msg, cost, priced_usage, model_spec
   end
 
   -- Calculate cost and usage
-  local priced_usage, cost, metrics_err = usage.price(model_spec, result)
   if metrics_err then
     if opts.fail_on_pricing_error then
       return nil, "pricing failed: " .. metrics_err, nil, priced_usage, model_spec

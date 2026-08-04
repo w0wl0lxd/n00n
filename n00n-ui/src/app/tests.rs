@@ -567,32 +567,6 @@ fn exit_on_done_flag_triggers_exit(event: AgentEvent, expected: ExitRequest) {
     assert_eq!(app.exit_request, expected);
 }
 
-#[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None } ; "done")]
-#[test_case(AgentEvent::Error { message: "boom".into() } ; "error")]
-fn fusion_phase_clears_on_terminal_event(event: AgentEvent) {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(agent_msg(AgentEvent::FusionPhaseChanged {
-        phase: FusionPhase::Reviewing,
-    }));
-    assert_eq!(app.fusion_phase, Some(FusionPhase::Reviewing));
-
-    app.update(agent_msg(event));
-    assert_eq!(app.fusion_phase, None);
-}
-
-#[test]
-fn fusion_phase_clears_on_cancel() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.fusion_phase = Some(FusionPhase::Executing);
-
-    app.handle_cancel();
-
-    assert_eq!(app.fusion_phase, None);
-}
-
 #[test]
 fn toggle_mode_state_machine() {
     let tab = |app: &mut App| app.update(Msg::Key(key(KeyCode::Tab)));
@@ -2263,6 +2237,37 @@ fn stale_events_ignored_after_run_id_increment() {
 }
 
 #[test]
+fn active_main_fusion_phase_is_visible() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::FusionPhase {
+        phase: n00n_agent::FusionPhase::Executing,
+        label: Some("brief label".into()),
+    }));
+    assert_eq!(
+        app.main_chat().last_message_text(),
+        "Executing: brief label"
+    );
+}
+
+#[test]
+fn stale_fusion_phase_is_ignored() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 2;
+    let count_before = app.main_chat().message_count();
+    app.update(agent_msg_with_run_id(
+        AgentEvent::FusionPhase {
+            phase: n00n_agent::FusionPhase::Reviewing,
+            label: None,
+        },
+        1,
+    ));
+    assert_eq!(app.main_chat().message_count(), count_before);
+}
+
+#[test]
 fn stale_done_does_not_drain_queue() {
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -2621,6 +2626,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let mcp_reader = McpSnapshotReader::from_snapshot(McpSnapshot {
@@ -3337,6 +3343,7 @@ fn mcp_command_opens_picker() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_toggle_dispatches_action() {
     let mut app = test_app();
     app.mcp_picker = McpPicker::new(
@@ -3351,7 +3358,7 @@ fn mcp_toggle_dispatches_action() {
                 url: None,
             }],
             prompts: vec![],
-            pids: vec![],
+            pids: Vec::new(),
             generation: 0,
         }),
         McpConfigErrors::new(PathBuf::new()),

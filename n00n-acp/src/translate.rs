@@ -391,6 +391,9 @@ mod tests {
             vec![ImageSource {
                 media_type: ImageMediaType::Png,
                 data: std::sync::Arc::from("b64data"),
+                detail: None,
+                file_id: None,
+                url: None,
             }],
         );
         let json = updates_json(&[msg]);
