@@ -92,7 +92,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
 /// pointer to the new one.
 pub const EDIT_SUB_TOOLS: &[&str] = &["edit_lines", "insert_lines", "multiedit"];
 
-pub const FILE_WRITE_TOOLS: &[&str] = &["write", "edit", "multiedit", "edit_lines", "insert_lines"];
+pub const FILE_WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "edit_files"];
 
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigValue {
@@ -1070,7 +1070,14 @@ impl ToolOutputLines {
             "arbor" | "codegraph" | "explore" => self.explore,
             "read" => self.read,
             "memory" => self.write,
-            name if FILE_WRITE_TOOLS.contains(&name) => self.write,
+            name if FILE_WRITE_TOOLS.contains(&name)
+                || matches!(
+                    name,
+                    "write" | "edit" | "multiedit" | "edit_lines" | "insert_lines"
+                ) =>
+            {
+                self.write
+            }
             "webfetch" | "websearch" => self.web,
             _ => self.other,
         }

@@ -92,15 +92,16 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
             let Some(name) = definition.get("name").and_then(Value::as_str) else {
                 return true;
             };
+            let canonical = crate::tools::canonical_tool_name(name);
             // Bash is the only execute-kind tool allowed in plan mode, and only
             // for commands that pass the read-only classifier.
-            if name == crate::tools::BASH_TOOL_NAME {
+            if canonical == crate::tools::BASH_TOOL_NAME {
                 return true;
             }
             // Keep the historical name-based guard and extend it to any tool
             // whose kind is "execute", so a renamed code_execution tool is
             // also filtered out.
-            if name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+            if canonical == crate::tools::CODE_EXECUTION_TOOL_NAME {
                 return false;
             }
             // Only remove tools we can positively identify as execute-kind.

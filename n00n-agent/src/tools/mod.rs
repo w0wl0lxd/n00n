@@ -249,7 +249,7 @@ pub fn canonical_tool_name(name: &str) -> &str {
         "batch" => BATCH_TOOL_NAME,
         "bash" => BASH_TOOL_NAME,
         "code_execution" => CODE_EXECUTION_TOOL_NAME,
-        "edit" => EDIT_TOOL_NAME,
+        "edit" | "edit_lines" | "insert_lines" => EDIT_TOOL_NAME,
         "glob" => GLOB_TOOL_NAME,
         "grep" => GREP_TOOL_NAME,
         "multiedit" => MULTIEDIT_TOOL_NAME,
@@ -527,10 +527,12 @@ pub fn is_builtin_tool(name: &str) -> bool {
 
 #[must_use]
 pub fn all_builtin_tool_names() -> Vec<&'static str> {
+    let mut seen = std::collections::HashSet::new();
     n00n_config::DEFAULT_BUILTINS
         .iter()
         .chain(n00n_config::EDIT_SUB_TOOLS.iter())
         .map(|name| canonical_tool_name(name))
+        .filter(|name| seen.insert(*name))
         .collect()
 }
 

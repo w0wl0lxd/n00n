@@ -333,7 +333,7 @@ impl ToolsSnapshot {
     }
 
     #[must_use]
-    pub fn resolve_name(&self, name: &str) -> Option<&str> {
+    pub fn resolve_name<'a>(&'a self, name: &'a str) -> Option<&'a str> {
         if self.by_name.contains_key(name) {
             Some(name)
         } else {
