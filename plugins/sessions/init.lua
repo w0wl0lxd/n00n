@@ -605,7 +605,6 @@ local function refresh()
   for _, root in ipairs(board.roots) do
     group_node(root, board.nodes, board.rank, expanded_state)
   end
-  table.sort(all, by_recency)
 
   apply_filter()
   update_footer()

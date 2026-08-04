@@ -304,7 +304,9 @@ impl PermissionManager {
         // A single non-plan scope means we must prompt for the rest.
         if !force_prompt && !pending.is_empty() {
             let is_plan_write = plan_path.is_some_and(|pp| {
-                matches!(tool, ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()))
+                matches!(tool, ToolKey::Native(name) if FILE_WRITE_TOOLS
+                    .iter()
+                    .any(|configured| canonical_tool_name(configured) == canonical_tool_name(name)))
                     && {
                         let normalized_plan = normalize_scope_path(&pp.display().to_string());
                         pending
@@ -317,7 +319,7 @@ impl PermissionManager {
             }
         }
 
-        let eff = default_for_tool(&self.tool_defaults, tool).unwrap_or(self.default);
+        let eff = default_for_tool(&self.tool_defaults, tool).unwrap_or_else(|| self.default);
         match eff {
             DefaultEffect::Deny => {
                 info!(tool = %tool, "denied by default");
@@ -699,7 +701,11 @@ fn generalize_scope(tool: &ToolKey, scope: &str) -> String {
         ToolKey::Native(name) if canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME => {
             generalize_bash_segment(scope)
         }
-        ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()) => {
+        ToolKey::Native(name)
+            if FILE_WRITE_TOOLS
+                .iter()
+                .any(|configured| canonical_tool_name(configured) == canonical_tool_name(name)) =>
+        {
             let p = Path::new(scope);
             match p.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => {
