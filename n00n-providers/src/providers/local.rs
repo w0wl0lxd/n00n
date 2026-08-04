@@ -115,7 +115,9 @@ impl LocalEndpoint {
                 .to_string(),
             None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
         };
-        let configured = host_is_set || api_key.is_some() || provider_entry;
+        let configured = host_is_set
+            || api_key.is_some()
+            || (provider_entry && cfg.cloud_fallback_url.is_none());
         let headers = match api_key {
             Some(key) => vec![("authorization".into(), format!("Bearer {key}"))],
             None => Vec::new(),

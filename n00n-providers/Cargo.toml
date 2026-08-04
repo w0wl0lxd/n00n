@@ -13,6 +13,7 @@ build = "build.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+toml = { workspace = true }
 n00n-storage = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
