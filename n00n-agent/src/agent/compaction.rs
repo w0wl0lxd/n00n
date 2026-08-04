@@ -411,9 +411,34 @@ mod tests {
 
     #[test]
     fn compaction_summary_is_an_assistant_message() {
-        let summary = Message::assistant("summary".into());
-        assert!(matches!(summary.role, Role::Assistant));
-        assert_eq!(summary.first_text_content(), Some("summary"));
+        smol::block_on(async {
+            let model = default_model();
+            let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(MockProvider::new(
+                vec![Ok(text_response(StopReason::EndTurn))],
+            ));
+            let (event_tx, event_rx) = flume::unbounded();
+            let mut history = History::new(vec![Message::user("before".into())]);
+
+            compact(
+                &*provider,
+                &model,
+                &mut history,
+                &EventSender::new(event_tx, 0),
+            )
+            .await
+            .expect("compact should succeed");
+
+            let turn_complete: TurnCompleteEvent = event_rx
+                .try_iter()
+                .find_map(|envelope| match envelope.event {
+                    AgentEvent::TurnComplete(event) => Some(*event),
+                    _ => None,
+                })
+                .expect("TurnComplete event should be emitted");
+            assert!(matches!(turn_complete.message.role, Role::Assistant));
+            assert_eq!(turn_complete.message.first_text_content(), Some("response"));
+            assert!(turn_complete.context_size.is_some());
+        });
     }
 
     struct MockProvider {
@@ -521,7 +546,7 @@ mod tests {
         let usage = finish_compact(
             text_response(StopReason::EndTurn),
             &mut history,
-            std::time::Instant::now(),
+            Instant::now(),
             &compact_model,
         );
 
@@ -1193,16 +1218,15 @@ mod tests {
             let mut model = default_model();
             model.context_window = 1000;
 
-            let summary_response = text_response(StopReason::EndTurn);
-            let provider: std::sync::Arc<dyn Provider> =
-                std::sync::Arc::new(MockProvider::new(vec![
-                    Err(AgentError::Api {
-                        status: 400,
-                        message: "server_is_overloaded: Our servers are currently overloaded"
-                            .into(),
-                    }),
-                    Ok(summary_response),
-                ]));
+            let overload_error = || {
+                Err(AgentError::Api {
+                    status: 400,
+                    message: "server_is_overloaded: Our servers are currently overloaded".into(),
+                })
+            };
+            let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(MockProvider::new(
+                std::iter::repeat_with(overload_error).take(4).collect(),
+            ));
 
             let (raw_tx, _rx) = flume::unbounded();
             let mut history = History::new(vec![
@@ -1224,6 +1248,7 @@ mod tests {
                 },
             ]);
 
+            let original_len = history.len();
             let result = compact_history(
                 &*provider,
                 &model,
@@ -1238,11 +1263,11 @@ mod tests {
             .await;
 
             assert!(
-                result.is_ok(),
-                "compact_history should succeed after truncation"
+                result.is_err(),
+                "compact_history should return the server_overloaded error"
             );
-            let (_, summary) = result.unwrap();
-            assert_eq!(summary, "response");
+            assert!(result.unwrap_err().is_server_overloaded());
+            assert_eq!(history.len(), original_len, "history should be unchanged");
         });
     }
 

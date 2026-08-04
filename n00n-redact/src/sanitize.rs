@@ -50,7 +50,11 @@ pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
 #[must_use]
 pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
     let words = raw.split_whitespace().collect::<Vec<_>>();
-    let sanitized = sanitize_words(&words);
+    let sanitized = sanitize_words(&words)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
     truncate(&sanitized, max_chars)
 }
 
@@ -140,11 +144,12 @@ fn sanitize_tokens(tokens: Vec<Token<'_>>) -> String {
         })
         .collect();
 
-    // Sanitize all words as a single block to preserve state across line boundaries
+    // Sanitize all words as a single block to preserve state across line boundaries.
+    // Each entry lines up with the corresponding input word (None means it was
+    // consumed as part of an earlier redaction).
     let sanitized = sanitize_words(&words);
-    let sanitized_words: Vec<&str> = sanitized.split(' ').collect();
 
-    // Reconstruct output, replacing word tokens with sanitized versions
+    // Reconstruct output, replacing word tokens with their sanitized counterpart
     let mut result = String::new();
     let mut word_index = 0;
     let mut at_line_start = true;
@@ -152,14 +157,14 @@ fn sanitize_tokens(tokens: Vec<Token<'_>>) -> String {
     for token in tokens {
         match token {
             Token::Word(_) => {
-                if let Some(word) = sanitized_words.get(word_index) {
+                if let Some(Some(word)) = sanitized.get(word_index) {
                     if !at_line_start && !result.is_empty() {
                         result.push(' ');
                     }
                     result.push_str(word);
-                    word_index += 1;
                     at_line_start = false;
                 }
+                word_index += 1;
             }
             Token::LineBreak(separator) => {
                 result.push_str(separator);
@@ -171,8 +176,10 @@ fn sanitize_tokens(tokens: Vec<Token<'_>>) -> String {
     result
 }
 
-fn sanitize_words(words: &[&str]) -> String {
-    let mut sanitized = Vec::with_capacity(words.len());
+/// Returns a sanitized word for each input word. `None` means the word was
+/// consumed as part of an earlier redaction (e.g. the value after a secret key).
+fn sanitize_words(words: &[&str]) -> Vec<Option<String>> {
+    let mut result = vec![None; words.len()];
     let mut index = 0;
     while index < words.len() {
         let word = words[index];
@@ -186,7 +193,7 @@ fn sanitize_words(words: &[&str]) -> String {
             } else {
                 "Bearer"
             };
-            sanitized.push(format!("{scheme} {REDACTED}"));
+            result[index] = Some(format!("{scheme} {REDACTED}"));
             index = index.saturating_add(2);
             continue;
         }
@@ -196,17 +203,21 @@ fn sanitize_words(words: &[&str]) -> String {
         if is_sensitive_key(key) || is_sensitive_key(word) {
             let separator_char =
                 separator.map_or('=', |position| word.as_bytes()[position] as char);
-            sanitized.push(format!("{key}{separator_char}{REDACTED}"));
+            result[index] = Some(format!("{key}{separator_char}{REDACTED}"));
             let inline_value = separator.and_then(|position| word.get(position + 1..));
             index += 1;
             if let Some(quote) = inline_value.and_then(unterminated_opening_quote) {
                 while let Some(fragment) = words.get(index) {
+                    result[index] = None;
                     index += 1;
                     if contains_unescaped_quote(fragment, quote) {
                         break;
                     }
                 }
             } else if inline_value.is_some_and(is_authentication_scheme) {
+                if index < words.len() {
+                    result[index] = None;
+                }
                 index = index.saturating_add(1).min(words.len());
             } else if inline_value.is_none_or(str::is_empty) {
                 let next_is_separator = words
@@ -216,26 +227,31 @@ fn sanitize_words(words: &[&str]) -> String {
                 if separator.is_some() || next_is_separator || key.starts_with('-') || json_like_key
                 {
                     if next_is_separator {
+                        result[index] = None;
                         index += 1;
                     }
                     if words
                         .get(index)
                         .is_some_and(|next| is_authentication_scheme(next))
                     {
+                        result[index] = None;
                         index += 1;
                     }
                     if let Some(quote) = words
                         .get(index)
                         .and_then(|value| unterminated_opening_quote(value))
                     {
+                        result[index] = None;
                         index += 1;
                         while let Some(fragment) = words.get(index) {
+                            result[index] = None;
                             index += 1;
                             if contains_unescaped_quote(fragment, quote) {
                                 break;
                             }
                         }
                     } else if index < words.len() {
+                        result[index] = None;
                         index += 1;
                     }
                 }
@@ -249,13 +265,13 @@ fn sanitize_words(words: &[&str]) -> String {
             .any(is_secret_token);
         if is_secret_token(secret_value) || contains_secret_token {
             let prefix = separator.map_or("", |position| &word[..=position]);
-            sanitized.push(format!("{prefix}{REDACTED}"));
+            result[index] = Some(format!("{prefix}{REDACTED}"));
         } else {
-            sanitized.push(word.to_owned());
+            result[index] = Some(word.to_owned());
         }
         index += 1;
     }
-    sanitized.join(" ")
+    result
 }
 
 fn unterminated_opening_quote(value: &str) -> Option<char> {
@@ -287,7 +303,8 @@ fn is_basic_auth_credential(value: &str) -> bool {
         .chars()
         .any(|character| character.is_ascii_digit() || "+/=".contains(character));
     trimmed.len() > AUTH_CREDENTIAL_MIN_CHARS
-        && (has_mixed_case || has_base64_specific)
+        && has_mixed_case
+        && has_base64_specific
         && trimmed.chars().all(|character| {
             character.is_ascii_alphanumeric()
                 || character == '+'
@@ -391,13 +408,13 @@ mod tests {
 
     #[test]
     fn redacts_basic_auth_credentials_completely() {
-        let sanitized = sanitize_text("Authorization: Basic dXNlcjpwYXNz trailing", 80);
+        let sanitized = sanitize_text("Authorization: Basic dXNlcjpwYXNzd29yZA== trailing", 80);
         assert_eq!(sanitized, "Authorization:[redacted] trailing");
     }
 
     #[test]
     fn redacts_standalone_basic_auth_credentials() {
-        let sanitized = sanitize_text("value Basic dXNlcjpwYXNz trailing", 80);
+        let sanitized = sanitize_text("value Basic dXNlcjpwYXNzd29yZA== trailing", 80);
         assert_eq!(sanitized, "value Basic [redacted] trailing");
     }
 
@@ -629,5 +646,19 @@ mod tests {
         let sanitized = sanitize_text_preserve_newlines(input, 200);
         assert!(sanitized.contains("[redacted]"));
         assert!(!sanitized.contains("sk-secret"));
+    }
+
+    #[test]
+    fn redacts_key_value_and_keeps_remaining_words_on_their_lines() {
+        let input = "password:\nfoo bar\r\nbaz";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "password:[redacted]\nbar\r\nbaz");
+    }
+
+    #[test]
+    fn keeps_remaining_words_after_sensitive_key_with_value() {
+        let input = "api_key:\nfoo bar\r\nbaz";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "api_key:[redacted]\nbar\r\nbaz");
     }
 }

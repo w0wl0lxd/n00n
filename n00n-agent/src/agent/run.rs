@@ -1418,10 +1418,21 @@ mod tests {
     #[test]
     fn ambiguous_replay_cancellation_is_not_a_denial() {
         smol::block_on(async {
+            let mut history = History::new(vec![Message::user("before".into())]);
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (_response_tx, response_rx) = flume::unbounded::<String>();
             let (trigger, cancel) = CancelToken::new();
             trigger.cancel();
-            let result = cancel.race(async { Ok::<_, ()>(()) }).await;
-            assert_eq!(result, Err("cancelled".into()));
+            let agent = agent
+                .with_cancel(cancel)
+                .with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let result = agent.approve_ambiguous_request_replay(None).await;
+
+            assert!(
+                matches!(result, Err(AgentError::Cancelled)),
+                "expected cancellation, got {result:?}"
+            );
         });
     }
 
