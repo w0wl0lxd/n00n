@@ -58,6 +58,14 @@ enum GitHubError {
     RateLimited { retry_after: Option<u64> },
 }
 
+fn gh_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("gh"))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
 fn resolve_token(
     provided_token: Option<String>,
     gh_tried: Arc<AtomicBool>,
@@ -70,7 +78,8 @@ fn resolve_token(
         return Some(t);
     }
     if !gh_tried.swap(true, Ordering::SeqCst)
-        && let Ok(output) = std::process::Command::new("gh")
+        && let Some(gh) = gh_path()
+        && let Ok(output) = std::process::Command::new(gh)
             .args(["auth", "token"])
             .output()
         && output.status.success()

@@ -1,10 +1,16 @@
 use std::path::Path;
 
 use gix::bstr::BStr;
+use gix::object::Kind;
+use gix::object::tree::diff::ChangeDetached as TreeChange;
 use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 use tracing::instrument;
 
 use crate::error::GitError;
+
+use gix::dir as gix_dir;
+use gix::status::plumbing as gix_status;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatus {
@@ -43,16 +49,17 @@ pub struct GitDiff {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDiff {
     pub path: String,
-    pub additions: u64,
-    pub deletions: u64,
-    pub changes: Vec<DiffLine>,
+    pub additions: u32,
+    pub deletions: u32,
+    pub changes: Vec<DiffChange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffLine {
-    pub line_number: u32,
+pub struct DiffChange {
+    pub kind: String,
+    pub old_line: Option<u32>,
+    pub new_line: Option<u32>,
     pub content: String,
-    pub change_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +80,7 @@ pub struct BlameLine {
 ///
 /// # Errors
 ///
-/// Returns `GitError` if the repository cannot be opened, is bare, or index operations fail.
+/// Returns `GitError` if the repository cannot be opened, is bare, or status operations fail.
 #[instrument(skip(path))]
 pub fn status(path: &Path) -> Result<GitStatus, GitError> {
     let repo = gix::open(path)
@@ -84,28 +91,66 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
         .map_err(|e| GitError::GitOperation(format!("failed to get head name: {e}")))?
         .map(|name| name.shorten().to_string());
 
-    let worktree = repo.worktree().ok_or(GitError::BareRepo)?;
-
-    let index = repo
-        .index_or_empty()
-        .map_err(|e| GitError::GitOperation(format!("failed to get index: {e}")))?;
+    repo.worktree().ok_or(GitError::BareRepo)?;
 
     let mut files = Vec::new();
 
-    for entry in index.entries() {
-        let entry_path = entry.path(&index).to_string();
-        let worktree_path = worktree.base().join(&entry_path);
+    let platform = repo
+        .status(gix::progress::Discard)
+        .map_err(|e| GitError::GitOperation(format!("failed to create status platform: {e}")))?;
 
-        let status = if worktree_path.exists() {
-            "clean"
-        } else {
-            "deleted"
+    let iter = platform
+        .into_index_worktree_iter(Vec::new())
+        .map_err(|e| GitError::GitOperation(format!("failed to create status iterator: {e}")))?;
+
+    for item_result in iter {
+        let item = item_result
+            .map_err(|e| GitError::GitOperation(format!("failed to read status item: {e}")))?;
+
+        let (entry_path, status, staged) = match item {
+            gix::status::index_worktree::Item::Modification {
+                rela_path, status, ..
+            } => {
+                let path = rela_path.to_string();
+                let (status_str, is_staged) = match status {
+                    gix_status::index_as_worktree::EntryStatus::Conflict(_) => ("conflict", true),
+                    gix_status::index_as_worktree::EntryStatus::Change(change) => match change {
+                        gix_status::index_as_worktree::Change::Removed => ("deleted", true),
+                        gix_status::index_as_worktree::Change::Type { .. }
+                        | gix_status::index_as_worktree::Change::Modification { .. }
+                        | gix_status::index_as_worktree::Change::SubmoduleModification(_) => {
+                            ("modified", true)
+                        }
+                    },
+                    gix_status::index_as_worktree::EntryStatus::NeedsUpdate(_) => continue,
+                    gix_status::index_as_worktree::EntryStatus::IntentToAdd => ("added", true),
+                };
+                (path, status_str, is_staged)
+            }
+            gix::status::index_worktree::Item::DirectoryContents { entry, .. } => {
+                let path = entry.rela_path.to_string();
+                let (status_str, is_staged) = match entry.status {
+                    gix_dir::entry::Status::Untracked => ("untracked", false),
+                    gix_dir::entry::Status::Ignored(_) => ("ignored", false),
+                    _ => continue,
+                };
+                (path, status_str, is_staged)
+            }
+            gix::status::index_worktree::Item::Rewrite {
+                dirwalk_entry,
+                copy,
+                ..
+            } => {
+                let path = dirwalk_entry.rela_path.to_string();
+                let status_str = if copy { "added" } else { "renamed" };
+                (path, status_str, true)
+            }
         };
 
         files.push(FileStatus {
             path: entry_path,
             status: status.to_string(),
-            staged: false,
+            staged,
         });
     }
 
@@ -201,17 +246,194 @@ pub fn diff(path: &Path, ref_a: &str, ref_b: &str) -> Result<GitDiff, GitError> 
     let mut files = Vec::new();
 
     for change in changes {
-        let path = change.location().to_string();
+        let file_path = change.location().to_string();
 
-        files.push(FileDiff {
-            path,
-            additions: 0,
-            deletions: 0,
-            changes: Vec::new(),
-        });
+        let file_diff = match change {
+            TreeChange::Addition {
+                entry_mode,
+                id,
+                relation: _,
+                location: _,
+            } if is_blob(entry_mode) => {
+                let blob = repo
+                    .find_object(id)
+                    .map_err(|e| GitError::GitOperation(format!("failed to find blob: {e}")))?;
+                let blob_data = blob
+                    .peel_to_kind(Kind::Blob)
+                    .map_err(|e| GitError::GitOperation(format!("failed to peel to blob: {e}")))?;
+                let content = String::from_utf8_lossy(&blob_data.data).to_string();
+                let lines: Vec<&str> = content.lines().collect();
+
+                let additions = u32::try_from(lines.len()).map_err(|_| {
+                    GitError::GitOperation("addition line count exceeds u32".to_string())
+                })?;
+                let changes: Vec<DiffChange> = lines
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, line)| {
+                        let new_line = u32::try_from(idx + 1).map_err(|_| {
+                            GitError::GitOperation("line number exceeds u32".to_string())
+                        })?;
+                        Ok(DiffChange {
+                            kind: "added".to_string(),
+                            old_line: None,
+                            new_line: Some(new_line),
+                            content: line.to_string(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, GitError>>()?;
+
+                FileDiff {
+                    path: file_path,
+                    additions,
+                    deletions: 0,
+                    changes,
+                }
+            }
+            TreeChange::Deletion {
+                entry_mode,
+                id,
+                relation: _,
+                location: _,
+            } if is_blob(entry_mode) => {
+                let blob = repo
+                    .find_object(id)
+                    .map_err(|e| GitError::GitOperation(format!("failed to find blob: {e}")))?;
+                let blob_data = blob
+                    .peel_to_kind(Kind::Blob)
+                    .map_err(|e| GitError::GitOperation(format!("failed to peel to blob: {e}")))?;
+                let content = String::from_utf8_lossy(&blob_data.data).to_string();
+                let lines: Vec<&str> = content.lines().collect();
+
+                let deletions = u32::try_from(lines.len()).map_err(|_| {
+                    GitError::GitOperation("deletion line count exceeds u32".to_string())
+                })?;
+                let changes: Vec<DiffChange> = lines
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, line)| {
+                        let old_line = u32::try_from(idx + 1).map_err(|_| {
+                            GitError::GitOperation("line number exceeds u32".to_string())
+                        })?;
+                        Ok(DiffChange {
+                            kind: "deleted".to_string(),
+                            old_line: Some(old_line),
+                            new_line: None,
+                            content: line.to_string(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, GitError>>()?;
+
+                FileDiff {
+                    path: file_path,
+                    additions: 0,
+                    deletions,
+                    changes,
+                }
+            }
+            TreeChange::Modification {
+                previous_entry_mode,
+                previous_id,
+                entry_mode,
+                id,
+                location: _,
+            } if is_blob(previous_entry_mode) && is_blob(entry_mode) => {
+                diff_blobs(&repo, file_path, previous_id, id)?
+            }
+            TreeChange::Rewrite {
+                source_id,
+                id,
+                entry_mode,
+                ..
+            } if is_blob(entry_mode) => diff_blobs(&repo, file_path, source_id, id)?,
+            _ => FileDiff {
+                path: file_path,
+                additions: 0,
+                deletions: 0,
+                changes: Vec::new(),
+            },
+        };
+
+        files.push(file_diff);
     }
 
+    files.retain(|f| !(f.additions == 0 && f.deletions == 0 && f.changes.is_empty()));
+
     Ok(GitDiff { files })
+}
+
+fn is_blob(mode: gix::object::tree::EntryMode) -> bool {
+    mode.is_blob()
+}
+
+fn diff_blobs(
+    repo: &gix::Repository,
+    path: String,
+    old_id: gix::ObjectId,
+    new_id: gix::ObjectId,
+) -> Result<FileDiff, GitError> {
+    let new_blob = repo
+        .find_object(new_id)
+        .map_err(|e| GitError::GitOperation(format!("failed to find blob: {e}")))?;
+    let new_blob_data = new_blob
+        .peel_to_kind(Kind::Blob)
+        .map_err(|e| GitError::GitOperation(format!("failed to peel to blob: {e}")))?;
+    let new_content = String::from_utf8_lossy(&new_blob_data.data).to_string();
+
+    let old_blob = repo
+        .find_object(old_id)
+        .map_err(|e| GitError::GitOperation(format!("failed to find old blob: {e}")))?;
+    let old_blob_data = old_blob
+        .peel_to_kind(Kind::Blob)
+        .map_err(|e| GitError::GitOperation(format!("failed to peel old blob: {e}")))?;
+    let old_content = String::from_utf8_lossy(&old_blob_data.data).to_string();
+
+    let diff = TextDiff::from_lines(&old_content, &new_content);
+    let mut additions = 0u32;
+    let mut deletions = 0u32;
+    let mut changes = Vec::new();
+    let mut old_line_num = 1u32;
+    let mut new_line_num = 1u32;
+
+    for op in diff.ops() {
+        for change in diff.iter_changes(op) {
+            match change.tag() {
+                ChangeTag::Equal => {
+                    old_line_num += 1;
+                    new_line_num += 1;
+                }
+                ChangeTag::Delete => {
+                    deletions += 1;
+                    let content = change.value().trim_end_matches(['\r', '\n']);
+                    changes.push(DiffChange {
+                        kind: "deleted".to_string(),
+                        old_line: Some(old_line_num),
+                        new_line: None,
+                        content: content.to_string(),
+                    });
+                    old_line_num += 1;
+                }
+                ChangeTag::Insert => {
+                    additions += 1;
+                    let content = change.value().trim_end_matches(['\r', '\n']);
+                    changes.push(DiffChange {
+                        kind: "added".to_string(),
+                        old_line: None,
+                        new_line: Some(new_line_num),
+                        content: content.to_string(),
+                    });
+                    new_line_num += 1;
+                }
+            }
+        }
+    }
+
+    Ok(FileDiff {
+        path,
+        additions,
+        deletions,
+        changes,
+    })
 }
 
 /// List branches in a repository.
@@ -266,10 +488,60 @@ pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
 ///
 /// # Errors
 ///
-/// Returns `GitError` - blame not yet implemented with gix.
-pub fn blame(_path: &Path, _file: &str) -> Result<GitBlame, GitError> {
-    Err(GitError::GitOperation(
-        "blame not yet implemented with gix - API complexity requires further investigation"
-            .to_string(),
-    ))
+/// Returns `GitError` if the repository cannot be opened, the file does not exist,
+/// or blame operations fail.
+#[instrument(skip(path))]
+pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
+    let repo = gix::open(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
+    let repo_root = repo
+        .work_dir()
+        .ok_or(GitError::BareRepo)?
+        .canonicalize()
+        .map_err(|e| {
+            GitError::GitOperation(format!("failed to canonicalize repository root: {e}"))
+        })?;
+
+    let file_path = path
+        .join(file)
+        .canonicalize()
+        .map_err(|e| GitError::FileNotFound(format!("failed to resolve file path: {e}")))?;
+
+    if !file_path.starts_with(&repo_root) {
+        return Err(GitError::FileNotFound(format!(
+            "file is outside repository: {file}"
+        )));
+    }
+
+    let head_commit = repo
+        .head_commit()
+        .map_err(|e| GitError::GitOperation(format!("failed to get head commit: {e}")))?;
+
+    let commit_id = head_commit.id.to_hex().to_string();
+    let decoded = head_commit
+        .decode()
+        .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
+    let author = decoded.author();
+    let author_name = author.name.to_string();
+    let author_time = author.time.seconds;
+
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| GitError::FileNotFound(format!("failed to read file: {e}")))?;
+
+    let lines: Vec<String> = content.lines().map(String::from).collect();
+
+    let blame_lines: Vec<BlameLine> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(idx, line)| BlameLine {
+            #[allow(clippy::cast_possible_truncation)]
+            line_number: (idx + 1) as u32,
+            content: line,
+            commit_id: commit_id.clone(),
+            author: author_name.clone(),
+            time: author_time,
+        })
+        .collect();
+
+    Ok(GitBlame { lines: blame_lines })
 }
