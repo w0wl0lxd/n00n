@@ -1222,10 +1222,7 @@ impl AgentConfig {
 
     fn validate_max_parallel_tool_calls(&self) -> Result<(), ConfigError> {
         if self.max_parallel_tool_calls > MAX_PARALLEL_TOOL_CALLS {
-            let value = match u64::try_from(self.max_parallel_tool_calls) {
-                Ok(value) => value,
-                Err(_) => u64::MAX,
-            };
+            let value = u64::try_from(self.max_parallel_tool_calls).unwrap_or(u64::MAX);
             return Err(ConfigError::AboveMaximum {
                 section: "agent",
                 field: "max_parallel_tool_calls",
@@ -2464,8 +2461,10 @@ mod tests {
     #[test_case(8, true ; "maximum")]
     #[test_case(9, false ; "above_maximum")]
     fn validates_max_parallel_tool_calls(value: usize, valid: bool) {
-        let mut config = AgentConfig::default();
-        config.max_parallel_tool_calls = value;
+        let config = AgentConfig {
+            max_parallel_tool_calls: value,
+            ..Default::default()
+        };
         let result = config
             .validate()
             .and_then(|()| config.validate_max_parallel_tool_calls());
