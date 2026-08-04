@@ -19,7 +19,6 @@ local RTK_UNSUPPORTED_FLAGS = {
 }
 local SEPARATOR = "──────"
 local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
-local EXFILTRATION_JUSTIFICATION_REQUIRED = "error: justification is required for command that may exfiltrate data"
 
 local rtk_available
 
@@ -203,46 +202,6 @@ local function broad_bash_command_reason(command)
         return "git grep without result limit"
       end
     end
-  end
-
-  return nil
-end
-
-local function has_command(normalized, command, suffix)
-  return normalized:find("^" .. command .. suffix)
-    or normalized:find("[|;&]%s*" .. command .. suffix)
-    or normalized:find("[|;&]%s*[|&]%s*" .. command .. suffix)
-    or normalized:find("\n%s*" .. command .. suffix)
-end
-
-local function exfiltration_command_reason(command)
-  local normalized = trim(command):lower()
-  if normalized == "" then
-    return nil
-  end
-
-  -- Common network exfiltration transports.
-  local network_cmds = { "curl", "wget", "ftp", "sftp", "tftp", "scp", "rsync" }
-  for _, cmd in ipairs(network_cmds) do
-    if has_command(normalized, cmd, "%s") then
-      return cmd .. " may send data to a remote host"
-    end
-  end
-
-  -- Netcat / socket tools.
-  if has_command(normalized, "nc", "[%s%-]") then
-    return "nc may send data to a remote host"
-  end
-  if has_command(normalized, "ncat", "%s") then
-    return "ncat may send data to a remote host"
-  end
-
-  -- DNS exfiltration.
-  if has_command(normalized, "dig", "%s") then
-    return "dig may exfiltrate data via DNS"
-  end
-  if has_command(normalized, "nslookup", "%s") then
-    return "nslookup may exfiltrate data via DNS"
   end
 
   return nil
@@ -657,8 +616,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
 - Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, cat, head, tail).
 - Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
-- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`.
-- Commands that may exfiltrate data to remote hosts (curl, wget, nc, dig, base64 piped to network tools) require `justification`.
+- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`; the tool fails without it.
 - Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
@@ -686,7 +644,7 @@ n00n.api.register_tool({
       description = { type = "string", description = "Short description (3-5 words) of what the command does" },
       justification = {
         type = "string",
-        description = "Required when command is broad/unbounded or may exfiltrate data. Explain scope, bound assumptions, and why remote/network access is needed.",
+        description = "Required for unbounded commands. Explain scope and bounds.",
       },
     },
   },
@@ -710,7 +668,7 @@ n00n.api.register_tool({
     if #segments == 0 then
       segments = { command }
     end
-    if broad_command_reason(command) or exfiltration_command_reason(command) then
+    if broad_command_reason(command) then
       return { scopes = segments, force_prompt = true }
     end
     return { scopes = segments, force_prompt = false }
@@ -762,11 +720,9 @@ n00n.api.register_tool({
     end
 
     local command, workdir = parse_cd_hint(input)
-    local exfiltration_reason = exfiltration_command_reason(command)
-    local reason = broad_command_reason(command) or exfiltration_reason
+    local reason = broad_command_reason(command)
     if reason and (not input.justification or trim(input.justification) == "") then
-      local prefix = exfiltration_reason and EXFILTRATION_JUSTIFICATION_REQUIRED or BROAD_COMMAND_JUSTIFICATION_REQUIRED
-      return { llm_output = prefix .. ": " .. reason, is_error = true }
+      return { llm_output = BROAD_COMMAND_JUSTIFICATION_REQUIRED .. ": " .. reason, is_error = true }
     end
     local timeout_secs = input.timeout or opts.timeout_secs
 

@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 34 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -21,7 +21,7 @@ Commands run in <cwd> by default.
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required when command is broad/unbounded or may exfiltrate data. Explain scope, bound assumptions, and why remote/network access is needed. |
+| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
@@ -40,9 +40,8 @@ Write content to a file. Prefer edit or edit_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
 | `content` | string | yes |  |
-| `justification` | string | no | Required when content may contain secret patterns or authorization headers. Explain why this content is safe to write. |
+| `path` | string | yes |  |
 
 ### `edit` *(lua plugin)*
 
@@ -50,11 +49,10 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
-| `new_string` | string | yes |  |
-| `old_string` | string | yes |  |
-| `justification` | string | no | Required when new_string may contain secret patterns or authorization headers. Explain why this replacement is safe. |
 | `replace_all` | boolean | no |  |
+| `path` | string | yes | File path. |
+| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
+| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
 
 ### `multiedit` *(lua plugin)*
 
@@ -62,9 +60,8 @@ Apply multiple non-adjacent string edits to a single file atomically. Applied in
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
-| `justification` | string | no | Required when any new_string may contain secret patterns or authorization headers. Explain why these replacements are safe. |
 | `edits` | array | yes |  |
+| `path` | string | yes |  |
 
 ### `edit_lines` *(lua plugin)*
 
@@ -72,11 +69,10 @@ Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `ne
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
-| `end` | integer | yes |  |
 | `start` | integer | yes |  |
-| `justification` | string | no | Required when new_string may contain secret patterns or authorization headers. Explain why this replacement is safe. |
+| `path` | string | yes |  |
 | `new_string` | string | yes |  |
+| `end` | integer | yes |  |
 
 ### `insert_lines` *(lua plugin)*
 
@@ -84,7 +80,6 @@ Insert lines before `line` number. Existing lines shift down.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `justification` | string | no | Required when new_string may contain secret patterns or authorization headers. Explain why this insertion is safe. |
 | `path` | string | yes |  |
 | `line` | integer | yes |  |
 | `new_string` | string | yes |  |
@@ -128,9 +123,9 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no |  |
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| `include` | string | no | Glob pattern (e.g. '*.rs'). |
+| `path` | string | no | Directory or file to search. |
+| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
 | `context_before` | integer | no |  |
@@ -213,7 +208,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
+| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `code_execution` *(lua plugin)*
 
@@ -231,6 +226,28 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
+
+### `tmux` *(lua plugin)*
+
+Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_name` | string | no |  |
+| `source` | string | no |  |
+| `timeout` | integer | no |  |
+| `destination` | string | no |  |
+| `window` | string | no |  |
+| `height` | integer | no |  |
+| `width` | integer | no |  |
+| `raw_command` | string | no |  |
+| `window_name` | string | no |  |
+| `keys` | string | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `command_text` | string | no |  |
+| `session` | string | no |  |
+| `pane` | string | no |  |
 
 ## Agent & Knowledge
 
