@@ -21,7 +21,9 @@ use crate::cancel::{CancelMap, CancelToken};
 use crate::permissions::PermissionManager;
 use crate::prompt::ResolvedSlots;
 use crate::template;
-use crate::tools::{DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry};
+use crate::tools::{
+    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
+};
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
     EventSender, ImageSource, McpHandle, McpSession, PermissionsConfig, ToolOutput,
@@ -263,7 +265,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                         params.permissions_config,
                         working_dir_path,
                     )),
-                    session_id: Some(session_ref_clone.clone()),
+                    identity: Some(SessionIdentity::root(session_ref_clone.clone())),
                     timeouts: params.timeouts,
                     openai_options: params.openai_options,
                     file_tracker: FileReadTracker::fresh(),
@@ -518,7 +520,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         config: Arc::clone(&params.config),
                         tool_output_lines: ToolOutputLines::default(),
                         permissions: Arc::clone(&permissions),
-                        session_id: Some(session_ref_clone.clone()),
+                        identity: Some(SessionIdentity::root(session_ref_clone.clone())),
                         timeouts: params.timeouts,
                         openai_options: params.openai_options,
                         file_tracker: Arc::clone(&file_tracker),
