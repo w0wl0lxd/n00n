@@ -148,12 +148,9 @@ pub(super) async fn compact_history(
             Err(e) if e.is_server_overloaded() => {
                 warn!(
                     error = %e,
-                    "server_is_overloaded during compaction, truncating history"
+                    "server_is_overloaded during compaction; do not truncate transient overload"
                 );
-                if compaction_history.len() <= 1 {
-                    return Err(e);
-                }
-                truncate_oldest_round(&mut compaction_history);
+                return Err(e);
             }
             Err(e) => return Err(e),
         }

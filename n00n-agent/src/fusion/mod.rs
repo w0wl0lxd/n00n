@@ -198,6 +198,12 @@ impl FusionState {
         self.phase
     }
 
+    /// Resets the fusion state to Idle, allowing a new delegation cycle.
+    /// Call this when a queued delegable input arrives after a previous turn completed.
+    pub fn reset_to_idle(&mut self) {
+        self.phase = FusionPhase::Idle;
+    }
+
     #[must_use]
     pub const fn needs_continuation(&self) -> bool {
         matches!(
