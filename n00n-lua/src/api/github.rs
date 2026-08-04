@@ -563,7 +563,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(GitHubError::RateLimited { retry_after }) => {
-                assert_eq!(retry_after, Some(1234567890));
+                assert_eq!(retry_after, Some(1_234_567_890));
             }
             _ => panic!("Expected RateLimited error"),
         }
