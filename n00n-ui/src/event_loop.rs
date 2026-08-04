@@ -597,8 +597,9 @@ impl<'t> EventLoop<'t> {
                 break Err(e);
             }
         };
-        // Fatal errors still save every session, kill MCP process groups,
-        // and drain the storage writer before the process exits.
+        // Fatal errors still save every session, shut down MCP transports
+        // (terminating and reaping their child processes), and drain the
+        // storage writer before the process exits.
         let report = self.shutdown();
         result.map(|()| report)
     }
@@ -1484,9 +1485,6 @@ impl<'t> EventLoop<'t> {
     fn shutdown(mut self) -> ShutdownReport {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
-        if let Some(ref h) = self.ctx.mcp_handle {
-            mcp::kill_process_groups(&h.reader().load().pids);
-        }
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
@@ -1502,10 +1500,10 @@ impl<'t> EventLoop<'t> {
             tabs.push(app.state.session);
             agent_tasks.push(handles.into_task());
         }
-        crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
         if let Some(ref h) = self.ctx.mcp_handle {
             smol::block_on(h.shutdown());
         }
+        crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
         match Arc::try_unwrap(self.ctx.storage_writer) {
             Ok(writer) => writer.shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT),
             Err(_) => {
