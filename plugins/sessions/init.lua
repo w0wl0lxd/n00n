@@ -183,7 +183,7 @@ local function descendant_category(session)
   if kind == "workflow" then
     return "workflows"
   end
-  local text = table.concat({ session.kind or "", session.display_title or session.title or "" }, " ")
+  local text = session.display_title or session.title or ""
   for _, category in ipairs(NAMED_CATEGORIES) do
     if has_word(text, category) then
       return category
@@ -226,7 +226,7 @@ local function synthetic_group(root, category, children, expanded_state, rank)
     expanded = expanded_state[id] or false,
     depth = 0,
   }
-  rank[id] = rank[children[1].id] - 0.25
+  rank[id] = (rank[children[1].id] or 0) - 0.25
   for _, child in ipairs(children) do
     child.group_id = id
   end
