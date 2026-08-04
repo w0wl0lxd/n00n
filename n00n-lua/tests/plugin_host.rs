@@ -24,7 +24,8 @@ use n00n_providers::{
 };
 use n00n_storage::id::SessionRef;
 
-const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 46_000;
+// Explicit usage guidance and schema descriptions raise the prompt budget.
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 54_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())

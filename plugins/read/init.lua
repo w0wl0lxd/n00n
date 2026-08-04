@@ -2,7 +2,8 @@ local ToolView = require("n00n.tool_view")
 local shorten_path = require("n00n.shorten_path")
 local output_limits = require("n00n.output_limits")
 
-local DESCRIPTION = "Read a file or directory. Returns contents with line numbers (1-indexed)."
+local DESCRIPTION =
+  "Read a file or directory with line numbers (1-indexed). Use before editing or when exact contents are needed. Do not use for images; use `view_image` instead. Use `index_file` first for large source files and `search_files` for discovery."
 
 local DEFAULT_MAX_OUTPUT_LINES = 500
 
@@ -215,11 +216,12 @@ n00n.api.register_tool({
     properties = {
       path = {
         type = "string",
+        description = "File or directory path to read.",
         required = true,
         alias = "file_path",
       },
-      offset = { type = "integer" },
-      limit = { type = "integer" },
+      offset = { type = "integer", description = "One-based starting line; omit to start at line 1." },
+      limit = { type = "integer", description = "Maximum lines to return; omit to use the tool limit." },
     },
   },
 

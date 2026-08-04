@@ -19,13 +19,13 @@ n00n.api.register_tool({
   aliases = { "glob" },
   kind = "search",
   modes = { "default", "research", "build", "compact" },
-  description = "Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.",
+  description = "Find files by glob pattern. Use when you know a filename shape or directory pattern. Do not use to search file contents; use `search_code` or `search_text` instead. Use `read_file` after finding a path. Respects .gitignore and sorts matches by mtime.",
 
   schema = {
     type = "object",
     properties = {
-      pattern = { type = "string", required = true },
-      path = { type = "string" },
+      pattern = { type = "string", description = "Glob pattern such as `src/**/*.rs`.", required = true },
+      path = { type = "string", description = "Directory or project root in which to match (defaults to cwd)." },
     },
   },
 

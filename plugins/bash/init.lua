@@ -610,7 +610,7 @@ local function broad_command_reason(command)
   return nil
 end
 
-local description = [[Execute a bash command.
+local description = [[Execute a bash command. Use for git, builds, tests, and other system commands. Do not use for file reads or edits; use the file siblings instead. Use `run_batch` for independent calls and `run_python` for dependent calls.
 Commands run in ]] .. cwd .. [[ by default.
 
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.

@@ -20,7 +20,7 @@ n00n.api.register_tool({
   name = "search_text",
   aliases = { "semblem" },
   kind = "read",
-  description = [[Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+  description = [[Search indexed source code with BM25 keyword ranking. Use for natural-language or ranked code search after the index is available. Do not use for exact regex matches or call relationships; use `search_code` or `map_codegraph` instead. Builds a `.n00n/search/` index on first use.
 
 Commands:
 - `search`: ranked snippets for a natural-language or keyword query
@@ -36,17 +36,19 @@ Commands:
       command = {
         type = "string",
         enum = { "search", "find_related", "savings" },
+        description = "Search, find related chunks for a file location, or report index savings.",
       },
-      repo = { type = "string", description = "Project root (defaults to cwd)" },
-      query = { type = "string" },
-      file_path = { type = "string" },
-      line = { type = "integer" },
+      repo = { type = "string", description = "Project root (defaults to cwd)." },
+      query = { type = "string", description = "Keyword or natural-language query for `search`." },
+      file_path = { type = "string", description = "File path for `find_related`." },
+      line = { type = "integer", description = "One-based line for `find_related`." },
       mode = {
         type = "string",
         enum = { "bm25", "hybrid", "semantic" },
         default = "bm25",
+        description = "Ranking mode: bm25, hybrid, or semantic.",
       },
-      top_k = { type = "integer", default = 5 },
+      top_k = { type = "integer", default = 5, description = "Maximum number of result chunks." },
       content = {
         type = "string",
         enum = { "docs", "config", "code", "all" },

@@ -7,15 +7,16 @@ local SNIPPET_MAX_CHARS = 32
 local FALLBACK_VIEW_LINES = 10
 
 local EDIT_LINES_DESCRIPTION =
-  "Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete."
+  "Replace lines from `start` to `end` (inclusive) with `new_string`. Use for known line ranges after reading the file. Do not use for exact text matching or multiple distant edits; use `edit_file` or `edit_file_bulk` instead. Use empty `new_string` to delete."
 
-local INSERT_LINES_DESCRIPTION = "Insert lines before `line` number. Existing lines shift down."
+local INSERT_LINES_DESCRIPTION =
+  "Insert text before a known one-based line. Use after reading the target range. Do not use for exact replacements or several distant edits; use `edit_file` or `edit_file_bulk` instead. Existing lines shift down."
 
 local EDIT_DESCRIPTION =
-  "Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first."
+  "Replace an exact string in a file. Use for one targeted change after reading the file. Do not use to replace a whole file or several distant regions; use `write_file` or `edit_file_bulk` instead. `old_string` must match uniquely unless `replace_all` is true."
 
 local MULTIEDIT_DESCRIPTION =
-  "Apply multiple non-adjacent string edits to a single file atomically. Applied in sequence; all roll back if one fails."
+  "Apply multiple non-adjacent exact edits to one file atomically. Use when several independent replacements belong together. Do not use for one replacement or known line ranges; use `edit_file` or `edit_file_lines` instead. Edits run in sequence and all roll back if one fails."
 
 local function edit_header(input)
   local buf = n00n.ui.buf()
@@ -243,19 +244,23 @@ n00n.api.register_tool({
     properties = {
       path = {
         type = "string",
+        description = "File path to edit.",
         required = true,
         alias = "file_path",
       },
       old_string = {
         type = "string",
+        description = "Exact existing text to replace.",
         required = true,
       },
       new_string = {
         type = "string",
+        description = "Replacement text; empty deletes the matched text.",
         required = true,
       },
       replace_all = {
         type = "boolean",
+        description = "Replace every match instead of requiring one unique match (default false).",
       },
     },
   },
@@ -292,25 +297,30 @@ register_tool_if(opts.multiedit, {
     properties = {
       path = {
         type = "string",
+        description = "File path to edit.",
         required = true,
         alias = "file_path",
       },
       edits = {
         type = "array",
+        description = "Ordered exact edits applied atomically.",
         required = true,
         items = {
           type = "object",
           properties = {
             old_string = {
               type = "string",
+              description = "Exact existing text to replace.",
               required = true,
             },
             new_string = {
               type = "string",
+              description = "Replacement text; empty deletes the matched text.",
               required = true,
             },
             replace_all = {
               type = "boolean",
+              description = "Replace every match instead of requiring one unique match (default false).",
             },
           },
         },
@@ -373,19 +383,23 @@ register_tool_if(opts.edit_lines, {
     properties = {
       path = {
         type = "string",
+        description = "File path to edit.",
         required = true,
         alias = "file_path",
       },
       start = {
         type = "integer",
+        description = "First one-based line to replace.",
         required = true,
       },
       ["end"] = {
         type = "integer",
+        description = "Last one-based line to replace, inclusive.",
         required = true,
       },
       new_string = {
         type = "string",
+        description = "Replacement text; empty deletes the matched text.",
         required = true,
       },
     },
@@ -424,15 +438,18 @@ register_tool_if(opts.insert_lines, {
     properties = {
       path = {
         type = "string",
+        description = "File path to edit.",
         required = true,
         alias = "file_path",
       },
       line = {
         type = "integer",
+        description = "One-based line before which to insert.",
         required = true,
       },
       new_string = {
         type = "string",
+        description = "Replacement text; empty deletes the matched text.",
         required = true,
       },
     },

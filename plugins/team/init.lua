@@ -107,7 +107,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.]]
+  [[Run an ALMAS agent team for a multi-step SDLC goal. Use when the work benefits from planning, parallel roles, validation, or review. Do not use for one focused task; use `run_task` instead. Do not use `run_workflow` unless you need scripted branching and resume. supervised plans, autonomous executes, swarm runs decentralized rounds; background returns agent_id.]]
 
 local schema = {
   type = "object",
@@ -116,7 +116,7 @@ local schema = {
   properties = {
     goal = {
       type = "string",
-      description = "Goal.",
+      description = "Multi-step SDLC goal for the team. Include scope, constraints, and definition of done.",
     },
     mode = {
       type = "string",

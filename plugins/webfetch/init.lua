@@ -82,14 +82,14 @@ n00n.api.register_tool({
   aliases = { "webfetch" },
   kind = "fetch",
   modes = { "default", "research" },
-  description = [[Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside run_python to avoid context bloat.]],
+  description = [[Fetch a known URL and return its contents as markdown, text, or html. Use for current documentation or web pages when a URL is available. Do not use for discovery or a guessed URL; use `search_web` instead. Use `run_python` when filtering a large response. HTTP is upgraded to HTTPS; max 5MB and 120s.]],
 
   schema = {
     type = "object",
     properties = {
-      url = { type = "string", description = "URL to fetch (http:// or https://)", required = true },
-      format = { type = "string", description = "Output format: markdown (default), text, or html" },
-      timeout = { type = "integer", description = "Timeout in seconds (default 30, max 120)" },
+      url = { type = "string", description = "Known URL to fetch (http:// or https://).", required = true },
+      format = { type = "string", description = "Output format: markdown (default), text, or html." },
+      timeout = { type = "integer", description = "Timeout in seconds (default 30, max 120)." },
     },
   },
   permission_scopes = "url",

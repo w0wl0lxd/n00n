@@ -179,7 +179,7 @@ end
 n00n.api.register_tool({
   name = "list_agents",
   aliases = { "agent_list" },
-  description = "List live background agents (task/team/workflow sessions).",
+  description = "List live background agent sessions. Use to discover ids and current states before inspecting or controlling a session. Do not use when you already have one id; use `get_agent` instead. Use `control_agent` only for mutations.",
   kind = "execute",
   audiences = { "main" },
   schema = {
@@ -231,7 +231,7 @@ n00n.api.register_tool({
 n00n.api.register_tool({
   name = "get_agent",
   aliases = { "agent_status" },
-  description = "Show status for one live background agent.",
+  description = "Show status for one live background agent. Use when you have its agent id and need progress or output. Do not use to discover ids; use `list_agents` instead. Use `control_agent` only when you need to mutate that session.",
   kind = "execute",
   audiences = { "main" },
   schema = {
@@ -303,10 +303,10 @@ local control_schema = {
       required = true,
     },
     agent_id = { type = "string", description = "Target agent id." },
-    message = { type = "string", description = "Steering text for message/resume." },
+    message = { type = "string", description = "New instructions for `message` or optional guidance for `resume`." },
     policy = {
       type = "object",
-      description = "Policy payload when action=policy.",
+      description = "Policy payload when action=policy. Use only with a validated rule scope.",
       properties = {
         action = {
           type = "string",
@@ -341,7 +341,7 @@ local control_schema = {
           },
           required = { "id", "scope", "priority" },
         },
-        rule_id = { type = "string" },
+        rule_id = { type = "string", description = "Existing policy id for get or delete." },
       },
     },
   },
@@ -496,7 +496,7 @@ end
 n00n.api.register_tool({
   name = "control_agent",
   aliases = { "agent_control" },
-  description = "Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.",
+  description = "Mutate a background agent by messaging, stopping, resuming, or managing policy. Use only when a live session must change. Do not use for discovery or status reads; use `list_agents` or `get_agent` instead. Pause is unsupported on TUI sessions.",
   kind = "execute",
   audiences = { "main" },
   defer_loading = true,

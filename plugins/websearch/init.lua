@@ -30,17 +30,13 @@ n00n.api.register_tool({
   name = "search_web",
   aliases = { "websearch" },
   kind = "fetch",
-  description = [[Search the web for real-time information using Exa AI.
-
-- Use for current events, documentation, APIs, or anything not in local files.
-- Prefer specific, targeted queries over broad ones.
-- Results include page titles, URLs, and content snippets.]],
+  description = [[Search the web for current information and source discovery. Use when you need current events, documentation, APIs, or anything not in local files and do not have a URL. Do not use for a known URL; use `fetch_url` instead. Prefer specific queries, never expose secrets or invent citations, and use `run_python` to filter large result sets.]],
 
   schema = {
     type = "object",
     properties = {
-      query = { type = "string", description = "Search query", required = true },
-      num_results = { type = "integer", description = "Number of results to return (default 8)" },
+      query = { type = "string", description = "Specific question or keywords to search.", required = true },
+      num_results = { type = "integer", description = "Number of results to return (default 8)." },
     },
   },
   permission_scopes = "query",

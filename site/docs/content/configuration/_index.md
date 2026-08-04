@@ -84,7 +84,7 @@ Themes use 24-bit colors. n00n detects truecolor support from the environment, t
 
 ### `ui.tool_output_lines`
 
-How many lines of output to show per tool in the UI. All values are `usize` with a minimum of 1.
+How many lines of output to show per tool in the UI. All values are `usize` with a minimum of 1. These keys are stable display buckets, not tool names.
 
 | Field | Default |
 |-------|---------|
@@ -100,6 +100,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `web` | 2 |
 | `other` | 2 |
 
+Legacy runtime names are grouped into these buckets: `bash`/`run_shell`, `code_execution`/`run_python`, `task`/`run_task`, `workflow`/`run_workflow`, `index`/`index_file`, `grep`/`search_code`/`search_files`/`search_text`, `explore`/`explore_code`/`map_code`/`map_codegraph`, `read`/`read_file`, `write`/`write_file`, and `web`/`fetch_url`/`search_web`. Use the short bucket keys in `init.lua`; canonical tool names are listed in the tool reference.
 ### `agent`
 
 | Field | Type | Default | Min | Description |
@@ -109,6 +110,10 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
+
+### `agent.dynamic_tools`
+
+Mode-based dynamic tool loading is disabled by default. Set `enabled = true` to filter the initial tool set by mode and use deferred tool loading. `default_mode` selects the starting mode (`default`, `research`, `build`, or `compact`); it defaults to `default`. Use `search_tools` for one unknown capability and `load_toolset` for several tools in a namespace.
 
 ### `agent.fusion`
 
@@ -143,7 +148,7 @@ The `plugins` table turns plugins on or off and passes options to them. All bund
 
 Each plugin checks its own options at startup. A typo, a wrong type, or an unknown plugin name gives you a clear error right away.
 
-The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, n00n stops at startup and shows you the new form.
+The edit plugin's options control the extra canonical tools: `multiedit` provides `edit_file_bulk`, `edit_lines` provides `edit_file_lines`, and `insert_lines` provides `insert_file_lines`. The old top-level `tools` table is gone. If your config still uses it, n00n stops at startup and points to the `plugins.edit` form.
 
 ```lua
 n00n.setup({

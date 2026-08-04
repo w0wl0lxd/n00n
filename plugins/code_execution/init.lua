@@ -86,7 +86,7 @@ local function build_body(ctx, code)
 end
 
 local description =
-  [[Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.]]
+  [[Execute Python in a sandboxed interpreter with tools as callable functions. Use for dependent calls, filtering, or transforming results. Do not use for one independent call; use that sibling directly, or use `run_batch` for independent calls. Tools are async: await every call and use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox, 30s script timeout, and output truncated beyond 500 lines or 16KB.]]
 
 local schema = {
   type = "object",
@@ -95,7 +95,7 @@ local schema = {
   properties = {
     code = {
       type = "string",
-      description = "Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency.",
+      description = "Python code. Tools are async functions returning strings. MUST await every call: `result = await read_file(path='/file')`. Use `await asyncio.gather(...)` for concurrency.",
     },
     timeout = {
       type = "integer",

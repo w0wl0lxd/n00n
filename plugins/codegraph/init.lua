@@ -17,7 +17,7 @@ n00n.api.register_tool({
   name = "map_codegraph",
   aliases = { "codegraph" },
   kind = "read",
-  description = [[Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+  description = [[Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question. Use for end-to-end behavior, call paths, symbol relationships, and blast radius. Do not use without a `.codegraph/` index or for simple text search; use `search_code` or `search_text` instead. Use `index_file` for one-file structure.
 
 Best for:
 - Understanding how a system works end-to-end ("how does X work")
@@ -36,7 +36,7 @@ Requires a .codegraph/ index in the project root.]],
       command = {
         type = "string",
         enum = { "explore", "callers", "callees", "impact", "affected", "node", "query", "sync", "files" },
-        description = "CodeGraph command to run",
+        description = "Graph operation to run, such as explore, callers, impact, node, query, or files.",
       },
       query = {
         type = "string",
@@ -61,9 +61,9 @@ Requires a .codegraph/ index in the project root.]],
       files = {
         type = "array",
         items = { type = "string" },
-        description = "Array of file paths for affected command",
+        description = "File paths to analyze for the `affected` command.",
       },
-      projectPath = { type = "string", description = "Absolute path to the project (defaults to current workspace)" },
+      projectPath = { type = "string", description = "Absolute project path (defaults to the current workspace)." },
       timeout_secs = {
         type = "integer",
         description = "Timeout in seconds for CodeGraph operations (default 30)",

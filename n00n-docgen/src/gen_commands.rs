@@ -82,22 +82,13 @@ fn write_builtin_commands(out: &mut String) {
         let _ = writeln!(out);
         let _ = writeln!(out, "### {}", category.label());
         let _ = writeln!(out);
-        let _ = writeln!(out, "| Command | Legacy aliases | Description |");
-        let _ = writeln!(out, "|---------|----------------|-------------|");
+        let _ = writeln!(out, "| Command | Description |");
+        let _ = writeln!(out, "|---------|-------------|");
         for command in builtins {
-            let aliases = if command.aliases.is_empty() {
-                "—".to_owned()
-            } else {
-                format!("`{}`", command.aliases.join("`, `"))
-            };
-            let _ = writeln!(
-                out,
-                "| `{}` | {aliases} | {} |",
-                command.name, command.description
-            );
+            let _ = writeln!(out, "| `{}` | {} |", command.name, command.description);
         }
         for command in plugins {
-            let _ = writeln!(out, "| `{}` | — | {} |", command.name, command.description);
+            let _ = writeln!(out, "| `{}` | {} |", command.name, command.description);
         }
     }
 }
@@ -211,10 +202,35 @@ mod tests {
     }
 
     #[test]
-    fn command_reference_lists_legacy_aliases() {
+    fn command_reference_uses_canonical_names_only() {
         let docs = generate();
-        assert!(docs.contains("| Command | Legacy aliases | Description |"));
-        assert!(docs.contains("| `/action:compact` | `/compact`, `/session:compact` |"));
-        assert!(docs.contains("| `/session:fork` | `/fork` |"));
+        assert!(docs.contains("| Command | Description |"));
+        assert!(!docs.contains("Legacy aliases"));
+        assert!(!docs.contains("`/compact`"));
+        assert!(!docs.contains("`/fork`"));
+    }
+
+    #[test]
+    fn migration_guide_covers_command_aliases_and_removal_window() {
+        let guide = include_str!("../../site/docs/content/migration/2026-ux-rename.md");
+        for command in BUILTIN_COMMANDS {
+            for alias in command.aliases {
+                assert!(guide.contains(alias), "migration guide omits {alias}");
+                assert!(
+                    guide.contains(command.name),
+                    "migration guide omits canonical command {}",
+                    command.name
+                );
+            }
+        }
+        assert!(guide.contains("0.6 release line"));
+        assert!(guide.contains("0.7 at the earliest"));
+        assert!(guide.contains("resolve every legacy-name warning"));
+    }
+
+    #[test]
+    fn command_reference_lists_team_inventory() {
+        let docs = generate();
+        assert!(docs.contains("| `/team` | Configure and run an agent team for a goal |"));
     }
 }

@@ -49,11 +49,12 @@ local RUN_ID_PATTERN = "^[%x]+$"
 local DEFAULT_TIMEOUT_SECS = 600
 local ASYNC_RUNTIME_MIN_TIMEOUT_SECS = 60
 
-local description = [[Run sandboxed Lua workflow for multi-stage agent orchestration.
+local description =
+  [[Run a sandboxed Lua workflow for multi-stage agent orchestration. Use for branching, pipelines, or deterministic resume. Do not use for one focused agent or role-based SDLC work; use `run_task` or `run_team` instead.
 
 Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use run_task for one agent.]]
+No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, return the final string, and stay within max_agents_per_run (default 24, no hard maximum) plus the runaway guard.]]
 
 local schema = {
   type = "object",

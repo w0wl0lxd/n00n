@@ -205,20 +205,25 @@ n00n.api.register_tool({
   aliases = { "grep" },
   kind = "search",
   modes = { "default", "research", "build", "compact" },
-  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
+  description = [[Search file contents using regex. Use for literal or regex matches when you know the text to find. Do not use for symbol relationships or one-file structure; use `map_codegraph`, `map_code`, or `index_file` instead. Use `run_batch` for independent searches. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
 
   schema = {
     type = "object",
     properties = {
-      pattern = { type = "string", required = true },
-      path = { type = "string" },
+      pattern = {
+        type = "string",
+        description = "Regex or literal text to find. Do not add shell-style quotes.",
+        required = true,
+      },
+      path = { type = "string", description = "Directory or file root in which to search (defaults to cwd)." },
       include = {
         type = "string",
+        description = "Optional glob filter such as `*.rs`.",
         alias = "glob",
       },
-      context_before = { type = "integer" },
-      context_after = { type = "integer" },
-      limit = { type = "integer" },
+      context_before = { type = "integer", description = "Lines of context before each match." },
+      context_after = { type = "integer", description = "Lines of context after each match." },
+      limit = { type = "integer", description = "Maximum number of matching lines to return." },
     },
   },
 
