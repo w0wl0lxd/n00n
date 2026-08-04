@@ -1129,39 +1129,70 @@ async fn drain_runtime(
     request_rx: &flume::Receiver<Request>,
     deferred: &mut VecDeque<Request>,
 ) {
+    let mut spawn_closed = false;
+    let mut request_closed = false;
     while !lifecycle.is_idle() {
-        while let Ok(task) = spawn_rx.try_recv() {
-            spawn_async_task(&rt.lua, ex, gate, task);
+        while !spawn_closed {
+            match spawn_rx.try_recv() {
+                Ok(task) => spawn_async_task(&rt.lua, ex, gate, task),
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => {
+                    spawn_closed = true;
+                    break;
+                }
+            }
         }
-        while let Ok(request) = request_rx.try_recv() {
-            if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, request) {
-                deferred.push_back(request);
+        while !request_closed {
+            match request_rx.try_recv() {
+                Ok(request) => {
+                    if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, request) {
+                        deferred.push_back(request);
+                    }
+                }
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => {
+                    request_closed = true;
+                    break;
+                }
             }
         }
         if lifecycle.is_idle() {
             break;
         }
-        let wake = smol::future::or(
-            async {
-                lifecycle.changed().await;
-                RuntimeWake::Lifecycle
-            },
+        let wake = if spawn_closed && request_closed {
+            lifecycle.changed().await;
+            RuntimeWake::Lifecycle
+        } else {
             smol::future::or(
                 async {
-                    spawn_rx
-                        .recv_async()
-                        .await
-                        .map_or(RuntimeWake::Closed, RuntimeWake::Spawn)
+                    lifecycle.changed().await;
+                    RuntimeWake::Lifecycle
                 },
-                async {
-                    request_rx.recv_async().await.map_or_else(
-                        |_| RuntimeWake::Closed,
-                        |request| RuntimeWake::Request(Box::new(request)),
-                    )
-                },
-            ),
-        )
-        .await;
+                smol::future::or(
+                    async {
+                        if spawn_closed {
+                            smol::future::pending::<RuntimeWake>().await
+                        } else {
+                            spawn_rx
+                                .recv_async()
+                                .await
+                                .map_or(RuntimeWake::Closed, RuntimeWake::Spawn)
+                        }
+                    },
+                    async {
+                        if request_closed {
+                            smol::future::pending::<RuntimeWake>().await
+                        } else {
+                            request_rx.recv_async().await.map_or_else(
+                                |_| RuntimeWake::Closed,
+                                |request| RuntimeWake::Request(Box::new(request)),
+                            )
+                        }
+                    },
+                ),
+            )
+            .await
+        };
         match wake {
             RuntimeWake::Spawn(task) => spawn_async_task(&rt.lua, ex, gate, task),
             RuntimeWake::Request(request) => {
@@ -1169,7 +1200,14 @@ async fn drain_runtime(
                     deferred.push_back(request);
                 }
             }
-            RuntimeWake::Lifecycle | RuntimeWake::Closed => {}
+            RuntimeWake::Closed => {
+                if !spawn_closed {
+                    spawn_closed = true;
+                } else if !request_closed {
+                    request_closed = true;
+                }
+            }
+            RuntimeWake::Lifecycle => {}
         }
     }
     drain_barrier(&rt.lua, ex, gate, spawn_rx).await;
@@ -2585,7 +2623,6 @@ pub fn spawn(
                             )
                             .await;
                             rt.clear_plugin(&plugin);
-                            rt.state.drop_plugin(&plugin);
                             let _ = reply.send(());
                         }
                         Request::RunCommand {

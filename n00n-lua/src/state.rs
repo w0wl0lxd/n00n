@@ -220,32 +220,8 @@ impl PluginStateStore {
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, PluginStateError> {
         let mut inner = self.lock();
-        let mut candidate = inner
-            .bases
-            .get(identity)
-            .cloned()
-            .unwrap_or_else(|| StoredSessionStateSnapshot::new(revision));
+        let mut candidate = candidate_for(&inner, identity, None);
         candidate.set_state_revision(revision)?;
-
-        let managed = inner
-            .managed
-            .iter()
-            .filter(|key| identity.owns_scope(key.scope) && key.owner == identity.owner(key.scope))
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in managed {
-            if let Some(value) = inner.values.get(&key) {
-                candidate.set_plugin_state(
-                    &key.plugin,
-                    PLUGIN_STATE_SCHEMA_VERSION,
-                    key.scope.stored(),
-                    value.clone(),
-                )?;
-            } else {
-                candidate.remove_plugin_state(&key.plugin, key.scope.stored())?;
-            }
-        }
-
         inner.bases.insert(identity.clone(), candidate.clone());
         Ok(candidate)
     }
@@ -262,65 +238,53 @@ impl PluginStateStore {
             identity.session_id != owner && identity.root_session_id != owner
         });
     }
+}
 
-    pub(crate) fn drop_plugin(&self, plugin: &str) {
-        let mut inner = self.lock();
-        let keys = inner
-            .values
-            .keys()
-            .filter(|key| key.plugin == plugin)
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in keys {
-            inner.values.remove(&key);
-            inner.managed.insert(key);
+fn candidate_for(
+    inner: &StateInner,
+    identity: &PluginStateIdentity,
+    skipped: Option<&StateKey>,
+) -> StoredSessionStateSnapshot {
+    let mut candidate = inner
+        .bases
+        .get(identity)
+        .cloned()
+        .unwrap_or_else(|| StoredSessionStateSnapshot::new(0));
+    for key in inner
+        .managed
+        .iter()
+        .filter(|key| identity.owns_scope(key.scope) && key.owner == identity.owner(key.scope))
+    {
+        if skipped.map_or(false, |s| key == s) {
+            continue;
+        }
+        if let Some(value) = inner.values.get(key) {
+            let _ = candidate.set_plugin_state(
+                &key.plugin,
+                PLUGIN_STATE_SCHEMA_VERSION,
+                key.scope.stored(),
+                value.clone(),
+            );
+        } else {
+            let _ = candidate.remove_plugin_state(&key.plugin, key.scope.stored());
         }
     }
+    candidate
 }
+
 fn validate_replacement(
     inner: &StateInner,
     identity: &PluginStateIdentity,
     replacement_key: &StateKey,
     replacement_value: &Value,
 ) -> Result<(), PluginStateError> {
-    let mut candidate = inner
-        .bases
-        .get(identity)
-        .cloned()
-        .unwrap_or_else(|| StoredSessionStateSnapshot::new(0));
-    let mut replacement_applied = false;
-    for key in inner
-        .managed
-        .iter()
-        .filter(|key| identity.owns_scope(key.scope) && key.owner == identity.owner(key.scope))
-    {
-        if key == replacement_key {
-            candidate.set_plugin_state(
-                &key.plugin,
-                PLUGIN_STATE_SCHEMA_VERSION,
-                key.scope.stored(),
-                replacement_value.clone(),
-            )?;
-            replacement_applied = true;
-        } else if let Some(value) = inner.values.get(key) {
-            candidate.set_plugin_state(
-                &key.plugin,
-                PLUGIN_STATE_SCHEMA_VERSION,
-                key.scope.stored(),
-                value.clone(),
-            )?;
-        } else {
-            candidate.remove_plugin_state(&key.plugin, key.scope.stored())?;
-        }
-    }
-    if !replacement_applied {
-        candidate.set_plugin_state(
-            &replacement_key.plugin,
-            PLUGIN_STATE_SCHEMA_VERSION,
-            replacement_key.scope.stored(),
-            replacement_value.clone(),
-        )?;
-    }
+    let mut candidate = candidate_for(inner, identity, Some(replacement_key));
+    candidate.set_plugin_state(
+        &replacement_key.plugin,
+        PLUGIN_STATE_SCHEMA_VERSION,
+        replacement_key.scope.stored(),
+        replacement_value.clone(),
+    )?;
     Ok(())
 }
 
@@ -341,27 +305,7 @@ fn validate_removal(
     identity: &PluginStateIdentity,
     removal_key: &StateKey,
 ) -> Result<(), PluginStateError> {
-    let mut candidate = inner
-        .bases
-        .get(identity)
-        .cloned()
-        .unwrap_or_else(|| StoredSessionStateSnapshot::new(0));
-    for key in inner.managed.iter().filter(|key| {
-        identity.owns_scope(key.scope)
-            && key.owner == identity.owner(key.scope)
-            && *key != removal_key
-    }) {
-        if let Some(value) = inner.values.get(key) {
-            candidate.set_plugin_state(
-                &key.plugin,
-                PLUGIN_STATE_SCHEMA_VERSION,
-                key.scope.stored(),
-                value.clone(),
-            )?;
-        } else {
-            candidate.remove_plugin_state(&key.plugin, key.scope.stored())?;
-        }
-    }
+    let mut candidate = candidate_for(inner, identity, Some(removal_key));
     candidate.remove_plugin_state(&removal_key.plugin, removal_key.scope.stored())?;
     Ok(())
 }

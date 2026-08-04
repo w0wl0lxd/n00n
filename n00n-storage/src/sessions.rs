@@ -516,8 +516,14 @@ impl StoredSessionStateSnapshot {
                 requested: state_revision,
             });
         }
+        let current_size = serde_json::to_vec(snapshot).map(|v| v.len()).ok();
         let mut candidate = snapshot.clone();
         candidate.state_revision = state_revision;
+        let new_size = serde_json::to_vec(&candidate).map(|v| v.len()).ok();
+        if new_size.is_some_and(|new| current_size.is_some_and(|cur| new <= cur)) {
+            self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+            return Ok(());
+        }
         validate_supported_snapshot(&candidate)?;
         self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
         Ok(())
@@ -547,20 +553,6 @@ impl StoredSessionStateSnapshot {
         validate_supported_snapshot(&candidate)?;
         self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
         Ok(())
-    }
-
-    /// Adds or replaces one exact plugin scope after enforcing snapshot bounds.
-    ///
-    /// # Errors
-    /// Returns a typed error for unsupported envelopes, invalid names, or exceeded bounds.
-    pub fn insert_plugin_state(
-        &mut self,
-        plugin: &str,
-        schema_version: u32,
-        scope: StoredStateScope,
-        payload: serde_json::Value,
-    ) -> Result<(), SessionStateError> {
-        self.set_plugin_state(plugin, schema_version, scope, payload)
     }
 
     /// Removes one exact plugin scope while preserving every sibling entry.
@@ -4763,7 +4755,7 @@ mod tests {
     fn session_state_snapshot_round_trips_unknown_plugin_entries() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(7);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "future_plugin",
                 99,
                 super::StoredStateScope::Root,
@@ -4866,7 +4858,7 @@ mod tests {
         let mut session: TestSession = Session::new("model", "/project");
         let mut snapshot = super::StoredSessionStateSnapshot::new(4);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "todo_write",
                 1,
                 super::StoredStateScope::Root,
@@ -4884,7 +4876,7 @@ mod tests {
     fn session_state_snapshot_supports_both_scopes_for_one_plugin() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "plugin",
                 1,
                 super::StoredStateScope::Root,
@@ -4892,7 +4884,7 @@ mod tests {
             )
             .unwrap();
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "plugin",
                 2,
                 super::StoredStateScope::Session,
@@ -4918,7 +4910,7 @@ mod tests {
     fn session_state_snapshot_absent_requested_scope_is_none() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "todo_write",
                 1,
                 super::StoredStateScope::Root,
@@ -5215,7 +5207,7 @@ mod tests {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         let maximum_name = "x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 &maximum_name,
                 1,
                 super::StoredStateScope::Root,
@@ -5223,7 +5215,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            snapshot.insert_plugin_state(
+            snapshot.set_plugin_state(
                 &"x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES + 1),
                 1,
                 super::StoredStateScope::Root,
@@ -5235,7 +5227,7 @@ mod tests {
         let mut entries = super::StoredSessionStateSnapshot::new(1);
         for index in 0..super::MAX_PLUGIN_STATE_ENTRIES {
             entries
-                .insert_plugin_state(
+                .set_plugin_state(
                     &format!("plugin_{index}"),
                     1,
                     super::StoredStateScope::Root,
@@ -5244,7 +5236,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            entries.insert_plugin_state(
+            entries.set_plugin_state(
                 "one_too_many",
                 1,
                 super::StoredStateScope::Root,
@@ -5262,7 +5254,7 @@ mod tests {
     fn session_state_snapshot_rejects_unsafe_plugin_names(plugin: &str) {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         assert!(matches!(
-            snapshot.insert_plugin_state(
+            snapshot.set_plugin_state(
                 plugin,
                 1,
                 super::StoredStateScope::Root,
@@ -5286,7 +5278,7 @@ mod tests {
             }))
             .unwrap();
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "usable",
                 1,
                 super::StoredStateScope::Root,
@@ -5305,7 +5297,7 @@ mod tests {
     fn session_state_snapshot_enforces_payload_and_aggregate_boundaries() {
         let mut payload = super::StoredSessionStateSnapshot::new(1);
         payload
-            .insert_plugin_state(
+            .set_plugin_state(
                 "maximum",
                 1,
                 super::StoredStateScope::Root,
@@ -5313,7 +5305,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            payload.insert_plugin_state(
+            payload.set_plugin_state(
                 "oversized",
                 1,
                 super::StoredStateScope::Root,
@@ -5325,7 +5317,7 @@ mod tests {
         let mut aggregate = super::StoredSessionStateSnapshot::new(1);
         for index in 0..4 {
             aggregate
-                .insert_plugin_state(
+                .set_plugin_state(
                     &format!("large_{index}"),
                     1,
                     super::StoredStateScope::Root,
@@ -5334,7 +5326,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            aggregate.insert_plugin_state(
+            aggregate.set_plugin_state(
                 "aggregate_overflow",
                 1,
                 super::StoredStateScope::Root,
