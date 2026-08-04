@@ -85,7 +85,7 @@ pub(super) async fn compact_history(
 ) -> Result<(TokenUsage, String), AgentError> {
     run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
 
-    let compact_start = std::time::Instant::now();
+    let compact_start = Instant::now();
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     strip_images(&mut compaction_history);
     strip_thinking(&mut compaction_history);
