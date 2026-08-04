@@ -38,7 +38,10 @@ function M.save(_ctx, slug, content)
   if not dir then
     return nil, err
   end
-  n00n.fs.mkdir(dir, { parents = true })
+  local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
+  if not mkdir_ok then
+    return nil, "mkdir error: " .. tostring(mkdir_err)
+  end
   local path, perr = helpers.safe_resolve(dir, slug .. ".md")
   if not path then
     return nil, perr
@@ -55,15 +58,21 @@ function M.load_state(_ctx, slug)
   if not path then
     return nil, perr
   end
-  local ok, text = pcall(n00n.fs.read, path)
-  if not ok or not text then
-    return nil
+  local ok, text, read_err = pcall(n00n.fs.read, path)
+  if not ok then
+    return nil, "read error: " .. tostring(text)
   end
-  local data = n00n.json.decode(text)
-  if type(data) == "table" then
-    return data
+  if not text then
+    return nil, read_err and ("read error: " .. tostring(read_err)) or nil
   end
-  return nil
+  local data, decode_err = n00n.json.decode(text)
+  if not data then
+    return nil, "decode error: " .. tostring(decode_err)
+  end
+  if type(data) ~= "table" then
+    return nil, "decode error: resume state must be a JSON object"
+  end
+  return data
 end
 
 function M.save_state(_ctx, slug, data)
@@ -71,14 +80,24 @@ function M.save_state(_ctx, slug, data)
   if not dir then
     return nil, err
   end
-  n00n.fs.mkdir(dir, { parents = true })
+  local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
+  if not mkdir_ok then
+    return nil, "mkdir error: " .. tostring(mkdir_err)
+  end
   local path, perr = helpers.safe_resolve(dir, slug .. ".state.json")
   if not path then
     return nil, perr
   end
-  local ok, werr = pcall(n00n.fs.write, path, n00n.json.encode(data))
+  local content, encode_err = n00n.json.encode(data)
+  if not content then
+    return nil, "encode error: " .. tostring(encode_err)
+  end
+  local ok, write_ok, write_err = pcall(n00n.fs.write, path, content)
   if not ok then
-    return nil, tostring(werr)
+    return nil, "write error: " .. tostring(write_ok)
+  end
+  if not write_ok then
+    return nil, "write error: " .. tostring(write_err)
   end
   return true
 end

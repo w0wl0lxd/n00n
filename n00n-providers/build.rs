@@ -83,6 +83,7 @@ fn main() {
     supports_prompt_cache_key: {},
     supports_prompt_cache_breakpoint: {},
     emit_reasoning_content: {},
+    supports_parallel_tool_calls: {},
 }};
 "#,
             get_str("slug"),
@@ -94,6 +95,7 @@ fn main() {
             get_bool("supports_prompt_cache_key"),
             get_bool("supports_prompt_cache_breakpoint"),
             get_bool("emit_reasoning_content"),
+            get_bool("supports_parallel_tool_calls"),
         );
 
         let out_file = out_dir.join(format!("{stem}.rs"));

@@ -66,6 +66,21 @@ impl ToolFilter {
     }
 
     #[must_use]
+    pub fn including(self, names: impl IntoIterator<Item = String>) -> Self {
+        match self {
+            Self::Only(mut allowed) => {
+                for name in names {
+                    if !allowed.contains(&name) {
+                        allowed.push(name);
+                    }
+                }
+                Self::Only(allowed)
+            }
+            other => other,
+        }
+    }
+
+    #[must_use]
     pub fn excluding(self, names: &[&str]) -> Self {
         if names.is_empty() {
             return self;
@@ -156,6 +171,27 @@ impl ToolFilter {
     }
 }
 
+pub fn filter_definitions(definitions: &mut Value, filter: &ToolFilter) {
+    let Some(definitions) = definitions.as_array_mut() else {
+        return;
+    };
+    definitions.retain(|definition| {
+        definition
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| filter.matches(name))
+    });
+}
+
+#[must_use]
+pub fn has_definition(definitions: &Value, name: &str) -> bool {
+    definitions.as_array().is_some_and(|definitions| {
+        definitions
+            .iter()
+            .any(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
+    })
+}
+
 /// One gate for every definitions builder (main loop, headless, Lua): a model
 /// without vision never learns `view_image` exists.
 #[must_use]
@@ -167,6 +203,17 @@ pub fn capability_exclusions(model: &Model) -> &'static [&'static str] {
     }
 }
 
+/// Deferred tools that should be active by default so new features are not
+/// silently disabled. `view_image` is still filtered out for non-vision models.
+#[must_use]
+pub fn default_active_tools() -> ActiveTools {
+    let mut active = ActiveTools::default();
+    active.names.insert(AGENT_CONTROL_TOOL_NAME.to_owned());
+    active.names.insert(BATCH_TOOL_NAME.to_owned());
+    active.names.insert(VIEW_IMAGE_TOOL_NAME.to_owned());
+    active
+}
+
 /// A tool is enabled unless named in `disabled_tools` (config, or the raw
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
@@ -174,6 +221,8 @@ pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
     !disabled_tools.iter().any(|s| s == name)
 }
 
+pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
+pub const BATCH_TOOL_NAME: &str = "batch";
 pub const BASH_TOOL_NAME: &str = "bash";
 pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 pub const EDIT_TOOL_NAME: &str = "edit";
@@ -251,6 +300,40 @@ pub fn timeout_annotation(secs: u64) -> String {
 pub type LocalToolFn = Arc<dyn Fn(&Value) -> Result<String, String> + Send + Sync>;
 pub type LocalTools = Arc<HashMap<String, LocalToolFn>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionIdentity {
+    session_id: SessionRef,
+    root_session_id: SessionRef,
+}
+
+impl SessionIdentity {
+    #[must_use]
+    pub fn root(session_id: SessionRef) -> Self {
+        Self {
+            root_session_id: session_id.clone(),
+            session_id,
+        }
+    }
+
+    #[must_use]
+    pub fn child(session_id: SessionRef, root_session_id: SessionRef) -> Self {
+        Self {
+            session_id,
+            root_session_id,
+        }
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> &SessionRef {
+        &self.session_id
+    }
+
+    #[must_use]
+    pub fn root_session_id(&self) -> &SessionRef {
+        &self.root_session_id
+    }
+}
+
 #[derive(Clone)]
 pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
@@ -272,7 +355,10 @@ pub struct ToolContext {
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub opts: RequestOptions,
     pub subagent_cancels: Arc<CancelMap<String>>,
+    /// Immutable session and root identity of the agent executing this tool.
+    pub identity: Option<SessionIdentity>,
     pub registry: Arc<ToolRegistry>,
+    pub tool_filter: ToolFilter,
     pub workflow: bool,
     pub audience: ToolAudience,
     pub local_tools: LocalTools,
@@ -494,9 +580,13 @@ fn fallback_model() -> Model {
         supports_tool_examples_override: None,
         supports_thinking_override: None,
         supports_vision_override: None,
+        supports_files_override: None,
         pricing: ModelPricing::ZERO,
         max_output_tokens: None,
         context_window: FALLBACK_CONTEXT_WINDOW,
+        thinking_dialect: None,
+        thinking_fields: None,
+        body_override: None,
     }
 }
 
@@ -537,7 +627,9 @@ pub fn interpreter_ctx(
         prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
         opts: RequestOptions::default(),
         subagent_cancels: Arc::new(CancelMap::new()),
+        identity: None,
         registry,
+        tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,
         local_tools: LocalTools::default(),
@@ -577,7 +669,8 @@ pub mod test_support {
 
     use super::{
         AgentMode, Arc, CancelToken, DescriptionContext, FileReadTracker, LazyLock,
-        PermissionManager, ToolContext, ToolRegistry, Value, interpreter_ctx, registry,
+        PermissionManager, SessionIdentity, ToolContext, ToolRegistry, Value, interpreter_ctx,
+        registry,
     };
 
     pub const GUARDED_TOOL_NAME: &str = "guarded_mock";
@@ -653,6 +746,9 @@ pub mod test_support {
             Arc::new(ToolRegistry::new()),
         );
         ctx.tool_use_id = tool_use_id.map(String::from);
+        ctx.identity = Some(SessionIdentity::root(
+            n00n_storage::id::SessionRef::generate(),
+        ));
         ctx
     }
 
@@ -692,6 +788,33 @@ mod tests {
     use super::*;
 
     const LINE_LIMIT: usize = 500;
+
+    #[test]
+    fn root_session_identity_uses_one_id() {
+        let session_id = n00n_storage::id::SessionRef::generate();
+        let identity = SessionIdentity::root(session_id.clone());
+
+        assert_eq!(identity.session_id(), &session_id);
+        assert_eq!(identity.root_session_id(), &session_id);
+    }
+
+    #[test]
+    fn descendant_session_identities_inherit_root_and_remain_distinct() {
+        let root = SessionIdentity::root(n00n_storage::id::SessionRef::generate());
+        let child = SessionIdentity::child(
+            n00n_storage::id::SessionRef::generate(),
+            root.root_session_id().clone(),
+        );
+        let grandchild = SessionIdentity::child(
+            n00n_storage::id::SessionRef::generate(),
+            child.root_session_id().clone(),
+        );
+
+        assert_ne!(child.session_id(), root.session_id());
+        assert_ne!(grandchild.session_id(), child.session_id());
+        assert_eq!(child.root_session_id(), root.root_session_id());
+        assert_eq!(grandchild.root_session_id(), root.root_session_id());
+    }
 
     #[test_case(true  ; "vision_model_keeps_view_image")]
     #[test_case(false ; "text_only_model_loses_view_image")]
@@ -1122,6 +1245,18 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for name in &names {
             assert!(seen.insert(name), "duplicate builtin tool name: {name}");
+        }
+    }
+
+    #[test]
+    fn default_active_tools_include_deferred_tools() {
+        let active = default_active_tools();
+        for name in [
+            AGENT_CONTROL_TOOL_NAME,
+            BATCH_TOOL_NAME,
+            VIEW_IMAGE_TOOL_NAME,
+        ] {
+            assert!(active.names.contains(name), "missing default tool: {name}");
         }
     }
 }

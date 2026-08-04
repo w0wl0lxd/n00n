@@ -209,9 +209,16 @@ impl Provider for Mistral {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
+                opts.message_cache_breakpoints,
+                opts.fast,
             );
-            opts.thinking
-                .apply_reasoning_effort(&mut body, &dialect::HIGH_ONLY, model);
+            opts.thinking.apply_thinking(
+                &mut body,
+                model,
+                &dialect::HIGH_ONLY,
+                &super::reasoning_effort_fields(),
+            );
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             // Convert assistant messages to Mistral's expected format with thinking content
             let messages = body.get_mut("messages").ok_or_else(|| AgentError::Config {
                 message: "missing messages in request body".into(),
@@ -392,6 +399,32 @@ mod tests {
         let mut input_clone = input.clone();
         convert_assistant_messages_in_place(&mut input_clone);
         assert_eq!(input_clone, *expected);
+    }
+
+    #[test]
+    fn mistral_request_emits_parallel_tool_calls() {
+        let provider =
+            OpenAiCompatProvider::new(&CONFIG, super::super::Timeouts::default()).unwrap();
+        let model = Model::from_spec("mistral/mistral-medium-latest").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            0,
+            false,
+        );
+
+        assert_eq!(body["parallel_tool_calls"], true);
     }
 
     #[test_case("mistral/ministral-14b-latest", false ; "ministral_no_thinking")]

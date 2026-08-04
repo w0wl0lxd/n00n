@@ -212,7 +212,7 @@ fn open_credentials_lock(path: &Path) -> Result<File, AgentError> {
     let mut options = OpenOptions::new();
     options.create_new(true).read(true).write(true);
     #[cfg(unix)]
-    options.mode(AUTH_LOCK_MODE);
+    options.mode(AUTH_LOCK_MODE).custom_flags(libc::O_CLOEXEC);
     let file = match options.open(path) {
         Ok(file) => file,
         Err(error)
@@ -346,7 +346,9 @@ fn open_admission_slot(path: &Path) -> Result<File, AgentError> {
     let mut create = OpenOptions::new();
     create.create_new(true).read(true).write(true);
     #[cfg(unix)]
-    create.mode(AUTH_LOCK_MODE).custom_flags(libc::O_NOFOLLOW);
+    create
+        .mode(AUTH_LOCK_MODE)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     match create.open(path) {
         Ok(file) => {
             validate_lock_metadata(&file.metadata()?)?;
@@ -365,7 +367,7 @@ fn open_admission_slot(path: &Path) -> Result<File, AgentError> {
             let mut open = OpenOptions::new();
             open.read(true).write(true);
             #[cfg(unix)]
-            open.custom_flags(libc::O_NOFOLLOW);
+            open.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
             let file = open.open(path)?;
             let opened = file.metadata()?;
             validate_lock_metadata(&opened)?;

@@ -52,13 +52,6 @@ pub(crate) fn telemetry_text(telemetry: &ToolTelemetry) -> String {
     out
 }
 
-pub(crate) fn json_text(value: &serde_json::Value) -> String {
-    match serde_json::to_string_pretty(value) {
-        Ok(s) => s,
-        Err(e) => format!("<invalid JSON: {e}>"),
-    }
-}
-
 fn todo_status_style(status: TodoStatus) -> Style {
     match status {
         TodoStatus::Completed => theme::current().tool_success,
@@ -98,24 +91,8 @@ fn render_todo_list(items: &[TodoItem], max_lines: usize) -> (Vec<Line<'static>>
     (lines, truncated)
 }
 
-fn render_details(
-    raw_input: Option<&serde_json::Value>,
-    output: Option<&ToolOutput>,
-    limit: usize,
-) -> (Vec<Line<'static>>, bool) {
+fn render_details(output: Option<&ToolOutput>, limit: usize) -> (Vec<Line<'static>>, bool) {
     let mut content: Vec<Line<'static>> = Vec::new();
-    if let Some(raw) = raw_input {
-        content.push(Line::from(Span::styled(
-            "Raw input:",
-            theme::current().tool_annotation,
-        )));
-        for line in json_text(raw).lines() {
-            content.push(Line::from(Span::styled(
-                line.to_owned(),
-                theme::current().tool,
-            )));
-        }
-    }
     if let Some(ToolOutput::Image { source, .. }) = output {
         content.push(Line::from(Span::styled(
             "Image source:",
@@ -578,7 +555,6 @@ pub struct ToolContent {
 
 pub fn render_tool_content(
     input: Option<&ToolInput>,
-    raw_input: Option<&serde_json::Value>,
     output: Option<&ToolOutput>,
     highlight: bool,
     limits: RenderLimits,
@@ -599,25 +575,6 @@ pub fn render_tool_content(
         let total = code_lines.len();
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_token(language));
         let (code_result, trunc) = render_code(hl, 1, &code_lines, total, limits.script);
-        truncation.script = trunc;
-        if trunc {
-            truncation_actions.push(TruncationAction {
-                line: lines.len() + code_result.len().saturating_sub(1),
-                section: SectionFlags {
-                    script: true,
-                    output: false,
-                    details: false,
-                },
-            });
-        }
-        lines.extend(code_result);
-    } else if let Some(raw) = raw_input {
-        // No parsed tool input: fall back to the raw JSON in the script section
-        // so the input is still visible.
-        let json = json_text(raw);
-        let code_lines: Vec<String> = json.lines().map(String::from).collect();
-        let total = code_lines.len();
-        let (code_result, trunc) = render_code(None, 1, &code_lines, total, limits.script);
         truncation.script = trunc;
         if trunc {
             truncation_actions.push(TruncationAction {
@@ -705,8 +662,7 @@ pub fn render_tool_content(
         });
     }
     lines.extend(output_lines);
-    let detail_raw = if input.is_some() { raw_input } else { None };
-    let (details_lines, details_trunc) = render_details(detail_raw, output, limits.details);
+    let (details_lines, details_trunc) = render_details(output, limits.details);
     if !lines.is_empty() && !details_lines.is_empty() {
         lines.push(Line::default());
     }
@@ -780,7 +736,6 @@ mod tests {
     use super::*;
     use crate::markdown::TRUNCATION_PREFIX;
     use n00n_agent::{GrepMatchGroup, ImageMediaType, ImageSource};
-    use serde_json::json;
     use test_case::test_case;
 
     fn plain(text: &str) -> DiffSpan {
@@ -1040,23 +995,46 @@ mod tests {
     }
 
     #[test]
-    fn render_details_collapsed_raw_input_shows_label_and_notice() {
-        let raw = json!({"command": "echo hi", "args": ["a", "b", "c"]});
-        let (lines, truncated) = render_details(Some(&raw), None, 1);
-        assert!(truncated);
-        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("Raw input:"));
-        assert!(text.contains(TRUNCATION_PREFIX));
+    fn missing_structured_input_does_not_render_generic_content() {
+        let content = render_tool_content(
+            None,
+            None,
+            false,
+            RenderLimits::new(SectionFlags::default(), 10),
+        );
+
+        assert!(content.lines.is_empty());
+        assert_eq!(content.truncation, SectionFlags::default());
     }
 
     #[test]
-    fn render_details_expanded_raw_input_shows_json() {
-        let raw = json!({"command": "echo hi"});
-        let (lines, truncated) = render_details(Some(&raw), None, usize::MAX);
-        assert!(!truncated);
-        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("Raw input:"));
-        assert!(text.contains("\"command\": \"echo hi\""));
+    fn structured_input_renders_only_specialized_content() {
+        let input = ToolInput::Code {
+            language: "python".into(),
+            code: "print('hello')".into(),
+        };
+        let content = render_tool_content(
+            Some(&input),
+            None,
+            false,
+            RenderLimits::new(
+                SectionFlags {
+                    script: true,
+                    output: true,
+                    details: true,
+                },
+                10,
+            ),
+        );
+        let text = content
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("print('hello')"));
+        assert!(!text.contains("Raw input:"));
     }
 
     #[test]
@@ -1067,7 +1045,7 @@ mod tests {
             text: "[image: pic.png 1KB]".into(),
             telemetry: None,
         };
-        let (lines, truncated) = render_details(None, Some(&output), usize::MAX);
+        let (lines, truncated) = render_details(Some(&output), usize::MAX);
         assert!(!truncated);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("Image source:"));

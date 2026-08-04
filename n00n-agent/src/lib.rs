@@ -18,7 +18,9 @@ pub use agent::{
     SharedTranscript, find_subdirectory_instructions, is_instruction_file,
 };
 pub use cancel::{CancelMap, CancelToken, CancelTrigger, PreDispatchGate};
-pub use fusion::{FusionLane, FusionRoute, FusionState, FusionUsageStats};
+pub use fusion::{
+    FusionFailure, FusionLane, FusionPhase, FusionRoute, FusionState, FusionUsageStats,
+};
 pub use n00n_config::{AgentConfig, FusionConfig, PermissionsConfig, ToolOutputLines};
 pub mod command;
 pub mod diff;
@@ -37,6 +39,8 @@ use std::path::{Path, PathBuf};
 pub use n00n_providers::AgentError;
 use n00n_providers::Message;
 pub use n00n_providers::{ImageMediaType, ImageSource, ThinkingConfig};
+use n00n_storage::StateDir;
+use n00n_storage::sessions::{SessionMeta, StoredMode};
 pub use types::{
     AgentEvent, BufferSnapshot, Envelope, EventSender, GrepFileEntry, GrepLine, GrepMatchGroup,
     InstructionBlock, NO_FILES_FOUND, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle,
@@ -64,6 +68,35 @@ impl AgentMode {
     #[must_use]
     pub fn is_readonly(&self) -> bool {
         matches!(self, Self::Plan(_) | Self::Research)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoredModeError {
+    #[error("failed to allocate a plan path for restored session: {0}")]
+    PlanPath(#[from] n00n_storage::StorageError),
+}
+
+/// Convert stored session metadata into a runtime mode and optional plan path.
+///
+/// # Errors
+/// Returns an error when a legacy Plan session needs a path but one cannot be
+/// allocated. Falling back would silently write outside the session's state.
+pub fn mode_and_plan_from_stored(
+    state_dir: &StateDir,
+    meta: &SessionMeta,
+) -> Result<(AgentMode, Option<PathBuf>), StoredModeError> {
+    let plan_path = meta.plan_path.as_ref().map(PathBuf::from);
+    match meta.mode {
+        Some(StoredMode::Build) | None => Ok((AgentMode::Build, plan_path)),
+        Some(StoredMode::Plan) => {
+            let path = match plan_path {
+                Some(path) => path,
+                None => n00n_storage::plans::new_plan_path(state_dir)?,
+            };
+            Ok((AgentMode::Plan(path.clone()), Some(path)))
+        }
+        Some(StoredMode::Research) => Ok((AgentMode::Research, plan_path)),
     }
 }
 
@@ -100,4 +133,5 @@ pub struct AgentInput {
     pub workflow: bool,
     pub control: bool,
     pub prompt: Option<Box<McpPromptRef>>,
+    pub plan_path: Option<PathBuf>,
 }
