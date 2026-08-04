@@ -540,9 +540,13 @@ impl McpSession {
 }
 
 impl McpHandle {
-    pub fn send(&self, cmd: McpCommand) {
+    pub fn send(&self, cmd: McpCommand) -> Result<(), flume::TrySendError<McpCommand>> {
+        self.cmd_tx.try_send(cmd)
+    }
+
+    pub fn send_shutdown(&self, cmd: McpCommand) {
         if let Err(e) = self.cmd_tx.try_send(cmd) {
-            warn!(error = %e, "MCP command loop is gone");
+            warn!(error = %e, "MCP command loop is gone during shutdown");
         }
     }
 
@@ -614,7 +618,7 @@ impl McpHandle {
 
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = flume::bounded(1);
-        self.send(McpCommand::Shutdown { ack: ack_tx });
+        self.send_shutdown(McpCommand::Shutdown { ack: ack_tx });
         let finished = futures_lite::future::or(
             async {
                 let _ = ack_rx.recv_async().await;
@@ -2013,7 +2017,7 @@ mod tests {
                 handle,
             } = prepare_manager(config).unwrap();
             let (ack_tx, ack_rx) = flume::bounded(1);
-            handle.send(McpCommand::Shutdown { ack: ack_tx });
+            handle.send_shutdown(McpCommand::Shutdown { ack: ack_tx });
 
             assert!(!initialize_deferred(&mut inner, &index, &snapshot, &cmd_rx).await);
             assert_eq!(ack_rx.recv_async().await, Ok(()));

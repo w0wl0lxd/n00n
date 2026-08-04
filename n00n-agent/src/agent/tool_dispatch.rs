@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
@@ -39,7 +39,7 @@ const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_trigg
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FusionDispatchAuth {
     pub phase: crate::fusion::FusionPhase,
     pub lane: crate::fusion::FusionLane,
@@ -433,7 +433,6 @@ async fn run_authorized(
             Ok(inv) => inv,
             Err(e) => {
                 warn!(
-                    tool = %name,
                     source = %entry.source.as_log_field(),
                     input_preview = %crate::tools::schema::preview(&redact_json_value_for_log(input).to_string()),
                     error = %e,
@@ -776,6 +775,18 @@ fn fusion_brief_is_authorized(input: &Value) -> bool {
     let Some(brief) = input.as_object() else {
         return false;
     };
+    // Reject unknown fields to prevent lead-only work from bypassing authorization
+    let allowed_fields: std::collections::HashSet<&str> = FUSION_REQUIRED_BRIEF_FIELDS
+        .iter()
+        .chain(FUSION_OPTIONAL_BRIEF_FIELDS)
+        .copied()
+        .collect();
+    if brief
+        .keys()
+        .any(|key| !allowed_fields.contains(key.as_str()))
+    {
+        return false;
+    }
     let required_allowed = FUSION_REQUIRED_BRIEF_FIELDS.iter().all(|field| {
         brief
             .get(*field)
@@ -818,22 +829,23 @@ pub(super) async fn process_tool_calls(
     let mut immediate_errors: Vec<(usize, ToolDoneEvent)> = Vec::new();
     let mut skill_calls: Vec<PendingToolCall> = Vec::new();
     let mut non_skill_calls: Vec<PendingToolCall> = Vec::new();
-    let mut fusion_guard = fusion.map(|auth| {
+    let mut fusion_guard = fusion.as_ref().map(|auth| {
         crate::fusion::FusionDispatchGuard::new(
             ctx.config.fusion.enabled,
             auth.classification,
             ctx.audience,
         )
     });
-    let fusion_lifecycle_ok = fusion.is_some_and(|auth| {
+    let fusion_lifecycle_ok = fusion.as_ref().is_some_and(|auth| {
         auth.phase == crate::fusion::FusionPhase::Planning
             && auth.lane == crate::fusion::FusionLane::Lead
     });
 
     for (position, id, name, mut input) in tool_uses {
         debug!(
-            tool = %name,
-            id = %id,
+            tool_index = position,
+            has_tool_name = !name.is_empty(),
+            tool_name_length = name.len(),
             input_preview = %crate::tools::schema::preview(&redact_json_value_for_log(&input).to_string()),
             "parsing tool call"
         );
@@ -844,7 +856,6 @@ pub(super) async fn process_tool_calls(
         if is_fusion_delegate
             && ctx.config.fusion.enabled
             && let Value::Object(arguments) = &mut input
-            && !arguments.contains_key("model_tier")
         {
             let tier = match ctx.config.fusion.sidekick_tier {
                 n00n_config::providers::Tier::Weak | n00n_config::providers::Tier::Compaction => {

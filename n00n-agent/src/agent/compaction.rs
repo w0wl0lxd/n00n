@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::env;
+use std::time::Instant;
 
 use n00n_config::CompactionBuffer;
 use n00n_providers::{
@@ -170,7 +171,7 @@ pub(super) async fn compact_history(
 fn finish_compact(
     response: StreamResponse,
     history: &mut History,
-    compact_start: std::time::Instant,
+    compact_start: Instant,
     model: &Model,
 ) -> TokenUsage {
     let StreamResponse {
