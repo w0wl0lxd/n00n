@@ -167,10 +167,12 @@ end
 
 local function has_word(text, word)
   text = string.lower(text or "")
+  -- Escape word for safe pattern matching
+  local escaped = word:gsub("([^%w])", "%%%1")
   return text == word
-    or text:match("^" .. word .. "[%s:_/%-]")
-    or text:match("[%s:_/%-]" .. word .. "[%s:_/%-]")
-    or text:match("[%s:_/%-]" .. word .. "$")
+    or text:match("^" .. escaped .. "%W")
+    or text:match("%W" .. escaped .. "%W")
+    or text:match("%W" .. escaped .. "$")
 end
 
 local function descendant_category(session)
@@ -181,7 +183,7 @@ local function descendant_category(session)
   if kind == "workflow" then
     return "workflows"
   end
-  local text = table.concat({ session.kind or "", session.title or "", session.display_title or "" }, " ")
+  local text = table.concat({ session.kind or "", session.display_title or session.title or "" }, " ")
   for _, category in ipairs(NAMED_CATEGORIES) do
     if has_word(text, category) then
       return category
