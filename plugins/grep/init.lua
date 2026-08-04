@@ -208,13 +208,11 @@ n00n.api.register_tool({
 
   schema = {
     type = "object",
+    required = { "pattern" },
     properties = {
-      pattern = { type = "string", required = true },
-      path = { type = "string" },
-      include = {
-        type = "string",
-        alias = "glob",
-      },
+      pattern = { type = "string", required = true, description = "Regex pattern. Do not wrap in quotes." },
+      path = { type = "string", description = "Directory or file to search." },
+      include = { type = "string", alias = "glob", description = "Glob pattern (e.g. '*.rs')." },
       context_before = { type = "integer" },
       context_after = { type = "integer" },
       limit = { type = "integer" },
