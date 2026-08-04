@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785808818160,
+  "lastUpdate": 1785815541266,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -13711,6 +13711,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 140362,
             "range": "± 18432",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "84c2c28825faced46d491f85be970b32b0c5ee9c",
+          "message": "Merge pull request #320 from w0wl0lxd/feat/plugin-session-state-runtime\n\nfeat(lua): add scoped plugin session state runtime",
+          "timestamp": "2026-08-03T23:35:54-04:00",
+          "tree_id": "1e08c317be61926e519442af589717413b9fadc2",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/84c2c28825faced46d491f85be970b32b0c5ee9c"
+        },
+        "date": 1785815539864,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 8426589,
+            "range": "± 110410",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1717091,
+            "range": "± 25793",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1717158,
+            "range": "± 12889",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9475873,
+            "range": "± 25319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3377220,
+            "range": "± 11487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3350648,
+            "range": "± 36411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 856795,
+            "range": "± 2515",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 104862,
+            "range": "± 23251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 104660,
+            "range": "± 7010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1260740,
+            "range": "± 3130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 532122,
+            "range": "± 990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 531006,
+            "range": "± 1202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 65764,
+            "range": "± 200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 100937,
+            "range": "± 6740",
             "unit": "ns/iter"
           }
         ]
