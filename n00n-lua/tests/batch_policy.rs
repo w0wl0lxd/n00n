@@ -414,10 +414,7 @@ fn restore_accepts_tool_uses_alias_with_state() {
 #[test]
 fn restore_accepts_tool_uses_alias_without_state() {
     let (_reg, host) = load_batch_host();
-    let output = format!(
-        "## hdrtool\nline one\nline two\n\n\n{}",
-        format!(SUMMARY_ALL_OK_FMT, 1)
-    );
+    let output = format!("## hdrtool\nline one\nline two\n\n\n{}", summary_all_ok(1));
     let lines = restore_snapshot_lines(
         &host,
         json!({ "tool_uses": [{ "tool": "hdrtool", "parameters": { "x": "A" } }] }),
