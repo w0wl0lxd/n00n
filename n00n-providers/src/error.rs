@@ -246,7 +246,8 @@ impl AgentError {
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
             | Self::HistoryReplayRequired { .. }
-            | Self::RequestSent { .. } => false,
+            | Self::RequestSent { .. }
+            | Self::SetupRequired { .. } => false,
         }
     }
 
