@@ -9,7 +9,8 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry, ToolsSnapshot,
+    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
+    ToolsSnapshot,
 };
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -55,7 +56,7 @@ pub(super) struct AgentLoop {
     agent_tx: flume::Sender<Envelope>,
     answer_rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
     queue: Arc<QueueReceiver>,
-    session_id: Option<SessionRef>,
+    identity: Option<SessionIdentity>,
     timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
     lua_handle: Option<EventHandle>,
@@ -144,7 +145,7 @@ impl AgentLoop {
             agent_tx,
             answer_rx: Arc::new(async_lock::Mutex::new(answer_rx)),
             queue,
-            session_id,
+            identity: session_id.map(SessionIdentity::root),
             timeouts,
             openai_options,
             lua_handle,
@@ -342,7 +343,7 @@ impl AgentLoop {
                 config: Arc::new(self.config.clone()),
                 tool_output_lines: self.tool_output_lines,
                 permissions: Arc::clone(&self.permissions),
-                session_id: self.session_id.clone(),
+                identity: self.identity.clone(),
                 timeouts: self.timeouts,
                 file_tracker: Arc::clone(&self.file_tracker),
                 prompt_slots: Arc::new(prompt_slots),
