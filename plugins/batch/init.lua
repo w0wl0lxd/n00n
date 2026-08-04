@@ -53,20 +53,14 @@ local description = string.format(
 
 local schema = {
   type = "object",
-  additionalProperties = false,
-  required = { "tool_calls" },
   properties = {
     tool_calls = {
       type = "array",
+      description = "Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'.",
       required = true,
+      alias = "tool_uses",
       items = {
-        type = "object",
-        additionalProperties = false,
-        required = { "tool", "parameters" },
-        properties = {
-          tool = { type = "string", required = true },
-          parameters = { type = "object", required = true, properties = {} },
-        },
+        description = "Tool invocation: {tool, parameters} or flat {tool, ...params}.",
       },
     },
   },
@@ -74,9 +68,9 @@ local schema = {
 
 --- Input normalization (pure) ---------------------------------------------
 
--- Batch entries are strictly { tool = string, parameters = object }.
--- The normalization code still tolerates flat fields for backward
--- compatibility, but new schemas should use the nested 'parameters' form.
+-- Models send entries in two shapes, { tool, parameters } and flat
+-- { tool, ...params }, so accept either, or even both merged, as long
+-- as no key appears twice.
 local function normalize_entry(entry)
   if type(entry) ~= "table" then
     return nil, "batch entry must be an object"
@@ -480,9 +474,15 @@ local function legacy_restore(children, output, tol)
   return buf
 end
 
+-- Restore/header see persisted raw model JSON; accept the schema alias
+-- `tool_uses` the same way live `parse`/`validate` remaps it.
+local function tool_calls_of(input)
+  return input.tool_calls or input.tool_uses or {}
+end
+
 local function restore(input, output, _is_error, rctx)
   local tol = rctx:tool_output_lines()
-  local children = prepare_children(input.tool_calls or {})
+  local children = prepare_children(tool_calls_of(input))
   if not children then
     return ToolView.restore(output, { max_lines = tol.other, keep = "head" })
   end
@@ -508,10 +508,9 @@ n00n.api.register_tool({
   kind = "execute",
   audiences = { "main", "research_sub", "general_sub" },
   defer_loading = true,
-  namespace = "agent",
   schema = schema,
   header = function(input)
-    return #(input.tool_calls or {}) .. " tools"
+    return #tool_calls_of(input) .. " tools"
   end,
   handler = handler,
   restore = restore,

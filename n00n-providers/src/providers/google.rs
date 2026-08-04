@@ -15,9 +15,10 @@ use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
+use crate::types::{ThinkingFieldConfig, ToggleEntry};
 use crate::{
     AgentError, CacheHealth, CacheKind, ContentBlock, Message, ProviderEvent, RequestOptions, Role,
-    StopReason, StreamResponse, System, ThinkingConfig, TokenUsage,
+    StopReason, StreamResponse, System, ThinkingConfig, TokenUsage, dialect,
 };
 
 use super::{
@@ -28,6 +29,9 @@ use super::{
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const ENV_VAR: &str = "GEMINI_API_KEY";
 const FLASH_MAX_THINKING: u32 = 24_576;
+const THINKING_BUDGET_PATH: &str = "generationConfig.thinkingConfig.thinkingBudget";
+const INCLUDE_THOUGHTS_PATH: &str = "generationConfig.thinkingConfig.includeThoughts";
+const CONTENTS_FIELD: &str = "contents";
 const PRO_MAX_THINKING: u32 = 32_768;
 const CACHE_PREFIX_LEN: usize = 3;
 const CACHE_TTL_SECONDS: u64 = 300;
@@ -42,13 +46,22 @@ fn supports_explicit_cache(model_id: &str) -> bool {
     !model_id.starts_with("gemini-2.0-flash-lite")
 }
 
-fn max_thinking(model: &Model) -> u32 {
+fn google_fields(model: &Model) -> ThinkingFieldConfig {
     let cap = if model.id.contains("flash") {
         FLASH_MAX_THINKING
     } else {
         PRO_MAX_THINKING
     };
-    model.max_thinking_budget().map_or(cap, |m| m.min(cap))
+    ThinkingFieldConfig {
+        budget_path: Some(THINKING_BUDGET_PATH.into()),
+        budget_max: Some(cap),
+        toggles: vec![ToggleEntry {
+            path: INCLUDE_THOUGHTS_PATH.into(),
+            adaptive: Some(json!(true)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
 }
 
 fn cached_content_metadata(cached: &Value) -> Result<(String, u32), AgentError> {
@@ -414,7 +427,7 @@ impl Google {
             body["systemInstruction"] = json!({"parts": [{"text": system_text}]});
         }
 
-        thinking.apply_google_thinking(&mut body, max_thinking(model));
+        thinking.apply_thinking(&mut body, model, &dialect::STANDARD, &google_fields(model));
 
         if let Some(max_output) = model.max_output_tokens {
             body["generationConfig"]["maxOutputTokens"] = json!(max_output);
@@ -425,6 +438,7 @@ impl Google {
             body["tools"] = json!([{"functionDeclarations": tool_decls}]);
         }
 
+        super::apply_body_overrides(&mut body, model, &[CONTENTS_FIELD]);
         body
     }
 
@@ -1079,6 +1093,43 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    #[test_case(ThinkingConfig::Off,           &json!({})                                                                  ; "off_sends_nothing")]
+    #[test_case(ThinkingConfig::Adaptive,      &json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive_asks_for_thoughts")]
+    #[test_case(ThinkingConfig::Budget(4096),  &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}})  ; "budget")]
+    #[test_case(ThinkingConfig::Budget(99_999), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}}) ; "budget_clamped_to_half_window")]
+    fn google_thinking_layout(config: ThinkingConfig, expected: &Value) {
+        let model = test_model();
+        let mut body = json!({});
+        config.apply_thinking(
+            &mut body,
+            &model,
+            &dialect::STANDARD,
+            &google_fields(&model),
+        );
+        assert_eq!(body, *expected);
+    }
+
+    /// Google documents a hard `thinkingBudget` ceiling per family, below the
+    /// generic half-output-window rule for wide-output models.
+    #[test_case("gemini-2.5-flash", FLASH_MAX_THINKING ; "flash")]
+    #[test_case("gemini-2.5-pro",   PRO_MAX_THINKING   ; "pro")]
+    fn google_budget_cap_follows_family(model_id: &str, expected: u32) {
+        let mut model = test_model();
+        model.id = model_id.into();
+        model.max_output_tokens = Some(u32::MAX);
+        let mut body = json!({});
+        ThinkingConfig::Budget(u32::MAX).apply_thinking(
+            &mut body,
+            &model,
+            &dialect::STANDARD,
+            &google_fields(&model),
+        );
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            expected
+        );
+    }
+
     fn test_model() -> Model {
         Model {
             id: "gemini-2.5-flash".into(),
@@ -1092,6 +1143,9 @@ mod tests {
             pricing: ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 1_048_576,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 

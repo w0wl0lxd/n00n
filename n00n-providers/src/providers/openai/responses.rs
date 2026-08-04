@@ -11,7 +11,9 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::providers::{DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, ResolvedAuth, trim_tool_description};
-use crate::types::{ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX};
+use crate::types::{
+    ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX, ThinkingFieldConfig,
+};
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
     RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
@@ -25,6 +27,8 @@ const PROMPT_CACHE_TTL: &str = "30m";
 const MAX_SAFETY_IDENTIFIER_CHARS: usize = 64;
 pub(super) const MODERATION_MODEL: &str = "omni-moderation-latest";
 const OPENAI_BUILTIN_ORIGIN: &str = "openai";
+const INPUT_FIELD: &str = "input";
+const REASONING_EFFORT_PATH: &str = "reasoning.effort";
 
 pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
     stream_timeout
@@ -99,9 +103,16 @@ pub(crate) fn build_body(
 
     // Reasoning effort with extended dialect for xhigh/max
     let extras = opts.thinking.extras();
-    if let Some(effort) = opts.thinking.effort_str(&dialect::OPENAI_EXTENDED, model) {
-        body["reasoning"]["effort"] = json!(effort);
-    }
+    let reasoning_fields = ThinkingFieldConfig {
+        effort_path: Some(REASONING_EFFORT_PATH.into()),
+        ..Default::default()
+    };
+    opts.thinking.apply_thinking(
+        &mut body,
+        model,
+        &dialect::OPENAI_EXTENDED,
+        &reasoning_fields,
+    );
 
     // Reasoning mode and context from extras
     if let Some(mode) = extras.reasoning_mode {
@@ -125,6 +136,7 @@ pub(crate) fn build_body(
         }
     }
 
+    super::super::apply_body_overrides(&mut body, model, &[INPUT_FIELD]);
     body
 }
 
