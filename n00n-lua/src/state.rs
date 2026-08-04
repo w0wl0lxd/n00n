@@ -220,7 +220,7 @@ impl PluginStateStore {
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, PluginStateError> {
         let mut inner = self.lock();
-        let mut candidate = candidate_for(&inner, identity, None);
+        let mut candidate = candidate_for(&inner, identity, None)?;
         candidate.set_state_revision(revision)?;
         inner.bases.insert(identity.clone(), candidate.clone());
         Ok(candidate)
@@ -244,7 +244,7 @@ fn candidate_for(
     inner: &StateInner,
     identity: &PluginStateIdentity,
     skipped: Option<&StateKey>,
-) -> StoredSessionStateSnapshot {
+) -> Result<StoredSessionStateSnapshot, PluginStateError> {
     let mut candidate = inner
         .bases
         .get(identity)
@@ -259,17 +259,17 @@ fn candidate_for(
             continue;
         }
         if let Some(value) = inner.values.get(key) {
-            let _ = candidate.set_plugin_state(
+            candidate.set_plugin_state(
                 &key.plugin,
                 PLUGIN_STATE_SCHEMA_VERSION,
                 key.scope.stored(),
                 value.clone(),
-            );
+            )?;
         } else {
-            let _ = candidate.remove_plugin_state(&key.plugin, key.scope.stored());
+            candidate.remove_plugin_state(&key.plugin, key.scope.stored())?;
         }
     }
-    candidate
+    Ok(candidate)
 }
 
 fn validate_replacement(
@@ -278,7 +278,7 @@ fn validate_replacement(
     replacement_key: &StateKey,
     replacement_value: &Value,
 ) -> Result<(), PluginStateError> {
-    let mut candidate = candidate_for(inner, identity, Some(replacement_key));
+    let mut candidate = candidate_for(inner, identity, Some(replacement_key))?;
     candidate.set_plugin_state(
         &replacement_key.plugin,
         PLUGIN_STATE_SCHEMA_VERSION,
@@ -305,7 +305,7 @@ fn validate_removal(
     identity: &PluginStateIdentity,
     removal_key: &StateKey,
 ) -> Result<(), PluginStateError> {
-    let mut candidate = candidate_for(inner, identity, Some(removal_key));
+    let mut candidate = candidate_for(inner, identity, Some(removal_key))?;
     candidate.remove_plugin_state(&removal_key.plugin, removal_key.scope.stored())?;
     Ok(())
 }
