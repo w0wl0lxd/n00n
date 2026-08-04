@@ -54,8 +54,8 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    AgentEvent, Envelope, ImageSource, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
-    PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
+    AgentEvent, Envelope, FusionPhase, ImageSource, McpConfigErrors, McpPromptInfo,
+    McpSnapshotReader, PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
@@ -254,6 +254,7 @@ pub struct App {
     pub(super) plan_form: PlanForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
+    pub(super) fusion_phase: Option<FusionPhase>,
     pub(crate) state: session_state::SessionState,
     pub exit_request: ExitRequest,
     pub(crate) exit_on_done: bool,
@@ -371,6 +372,7 @@ impl App {
             plan_form: PlanForm::new(),
             status_bar: StatusBar::new(ui_config.flash_duration()),
             status: Status::Idle,
+            fusion_phase: None,
             state,
             exit_request: ExitRequest::None,
             exit_on_done: false,
@@ -1424,6 +1426,7 @@ impl App {
             .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
         self.queue.clear();
         self.status = Status::Idle;
+        self.fusion_phase = None;
         vec![Action::CancelAgent {
             run_id: cancelled_run,
         }]
@@ -1642,35 +1645,49 @@ impl App {
 
         if chat_idx == 0 {
             match &envelope.event {
-                AgentEvent::Done {
-                    fusion: Some(stats),
-                    ..
-                } => {
-                    self.state.session.meta.fusion =
-                        Some(n00n_storage::sessions::StoredFusionUsage {
-                            lead_cost: stats.lead_cost,
-                            sidekick_cost: stats.sidekick_cost,
-                            lead_usage: StoredTokenUsage {
-                                input: stats.lead_usage.input,
-                                output: stats.lead_usage.output,
-                                cache_creation: stats.lead_usage.cache_creation,
-                                cache_read: stats.lead_usage.cache_read,
-                            },
-                            sidekick_usage: StoredTokenUsage {
-                                input: stats.sidekick_usage.input,
-                                output: stats.sidekick_usage.output,
-                                cache_creation: stats.sidekick_usage.cache_creation,
-                                cache_read: stats.sidekick_usage.cache_read,
-                            },
-                            delegation_count: stats.delegation_count,
-                            compact_count: stats.compact_count,
-                            final_lane: stats.final_lane.as_str().into(),
-                        });
+                AgentEvent::FusionPhase { phase, .. } => {
+                    self.fusion_phase = match phase {
+                        FusionPhase::Idle
+                        | FusionPhase::Complete
+                        | FusionPhase::Cancelled
+                        | FusionPhase::Failed => None,
+                        phase => Some(*phase),
+                    };
                 }
-                AgentEvent::Done { fusion: None, .. } => {
-                    self.state.session.meta.fusion = None;
+                AgentEvent::Done { .. } | AgentEvent::Error { .. } => {
+                    self.fusion_phase = None;
                 }
                 _ => {}
+            }
+
+            if let AgentEvent::Done {
+                fusion: Some(stats),
+                ..
+            } = &envelope.event
+            {
+                let stored = self
+                    .state
+                    .session
+                    .meta
+                    .fusion
+                    .get_or_insert_with(Default::default);
+                stored.lead_cost += stats.lead_cost;
+                stored.sidekick_cost += stats.sidekick_cost;
+                stored.lead_usage += StoredTokenUsage {
+                    input: stats.lead_usage.input,
+                    output: stats.lead_usage.output,
+                    cache_creation: stats.lead_usage.cache_creation,
+                    cache_read: stats.lead_usage.cache_read,
+                };
+                stored.sidekick_usage += StoredTokenUsage {
+                    input: stats.sidekick_usage.input,
+                    output: stats.sidekick_usage.output,
+                    cache_creation: stats.sidekick_usage.cache_creation,
+                    cache_read: stats.sidekick_usage.cache_read,
+                };
+                stored.delegation_count += stats.delegation_count;
+                stored.compact_count += stats.compact_count;
+                stored.final_lane = stats.final_lane.as_str().into();
             }
         }
 

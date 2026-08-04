@@ -1054,6 +1054,7 @@ impl EventPump {
             | AgentEvent::QueueItemConsumed { .. }
             | AgentEvent::AutoCompacting
             | AgentEvent::CompactionDone
+            | AgentEvent::FusionPhase { .. }
             | AgentEvent::AuthRequired
             | AgentEvent::SubagentInputRequired { .. }
             | AgentEvent::SubagentHistory { .. }

@@ -18,7 +18,7 @@ NEVER generate/guess URLs unless for programming help.
 - Read before editing; check context/imports to match conventions.
 - Prefer edit/multiedit over write; targeted edits use fewer tokens.
 - NEVER create files unless necessary. Prefer editing existing files.
-- Prefer **codegraph/index/semble** over broad reads, **bash** (rtk except jq/yq) for shell, and **thoughtbox** for reasoning.
+- Prefer **explore/index/arbor/codegraph/semblem** for codebase questions, then **read**, then **bash** (rtk except jq/yq) for shell, and **thoughtbox** for reasoning.
 {{tool_usage}}
 
 {{efficient_tools}}

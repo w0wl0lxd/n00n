@@ -203,7 +203,7 @@ impl Cursor {
     ) -> Result<StreamResponse, AgentError> {
         let prompt = self.build_prompt(messages, system, session_id)?;
         let mut child = self
-            .build_command(model, opts, prompt, session_id)?
+            .build_command(model, &opts, prompt, session_id)?
             .spawn()
             .map_err(|e| AgentError::Config {
                 message: format!("{SPAWN_FAILED}: {e}"),
@@ -415,7 +415,7 @@ impl Cursor {
     fn build_command(
         &self,
         model: &Model,
-        opts: RequestOptions,
+        opts: &RequestOptions,
         prompt: String,
         session_id: Option<&SessionRef>,
     ) -> Result<Command, AgentError> {
@@ -837,7 +837,7 @@ fn map_stderr_error(stderr: &str) -> AgentError {
     }
 }
 
-fn format_model_id(model: &Model, opts: RequestOptions) -> String {
+fn format_model_id(model: &Model, opts: &RequestOptions) -> String {
     let id = &model.id;
     if id.contains('[') {
         return id.clone();
@@ -851,9 +851,13 @@ fn format_model_id(model: &Model, opts: RequestOptions) -> String {
 
     let effort = match opts.thinking {
         ThinkingConfig::Off => None,
-        ThinkingConfig::Adaptive | ThinkingConfig::Effort(Effort::Medium) => Some("medium"),
-        ThinkingConfig::Effort(Effort::Minimal | Effort::Low) => Some("low"),
+        ThinkingConfig::Adaptive
+        | ThinkingConfig::Effort(Effort::Medium)
+        | ThinkingConfig::WithExtras(Effort::Medium, _) => Some("medium"),
+        ThinkingConfig::Effort(Effort::Minimal | Effort::Low)
+        | ThinkingConfig::WithExtras(Effort::Minimal | Effort::Low, _) => Some("low"),
         ThinkingConfig::Effort(Effort::High | Effort::XHigh | Effort::Max)
+        | ThinkingConfig::WithExtras(Effort::High | Effort::XHigh | Effort::Max, _)
         | ThinkingConfig::Budget(_) => Some("high"),
     };
 
@@ -902,6 +906,15 @@ fn append_content_block(prompt: &mut String, block: &ContentBlock) {
             prompt.push_str(&source.to_data_url());
             prompt.push(']');
         }
+        ContentBlock::File { source } => {
+            prompt.push_str("\n[file: ");
+            if let Some(id) = source.identifier() {
+                prompt.push_str(id);
+            } else {
+                prompt.push_str("unknown");
+            }
+            prompt.push(']');
+        }
     }
 }
 
@@ -934,7 +947,8 @@ fn env_flag(name: &str, default: bool) -> bool {
 mod tests {
     use super::*;
     use crate::model::ModelPricing;
-    use crate::types::SystemBlock;
+    use crate::types::{SystemBlock, ThinkingExtras};
+    use test_case::test_case;
 
     fn test_cursor() -> Cursor {
         Cursor {
@@ -959,9 +973,13 @@ mod tests {
             supports_tool_examples_override: None,
             supports_thinking_override: None,
             supports_vision_override: None,
+            supports_files_override: None,
             pricing: ModelPricing::ZERO,
             max_output_tokens: Some(32_768),
             context_window: 128_000,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 
@@ -1003,8 +1021,9 @@ mod tests {
     #[test]
     fn format_model_id_passthrough_with_brackets() {
         let model = test_model("claude-opus-4-8[context=1m,effort=high]");
+        let opts = RequestOptions::default();
         assert_eq!(
-            format_model_id(&model, RequestOptions::default()),
+            format_model_id(&model, &opts),
             "claude-opus-4-8[context=1m,effort=high]"
         );
     }
@@ -1016,16 +1035,28 @@ mod tests {
             thinking: ThinkingConfig::Effort(Effort::High),
             ..Default::default()
         };
-        assert_eq!(format_model_id(&model, opts), "composer-2.5[effort=high]");
+        assert_eq!(format_model_id(&model, &opts), "composer-2.5[effort=high]");
+    }
+
+    #[test_case(Effort::Low, "low" ; "low")]
+    #[test_case(Effort::Medium, "medium" ; "medium")]
+    fn format_model_id_preserves_with_extras_effort(effort: Effort, expected: &str) {
+        let model = test_model("composer-2.5");
+        let opts = RequestOptions {
+            thinking: ThinkingConfig::WithExtras(effort, ThinkingExtras::default()),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_model_id(&model, &opts),
+            format!("composer-2.5[effort={expected}]")
+        );
     }
 
     #[test]
     fn format_model_id_off_keeps_plain_id() {
         let model = test_model("composer-2.5");
-        assert_eq!(
-            format_model_id(&model, RequestOptions::default()),
-            "composer-2.5"
-        );
+        let opts = RequestOptions::default();
+        assert_eq!(format_model_id(&model, &opts), "composer-2.5");
     }
 
     #[test]
