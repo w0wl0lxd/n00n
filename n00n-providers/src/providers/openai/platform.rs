@@ -1286,7 +1286,10 @@ impl OpenAi {
     ) -> CodexAttempt {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
-        // Codex keeps continuation state only while its WebSocket stays connected.
+        // Without server-side response storage, a WebSocket reconnection must be able to replay
+        // full history instead of relying on a continuation chain.
+        let mut opts = opts;
+        opts.allow_history_replay = true;
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await

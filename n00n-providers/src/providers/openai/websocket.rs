@@ -1057,7 +1057,7 @@ mod tests {
         .into_agent_error();
 
         assert!(matches!(error, AgentError::RequestSent { .. }));
-        assert!(!error.is_retryable());
+        assert!(error.is_retryable());
         assert!(error.is_server_overloaded());
     }
 
