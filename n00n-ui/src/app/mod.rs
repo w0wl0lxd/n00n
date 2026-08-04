@@ -651,9 +651,8 @@ impl App {
         }
     }
 
-    fn open_tasks(&mut self) {
-        let entries: Vec<TaskEntry> = self
-            .chats
+    fn task_entries(&self) -> Vec<TaskEntry> {
+        self.chats
             .iter()
             .enumerate()
             .map(|(i, c)| {
@@ -687,7 +686,17 @@ impl App {
                     usage,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    fn refresh_tasks(&mut self) {
+        if self.task_picker.is_open() {
+            self.task_picker.replace_items(self.task_entries());
+        }
+    }
+
+    fn open_tasks(&mut self) {
+        let entries = self.task_entries();
         self.task_picker_original = Some(self.active_chat);
         self.task_picker.set_footer(TASK_PANEL_FOOTER);
         self.task_picker.open(entries, " Agents & Teams ");

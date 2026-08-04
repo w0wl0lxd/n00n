@@ -26,8 +26,10 @@ use n00n_agent::{
     AgentConfig, AgentEvent, AgentInput, AgentMode, Envelope, PermissionsConfig, ToolOutput,
 };
 use n00n_providers::model::Model;
+use n00n_providers::provider::fetch_all_models;
 use n00n_providers::{
-    ImageSource, Message, ModelResolver, OpenAiOptions, StopReason, Timeouts, TokenUsage,
+    ImageSource, Message, ModelCatalog, ModelCatalogError, OpenAiOptions, StopReason, Timeouts,
+    TokenUsage,
 };
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
@@ -469,9 +471,100 @@ pub struct SdkParams {
 
 struct Shared {
     model: Model,
+    models_by_run: Vec<(u64, Model)>,
     permission_mode: PermissionMode,
     turn_start: Instant,
     pending: HashSet<String>,
+}
+
+enum ModelDiscoveryEvent {
+    Batch(Vec<String>),
+    Complete,
+}
+
+struct SdkModelDiscovery {
+    catalog: ModelCatalog,
+    discovered_specs: Vec<String>,
+    event_rx: Receiver<ModelDiscoveryEvent>,
+    complete: bool,
+}
+
+impl SdkModelDiscovery {
+    fn start(startup_spec: String) -> Self {
+        let (event_tx, event_rx) = flume::unbounded();
+        smol::spawn(async move {
+            let batch_tx = event_tx.clone();
+            let done_tx = event_tx;
+            fetch_all_models(
+                move |batch| {
+                    for warning in batch.warnings {
+                        warn!(%warning, "SDK model discovery warning");
+                    }
+                    if batch_tx
+                        .send(ModelDiscoveryEvent::Batch(batch.models))
+                        .is_err()
+                    {
+                        tracing::debug!("SDK model discovery receiver closed");
+                    }
+                },
+                Some(Box::new(move || {
+                    if done_tx.send(ModelDiscoveryEvent::Complete).is_err() {
+                        tracing::debug!("SDK model discovery receiver closed before completion");
+                    }
+                })),
+            )
+            .await;
+        })
+        .detach();
+        Self::from_receiver(startup_spec, event_rx)
+    }
+
+    fn from_receiver(startup_spec: String, event_rx: Receiver<ModelDiscoveryEvent>) -> Self {
+        let discovered_specs = vec![startup_spec];
+        let catalog = ModelCatalog::from_discovered_specs(discovered_specs.clone());
+        Self {
+            catalog,
+            discovered_specs,
+            event_rx,
+            complete: false,
+        }
+    }
+
+    fn apply(&mut self, event: ModelDiscoveryEvent) {
+        match event {
+            ModelDiscoveryEvent::Batch(specs) => {
+                self.discovered_specs.extend(specs);
+                self.catalog = ModelCatalog::from_discovered_specs(self.discovered_specs.clone());
+            }
+            ModelDiscoveryEvent::Complete => self.complete = true,
+        }
+    }
+
+    fn refresh(&mut self) {
+        loop {
+            match self.event_rx.try_recv() {
+                Ok(event) => self.apply(event),
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => {
+                    self.complete = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn resolve(&mut self, requested: &str) -> Result<Model, ModelCatalogError> {
+        self.refresh();
+        let mut result = self.catalog.resolve(requested);
+        while result.is_err() && !self.complete {
+            match self.event_rx.recv() {
+                Ok(event) => self.apply(event),
+                Err(_) => self.complete = true,
+            }
+            result = self.catalog.resolve(requested);
+        }
+        result
+    }
 }
 
 fn with_max_turns(config: &AgentConfig, max_turns: Option<u32>) -> Arc<AgentConfig> {
@@ -509,6 +602,7 @@ pub fn run(params: SdkParams) -> Result<()> {
     }
 
     let startup_model = model.clone();
+    let mut model_discovery = SdkModelDiscovery::start(startup_model.spec());
     let handle = headless::spawn_interactive(InteractiveParams {
         model,
         config,
@@ -545,6 +639,7 @@ pub fn run(params: SdkParams) -> Result<()> {
 
     let shared = Arc::new(Mutex::new(Shared {
         model: startup_model.clone(),
+        models_by_run: vec![(0, startup_model.clone())],
         permission_mode,
         turn_start: Instant::now(),
         pending: HashSet::new(),
@@ -564,6 +659,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         &writer,
         &shared,
         &startup_model,
+        &mut model_discovery,
         &cwd,
         fast,
         workflow,
@@ -652,6 +748,7 @@ fn run_event_loop(
     writer: &SdkWriter,
     shared: &Arc<Mutex<Shared>>,
     startup_model: &Model,
+    model_discovery: &mut SdkModelDiscovery,
     cwd: &Path,
     fast: bool,
     workflow: bool,
@@ -682,6 +779,7 @@ fn run_event_loop(
             writer,
             shared,
             startup_model,
+            model_discovery,
             cwd,
             fast,
             workflow,
@@ -697,6 +795,7 @@ fn process_inbound_message(
     writer: &SdkWriter,
     shared: &Arc<Mutex<Shared>>,
     startup_model: &Model,
+    model_discovery: &mut SdkModelDiscovery,
     cwd: &Path,
     fast: bool,
     workflow: bool,
@@ -705,7 +804,14 @@ fn process_inbound_message(
         "user" => handle_user_message(msg, handle, shared, cwd, fast, workflow),
         "control_request" => {
             if let Some(cr) = parse_or_warn::<InboundControlRequest>(msg.payload, "control_request")
-                && let Err(e) = handle_control_request(&cr, writer, handle, shared, startup_model)
+                && let Err(e) = handle_control_request(
+                    &cr,
+                    writer,
+                    handle,
+                    shared,
+                    startup_model,
+                    model_discovery,
+                )
             {
                 eprintln!("error handling control request: {e}");
             }
@@ -881,8 +987,9 @@ fn handle_control_request(
     cr: &InboundControlRequest,
     writer: &SdkWriter,
     handle: &InteractiveHandle,
-    shared: &Mutex<Shared>,
+    shared: &Arc<Mutex<Shared>>,
     startup_model: &Model,
+    model_discovery: &mut SdkModelDiscovery,
 ) -> Result<()> {
     let ok = Some(Value::Object(serde_json::Map::default()));
     match cr.request.subtype.as_str() {
@@ -921,19 +1028,42 @@ fn handle_control_request(
                 ),
             }
         }
-        "set_model" => match resolve_set_model(cr.request.extra.get("model"), startup_model) {
-            Ok(model) => {
-                if handle.model_tx.send(model.clone()).is_err() {
-                    writer.emit_control_response(
-                        &cr.request_id,
-                        None,
-                        Some("session ended before the model could be changed".to_string()),
-                    )
-                } else {
-                    store_shared_model(shared, model);
-                    writer.emit_control_response(&cr.request_id, ok, None)
+        "set_model" => match resolve_set_model(
+            cr.request.extra.get("model"),
+            startup_model,
+            model_discovery,
+        ) {
+            Ok(model) => match handle.request_model_change(model) {
+                Ok(acknowledgement) => {
+                    let writer = writer.clone();
+                    let shared = Arc::clone(shared);
+                    let request_id = cr.request_id.clone();
+                    smol::spawn(async move {
+                        let result = acknowledgement.recv_async().await.map_err(|_| {
+                            "session ended before the model change was confirmed".to_string()
+                        });
+                        let emit_result = match result {
+                            Ok(Ok(applied)) => {
+                                store_shared_model(&shared, applied);
+                                writer.emit_control_response(
+                                    &request_id,
+                                    Some(Value::Object(serde_json::Map::default())),
+                                    None,
+                                )
+                            }
+                            Ok(Err(error)) | Err(error) => {
+                                writer.emit_control_response(&request_id, None, Some(error))
+                            }
+                        };
+                        if let Err(error) = emit_result {
+                            warn!(%error, "failed to emit model change response");
+                        }
+                    })
+                    .detach();
+                    Ok(())
                 }
-            }
+                Err(error) => writer.emit_control_response(&cr.request_id, None, Some(error)),
+            },
             Err(error) => writer.emit_control_response(&cr.request_id, None, Some(error)),
         },
         other => writer.emit_control_response(
@@ -944,27 +1074,39 @@ fn handle_control_request(
     }
 }
 
-fn store_shared_model(shared: &Mutex<Shared>, model: Model) {
+fn store_shared_model(shared: &Mutex<Shared>, applied: n00n_agent::headless::AppliedModel) {
+    let update = |shared: &mut Shared| {
+        shared.model.clone_from(&applied.model);
+        shared
+            .models_by_run
+            .retain(|(run_id, _)| *run_id != applied.effective_run_id);
+        shared
+            .models_by_run
+            .push((applied.effective_run_id, applied.model));
+        shared.models_by_run.sort_by_key(|(run_id, _)| *run_id);
+    };
     match shared.lock() {
-        Ok(mut shared) => shared.model = model,
+        Ok(mut shared) => update(&mut shared),
         Err(poisoned) => {
             tracing::warn!("recovering poisoned SDK shared model lock");
-            {
-                poisoned.into_inner().model = model;
-            }
+            update(&mut poisoned.into_inner());
             shared.clear_poison();
         }
     }
 }
 
-fn resolve_set_model(model_val: Option<&Value>, current_model: &Model) -> Result<Model, String> {
+fn resolve_set_model(
+    model_val: Option<&Value>,
+    current_model: &Model,
+    discovery: &mut SdkModelDiscovery,
+) -> Result<Model, String> {
     let requested = match model_val {
         Some(Value::Null) => return Ok(current_model.clone()),
         Some(Value::String(model)) => model.clone(),
         Some(_) => return Err("model must be a string or null".to_string()),
         None => return Err("model is required".to_string()),
     };
-    ModelResolver::current()
+    discovery
         .resolve(&requested)
         .map_err(|error| format!("model '{requested}' is unavailable: {error}"))
 }
@@ -1005,10 +1147,18 @@ impl EventPump {
         })
     }
 
-    fn model_id(&self) -> String {
-        self.shared
+    fn model_for_run(&self, run_id: u64) -> Result<Model> {
+        let shared = self
+            .shared
             .lock()
-            .map_or_else(|_| "unknown".to_string(), |shared| shared.model.id.clone())
+            .map_err(|error| eyre!("mutex poisoned: {error}"))?;
+        shared
+            .models_by_run
+            .iter()
+            .rev()
+            .find(|(effective_run_id, _)| *effective_run_id <= run_id)
+            .map(|(_, model)| model.clone())
+            .ok_or_else(|| eyre!("no model recorded for run {run_id}"))
     }
 
     fn emit_stream(&self, events: Vec<Value>) -> Result<()> {
@@ -1034,6 +1184,7 @@ impl EventPump {
         num_turns: u32,
         usage: TokenUsage,
         fusion: Option<&n00n_agent::FusionUsageStats>,
+        model: &Model,
     ) -> Result<()> {
         let (duration_ms, total_cost_usd) = {
             let shared = self
@@ -1042,7 +1193,7 @@ impl EventPump {
                 .map_err(|e| eyre!("mutex poisoned: {e}"))?;
             (
                 shared.turn_start.elapsed().as_millis(),
-                result_cost_usd(&usage, &shared.model, self.fast, fusion),
+                result_cost_usd(&usage, model, self.fast, fusion),
             )
         };
         self.writer.emit(WireInner::Result(ResultPayload {
@@ -1065,15 +1216,16 @@ impl EventPump {
     }
 
     fn handle(&mut self, envelope: &Envelope) -> Result<()> {
+        let model = self.model_for_run(envelope.run_id)?;
         let parent_tool_use_id = envelope
             .subagent
             .as_ref()
             .map(|s| s.parent_tool_use_id.clone());
 
         match &envelope.event {
-            AgentEvent::TextDelta { text } => self.handle_text_delta(text),
-            AgentEvent::ThinkingDelta { text } => self.handle_thinking_delta(text),
-            AgentEvent::ToolStart(ts) => self.handle_tool_start(ts),
+            AgentEvent::TextDelta { text } => self.handle_text_delta(text, &model),
+            AgentEvent::ThinkingDelta { text } => self.handle_thinking_delta(text, &model),
+            AgentEvent::ToolStart(ts) => self.handle_tool_start(ts, &model),
             AgentEvent::ToolPending { .. }
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
@@ -1107,37 +1259,34 @@ impl EventPump {
                 num_turns,
                 fusion,
                 ..
-            } => self.handle_done(usage, *num_turns, fusion.as_ref()),
-            AgentEvent::Error { message } => self.handle_error(message),
+            } => self.handle_done(usage, *num_turns, fusion.as_ref(), &model),
+            AgentEvent::Error { message } => self.handle_error(message, &model),
         }
     }
 
-    fn handle_text_delta(&mut self, text: &str) -> Result<()> {
+    fn handle_text_delta(&mut self, text: &str, model: &Model) -> Result<()> {
         if self.include_partial_messages {
-            let model = self.model_id();
-            let events = self.synth.text_delta(&model, text);
+            let events = self.synth.text_delta(&model.id, text);
             self.emit_stream(events)?;
         }
         Ok(())
     }
 
-    fn handle_thinking_delta(&mut self, text: &str) -> Result<()> {
+    fn handle_thinking_delta(&mut self, text: &str, model: &Model) -> Result<()> {
         if self.include_partial_messages {
-            let model = self.model_id();
-            let events = self.synth.thinking_delta(&model, text);
+            let events = self.synth.thinking_delta(&model.id, text);
             self.emit_stream(events)?;
         }
         Ok(())
     }
 
-    fn handle_tool_start(&mut self, ts: &n00n_agent::ToolStartEvent) -> Result<()> {
+    fn handle_tool_start(&mut self, ts: &n00n_agent::ToolStartEvent, model: &Model) -> Result<()> {
         let name = ts.tool.to_string();
         let input = ts.raw_input.clone().unwrap_or_else(|| Value::Null);
 
         if self.include_partial_messages {
-            let model = self.model_id();
             let events = self.synth.tool_use(
-                &model,
+                &model.id,
                 &ts.id,
                 n00n_to_claude_tool_name(&name),
                 &serde_json::to_string(&input)?,
@@ -1241,13 +1390,21 @@ impl EventPump {
         usage: &TokenUsage,
         num_turns: u32,
         fusion: Option<&n00n_agent::FusionUsageStats>,
+        model: &Model,
     ) -> Result<()> {
         let result = mem::take(&mut self.result_text);
-        self.emit_turn_result(false, result, num_turns, *usage, fusion)
+        self.emit_turn_result(false, result, num_turns, *usage, fusion, model)
     }
 
-    fn handle_error(&mut self, message: &str) -> Result<()> {
-        self.emit_turn_result(true, message.to_string(), 0, TokenUsage::default(), None)
+    fn handle_error(&mut self, message: &str, model: &Model) -> Result<()> {
+        self.emit_turn_result(
+            true,
+            message.to_string(),
+            0,
+            TokenUsage::default(),
+            None,
+            model,
+        )
     }
 }
 
@@ -1325,8 +1482,20 @@ mod tests {
 
     #[test_case("run_shell", "Bash")]
     #[test_case("read_file", "Read")]
-    #[test_case("load_skill", "Skill")]
+    #[test_case("edit_file", "Edit")]
+    #[test_case("write_file", "Write")]
+    #[test_case("search_code", "Grep")]
+    #[test_case("search_files", "Glob")]
+    #[test_case("update_todo", "TodoWrite")]
+    #[test_case("fetch_url", "WebFetch")]
+    #[test_case("search_web", "WebSearch")]
+    #[test_case("run_task", "Task")]
+    #[test_case("edit_file_bulk", "MultiEdit")]
+    #[test_case("run_python", "CodeExecution")]
+    #[test_case("index_file", "Index")]
     #[test_case("use_memory", "Memory")]
+    #[test_case("ask_user", "Question")]
+    #[test_case("load_skill", "Skill")]
     fn canonical_tool_names_use_claude_wire_names(n00n: &str, claude: &str) {
         assert_eq!(n00n_to_claude_tool_name(n00n), claude);
     }
@@ -1641,7 +1810,8 @@ mod tests {
         let original = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
         let replacement = Model::from_spec("anthropic/claude-3-haiku-20240307").unwrap();
         let shared = Mutex::new(Shared {
-            model: original,
+            model: original.clone(),
+            models_by_run: vec![(0, original)],
             permission_mode: PermissionMode::Default,
             turn_start: Instant::now(),
             pending: HashSet::new(),
@@ -1651,25 +1821,166 @@ mod tests {
             panic!("poison shared model lock");
         });
 
-        store_shared_model(&shared, replacement.clone());
+        store_shared_model(
+            &shared,
+            n00n_agent::headless::AppliedModel {
+                model: replacement.clone(),
+                effective_run_id: 2,
+            },
+        );
 
         assert!(!shared.is_poisoned());
         let recovered = shared.lock().expect("poison cleared after recovery");
         assert_eq!(recovered.model.id, replacement.id);
+        assert_eq!(recovered.models_by_run[1].0, 2);
+    }
+
+    #[test]
+    fn event_models_follow_worker_effective_run_id() {
+        let original = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let replacement = Model::from_spec("anthropic/claude-3-haiku-20240307").unwrap();
+        let shared = Arc::new(Mutex::new(Shared {
+            model: original.clone(),
+            models_by_run: vec![(0, original.clone())],
+            permission_mode: PermissionMode::Default,
+            turn_start: Instant::now(),
+            pending: HashSet::new(),
+        }));
+        store_shared_model(
+            &shared,
+            n00n_agent::headless::AppliedModel {
+                model: replacement.clone(),
+                effective_run_id: 2,
+            },
+        );
+        let (out_tx, _out_rx) = flume::unbounded();
+        let (answer_tx, _answer_rx) = flume::unbounded();
+        let pump = EventPump {
+            writer: SdkWriter {
+                session_id: SessionRef::generate(),
+                out_tx,
+            },
+            shared,
+            answer_tx,
+            include_partial_messages: true,
+            fast: false,
+            synth: StreamSynth::new(),
+            tool_inputs: HashMap::new(),
+            result_text: String::new(),
+            request_counter: 0,
+        };
+
+        assert_eq!(pump.model_for_run(1).unwrap().id, original.id);
+        assert_eq!(pump.model_for_run(2).unwrap().id, replacement.id);
+    }
+
+    fn completed_discovery(specs: impl IntoIterator<Item = String>) -> SdkModelDiscovery {
+        let (_event_tx, event_rx) = flume::unbounded();
+        let discovered_specs: Vec<String> = specs.into_iter().collect();
+        SdkModelDiscovery {
+            catalog: ModelCatalog::from_discovered_specs(discovered_specs.clone()),
+            discovered_specs,
+            event_rx,
+            complete: true,
+        }
     }
 
     #[test]
     fn resolve_set_model_null_returns_startup() {
         let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
-        let result = resolve_set_model(Some(&Value::Null), &startup).unwrap();
+        let mut discovery = completed_discovery([]);
+        let result = resolve_set_model(Some(&Value::Null), &startup, &mut discovery).unwrap();
         assert_eq!(result.id, startup.id);
+    }
+
+    #[test]
+    fn resolve_set_model_waits_for_live_discovery_batch() {
+        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let spec = "ollama/live-only-model";
+        let (event_tx, event_rx) = flume::bounded(0);
+        let mut discovery = SdkModelDiscovery::from_receiver(startup.spec(), event_rx);
+        let discovered_spec = spec.to_string();
+        let sender = thread::spawn(move || {
+            event_tx
+                .send(ModelDiscoveryEvent::Batch(vec![discovered_spec]))
+                .unwrap();
+        });
+
+        let result = resolve_set_model(
+            Some(&Value::String(spec.to_string())),
+            &startup,
+            &mut discovery,
+        )
+        .unwrap();
+        sender.join().unwrap();
+        assert_eq!(result.spec(), spec);
+    }
+
+    #[test]
+    fn resolve_set_model_waits_for_discovery_completion_before_rejection() {
+        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let (event_tx, event_rx) = flume::bounded(0);
+        let mut discovery = SdkModelDiscovery::from_receiver(startup.spec(), event_rx);
+        let sender = thread::spawn(move || {
+            event_tx.send(ModelDiscoveryEvent::Complete).unwrap();
+        });
+
+        let error = resolve_set_model(
+            Some(&Value::String("ollama/not-discovered".to_string())),
+            &startup,
+            &mut discovery,
+        )
+        .unwrap_err();
+        sender.join().unwrap();
+
+        assert!(error.contains("unavailable"));
+    }
+
+    #[test]
+    fn resolve_set_model_preserves_startup_before_discovery_completes() {
+        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let (_event_tx, event_rx) = flume::unbounded();
+        let mut discovery = SdkModelDiscovery::from_receiver(startup.spec(), event_rx);
+
+        let result = resolve_set_model(
+            Some(&Value::String(startup.spec())),
+            &startup,
+            &mut discovery,
+        )
+        .unwrap();
+
+        assert_eq!(result.spec(), startup.spec());
+    }
+
+    #[test]
+    fn resolve_set_model_rejects_missing_value() {
+        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let mut discovery = completed_discovery([]);
+        let error = resolve_set_model(None, &startup, &mut discovery).unwrap_err();
+        assert_eq!(error, "model is required");
     }
 
     #[test]
     fn resolve_set_model_rejects_invalid_value() {
         let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
-        let error = resolve_set_model(Some(&Value::Bool(true)), &startup).unwrap_err();
+        let mut discovery = completed_discovery([]);
+        let error =
+            resolve_set_model(Some(&Value::Bool(true)), &startup, &mut discovery).unwrap_err();
         assert_eq!(error, "model must be a string or null");
+    }
+
+    #[test_case("not-a-model-spec")]
+    #[test_case("ollama/not-discovered")]
+    fn resolve_set_model_rejects_malformed_or_unavailable_spec(spec: &str) {
+        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let mut discovery = completed_discovery([]);
+        let error = resolve_set_model(
+            Some(&Value::String(spec.to_string())),
+            &startup,
+            &mut discovery,
+        )
+        .unwrap_err();
+        assert!(error.contains("unavailable"));
     }
 
     #[test]

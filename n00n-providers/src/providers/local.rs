@@ -56,11 +56,34 @@ impl LocalEndpoint {
         cfg: &'static LocalEndpointConfig,
         timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
-        let key_pool = KeyPool::resolve(cfg.slug, cfg.api_key_env).ok();
-        let host = n00n_config::providers::ProvidersConfig::load()
-            .get(cfg.slug)
-            .and_then(|d| d.base_url.clone())
-            .or_else(|| std::env::var(cfg.host_env).ok());
+        let providers = n00n_config::providers::ProvidersConfig::load();
+        let def = providers.get(cfg.slug);
+        let api_key_env = match def.and_then(|provider| provider.api_key_env.as_deref()) {
+            Some(configured) => configured,
+            None => cfg.api_key_env,
+        };
+        let key_pool = match KeyPool::resolve(cfg.slug, api_key_env) {
+            Ok(keys) if !keys.current().trim().is_empty() => Some(keys),
+            Ok(_) => {
+                warn!(provider = cfg.slug, "ignoring empty local provider API key");
+                None
+            }
+            Err(error) => {
+                tracing::debug!(provider = cfg.slug, %error, "local provider API key not configured");
+                None
+            }
+        };
+        let host_env = match std::env::var(cfg.host_env) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::debug!(provider = cfg.slug, %error, "local provider host not configured");
+                None
+            }
+        };
+        let host = n00n_config::providers::base_url_override(cfg.slug)
+            .or_else(|| def.and_then(|provider| provider.base_url.clone()))
+            .or(host_env)
+            .filter(|value| !value.trim().is_empty());
         Self::build(
             cfg,
             timeouts,
@@ -113,7 +136,7 @@ impl LocalEndpoint {
             }
             None => (
                 format!("{}/v1", cfg.default_host.trim_end_matches('/')),
-                false,
+                api_key.is_some(),
             ),
         };
         let headers = match api_key {
@@ -209,9 +232,6 @@ impl Provider for LocalEndpoint {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
-            if !self.configured {
-                return Ok(Vec::new());
-            }
             let auth = self
                 .auth
                 .lock()
@@ -223,6 +243,10 @@ impl Provider for LocalEndpoint {
                 DiscoveryMode::Ollama => self.discover_ollama_models(&auth).await,
             }
         })
+    }
+
+    fn suppress_discovery_error(&self) -> bool {
+        !self.configured
     }
 
     fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
@@ -582,7 +606,7 @@ mod tests {
     };
 
     #[test]
-    fn from_env_without_host_or_api_key_uses_default_host() {
+    fn default_ollama_endpoint_is_probed_without_absence_warning() {
         let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, None, None).unwrap();
         assert_eq!(
             ep.auth
@@ -592,6 +616,8 @@ mod tests {
                 .as_deref(),
             Some("http://localhost:11434/v1")
         );
+        assert!(!ep.configured);
+        assert!(ep.suppress_discovery_error());
     }
 
     #[test]
@@ -610,6 +636,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
+        assert!(ep.configured);
+        assert!(!ep.suppress_discovery_error());
     }
 
     #[test]
@@ -623,6 +651,7 @@ mod tests {
         assert_eq!(auth.base_url.as_deref(), Some("https://ollama.com/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
+        assert!(ep.configured);
     }
 
     #[test]
@@ -643,6 +672,7 @@ mod tests {
         assert_eq!(auth.base_url.as_deref(), Some("http://local:1234/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
+        assert!(ep.configured);
     }
 
     #[test]
@@ -656,6 +686,8 @@ mod tests {
                 .as_deref(),
             Some("http://localhost:8080/v1")
         );
+        assert!(!ep.configured);
+        assert!(ep.suppress_discovery_error());
     }
 
     #[test]
@@ -674,6 +706,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
+        assert!(ep.configured);
     }
 
     #[test]
@@ -689,6 +722,7 @@ mod tests {
             auth.headers,
             vec![("authorization".into(), "Bearer key".into())]
         );
+        assert!(ep.configured);
     }
 
     #[test]

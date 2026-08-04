@@ -313,6 +313,7 @@ impl App {
         }
 
         if self.task_picker.is_open() {
+            self.refresh_tasks();
             overlay_rect = self.task_picker.view(frame, full);
         }
 

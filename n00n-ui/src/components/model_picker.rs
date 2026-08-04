@@ -26,28 +26,28 @@ fn footer_line(width: u16) -> Line<'static> {
         return Line::from(vec![
             Span::styled("  Enter", t.keybind_key),
             Span::styled(" select", t.tool_dim),
-            Span::styled("  1–4", t.keybind_key),
+            Span::styled("  Shift+1–4", t.keybind_key),
             Span::styled(" tier", t.tool_dim),
         ]);
     }
     Line::from(vec![
         Span::styled("  Enter", t.keybind_key),
         Span::styled(" select", t.tool_dim),
-        Span::styled("  1", t.keybind_key),
+        Span::styled("  Shift+1", t.keybind_key),
         Span::styled(" Strong", t.tool_dim),
-        Span::styled("  2", t.keybind_key),
+        Span::styled("  Shift+2", t.keybind_key),
         Span::styled(" Medium", t.tool_dim),
-        Span::styled("  3", t.keybind_key),
+        Span::styled("  Shift+3", t.keybind_key),
         Span::styled(" Weak", t.tool_dim),
-        Span::styled("  4", t.keybind_key),
+        Span::styled("  Shift+4", t.keybind_key),
         Span::styled(" Compaction", t.tool_dim),
     ])
 }
 
 fn tier_for_shortcut(key: KeyEvent) -> Option<ModelTier> {
     let digit = match (key.code, key.modifiers.contains(KeyModifiers::SHIFT)) {
-        // Kitty and modern terminals report number keys as digits.
-        (KeyCode::Char(c @ '1'..='4'), _) => c,
+        // Kitty and modern terminals report Shift+number as a digit plus SHIFT.
+        (KeyCode::Char(c @ '1'..='4'), true) => c,
         // Legacy terminals report Shift+number as the resulting character.
         (KeyCode::Char('!' | '¡'), false) => '1', // US, ES
         (KeyCode::Char('@' | '"' | '™'), false) => '2', // US, UK/DE
@@ -307,7 +307,16 @@ mod tests {
     #[test_case('3', ModelTier::Weak ; "weak")]
     #[test_case('4', ModelTier::Compaction ; "compaction")]
     fn number_keys_assign_named_tiers(digit: char, expected: ModelTier) {
-        assert_eq!(tier_for_shortcut(key(KeyCode::Char(digit))), Some(expected));
+        let shortcut = KeyEvent::new(KeyCode::Char(digit), KeyModifiers::SHIFT);
+        assert_eq!(tier_for_shortcut(shortcut), Some(expected));
+    }
+
+    #[test_case('1'; "one")]
+    #[test_case('2'; "two")]
+    #[test_case('3'; "three")]
+    #[test_case('4'; "four")]
+    fn plain_number_keys_remain_search_input(digit: char) {
+        assert_eq!(tier_for_shortcut(key(KeyCode::Char(digit))), None);
     }
 
     #[test_case(key(KeyCode::Esc)          ; "esc_closes")]

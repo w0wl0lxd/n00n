@@ -736,12 +736,20 @@ pub(crate) fn bake_snapshot_tail(
 }
 
 pub(crate) fn resolve_span_style(style: &SpanStyle) -> Style {
+    resolve_span_style_with_accessibility(style, theme::no_color(), theme::high_contrast())
+}
+
+fn resolve_span_style_with_accessibility(
+    style: &SpanStyle,
+    no_color: bool,
+    high_contrast: bool,
+) -> Style {
     match style {
         SpanStyle::Default => theme::current().tool,
         SpanStyle::Named(name) => theme::style_by_name(name),
         SpanStyle::Inline(inline) => {
-            let accessible = theme::no_color() || theme::high_contrast();
-            let mut s = if theme::high_contrast() {
+            let accessible = no_color || high_contrast;
+            let mut s = if high_contrast {
                 theme::current().tool
             } else {
                 Style::default()
@@ -2168,7 +2176,7 @@ mod tests {
             strikethrough: true,
             reversed: true,
         });
-        let resolved = resolve_span_style(&style);
+        let resolved = resolve_span_style_with_accessibility(&style, false, false);
         assert_eq!(resolved.fg, Some(Color::Rgb(10, 20, 30)));
         assert_eq!(resolved.bg, Some(Color::Rgb(40, 50, 60)));
         assert!(resolved.add_modifier.contains(Modifier::BOLD));
@@ -2177,6 +2185,33 @@ mod tests {
         assert!(resolved.add_modifier.contains(Modifier::DIM));
         assert!(resolved.add_modifier.contains(Modifier::CROSSED_OUT));
         assert!(resolved.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn inline_span_ignores_rgb_in_no_color_mode() {
+        use n00n_agent::types::InlineStyle;
+        let style = SpanStyle::Inline(InlineStyle {
+            fg: Some((10, 20, 30)),
+            bg: Some((40, 50, 60)),
+            ..InlineStyle::default()
+        });
+
+        let resolved = resolve_span_style_with_accessibility(&style, true, false);
+        assert_eq!(resolved.fg, None);
+        assert_eq!(resolved.bg, None);
+    }
+
+    #[test]
+    fn inline_span_uses_theme_style_in_high_contrast_mode() {
+        use n00n_agent::types::InlineStyle;
+        let style = SpanStyle::Inline(InlineStyle {
+            fg: Some((10, 20, 30)),
+            bg: Some((40, 50, 60)),
+            ..InlineStyle::default()
+        });
+
+        let resolved = resolve_span_style_with_accessibility(&style, false, true);
+        assert_eq!(resolved, theme::current().tool);
     }
 
     #[test]

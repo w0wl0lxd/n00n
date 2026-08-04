@@ -759,7 +759,7 @@ fn render_list<T: PickerItem>(
             (false, false) => (t.item, t.item_desc),
         };
         let checkbox = enabled.map(|en| {
-            let sym = if en[item_idx] { "✓ on " } else { "✗ off " };
+            let sym = if en[item_idx] { "✓ on  " } else { "✗ off " };
             let sty = if i == selected {
                 style
             } else if en[item_idx] {

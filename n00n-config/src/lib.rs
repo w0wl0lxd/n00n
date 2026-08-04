@@ -2265,6 +2265,23 @@ mod tests {
         dir.join(".config/n00n")
     }
 
+    #[test]
+    fn tool_aliases_are_unique_disjoint_and_idempotent() {
+        let aliases: std::collections::HashSet<_> =
+            TOOL_ALIASES.iter().map(|(alias, _)| *alias).collect();
+        let canonical_names: std::collections::HashSet<_> = TOOL_ALIASES
+            .iter()
+            .map(|(_, canonical)| *canonical)
+            .collect();
+
+        assert_eq!(aliases.len(), TOOL_ALIASES.len());
+        assert!(aliases.is_disjoint(&canonical_names));
+        for (alias, canonical) in TOOL_ALIASES {
+            assert_eq!(canonical_tool_name(alias), *canonical);
+            assert_eq!(canonical_tool_name(canonical), *canonical);
+        }
+    }
+
     #[test_case("12000", CompactionBuffer::Tokens(12_000) ; "tokens_number")]
     #[test_case("\"20%\"", CompactionBuffer::Percent(20) ; "percent_string")]
     #[test_case("\" 5 %\"", CompactionBuffer::Percent(5) ; "percent_with_spaces")]

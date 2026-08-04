@@ -512,7 +512,6 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     let mut defs =
         ToolRegistry::global().definitions(&vars, &ctx_desc, model.supports_tool_examples());
 
-    n00n_agent::tools::filter_definitions(&mut defs, &filter);
     let base_count = defs.as_array().map_or(0, Vec::len);
     if include_mcp && let Some(ref mcp) = agent.mcp {
         mcp.extend_tools(&mut defs);

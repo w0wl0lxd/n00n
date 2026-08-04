@@ -360,16 +360,71 @@ pub struct InteractiveParams {
     pub mode: AgentMode,
 }
 
+#[derive(Debug, Clone)]
+pub struct AppliedModel {
+    pub model: Model,
+    pub effective_run_id: u64,
+}
+
+struct ModelChangeRequest {
+    model: Model,
+    acknowledgement: flume::Sender<Result<AppliedModel, String>>,
+}
+
+enum InteractiveMessage {
+    Input(AgentInput),
+    ModelChange(ModelChangeRequest),
+}
+
 pub struct InteractiveHandle {
     pub event_rx: Receiver<Envelope>,
     pub tool_names: Vec<String>,
     pub input_tx: flume::Sender<AgentInput>,
     pub answer_tx: flume::Sender<String>,
     pub cancel_tx: flume::Sender<()>,
-    pub model_tx: flume::Sender<Model>,
+    model_tx: flume::Sender<ModelChangeRequest>,
     pub session_id: SessionRef,
     pub permissions: Arc<PermissionManager>,
     pub task: smol::Task<()>,
+}
+
+impl InteractiveHandle {
+    /// Applies a model on the interactive worker and waits for confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker rejects the provider/model or the session has ended.
+    pub fn set_model(&self, model: Model) -> Result<AppliedModel, String> {
+        request_model_change(&self.model_tx, model)?
+            .recv()
+            .map_err(|_| "session ended before the model change was confirmed".to_string())?
+    }
+
+    /// Queues a model change and returns the worker acknowledgement channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session has already ended.
+    pub fn request_model_change(
+        &self,
+        model: Model,
+    ) -> Result<flume::Receiver<Result<AppliedModel, String>>, String> {
+        request_model_change(&self.model_tx, model)
+    }
+}
+
+fn request_model_change(
+    model_tx: &flume::Sender<ModelChangeRequest>,
+    model: Model,
+) -> Result<flume::Receiver<Result<AppliedModel, String>>, String> {
+    let (acknowledgement, response) = flume::bounded(1);
+    model_tx
+        .send(ModelChangeRequest {
+            model,
+            acknowledgement,
+        })
+        .map_err(|_| "session ended before the model could be changed".to_string())?;
+    Ok(response)
 }
 
 #[must_use]
@@ -392,7 +447,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     let (input_tx, input_rx) = flume::unbounded::<AgentInput>();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
     let (cancel_tx, cancel_rx) = flume::bounded::<()>(1);
-    let (model_tx, model_rx) = flume::unbounded::<Model>();
+    let (model_tx, model_rx) = flume::unbounded::<ModelChangeRequest>();
 
     let (session_id, session_ref) = if let Some(w) = params.session_id.clone() {
         (w.id(), w)
@@ -431,7 +486,60 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
             let mut run_id: u64 = 0;
             let mut tool_filter = tool_filter.clone();
 
-            while let Ok(input) = input_rx.recv_async().await {
+            loop {
+                let message = futures_lite::future::race(
+                    async { input_rx.recv_async().await.map(InteractiveMessage::Input) },
+                    async {
+                        model_rx
+                            .recv_async()
+                            .await
+                            .map(InteractiveMessage::ModelChange)
+                    },
+                )
+                .await;
+                let Ok(message) = message else {
+                    break;
+                };
+                let input = match message {
+                    InteractiveMessage::Input(input) => input,
+                    InteractiveMessage::ModelChange(request) => {
+                        let mut new_model = request.model;
+                        let result = if new_model.spec() == model.spec() {
+                            Ok(AppliedModel {
+                                model: model.clone(),
+                                effective_run_id: run_id,
+                            })
+                        } else {
+                            match provider::from_model_with_openai_options(
+                                &mut new_model,
+                                params.timeouts,
+                                params.openai_options,
+                            ) {
+                                Ok(new_provider) => {
+                                    let (new_tools, new_filter) = tool_definitions(
+                                        &vars,
+                                        &new_model,
+                                        &params.config,
+                                        &params.excluded_tools,
+                                        params.workflow,
+                                        ToolRegistry::global(),
+                                    );
+                                    provider = Arc::from(new_provider);
+                                    tools = new_tools;
+                                    tool_filter = new_filter;
+                                    model = new_model.clone();
+                                    Ok(AppliedModel {
+                                        model: new_model,
+                                        effective_run_id: run_id,
+                                    })
+                                }
+                                Err(error) => Err(error.to_string()),
+                            }
+                        };
+                        let _ = request.acknowledgement.send(result);
+                        continue;
+                    }
+                };
                 let event_tx = EventSender::new(raw_tx.clone(), run_id);
                 let error_tx = event_tx.clone();
                 let turn_mode = input.mode.clone();
@@ -445,27 +553,6 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     });
                     run_id += 1;
                     continue;
-                }
-
-                if let Some(mut new_model) = model_rx.try_iter().last()
-                    && new_model.spec() != model.spec()
-                {
-                    provider = Arc::from(provider::from_model_fallback_with_openai_options(
-                        &mut new_model,
-                        params.timeouts,
-                        params.openai_options,
-                    ));
-                    let (new_tools, new_filter) = tool_definitions(
-                        &vars,
-                        &new_model,
-                        &params.config,
-                        &params.excluded_tools,
-                        params.workflow,
-                        ToolRegistry::global(),
-                    );
-                    tools = new_tools;
-                    tool_filter = new_filter;
-                    model = new_model;
                 }
 
                 let mut system = if let Some(override_) = params.system_prompt_override.as_deref() {
@@ -713,6 +800,57 @@ mod tests {
         let loaded = load(&tmp);
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.model, "other/model");
+    }
+
+    #[test]
+    fn model_change_waits_for_worker_acknowledgement() {
+        let requested = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let applied_model = requested.clone();
+        let (model_tx, model_rx) = flume::unbounded();
+        let worker = std::thread::spawn(move || {
+            let request: ModelChangeRequest = model_rx.recv().unwrap();
+            assert_eq!(request.model.spec(), requested.spec());
+            request
+                .acknowledgement
+                .send(Ok(AppliedModel {
+                    model: applied_model,
+                    effective_run_id: 4,
+                }))
+                .unwrap();
+        });
+
+        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let applied = request_model_change(&model_tx, model)
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+
+        assert_eq!(applied.model.spec(), "anthropic/claude-sonnet-4-20250514");
+        assert_eq!(applied.effective_run_id, 4);
+    }
+
+    #[test]
+    fn model_change_propagates_worker_rejection() {
+        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let (model_tx, model_rx) = flume::unbounded();
+        let worker = std::thread::spawn(move || {
+            let request: ModelChangeRequest = model_rx.recv().unwrap();
+            request
+                .acknowledgement
+                .send(Err("provider rejected model".to_string()))
+                .unwrap();
+        });
+
+        let error = request_model_change(&model_tx, model)
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap_err();
+        worker.join().unwrap();
+
+        assert_eq!(error, "provider rejected model");
     }
 
     #[cfg(unix)]

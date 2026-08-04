@@ -58,10 +58,22 @@ pub enum ToolFilter {
 impl ToolFilter {
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
+        self.matches_names(&std::iter::once(name))
+    }
+
+    pub(crate) fn matches_registered(&self, tool: &RegisteredTool) -> bool {
+        self.matches_names(&std::iter::once(tool.name()).chain(tool.tool.aliases()))
+    }
+
+    fn matches_names<'a>(&self, names: &(impl Iterator<Item = &'a str> + Clone)) -> bool {
         match self {
             Self::All => true,
-            Self::Only(allowed) => allowed.iter().any(|candidate| same_tool(candidate, name)),
-            Self::AllExcept(blocked) => !blocked.iter().any(|candidate| same_tool(candidate, name)),
+            Self::Only(allowed) => allowed
+                .iter()
+                .any(|candidate| names.clone().any(|name| same_tool(candidate, name))),
+            Self::AllExcept(blocked) => !blocked
+                .iter()
+                .any(|candidate| names.clone().any(|name| same_tool(candidate, name))),
         }
     }
 
@@ -235,6 +247,8 @@ pub const QUESTION_TOOL_NAME: &str = "ask_user";
 pub const READ_TOOL_NAME: &str = "read_file";
 pub const TASK_TOOL_NAME: &str = "run_task";
 pub const TODOWRITE_TOOL_NAME: &str = "update_todo";
+pub const TOOL_SEARCH_TOOL_NAME: &str = "search_tools";
+pub const TOOL_SEARCH_TOOL_ALIAS: &str = "tool_search";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
 pub const WRITE_TOOL_NAME: &str = "write_file";
 
@@ -1222,6 +1236,13 @@ mod tests {
             assert_eq!(canonical_tool_name(name), *name);
             assert!(name.len() <= 32, "builtin tool name is too long: {name}");
         }
+    }
+
+    #[test_case::test_case("edit_lines")]
+    #[test_case::test_case("insert_lines")]
+    #[test_case::test_case("multiedit")]
+    fn legacy_edit_aliases_are_builtin(tool_name: &str) {
+        assert!(is_builtin_tool(tool_name));
     }
 
     #[test]

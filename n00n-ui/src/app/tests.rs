@@ -1536,6 +1536,32 @@ fn agent_picker_exposes_names_models_and_status() {
 }
 
 #[test]
+fn tasks_picker_refreshes_live_entries_and_status() {
+    let mut app = app_with_subagent_id("task1");
+    open_tasks_picker(&mut app);
+    assert_eq!(
+        app.task_picker.item(1).unwrap().detail(),
+        Some(TASK_RUNNING_DETAIL)
+    );
+
+    app.update(subagent_msg(
+        AgentEvent::TextDelta { text: "y".into() },
+        "task2",
+        Some("build"),
+    ));
+    finish_subagent(&mut app, "task1", false);
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.view(frame)).unwrap();
+
+    assert_eq!(
+        app.task_picker.item(1).unwrap().detail(),
+        Some(TASK_DONE_DETAIL)
+    );
+    assert_eq!(app.task_picker.item(2).unwrap().label(), "Agent: build");
+}
+
+#[test]
 fn ctrl_x_toggles_tasks_picker() {
     let mut app = test_app();
     app.update(Msg::Key(kb::TASKS.to_key_event()));

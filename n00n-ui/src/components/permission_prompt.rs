@@ -175,6 +175,7 @@ impl PermissionPrompt {
             | "insert_file_lines" => "change files",
             "run_shell" | "run_python" | "run_batch" => "run a command",
             "fetch_url" | "search_web" => "access the network",
+            "update_todo" => "update the task list",
             _ => "use an external tool",
         }
     }
@@ -519,6 +520,7 @@ mod tests {
     #[test_case("run_python", "run a command" ; "run_python")]
     #[test_case("fetch_url", "access the network" ; "fetch_url")]
     #[test_case("search_web", "access the network" ; "search_web")]
+    #[test_case("update_todo", "update the task list" ; "update_todo")]
     #[test_case("mcp_web_fetch", "use an external tool" ; "unknown_native_name")]
     fn native_action_hints_use_canonical_names(name: &str, expected: &str) {
         assert_eq!(

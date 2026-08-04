@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,14 +57,17 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
             },
         ),
     ];
+    let builtin_names: HashSet<String> = tools
+        .iter()
+        .flat_map(|(tool, _)| {
+            std::iter::once(tool.name().to_owned())
+                .chain(tool.aliases().into_iter().map(ToOwned::to_owned))
+        })
+        .collect();
     for (tool, source) in tools {
         match registry.register(&tool, &source) {
             Ok(()) => {}
-            Err(RegistryError::NameConflict { name, .. })
-                if name == "search_tools"
-                    || name == "tool_search"
-                    || name == "load_toolset"
-                    || name == "load_namespace" => {}
+            Err(RegistryError::NameConflict { name, .. }) if builtin_names.contains(&name) => {}
             Err(e) => {
                 return Err(PluginError::Lua {
                     plugin: "builtin".to_owned(),
@@ -1042,7 +1045,7 @@ impl LuaRuntime {
             let plugins = Rc::clone(&plugins);
             crate::api::tool::set_local_tool_handles(move |tool| {
                 let plugins = plugins.borrow();
-                let tk = plugins.values().find_map(|tools| tools.get(tool))?;
+                let tk = local_tool_keys_for_name(&plugins, tool)?;
                 let to_fn = |key: Option<&RegistryKey>| {
                     key.and_then(|k| lua.registry_value::<Function>(k).ok())
                 };
@@ -1638,6 +1641,15 @@ fn tool_keys_for_name<'a>(
             .values()
             .find(|keys| keys.aliases.iter().any(|alias| alias.as_ref() == name))
     })
+}
+
+fn local_tool_keys_for_name<'a>(
+    plugins: &'a HashMap<Arc<str>, HashMap<Arc<str>, ToolKeys>>,
+    name: &str,
+) -> Option<&'a ToolKeys> {
+    plugins
+        .values()
+        .find_map(|tools| tool_keys_for_name(tools, name))
 }
 
 /// Resolves a plugin callback and converts its json input, warning on
@@ -2586,6 +2598,35 @@ mod tests {
         let registry = Arc::new(ToolRegistry::new());
         register_builtin_tools(&registry).unwrap();
         register_builtin_tools(&registry).unwrap();
+    }
+
+    #[test]
+    fn local_tool_handle_lookup_resolves_canonical_and_alias_names_identically() {
+        let lua = Lua::new();
+        let handler = lua
+            .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
+        let header = lua
+            .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
+        let tools = HashMap::from([(
+            Arc::from("canonical_tool"),
+            ToolKeys {
+                aliases: vec![Arc::from("legacy_tool")],
+                handler,
+                header: Some(header),
+                restore: None,
+                start: None,
+                permission_scopes: None,
+                describe: None,
+            },
+        )]);
+        let plugins = HashMap::from([(Arc::from("test_plugin"), tools)]);
+
+        let canonical = local_tool_keys_for_name(&plugins, "canonical_tool").unwrap();
+        let alias = local_tool_keys_for_name(&plugins, "legacy_tool").unwrap();
+
+        assert!(std::ptr::eq(canonical, alias));
     }
 
     fn make_buf_handle(text: &str) -> BufHandle {

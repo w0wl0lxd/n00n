@@ -82,8 +82,20 @@ fn system_without_fusion_lead_prompt(system: &System) -> System {
     filtered
 }
 
-fn filter_provider_tools(tools: &mut Value, filter: &ToolFilter, mode: &AgentMode) {
-    crate::tools::filter_definitions(tools, filter);
+fn filter_provider_tools(
+    tools: &mut Value,
+    filter: &ToolFilter,
+    mode: &AgentMode,
+    registry: &ToolRegistry,
+) {
+    if let Some(definitions) = tools.as_array_mut() {
+        definitions.retain(|definition| {
+            definition
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| registry.matches_filter(name, filter))
+        });
+    }
     filter_tools_for_mode(tools, mode);
 }
 
@@ -149,14 +161,30 @@ pub fn resolve_compaction_model(
 ) -> (Arc<dyn Provider>, Model) {
     if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
         && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
-        && let Ok(mut m) = ModelResolver::current().resolve(&spec)
-        && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
-            &mut m,
-            timeouts,
-            openai_options,
-        )
     {
-        return (Arc::from(p), m);
+        match ModelResolver::current().resolve(&spec) {
+            Ok(mut compaction_model) => {
+                match n00n_providers::provider::from_model_with_openai_options(
+                    &mut compaction_model,
+                    timeouts,
+                    openai_options,
+                ) {
+                    Ok(compaction_provider) => {
+                        return (Arc::from(compaction_provider), compaction_model);
+                    }
+                    Err(error) => warn!(
+                        %error,
+                        %spec,
+                        "failed to build compaction provider; using current model"
+                    ),
+                }
+            }
+            Err(error) => warn!(
+                %error,
+                %spec,
+                "failed to resolve compaction model; using current model"
+            ),
+        }
     }
     (Arc::clone(provider), model.clone())
 }
@@ -392,7 +420,7 @@ impl<'h> Agent<'h> {
             mcp.extend_tools(&mut self.tools);
         }
         let tool_filter = self.effective_tool_filter();
-        filter_provider_tools(&mut self.tools, &tool_filter, &self.mode);
+        filter_provider_tools(&mut self.tools, &tool_filter, &self.mode, &self.registry);
         self.sync_fusion_availability();
         self.start_fusion_request(&input.message)?;
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
@@ -490,7 +518,12 @@ impl<'h> Agent<'h> {
 
     async fn stream_response(&self, opts: RequestOptions) -> Result<StreamResponse, AgentError> {
         let mut tools = self.tools.clone();
-        filter_provider_tools(&mut tools, &self.effective_tool_filter(), &self.mode);
+        filter_provider_tools(
+            &mut tools,
+            &self.effective_tool_filter(),
+            &self.mode,
+            &self.registry,
+        );
         let visible = self.fusion_delegate_visible(&tools);
         if !visible {
             remove_fusion_delegate_tool(&mut tools);
@@ -933,7 +966,12 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
         }
-        filter_provider_tools(&mut tools, &self.effective_tool_filter(), &self.mode);
+        filter_provider_tools(
+            &mut tools,
+            &self.effective_tool_filter(),
+            &self.mode,
+            &self.registry,
+        );
         self.tools = tools;
         if !self
             .fusion_state
@@ -1440,7 +1478,12 @@ mod tests {
             {"name": "write"},
         ]);
         mcp.extend_tools(&mut definitions);
-        filter_provider_tools(&mut definitions, &effective_filter, &AgentMode::Build);
+        filter_provider_tools(
+            &mut definitions,
+            &effective_filter,
+            &AgentMode::Build,
+            &agent.registry,
+        );
         let names: Vec<_> = definitions
             .as_array()
             .unwrap()
@@ -1470,7 +1513,12 @@ mod tests {
             {"name": "write"},
         ]);
         mcp.extend_tools(&mut definitions);
-        filter_provider_tools(&mut definitions, &effective_filter, &AgentMode::Build);
+        filter_provider_tools(
+            &mut definitions,
+            &effective_filter,
+            &AgentMode::Build,
+            &agent.registry,
+        );
         let names = definitions
             .as_array()
             .unwrap()

@@ -242,6 +242,7 @@ impl PermissionManager {
     fn check_inner(
         &self,
         tool: &ToolKey,
+        aliases: &[&str],
         scopes: &[&str],
         force_prompt: bool,
         plan_path: Option<&Path>,
@@ -263,7 +264,7 @@ impl PermissionManager {
                 .chain(self.config_rules.iter())
                 .chain(self.builtin_rules.iter())
             {
-                if !matches_rule(&r.tool, tool) || !rule_matches_scope(r, scope) {
+                if !matches_rule(&r.tool, tool, aliases) || !rule_matches_scope(r, scope) {
                     continue;
                 }
                 match r.effect {
@@ -316,7 +317,8 @@ impl PermissionManager {
             }
         }
 
-        let eff = resolve_tool_default(&self.tool_defaults, tool).unwrap_or_else(|| self.default);
+        let eff = resolve_tool_default(&self.tool_defaults, tool, aliases)
+            .unwrap_or_else(|| self.default);
         match eff {
             DefaultEffect::Deny => {
                 info!(tool = %tool, "denied by default");
@@ -335,7 +337,7 @@ impl PermissionManager {
     }
 
     pub fn check(&self, tool: &ToolKey, scope: &str, plan_path: Option<&Path>) -> PermissionCheck {
-        self.check_inner(tool, &[scope], false, plan_path)
+        self.check_inner(tool, &[], &[scope], false, plan_path)
     }
 
     pub fn check_multi(
@@ -345,7 +347,7 @@ impl PermissionManager {
         force_prompt: bool,
         plan_path: Option<&Path>,
     ) -> PermissionCheck {
-        self.check_inner(tool, scopes, force_prompt, plan_path)
+        self.check_inner(tool, &[], scopes, force_prompt, plan_path)
     }
 
     pub fn add_session_rule(&self, rule: PermissionRule) {
@@ -451,6 +453,20 @@ impl PermissionManager {
     ///
     /// Returns `PermissionError` if the tool is not allowed.
     pub async fn enforce(&self, ctx: PermissionCheckContext<'_>) -> Result<(), PermissionError> {
+        self.enforce_with_aliases(ctx, &[]).await
+    }
+
+    /// Enforces permission rules while treating runtime-registered aliases as
+    /// equivalent to the canonical tool name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PermissionError` if the tool is not allowed.
+    pub(crate) async fn enforce_with_aliases(
+        &self,
+        ctx: PermissionCheckContext<'_>,
+        aliases: &[&str],
+    ) -> Result<(), PermissionError> {
         let scope_refs: Vec<&str> = ctx
             .scopes
             .scopes
@@ -466,6 +482,7 @@ impl PermissionManager {
 
         let (pt, ps, force_prompt) = match self.check_inner(
             ctx.tool,
+            aliases,
             &scope_refs,
             ctx.scopes.force_prompt,
             ctx.plan_path,
@@ -486,7 +503,7 @@ impl PermissionManager {
 
         let guard = rx.lock().await;
         let refs: Vec<&str> = ps.iter().map(std::string::String::as_str).collect();
-        let (t2, s2) = match self.check_inner(&pt, &refs, force_prompt, ctx.plan_path) {
+        let (t2, s2) = match self.check_inner(&pt, aliases, &refs, force_prompt, ctx.plan_path) {
             PermissionCheck::Allowed => return Ok(()),
             PermissionCheck::Denied => return Err(deny(None)),
             PermissionCheck::NeedsPrompt { tool, scopes, .. } => (tool, scopes),
@@ -521,52 +538,64 @@ impl PermissionManager {
     }
 }
 
+const fn default_effect_restriction(effect: DefaultEffect) -> u8 {
+    match effect {
+        DefaultEffect::Allow => 0,
+        DefaultEffect::Prompt => 1,
+        DefaultEffect::Deny => 2,
+    }
+}
+
 fn resolve_tool_default(
     defaults: &HashMap<ToolKey, DefaultEffect>,
     tool: &ToolKey,
+    aliases: &[&str],
 ) -> Option<DefaultEffect> {
-    if let Some(effect) = defaults.get(tool) {
-        return Some(*effect);
-    }
-
     match tool {
         ToolKey::Native(actual) => {
             let canonical = canonical_tool_name(actual);
             defaults
                 .iter()
-                .find_map(|(key, effect)| match key {
-                    ToolKey::Native(name) if name.as_ref() == canonical => Some(*effect),
+                .filter_map(|(key, effect)| match key {
+                    ToolKey::Native(name)
+                        if canonical_tool_name(name) == canonical
+                            || aliases.iter().any(|alias| {
+                                canonical_tool_name(name) == canonical_tool_name(alias)
+                            }) =>
+                    {
+                        Some(*effect)
+                    }
                     _ => None,
                 })
-                .or_else(|| {
-                    defaults
-                        .iter()
-                        .filter_map(|(key, effect)| match key {
-                            ToolKey::Native(name) if canonical_tool_name(name) == canonical => {
-                                Some((name.as_ref(), *effect))
-                            }
-                            _ => None,
-                        })
-                        .min_by_key(|(name, _)| *name)
-                        .map(|(_, effect)| effect)
-                })
+                .max_by_key(|effect| default_effect_restriction(*effect))
                 .or_else(|| defaults.get(&ToolKey::Wildcard).copied())
         }
         ToolKey::McpTool { server, .. } => defaults
-            .get(&ToolKey::McpServer {
-                server: Arc::clone(server),
+            .get(tool)
+            .copied()
+            .or_else(|| {
+                defaults
+                    .get(&ToolKey::McpServer {
+                        server: Arc::clone(server),
+                    })
+                    .copied()
             })
+            .or_else(|| defaults.get(&ToolKey::Wildcard).copied()),
+        ToolKey::McpServer { .. } | ToolKey::Wildcard => defaults
+            .get(tool)
             .copied()
             .or_else(|| defaults.get(&ToolKey::Wildcard).copied()),
-        ToolKey::McpServer { .. } | ToolKey::Wildcard => defaults.get(&ToolKey::Wildcard).copied(),
     }
 }
 
-fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
+fn matches_rule(rule_key: &ToolKey, actual: &ToolKey, aliases: &[&str]) -> bool {
     match (rule_key, actual) {
         (ToolKey::Wildcard, _) => true,
         (ToolKey::Native(a), ToolKey::Native(b)) => {
             canonical_tool_name(a) == canonical_tool_name(b)
+                || aliases
+                    .iter()
+                    .any(|alias| canonical_tool_name(a) == canonical_tool_name(alias))
         }
         (
             ToolKey::McpServer { server: rs },
@@ -1470,6 +1499,121 @@ mod tests {
         assert!(matches!(
             mgr.check(&ToolKey::native("read"), "/tmp/file", None),
             PermissionCheck::Allowed
+        ));
+    }
+
+    #[test]
+    fn runtime_alias_permission_default_matches_canonical_dispatch_name() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Allow,
+                tool_defaults: HashMap::from([(
+                    ToolKey::native("mock_alias"),
+                    DefaultEffect::Deny,
+                )]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["scope"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
+    fn conflicting_runtime_alias_defaults_fail_closed() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Allow,
+                tool_defaults: HashMap::from([
+                    (ToolKey::native("allow_alias"), DefaultEffect::Allow),
+                    (ToolKey::native("deny_alias"), DefaultEffect::Deny),
+                ]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["allow_alias", "deny_alias"],
+                &["scope"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
+    fn conflicting_canonical_and_runtime_alias_defaults_fail_closed() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Prompt,
+                tool_defaults: HashMap::from([
+                    (ToolKey::native("mock_canonical"), DefaultEffect::Allow),
+                    (ToolKey::native("mock_alias"), DefaultEffect::Deny),
+                ]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["scope"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
+        ));
+    }
+
+    #[test]
+    fn runtime_alias_permission_rule_matches_canonical_dispatch_name() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Deny,
+                rules: vec![PermissionRule {
+                    tool: ToolKey::native("mock_alias"),
+                    scope: Some("safe/**".into()),
+                    effect: Effect::Allow,
+                }],
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["safe/file"],
+                false,
+                None,
+            ),
+            PermissionCheck::Allowed
+        ));
+        assert!(matches!(
+            mgr.check_inner(
+                &ToolKey::native("mock_canonical"),
+                &["mock_alias"],
+                &["unsafe/file"],
+                false,
+                None,
+            ),
+            PermissionCheck::Denied
         ));
     }
 

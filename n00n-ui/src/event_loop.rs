@@ -30,7 +30,9 @@ use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_fallback_with_openai_options,
     from_model_with_openai_options,
 };
-use n00n_providers::{ContentBlock, Message, Model, ModelCatalog, ModelResolver, OpenAiOptions};
+use n00n_providers::{
+    AgentError, ContentBlock, Message, Model, ModelCatalog, ModelResolver, OpenAiOptions,
+};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
@@ -65,6 +67,8 @@ const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 const TEAM_TOOL_NAME: &str = "team";
+const SESSION_MODEL_RESTORE_WARNING: &str =
+    "Could not restore the session model; keeping the current model";
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -178,6 +182,7 @@ fn paused_team_run(history: &[Message]) -> Option<Value> {
 struct SessionRuntime {
     app: App,
     handles: AgentHandles,
+    model_slot: Arc<ArcSwap<ModelSlot>>,
     shell_tx: flume::Sender<ShellEvent>,
     shell_rx: flume::Receiver<ShellEvent>,
     last_status: SessionStatus,
@@ -214,12 +219,42 @@ struct SpawnCtx {
 }
 
 impl SpawnCtx {
+    fn prepare_model_slot(
+        &self,
+        current_spec: &str,
+        loaded_spec: &str,
+    ) -> Result<Option<ModelSlot>, ModelRestoreError> {
+        let resolver = live_model_resolver(&self.available_models);
+        prepare_session_model(
+            current_spec,
+            loaded_spec,
+            |spec| resolver.resolve(spec),
+            |mut model| -> Result<ModelSlot, AgentError> {
+                let provider =
+                    from_model_with_openai_options(&mut model, self.timeouts, self.openai_options)?;
+                Ok(ModelSlot {
+                    model,
+                    provider: Arc::from(provider),
+                })
+            },
+        )
+    }
+
     fn spawn_runtime(&self, session: AppSession) -> SessionRuntime {
         let resumed = crate::app::session_has_content(&session);
         let permissions = Arc::new(self.permissions.fork());
         let initial_plan_path = session.meta.plan_path.as_ref().map(PathBuf::from);
+        let requested_model = session.model.clone();
+        let active_model = self.model_slot.load_full();
+        let restored_model = self.prepare_model_slot(&active_model.model.spec(), &requested_model);
+        let (initial_model, restore_error) = match restored_model {
+            Ok(Some(model_slot)) => (Arc::new(model_slot), None),
+            Ok(None) => (active_model, None),
+            Err(error) => (active_model, Some(error)),
+        };
+        let model_slot = Arc::new(ArcSwap::from(initial_model));
         let handles = AgentHandles::spawn(
-            &self.model_slot,
+            &model_slot,
             session.messages.clone(),
             session.transcript.clone(),
             initial_plan_path,
@@ -234,7 +269,7 @@ impl SpawnCtx {
             self.mcp_config_errors.clone(),
         );
         let mut app = App::new(AppInit {
-            model: self.model_slot.load().model.clone(),
+            model: model_slot.load().model.clone(),
             session,
             storage: self.storage.clone(),
             available_models: Arc::clone(&self.available_models),
@@ -252,6 +287,14 @@ impl SpawnCtx {
         });
         app.lua_event_handle.clone_from(&self.lua_event_handle);
         handles.apply_to_app(&mut app);
+        if let Some(error) = restore_error {
+            warn!(
+                stage = error.stage(),
+                model = %requested_model,
+                "session model restoration failed; keeping current model"
+            );
+            app.flash(SESSION_MODEL_RESTORE_WARNING.into());
+        }
         if resumed {
             restore_session(&mut app, &handles);
         }
@@ -259,6 +302,7 @@ impl SpawnCtx {
         SessionRuntime {
             app,
             handles,
+            model_slot,
             shell_tx,
             shell_rx,
             last_status: SessionStatus::Idle,
@@ -413,6 +457,48 @@ fn spawn_model_fetch(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelRestoreError {
+    Resolution,
+    Provider,
+}
+
+impl ModelRestoreError {
+    const fn stage(self) -> &'static str {
+        match self {
+            Self::Resolution => "resolution",
+            Self::Provider => "provider_construction",
+        }
+    }
+}
+
+fn live_model_resolver(available: &ArcSwapOption<Vec<String>>) -> ModelResolver {
+    let discovered = available
+        .load_full()
+        .map_or_else(Vec::new, |models| models.as_ref().clone());
+    ModelResolver::from_catalog(ModelCatalog::current_with_specs(discovered))
+}
+
+fn activate_runtime_model<T>(active: &ArcSwap<T>, runtime: &ArcSwap<T>) {
+    active.store(runtime.load_full());
+}
+
+fn prepare_session_model<T, M, ResolutionError, ProviderError>(
+    current_spec: &str,
+    loaded_spec: &str,
+    resolve: impl FnOnce(&str) -> Result<M, ResolutionError>,
+    create_provider: impl FnOnce(M) -> Result<T, ProviderError>,
+) -> Result<Option<T>, ModelRestoreError> {
+    if loaded_spec == current_spec {
+        return Ok(None);
+    }
+
+    let model = resolve(loaded_spec).map_err(|_| ModelRestoreError::Resolution)?;
+    create_provider(model)
+        .map(Some)
+        .map_err(|_| ModelRestoreError::Provider)
+}
+
 fn restore_session(app: &mut App, handles: &AgentHandles) {
     app.permissions
         .load_session_rules(crate::app::session_state::stored_to_rules(
@@ -517,6 +603,7 @@ impl<'t> EventLoop<'t> {
             return Err(eyre!("event loop needs at least one session"));
         }
         let focused = focused.min(runtimes.len() - 1);
+        activate_runtime_model(&ctx.model_slot, &runtimes[focused].model_slot);
         let app = &mut runtimes[focused].app;
         app.exit_on_done = exit_on_done;
         if needs_login {
@@ -758,9 +845,17 @@ impl<'t> EventLoop<'t> {
             }
         }
 
-        let slot_model = self.ctx.model_slot.load();
-        let spec = slot_model.model.spec();
+        let active_model = self.ctx.model_slot.load_full();
+        let focused_model = self.sessions[self.focused].model_slot.load_full();
+        if !Arc::ptr_eq(&active_model, &focused_model)
+            && active_model.model.spec() == focused_model.model.spec()
+        {
+            self.sessions[self.focused].model_slot.store(active_model);
+        }
+
         for rt in &mut self.sessions {
+            let slot_model = rt.model_slot.load();
+            let spec = slot_model.model.spec();
             if rt.app.state.session.model != spec
                 || rt.app.state.model.context_window != slot_model.model.context_window
             {
@@ -768,7 +863,6 @@ impl<'t> EventLoop<'t> {
                 self.dirty = true;
             }
         }
-        drop(slot_model);
 
         self.emit_status_changes();
         Ok(())
@@ -948,7 +1042,7 @@ impl<'t> EventLoop<'t> {
                 parent_id,
             } => {
                 let mut session = {
-                    let slot = self.ctx.model_slot.load();
+                    let slot = self.sessions[self.focused].model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
                 };
@@ -1085,6 +1179,7 @@ impl<'t> EventLoop<'t> {
         }
         self.sessions[self.focused].app.save_session();
         self.focused = idx;
+        activate_runtime_model(&self.ctx.model_slot, &self.sessions[idx].model_slot);
     }
 
     /// Focus a live session, or bring a stored one up: in place when the
@@ -1252,7 +1347,7 @@ impl<'t> EventLoop<'t> {
         rt.handles.respawn(
             history,
             transcript,
-            &self.ctx.model_slot,
+            &rt.model_slot,
             self.ctx.config.clone(),
             self.ctx.ui_config.tool_output_lines,
             &permissions,
@@ -1339,19 +1434,32 @@ impl<'t> EventLoop<'t> {
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
-                if loaded.model_spec != self.ctx.model_slot.load().model.spec()
-                    && let Ok(mut new_model) = ModelResolver::current().resolve(&loaded.model_spec)
-                    && let Ok(new_provider) = from_model_with_openai_options(
-                        &mut new_model,
-                        self.ctx.timeouts,
-                        self.ctx.openai_options,
-                    )
-                {
-                    self.sessions[idx].app.usage_slot.store(None);
-                    self.ctx.model_slot.store(Arc::new(ModelSlot {
-                        model: new_model,
-                        provider: Arc::from(new_provider),
-                    }));
+                let current_spec = self.sessions[idx].model_slot.load().model.spec();
+                let restored_model = self
+                    .ctx
+                    .prepare_model_slot(&current_spec, &loaded.model_spec);
+                match restored_model {
+                    Ok(Some(model_slot)) => {
+                        self.sessions[idx].app.usage_slot.store(None);
+                        self.sessions[idx].model_slot.store(Arc::new(model_slot));
+                        if idx == self.focused {
+                            activate_runtime_model(
+                                &self.ctx.model_slot,
+                                &self.sessions[idx].model_slot,
+                            );
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        warn!(
+                            stage = error.stage(),
+                            model = %loaded.model_spec,
+                            "session model restoration failed; keeping current model"
+                        );
+                        self.sessions[idx]
+                            .app
+                            .flash(SESSION_MODEL_RESTORE_WARNING.into());
+                    }
                 }
                 self.respawn_agent(idx, loaded.messages, loaded.transcript);
                 *self.sessions[idx]
@@ -1360,8 +1468,8 @@ impl<'t> EventLoop<'t> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.tool_outputs;
             }
-            Action::ChangeModel(spec) => self.change_model(&spec),
-            Action::RefreshProvider { slug } => self.refresh_provider(&slug),
+            Action::ChangeModel(spec) => self.change_model(idx, &spec),
+            Action::RefreshProvider { slug } => self.refresh_provider(idx, &slug),
             Action::AssignTier(spec, tier) => {
                 n00n_providers::model_registry::set_and_persist(spec, tier, &self.ctx.storage);
             }
@@ -1411,7 +1519,7 @@ impl<'t> EventLoop<'t> {
                 }
             }
             Action::Btw(question) => {
-                let slot = self.ctx.model_slot.load();
+                let slot = self.sessions[idx].model_slot.load();
                 self.sessions[idx].app.start_btw(
                     &question,
                     Arc::clone(&slot.provider),
@@ -1423,17 +1531,12 @@ impl<'t> EventLoop<'t> {
                 Err(e) => self.sessions[idx].app.flash(e),
             },
             Action::RefreshModels => self.refresh_models(),
-            Action::RefreshUsage => self.refresh_usage(),
+            Action::RefreshUsage => self.refresh_usage(idx),
         }
     }
 
-    fn change_model(&mut self, spec: &str) {
-        let discovered = self
-            .ctx
-            .available_models
-            .load_full()
-            .map_or_else(Vec::new, |models| models.as_ref().clone());
-        let resolver = ModelResolver::from_catalog(ModelCatalog::current_with_specs(discovered));
+    fn change_model(&mut self, idx: usize, spec: &str) {
+        let resolver = live_model_resolver(&self.ctx.available_models);
         match resolver.resolve(spec) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
@@ -1441,29 +1544,37 @@ impl<'t> EventLoop<'t> {
                 self.ctx.openai_options,
             ) {
                 Ok(new_provider) => {
-                    let app = self.focused_app();
+                    let app = &mut self.sessions[idx].app;
                     app.update_model(&new_model);
                     app.record_recent_model(&new_model.spec());
                     app.usage_slot.store(None);
-                    self.ctx.model_slot.store(Arc::new(ModelSlot {
+                    self.sessions[idx].model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
                         provider: Arc::from(new_provider),
                     }));
+                    if idx == self.focused {
+                        activate_runtime_model(
+                            &self.ctx.model_slot,
+                            &self.sessions[idx].model_slot,
+                        );
+                    }
                 }
                 Err(e) => {
                     let msg = format!("Failed to create provider: {e}");
-                    self.focused_app()
+                    self.sessions[idx]
+                        .app
                         .main_chat()
                         .push(DisplayMessage::new(DisplayRole::Error, msg.clone()));
-                    self.focused_app().flash(msg);
+                    self.sessions[idx].app.flash(msg);
                 }
             },
             Err(e) => {
                 let msg = format!("Invalid model: {e}");
-                self.focused_app()
+                self.sessions[idx]
+                    .app
                     .main_chat()
                     .push(DisplayMessage::new(DisplayRole::Error, msg.clone()));
-                self.focused_app().flash(msg);
+                self.sessions[idx].app.flash(msg);
             }
         }
     }
@@ -1478,9 +1589,9 @@ impl<'t> EventLoop<'t> {
         .detach();
     }
 
-    fn refresh_usage(&mut self) {
-        let provider = Arc::clone(&self.ctx.model_slot.load().provider);
-        let slot = Arc::clone(&self.focused_app().usage_slot);
+    fn refresh_usage(&mut self, idx: usize) {
+        let provider = Arc::clone(&self.sessions[idx].model_slot.load().provider);
+        let slot = Arc::clone(&self.sessions[idx].app.usage_slot);
         slot.store(Some(Arc::new(UsageFetchState::Loading)));
         smol::spawn(async move {
             let state = match provider.fetch_usage().await {
@@ -1493,20 +1604,23 @@ impl<'t> EventLoop<'t> {
         .detach();
     }
 
-    fn refresh_provider(&mut self, slug: &str) {
-        let mut model = self.ctx.model_slot.load().model.clone();
+    fn refresh_provider(&mut self, idx: usize, slug: &str) {
+        let mut model = self.sessions[idx].model_slot.load().model.clone();
         if model.provider.to_string() == slug {
             if let Ok(provider) =
                 n00n_providers::provider::from_model(&mut model, self.ctx.timeouts)
             {
-                self.focused_app().usage_slot.store(None);
-                self.ctx.model_slot.store(Arc::new(ModelSlot {
+                self.sessions[idx].app.usage_slot.store(None);
+                self.sessions[idx].model_slot.store(Arc::new(ModelSlot {
                     model,
                     provider: Arc::from(provider),
                 }));
+                if idx == self.focused {
+                    activate_runtime_model(&self.ctx.model_slot, &self.sessions[idx].model_slot);
+                }
             }
         } else if let Some(builtin) = n00n_config::providers::builtin_provider(slug) {
-            self.change_model(builtin.default_model);
+            self.change_model(idx, builtin.default_model);
         }
     }
 
@@ -1613,10 +1727,12 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
+        DRAIN_BUDGET, DrainScheduler, ModelRestoreError, TEAM_TOOL_NAME, activate_runtime_model,
+        draw_then_post_terminal, live_model_resolver, paused_team_run, prepare_session_model,
         should_save_periodically, take_painted_submissions,
     };
     use crate::components::Status;
+    use arc_swap::{ArcSwap, ArcSwapOption};
     use n00n_providers::{ContentBlock, Message, Role};
     use n00n_storage::id::n00nId;
     use ratatui::{
@@ -1626,7 +1742,94 @@ mod tests {
         layout::{Position, Size},
         widgets::Paragraph,
     };
-    use std::io;
+    use std::{io, sync::Arc};
+
+    #[test]
+    fn session_model_resolution_failure_preserves_current_model() {
+        let mut provider_called = false;
+        let result = prepare_session_model(
+            "current/model",
+            "missing/model",
+            |_| Err("resolution failed"),
+            |_: &str| {
+                provider_called = true;
+                Ok::<_, &str>("replacement")
+            },
+        );
+
+        assert_eq!(result, Err(ModelRestoreError::Resolution));
+        assert!(!provider_called);
+    }
+
+    #[test]
+    fn matching_session_model_keeps_existing_slot_without_work() {
+        let mut resolver_called = false;
+        let result = prepare_session_model(
+            "current/model",
+            "current/model",
+            |_| {
+                resolver_called = true;
+                Ok::<_, &str>("resolved")
+            },
+            |_| Ok::<_, &str>("replacement"),
+        );
+
+        assert_eq!(result, Ok(None));
+        assert!(!resolver_called);
+    }
+
+    #[test]
+    fn session_model_provider_failure_preserves_current_model() {
+        let result = prepare_session_model(
+            "current/model",
+            "loaded/model",
+            |_| Ok::<_, &str>("resolved"),
+            |_| Err::<&str, _>("provider failed"),
+        );
+
+        assert_eq!(result, Err(ModelRestoreError::Provider));
+    }
+
+    #[test]
+    fn session_model_success_returns_replacement() {
+        let result = prepare_session_model(
+            "current/model",
+            "loaded/model",
+            |_| Ok::<_, &str>("resolved"),
+            |model| Ok::<_, &str>(format!("provider for {model}")),
+        );
+
+        assert_eq!(result, Ok(Some("provider for resolved".to_owned())));
+    }
+
+    #[test]
+    fn runtime_model_changes_are_scoped_and_focus_activates_selected_model() {
+        let active = ArcSwap::from_pointee("first/model".to_owned());
+        let first = ArcSwap::from_pointee("first/model".to_owned());
+        let second = ArcSwap::from_pointee("second/model".to_owned());
+
+        first.store(Arc::new("first/changed".to_owned()));
+        activate_runtime_model(&active, &first);
+
+        assert_eq!(active.load().as_str(), "first/changed");
+        assert_eq!(second.load().as_str(), "second/model");
+
+        activate_runtime_model(&active, &second);
+        assert_eq!(active.load().as_str(), "second/model");
+        assert_eq!(first.load().as_str(), "first/changed");
+    }
+
+    #[test]
+    fn session_model_resolver_includes_live_discovered_specs() {
+        let available =
+            ArcSwapOption::from(Some(Arc::new(vec!["opencode/discovered/model".to_owned()])));
+
+        let model = live_model_resolver(&available)
+            .resolve("opencode/discovered/model")
+            .expect("live discovered model resolves");
+
+        assert_eq!(model.spec(), "opencode/discovered/model");
+    }
 
     #[test]
     fn paused_team_run_requires_matching_team_tool_call() {

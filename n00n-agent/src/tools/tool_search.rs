@@ -71,11 +71,11 @@ impl ToolInvocation for ToolSearchInvocation {
 
 impl crate::tools::registry::Tool for ToolSearch {
     fn name(&self) -> &'static str {
-        "search_tools"
+        crate::tools::TOOL_SEARCH_TOOL_NAME
     }
 
     fn aliases(&self) -> Vec<&str> {
-        vec!["tool_search"]
+        vec![crate::tools::TOOL_SEARCH_TOOL_ALIAS]
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
