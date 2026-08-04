@@ -2196,6 +2196,7 @@ fn insert_permission_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Tier;
     use n00n_storage::sessions::Effort;
     use std::fs;
     use tempfile::TempDir;
