@@ -113,7 +113,9 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
             } => {
                 let path = rela_path.to_string();
                 let (status_str, is_staged) = match status {
-                    gix_status::index_as_worktree::EntryStatus::Conflict(_) => ("conflict", true),
+                    gix_status::index_as_worktree::EntryStatus::Conflict { .. } => {
+                        ("conflict", true)
+                    }
                     gix_status::index_as_worktree::EntryStatus::Change(change) => match change {
                         gix_status::index_as_worktree::Change::Removed => ("deleted", true),
                         gix_status::index_as_worktree::Change::Type { .. }
@@ -179,12 +181,15 @@ pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
             .decode()
             .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
 
-        let author = decoded.author();
+        let author = decoded
+            .author()
+            .map_err(|e| GitError::GitOperation(format!("failed to get author: {e}")))?;
+        let time = author.time.parse::<i64>().unwrap_or(0);
         commits.push(GitCommit {
             id: commit.id.to_hex().to_string(),
             author: author.name.to_string(),
             email: author.email.to_string(),
-            time: author.time.seconds,
+            time,
             message: decoded.message.to_string(),
         });
 
@@ -495,7 +500,7 @@ pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
     let repo = gix::open(path)
         .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
     let repo_root = repo
-        .work_dir()
+        .workdir()
         .ok_or(GitError::BareRepo)?
         .canonicalize()
         .map_err(|e| {
@@ -521,9 +526,11 @@ pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
     let decoded = head_commit
         .decode()
         .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
-    let author = decoded.author();
+    let author = decoded
+        .author()
+        .map_err(|e| GitError::GitOperation(format!("failed to get author: {e}")))?;
     let author_name = author.name.to_string();
-    let author_time = author.time.seconds;
+    let author_time = author.time.parse::<i64>().unwrap_or(0);
 
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| GitError::FileNotFound(format!("failed to read file: {e}")))?;
