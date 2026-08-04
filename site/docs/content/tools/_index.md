@@ -21,7 +21,7 @@ Commands run in <cwd> by default.
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
@@ -50,9 +50,9 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `replace_all` | boolean | no |  |
-| `path` | string | yes |  |
-| `old_string` | string | yes |  |
-| `new_string` | string | yes |  |
+| `path` | string | yes | File path. |
+| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
+| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
 
 ### `multiedit` *(lua plugin)*
 
@@ -123,9 +123,9 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no |  |
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| `include` | string | no | Glob pattern (e.g. '*.rs'). |
+| `path` | string | no | Directory or file to search. |
+| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
 | `context_before` | integer | no |  |
@@ -208,7 +208,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
+| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `code_execution` *(lua plugin)*
 
