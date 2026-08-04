@@ -17,8 +17,8 @@ use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
 use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
-    ToolContext, ToolFilter, ToolLive,
+    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, SessionIdentity,
+    ToolAudience, ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -37,6 +37,7 @@ use tracing::info;
 use crate::api::ui::buf::BufHandle;
 use crate::api::util::convert::{JSON_ARRAY_META_FIELD, json_to_lua, lua_to_json, lua_tool_result};
 use crate::api::util::ctx::{AgentContext, LuaCtx};
+use crate::state::PluginStateStore;
 
 const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
@@ -93,8 +94,7 @@ fn model_to_lua_table(lua: &Lua, model: &Model) -> LuaResult<Table> {
 }
 
 fn dispatch_ctx<'a>(ctx: &'a LuaCtx, method: &str) -> Result<&'a AgentContext, String> {
-    ctx.agent()
-        .ok_or_else(|| ctx.cap_err(&format!("n00n.agent.{method}")))
+    ctx.dispatch_agent(method)
 }
 
 fn parse_session_mode(
@@ -642,6 +642,10 @@ async fn session(
     opts: Table,
 ) -> LuaResult<Pair<mlua::AnyUserData>> {
     let agent_ctx = try_pair!(dispatch_ctx(&ctx, "session")).clone();
+    let Some(parent_identity) = agent_ctx.identity.clone() else {
+        return Ok(err_pair("session identity is unavailable"));
+    };
+    let plugin_state_store = try_pair!(ctx.plugin_state_store());
     drop(ctx);
     let model_spec: Option<String> = opts.get("model_spec")?;
     let system: Option<String> = opts.get("system")?;
@@ -716,7 +720,7 @@ async fn session(
             audience,
             workflow: false,
         };
-        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+        let tools = agent_ctx.registry.definitions_active(
             &vars,
             &ctx,
             model.supports_tool_examples(),
@@ -848,13 +852,16 @@ async fn session(
             config: session_config(&agent_ctx.config, excluded_tools.clone()),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
-            session_id: Some(session_id.into()),
+            identity: Some(SessionIdentity::child(
+                session_id.into(),
+                parent_identity.root_session_id().clone(),
+            )),
             timeouts: agent_ctx.timeouts,
             openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
-            registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
+            registry: Arc::clone(&agent_ctx.registry),
             audience,
         },
         system: system.unwrap_or_else(String::new),
@@ -880,6 +887,8 @@ async fn session(
         prompt_rx,
         prompt_tx: Some(prompt_tx),
         parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
+        plugin_state_store,
+        child_state_owner: session_id,
         child_id,
         parent_tool_use_id,
         parent_event_tx: parent_tx,
@@ -1287,6 +1296,8 @@ struct SessionState {
     prompt_rx: flume::Receiver<SubagentPrompt>,
     prompt_tx: Option<flume::Sender<SubagentPrompt>>,
     parent_cancels: Arc<CancelMap<String>>,
+    plugin_state_store: Arc<PluginStateStore>,
+    child_state_owner: n00nId,
     child_id: String,
     parent_tool_use_id: String,
     parent_event_tx: EventSender,
@@ -1310,6 +1321,7 @@ impl SessionState {
         self.closed = true;
         self.progress.set_current_done();
         self.parent_cancels.remove(&self.child_id);
+        self.plugin_state_store.drop_owner(self.child_state_owner);
         let messages = std::mem::replace(&mut self.history, History::new(Vec::new())).into_vec();
         let _ = self.parent_event_tx.send(AgentEvent::SubagentHistory {
             tool_use_id: self.child_id.clone(),
