@@ -350,8 +350,8 @@ Run sandboxed Lua workflow for multi-stage agent orchestration.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `resume` | string | no | Paused run_id. Replays journaled agent() calls. |
-| `inputs` | object | no | Free-form object exposed as global `inputs`. |
-| `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. |
+| `inputs` | object | no | Free-form object exposed as global `inputs`; defaults to `{}` when omitted. |
+| `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs. |
 | `timeout_secs` | integer | no | Wall-clock timeout for this run (minimum 60s). May shorten, but cannot exceed, the configured workflow timeout. |
 
 ### `todo_write` *(lua plugin)*
