@@ -178,7 +178,7 @@ impl Chat {
                     self.messages_panel.flush();
                 }
             }
-            AgentEvent::FusionPhase { phase, label } => {
+            AgentEvent::FusionPhaseChanged { phase, label } => {
                 let phase = match phase {
                     n00n_agent::FusionPhase::Idle => "Idle",
                     n00n_agent::FusionPhase::Planning => "Planning",
@@ -1019,7 +1019,7 @@ mod tests {
     ) {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(
-            AgentEvent::FusionPhase {
+            AgentEvent::FusionPhaseChanged {
                 phase,
                 label: label.map(str::to_owned),
             },
@@ -1041,7 +1041,7 @@ mod tests {
         let cards_before = chat.compaction_card_count();
 
         chat.handle_event(
-            AgentEvent::FusionPhase {
+            AgentEvent::FusionPhaseChanged {
                 phase: n00n_agent::FusionPhase::Executing,
                 label: Some("brief label".into()),
             },

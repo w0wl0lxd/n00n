@@ -167,34 +167,6 @@ pub enum FusionRoute {
     EscalateToLead,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FusionContinuation {
-    Review,
-    Fallback,
-}
-
-impl FusionContinuation {
-    #[must_use]
-    pub const fn prompt(self) -> &'static str {
-        match self {
-            Self::Review => {
-                "Review the completed Fusion sidekick work now. Verify the result against the user request, inspect or test anything necessary, fix any issue yourself, then give the final answer. Do not delegate again."
-            }
-            Self::Fallback => {
-                "The Fusion sidekick failed or was cancelled. Continue on the lead model now, complete the remaining work yourself, then give the final answer. Do not delegate again."
-            }
-        }
-    }
-
-    #[must_use]
-    pub const fn phase(self) -> FusionPhase {
-        match self {
-            Self::Review => FusionPhase::Reviewing,
-            Self::Fallback => FusionPhase::LeadFallback,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct FusionUsageStats {
     pub lead_cost: f64,
@@ -220,7 +192,6 @@ pub struct FusionState {
     phase: FusionPhase,
     review_count: u32,
     fallback_count: u32,
-    continuation_attempts: u32,
     request_kind: DelegationKind,
 }
 
@@ -240,7 +211,6 @@ impl FusionState {
             phase: FusionPhase::Planning,
             review_count: 0,
             fallback_count: 0,
-            continuation_attempts: 0,
             request_kind: DelegationKind::LeadOnly,
         }
     }
@@ -261,58 +231,6 @@ impl FusionState {
     #[must_use]
     pub const fn request_kind(&self) -> DelegationKind {
         self.request_kind
-    }
-
-    #[must_use]
-    pub const fn phase(&self) -> FusionPhase {
-        self.phase
-    }
-
-    #[must_use]
-    pub const fn needs_continuation(&self) -> bool {
-        matches!(
-            self.phase,
-            FusionPhase::Reviewing | FusionPhase::LeadFallback
-        )
-    }
-
-    pub fn begin_continuation(&mut self, max_attempts: u32) -> bool {
-        if !self.needs_continuation() || self.continuation_attempts >= max_attempts {
-            return false;
-        }
-        self.continuation_attempts = self.continuation_attempts.saturating_add(1);
-        true
-    }
-
-    pub(crate) fn retry_continuation(&mut self) {
-        if self.needs_continuation() {
-            self.continuation_attempts = self.continuation_attempts.saturating_sub(1);
-        }
-    }
-
-    pub fn start_request(&mut self, decision: FusionRequestDecision) -> Option<FusionPhase> {
-        if self.phase != FusionPhase::Idle {
-            return None;
-        }
-        if decision != FusionRequestDecision::Delegate {
-            self.phase = FusionPhase::Complete;
-            return None;
-        }
-        self.phase = FusionPhase::Planning;
-        Some(self.phase)
-    }
-
-    pub fn start_delegate(&mut self) -> Option<FusionPhase> {
-        if self.phase != FusionPhase::Planning {
-            return None;
-        }
-        self.phase = FusionPhase::Executing;
-        Some(self.phase)
-    }
-
-    pub fn record_lead_usage(&mut self, usage: TokenUsage, cost: f64) {
-        self.lead_usage += usage;
-        self.lead_cost += cost;
     }
 
     pub fn record_lane_usage(&mut self, lane: FusionLane, usage: TokenUsage, cost: f64) {
@@ -375,103 +293,18 @@ impl FusionState {
         }
     }
 
-    pub fn observe_tool_results_for_continuation(
-        &mut self,
-        results: &[crate::ToolDoneEvent],
-    ) -> Option<FusionContinuation> {
-        if self.phase != FusionPhase::Executing {
-            return None;
-        }
-        let mut found_delegate = false;
-        let mut has_error = false;
-        let mut error_message = String::new();
-        for result in results {
-            if result.tool.as_ref() == FUSION_DELEGATE_TOOL {
-                found_delegate = true;
-                if result.is_error {
-                    has_error = true;
-                    error_message = result.output.as_text().to_string();
-                }
-            }
-        }
-        if !found_delegate {
-            return None;
-        }
-        if has_error {
-            let continuation =
-                if error_message.contains("timed out") || error_message.contains("timeout") {
-                    FusionContinuation::Fallback
-                } else if error_message.contains("cancelled") {
-                    FusionContinuation::Fallback
-                } else if error_message.contains("unavailable") || error_message.contains("model") {
-                    FusionContinuation::Fallback
-                } else {
-                    FusionContinuation::Fallback
-                };
-            self.phase = continuation.phase();
-            Some(continuation)
-        } else {
-            let continuation = FusionContinuation::Review;
-            self.phase = continuation.phase();
-            Some(continuation)
-        }
+    pub fn clear_recent_tool_errors(&mut self) {
+        self.recent_tool_errors = 0;
     }
 
-    pub fn finish_continuation(&mut self) -> Option<FusionPhase> {
-        if !self.needs_continuation() {
-            return None;
-        }
-        self.phase = FusionPhase::Complete;
-        Some(self.phase)
-    }
-
-    pub fn delegate_failed(
-        &mut self,
-        _failure: FusionFailure,
-    ) -> Result<(), FusionTransitionError> {
-        if self.phase != FusionPhase::Executing {
-            return Err(FusionTransitionError {
-                from: self.phase,
-                to: FusionPhase::LeadFallback,
-            });
-        }
-        self.phase = FusionPhase::LeadFallback;
-        self.sidekick_failures = self.sidekick_failures.saturating_add(1);
-        Ok(())
-    }
-
+    #[must_use]
     pub fn recent_tool_errors(&self) -> u32 {
         self.recent_tool_errors
     }
 
+    #[must_use]
     pub fn should_escalate_for_tool_errors(&self) -> bool {
         self.recent_tool_errors >= RECENT_ERROR_ESCALATE_THRESHOLD
-    }
-
-    pub fn cancel(&mut self) -> Result<(), FusionTransitionError> {
-        if self.phase.is_terminal() {
-            return Err(FusionTransitionError {
-                from: self.phase,
-                to: FusionPhase::Cancelled,
-            });
-        }
-        self.phase = FusionPhase::Cancelled;
-        Ok(())
-    }
-
-    pub fn fail(&mut self) -> Result<(), FusionTransitionError> {
-        if self.phase.is_terminal() {
-            return Err(FusionTransitionError {
-                from: self.phase,
-                to: FusionPhase::Failed,
-            });
-        }
-        self.phase = FusionPhase::Failed;
-        Ok(())
-    }
-
-    pub fn clear_recent_tool_errors(&mut self) {
-        self.recent_tool_errors = 0;
     }
 
     pub fn record_delegation(&mut self) {
@@ -488,6 +321,11 @@ impl FusionState {
     }
 
     #[must_use]
+    pub const fn phase(&self) -> FusionPhase {
+        self.phase
+    }
+
+    #[must_use]
     pub const fn review_count(&self) -> u32 {
         self.review_count
     }
@@ -495,6 +333,92 @@ impl FusionState {
     #[must_use]
     pub const fn fallback_count(&self) -> u32 {
         self.fallback_count
+    }
+
+    /// Advance the one-way Fusion lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for cycles, back edges, terminal-state transitions, or
+    /// delegation attempts from a sidekick context.
+    pub fn transition(&mut self, next: FusionPhase) -> Result<(), FusionTransitionError> {
+        let allowed = matches!(
+            (self.phase, next),
+            (
+                FusionPhase::Planning,
+                FusionPhase::Executing | FusionPhase::Complete
+            ) | (FusionPhase::Executing, FusionPhase::Reviewing)
+                | (
+                    FusionPhase::Reviewing | FusionPhase::LeadFallback,
+                    FusionPhase::Complete
+                )
+        );
+        if !allowed || (next == FusionPhase::Executing && self.lane != FusionLane::Lead) {
+            return Err(FusionTransitionError {
+                from: self.phase,
+                to: next,
+            });
+        }
+
+        if next == FusionPhase::Reviewing {
+            self.review_count = self.review_count.saturating_add(1);
+        }
+        if matches!(next, FusionPhase::Reviewing | FusionPhase::Complete) {
+            self.lane = FusionLane::Lead;
+        }
+        self.phase = next;
+        Ok(())
+    }
+
+    /// Move a failed delegate into the single lead fallback turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless a delegate is currently executing.
+    pub fn delegate_failed(
+        &mut self,
+        _failure: FusionFailure,
+    ) -> Result<(), FusionTransitionError> {
+        if self.phase != FusionPhase::Executing {
+            return Err(FusionTransitionError {
+                from: self.phase,
+                to: FusionPhase::LeadFallback,
+            });
+        }
+        self.phase = FusionPhase::LeadFallback;
+        self.lane = FusionLane::Lead;
+        self.fallback_count = self.fallback_count.saturating_add(1);
+        Ok(())
+    }
+
+    /// Mark the entire Fusion run cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lifecycle is already terminal.
+    pub fn cancel(&mut self) -> Result<(), FusionTransitionError> {
+        self.enter_terminal(FusionPhase::Cancelled)
+    }
+
+    /// Mark the Fusion run failed due to an unrecoverable lead error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lifecycle is already terminal.
+    pub fn fail(&mut self) -> Result<(), FusionTransitionError> {
+        self.enter_terminal(FusionPhase::Failed)
+    }
+
+    fn enter_terminal(&mut self, terminal: FusionPhase) -> Result<(), FusionTransitionError> {
+        if self.phase.is_terminal() {
+            return Err(FusionTransitionError {
+                from: self.phase,
+                to: terminal,
+            });
+        }
+        self.phase = terminal;
+        self.lane = FusionLane::Lead;
+        Ok(())
     }
 }
 

@@ -19,8 +19,7 @@ pub use agent::{
 };
 pub use cancel::{CancelMap, CancelToken, CancelTrigger, PreDispatchGate};
 pub use fusion::{
-    FusionContinuation, FusionFailure, FusionLane, FusionPhase, FusionRequestDecision, FusionRoute,
-    FusionState, FusionUsageStats,
+    FusionFailure, FusionLane, FusionPhase, FusionRoute, FusionState, FusionUsageStats,
 };
 pub use n00n_config::{AgentConfig, FusionConfig, PermissionsConfig, ToolOutputLines};
 pub mod command;

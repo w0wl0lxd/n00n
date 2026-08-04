@@ -19,8 +19,8 @@ use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpSession;
 use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
-    ActiveTools, AdmissionError, Deadline, FileReadTracker, LocalTools, SessionIdentity,
-    ToolAudience, ToolContext, ToolFilter, ToolRegistry,
+    ActiveTools, Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext,
+    ToolFilter, ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -284,6 +284,7 @@ impl<'h> Agent<'h> {
         self.mcp = mcp;
         self
     }
+
     #[must_use]
     pub fn with_dynamic_mcp_tools(mut self, enabled: bool) -> Self {
         self.allow_dynamic_mcp_tools = enabled;
@@ -475,39 +476,12 @@ impl<'h> Agent<'h> {
     }
 
     async fn stream_response(&self, opts: RequestOptions) -> Result<StreamResponse, AgentError> {
-        let child_agent = self.audience.intersects(
-            ToolAudience::RESEARCH_SUB | ToolAudience::GENERAL_SUB | ToolAudience::WORKFLOW,
-        ) && !self.audience.contains(ToolAudience::MAIN);
-        let _agent_admission = if child_agent {
-            Some(
-                self.registry
-                    .admission()
-                    .acquire_agent(&self.cancel)
-                    .await
-                    .map_err(|error| match error {
-                        AdmissionError::Cancelled => AgentError::Cancelled,
-                    })?,
-            )
-        } else {
-            None
-        };
-        let mut tools = self.tools.clone();
-        filter_provider_tools(&mut tools, &self.effective_tool_filter(), &self.mode);
-        let visible = self.fusion_delegate_visible(&tools);
-        if !visible {
-            remove_fusion_delegate_tool(&mut tools);
-        }
-        let system = if visible {
-            self.system.clone()
-        } else {
-            system_without_fusion_lead_prompt(&self.system)
-        };
         stream_with_retry(super::streaming::StreamContext {
             provider: &*self.provider,
             model: &self.model,
             messages: self.history.as_slice(),
-            system: &system,
-            tools: &tools,
+            system: &self.system,
+            tools: &self.tools,
             event_tx: &self.event_tx,
             cancel: &self.cancel,
             opts,
@@ -867,7 +841,7 @@ impl<'h> Agent<'h> {
 
     fn emit_fusion_phase(&self, phase: FusionPhase) -> Result<(), AgentError> {
         self.event_tx
-            .send(AgentEvent::FusionPhase { phase, label: None })
+            .send(AgentEvent::FusionPhaseChanged { phase, label: None })
     }
 
     fn complete_fusion_phase(&mut self) -> Result<(), AgentError> {
@@ -961,8 +935,8 @@ impl<'h> Agent<'h> {
             model: Arc::clone(&self.model),
             event_tx: self.event_tx.clone(),
             mode: Arc::clone(&self.mode),
-            session_id: self.session_id.clone(),
             tool_use_id: None,
+            session_id: self.identity.as_ref().map(SessionIdentity::session_id),
             user_response_rx: self.user_response_rx.clone(),
             loaded_instructions: self.loaded_instructions.clone(),
             cancel: self.cancel.clone(),
@@ -1523,6 +1497,7 @@ mod tests {
             ));
         });
     }
+
     #[test]
     fn ambiguous_replay_cancellation_is_not_a_denial() {
         smol::block_on(async {
@@ -1857,6 +1832,7 @@ mod tests {
             Box::pin(async { Ok(Vec::new()) })
         }
     }
+
     #[test]
     fn estimate_message_tokens_counts_thinking_and_signature() {
         let messages = vec![Message {
@@ -1999,6 +1975,7 @@ mod tests {
             stop_reason: Some(StopReason::EndTurn),
         }
     }
+
     fn thinking_response() -> StreamResponse {
         StreamResponse {
             message: Message {
@@ -2473,7 +2450,7 @@ mod tests {
             let phases: Vec<_> = drain_events(&event_rx)
                 .into_iter()
                 .filter_map(|envelope| match envelope.event {
-                    AgentEvent::FusionPhase { phase, .. } => Some(phase),
+                    AgentEvent::FusionPhaseChanged { phase, .. } => Some(phase),
                     _ => None,
                 })
                 .collect();
@@ -2536,7 +2513,7 @@ mod tests {
             let phases: Vec<_> = drain_events(&event_rx)
                 .into_iter()
                 .filter_map(|envelope| match envelope.event {
-                    AgentEvent::FusionPhase { phase, .. } => Some(phase),
+                    AgentEvent::FusionPhaseChanged { phase, .. } => Some(phase),
                     _ => None,
                 })
                 .collect();

@@ -2271,7 +2271,7 @@ fn active_main_fusion_phase_is_visible() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.update(agent_msg(AgentEvent::FusionPhase {
+    app.update(agent_msg(AgentEvent::FusionPhaseChanged {
         phase: n00n_agent::FusionPhase::Executing,
         label: Some("brief label".into()),
     }));
@@ -2288,7 +2288,7 @@ fn stale_fusion_phase_is_ignored() {
     app.run_id = 2;
     let count_before = app.main_chat().message_count();
     app.update(agent_msg_with_run_id(
-        AgentEvent::FusionPhase {
+        AgentEvent::FusionPhaseChanged {
             phase: n00n_agent::FusionPhase::Reviewing,
             label: None,
         },
