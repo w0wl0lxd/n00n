@@ -352,7 +352,9 @@ fn clear_identity_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::{PluginStateError, PluginStateIdentity, PluginStateScope, PluginStateStore};
+    use super::{
+        PluginStateError, PluginStateIdentity, PluginStateScope, PluginStateStore, StateKey,
+    };
     use n00n_agent::tools::SessionIdentity;
     use n00n_storage::{
         id::{SessionRef, n00nId},
@@ -702,6 +704,35 @@ mod tests {
         let captured = store.capture(&identity, 2).unwrap();
         assert_eq!(
             serde_json::to_value(captured).unwrap()["plugins"]["plugin"],
+            json!(null)
+        );
+    }
+
+    #[test]
+    fn capture_rejects_candidate_mutation_failure_without_replacing_base() {
+        let store = PluginStateStore::default();
+        let identity = identity();
+        let snapshot: StoredSessionStateSnapshot = serde_json::from_value(json!({
+            "schema_version": SESSION_STATE_SCHEMA_VERSION,
+            "state_revision": 1,
+            "plugins": {"plugin": null}
+        }))
+        .unwrap();
+        store.hydrate(identity.clone(), Some(snapshot)).unwrap();
+
+        let key = StateKey::new("plugin", PluginStateScope::Session, &identity);
+        {
+            let mut inner = store.lock();
+            inner.managed.insert(key.clone());
+            inner.values.insert(key, json!("new"));
+        }
+
+        assert!(store.capture(&identity, 2).is_err());
+        let inner = store.lock();
+        let base = &inner.bases[&identity];
+        assert_eq!(base.state_revision(), Some(1));
+        assert_eq!(
+            serde_json::to_value(base).unwrap()["plugins"]["plugin"],
             json!(null)
         );
     }

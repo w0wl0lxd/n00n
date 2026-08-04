@@ -10,9 +10,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventK
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_agent::{
-    ExtractedCommand, FusionLane, FusionUsageStats, ImageMediaType, InterruptPoint,
-    InterruptSource, McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot,
-    McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
+    McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
+    ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
@@ -569,33 +569,6 @@ fn exit_on_done_flag_triggers_exit(event: AgentEvent, expected: ExitRequest) {
     app.run_id = 1;
     app.update(agent_msg(event));
     assert_eq!(app.exit_request, expected);
-}
-
-#[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None } ; "done")]
-#[test_case(AgentEvent::Error { message: "boom".into() } ; "error")]
-fn fusion_phase_clears_on_terminal_event(event: AgentEvent) {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(agent_msg(AgentEvent::FusionPhaseChanged {
-        phase: FusionPhase::Reviewing,
-        label: None,
-    }));
-    assert_eq!(app.fusion_phase, Some(FusionPhase::Reviewing));
-
-    app.update(agent_msg(event));
-    assert_eq!(app.fusion_phase, None);
-}
-
-#[test]
-fn fusion_phase_clears_on_cancel() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.fusion_phase = Some(FusionPhase::Executing);
-
-    app.handle_cancel();
-
-    assert_eq!(app.fusion_phase, None);
 }
 
 #[test]
@@ -1941,66 +1914,6 @@ fn ctrl_c_while_streaming_cancels_instead_of_quitting() {
 }
 
 #[test]
-fn fusion_done_accounting_accumulates_across_events() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let stats = |lead_cost, sidekick_cost, input, delegations| FusionUsageStats {
-        lead_cost,
-        sidekick_cost,
-        lead_usage: TokenUsage {
-            input,
-            ..TokenUsage::default()
-        },
-        sidekick_usage: TokenUsage {
-            output: input,
-            ..TokenUsage::default()
-        },
-        delegation_count: delegations,
-        compact_count: 1,
-        final_lane: FusionLane::Sidekick,
-    };
-    for stats in [stats(0.1, 0.2, 10, 1), stats(0.3, 0.4, 20, 2)] {
-        app.update(agent_msg(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-            fusion: Some(stats),
-        }));
-        app.status = Status::Streaming;
-    }
-    let stored = app
-        .state
-        .session
-        .meta
-        .fusion
-        .as_ref()
-        .expect("fusion stats");
-    assert!((stored.lead_cost - 0.4).abs() < f64::EPSILON);
-    assert!((stored.sidekick_cost - 0.6).abs() < f64::EPSILON);
-    assert_eq!(stored.lead_usage.input, 30);
-    assert_eq!(stored.sidekick_usage.output, 30);
-    assert_eq!(stored.delegation_count, 3);
-    assert_eq!(stored.compact_count, 2);
-
-    app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-        fusion: None,
-    }));
-    let unchanged = app
-        .state
-        .session
-        .meta
-        .fusion
-        .as_ref()
-        .expect("fusion stats");
-    assert!((unchanged.lead_cost - 0.4).abs() < f64::EPSILON);
-    assert_eq!(unchanged.delegation_count, 3);
-}
-
-#[test]
 fn streaming_status_keeps_app_animating() {
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -2328,15 +2241,14 @@ fn stale_events_ignored_after_run_id_increment() {
 }
 
 #[test]
-fn active_main_fusion_phase_is_visible_and_updates_status_bar_state() {
+fn active_main_fusion_phase_is_visible() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.update(agent_msg(AgentEvent::FusionPhaseChanged {
-        phase: FusionPhase::Executing,
+    app.update(agent_msg(AgentEvent::FusionPhase {
+        phase: n00n_agent::FusionPhase::Executing,
         label: Some("brief label".into()),
     }));
-    assert_eq!(app.fusion_phase, Some(FusionPhase::Executing));
     assert_eq!(
         app.main_chat().last_message_text(),
         "Executing: brief label"
@@ -2350,13 +2262,12 @@ fn stale_fusion_phase_is_ignored() {
     app.run_id = 2;
     let count_before = app.main_chat().message_count();
     app.update(agent_msg_with_run_id(
-        AgentEvent::FusionPhaseChanged {
-            phase: FusionPhase::Reviewing,
+        AgentEvent::FusionPhase {
+            phase: n00n_agent::FusionPhase::Reviewing,
             label: None,
         },
         1,
     ));
-    assert_eq!(app.fusion_phase, None);
     assert_eq!(app.main_chat().message_count(), count_before);
 }
 
