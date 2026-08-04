@@ -25,4 +25,6 @@ pub enum PluginError {
     UnknownPlugin { plugin: String },
     #[error("plugin host is not running")]
     HostDead,
+    #[error("plugin state operation failed: {message}")]
+    State { message: String },
 }
