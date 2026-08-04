@@ -859,27 +859,8 @@ mod tests {
             panic!("unknown protobuf wire types must fail the frame");
         };
 
+        assert!(matches!(error, AgentError::Api { status: 502, .. }));
         assert!(error.to_string().contains("wire type 3"));
-    }
-
-    #[test]
-    fn handle_data_frame_rejects_corrupt_compressed_payload() {
-        let frame = ConnectFrame {
-            end_stream: false,
-            compressed: true,
-            payload: b"not-gzip".to_vec(),
-        };
-        let store = shared_store();
-        let (outbound, _notify) = new_outbound_queue();
-        let mut text = String::new();
-        let mut thinking = String::new();
-
-        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
-        else {
-            panic!("transport decompression errors must remain strict");
-        };
-
-        assert!(error.to_string().contains("gzip"));
     }
 
     #[test]
@@ -944,6 +925,7 @@ mod tests {
         };
 
         assert!(matches!(error, AgentError::Api { status: 502, .. }));
+        assert!(error.to_string().contains("gzip"));
     }
 
     #[test]
@@ -1021,6 +1003,39 @@ mod tests {
             text.to_lowercase().contains("pong"),
             "capture text={text:?} thinking={thinking:?}"
         );
+    }
+
+    #[test]
+    fn extract_text_deltas_rejects_invalid_protobuf() {
+        let malformed = [0x0b, 0x0c];
+        let err = extract_text_deltas(&malformed).expect_err("must fail");
+        assert!(err.contains("wire type 3"));
+
+        let truncated = [0x0a, 0x05, 0x01, 0x02];
+        let err = extract_text_deltas(&truncated).expect_err("must fail");
+        assert!(err.contains("truncated"));
+    }
+
+    #[test]
+    fn extract_thinking_deltas_rejects_invalid_protobuf() {
+        let malformed = [0x0b, 0x0c];
+        let err = extract_thinking_deltas(&malformed).expect_err("must fail");
+        assert!(err.contains("wire type 3"));
+
+        let truncated = [0x0a, 0x05, 0x01, 0x02];
+        let err = extract_thinking_deltas(&truncated).expect_err("must fail");
+        assert!(err.contains("truncated"));
+    }
+
+    #[test]
+    fn has_exec_server_message_rejects_invalid_protobuf() {
+        let malformed = [0x0b, 0x0c];
+        let err = has_exec_server_message(&malformed).expect_err("must fail");
+        assert!(err.contains("wire type 3"));
+
+        let truncated = [0x0a, 0x05, 0x01, 0x02];
+        let err = has_exec_server_message(&truncated).expect_err("must fail");
+        assert!(err.contains("truncated"));
     }
 
     #[test]
