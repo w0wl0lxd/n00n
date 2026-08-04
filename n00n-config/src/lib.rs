@@ -1222,6 +1222,7 @@ impl AgentConfig {
 
     fn validate_max_parallel_tool_calls(&self) -> Result<(), ConfigError> {
         if self.max_parallel_tool_calls > MAX_PARALLEL_TOOL_CALLS {
+            #[allow(clippy::disallowed_methods)]
             let value = u64::try_from(self.max_parallel_tool_calls).unwrap_or(u64::MAX);
             return Err(ConfigError::AboveMaximum {
                 section: "agent",
