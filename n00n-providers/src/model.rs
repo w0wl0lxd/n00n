@@ -9,12 +9,15 @@ use std::ops::AddAssign;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use n00n_storage::sessions::{MIN_THINKING_BUDGET, StoredTokenUsage};
+use n00n_storage::sessions::{
+    BodyOverride, EffortDialectId, MIN_THINKING_BUDGET, StoredTokenUsage, ThinkingFieldConfig,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{ManifestRegistry, ProviderManifest};
 use crate::model_registry::model_registry;
 use crate::providers::{anthropic, custom, dynamic};
+use crate::types::{EffortDialect, effort_dialect_for};
 
 const PER_MILLION: f64 = 1_000_000.0;
 const GPT_MODEL_PREFIX: &str = "gpt-";
@@ -230,6 +233,13 @@ pub struct Model {
     /// `None` when unknown, see [`ProviderManifest::fallback_max_output`].
     pub max_output_tokens: Option<u32>,
     pub context_window: u32,
+    /// Effort dialect override. `None` keeps the base provider's dialect.
+    pub thinking_dialect: Option<EffortDialectId>,
+    /// Request-body layout override for thinking values. `None` keeps the base
+    /// provider's hardcoded layout.
+    pub thinking_fields: Option<ThinkingFieldConfig>,
+    /// Body overrides applied after all typed thinking setup.
+    pub body_override: Option<BodyOverride>,
 }
 
 impl Model {
@@ -272,6 +282,9 @@ impl Model {
             pricing,
             max_output_tokens,
             context_window,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 
@@ -341,6 +354,16 @@ impl Model {
     pub fn supports_tool_examples(&self) -> bool {
         self.supports_tool_examples_override
             .unwrap_or_else(|| self.family.supports_tool_examples())
+    }
+
+    /// The effort dialect for this model: the model's override when set,
+    /// otherwise the provider's default.
+    #[must_use]
+    pub fn effort_dialect<'a>(&self, default: &'a EffortDialect<'a>) -> &'a EffortDialect<'a> {
+        match self.thinking_dialect {
+            Some(id) => effort_dialect_for(id),
+            None => default,
+        }
     }
 
     /// Half the output window, so the answer always has room after the
@@ -445,7 +468,7 @@ impl Model {
         // protocol default under the custom slug, keeping its tier and pricing),
         // or no such provider.
         match custom::resolve_tier(slug, tier) {
-            custom::TierLookup::Model(model) => return Ok(model),
+            custom::TierLookup::Model(model) => return Ok(*model),
             custom::TierLookup::NoModelForTier(base) => {
                 let manifest = ManifestRegistry::get(&base.to_string())
                     .ok_or_else(|| ModelError::NoDefault(slug.to_string(), tier))?;
