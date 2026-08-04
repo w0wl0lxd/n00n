@@ -212,8 +212,13 @@ impl Provider for Mistral {
                 opts.message_cache_breakpoints,
                 opts.fast,
             );
-            opts.thinking
-                .apply_reasoning_effort(&mut body, &dialect::HIGH_ONLY, model);
+            opts.thinking.apply_thinking(
+                &mut body,
+                model,
+                &dialect::HIGH_ONLY,
+                &super::reasoning_effort_fields(),
+            );
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             // Convert assistant messages to Mistral's expected format with thinking content
             let messages = body.get_mut("messages").ok_or_else(|| AgentError::Config {
                 message: "missing messages in request body".into(),
@@ -226,7 +231,7 @@ impl Provider for Mistral {
             }
             let response = self
                 .compat
-                .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
+                .do_stream(model, &extra_headers, &body, event_tx, &auth)
                 .await?;
 
             let hit = response.usage.cache_read > 0;

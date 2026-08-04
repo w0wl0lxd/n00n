@@ -1,11 +1,10 @@
-use std::cmp;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use async_lock::{Mutex as AsyncMutex, Semaphore as AsyncSemaphore};
+use async_lock::Mutex as AsyncMutex;
 use flume::Sender;
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
@@ -61,13 +60,6 @@ fn coding_plan_slot_count(slots: u64) -> u8 {
         Ok(slots) => slots,
         Err(_) => CODING_PLAN_MAX_SLOTS,
     }
-}
-
-fn process_coding_plan_slots(slots: u8) -> usize {
-    // Cap a single n00n process at half the account slots, leaving the
-    // remainder for other n00n sessions. This prevents one long-running
-    // TUI or agent from monopolizing all OpenAI Coding Plan concurrency.
-    cmp::max(1, slots / 2).into()
 }
 
 type ResponseOperationSlot = Arc<AsyncMutex<()>>;
@@ -491,7 +483,6 @@ pub struct OpenAi {
     response_state_storage: Option<StateDir>,
     websocket_connect_timeout: Duration,
     coding_plan_slots: u8,
-    coding_plan_semaphore: Arc<AsyncSemaphore>,
     system_prefix: Option<String>,
     session_state: Arc<Mutex<HashMap<n00nId, OpenAiSessionState>>>,
     response_connections: Arc<Mutex<HashMap<n00nId, ResponseConnectionSlot>>>,
@@ -528,9 +519,6 @@ impl OpenAi {
             response_state_storage: Some(storage),
             websocket_connect_timeout: timeouts.connect,
             coding_plan_slots: options.coding_plan_slots,
-            coding_plan_semaphore: Arc::new(AsyncSemaphore::new(process_coding_plan_slots(
-                options.coding_plan_slots,
-            ))),
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
@@ -565,9 +553,6 @@ impl OpenAi {
             response_state_storage: None,
             websocket_connect_timeout: timeouts.connect,
             coding_plan_slots: options.coding_plan_slots,
-            coding_plan_semaphore: Arc::new(AsyncSemaphore::new(process_coding_plan_slots(
-                options.coding_plan_slots,
-            ))),
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
@@ -864,49 +849,10 @@ impl OpenAi {
         result
     }
 
-    #[cfg(test)]
-    #[allow(clippy::large_futures)]
-    #[allow(clippy::too_many_arguments)]
-    async fn stream_websocket<F>(
-        &self,
-        slot: Option<ResponseConnectionSlot>,
-        body: &Value,
-        full_history_body: &mut Option<Value>,
-        full_history_fallback_available: bool,
-        build_full_history: F,
-        chain_session: Option<n00nId>,
-        admission_scope: Option<&str>,
-        event_tx: &Sender<ProviderEvent>,
-        auth: &ResolvedAuth,
-        credential_hash: &str,
-        stream_timeout: Duration,
-        attempt_nonce: u64,
-    ) -> Result<(Option<String>, StreamResponse), super::websocket::WebSocketAttemptError>
-    where
-        F: FnMut() -> Value,
-    {
-        self.stream_websocket_with_key(
-            slot,
-            body,
-            full_history_body,
-            full_history_fallback_available,
-            build_full_history,
-            chain_session,
-            admission_scope,
-            event_tx,
-            auth,
-            credential_hash,
-            stream_timeout,
-            attempt_nonce,
-            None,
-        )
-        .await
-    }
-
     #[allow(clippy::large_futures)]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
-    async fn stream_websocket_with_key<F>(
+    async fn stream_websocket<F>(
         &self,
         slot: Option<ResponseConnectionSlot>,
         body: &Value,
@@ -920,7 +866,6 @@ impl OpenAi {
         credential_hash: &str,
         stream_timeout: Duration,
         attempt_nonce: u64,
-        idempotency_key: Option<&str>,
     ) -> Result<(Option<String>, StreamResponse), super::websocket::WebSocketAttemptError>
     where
         F: FnMut() -> Value,
@@ -1029,7 +974,6 @@ impl OpenAi {
                     },
                     event_tx,
                     stream_timeout,
-                    idempotency_key,
                 )
                 .await;
             match &result {
@@ -1340,18 +1284,12 @@ impl OpenAi {
         auth: &ResolvedAuth,
         attempt_nonce: u64,
     ) -> CodexAttempt {
-        // Backpressure: limit how many Coding Plan attempts this process can run
-        // concurrently, so one long-running n00n session cannot starve all others.
-        let _permit = self.coding_plan_semaphore.acquire().await;
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
         // Codex keeps continuation state only while its WebSocket stays connected.
         // Full-history replay is therefore required after a connection change.
         let mut opts = opts;
         opts.allow_history_replay = true;
-        // The OpenAI Coding Plan endpoint rejects `prompt_cache_options`, so
-        // disable message-cache breakpoints for Codex requests.
-        opts.message_cache_breakpoints = 0;
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
@@ -1470,7 +1408,7 @@ impl OpenAi {
             let admission_guard = admission;
             let connection_slot = self.response_connection_slot(session_id);
             let websocket_result = self
-                .stream_websocket_with_key(
+                .stream_websocket(
                     connection_slot,
                     &body,
                     &mut full_history_body,
@@ -1495,7 +1433,6 @@ impl OpenAi {
                     &socket_credential_hash,
                     stream_timeout,
                     attempt_nonce,
-                    opts.idempotency_key.as_deref(),
                 )
                 .await;
             match websocket_result {
@@ -1619,7 +1556,6 @@ impl OpenAi {
                         event_tx,
                         &fallback_auth.resolved,
                         stream_timeout,
-                        &opts,
                     )
                     .await
                     {
@@ -1801,7 +1737,6 @@ impl OpenAi {
                 event_tx,
                 &auth,
                 self.compat.stream_timeout(),
-                &opts,
             )
             .await
         })
@@ -2178,12 +2113,17 @@ impl Provider for OpenAi {
                 opts.message_cache_breakpoints,
                 opts.fast,
             );
-            opts.thinking
-                .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
+            opts.thinking.apply_thinking(
+                &mut body,
+                model,
+                &dialect::STANDARD,
+                &super::super::reasoning_effort_fields(),
+            );
+            super::super::apply_body_overrides(&mut body, model, &[super::super::MESSAGES_FIELD]);
             self.with_oauth_retry(|| async {
                 let auth = self.current_auth();
                 self.compat
-                    .do_stream(model, &[], &body, event_tx, &auth, &opts)
+                    .do_stream(model, &[], &body, event_tx, &auth)
                     .await
             })
             .await

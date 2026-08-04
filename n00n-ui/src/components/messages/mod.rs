@@ -11,8 +11,8 @@ pub(crate) use self::segment::wrapped_line_count;
 
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
-    bake_snapshot_tail, build_instructions_lines, build_tool_lines, control_style, done_style,
-    error_style, format_timestamp_now, thinking_style, truncate_to_header, user_style,
+    build_instructions_lines, build_tool_lines, control_style, done_style, error_style,
+    format_timestamp_now, thinking_style, truncate_to_header, user_style,
 };
 use super::{
     CompactionDisplay, DisplayMessage, DisplayMetadata, DisplayRole, ToolRole, ToolStatus,
@@ -1436,7 +1436,7 @@ impl MessagesPanel {
         snapshot: BufferSnapshot,
         is_header: bool,
         theme_gen: Option<u64>,
-    ) -> bool {
+    ) {
         let (old_start, old_height) = self.segment_position(tool_id);
         let anchor_auto_scroll = self.auto_scroll && self.last_total_lines > self.viewport_height;
         if theme_gen.is_some() {
@@ -1446,26 +1446,24 @@ impl MessagesPanel {
             self.stop_watching(tool_id);
         }
         let Some(applied_gen) = self.resolve_snapshot_gen(tool_id, theme_gen) else {
-            return false;
+            return;
         };
-        let Some(msg) = self.find_tool_msg_mut(tool_id) else {
-            return false;
-        };
-        if is_header {
-            msg.text = snapshot.first_line_text();
-            msg.render_header = Some(snapshot);
-        } else {
-            msg.render_snapshot = Some(snapshot);
+        if let Some(msg) = self.find_tool_msg_mut(tool_id) {
+            if is_header {
+                msg.text = snapshot.first_line_text();
+                msg.render_header = Some(snapshot);
+            } else {
+                msg.render_snapshot = Some(snapshot);
+            }
+            msg.snapshot_theme_gen = applied_gen;
+            self.rebuild_tool_segment(tool_id);
+            let (_, new_height) = self.segment_position(tool_id);
+            if anchor_auto_scroll {
+                self.shift_scroll_for_height_change(old_height, new_height);
+            } else {
+                self.preserve_anchor(old_start, old_height, tool_id);
+            }
         }
-        msg.snapshot_theme_gen = applied_gen;
-        self.rebuild_tool_segment(tool_id);
-        let (_, new_height) = self.segment_position(tool_id);
-        if anchor_auto_scroll {
-            self.shift_scroll_for_height_change(old_height, new_height);
-        } else {
-            self.preserve_anchor(old_start, old_height, tool_id);
-        }
-        true
     }
 
     fn find_tool_msg_mut(&mut self, tool_id: &str) -> Option<&mut DisplayMessage> {
@@ -1491,75 +1489,11 @@ impl MessagesPanel {
             .live_bufs
             .iter()
             .chain(self.watched_bufs.iter().map(|(id, buf)| (id, buf)))
-            .filter_map(|(id, buf)| {
-                buf.read_incremental()
-                    .map(|read| (id.clone(), Arc::clone(buf), read))
-            })
+            .filter_map(|(id, buf)| buf.read_if_dirty().map(|lines| (id.clone(), lines)))
             .collect();
-        for (tool_id, buf, read) in dirty {
-            let applied = (!read.replaced
-                && self.append_snapshot_tail(&tool_id, &read.lines, read.new_start))
-                || self.store_snapshot(
-                    &tool_id,
-                    BufferSnapshot::from_arc(Arc::clone(&read.lines)),
-                    false,
-                    None,
-                );
-            buf.finish_incremental(&read, applied);
+        for (tool_id, lines) in dirty {
+            self.store_snapshot(&tool_id, BufferSnapshot::from_arc(lines), false, None);
         }
-    }
-
-    /// Fast path for a live tool buffer that only grew: bakes just the new
-    /// tail onto the existing segment instead of rebuilding the whole thing.
-    /// Returns false when any invariant fails, and the caller falls back to a
-    /// full rebuild.
-    fn append_snapshot_tail(
-        &mut self,
-        tool_id: &str,
-        lines: &Arc<Vec<n00n_agent::SnapshotLine>>,
-        new_start: usize,
-    ) -> bool {
-        if !self.has_snapshot(tool_id) {
-            return false;
-        }
-        let Some(seg_idx) = self.cache.find_by_tool_id(tool_id) else {
-            return false;
-        };
-        let (Some(base), count) = (
-            self.cache.segments()[seg_idx].snapshot_base(),
-            self.cache.segments()[seg_idx].snapshot_count(),
-        ) else {
-            return false;
-        };
-        if new_start != count || new_start >= lines.len() {
-            return false;
-        }
-        let snapshot = BufferSnapshot::from_arc(Arc::clone(lines));
-        let (tail, spinners) = bake_snapshot_tail(&snapshot, new_start, self.started_at);
-        let search_tail = join_snapshot_text(&lines[new_start..]);
-
-        let (old_start, old_height) = self.segment_position(tool_id);
-        let anchor_auto_scroll = self.auto_scroll && self.last_total_lines > self.viewport_height;
-
-        let Some(msg) = self.find_tool_msg_mut(tool_id) else {
-            return false;
-        };
-        msg.render_snapshot = Some(BufferSnapshot::from_arc(Arc::clone(lines)));
-
-        let insert_at = base + count;
-        let appended = self.cache.get_mut(seg_idx).is_some_and(|seg| {
-            seg.append_snapshot_lines(insert_at, tail, spinners, lines.len(), &search_tail)
-        });
-        if !appended {
-            self.rebuild_tool_segment(tool_id);
-        }
-        let (_, new_height) = self.segment_position(tool_id);
-        if anchor_auto_scroll {
-            self.shift_scroll_for_height_change(old_height, new_height);
-        } else {
-            self.preserve_anchor(old_start, old_height, tool_id);
-        }
-        true
     }
 
     fn build_tool_segment_lines(
@@ -2209,19 +2143,4 @@ fn logical_line_count(text: &str) -> usize {
     } else {
         text.bytes().filter(|&b| b == b'\n').count() + 1
     }
-}
-
-/// Mirrors `BufferSnapshot::text` for a slice, so an incremental tail can
-/// extend the segment's search text without re-joining the whole buffer.
-fn join_snapshot_text(lines: &[n00n_agent::SnapshotLine]) -> String {
-    let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        for span in &line.spans {
-            out.push_str(&span.text);
-        }
-    }
-    out
 }

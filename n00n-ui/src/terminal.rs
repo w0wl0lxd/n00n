@@ -55,7 +55,7 @@ impl TerminalMux {
 
 impl TerminalGuard {
     pub(crate) fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
-        let terminal = ratatui::try_init()?;
+        let terminal = ratatui::init();
         let guard = Self;
         stdout().execute(EnableBracketedPaste)?;
         stdout().execute(EnableMouseCapture)?;
