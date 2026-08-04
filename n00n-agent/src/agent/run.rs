@@ -19,8 +19,8 @@ use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpSession;
 use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
-    ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
-    ToolRegistry,
+    ActiveTools, Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext,
+    ToolFilter, ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -28,6 +28,7 @@ use crate::{
     InterruptSource, ToolDoneEvent, TurnCompleteEvent,
 };
 use n00n_config::{ToolKey, ToolOutputLines};
+#[cfg(test)]
 use n00n_storage::id::SessionRef;
 
 use crate::tokenize::{
@@ -148,7 +149,7 @@ pub struct AgentParams {
     pub config: Arc<AgentConfig>,
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
-    pub session_id: Option<SessionRef>,
+    pub identity: Option<SessionIdentity>,
     pub timeouts: n00n_providers::Timeouts,
     pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
@@ -195,7 +196,7 @@ pub struct Agent<'h> {
     thinking_empty_retried: bool,
     permissions: Arc<PermissionManager>,
     opts: RequestOptions,
-    session_id: Option<SessionRef>,
+    identity: Option<SessionIdentity>,
     timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
@@ -254,7 +255,7 @@ impl<'h> Agent<'h> {
             post_tool_empty_retried: false,
             thinking_empty_retried: false,
             opts: RequestOptions::default(),
-            session_id: params.session_id,
+            identity: params.identity,
             file_tracker: params.file_tracker,
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
@@ -484,7 +485,7 @@ impl<'h> Agent<'h> {
             event_tx: &self.event_tx,
             cancel: &self.cancel,
             opts,
-            session_id: self.session_id.as_ref(),
+            session_id: self.identity.as_ref().map(SessionIdentity::session_id),
         })
         .await
     }
@@ -897,12 +898,22 @@ impl<'h> Agent<'h> {
     }
 
     fn effective_tool_filter(&self) -> ToolFilter {
-        if !self.allow_dynamic_mcp_tools {
-            return self.tool_filter.clone();
-        }
         let Some(mcp) = self.mcp.as_ref() else {
             return self.tool_filter.clone();
         };
+        let mut filter = self.tool_filter.clone();
+        let tool_search = crate::mcp::TOOL_SEARCH_TOOL_NAME;
+        if crate::tools::is_tool_enabled(&self.config.disabled_tools, tool_search) {
+            if !filter.matches(tool_search) {
+                filter = filter.including([tool_search.to_owned()]);
+            }
+        } else {
+            filter = filter.excluding(&[tool_search]);
+        }
+        if !self.allow_dynamic_mcp_tools {
+            return filter;
+        }
+        let capability_exclusions = crate::tools::capability_exclusions(&self.model);
         let mut definitions = Value::Array(Vec::new());
         mcp.extend_tools(&mut definitions);
         let names = definitions
@@ -910,8 +921,12 @@ impl<'h> Agent<'h> {
             .into_iter()
             .flatten()
             .filter_map(|definition| definition.get("name").and_then(Value::as_str))
+            .filter(|name| {
+                crate::tools::is_tool_enabled(&self.config.disabled_tools, name)
+                    && !capability_exclusions.contains(name)
+            })
             .map(str::to_owned);
-        self.tool_filter.clone().including(names)
+        filter.including(names)
     }
 
     fn tool_context(&self) -> ToolContext {
@@ -935,6 +950,7 @@ impl<'h> Agent<'h> {
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
+            identity: self.identity.clone(),
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
             audience: self.audience,
@@ -1097,7 +1113,7 @@ impl<'h> Agent<'h> {
             &self.event_tx,
             &self.cancel,
             CompactionTrigger::Auto,
-            self.session_id.as_ref(),
+            self.identity.as_ref().map(SessionIdentity::session_id),
             &cwd,
             None,
         )
@@ -1344,6 +1360,74 @@ mod tests {
             .filter_map(|definition| definition["name"].as_str())
             .collect();
         assert_eq!(names, ["codegraph", "server__search"]);
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_includes_tool_search_with_mcp() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+        agent = agent.with_mcp(Some(mcp)).with_dynamic_mcp_tools(false);
+
+        let effective_filter = agent.effective_tool_filter();
+        assert!(effective_filter.matches("tool_search"));
+        assert!(effective_filter.matches("read"));
+        assert!(!effective_filter.matches("write"));
+        assert!(!effective_filter.matches("srv__fetch_issue"));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_keeps_disabled_tool_search_blocked() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        let mut config = (*agent.config).clone();
+        config
+            .disabled_tools
+            .push(crate::mcp::TOOL_SEARCH_TOOL_NAME.into());
+        agent.config = Arc::new(config);
+        agent = agent.with_mcp(Some(mcp)).with_dynamic_mcp_tools(true);
+
+        assert!(!agent.effective_tool_filter().matches("tool_search"));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_keeps_disabled_tools_blocked() {
+        const DISABLED_MCP_TOOL: &str = "srv__fetch_issue";
+
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        let mut config = (*agent.config).clone();
+        config.disabled_tools.push(DISABLED_MCP_TOOL.into());
+        agent.config = Arc::new(config);
+        agent.tool_filter = ToolFilter::Only(vec![crate::mcp::TOOL_SEARCH_TOOL_NAME.into()]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        mcp.search_tools("issue").unwrap();
+
+        assert!(!agent.effective_tool_filter().matches(DISABLED_MCP_TOOL));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_includes_loaded_tools_with_flag() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        mcp.search_tools("issue").unwrap();
+        let effective_filter = agent.effective_tool_filter();
+        assert!(effective_filter.matches("tool_search"));
+        assert!(effective_filter.matches("srv__fetch_issue"));
+        assert!(effective_filter.matches("read"));
+        assert!(!effective_filter.matches("write"));
     }
 
     #[test]
@@ -1934,7 +2018,7 @@ mod tests {
                     },
                     std::path::PathBuf::from("/tmp"),
                 )),
-                session_id: None,
+                identity: None,
                 timeouts: n00n_providers::Timeouts::default(),
                 openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
@@ -2700,7 +2784,7 @@ mod tests {
                         },
                         std::path::PathBuf::from("/tmp"),
                     )),
-                    session_id: None,
+                    identity: None,
                     timeouts: n00n_providers::Timeouts::default(),
                     openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),
