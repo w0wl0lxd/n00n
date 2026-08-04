@@ -49,6 +49,17 @@ fn which(name: &str) -> Option<PathBuf> {
     })
 }
 
+fn resolve_project(project: &str) -> Result<PathBuf, mlua::Error> {
+    let path = Path::new(project);
+    if !path.is_dir() {
+        return Err(mlua::Error::external(format!(
+            "project path is not a directory: {project}"
+        )));
+    }
+    path.canonicalize()
+        .map_err(|err| mlua::Error::external(format!("failed to resolve {project}: {err}")))
+}
+
 fn run_smell(args: &[&str]) -> Result<String, mlua::Error> {
     let binary = smell_binary_path()?;
     let output = Command::new(binary)
@@ -70,21 +81,29 @@ pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
     let table = lua.create_table()?;
 
     let has_index = lua.create_function(|_, project: String| {
-        Ok(Path::new(&project)
-            .join(".n00n/smells/metadata.json")
-            .is_file())
+        let path = Path::new(&project);
+        if !path.is_dir() {
+            return Ok(false);
+        }
+        Ok(path.join(".n00n/smells/metadata.json").is_file())
     })?;
     table.set("has_index", has_index)?;
 
     let index = lua.create_function(|_, project: String| {
-        run_smell(&["index", &project])?;
+        let project = resolve_project(&project)?;
+        run_smell(&["index", &project.to_string_lossy()])?;
         Ok(())
     })?;
     table.set("index", index)?;
 
     let search = lua.create_function(
         |_, (project, query, kind, top_k): (String, String, Option<String>, Option<usize>)| {
-            let mut owned = vec!["search".to_owned(), project, query];
+            let project = resolve_project(&project)?;
+            let mut owned = vec![
+                "search".to_owned(),
+                project.to_string_lossy().into_owned(),
+                query,
+            ];
             if let Some(k) = kind {
                 owned.push("--kind".to_owned());
                 owned.push(k);

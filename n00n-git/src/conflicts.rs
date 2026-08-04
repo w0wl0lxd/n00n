@@ -139,7 +139,10 @@ pub fn find(path: &Path, options: &ConflictsOptions) -> Result<GitConflicts, Git
     let repo = gix::open(path)
         .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
     let worktree = repo.worktree().ok_or(GitError::BareRepo)?;
-    let workdir = worktree.base().to_path_buf();
+    let workdir = worktree
+        .base()
+        .canonicalize()
+        .map_err(|e| GitError::GitOperation(format!("failed to canonicalize workdir: {e}")))?;
 
     let index = repo
         .index()
@@ -186,6 +189,16 @@ pub fn find(path: &Path, options: &ConflictsOptions) -> Result<GitConflicts, Git
         let rela = gix::path::try_from_bstr(rela_path)
             .map_err(|e| GitError::GitOperation(format!("invalid relative path: {e}")))?;
         let file_path = workdir.join(rela.as_ref());
+        let canonical_file = file_path
+            .canonicalize()
+            .unwrap_or_else(|_| file_path.clone());
+        if !canonical_file.starts_with(&workdir) {
+            tracing::warn!(
+                path = %file_path.display(),
+                "skipping file outside worktree"
+            );
+            continue;
+        }
 
         match scan_file(&file_path, options, is_unmerged) {
             Ok(mut conflict_file) => {
