@@ -17,8 +17,8 @@ use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
 use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, SessionIdentity,
-    ToolAudience, ToolContext, ToolFilter, ToolLive,
+    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
+    ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -852,10 +852,7 @@ async fn session(
             config: session_config(&agent_ctx.config, excluded_tools.clone()),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
-            identity: Some(SessionIdentity::child(
-                session_id.into(),
-                parent_identity.root_session_id().clone(),
-            )),
+            session_id: Some(session_id.into()),
             timeouts: agent_ctx.timeouts,
             openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
@@ -1557,7 +1554,6 @@ async fn prompt(
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
-        .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {
