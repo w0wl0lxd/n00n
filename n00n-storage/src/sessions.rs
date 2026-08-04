@@ -5,7 +5,7 @@
 //! `SessionLog` tracks cursor state to enable O(delta) incremental saves.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -42,6 +42,11 @@ const MAX_SNIPPET_BYTES: usize = 256;
 const MAX_FIRST_MESSAGE_LINE_BYTES: usize = 64 * 1024;
 const MAX_FIRST_MESSAGE_TEXT_BYTES: usize = 1024;
 const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
+pub const SESSION_STATE_SCHEMA_VERSION: u32 = 1;
+const MAX_PLUGIN_STATE_ENTRIES: usize = 64;
+const MAX_PLUGIN_STATE_NAME_BYTES: usize = 128;
+const MAX_PLUGIN_STATE_BYTES: usize = 256 * 1024;
+const MAX_SESSION_STATE_BYTES: usize = 1024 * 1024;
 const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
@@ -446,6 +451,12 @@ impl StoredSessionStateSnapshot {
         }
     }
 
+    /// Insert or replace a plugin's state for the given scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SessionStateError` if the snapshot uses an unsupported schema version or the
+    /// resulting snapshot would exceed size or entry limits.
     pub fn insert_plugin_state(
         &mut self,
         plugin: &str,
@@ -467,6 +478,11 @@ impl StoredSessionStateSnapshot {
         Ok(())
     }
 
+    /// Validate that this snapshot can be applied to a session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SessionStateError` if the snapshot is unsupported or violates invariants.
     pub fn validate_for_apply(&self) -> Result<(), SessionStateError> {
         match &self.inner {
             StoredSessionStateSnapshotInner::Supported(snapshot) => {
@@ -478,6 +494,12 @@ impl StoredSessionStateSnapshot {
         }
     }
 
+    /// Return the stored payload for a plugin/scope if the snapshot and schema version match.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SessionStateError` if the snapshot is unsupported, the plugin name is invalid, or
+    /// the plugin's stored container is malformed.
     pub fn plugin_payload_for_apply(
         &self,
         plugin: &str,

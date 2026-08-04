@@ -7,7 +7,7 @@ mod image_paste;
 pub(crate) mod mode;
 mod mouse;
 mod queue;
-mod session;
+pub(crate) mod session;
 pub(crate) mod session_state;
 pub(crate) mod shell;
 #[cfg(test)]
@@ -502,9 +502,12 @@ impl App {
         }
     }
 
-    pub fn tick_error_expiry(&mut self) {
+    pub fn tick_error_expiry(&mut self) -> bool {
         if self.status.is_error_expired() {
             self.status = Status::Idle;
+            true
+        } else {
+            false
         }
     }
 

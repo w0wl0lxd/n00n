@@ -1313,8 +1313,9 @@ impl<'t> EventLoop<'t> {
                     .runtime_descriptors()
                     .iter()
                     .filter(|descriptor| {
-                        caller_root
-                            .is_none_or(|root| descriptor.root_id.unwrap_or(descriptor.id) == root)
+                        caller_root.is_none_or(|root| {
+                            descriptor.root_id.unwrap_or_else(|| descriptor.id) == root
+                        })
                     })
                     .map(RuntimeDescriptor::control_json)
                     .collect();
@@ -1340,7 +1341,7 @@ impl<'t> EventLoop<'t> {
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::Current => {
-                let current = caller.unwrap_or(self.focused);
+                let current = caller.unwrap_or_else(|| self.focused);
                 let _ = reply_tx.send(Ok(json!(self.sessions[current].id())));
             }
             SessionRequest::New {
@@ -1355,7 +1356,7 @@ impl<'t> EventLoop<'t> {
                     return;
                 }
                 let mut session = {
-                    let source = caller.unwrap_or(self.focused);
+                    let source = caller.unwrap_or_else(|| self.focused);
                     let slot = self.sessions[source].model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
@@ -1428,7 +1429,7 @@ impl<'t> EventLoop<'t> {
                 control,
             } => {
                 let idx = match id {
-                    None => Ok(caller.unwrap_or(self.focused)),
+                    None => Ok(caller.unwrap_or_else(|| self.focused)),
                     Some(id) => parse_session_id(&id).and_then(|id| {
                         self.position(id)
                             .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
@@ -2080,7 +2081,7 @@ impl<'t> EventLoop<'t> {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
         if let Some(ref h) = self.ctx.mcp_handle {
-            mcp::kill_process_groups(&h.reader().load().pids);
+            smol::block_on(h.shutdown());
         }
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);

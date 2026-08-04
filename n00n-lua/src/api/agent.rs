@@ -1567,7 +1567,7 @@ async fn prompt(
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
         .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
-        .with_delegation_policy(s.delegation_policy)
+        .with_delegation_policy(s.delegation_policy.clone())
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {
