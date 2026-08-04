@@ -202,11 +202,33 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
 }
 
 fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
+    // Devin gRPC usage reports input_tokens as the total prompt tokens
+    // (including cache reads and writes), with cache fields as details.
+    // TokenUsage.input must be the non-cached portion so that total_input()
+    // and cost() are consistent with the rest of the providers. Some
+    // responses already report input_tokens as the non-cached remainder;
+    // keep that reported value instead of saturating to zero.
+    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
+    let (input, cache_read, cache_creation) = if u.input_tokens >= cached {
+        (
+            u.input_tokens.saturating_sub(cached),
+            u.cache_read_tokens,
+            u.cache_write_tokens,
+        )
+    } else {
+        debug!(
+            input_tokens = u.input_tokens,
+            cache_read_tokens = u.cache_read_tokens,
+            cache_write_tokens = u.cache_write_tokens,
+            "Devin input_tokens is less than cached tokens; treating as non-cached"
+        );
+        (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens)
+    };
     TokenUsage {
-        input: clamp_tokens("input", u.input_tokens),
+        input: clamp_tokens("input", input),
         output: clamp_tokens("output", u.output_tokens),
-        cache_creation: clamp_tokens("cache_write", u.cache_write_tokens),
-        cache_read: clamp_tokens("cache_read", u.cache_read_tokens),
+        cache_creation: clamp_tokens("cache_write", cache_creation),
+        cache_read: clamp_tokens("cache_read", cache_read),
     }
 }
 
@@ -1008,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn devin_usage_preserves_reported_input_when_it_exceeds_cache() {
+    fn devin_usage_maps_total_input_to_non_cached() {
         let stats = ModelUsageStats {
             input_tokens: 100,
             output_tokens: 50,
@@ -1016,11 +1038,11 @@ mod tests {
             cache_write_tokens: 10,
         };
         let usage = devin_usage_to_token_usage(&stats);
-        assert_eq!(usage.input, 100);
+        assert_eq!(usage.input, 80);
         assert_eq!(usage.output, 50);
         assert_eq!(usage.cache_read, 10);
         assert_eq!(usage.cache_creation, 10);
-        assert_eq!(usage.total_input(), 120);
+        assert_eq!(usage.total_input(), 100);
     }
 
     #[test]
@@ -1038,6 +1060,21 @@ mod tests {
         assert_eq!(usage.cache_read, 100);
         assert_eq!(usage.cache_creation, 50);
         assert_eq!(usage.total_input(), 160);
+    }
+
+    #[test]
+    fn devin_usage_handles_cache_equal_to_total_input() {
+        let stats = ModelUsageStats {
+            input_tokens: 50,
+            output_tokens: 10,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 0);
+        assert_eq!(usage.cache_read, 30);
+        assert_eq!(usage.cache_creation, 20);
+        assert_eq!(usage.total_input(), 50);
     }
 
     #[test]

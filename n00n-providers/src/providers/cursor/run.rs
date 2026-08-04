@@ -35,7 +35,7 @@ use super::checksum::{
 use super::connect::{ConnectFrame, FrameBuffer, decode_frame_payload, encode_frame};
 use super::proto::{
     AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames,
-    decode_agent_server_message, exec_message_has_mcp_args, heartbeat_frame,
+    exec_message_has_mcp_args, heartbeat_frame,
 };
 use super::wire::{
     CLIENT_TYPE, CLIENT_VERSION, CONNECT_CONTENT_TYPE, CONNECT_PROTOCOL_VERSION, wire_model_id,
@@ -696,7 +696,10 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    let server_msg = decode_agent_server_message(&payload);
+    let server_msg = AgentServerMessage::decode(&*payload).map_err(|message| AgentError::Api {
+        status: 502,
+        message: message.to_string(),
+    })?;
     if let Ok(Some(op)) = parse_kv_server_message(&server_msg.kv_server_message) {
         queue_checkpoint_reply(op, checkpoints, outbound)?;
         return Ok(FrameHandleOutcome {
@@ -860,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_data_frame_preserves_fields_before_truncated_tail() {
+    fn handle_data_frame_rejects_truncated_tail() {
         let msg = AgentServerMessage {
             interaction_update: Some(InteractionUpdate {
                 text_delta: Some(TextDelta {
@@ -883,10 +886,13 @@ mod tests {
         let (outbound, _notify) = new_outbound_queue();
         let mut text = String::new();
         let mut thinking = String::new();
-        let outcome =
-            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
-        assert_eq!(outcome.text_deltas, 1);
-        assert_eq!(text, "pong");
+
+        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
+        else {
+            panic!("truncated protobuf must fail");
+        };
+
+        assert!(error.to_string().contains("Protobuf"));
     }
 
     #[test]
@@ -927,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_data_frame_ignores_non_protobuf_end_stream() {
+    fn handle_data_frame_rejects_non_protobuf_payload() {
         let frame = ConnectFrame {
             end_stream: true,
             compressed: false,
@@ -937,12 +943,13 @@ mod tests {
         let (outbound, _notify) = new_outbound_queue();
         let mut text = String::new();
         let mut thinking = String::new();
-        let outcome =
-            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
-        assert!(!outcome.exec_skipped);
-        assert_eq!(outcome.text_deltas, 0);
-        assert!(text.is_empty());
-        assert!(thinking.is_empty());
+
+        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
+        else {
+            panic!("non-protobuf payload must fail");
+        };
+
+        assert!(error.to_string().contains("Protobuf"));
     }
 
     #[test]
