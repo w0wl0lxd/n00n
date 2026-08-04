@@ -4464,25 +4464,25 @@ fn plugin_state_isolates_namespaces_and_session_scope_while_sharing_root_scope()
 
     host.unload("plugin_a").unwrap();
     let unloaded = handle.capture_state(&root, 9).unwrap();
-    assert!(
+    assert_eq!(
         unloaded
             .plugin_payload_for_apply(
                 "plugin_a",
                 1,
                 n00n_storage::sessions::StoredStateScope::Root,
             )
-            .unwrap()
-            .is_none()
+            .unwrap(),
+        Some(&serde_json::json!({"name": "root-a"}))
     );
-    assert!(
+    assert_eq!(
         unloaded
             .plugin_payload_for_apply(
                 "plugin_a",
                 1,
                 n00n_storage::sessions::StoredStateScope::Session,
             )
-            .unwrap()
-            .is_none()
+            .unwrap(),
+        Some(&serde_json::json!({"name": "session-a"}))
     );
 }
 
