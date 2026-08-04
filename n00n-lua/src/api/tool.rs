@@ -624,7 +624,7 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 ///
 /// @param spec table Tool specification:
 ///   name            (string)   Required canonical ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
-///   aliases         (string[]) Optional deprecated names accepted for compatibility but never shown to the model.
+///   aliases         (string[]) Optional deprecated names accepted for compatibility but never shown to the model. Must be unique within the tool and must not include the canonical name.
 ///   description     (string)   Required. Non-empty description shown to the model.
 ///   schema          (table)    Required. JSON Schema object describing the tool's input parameters.
 ///   handler         (function) Required. Called with `(input, ctx)` when the tool is invoked.
@@ -1140,25 +1140,25 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             "register_tool: invalid name '{name}'"
         )));
     }
-    #[allow(clippy::manual_unwrap_or_default)]
-    let aliases = match spec.get::<Option<Vec<String>>>("aliases")? {
-        Some(aliases) => aliases,
-        None => Vec::new(),
-    }
-    .into_iter()
-    .map(|alias| {
-        if !is_valid_tool_name(&alias) || alias == name {
-            return Err(mlua::Error::runtime(format!(
-                "register_tool: invalid alias '{alias}'"
-            )));
-        }
-        Ok(Arc::from(alias))
-    })
-    .collect::<LuaResult<Vec<Arc<str>>>>()?;
+    let aliases = spec
+        .get::<Option<Vec<String>>>("aliases")?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|alias| {
+            if !is_valid_tool_name(&alias) || alias == name {
+                return Err(mlua::Error::runtime(format!(
+                    "register_tool: invalid alias '{alias}'"
+                )));
+            }
+            Ok(Arc::from(alias))
+        })
+        .collect::<LuaResult<Vec<Arc<str>>>>()?;
     let mut seen = HashSet::new();
     for alias in &aliases {
         if !seen.insert(alias) {
-            return Err(mlua::Error::runtime("register_tool: duplicate aliases"));
+            return Err(mlua::Error::runtime(format!(
+                "register_tool: duplicate alias '{alias}'"
+            )));
         }
     }
     let description: String = spec.get("description").unwrap_or_else(|_| String::new());
@@ -2334,5 +2334,25 @@ mod tests {
         };
         let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
         smol::block_on(inv.start(&ctx));
+    }
+
+    #[test]
+    fn register_tool_rejects_non_adjacent_duplicate_aliases() {
+        let lua = Lua::new();
+        let spec = lua
+            .load(
+                r#"{
+                name = "test_tool",
+                description = "Test",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function() return "ok" end,
+                aliases = {"alias1", "alias2", "alias1"}
+            }"#,
+            )
+            .eval()
+            .unwrap();
+        let pending = PendingTools::default();
+        let err = register_tool_from_lua(&lua, &spec, pending).unwrap_err();
+        assert!(err.to_string().contains("duplicate alias 'alias1'"));
     }
 }

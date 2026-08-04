@@ -7,6 +7,8 @@ use crate::tools::registry::{HeaderFuture, HeaderResult, ParseError, ToolInvocat
 use crate::tools::schema::ToolInputErrorKind;
 use crate::tools::{DescriptionContext, ToolContext, ToolExecResult};
 
+pub const LOAD_NAMESPACE_TOOL_NAME: &str = "load_namespace";
+
 pub struct ToolSearch;
 
 impl ToolSearch {
@@ -60,7 +62,7 @@ impl ToolInvocation for ToolSearchInvocation {
 
 impl crate::tools::registry::Tool for ToolSearch {
     fn name(&self) -> &'static str {
-        "search_tools"
+        crate::mcp::TOOL_SEARCH_TOOL_NAME
     }
 
     fn aliases(&self) -> Vec<&str> {
@@ -155,7 +157,7 @@ impl ToolInvocation for LoadNamespaceInvocation {
 
 impl crate::tools::registry::Tool for LoadNamespace {
     fn name(&self) -> &'static str {
-        "load_namespace"
+        LOAD_NAMESPACE_TOOL_NAME
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {

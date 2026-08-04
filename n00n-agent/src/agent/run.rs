@@ -1015,7 +1015,7 @@ impl<'h> Agent<'h> {
         let mut dirty = false;
         for done in results {
             match crate::tools::canonical_tool_name(done.tool.as_ref()) {
-                "search_tools" => {
+                crate::mcp::TOOL_SEARCH_TOOL_NAME => {
                     let text = done.output.as_text();
                     if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) {
                         for item in items {
@@ -1026,7 +1026,7 @@ impl<'h> Agent<'h> {
                         }
                     }
                 }
-                "load_namespace" => {
+                crate::tools::tool_search::LOAD_NAMESPACE_TOOL_NAME => {
                     let text = done.output.as_text();
                     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&text)
                         && let Some(ns) = obj.get("namespace").and_then(|v| v.as_str())

@@ -301,7 +301,7 @@ impl ToolsSnapshot {
         }
         for (i, tool) in tools.iter().enumerate() {
             for alias in tool.tool.aliases() {
-                by_name.entry(alias.to_owned()).or_insert(i);
+                by_name.entry(alias.to_owned()).or_insert_with(|| i);
             }
         }
         Self { tools, by_name }
@@ -553,16 +553,22 @@ impl ToolRegistry {
                 .collect();
             let mut new_sources: HashMap<String, ToolSource> =
                 HashMap::with_capacity(new_entries.len());
+            let mut retained_index: HashMap<String, ToolSource> = HashMap::new();
+            for tool in &next_tools {
+                retained_index.insert(tool.name().to_owned(), tool.source.clone());
+                for alias in tool.tool.aliases() {
+                    retained_index.insert(alias.to_owned(), tool.source.clone());
+                }
+            }
             for (tool, source) in new_entries {
                 let existing_check = |name: &str| -> Option<String> {
                     new_sources
                         .get(name)
                         .map(|s| s.as_log_field().into_owned())
                         .or_else(|| {
-                            next_tools
-                                .iter()
-                                .find(|t| t.name() == name || t.tool.aliases().contains(&name))
-                                .map(|t| t.source.as_log_field().into_owned())
+                            retained_index
+                                .get(name)
+                                .map(|s| s.as_log_field().into_owned())
                         })
                 };
                 if let Err((candidate, existing)) = validate_candidate_names(tool, &existing_check)
@@ -964,6 +970,101 @@ mod tests {
         reg.register(&tool, &source).unwrap();
         let err = reg.register(&tool, &source).unwrap_err();
         assert!(matches!(err, RegistryError::NameConflict { .. }));
+    }
+
+    #[test]
+    fn register_rejects_alias_collision_with_existing_canonical() {
+        let reg = ToolRegistry::new();
+        let first: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "read_file".into(),
+            aliases: vec![],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let second: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "write_file".into(),
+            aliases: vec!["read_file".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        reg.register(&first, &lua_source("a")).unwrap();
+        let err = reg.register(&second, &lua_source("b")).unwrap_err();
+        assert!(matches!(err, RegistryError::NameConflict { name, .. } if name == "read_file"));
+    }
+
+    #[test]
+    fn register_rejects_alias_collision_with_existing_alias() {
+        let reg = ToolRegistry::new();
+        let first: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "read_file".into(),
+            aliases: vec!["read".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let second: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "write_file".into(),
+            aliases: vec!["read".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        reg.register(&first, &lua_source("a")).unwrap();
+        let err = reg.register(&second, &lua_source("b")).unwrap_err();
+        assert!(matches!(err, RegistryError::NameConflict { name, .. } if name == "read"));
+    }
+
+    #[test]
+    fn replace_plugin_rejects_alias_collision_with_retained_tool() {
+        let reg = ToolRegistry::new();
+        let retained: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "read_file".into(),
+            aliases: vec!["read".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let new_tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "write_file".into(),
+            aliases: vec!["read".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        reg.register(&retained, &lua_source("other_plugin"))
+            .unwrap();
+        let err = reg
+            .replace_plugin("plugin_a", &[(new_tool, lua_source("plugin_a"))])
+            .unwrap_err();
+        assert!(matches!(err, RegistryError::NameConflict { name, .. } if name == "read"));
+    }
+
+    #[test]
+    fn definitions_returns_single_canonical_entry_for_aliased_tool() {
+        let reg = ToolRegistry::new();
+        let tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "read_file".into(),
+            aliases: vec!["read".into(), "rf".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        reg.register(&tool, &lua_source("p")).unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let defs = reg.definitions(
+            &Vars::new(),
+            &DescriptionContext {
+                filter: &filter,
+                audience: ToolAudience::MAIN,
+                workflow: false,
+            },
+            false,
+        );
+        let defs_arr = defs.as_array().expect("definitions should be an array");
+        assert_eq!(defs_arr.len(), 1);
+        assert_eq!(defs_arr[0]["name"], "read_file");
     }
 
     #[test]

@@ -356,9 +356,13 @@ fn run_ui_loop(
         let model = if focused_tab.messages.is_empty() {
             stack.model.clone()
         } else {
-            ModelResolver::current()
-                .resolve(&focused_tab.model)
-                .unwrap_or_else(|_| stack.model.clone())
+            match ModelResolver::current().resolve(&focused_tab.model) {
+                Ok(m) => m,
+                Err(e) => {
+                    warnings.push(format!("failed to resolve session model: {e:#}"));
+                    stack.model.clone()
+                }
+            }
         };
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`

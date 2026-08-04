@@ -1342,10 +1342,14 @@ impl<'t> EventLoop<'t> {
                 rt.handles.queue.push(QueueItem::Compact { run_id });
             }
             Action::ToggleMcp(server_name, enabled) => {
-                self.sessions[idx].handles.send_mcp(McpCommand::Toggle {
-                    server: server_name,
-                    enabled,
-                });
+                if self.sessions[idx].handles.mcp_handle.is_none() {
+                    tracing::warn!(server = %server_name, "MCP toggle requested but MCP not available");
+                } else {
+                    self.sessions[idx].handles.send_mcp(McpCommand::Toggle {
+                        server: server_name,
+                        enabled,
+                    });
+                }
             }
             Action::ShellCommand {
                 id,

@@ -366,8 +366,10 @@ fn local_provider_configured(slug: &str) -> bool {
         "llama-cpp" => "LLAMA_CPP_HOST",
         _ => return false,
     };
-    let has_host = n00n_config::providers::resolve_base_url(slug, def).is_some()
-        || std::env::var(host_env).is_ok_and(|value| !value.trim().is_empty());
+    let has_host = def
+        .and_then(|d| d.base_url.as_ref())
+        .map(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| std::env::var(host_env).is_ok_and(|value| !value.trim().is_empty()));
     let env = n00n_config::providers::resolve_api_key_env(slug, def);
     let has_key = !env.is_empty() && crate::providers::KeyPool::resolve(slug, &env).is_ok();
     has_host || has_key

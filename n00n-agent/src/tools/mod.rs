@@ -1317,6 +1317,53 @@ mod tests {
     }
 
     #[test]
+    fn tool_aliases_are_unique_and_no_canonical_is_alias() {
+        let mut seen_aliases = std::collections::HashSet::new();
+        let mut canonical_names = std::collections::HashSet::new();
+        for (alias, _canonical) in TOOL_ALIASES {
+            assert!(
+                seen_aliases.insert(alias),
+                "duplicate alias in TOOL_ALIASES: {alias}"
+            );
+            canonical_names.insert(*_canonical);
+        }
+        for (alias, _canonical) in TOOL_ALIASES {
+            assert!(
+                !canonical_names.contains(alias),
+                "alias '{alias}' is also a canonical name in TOOL_ALIASES"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_tool_name_is_idempotent() {
+        for (alias, canonical) in TOOL_ALIASES {
+            let once = canonical_tool_name(alias);
+            let twice = canonical_tool_name(once);
+            assert_eq!(
+                once, *canonical,
+                "first canonicalization failed for {alias}"
+            );
+            assert_eq!(twice, *canonical, "idempotency failed for {alias}");
+        }
+    }
+
+    #[test_case("edit_file_lines" ; "edit_file_lines")]
+    #[test_case("insert_file_lines" ; "insert_file_lines")]
+    #[test_case("edit_file_bulk" ; "edit_file_bulk")]
+    fn edit_sub_tools_in_edit_sub_tools(name: &str) {
+        assert!(n00n_config::EDIT_SUB_TOOLS.contains(&name));
+    }
+
+    #[test_case("edit_lines" ; "edit_lines")]
+    #[test_case("insert_lines" ; "insert_lines")]
+    #[test_case("multiedit" ; "multiedit")]
+    fn edit_sub_tool_aliases_in_tool_aliases(alias: &str) {
+        let canonical = canonical_tool_name(alias);
+        assert!(n00n_config::EDIT_SUB_TOOLS.contains(&canonical));
+    }
+
+    #[test]
     fn default_active_tools_include_deferred_tools() {
         let active = default_active_tools();
         for name in [

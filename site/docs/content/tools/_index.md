@@ -217,7 +217,7 @@ Execute Python in sandboxed interpreter with tools as callable functions. Use fo
 
 ### `run_batch` *(lua plugin)*
 
-Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
+Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations. Prefer batch over sequential tool calls when operations are independent.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -250,7 +250,7 @@ Show status for one live background agent.
 
 ### `control_agent` *(lua plugin)*
 
-Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
+Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

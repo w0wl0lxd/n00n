@@ -371,7 +371,7 @@ impl McpSession {
     }
 
     /// Append this request's MCP definitions: loaded and `always_load`
-    /// tools in full, the rest as names inside one `tool_search` catalog.
+    /// tools in full, the rest as names inside one `search_tools` catalog.
     /// Names already in the array are skipped.
     ///
     /// The `defer_tools` threshold is measured against the full index, not

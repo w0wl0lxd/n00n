@@ -903,15 +903,16 @@ fn handle_control_request(
                 ),
             }
         }
-        "set_model" => {
-            if let Some(model) = resolve_set_model(cr.request.extra.get("model"), startup_model) {
+        "set_model" => match resolve_set_model(cr.request.extra.get("model"), startup_model) {
+            Ok(model) => {
                 let _ = handle.model_tx.send(model.clone());
                 if let Ok(mut shared) = shared.lock() {
                     shared.model = model;
                 }
+                writer.emit_control_response(&cr.request_id, ok, None)
             }
-            writer.emit_control_response(&cr.request_id, ok, None)
-        }
+            Err(e) => writer.emit_control_response(&cr.request_id, None, Some(e)),
+        },
         other => writer.emit_control_response(
             &cr.request_id,
             None,
@@ -920,21 +921,17 @@ fn handle_control_request(
     }
 }
 
-fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Option<Model> {
+fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Result<Model, String> {
     let resolver = ModelResolver::current();
-    match model_val? {
-        Value::Null => Some(startup_model.clone()),
-        Value::String(model_str) => {
-            if let Ok(model) = resolver.resolve(model_str) {
-                Some(model)
-            } else {
-                eprintln!(
-                    "warning: requested model is not configured or available; keeping current model"
-                );
-                None
-            }
-        }
-        _ => None,
+    let Some(val) = model_val else {
+        return Err("model value missing".to_string());
+    };
+    match val {
+        Value::Null => Ok(startup_model.clone()),
+        Value::String(model_str) => resolver
+            .resolve(model_str)
+            .map_err(|e| format!("model '{model_str}' is not configured or available: {e}")),
+        _ => Err("model value must be a string or null".to_string()),
     }
 }
 
@@ -1282,6 +1279,7 @@ mod tests {
     #[test_case("use_memory", "Memory")]
     #[test_case("ask_user", "Question")]
     #[test_case("load_skill", "Skill")]
+    #[test_case("skill", "Skill")]
     fn n00n_to_claude_roundtrip(n00n: &str, claude: &str) {
         assert_eq!(n00n_to_claude_tool_name(n00n), claude);
         assert_eq!(claude_to_n00n_tool_name(claude), n00n);
@@ -1597,6 +1595,14 @@ mod tests {
         let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
         let result = resolve_set_model(Some(&Value::Null), &startup).unwrap();
         assert_eq!(result.id, startup.id);
+    }
+
+    #[test]
+    fn resolve_set_model_invalid_returns_error() {
+        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let err = resolve_set_model(Some(&Value::String("invalid/model".to_string())), &startup)
+            .unwrap_err();
+        assert!(err.contains("not configured or available"));
     }
 
     #[test]
