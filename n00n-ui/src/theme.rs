@@ -338,107 +338,115 @@ pub fn style_by_name(name: &str) -> Style {
         "todo_cancelled" | "cancelled" => t.todo_cancelled,
         _ => Style::default(),
     }
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum SemanticRole {
-        Surface,
-        Text,
-        Muted,
-        Border,
-        Accent,
-        Focus,
-        Info,
-        Success,
-        Warning,
-        Error,
-        Activity,
-        ActivityDetail,
-        FooterKey,
-        FooterText,
-        Status,
-    }
+}
 
-    #[derive(Debug, Clone, Copy)]
-    pub struct SemanticRoles {
-        surface: Style,
-        text: Style,
-        muted: Style,
-        border: Style,
-        accent: Style,
-        focus: Style,
-        info: Style,
-        success: Style,
-        warning: Style,
-        error: Style,
-        activity: Style,
-        activity_detail: Style,
-        footer_key: Style,
-        footer_text: Style,
-        status: Style,
-    }
+// Used by downstream UX stack PRs; keep public API available until those land.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticRole {
+    Surface,
+    Text,
+    Muted,
+    Border,
+    Accent,
+    Focus,
+    Info,
+    Success,
+    Warning,
+    Error,
+    Activity,
+    ActivityDetail,
+    FooterKey,
+    FooterText,
+    Status,
+}
 
-    impl SemanticRoles {
-        fn from_theme(theme: &Theme) -> Self {
-            Self {
-                surface: Style::new().bg(theme.background),
-                text: Style::new().fg(theme.foreground),
-                muted: theme.status_dim,
-                border: theme.panel_border,
-                accent: theme.accent,
-                focus: theme.active,
-                info: theme.status_notice,
-                success: theme.tool_success,
-                warning: theme.todo_in_progress,
-                error: theme.error,
-                activity: theme.tool,
-                activity_detail: theme.tool_dim,
-                footer_key: theme.keybind_key,
-                footer_text: theme.keybind_desc,
-                status: theme.status_dim,
-            }
-        }
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SemanticRoles {
+    surface: Style,
+    text: Style,
+    muted: Style,
+    border: Style,
+    accent: Style,
+    focus: Style,
+    info: Style,
+    success: Style,
+    warning: Style,
+    error: Style,
+    activity: Style,
+    activity_detail: Style,
+    footer_key: Style,
+    footer_text: Style,
+    status: Style,
+}
 
-        fn get(self, role: SemanticRole) -> Style {
-            match role {
-                SemanticRole::Surface => self.surface,
-                SemanticRole::Text => self.text,
-                SemanticRole::Muted => self.muted,
-                SemanticRole::Border => self.border,
-                SemanticRole::Accent => self.accent,
-                SemanticRole::Focus => self.focus,
-                SemanticRole::Info => self.info,
-                SemanticRole::Success => self.success,
-                SemanticRole::Warning => self.warning,
-                SemanticRole::Error => self.error,
-                SemanticRole::Activity => self.activity,
-                SemanticRole::ActivityDetail => self.activity_detail,
-                SemanticRole::FooterKey => self.footer_key,
-                SemanticRole::FooterText => self.footer_text,
-                SemanticRole::Status => self.status,
-            }
+#[allow(dead_code)]
+impl SemanticRoles {
+    fn from_theme(theme: &Theme) -> Self {
+        Self {
+            surface: Style::new().bg(theme.background),
+            text: Style::new().fg(theme.foreground),
+            muted: theme.status_dim,
+            border: theme.panel_border,
+            accent: theme.accent,
+            focus: theme.active,
+            info: theme.status_notice,
+            success: theme.tool_success,
+            warning: theme.todo_in_progress,
+            error: theme.error,
+            activity: theme.tool,
+            activity_detail: theme.tool_dim,
+            footer_key: theme.keybind_key,
+            footer_text: theme.keybind_desc,
+            status: theme.status_dim,
         }
     }
 
-    pub fn no_color() -> bool {
-        env::var_os("NO_COLOR").is_some_and(|value| value != "0")
-    }
-
-    pub fn high_contrast() -> bool {
-        env::var_os("N00N_HIGH_CONTRAST").is_some_and(|value| value != "0")
-    }
-
-    pub fn semantic_style(role: SemanticRole) -> Style {
-        let theme = current();
-        let style = theme.semantic.get(role);
-        if no_color() {
-            return Style::default();
+    fn get(self, role: SemanticRole) -> Style {
+        match role {
+            SemanticRole::Surface => self.surface,
+            SemanticRole::Text => self.text,
+            SemanticRole::Muted => self.muted,
+            SemanticRole::Border => self.border,
+            SemanticRole::Accent => self.accent,
+            SemanticRole::Focus => self.focus,
+            SemanticRole::Info => self.info,
+            SemanticRole::Success => self.success,
+            SemanticRole::Warning => self.warning,
+            SemanticRole::Error => self.error,
+            SemanticRole::Activity => self.activity,
+            SemanticRole::ActivityDetail => self.activity_detail,
+            SemanticRole::FooterKey => self.footer_key,
+            SemanticRole::FooterText => self.footer_text,
+            SemanticRole::Status => self.status,
         }
-        if high_contrast() {
-            return style
-                .fg(style.fg.unwrap_or(theme.foreground))
-                .add_modifier(Modifier::BOLD);
-        }
-        style
     }
+}
+
+#[allow(dead_code)]
+pub fn no_color() -> bool {
+    env::var_os("NO_COLOR").is_some_and(|value| value != "0")
+}
+
+#[allow(dead_code)]
+pub fn high_contrast() -> bool {
+    env::var_os("N00N_HIGH_CONTRAST").is_some_and(|value| value != "0")
+}
+
+#[allow(dead_code)]
+pub fn semantic_style(role: SemanticRole) -> Style {
+    let theme = current();
+    let style = theme.semantic.get(role);
+    if no_color() {
+        return Style::default();
+    }
+    if high_contrast() {
+        return style
+            .fg(style.fg.unwrap_or_else(|| theme.foreground))
+            .add_modifier(Modifier::BOLD);
+    }
+    style
 }
 
 #[derive(Debug)]
@@ -830,6 +838,7 @@ impl Theme {
         theme.background = color("background");
         theme.foreground = color("foreground");
         theme.syntax = syntax;
+        theme.semantic = SemanticRoles::from_theme(&theme);
         theme
     }
 
@@ -845,6 +854,7 @@ impl Theme {
         Self {
             background: Color::default(),
             foreground: Color::default(),
+            semantic: SemanticRoles::default(),
             user: style("user"),
             control: Self::build_simple_fallback(style, "control", "user"),
             assistant: style("assistant"),
