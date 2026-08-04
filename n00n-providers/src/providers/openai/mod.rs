@@ -545,14 +545,6 @@ fn parse_model_version(id: &str) -> (u32, u32) {
     }
 }
 
-fn chat_model_version(id: &str) -> Option<(u32, u32)> {
-    let version = id.strip_prefix("gpt-").or_else(|| {
-        id.strip_prefix('o')
-            .filter(|rest| rest.starts_with(char::is_numeric))
-    })?;
-    Some(parse_model_version(version))
-}
-
 pub(crate) fn sort_models(models: &mut [ModelInfo], entries: &[ModelEntry]) {
     fn key<'a>(
         info: &'a ModelInfo,

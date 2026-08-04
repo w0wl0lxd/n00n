@@ -81,19 +81,6 @@ struct TokenResponse {
     expires_in: Option<u64>,
 }
 
-#[derive(Deserialize)]
-struct CodexAuthFile {
-    tokens: CodexTokens,
-}
-
-#[derive(Deserialize)]
-struct CodexTokens {
-    access_token: String,
-    refresh_token: String,
-    #[serde(default)]
-    account_id: Option<String>,
-}
-
 struct CredentialsLock {
     _file: File,
 }
@@ -818,15 +805,16 @@ fn codex_auth_path(codex_home: &Path) -> PathBuf {
     codex_home.join(CODEX_AUTH_FILE)
 }
 
+#[allow(clippy::needless_borrow)]
+pub(crate) fn codex_auth_path_from_env() -> Option<PathBuf> {
+    codex_home_from_env().map(|home| codex_auth_path(&home))
+}
+
 fn codex_home_from_env() -> Option<PathBuf> {
     if let Some(codex_home) = env::var_os("CODEX_HOME") {
         return Some(PathBuf::from(codex_home));
     }
     n00n_storage::paths::home().map(|home| codex_home_path(&home, None))
-}
-
-pub(crate) fn codex_auth_path_from_env() -> Option<PathBuf> {
-    codex_home_from_env().map(|home| codex_auth_path(&home))
 }
 
 fn codex_storage_error(path: &Path, message: impl Into<String>) -> AgentError {
@@ -1562,6 +1550,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_borrow)]
     fn codex_path_selection_prefers_injected_home() {
         let home = Path::new("/tmp/home");
         let codex_home = Path::new("/tmp/codex");
