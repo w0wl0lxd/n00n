@@ -69,9 +69,10 @@ You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROP
 |------|--------|-------------------------------|---------|
 | Weak | **gpt-5.6-luna** (default), gpt-5.4-nano, gpt-5.4-mini, gpt-4.1-nano | $1.00 / $6.00 | 372K ctx / 128K out |
 | Medium | **gpt-5.6-terra** (default), gpt-4.1-mini, gpt-4.1, o4-mini | $2.50 / $15.00 | 372K ctx / 128K out |
-| Strong | **gpt-5.6-sol, gpt-5.6** (default), gpt-5.5, gpt-5.5-pro, gpt-5.4, o3 | $5.00 / $30.00 | 372K ctx / 128K out |
+| Strong | gpt-5.6-sol, **gpt-5.6** (default), gpt-5.5, gpt-5.4, o3 | $5.00 / $30.00 | 372K ctx / 128K out |
+| Strong | gpt-5.5-pro | $7.50 / $45.00 | 1050K ctx / 128K out |
 
-Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6-sol (strong)
+Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6 (strong)
 
 ### Codex
 
@@ -83,7 +84,8 @@ Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6-sol (strong)
 |------|--------|-------------------------------|---------|
 | Weak | **gpt-5.6-luna** (default), gpt-5.4-nano, gpt-5.4-mini, gpt-4.1-nano, gpt-5.2 | $1.00 / $6.00 | 272K ctx / 128K out |
 | Medium | **gpt-5.6-terra** (default), gpt-4.1-mini, gpt-4.1, o4-mini, gpt-5.1-codex-mini | $2.50 / $15.00 | 272K ctx / 128K out |
-| Strong | **gpt-5.6-sol** (default), gpt-5.5, gpt-5.5-pro, gpt-5.4, o3, gpt-5.3-codex-spark, gpt-5.3-codex, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex | $5.00 / $30.00 | 272K ctx / 128K out |
+| Strong | **gpt-5.6-sol** (default), gpt-5.5, gpt-5.4, o3, gpt-5.3-codex-spark, gpt-5.3-codex, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex | $5.00 / $30.00 | 272K ctx / 128K out |
+| Strong | gpt-5.5-pro | $7.50 / $45.00 | 272K ctx / 128K out |
 
 Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6-sol (strong)
 
@@ -227,11 +229,11 @@ The default is `false`.
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|
-| Weak | gpt-5-6-luna-medium, gpt-5-6-luna-none, gpt-5-6-luna-low, gpt-5-6-luna-high, gpt-5-6-luna-xhigh, gpt-5-6-luna-max, glm-5-2, glm-5-2-max, glm-5-2-1m, glm-5-2-max-1m, glm-5-2-none, glm-5-2-none-1m, **swe-1-7** (default), swe-1-7-medium, adaptive, gemini-3-5-flash-minimal, gemini-3-5-flash-low, gemini-3-5-flash-medium, gemini-3-5-flash-high, gemini-3-6-flash-minimal, gemini, gemini-3-6-flash-low, gemini-3-6-flash-medium, gemini-3-6-flash-high, inkling-none, inkling-low, inkling-medium, inkling-high, inkling-xhigh, inkling-max, gpt-5-4-mini-low, gpt-5-4-mini-medium, gpt-5-4-mini-high, gpt-5-4-mini-xhigh, MODEL_GPT_5_2_LOW, MODEL_GPT_5_2_MEDIUM, MODEL_GPT_5_2_NONE, MODEL_GPT_5_2_HIGH, MODEL_GPT_5_2_XHIGH, MODEL_PRIVATE_11, haiku, MODEL_PRIVATE_12, MODEL_PRIVATE_13, MODEL_PRIVATE_14, MODEL_PRIVATE_15, gpt-5-3-codex-low, codex, gpt-5-3-codex-medium, gpt-5-3-codex-high, gpt-5-3-codex-xhigh, kimi-k2-6, kimi-k2-7, nemotron-3-ultra-nvfp4, swe-1-6, swe-1-6-fast, MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL, MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW, MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM, MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH, deepseek-v4 | $1.00 / $6.00 | 1000K ctx / 128K out |
-| Medium | claude-sonnet-5-medium, claude, sonnet, claude-sonnet-5-low, claude-sonnet-5-high, claude-sonnet-5-xhigh, claude-sonnet-5-max, gpt-5-6-luna-none-priority, gpt-5-6-luna-low-priority, gpt-5-6-luna-medium-priority, gpt-5-6-luna-high-priority, gpt-5-6-luna-xhigh-priority, kimi-k3-high, kimi-k3-low, kimi-k3-max, swe-1-7-lightning, swe, gpt-5-6-terra-none, gpt, gpt-5-6-terra-low, gpt-5-6-terra-medium, gpt-5-6-terra-high, gpt-5-6-terra-xhigh, gpt-5-6-terra-max, grok-4-5-low, grok-4-5-medium, grok-4-5-high, gpt-5-4-none, gpt-5-4-low, gpt-5-4-medium, gpt-5-4-high, gpt-5-4-xhigh, claude-sonnet-4-6, claude-sonnet-4-6-thinking, claude-sonnet-4-6-1m, claude-sonnet-4-6-thinking-1m, MODEL_PRIVATE_2, MODEL_PRIVATE_3, MODEL_CHAT_GPT_4_1_2025_04_14, gpt-5-3-codex-low-priority, gpt-5-3-codex-medium-priority, gpt-5-3-codex-high-priority, gpt-5-3-codex-xhigh-priority, gemini-3-1-pro-low, gemini-3-1-pro-high | $2.00 / $10.00 | 1000K ctx / 128K out |
+| Weak | gpt-5-6-luna-medium, gpt-5-6-luna-none, gpt-5-6-luna-low, gpt-5-6-luna-high, gpt-5-6-luna-xhigh, gpt-5-6-luna-max, glm-5-2, glm-5-2-max, glm-5-2-1m, glm-5-2-max-1m, glm-5-2-none, glm-5-2-none-1m, **swe-1-7-max, swe-1-7, swe-1.7, swe-1.7-max** (default), swe-1-7-medium, swe-1.7-medium, adaptive, gemini-3-5-flash-minimal, gemini-3-5-flash-low, gemini-3-5-flash-medium, gemini-3-5-flash-high, gemini-3-6-flash-minimal, gemini, gemini-3-6-flash-low, gemini-3-6-flash-medium, gemini-3-6-flash-high, inkling-none, inkling-low, inkling-medium, inkling-high, inkling-xhigh, inkling-max, gpt-5-4-mini-low, gpt-5-4-mini-medium, gpt-5-4-mini-high, gpt-5-4-mini-xhigh, MODEL_GPT_5_2_LOW, MODEL_GPT_5_2_MEDIUM, MODEL_GPT_5_2_NONE, MODEL_GPT_5_2_HIGH, MODEL_GPT_5_2_XHIGH, MODEL_PRIVATE_11, haiku, MODEL_PRIVATE_12, MODEL_PRIVATE_13, MODEL_PRIVATE_14, MODEL_PRIVATE_15, gpt-5-3-codex-low, codex, gpt-5-3-codex-medium, gpt-5-3-codex-high, gpt-5-3-codex-xhigh, kimi-k2-6, kimi-k2-7, nemotron-3-ultra-nvfp4, swe-1-6, swe-1-6-fast, MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL, MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW, MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM, MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH, deepseek-v4 | $1.00 / $6.00 | 1000K ctx / 128K out |
+| Medium | claude-sonnet-5-medium, claude, sonnet, claude-sonnet-5-low, claude-sonnet-5-high, claude-sonnet-5-xhigh, claude-sonnet-5-max, gpt-5-6-luna-none-priority, gpt-5-6-luna-low-priority, gpt-5-6-luna-medium-priority, gpt-5-6-luna-high-priority, gpt-5-6-luna-xhigh-priority, kimi-k3-high, kimi-k3-low, kimi-k3-max, swe-1-7-lightning, swe-1.7-lightning, swe, gpt-5-6-terra-none, gpt, gpt-5-6-terra-low, gpt-5-6-terra-medium, gpt-5-6-terra-high, gpt-5-6-terra-xhigh, gpt-5-6-terra-max, grok-4-5-low, grok-4-5-medium, grok-4-5-high, gpt-5-4-none, gpt-5-4-low, gpt-5-4-medium, gpt-5-4-high, gpt-5-4-xhigh, claude-sonnet-4-6, claude-sonnet-4-6-thinking, claude-sonnet-4-6-1m, claude-sonnet-4-6-thinking-1m, MODEL_PRIVATE_2, MODEL_PRIVATE_3, MODEL_CHAT_GPT_4_1_2025_04_14, gpt-5-3-codex-low-priority, gpt-5-3-codex-medium-priority, gpt-5-3-codex-high-priority, gpt-5-3-codex-xhigh-priority, gemini-3-1-pro-low, gemini-3-1-pro-high | $2.00 / $10.00 | 1000K ctx / 128K out |
 | Strong | claude-opus-5-medium, opus, claude-opus-5-low, claude-opus-5-high, claude-opus-5-xhigh, claude-opus-5-max, claude-opus-5-low-fast, claude-opus-5-medium-fast, claude-opus-5-high-fast, claude-opus-5-xhigh-fast, claude-opus-5-max-fast, claude-5-fable-medium, claude-5-fable-low, claude-5-fable-high, claude-5-fable-xhigh, claude-5-fable-max, gpt-5-6-sol-medium, gpt-5-6-sol-none, gpt-5-6-sol-low, gpt-5-6-sol-high, gpt-5-6-sol-xhigh, gpt-5-6-sol-max, gpt-5-6-sol-none-priority, gpt-5-6-sol-low-priority, gpt-5-6-sol-medium-priority, gpt-5-6-sol-high-priority, gpt-5-6-sol-xhigh-priority, claude-opus-4-7-medium, claude-opus-4-7-low, claude-opus-4-7-high, claude-opus-4-7-xhigh, claude-opus-4-7-max, claude-opus-4-8-medium, claude-opus-4-8-low, claude-opus-4-8-high, claude-opus-4-8-xhigh, claude-opus-4-8-max, claude-opus-4-8-low-fast, claude-opus-4-8-medium-fast, claude-opus-4-8-high-fast, claude-opus-4-8-xhigh-fast, claude-opus-4-8-max-fast, gpt-5-6-terra-none-priority, gpt-5-6-terra-low-priority, gpt-5-6-terra-medium-priority, gpt-5-6-terra-high-priority, gpt-5-6-terra-xhigh-priority, claude-opus-4-6, claude-opus-4-6-thinking, claude-opus-4-6-1m, claude-opus-4-6-thinking-1m, gpt-5-4-none-priority, gpt-5-4-low-priority, gpt-5-4-medium-priority, gpt-5-4-high-priority, gpt-5-4-xhigh-priority, gpt-5-5-none, gpt-5-5-low, gpt-5-5-medium, gpt-5-5-high, gpt-5-5-xhigh, gpt-5-5-none-priority, gpt-5-5-low-priority, gpt-5-5-medium-priority, gpt-5-5-high-priority, gpt-5-5-xhigh-priority, MODEL_CLAUDE_4_5_OPUS, MODEL_CLAUDE_4_5_OPUS_THINKING | $5.00 / $25.00 | 1000K ctx / 128K out |
 
-Defaults: swe-1-7 (weak)
+Defaults: swe-1-7-max (weak)
 
 ### Cursor
 
@@ -282,7 +284,23 @@ If your provider serves models not in the base catalog, add a `models` subcomman
 [{"id": "my-model-v2", "tier": "strong", "context_window": 200000, "max_output_tokens": 16384}]
 ```
 
-Only `id` is required. Optional fields: `tier` (default `medium`), `context_window` (128K), `max_output_tokens` (16K), `pricing` (`{input, output, cache_write, cache_read}`, all per 1M tokens), `supports_tool_examples` (defaults to the base provider's setting), `supports_thinking` (defaults to the base provider's setting), `supports_vision` (defaults to the base provider's setting; when false, image input and the `view_image` tool are disabled). The first model listed per tier is used for sub-agents. Without this subcommand, the base provider's models are used.
+Only `id` is required. Optional fields: `tier` (default `medium`), `context_window` (128K), `max_output_tokens` (16K), `pricing` (`{input, output, cache_write, cache_read}`, all per 1M tokens), `supports_tool_examples` (defaults to the base provider's setting), `supports_thinking` (defaults to the base provider's setting), `supports_vision` (defaults to the base provider's setting; when false, image input and the `view_image` tool are disabled), `thinking_dialect` (overrides the base provider's effort level mapping; one of `standard`, `openai-extended`, `prefer-high`, `high-only`, `glm`, `deep-seek`, `anthropic-adaptive`, `tensor-x`), `thinking_fields` (overrides where thinking values go in the body), `body_override` (per-model body manipulation). The first model listed per tier is used for sub-agents. Without this subcommand, the base provider's models are used.
+
+`thinking_fields` controls where thinking values land: `effort_path` (dot-path for the effort string), `budget_path` (dot-path for a budget integer), `budget_max` (cap), and `toggles` (objects with `path`, `on`, `off`, `adaptive`, and `budget_key`). Fields left unset fall back to the base provider's layout.
+
+`body_override` is the escape hatch for a field the base provider does not set, or one it always sets that this model rejects. Its three operations run after the typed thinking setup: `defaults` fills absent keys, `replace` overwrites existing ones, and `filter` strips keys. Each provider guards its conversation field (`messages`, `input`, or `contents`) from all three.
+
+```json
+[{"id": "my-model", "tier": "strong", "body_override": {"defaults": {"chat_template_kwargs": {"enable_thinking": true}}, "filter": ["some_base_key"]}}]
+```
+
+Provider-wide shaping goes in the `info` subcommand as `model_filters`, where each entry applies its `body_override` to every model id matching its `match` glob (`*` and `?`). A model's own `body_override` wins on conflicting keys.
+
+```json
+{"display_name": "My Proxy", "base": "openai", "has_auth": true, "model_filters": [{"match": "gpt-*", "body_override": {"filter": ["context_management"]}}]}
+```
+
+The same three fields are accepted per model in `providers.toml` for custom providers.
 
 Dynamic provider models are namespaced as `{slug}/{model_id}` (e.g. `myproxy/claude-sonnet-4-6`).
 
