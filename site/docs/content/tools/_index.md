@@ -36,7 +36,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 ### `write_file` *(lua plugin)*
 
-Write content to a file. Prefer edit or edit_lines for existing files.
+Write content to a file. Prefer edit_file or edit_file_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -140,7 +140,7 @@ Return a compact overview of a source file: imports, types, function signatures,
 
 ### `view_image` *(lua plugin)*
 
-View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
+View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_file` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -212,12 +212,12 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 ### `run_python` *(lua plugin)*
 
-Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
+Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read_file(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `timeout` | integer | no | 30 | Script timeout seconds |
-| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
+| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read_file(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `ask_user` *(lua plugin)*
 
@@ -403,7 +403,7 @@ Beta Fusion delegation: the lead plans and reviews while a conservative sidekick
 | `definition_of_done` | string | yes | Success checks (tests, artifacts). |
 | `goal` | string | yes | What to accomplish. |
 | `escalation_triggers` | string | no | When to escalate to the lead. |
-| `subagent_type` | string | no | research (read-only) or general (edit). Default: general. |
+| `subagent_type` | string | no | research (read-only) or general (can edit). Default: general. |
 
 ## Web
 

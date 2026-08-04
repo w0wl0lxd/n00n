@@ -8,7 +8,7 @@ local CG_TIMEOUT_SECS = 30
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **codegraph** for cross-file structural queries, call paths, and impact analysis before editing. Use **index** for single-file skeletons before read.",
+  content = "- Use **map_codegraph** for cross-file structural queries, call paths, and impact analysis before editing. Use **index** for single-file skeletons before read.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))
@@ -25,7 +25,7 @@ Best for:
 - Checking blast radius before editing ("what depends on Z")
 - Cross-file symbol resolution
 
-Prefer **index** for single-file structure, then **read** for specific sections. codegraph excels at multi-file exploration and impact analysis.
+Prefer **index** for single-file structure, then **read** for specific sections. map_codegraph excels at multi-file exploration and impact analysis.
 
 Requires a .codegraph/ index in the project root.]],
 

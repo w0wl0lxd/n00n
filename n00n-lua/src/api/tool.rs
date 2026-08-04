@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1154,8 +1155,11 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         Ok(Arc::from(alias))
     })
     .collect::<LuaResult<Vec<Arc<str>>>>()?;
-    if aliases.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(mlua::Error::runtime("register_tool: duplicate aliases"));
+    let mut seen = HashSet::new();
+    for alias in &aliases {
+        if !seen.insert(alias) {
+            return Err(mlua::Error::runtime("register_tool: duplicate aliases"));
+        }
     }
     let description: String = spec.get("description").unwrap_or_else(|_| String::new());
     if description.trim().is_empty() {

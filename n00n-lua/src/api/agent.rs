@@ -66,12 +66,10 @@ const STEERING_QUEUE_CAPACITY: usize = 32;
 const TOOL_EXCLUSIONS_META_FIELD: &str = "__n00n_tool_exclusions";
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
-    let resolver = ModelResolver::current();
     let Some(tier_str) = tier else {
-        return resolver
-            .resolve(&ctx.model.spec())
-            .map_err(|error| error.to_string());
+        return Ok(Model::clone(&ctx.model));
     };
+    let resolver = ModelResolver::current();
     let requested: ModelTier = tier_str.parse().map_err(|e: ModelError| e.to_string())?;
     let effective = requested.min(ctx.model.tier);
     if effective == ctx.model.tier {
