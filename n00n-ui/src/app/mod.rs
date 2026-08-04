@@ -1712,7 +1712,7 @@ impl App {
 
         if chat_idx == 0 {
             match &envelope.event {
-                AgentEvent::FusionPhaseChanged { phase, .. } => {
+                AgentEvent::FusionPhase { phase, .. } => {
                     self.fusion_phase = match phase {
                         FusionPhase::Idle
                         | FusionPhase::Complete
