@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 pub use n00n_storage::sessions::Effort;
+pub use n00n_storage::sessions::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
 use n00n_storage::sessions::{
     MIN_THINKING_BUDGET, StoredReasoningContext, StoredReasoningMode, StoredThinking, TitleSource,
 };
@@ -639,6 +640,16 @@ impl Message {
     }
 
     #[must_use]
+    pub fn assistant(text: String) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text }],
+            display_text: Some(String::new()),
+            control: false,
+        }
+    }
+
+    #[must_use]
     pub fn user_text(&self) -> Option<&str> {
         match &self.display_text {
             Some(t) if t.is_empty() => None,
@@ -841,6 +852,56 @@ pub mod dialect {
     };
 }
 
+/// Resolve a config-level dialect id to the dialect it names. Lives here
+/// because the dialect consts do, while the id is a storage type shared with
+/// `n00n-config`.
+#[must_use]
+pub fn effort_dialect_for(id: EffortDialectId) -> &'static EffortDialect<'static> {
+    match id {
+        EffortDialectId::Standard => &dialect::STANDARD,
+        EffortDialectId::OpenaiExtended => &dialect::OPENAI_EXTENDED,
+        EffortDialectId::PreferHigh => &dialect::PREFER_HIGH,
+        EffortDialectId::HighOnly => &dialect::HIGH_ONLY,
+        EffortDialectId::Glm => &dialect::GLM,
+        EffortDialectId::DeepSeek => &dialect::DEEPSEEK,
+        EffortDialectId::AnthropicAdaptive => &dialect::ANTHROPIC_ADAPTIVE,
+        EffortDialectId::TensorX => &dialect::TENSORX,
+    }
+}
+
+/// Navigate a dot-separated path, replacing any non-object segment on the way
+/// with a fresh object so indexing can never panic. `"reasoning.effort"`
+/// returns the slot for `effort` inside `body["reasoning"]`.
+fn entry_at<'a>(body: &'a mut Value, path: &str) -> &'a mut Value {
+    let mut current = body;
+    for segment in path.split('.') {
+        if !current.is_object() {
+            *current = json!({});
+        }
+        current = &mut current[segment];
+    }
+    current
+}
+
+/// Write `value` at `path`, overwriting whatever is there.
+fn set_by_path(body: &mut Value, path: &str, value: Value) {
+    *entry_at(body, path) = value;
+}
+
+/// Like [`set_by_path`] but shallow-merges objects at the leaf, so a toggle's
+/// static fields survive a later budget or effort write to the same object.
+fn merge_by_path(body: &mut Value, path: &str, value: Value) {
+    let target = entry_at(body, path);
+    match (target.as_object_mut(), value.as_object()) {
+        (Some(existing), Some(incoming)) => {
+            for (key, val) in incoming {
+                existing.insert(key.clone(), val.clone());
+            }
+        }
+        _ => *target = value,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningMode {
     Standard,
@@ -939,8 +1000,14 @@ impl ThinkingConfig {
 
     /// Anthropic messages API body. Adaptive-thinking models get the native
     /// adaptive knob plus `output_config.effort`; legacy models get a plain
-    /// token budget.
+    /// token budget. A model carrying `thinking_fields` (declared by a dynamic
+    /// or custom provider) takes full control of the wire format instead, so
+    /// the id-based version check is skipped.
     pub fn apply_to_body(self, body: &mut Value, model: &Model) {
+        if let Some(fields) = model.thinking_fields.clone() {
+            self.apply_thinking(body, model, &dialect::ANTHROPIC_ADAPTIVE, &fields);
+            return;
+        }
         if Self::requires_adaptive(&model.id) {
             match self {
                 Self::Off => {}
@@ -980,31 +1047,84 @@ impl ThinkingConfig {
         (major, minor) >= (4, 7)
     }
 
-    pub fn apply_reasoning_effort(self, body: &mut Value, dialect: &EffortDialect, model: &Model) {
-        if let Some(effort) = self.effort_str(dialect, model) {
-            body["reasoning_effort"] = json!(effort);
-        }
-    }
-
-    pub fn apply_google_thinking(self, body: &mut Value, max: u32) {
-        match self.budget(Some(max)) {
-            Budgeted::Off => {}
-            Budgeted::Adaptive => {
-                body["generationConfig"]["thinkingConfig"] = json!({"includeThoughts": true});
-            }
-            Budgeted::Tokens(n) => {
-                body["generationConfig"]["thinkingConfig"] = json!({"thinkingBudget": n});
-            }
-        }
-    }
-
-    pub fn apply_local_thinking(self, body: &mut Value, model: &Model) {
-        let budget = match self.budget(model.max_thinking_budget()) {
-            Budgeted::Off => 0,
-            Budgeted::Adaptive => -1,
-            Budgeted::Tokens(n) => i64::from(n),
+    /// Serialize thinking into `body` from a declarative field layout.
+    /// `model.thinking_fields` overrides `default_fields` field by field, so a
+    /// script that declares only a toggle still inherits the base provider's
+    /// effort and budget paths; `model.thinking_dialect` overrides
+    /// `default_dialect`.
+    ///
+    /// Order: toggles (`off` set for Off, `adaptive`/`on` merged otherwise),
+    /// then the budget (at `budget_path`, else nested under the first toggle
+    /// declaring a `budget_key`), then the effort string at `effort_path`.
+    pub fn apply_thinking(
+        self,
+        body: &mut Value,
+        model: &Model,
+        default_dialect: &EffortDialect,
+        default_fields: &ThinkingFieldConfig,
+    ) {
+        let model_fields = model.thinking_fields.as_ref();
+        let effort_path = model_fields
+            .and_then(|f| f.effort_path.as_deref())
+            .or(default_fields.effort_path.as_deref());
+        let budget_path = model_fields
+            .and_then(|f| f.budget_path.as_deref())
+            .or(default_fields.budget_path.as_deref());
+        let budget_max = model_fields
+            .and_then(|f| f.budget_max)
+            .or(default_fields.budget_max);
+        let toggles = match model_fields.filter(|f| !f.toggles.is_empty()) {
+            Some(fields) => &fields.toggles,
+            None => &default_fields.toggles,
         };
-        body["thinking_budget_tokens"] = json!(budget);
+
+        let max = match budget_max {
+            Some(cap) => Some(match model.max_thinking_budget() {
+                Some(model_max) => model_max.min(cap),
+                None => cap,
+            }),
+            None => model.max_thinking_budget(),
+        };
+
+        for toggle in toggles {
+            match self {
+                Self::Off => {
+                    if let Some(off) = &toggle.off {
+                        set_by_path(body, &toggle.path, off.clone());
+                    }
+                }
+                Self::Adaptive => {
+                    if let Some(value) = toggle.adaptive.as_ref().or(toggle.on.as_ref()) {
+                        merge_by_path(body, &toggle.path, value.clone());
+                    }
+                }
+                Self::Effort(_) | Self::Budget(_) | Self::WithExtras(_, _) => {
+                    if let Some(on) = &toggle.on {
+                        merge_by_path(body, &toggle.path, on.clone());
+                    }
+                }
+            }
+        }
+
+        if let Budgeted::Tokens(tokens) = self.budget(max) {
+            match budget_path {
+                Some(path) => set_by_path(body, path, json!(tokens)),
+                None => {
+                    if let Some((path, key)) = toggles
+                        .iter()
+                        .find_map(|t| t.budget_key.as_ref().map(|key| (&t.path, key)))
+                    {
+                        set_by_path(body, &format!("{path}.{key}"), json!(tokens));
+                    }
+                }
+            }
+        }
+
+        if let Some(path) = effort_path
+            && let Some(effort) = self.effort_str(model.effort_dialect(default_dialect), model)
+        {
+            set_by_path(body, path, json!(effort));
+        }
     }
 
     /// Parse a `/thinking` command argument.
@@ -1455,13 +1575,17 @@ mod tests {
     #[test_case(&dialect::ANTHROPIC_ADAPTIVE, ThinkingConfig::Adaptive,      None         ; "anthropic_adaptive_is_native")]
     #[test_case(&dialect::ANTHROPIC_ADAPTIVE, ThinkingConfig::Effort(XHigh), Some("high") ; "anthropic_xhigh_snaps_down")]
     #[test_case(&dialect::TENSORX, ThinkingConfig::Off,             Some("none") ; "tensorx_off_explicit_none")]
-    fn thinking_apply_reasoning_effort(
+    fn thinking_effort_reaches_the_body(
         dialect: &EffortDialect,
         config: ThinkingConfig,
         expected: Option<&str>,
     ) {
+        let fields = ThinkingFieldConfig {
+            effort_path: Some("reasoning_effort".into()),
+            ..Default::default()
+        };
         let mut body = json!({"model": "test"});
-        config.apply_reasoning_effort(&mut body, dialect, &thinking_model("test-model"));
+        config.apply_thinking(&mut body, &thinking_model("test-model"), dialect, &fields);
         match expected {
             Some(e) => assert_eq!(body["reasoning_effort"], e),
             None => assert!(body.get("reasoning_effort").is_none()),
@@ -1483,36 +1607,159 @@ mod tests {
         assert_eq!(config.budget(max), expected);
     }
 
-    #[test_case(ThinkingConfig::Off,          &json!({})                                                                  ; "off")]
-    #[test_case(ThinkingConfig::Adaptive,     &json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive")]
-    #[test_case(ThinkingConfig::Budget(4096), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}}) ; "budget")]
-    #[test_case(ThinkingConfig::Budget(10000), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}) ; "budget_clamped")]
-    #[test_case(ThinkingConfig::WithExtras(High, ThinkingExtras { reasoning_mode: Some(ReasoningMode::Pro), reasoning_context: Some(ReasoningContext::AllTurns) }), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4915}}}) ; "with_extras_maps_to_budget")]
-    fn thinking_apply_google_thinking(config: ThinkingConfig, expected: &Value) {
-        let mut body = json!({});
-        config.apply_google_thinking(&mut body, 8192);
-        assert_eq!(body, *expected);
-    }
-
-    #[test_case(ThinkingConfig::Off,            0    ; "off")]
-    #[test_case(ThinkingConfig::Adaptive,       -1   ; "adaptive")]
-    #[test_case(ThinkingConfig::Budget(4096),   4096 ; "budget")]
-    #[test_case(ThinkingConfig::Budget(10000),  4096 ; "budget_clamped")]
-    fn thinking_apply_local_thinking(config: ThinkingConfig, expected: i64) {
-        let mut body = json!({});
-        config.apply_local_thinking(&mut body, &thinking_model("local-model"));
-        assert_eq!(body["thinking_budget_tokens"], expected);
-    }
-
-    /// llama.cpp models have no known output window; the budget the user
-    /// asked for must reach the server untouched.
     #[test]
-    fn local_thinking_unknown_window_passes_budget_through() {
-        let mut model = thinking_model("llama-cpp-model");
-        model.max_output_tokens = None;
+    fn apply_thinking_writes_effort_at_nested_path() {
+        let fields = ThinkingFieldConfig {
+            effort_path: Some("reasoning.effort".into()),
+            ..Default::default()
+        };
+        let mut body = json!({"messages": []});
+        ThinkingConfig::Effort(Effort::High).apply_thinking(
+            &mut body,
+            &thinking_model("test-model"),
+            &dialect::PREFER_HIGH,
+            &fields,
+        );
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["messages"], json!([]));
+    }
+
+    #[test_case(ThinkingConfig::Off,      &json!({"type": "disabled"}) ; "off_uses_off_value")]
+    #[test_case(ThinkingConfig::Adaptive, &json!({"type": "adaptive"}) ; "adaptive_uses_adaptive_value")]
+    #[test_case(ThinkingConfig::Effort(Effort::High), &json!({"type": "enabled"}) ; "effort_uses_on_value")]
+    fn apply_thinking_toggle_per_state(config: ThinkingConfig, expected: &Value) {
+        let fields = ThinkingFieldConfig {
+            toggles: vec![ToggleEntry {
+                path: "thinking".into(),
+                on: Some(json!({"type": "enabled"})),
+                off: Some(json!({"type": "disabled"})),
+                adaptive: Some(json!({"type": "adaptive"})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
         let mut body = json!({});
-        ThinkingConfig::Budget(16_384).apply_local_thinking(&mut body, &model);
-        assert_eq!(body["thinking_budget_tokens"], 16_384);
+        config.apply_thinking(
+            &mut body,
+            &thinking_model("test-model"),
+            &dialect::STANDARD,
+            &fields,
+        );
+        assert_eq!(&body["thinking"], expected);
+    }
+
+    /// `budget_key` nests the resolved budget inside the toggle object without
+    /// clobbering the static fields the toggle already wrote.
+    #[test]
+    fn apply_thinking_budget_key_nests_under_toggle() {
+        let fields = ThinkingFieldConfig {
+            toggles: vec![ToggleEntry {
+                path: "thinking".into(),
+                on: Some(json!({"type": "enabled"})),
+                budget_key: Some("budget_tokens".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut body = json!({});
+        ThinkingConfig::Budget(2048).apply_thinking(
+            &mut body,
+            &thinking_model("test-model"),
+            &dialect::STANDARD,
+            &fields,
+        );
+        assert_eq!(
+            body["thinking"],
+            json!({"type": "enabled", "budget_tokens": 2048})
+        );
+    }
+
+    /// `budget_max` caps below the model's own half-window ceiling.
+    #[test]
+    fn apply_thinking_budget_max_caps_request() {
+        let fields = ThinkingFieldConfig {
+            budget_path: Some("generationConfig.thinkingConfig.thinkingBudget".into()),
+            budget_max: Some(1500),
+            ..Default::default()
+        };
+        let mut body = json!({});
+        ThinkingConfig::Budget(9999).apply_thinking(
+            &mut body,
+            &thinking_model("test-model"),
+            &dialect::STANDARD,
+            &fields,
+        );
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            1500
+        );
+    }
+
+    /// A model's declared layout overrides the provider default field by
+    /// field: the model's effort path wins, the provider's toggle survives.
+    #[test]
+    fn apply_thinking_model_fields_partially_override_provider_defaults() {
+        let provider_fields = ThinkingFieldConfig {
+            effort_path: Some("reasoning_effort".into()),
+            toggles: vec![ToggleEntry {
+                path: "thinking".into(),
+                on: Some(json!(true)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut model = thinking_model("test-model");
+        model.thinking_fields = Some(ThinkingFieldConfig {
+            effort_path: Some("reasoning.effort".into()),
+            ..Default::default()
+        });
+        let mut body = json!({});
+        ThinkingConfig::Effort(Effort::Low).apply_thinking(
+            &mut body,
+            &model,
+            &dialect::STANDARD,
+            &provider_fields,
+        );
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["thinking"], json!(true));
+    }
+
+    /// `thinking_dialect` re-snaps the effort level to the declared dialect.
+    #[test]
+    fn apply_thinking_model_dialect_overrides_provider_dialect() {
+        let fields = ThinkingFieldConfig {
+            effort_path: Some("reasoning_effort".into()),
+            ..Default::default()
+        };
+        let mut model = thinking_model("test-model");
+        model.thinking_dialect = Some(EffortDialectId::HighOnly);
+        let mut body = json!({});
+        ThinkingConfig::Effort(Effort::Low).apply_thinking(
+            &mut body,
+            &model,
+            &dialect::STANDARD,
+            &fields,
+        );
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    /// Anthropic's hardcoded layout yields to a model that declares its own.
+    #[test]
+    fn apply_to_body_defers_to_model_thinking_fields() {
+        let mut model = thinking_model("claude-opus-4-8");
+        model.thinking_fields = Some(ThinkingFieldConfig {
+            toggles: vec![ToggleEntry {
+                path: "chat_template_kwargs".into(),
+                on: Some(json!({"enable_thinking": true})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let mut body = json!({});
+        ThinkingConfig::Effort(Effort::High).apply_to_body(&mut body, &model);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+        assert!(body.get("thinking").is_none());
     }
 
     fn clamp_test_model(provider: crate::provider::ProviderKind) -> crate::model::Model {
@@ -1528,6 +1775,9 @@ mod tests {
             pricing: crate::model::ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 200_000,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 

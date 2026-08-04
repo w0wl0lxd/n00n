@@ -349,6 +349,7 @@ impl Copilot {
             "stream": true,
         });
         thinking.apply_to_body(&mut body, model);
+        super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
         let request = Self::build_post(&auth, MESSAGES_PATH, Some("conversation-agent"), &body)?
             .header("anthropic-version", "2023-06-01")

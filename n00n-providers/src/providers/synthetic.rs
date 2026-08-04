@@ -141,8 +141,13 @@ impl Provider for Synthetic {
                 opts.message_cache_breakpoints,
                 opts.fast,
             );
-            opts.thinking
-                .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
+            opts.thinking.apply_thinking(
+                &mut body,
+                model,
+                &dialect::STANDARD,
+                &super::reasoning_effort_fields(),
+            );
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             self.compat
                 .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await

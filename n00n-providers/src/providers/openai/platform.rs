@@ -2115,8 +2115,13 @@ impl Provider for OpenAi {
                 opts.message_cache_breakpoints,
                 opts.fast,
             );
-            opts.thinking
-                .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
+            opts.thinking.apply_thinking(
+                &mut body,
+                model,
+                &dialect::STANDARD,
+                &super::super::reasoning_effort_fields(),
+            );
+            super::super::apply_body_overrides(&mut body, model, &[super::super::MESSAGES_FIELD]);
             self.with_oauth_retry(|| async {
                 let auth = self.current_auth();
                 self.compat
