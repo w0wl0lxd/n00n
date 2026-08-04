@@ -22,7 +22,8 @@ use crossterm::event::{
 use n00n_agent::command::CustomCommand;
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, ToolOutput, mcp,
+    AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, SharedTranscript, ToolOutput,
+    mcp,
 };
 use n00n_config::UiConfig;
 use n00n_lua::{
@@ -334,10 +335,7 @@ impl RuntimeDescriptor {
                 "output".to_owned(),
                 output.map_or(Value::Null, |text| Value::String(text.to_owned())),
             );
-            object.insert(
-                "paused_team".to_owned(),
-                paused_team.map_or(Value::Null, std::convert::identity),
-            );
+            object.insert("paused_team".to_owned(), paused_team.unwrap_or(Value::Null));
         }
         descriptor
     }
@@ -398,12 +396,7 @@ fn continued_subagent_session(
     let mut session = AppSession::new(model, &parent.cwd);
     session.title = normalize_title(&format!("continued: {name}"));
     session.meta.parent_id = Some(parent.id);
-    session.meta.root_id = Some(
-        parent
-            .meta
-            .root_id
-            .map_or(parent.id, std::convert::identity),
-    );
+    session.meta.root_id = Some(parent.meta.root_id.unwrap_or(parent.id));
     session.transcript = messages
         .iter()
         .cloned()
@@ -1177,16 +1170,26 @@ impl<'t> EventLoop<'t> {
         }
     }
     fn runtime_root(&self, index: usize) -> Option<n00nId> {
-        let parents: HashMap<_, _> = self
+        let mut parents: HashMap<_, _> = self
             .sessions
             .iter()
             .map(|runtime| (runtime.id(), runtime.app.state.session.meta.parent_id))
             .collect();
-        let explicit_roots: HashMap<_, _> = self
+        parents.extend(
+            self.stored_agent_sessions
+                .iter()
+                .map(|session| (session.entry.id, session.parent_id)),
+        );
+        let mut explicit_roots: HashMap<_, _> = self
             .sessions
             .iter()
             .map(|runtime| (runtime.id(), runtime.app.state.session.meta.root_id))
             .collect();
+        explicit_roots.extend(
+            self.stored_agent_sessions
+                .iter()
+                .map(|session| (session.entry.id, session.root_id)),
+        );
         owned_session_root(self.sessions[index].id(), &explicit_roots, &parents)
     }
 
@@ -1402,7 +1405,7 @@ impl<'t> EventLoop<'t> {
                             .session
                             .meta
                             .root_id
-                            .map_or(parent_id, std::convert::identity),
+                            .unwrap_or(parent_id),
                     );
                 }
                 session.meta.parent_id = parent_id;
@@ -1563,28 +1566,34 @@ impl<'t> EventLoop<'t> {
     }
 
     fn cancel_session_tree(&mut self, id: n00nId) -> usize {
-        let parents: HashMap<_, _> = self
+        let mut parents: HashMap<_, _> = self
             .sessions
             .iter()
             .map(|runtime| (runtime.id(), runtime.app.state.session.meta.parent_id))
             .collect();
+        parents.extend(
+            self.stored_agent_sessions
+                .iter()
+                .map(|session| (session.entry.id, session.parent_id)),
+        );
         let targets: Vec<_> = self
             .sessions
             .iter()
-            .enumerate()
-            .filter(|(_, runtime)| {
+            .filter(|runtime| {
                 (runtime.id() == id || is_descendant(runtime.id(), id, &parents))
                     && matches!(
                         runtime.app.state.session.meta.lifecycle,
                         SessionLifecycle::Running | SessionLifecycle::WaitingInput
                     )
             })
-            .map(|(index, _)| index)
+            .map(|runtime| runtime.id())
             .collect();
         let cancelled = targets.len();
-        for position in targets {
-            let actions = self.sessions[position].app.cancel_current_run();
-            self.dispatch(position, actions);
+        for target_id in targets {
+            if let Some(position) = self.position(target_id) {
+                let actions = self.sessions[position].app.cancel_current_run();
+                self.dispatch(position, actions);
+            }
         }
         cancelled
     }
@@ -1602,7 +1611,11 @@ impl<'t> EventLoop<'t> {
                         .and_then(Value::as_str)
                         .map(str::to_owned)
                 })
-                .ok_or_else(|| "This session has no resumable team run".to_owned())?
+                .ok_or_else(|| {
+                    let runtime = self.remove_runtime(position);
+                    runtime.handles.cancel();
+                    "This session has no resumable team run".to_owned()
+                })?
         };
         let runtime = &mut self.sessions[position];
         runtime.app.run_id += 1;
@@ -1865,6 +1878,22 @@ impl<'t> EventLoop<'t> {
                 }
             }
             Action::ContinueSubagent { name, messages } => {
+                if self.sessions.len() >= MAX_LIVE_SESSIONS {
+                    self.focused_app()
+                        .flash(format!("live session limit reached ({MAX_LIVE_SESSIONS})"));
+                    return;
+                }
+                let parent_id = self.sessions[idx].id();
+                let parents: HashMap<_, _> = self
+                    .sessions
+                    .iter()
+                    .map(|runtime| (runtime.id(), runtime.app.state.session.meta.parent_id))
+                    .collect();
+                if session_depth(parent_id, &parents).is_none_or(|d| d >= MAX_SESSION_DEPTH) {
+                    self.focused_app()
+                        .flash(format!("session depth limit reached ({MAX_SESSION_DEPTH})"));
+                    return;
+                }
                 let model = self.sessions[idx].model_slot.load().model.spec();
                 let session = continued_subagent_session(
                     &self.sessions[idx].app.state.session,
@@ -2173,7 +2202,7 @@ fn take_painted_submissions<T>(
 fn sync_agent_mirrors(
     session: &mut AppSession,
     history: Option<&Arc<ArcSwap<Vec<Message>>>>,
-    transcript: Option<&n00n_agent::SharedTranscript>,
+    transcript: Option<&SharedTranscript>,
     tool_outputs: Option<&Arc<Mutex<HashMap<String, ToolOutput>>>>,
 ) {
     if let Some(history) = history {
@@ -2216,6 +2245,7 @@ mod tests {
         sync_agent_mirrors, take_painted_submissions,
     };
     use crate::{
+        app::session::TEAM_TOOL_NAME,
         app::{AgentSessionEntry, TaskStatus},
         components::Status,
     };
@@ -2231,8 +2261,6 @@ mod tests {
     };
     use std::collections::{HashMap, HashSet};
     use std::{io, sync::Arc};
-
-    const TEAM_TOOL_NAME: &str = "team";
 
     #[test]
     fn session_root_scopes_entries_to_one_tree() {
