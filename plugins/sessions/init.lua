@@ -226,7 +226,7 @@ local function synthetic_group(root, category, children, expanded_state, rank)
     expanded = expanded_state[id] or false,
     depth = 0,
   }
-  rank[id] = (rank[children[1].id] or 0) - 0.25
+  rank[id] = (rank[children[1].id] or 0) - 0.5
   for _, child in ipairs(children) do
     child.group_id = id
   end
@@ -331,7 +331,7 @@ local function make_bucket(parent, children, start_idx, finish, all_nodes, rank,
     expanded = expanded_state[bucket_id] or false,
     depth = 0,
   }
-  rank[bucket.id] = rank[children[start_idx].id] - 0.5
+  rank[bucket.id] = rank[children[start_idx].id] - 0.25
   for i = start_idx, finish do
     local child = children[i]
     child.group_id = bucket.id
