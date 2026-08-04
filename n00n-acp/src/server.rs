@@ -193,6 +193,7 @@ fn spawn_session(
         timeouts: params.timeouts,
         openai_options: params.openai_options,
         prompt_slots: Arc::clone(&params.prompt_slots),
+        state_persistence: params.state_persistence.clone(),
         excluded_tools: Vec::new(),
         mcp_handle: params.mcp_handle.clone(),
         initial_wd: cwd,

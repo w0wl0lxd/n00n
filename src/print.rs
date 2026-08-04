@@ -254,6 +254,9 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
         prompt,
         images,
         prompt_slots,
+        state_persistence: lua_handle.cloned().map(|handle| {
+            Arc::new(handle) as Arc<dyn n00n_agent::headless::SessionStatePersistence>
+        }),
         excluded_tools: vec![QUESTION_TOOL_NAME],
         mcp_handle,
         initial_wd: cwd,

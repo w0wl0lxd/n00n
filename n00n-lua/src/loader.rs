@@ -6,6 +6,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use include_dir::{Dir, include_dir};
+use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_config::{PluginsConfig, RawConfig};
 use n00n_storage::id::n00nId;
@@ -559,6 +560,33 @@ pub struct EventHandle {
     tx: flume::Sender<Request>,
     /// User-initiated requests bypass queued bulk work (session restores).
     prio_tx: flume::Sender<Request>,
+}
+
+impl SessionStatePersistence for EventHandle {
+    fn hydrate(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+    ) -> Result<(), String> {
+        self.drop_state_owner(identity.session_id().id())
+            .map_err(|error| error.to_string())?;
+        self.hydrate_state(identity, snapshot)
+            .map_err(|error| error.to_string())
+    }
+
+    fn capture(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+    ) -> Result<StoredSessionStateSnapshot, String> {
+        self.capture_state(identity, revision)
+            .map_err(|error| error.to_string())
+    }
+
+    fn drop_owner(&self, owner: n00nId) -> Result<(), String> {
+        self.drop_state_owner(owner)
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl EventHandle {

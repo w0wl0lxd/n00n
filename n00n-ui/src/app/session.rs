@@ -12,7 +12,7 @@ use n00n_providers::{Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
     StoredDelivery, StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode,
-    StoredQueuedMessage, StoredSubagent, StoredThinking,
+    StoredQueuedMessage, StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
 };
 
 use crate::AppSession;
@@ -20,6 +20,18 @@ use crate::AppSession;
 use super::session_state::{SessionState, stored_to_rules};
 use super::{App, Mode, PendingInput, PlanState};
 use crate::agent::{Delivery, QueuedMessage};
+
+const INITIAL_STATE_REVISION: u64 = 0;
+
+fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u64 {
+    let Some(snapshot) = snapshot else {
+        return INITIAL_STATE_REVISION;
+    };
+    let Some(revision) = snapshot.state_revision() else {
+        return INITIAL_STATE_REVISION;
+    };
+    revision
+}
 
 /// The single content predicate: `App::save_session` persists a session
 /// iff this holds, and the shutdown path reuses it to tell which tabs were
@@ -172,7 +184,10 @@ impl App {
     fn session_snapshot_with_plugin_state(&mut self) -> AppSession {
         let mut snapshot = self.session_snapshot();
         self.capture_plugin_state();
-        snapshot.meta.state_snapshot = self.state.session.meta.state_snapshot.clone();
+        snapshot
+            .meta
+            .state_snapshot
+            .clone_from(&self.state.session.meta.state_snapshot);
         snapshot
     }
 
@@ -206,17 +221,8 @@ impl App {
         };
         let session_id = self.state.session.id;
         let identity = SessionIdentity::root(SessionRef::from_id(session_id));
-        let persisted_revision = match self
-            .state
-            .session
-            .meta
-            .state_snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.state_revision())
-        {
-            Some(revision) => revision,
-            None => 0,
-        };
+        let persisted_revision =
+            state_revision_or_initial(self.state.session.meta.state_snapshot.as_ref());
         let revision = self
             .state
             .session
