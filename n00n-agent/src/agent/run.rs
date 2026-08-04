@@ -1224,12 +1224,12 @@ impl<'h> Agent<'h> {
         if self.fusion_delegate_available(&self.tools)
             && crate::fusion::decide_request(prompt) == FusionRequestDecision::Delegate
         {
-            // Reset fusion state to Idle if it's terminal (Complete/Cancelled/Failed)
-            // so that start_request can accept it and transition to Planning
-            if let Some(state) = self.fusion_state.as_mut() {
-                if state.phase().is_terminal() {
-                    state.reset_to_idle();
-                }
+            // Reset fusion state to Idle if it is terminal (Complete/Cancelled/Failed)
+            // so that start_request can accept it and transition to Planning.
+            if let Some(state) = self.fusion_state.as_mut()
+                && state.phase().is_terminal()
+            {
+                state.reset_to_idle();
             }
             self.start_fusion_request(prompt)?;
             return Ok(());
