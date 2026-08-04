@@ -602,8 +602,9 @@ impl<'t> EventLoop<'t> {
                 break Err(e);
             }
         };
-        // Fatal errors still save every session, kill MCP process groups,
-        // and drain the storage writer before the process exits.
+        // Fatal errors still save every session, shut down MCP transports
+        // (terminating and reaping their child processes), and drain the
+        // storage writer before the process exits.
         let report = self.shutdown();
         result.map(|()| report)
     }
@@ -675,50 +676,32 @@ impl<'t> EventLoop<'t> {
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
+        self.dirty = true;
         match wake {
             Wake::Input(ev) => self.handle_input(ev),
             Wake::InputGone => return Err(eyre!("terminal input reader stopped")),
-            Wake::Ui(action) => {
-                self.handle_ui_action(action);
-                self.dirty = true;
-            }
-            Wake::Agent(i, envelope) => {
-                self.handle_agent(i, envelope);
-                self.dirty = true;
-            }
-            Wake::Shell(i, event) => {
-                self.sessions[i].app.handle_shell_event(event);
-                self.dirty = true;
-            }
-            Wake::SubmissionPersisted(completion) => {
-                self.handle_submission_persisted(completion);
-                self.dirty = true;
-            }
-            Wake::Warn(warning) => {
-                self.focused_app().flash(warning);
-                self.dirty = true;
-            }
+            Wake::Ui(action) => self.handle_ui_action(action),
+            Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
+            Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
+            Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
+            Wake::Warn(warning) => self.focused_app().flash(warning),
         }
         Ok(())
     }
 
     fn tick(&mut self) {
-        let mut focused_changed = false;
         for (i, rt) in self.sessions.iter_mut().enumerate() {
             rt.app.float_mgr.tick();
             if i != self.focused {
                 continue;
             }
             rt.app.tick_edge_scroll();
-            focused_changed |= rt.app.tick_error_expiry();
-            focused_changed |= !rt.app.image_paste_rx.is_empty();
+            rt.app.tick_error_expiry();
             rt.app.poll_image_paste();
             rt.app.btw_modal.poll();
-            focused_changed |= rt.app.status_bar.clear_expired_hint();
-            focused_changed |= rt.app.status_bar.poll_branch_update();
+            rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
         }
-        self.dirty |= focused_changed;
         self.tick_periodic_save();
     }
 
@@ -963,18 +946,11 @@ impl<'t> EventLoop<'t> {
                     None => None,
                 };
                 session.meta.parent_id = parent_id;
-                let mut runtime = self.ctx.spawn_runtime(session);
-                let actions = match runtime.app.prepare_new_session_prompt(prompt) {
-                    Ok(actions) => actions,
-                    Err(error) => {
-                        runtime.handles.cancel();
-                        let _ = reply_tx.send(Err(error.into()));
-                        return;
-                    }
-                };
-                let id = runtime.id();
-                let idx = self.push_runtime(runtime);
-                self.dispatch(idx, actions);
+                let idx = self.push_runtime(self.ctx.spawn_runtime(session));
+                let id = self.sessions[idx].id();
+                if let Some(prompt) = prompt {
+                    let _ = self.submit_text(idx, prompt, false, false);
+                }
                 if focus {
                     self.set_focus(idx);
                 }
@@ -1135,14 +1111,8 @@ impl<'t> EventLoop<'t> {
                 self.dirty = true;
                 (None, None)
             }
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                self.dirty = true;
-                (Some(Msg::Key(key)), None)
-            }
-            Event::Paste(text) => {
-                self.dirty = true;
-                (Some(Msg::Paste(text)), None)
-            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
+            Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             _ => (None, None),
         }
@@ -1151,24 +1121,15 @@ impl<'t> EventLoop<'t> {
     fn translate_mouse(&mut self, mouse: CtMouseEvent) -> (Option<Msg>, Option<Event>) {
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                self.dirty = true;
                 let scroll_lines = self.focused_app().ui_config.mouse_scroll_lines;
                 let (msg, leftover) = self.aggregate_scroll(mouse, scroll_lines);
                 (Some(msg), leftover)
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                self.dirty = true;
                 let (drag, leftover) = self.coalesce_drag(mouse);
                 (Some(Msg::Mouse(drag)), leftover)
             }
-            MouseEventKind::Moved => {
-                self.dirty |= self.focused_app().ui_config.mascot;
-                (Some(Msg::Mouse(mouse)), None)
-            }
-            _ => {
-                self.dirty = true;
-                (Some(Msg::Mouse(mouse)), None)
-            }
+            _ => (Some(Msg::Mouse(mouse)), None),
         }
     }
 
@@ -1529,9 +1490,6 @@ impl<'t> EventLoop<'t> {
     fn shutdown(mut self) -> ShutdownReport {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
-        if let Some(ref h) = self.ctx.mcp_handle {
-            mcp::kill_process_groups(&h.reader().load().pids);
-        }
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
@@ -1547,10 +1505,10 @@ impl<'t> EventLoop<'t> {
             tabs.push(app.state.session);
             agent_tasks.push(handles.into_task());
         }
-        crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
         if let Some(ref h) = self.ctx.mcp_handle {
             smol::block_on(h.shutdown());
         }
+        crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
         match Arc::try_unwrap(self.ctx.storage_writer) {
             Ok(writer) => writer.shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT),
             Err(_) => {

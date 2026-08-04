@@ -198,6 +198,7 @@ n00n.api.register_tool({
             status = {
               type = "string",
               enum = { "pending", "in_progress", "completed", "cancelled" },
+              description = "One of: pending, in_progress, completed, cancelled.",
             },
             priority = {
               type = "string",
