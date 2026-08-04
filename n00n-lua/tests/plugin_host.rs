@@ -5015,9 +5015,9 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
     let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
         panic!("expected a prompt request");
     };
-    assert!(caller.is_agent(), "caller should be an agent");
-    assert_eq!(caller.session_id(), Some(&session_id));
-    assert_eq!(caller.tool(), Some("team"));
+    assert!(!caller.is_host(), "caller should be an agent");
+    assert_eq!(caller.session_id(), None, "a command carries no session");
+    assert_eq!(caller.tool(), None, "a command handler is not a tool call");
     assert!(
         text.contains("model: anthropic/claude-sonnet-4-6"),
         "submitted prompt: {text}"
