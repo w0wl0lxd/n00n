@@ -5,10 +5,10 @@
 //! `SessionLog` tracks cursor state to enable O(delta) incremental saves.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Take, Write};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use tracing::warn;
 use crate::id::{n00nId, n00nIdParseError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use zstd::stream::{Decoder, Encoder};
 
 use crate::{
@@ -31,11 +32,12 @@ const SESSION_VERSION: u32 = 1;
 const LOG_FORMAT_VERSION: u32 = 3;
 const COMPRESS_LEVEL: i32 = 3;
 const MAX_INCREMENTAL_FRAMES: u64 = 16_384;
-const MAX_SESSION_RECORD_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SESSION_RECORD_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SESSION_DECODED_BYTES: usize = 512 * 1024 * 1024;
 const MAX_SCAN_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_LOG: u32 = 27;
+const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
 const MAX_LAST_FRAME_DECODER_ATTEMPTS: usize = 1_024;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
@@ -48,6 +50,11 @@ const MAX_SNIPPET_BYTES: usize = 256;
 const MAX_FIRST_MESSAGE_LINE_BYTES: usize = 64 * 1024;
 const MAX_FIRST_MESSAGE_TEXT_BYTES: usize = 1024;
 const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
+pub const SESSION_STATE_SCHEMA_VERSION: u32 = 1;
+const MAX_PLUGIN_STATE_ENTRIES: usize = 64;
+const MAX_PLUGIN_STATE_NAME_BYTES: usize = 128;
+pub const MAX_PLUGIN_STATE_BYTES: usize = 256 * 1024;
+const MAX_SESSION_STATE_BYTES: usize = 1024 * 1024;
 const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
@@ -79,6 +86,8 @@ pub enum SessionError {
     DecodedBudgetExceeded { path: String, limit: usize },
     #[error("session log contains an unknown record type")]
     UnknownRecord,
+    #[error("session record exceeds the {maximum}-byte limit")]
+    RecordTooLargeWrite { maximum: usize },
 }
 
 /// Per-model token breakdown entry. Mirrors the four usage counters tracked by
@@ -175,6 +184,695 @@ fn is_default_delivery(delivery: &StoredDelivery) -> bool {
     *delivery == StoredDelivery::TurnEnd
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredStateScope {
+    #[default]
+    Session,
+    Root,
+}
+
+impl StoredStateScope {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Root => "root",
+        }
+    }
+
+    fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "session" => Some(Self::Session),
+            "root" => Some(Self::Root),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct StoredPluginState {
+    schema_version: Option<u64>,
+    raw: serde_json::Value,
+}
+
+impl StoredPluginState {
+    fn new(schema_version: u32, payload: serde_json::Value) -> Self {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            "schema_version".to_owned(),
+            serde_json::Value::from(schema_version),
+        );
+        fields.insert("payload".to_owned(), payload);
+        Self {
+            schema_version: Some(u64::from(schema_version)),
+            raw: serde_json::Value::Object(fields),
+        }
+    }
+
+    fn from_raw(raw: serde_json::Value) -> Self {
+        let schema_version = raw
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64);
+        Self {
+            schema_version,
+            raw,
+        }
+    }
+
+    fn payload(&self) -> Option<&serde_json::Value> {
+        self.raw.get("payload")
+    }
+}
+
+impl Serialize for StoredPluginState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.raw.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredPluginState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_raw(raw))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct StoredPluginScopes {
+    scopes: Option<BTreeMap<String, StoredPluginState>>,
+    malformed: Option<serde_json::Value>,
+}
+
+impl Default for StoredPluginScopes {
+    fn default() -> Self {
+        Self {
+            scopes: Some(BTreeMap::new()),
+            malformed: None,
+        }
+    }
+}
+
+impl StoredPluginScopes {
+    fn set(
+        &mut self,
+        plugin: &str,
+        scope: StoredStateScope,
+        schema_version: u32,
+        payload: serde_json::Value,
+    ) -> Result<(), SessionStateError> {
+        let Some(scopes) = self.scopes.as_mut() else {
+            return Err(SessionStateError::InvalidPluginContainer {
+                plugin: plugin.to_owned(),
+            });
+        };
+        if let Some(state) = scopes.get_mut(scope.as_str()) {
+            let serde_json::Value::Object(fields) = &mut state.raw else {
+                return Err(SessionStateError::InvalidPluginState {
+                    plugin: plugin.to_owned(),
+                    scope,
+                });
+            };
+            fields.insert(
+                "schema_version".to_owned(),
+                serde_json::Value::from(schema_version),
+            );
+            fields.insert("payload".to_owned(), payload);
+            state.schema_version = Some(u64::from(schema_version));
+        } else {
+            scopes.insert(
+                scope.as_str().to_owned(),
+                StoredPluginState::new(schema_version, payload),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for StoredPluginScopes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match (&self.scopes, &self.malformed) {
+            (Some(scopes), _) => scopes.serialize(serializer),
+            (None, Some(raw)) => raw.serialize(serializer),
+            (None, None) => serde_json::Value::Null.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredPluginScopes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let serde_json::Value::Object(fields) = raw else {
+            return Ok(Self {
+                scopes: None,
+                malformed: Some(raw),
+            });
+        };
+        let mut scopes = BTreeMap::new();
+        for (scope, state) in fields {
+            scopes.insert(scope, StoredPluginState::from_raw(state));
+        }
+        Ok(Self {
+            scopes: Some(scopes),
+            malformed: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct StoredSessionStateSnapshotV1 {
+    schema_version: u32,
+    state_revision: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    plugins: BTreeMap<String, StoredPluginScopes>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum StoredSessionStateSnapshotInner {
+    Supported(StoredSessionStateSnapshotV1),
+    Unsupported {
+        schema_version: u64,
+        raw: serde_json::Value,
+    },
+    Malformed {
+        raw: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredSessionStateSnapshot {
+    inner: StoredSessionStateSnapshotInner,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredPluginStateEntry<'a> {
+    pub plugin: &'a str,
+    pub scope: StoredStateScope,
+    pub payload: &'a serde_json::Value,
+}
+
+impl Default for StoredSessionStateSnapshot {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl Serialize for StoredSessionStateSnapshot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match &self.inner {
+            StoredSessionStateSnapshotInner::Supported(snapshot) => snapshot.serialize(serializer),
+            StoredSessionStateSnapshotInner::Unsupported { raw, .. }
+            | StoredSessionStateSnapshotInner::Malformed { raw } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredSessionStateSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let schema_version = raw
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                D::Error::custom("session-state snapshot requires numeric schema_version")
+            })?;
+        let bytes = serde_json::to_vec(&raw).map_err(D::Error::custom)?.len();
+        if bytes > MAX_SESSION_STATE_BYTES {
+            return Err(D::Error::custom(SessionStateError::SnapshotTooLarge {
+                bytes,
+                maximum: MAX_SESSION_STATE_BYTES,
+            }));
+        }
+        if schema_version != u64::from(SESSION_STATE_SCHEMA_VERSION) {
+            return Ok(Self {
+                inner: StoredSessionStateSnapshotInner::Unsupported {
+                    schema_version,
+                    raw,
+                },
+            });
+        }
+        let snapshot: StoredSessionStateSnapshotV1 =
+            serde_json::from_value(raw).map_err(D::Error::custom)?;
+        validate_supported_snapshot(&snapshot).map_err(D::Error::custom)?;
+        Ok(Self {
+            inner: StoredSessionStateSnapshotInner::Supported(snapshot),
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionStateError {
+    #[error("unsupported session-state schema version {found} (expected {expected})")]
+    UnsupportedSchemaVersion { found: u64, expected: u32 },
+    #[error("session-state snapshot envelope is malformed")]
+    InvalidEnvelope,
+    #[error("session state has {found} plugin entries (maximum {maximum})")]
+    TooManyPlugins { found: usize, maximum: usize },
+    #[error("invalid session-state plugin name {plugin:?}")]
+    InvalidPluginName { plugin: String },
+    #[error("session-state plugin {plugin:?} has malformed scoped-state container")]
+    InvalidPluginContainer { plugin: String },
+    #[error("session-state plugin {plugin:?} has no scoped state")]
+    MissingPluginState { plugin: String },
+    #[error("session-state plugin {plugin:?} has malformed {scope:?} state")]
+    InvalidPluginState {
+        plugin: String,
+        scope: StoredStateScope,
+    },
+    #[error("session-state plugin {plugin:?} has unsupported stored scope {scope:?}")]
+    InvalidStoredScope { plugin: String, scope: String },
+    #[error("session state for plugin {plugin:?} is {bytes} bytes (maximum {maximum})")]
+    PluginStateTooLarge {
+        plugin: String,
+        bytes: usize,
+        maximum: usize,
+    },
+    #[error("session state is {bytes} bytes (maximum {maximum})")]
+    SnapshotTooLarge { bytes: usize, maximum: usize },
+    #[error("unsupported state version {found} for plugin {plugin:?} (expected {expected})")]
+    UnsupportedPluginVersion {
+        plugin: String,
+        found: u64,
+        expected: u32,
+    },
+    #[error("session-state revision cannot regress from {current} to {requested}")]
+    StateRevisionRegression { current: u64, requested: u64 },
+    #[error("failed to measure serialized session state: {0}")]
+    Serialize(#[from] serde_json::Error),
+}
+
+impl StoredSessionStateSnapshot {
+    #[must_use]
+    pub fn new(state_revision: u64) -> Self {
+        Self {
+            inner: StoredSessionStateSnapshotInner::Supported(StoredSessionStateSnapshotV1 {
+                schema_version: SESSION_STATE_SCHEMA_VERSION,
+                state_revision,
+                plugins: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn state_revision(&self) -> Option<u64> {
+        match &self.inner {
+            StoredSessionStateSnapshotInner::Supported(snapshot) => Some(snapshot.state_revision),
+            StoredSessionStateSnapshotInner::Unsupported { .. }
+            | StoredSessionStateSnapshotInner::Malformed { .. } => None,
+        }
+    }
+
+    /// Advances the state revision without allowing regression.
+    ///
+    /// # Errors
+    /// Returns a typed error for unsupported envelopes, revision regression, or exceeded bounds.
+    pub fn set_state_revision(&mut self, state_revision: u64) -> Result<(), SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        if state_revision < snapshot.state_revision {
+            return Err(SessionStateError::StateRevisionRegression {
+                current: snapshot.state_revision,
+                requested: state_revision,
+            });
+        }
+        let current_size = serde_json::to_vec(snapshot).map(|v| v.len()).ok();
+        let mut candidate = snapshot.clone();
+        candidate.state_revision = state_revision;
+        let new_size = serde_json::to_vec(&candidate).map(|v| v.len()).ok();
+        if new_size.is_some_and(|new| current_size.is_some_and(|cur| new <= cur)) {
+            self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+            return Ok(());
+        }
+        validate_supported_snapshot(&candidate)?;
+        self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+        Ok(())
+    }
+
+    /// Adds or replaces one exact plugin scope after enforcing snapshot bounds.
+    ///
+    /// # Errors
+    /// Returns a typed error for unsupported envelopes, invalid names, or exceeded bounds.
+    pub fn set_plugin_state(
+        &mut self,
+        plugin: &str,
+        schema_version: u32,
+        scope: StoredStateScope,
+        payload: serde_json::Value,
+    ) -> Result<(), SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        let mut candidate = snapshot.clone();
+        validate_plugin_name(plugin)?;
+        candidate
+            .plugins
+            .entry(plugin.to_owned())
+            .or_default()
+            .set(plugin, scope, schema_version, payload)?;
+        validate_supported_snapshot(&candidate)?;
+        self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+        Ok(())
+    }
+
+    /// Removes one exact plugin scope while preserving every sibling entry.
+    ///
+    /// # Errors
+    /// Returns a typed error for unsupported envelopes, invalid names, or exceeded bounds.
+    pub fn remove_plugin_state(
+        &mut self,
+        plugin: &str,
+        scope: StoredStateScope,
+    ) -> Result<(), SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        validate_plugin_name(plugin)?;
+        let mut candidate = snapshot.clone();
+        if candidate
+            .plugins
+            .get(plugin)
+            .is_some_and(|stored_scopes| stored_scopes.scopes.is_none())
+        {
+            return Err(SessionStateError::InvalidPluginContainer {
+                plugin: plugin.to_owned(),
+            });
+        }
+        let remove_plugin = candidate
+            .plugins
+            .get_mut(plugin)
+            .and_then(|stored_scopes| stored_scopes.scopes.as_mut())
+            .is_some_and(|scopes| {
+                scopes.remove(scope.as_str());
+                scopes.is_empty()
+            });
+        if remove_plugin {
+            candidate.plugins.remove(plugin);
+        }
+        validate_supported_snapshot(&candidate)?;
+        self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+        Ok(())
+    }
+
+    /// Returns plugin names that contain the exact stored scope, including opaque state versions.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot envelope version is unsupported.
+    pub fn plugin_names_with_scope(
+        &self,
+        scope: StoredStateScope,
+    ) -> Result<Vec<&str>, SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        Ok(snapshot
+            .plugins
+            .iter()
+            .filter_map(|(plugin, stored_scopes)| {
+                stored_scopes
+                    .scopes
+                    .as_ref()
+                    .is_some_and(|scopes| scopes.contains_key(scope.as_str()))
+                    .then_some(plugin.as_str())
+            })
+            .collect())
+    }
+
+    /// Enumerates well-formed entries matching a supported plugin state version.
+    ///
+    /// Malformed entries, unknown scopes, and other plugin state versions remain preserved but are
+    /// omitted from the result.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot envelope version is unsupported.
+    pub fn plugin_entries_for_apply(
+        &self,
+        schema_version: u32,
+    ) -> Result<Vec<StoredPluginStateEntry<'_>>, SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        let mut entries = Vec::new();
+        for (plugin, stored_scopes) in &snapshot.plugins {
+            let Some(scopes) = stored_scopes.scopes.as_ref() else {
+                continue;
+            };
+            for (scope_name, state) in scopes {
+                let Some(scope) = StoredStateScope::from_stored(scope_name) else {
+                    continue;
+                };
+                let (Some(found), Some(payload)) = (state.schema_version, state.payload()) else {
+                    continue;
+                };
+                if found == u64::from(schema_version) {
+                    entries.push(StoredPluginStateEntry {
+                        plugin,
+                        scope,
+                        payload,
+                    });
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Validates persisted state before any plugin can apply it.
+    ///
+    /// These limits bound state accepted by plugins. The session reader separately caps each
+    /// decompressed outer record before JSON deserialization.
+    ///
+    /// # Errors
+    /// Returns a typed error for unsupported envelopes or exceeded bounds.
+    pub fn validate_for_apply(&self) -> Result<(), SessionStateError> {
+        match &self.inner {
+            StoredSessionStateSnapshotInner::Supported(snapshot) => {
+                validate_supported_snapshot(snapshot)
+            }
+            StoredSessionStateSnapshotInner::Unsupported { .. }
+            | StoredSessionStateSnapshotInner::Malformed { .. } => {
+                Err(self.unsupported_schema_error())
+            }
+        }
+    }
+
+    /// Returns a compatible plugin payload without dropping unknown entries.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot, plugin version, or scope cannot be applied.
+    pub fn plugin_payload_for_apply(
+        &self,
+        plugin: &str,
+        schema_version: u32,
+        scope: StoredStateScope,
+    ) -> Result<Option<&serde_json::Value>, SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        validate_plugin_name(plugin)?;
+        let Some(stored_scopes) = snapshot.plugins.get(plugin) else {
+            return Ok(None);
+        };
+        let Some(scopes) = stored_scopes.scopes.as_ref() else {
+            return Err(SessionStateError::InvalidPluginContainer {
+                plugin: plugin.to_owned(),
+            });
+        };
+        let Some(state) = scopes.get(scope.as_str()) else {
+            return Ok(None);
+        };
+        validate_stored_plugin_state_size(plugin, state)?;
+        let payload = state.payload();
+        let (Some(found), Some(payload)) = (state.schema_version, payload) else {
+            return Err(SessionStateError::InvalidPluginState {
+                plugin: plugin.to_owned(),
+                scope,
+            });
+        };
+        if found != u64::from(schema_version) {
+            return Err(SessionStateError::UnsupportedPluginVersion {
+                plugin: plugin.to_owned(),
+                found,
+                expected: schema_version,
+            });
+        }
+        Ok(Some(payload))
+    }
+
+    fn unsupported_schema_error(&self) -> SessionStateError {
+        let found = match &self.inner {
+            StoredSessionStateSnapshotInner::Supported(snapshot) => {
+                u64::from(snapshot.schema_version)
+            }
+            StoredSessionStateSnapshotInner::Unsupported { schema_version, .. } => *schema_version,
+            StoredSessionStateSnapshotInner::Malformed { .. } => {
+                return SessionStateError::InvalidEnvelope;
+            }
+        };
+        SessionStateError::UnsupportedSchemaVersion {
+            found,
+            expected: SESSION_STATE_SCHEMA_VERSION,
+        }
+    }
+}
+
+fn validate_supported_snapshot(
+    snapshot: &StoredSessionStateSnapshotV1,
+) -> Result<(), SessionStateError> {
+    let entry_count = snapshot
+        .plugins
+        .values()
+        .map(|stored_scopes| match &stored_scopes.scopes {
+            Some(scopes) => scopes.len(),
+            None => 1,
+        })
+        .sum::<usize>();
+    if entry_count > MAX_PLUGIN_STATE_ENTRIES {
+        return Err(SessionStateError::TooManyPlugins {
+            found: entry_count,
+            maximum: MAX_PLUGIN_STATE_ENTRIES,
+        });
+    }
+    for (plugin, stored_scopes) in &snapshot.plugins {
+        validate_plugin_name(plugin)?;
+        let Some(scopes) = stored_scopes.scopes.as_ref() else {
+            let Some(raw) = stored_scopes.malformed.as_ref() else {
+                return Err(SessionStateError::InvalidPluginContainer {
+                    plugin: plugin.clone(),
+                });
+            };
+            validate_plugin_state_size(plugin, raw)?;
+            continue;
+        };
+        for state in scopes.values() {
+            validate_stored_plugin_state_size(plugin, state)?;
+        }
+    }
+    let bytes = serde_json::to_vec(snapshot)?.len();
+    if bytes > MAX_SESSION_STATE_BYTES {
+        return Err(SessionStateError::SnapshotTooLarge {
+            bytes,
+            maximum: MAX_SESSION_STATE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn validate_plugin_name(plugin: &str) -> Result<(), SessionStateError> {
+    let valid = !plugin.is_empty()
+        && plugin.len() <= MAX_PLUGIN_STATE_NAME_BYTES
+        && plugin
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+    if !valid {
+        return Err(SessionStateError::InvalidPluginName {
+            plugin: plugin.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_plugin_state_size(
+    plugin: &str,
+    value: &serde_json::Value,
+) -> Result<(), SessionStateError> {
+    validate_plugin_state_bytes(plugin, serde_json::to_vec(value)?.len())
+}
+
+fn validate_stored_plugin_state_size(
+    plugin: &str,
+    state: &StoredPluginState,
+) -> Result<(), SessionStateError> {
+    let serde_json::Value::Object(fields) = &state.raw else {
+        return validate_plugin_state_size(plugin, &state.raw);
+    };
+    let Some(payload) = fields.get("payload") else {
+        return validate_plugin_state_size(plugin, &state.raw);
+    };
+    let payload_bytes = serde_json::to_vec(payload)?.len();
+    let opaque = fields
+        .iter()
+        .filter(|(name, _)| {
+            name.as_str() != "payload"
+                && (name.as_str() != "schema_version" || state.schema_version.is_none())
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    let opaque_bytes = if opaque.is_empty() {
+        0
+    } else {
+        serde_json::to_vec(&opaque)?.len()
+    };
+    validate_plugin_state_bytes(plugin, payload_bytes.saturating_add(opaque_bytes))
+}
+
+fn validate_plugin_state_bytes(plugin: &str, bytes: usize) -> Result<(), SessionStateError> {
+    if bytes > MAX_PLUGIN_STATE_BYTES {
+        return Err(SessionStateError::PluginStateTooLarge {
+            plugin: plugin.to_owned(),
+            bytes,
+            maximum: MAX_PLUGIN_STATE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn deserialize_state_snapshot_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<StoredSessionStateSnapshot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let bytes = serde_json::to_vec(&raw)
+        .map_err(serde::de::Error::custom)?
+        .len();
+    if bytes > MAX_SESSION_STATE_BYTES {
+        return Err(serde::de::Error::custom(
+            SessionStateError::SnapshotTooLarge {
+                bytes,
+                maximum: MAX_SESSION_STATE_BYTES,
+            },
+        ));
+    }
+    match serde_json::from_value(raw.clone()) {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(error) => {
+            warn!(
+                category = ?error.classify(),
+                "quarantining malformed session-state snapshot"
+            );
+            Ok(Some(StoredSessionStateSnapshot {
+                inner: StoredSessionStateSnapshotInner::Malformed { raw },
+            }))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,8 +905,18 @@ pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage_by_model: HashMap<String, StoredTokenUsage>,
     /// Fusion dual-lane cost breakdown when `--fusion` / `always_fusion` was on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_fusion_usage_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub fusion: Option<StoredFusionUsage>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_state_snapshot_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub state_snapshot: Option<StoredSessionStateSnapshot>,
     /// Monotonic snapshot ordering used by write-behind persistence.
     #[serde(default)]
     pub revision: u64,
@@ -230,6 +938,46 @@ pub struct StoredFusionUsage {
     pub compact_count: u32,
     #[serde(default)]
     pub final_lane: String,
+}
+
+/// Parses a JSON `Value` into `StoredFusionUsage`, dropping corrupt/empty records.
+///
+/// Older session files occasionally wrote `lead_cost` or `sidekick_cost` as objects
+/// (e.g., maps from the model) instead of plain `f64`s. We tolerate those so the
+/// whole meta record is not discarded.
+fn fusion_usage_from_value(value: &serde_json::Value) -> Option<StoredFusionUsage> {
+    if value.is_null() {
+        return None;
+    }
+    match serde_json::from_value::<StoredFusionUsage>(value.clone()) {
+        Ok(usage) if usage == StoredFusionUsage::default() => None,
+        Ok(usage) => Some(usage),
+        Err(e) => {
+            warn!(
+                error = %e,
+                value_type = %match value {
+                    serde_json::Value::Object(_) => "object",
+                    serde_json::Value::Array(_) => "array",
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Null => "null",
+                },
+                "rejected malformed fusion usage during session restore"
+            );
+            None
+        }
+    }
+}
+
+fn deserialize_fusion_usage_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<StoredFusionUsage>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.as_ref().and_then(fusion_usage_from_value))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -468,6 +1216,71 @@ impl FromStr for Effort {
             .find(|e| e.as_str() == s)
             .ok_or_else(|| ThinkingParseError::Unknown(s.to_string()))
     }
+}
+
+/// Serializable identifier for a built-in effort dialect, resolved to the
+/// actual dialect by `n00n_providers::effort_dialect_for`. Lives here so both
+/// `n00n-config` (providers.toml) and `n00n-providers` (dynamic provider
+/// script JSON) can deserialize it without a cross-dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EffortDialectId {
+    Standard,
+    OpenaiExtended,
+    PreferHigh,
+    HighOnly,
+    Glm,
+    DeepSeek,
+    AnthropicAdaptive,
+    TensorX,
+}
+
+/// One toggle object written to a request body based on the thinking state.
+/// `on` is merged for Effort/Budget, `adaptive` for Adaptive (falling back to
+/// `on`), `off` is set for Off. `budget_key` nests the resolved budget inside
+/// this toggle's object when no explicit budget path is configured.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToggleEntry {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_key: Option<String>,
+}
+
+/// Where thinking values go in a request body. When set on a model it
+/// overrides the base provider's hardcoded layout. Supports multiple toggle
+/// objects, dot-separated nested paths (`reasoning.effort`), budgets nested
+/// inside a toggle (Anthropic's `budget_tokens`), and budget caps (Google's
+/// family-specific limits).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ThinkingFieldConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_max: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toggles: Vec<ToggleEntry>,
+}
+
+/// Per-model request body manipulation. Three operations run in order:
+/// `defaults` (fills absent keys), `replace` (deep-merges, overwriting), and
+/// `filter` (strips keys). Every provider guards its conversation field, so
+/// none of the three can touch `messages`, `input`, or `contents`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BodyOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1405,8 +2218,54 @@ fn append_record_with_limits<R: Serialize>(
     Ok(())
 }
 
+struct BoundedRecordBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl BoundedRecordBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedRecordBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let Some(next_len) = self.bytes.len().checked_add(bytes.len()) else {
+            self.exceeded = true;
+            return Err(IoError::other("session record exceeds size limit"));
+        };
+        if next_len > self.limit {
+            self.exceeded = true;
+            return Err(IoError::other("session record exceeds size limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn append_record<W: Write, R: Serialize>(writer: &mut W, record: &R) -> Result<(), SessionError> {
-    serde_json::to_writer(&mut *writer, record).map_err(StorageError::from)?;
+    let mut encoded = BoundedRecordBuffer::new(MAX_SESSION_RECORD_BYTES.saturating_sub(1));
+    if let Err(error) = serde_json::to_writer(&mut encoded, record) {
+        if encoded.exceeded {
+            return Err(SessionError::RecordTooLargeWrite {
+                maximum: MAX_SESSION_RECORD_BYTES,
+            });
+        }
+        return Err(StorageError::from(error).into());
+    }
+    writer
+        .write_all(&encoded.bytes)
+        .map_err(StorageError::from)?;
     writer.write_all(b"\n").map_err(StorageError::from)?;
     Ok(())
 }
@@ -1494,37 +2353,50 @@ where
     };
     let mut got_header = false;
 
-    let (recovered_tail, decoded_bytes) =
-        visit_zstd_lines_with_decoded_bytes(path, limits, |line| {
-            line_count += 1;
-            if line.is_empty() {
+    let recovered_tail = visit_zstd_lines_with_limits(path, DecodeLimits::LOAD, |line| {
+        line_count += 1;
+        if line.is_empty() {
+            return Ok(());
+        }
+        let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
+            Ok(record) => record,
+            Err(error) => {
+                if !got_header
+                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(line)
+                    && let Err(source) = raw_id.parse::<n00nId>()
+                {
+                    return Err(SessionError::CorruptHeaderId {
+                        path: path.display().to_string(),
+                        raw_id,
+                        source,
+                    });
+                }
+                let tag = match serde_json::from_str::<serde_json::Value>(line) {
+                    Ok(v) => v.get("t").and_then(|t| t.as_str()).map(String::from),
+                    Err(tag_error) => {
+                        warn!(
+                            path = %path.display(),
+                            tag_error = %tag_error,
+                            line = line_count,
+                            "failed to extract record tag from malformed JSONL line"
+                        );
+                        None
+                    }
+                };
+                let record_tag = tag.as_deref().map_or("?", |t| t);
+                warn!(
+                    path = %path.display(),
+                    error = %error,
+                    line = line_count,
+                    record_tag = %record_tag,
+                    record_len = line.len(),
+                    "skipping unrecognized JSONL record",
+                );
                 return Ok(());
             }
-            let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
-                Ok(record) => record,
-                Err(error) => {
-                    if !got_header
-                        && let Ok(RawTag::Header { id: raw_id }) =
-                            serde_json::from_str::<RawTag>(line)
-                        && let Err(source) = raw_id.parse::<n00nId>()
-                    {
-                        return Err(SessionError::CorruptHeaderId {
-                            path: path.display().to_string(),
-                            raw_id,
-                            source,
-                        });
-                    }
-                    warn!(
-                        path = %path.display(),
-                        error = %error,
-                        line = line_count,
-                        "skipping unrecognized JSONL record",
-                    );
-                    return Ok(());
-                }
-            };
-            apply_record(&mut builder, record, &mut got_header)
-        })?;
+        };
+        apply_record(&mut builder, record, &mut got_header)
+    })?;
 
     let id = builder
         .id
@@ -1572,7 +2444,6 @@ where
         saw_legacy_transcript || hydrated_messages,
         recovered_tail,
         log_appends,
-        decoded_bytes,
     ))
 }
 
@@ -1654,7 +2525,7 @@ fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct DecodeLimits {
     line_bytes: usize,
     decoded_bytes: usize,
@@ -1685,82 +2556,18 @@ impl DecodeLimits {
 enum DecodedLine {
     Eof,
     Line(String),
-    Unterminated(String),
     Oversized,
 }
 
 enum LineReadError {
     Io(IoError),
-    RecordTooLarge,
     DecoderWindowLimitExceeded,
+    RecordTooLarge,
     BudgetExceeded,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("zstd frame exceeds the configured decoder window limit")]
-struct DecoderWindowLimitError;
-
-type ZstdFrameInput = BufReader<Take<File>>;
-type ZstdFrameDecoder = Decoder<'static, ZstdFrameInput>;
-
-struct ConcatenatedZstdReader {
-    input: Option<ZstdFrameInput>,
-    decoder: Option<ZstdFrameDecoder>,
-    max_window_log: u32,
-}
-
-impl ConcatenatedZstdReader {
-    fn new(input: ZstdFrameInput, max_window_log: u32) -> Self {
-        Self {
-            input: Some(input),
-            decoder: None,
-            max_window_log,
-        }
-    }
-
-    fn start_next_frame(&mut self) -> Result<bool, IoError> {
-        let Some(mut input) = self.input.take() else {
-            return Ok(false);
-        };
-        let frame = input.fill_buf()?;
-        if frame.is_empty() {
-            self.input = Some(input);
-            return Ok(false);
-        }
-        if frame_window_exceeds_limit_in_frame(frame, self.max_window_log) {
-            self.input = Some(input);
-            return Err(IoError::new(
-                ErrorKind::InvalidData,
-                DecoderWindowLimitError,
-            ));
-        }
-
-        let mut decoder = Decoder::with_buffer(input)?.single_frame();
-        decoder.window_log_max(self.max_window_log)?;
-        self.decoder = Some(decoder);
-        Ok(true)
-    }
-}
-
-impl Read for ConcatenatedZstdReader {
-    fn read(&mut self, output: &mut [u8]) -> Result<usize, IoError> {
-        loop {
-            if let Some(mut decoder) = self.decoder.take() {
-                let decoded = decoder.read(output)?;
-                if decoded != 0 {
-                    self.decoder = Some(decoder);
-                    return Ok(decoded);
-                }
-                self.input = Some(decoder.finish());
-            } else if !self.start_next_frame()? {
-                return Ok(0);
-            }
-        }
-    }
-}
-
 struct BoundedZstdLines {
-    reader: BufReader<ConcatenatedZstdReader>,
+    reader: BufReader<Decoder<'static, BufReader<File>>>,
     path: String,
     limits: DecodeLimits,
     decoded_bytes: usize,
@@ -1769,14 +2576,14 @@ struct BoundedZstdLines {
 impl BoundedZstdLines {
     fn open(path: &Path, offset: u64, limits: DecodeLimits) -> Result<Self, SessionError> {
         let mut file = File::open(path).map_err(StorageError::from)?;
-        let snapshot_end = file.metadata().map_err(StorageError::from)?.len();
-        let snapshot_len = snapshot_end.saturating_sub(offset);
         file.seek(SeekFrom::Start(offset))
             .map_err(StorageError::from)?;
-        let input = BufReader::new(file.take(snapshot_len));
-        let reader = ConcatenatedZstdReader::new(input, limits.window_log);
+        let mut decoder = Decoder::new(file).map_err(StorageError::from)?;
+        decoder
+            .window_log_max(limits.window_log)
+            .map_err(StorageError::from)?;
         Ok(Self {
-            reader: BufReader::new(reader),
+            reader: BufReader::new(decoder),
             path: path.display().to_string(),
             limits,
             decoded_bytes: 0,
@@ -1796,7 +2603,7 @@ impl BoundedZstdLines {
                     Ok(DecodedLine::Oversized)
                 } else {
                     String::from_utf8(line)
-                        .map(DecodedLine::Unterminated)
+                        .map(DecodedLine::Line)
                         .map_err(|error| {
                             LineReadError::Io(IoError::new(ErrorKind::InvalidData, error))
                         })
@@ -1847,13 +2654,13 @@ impl BoundedZstdLines {
     fn limit_error(&self, error: LineReadError) -> SessionError {
         match error {
             LineReadError::Io(error) => SessionError::Storage(StorageError::from(error)),
-            LineReadError::RecordTooLarge => SessionError::RecordTooLarge {
-                path: self.path.clone(),
-                limit: self.limits.line_bytes,
-            },
             LineReadError::DecoderWindowLimitExceeded => SessionError::DecoderWindowLimitExceeded {
                 path: self.path.clone(),
                 window_log: self.limits.window_log,
+            },
+            LineReadError::RecordTooLarge => SessionError::RecordTooLarge {
+                path: self.path.clone(),
+                limit: self.limits.line_bytes,
             },
             LineReadError::BudgetExceeded => SessionError::DecodedBudgetExceeded {
                 path: self.path.clone(),
@@ -1864,74 +2671,13 @@ impl BoundedZstdLines {
 }
 
 fn classify_decoder_error(error: IoError) -> LineReadError {
-    if error
-        .get_ref()
-        .is_some_and(|cause| cause.is::<DecoderWindowLimitError>())
-    {
+    let window_too_large_code = 0usize.wrapping_sub(ZSTD_WINDOW_TOO_LARGE_ERROR_CODE);
+    let window_too_large = zstd::zstd_safe::get_error_name(window_too_large_code);
+    if error.kind() == ErrorKind::Other && error.to_string() == window_too_large {
         LineReadError::DecoderWindowLimitExceeded
     } else {
         LineReadError::Io(error)
     }
-}
-
-fn frame_window_exceeds_limit_in_frame(frame: &[u8], max_window_log: u32) -> bool {
-    const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
-    const ZSTD_HEADER_MAX_BYTES: usize = 18;
-    if frame.len() < 5 || frame[..4] != ZSTD_FRAME_MAGIC {
-        return false;
-    }
-    let mut header = [0_u8; ZSTD_HEADER_MAX_BYTES];
-    let header_len = frame.len().min(ZSTD_HEADER_MAX_BYTES);
-    header[..header_len].copy_from_slice(&frame[..header_len]);
-
-    let descriptor = header[4];
-    let frame_content_size_flag = descriptor >> 6;
-    let single_segment = descriptor & (1 << 5) != 0;
-    let dictionary_id_flag = descriptor & 0b11;
-    let window_size = if single_segment {
-        let content_size_len = match frame_content_size_flag {
-            0 => 1,
-            1 => 2,
-            2 => 4,
-            _ => 8,
-        };
-        let content_size_offset = 5 + match dictionary_id_flag {
-            0 => 0,
-            1 => 1,
-            2 => 2,
-            _ => 4,
-        };
-        let Some(content_size) = header
-            .get(content_size_offset..content_size_offset + content_size_len)
-            .and_then(|bytes| match bytes {
-                [byte] => Some(u64::from(*byte)),
-                [first, second] => Some(u64::from(u16::from_le_bytes([*first, *second])) + 256),
-                [first, second, third, fourth] => Some(u64::from(u32::from_le_bytes([
-                    *first, *second, *third, *fourth,
-                ]))),
-                [first, second, third, fourth, fifth, sixth, seventh, eighth] => {
-                    Some(u64::from_le_bytes([
-                        *first, *second, *third, *fourth, *fifth, *sixth, *seventh, *eighth,
-                    ]))
-                }
-                _ => None,
-            })
-        else {
-            return false;
-        };
-        content_size
-    } else {
-        let Some(window_descriptor) = header.get(5) else {
-            return false;
-        };
-        let window_log = u32::from(*window_descriptor >> 3) + 10;
-        let window_base = 1_u64 << window_log;
-        window_base + (window_base >> 3) * u64::from(*window_descriptor & 7)
-    };
-    let Some(max_window_size) = 1_u64.checked_shl(max_window_log) else {
-        return false;
-    };
-    window_size > max_window_size
 }
 
 fn visit_zstd_lines_for_scan(
@@ -1947,7 +2693,7 @@ fn visit_zstd_lines_for_scan(
         match reader.next(true) {
             Ok(DecodedLine::Eof) => break (Ok(()), false),
             Ok(DecodedLine::Oversized) => {}
-            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => {
+            Ok(DecodedLine::Line(line)) => {
                 if let Err(error) = visit(&line) {
                     break (Err(error), false);
                 }
@@ -1966,29 +2712,13 @@ fn visit_zstd_lines_for_scan(
 fn visit_zstd_lines_with_limits(
     path: &Path,
     limits: DecodeLimits,
-    visit: impl FnMut(&str) -> Result<(), SessionError>,
-) -> Result<bool, SessionError> {
-    visit_zstd_lines_with_decoded_bytes(path, limits, visit).map(|(recovered, _)| recovered)
-}
-
-fn visit_zstd_lines_with_decoded_bytes(
-    path: &Path,
-    limits: DecodeLimits,
     mut visit: impl FnMut(&str) -> Result<(), SessionError>,
-) -> Result<(bool, usize), SessionError> {
+) -> Result<bool, SessionError> {
     let mut reader = BoundedZstdLines::open(path, 0, limits)?;
     loop {
         match reader.next(false) {
-            Ok(DecodedLine::Eof) => return Ok((false, reader.decoded_bytes)),
+            Ok(DecodedLine::Eof) => return Ok(false),
             Ok(DecodedLine::Line(line)) => visit(&line)?,
-            Ok(DecodedLine::Unterminated(line)) => {
-                visit(&line)?;
-                warn!(
-                    path = %path.display(),
-                    "recovering unterminated JSONL record at end of zstd stream",
-                );
-                return Ok((true, reader.decoded_bytes));
-            }
             Ok(DecodedLine::Oversized) => {
                 return Err(reader.limit_error(LineReadError::RecordTooLarge));
             }
@@ -1998,11 +2728,106 @@ fn visit_zstd_lines_with_decoded_bytes(
                     error = %error,
                     "recovering records before corrupt zstd tail",
                 );
-                return Ok((true, reader.decoded_bytes));
+                return Ok(true);
             }
             Err(error) => return Err(reader.limit_error(error)),
         }
     }
+}
+
+const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
+const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
+const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
+
+struct DecodedWorkBudget {
+    remaining: usize,
+}
+
+impl DecodedWorkBudget {
+    const fn new(limit: usize) -> Self {
+        Self { remaining: limit }
+    }
+
+    fn finish_attempt(&mut self, decoded_bytes: usize, allowance: usize, exhausted: bool) {
+        let spent = if exhausted {
+            allowance
+        } else {
+            decoded_bytes.min(allowance)
+        };
+        self.remaining = self.remaining.saturating_sub(spent);
+    }
+}
+
+fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
+    let mut reader = BoundedZstdLines::open(path, offset, DecodeLimits::SCAN).ok()?;
+    loop {
+        match reader.next(false) {
+            Ok(DecodedLine::Line(line)) if line.is_empty() => {}
+            Ok(DecodedLine::Line(line)) => return serde_json::from_str(&line).ok(),
+            Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(_) => return None,
+        }
+    }
+}
+
+fn try_decode_last_meta_at<M>(path: &Path, offset: u64) -> Option<(String, u64, Option<String>)>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
+    let mut budget = DecodedWorkBudget::new(DecodeLimits::SCAN.decoded_bytes);
+    try_decode_last_meta_at_with_budget::<M>(path, offset, DecodeLimits::SCAN, &mut budget)
+}
+
+fn try_decode_last_meta_at_with_budget<M>(
+    path: &Path,
+    offset: u64,
+    limits: DecodeLimits,
+    budget: &mut DecodedWorkBudget,
+) -> Option<(String, u64, Option<String>)>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
+    let mut reader = BoundedZstdLines::open(path, offset, limits).ok()?;
+    let mut title = String::new();
+    let mut updated_at = 0u64;
+    let mut first_message = None;
+    loop {
+        match reader.next(true) {
+            Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(LineReadError::BudgetExceeded) => {
+                break;
+            }
+            Ok(DecodedLine::Line(line)) => {
+                let trimmed = line.trim_end_matches(['\r', '\n']);
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.starts_with(META_RECORD_PREFIX)
+                    && let Ok(MetaScan {
+                        title: t,
+                        updated_at: u,
+                    }) = serde_json::from_str(trimmed)
+                {
+                    title = t;
+                    updated_at = u;
+                }
+                if offset == 0
+                    && first_message.is_none()
+                    && trimmed.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
+                    && trimmed.starts_with(MSG_RECORD_PREFIX)
+                    && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
+                        serde_json::from_str(trimmed)
+                    && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
+                {
+                    first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    budget.finish_attempt(reader.decoded_bytes, limits.decoded_bytes, false);
+    if updated_at == 0 && title.is_empty() {
+        return None;
+    }
+    Some((title, updated_at, first_message))
 }
 
 // -- CWD index --
@@ -2404,8 +3229,8 @@ fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
     let mut reader = BoundedZstdLines::open(path, offset, DecodeLimits::SCAN).ok()?;
     loop {
         match reader.next(false) {
-            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) if line.is_empty() => {}
-            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => {
+            Ok(DecodedLine::Line(line)) if line.is_empty() => {}
+            Ok(DecodedLine::Line(line)) => {
                 return serde_json::from_str(&line).ok();
             }
             Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(_) => return None,
@@ -2462,7 +3287,7 @@ where
                 break (result, false);
             }
             Ok(DecodedLine::Oversized) => continue,
-            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => line,
+            Ok(DecodedLine::Line(line)) => line,
             Err(LineReadError::BudgetExceeded) => break (None, true),
             Err(_) => break (None, false),
         };
@@ -2493,11 +3318,7 @@ where
     result
 }
 
-fn try_decode_first_message_at<M>(
-    path: &Path,
-    offset: u64,
-    budget: &mut DecodedWorkBudget,
-) -> Option<String>
+fn try_decode_first_message_at<M>(path: &Path, offset: u64) -> Option<String>
 where
     M: TitleSource + DeserializeOwned + Default,
 {
@@ -2506,14 +3327,12 @@ where
         MAX_FIRST_MESSAGE_BYTES,
         MAX_ZSTD_WINDOW_LOG,
     );
-    let (limits, allowance) = budget.limits(limits)?;
     let mut reader = BoundedZstdLines::open(path, offset, limits).ok()?;
-    let (result, exhausted) = loop {
+    loop {
         let line = match reader.next(true) {
-            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => line,
+            Ok(DecodedLine::Line(line)) => line,
             Ok(DecodedLine::Oversized) => continue,
-            Err(LineReadError::BudgetExceeded) => break (None, true),
-            Ok(DecodedLine::Eof) | Err(_) => break (None, false),
+            Ok(DecodedLine::Eof) | Err(_) => return None,
         };
         if line.is_empty() || !line.starts_with(MSG_RECORD_PREFIX) {
             continue;
@@ -2522,11 +3341,9 @@ where
             serde_json::from_str(&line)
             && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
         {
-            break (Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES)), false);
+            return Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
         }
-    };
-    budget.finish_attempt(reader.decoded_bytes, allowance, exhausted);
-    result
+    }
 }
 
 fn find_last_frame_meta<M>(
@@ -2536,11 +3353,7 @@ fn find_last_frame_meta<M>(
 where
     M: TitleSource + DeserializeOwned + Default,
 {
-    find_last_frame_meta_with_decoder_attempt_limit::<M>(
-        path,
-        budget,
-        MAX_LAST_FRAME_DECODER_ATTEMPTS,
-    )
+    find_last_frame_meta_with_decoder_attempt_limit::<M>(path, budget, 1_024)
 }
 
 fn find_last_frame_meta_with_decoder_attempt_limit<M>(
@@ -2621,7 +3434,7 @@ where
             let mut title = String::new();
             let mut updated_at = 0u64;
             let mut first_message = None;
-            let _ = visit_zstd_lines_for_scan(path, &mut budget, |line| {
+            let _ = visit_zstd_lines_with_limits(path, DecodeLimits::SCAN, |line| {
                 if !line.is_empty() {
                     if line.starts_with(META_RECORD_PREFIX)
                         && let Ok(MetaScan {
@@ -2648,8 +3461,7 @@ where
             (title, updated_at, first_message)
         });
 
-    let first_message =
-        first_message.or_else(|| try_decode_first_message_at::<M>(path, 0, &mut budget));
+    let first_message = first_message.or_else(|| try_decode_first_message_at::<M>(path, 0));
 
     Some(ScannedHeader {
         id: header.id,
@@ -2905,6 +3717,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::ThinkingParseError;
+    use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
         SESSION_VERSION, StoredDelivery, StoredQueuedMessage, StoredSubagent, append_record,
@@ -2919,8 +3732,8 @@ mod tests {
         try_lock_openai_response_chain,
     };
     use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
-        TranscriptEntry,
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredFusionUsage,
+        StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::n00nId;
@@ -3536,6 +4349,56 @@ mod tests {
 
         let error = TestSession::load_from(session.id, dir).unwrap_err();
         assert!(matches!(error, SessionError::UnknownRecord));
+    }
+    #[test]
+    fn bounded_record_buffer_accepts_exact_limit_and_rejects_next_byte() {
+        let mut writer = super::BoundedRecordBuffer::new(3);
+        writer.write_all(b"abc").unwrap();
+        assert!(writer.write_all(b"d").is_err());
+        assert_eq!(writer.bytes, b"abc");
+    }
+
+    #[test]
+    fn append_record_rejects_oversized_records() {
+        let record = serde_json::json!({
+            "t": "msg",
+            "d": "x".repeat(super::MAX_SESSION_RECORD_BYTES),
+        });
+        let error = append_record(&mut Vec::new(), &record).unwrap_err();
+        assert!(matches!(error, SessionError::RecordTooLargeWrite { .. }));
+    }
+
+    #[test]
+    fn session_open_rejects_oversized_decompressed_records_without_repair() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+
+        let prefix = b"{\"t\":\"meta\",\"state_snapshot\":{\"schema_version\":2,\"opaque\":\"";
+        let mut record = prefix.to_vec();
+        record.extend(std::iter::repeat_n(
+            b'x',
+            super::MAX_SESSION_RECORD_BYTES - prefix.len(),
+        ));
+        record.extend_from_slice("é\"}}\n".as_bytes());
+        let mut encoded = Vec::new();
+        encode_frame(&mut encoded, &record).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let original_len = fs::metadata(&path).unwrap().len();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&encoded).unwrap();
+        drop(file);
+
+        let Err(error) = SessionLog::open::<Value, Value, Value>(dir, session.id) else {
+            panic!("oversized record unexpectedly loaded");
+        };
+        assert!(matches!(error, SessionError::RecordTooLarge { .. }));
+        assert_eq!(
+            fs::metadata(path).unwrap().len(),
+            original_len + encoded.len() as u64
+        );
     }
 
     #[test]
@@ -4874,6 +5737,603 @@ mod tests {
     }
 
     #[test]
+    fn session_state_snapshot_defaults_to_absent_and_is_omitted() {
+        let meta = super::SessionMeta::default();
+        assert!(meta.state_snapshot.is_none());
+        assert_eq!(
+            super::StoredSessionStateSnapshot::default().state_revision(),
+            Some(0)
+        );
+        let encoded = serde_json::to_value(meta).unwrap();
+        assert!(encoded.get("state_snapshot").is_none());
+    }
+
+    #[test]
+    fn session_state_snapshot_round_trips_unknown_plugin_entries() {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(7);
+        snapshot
+            .set_plugin_state(
+                "future_plugin",
+                99,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "future": [1, 2, 3] }),
+            )
+            .unwrap();
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: super::StoredSessionStateSnapshot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, snapshot);
+        assert!(matches!(
+            decoded.plugin_payload_for_apply("future_plugin", 1, super::StoredStateScope::Root),
+            Err(super::SessionStateError::UnsupportedPluginVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn session_state_snapshot_preserves_unsupported_envelopes() {
+        let raw = serde_json::json!({
+            "schema_version": 2,
+            "state_revision": 8,
+            "future_field": { "opaque": true }
+        });
+        let snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+        assert!(matches!(
+            snapshot.validate_for_apply(),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), raw);
+    }
+    #[test]
+    fn session_state_snapshot_preserves_unknown_current_envelope_fields() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 8,
+            "future_field": { "opaque": true }
+        });
+        let snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), raw);
+    }
+
+    #[test]
+    fn session_state_snapshot_rejects_oversized_unsupported_envelopes() {
+        let raw = serde_json::json!({
+            "schema_version": 2,
+            "opaque": "x".repeat(super::MAX_SESSION_STATE_BYTES),
+        });
+        assert!(serde_json::from_value::<super::StoredSessionStateSnapshot>(raw).is_err());
+    }
+
+    #[test]
+    fn session_state_snapshot_preserves_valid_state_beside_malformed_state() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "plugins": {
+                "good": {
+                    "root": { "schema_version": 1, "payload": { "value": 7 } }
+                },
+                "bad": {
+                    "session": { "schema_version": "invalid", "future": true }
+                },
+                "bad_container": null
+            }
+        });
+        let snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("good", 1, super::StoredStateScope::Root)
+                .unwrap(),
+            Some(&serde_json::json!({ "value": 7 }))
+        );
+        assert!(matches!(
+            snapshot.plugin_payload_for_apply("bad", 1, super::StoredStateScope::Session),
+            Err(super::SessionStateError::InvalidPluginState { .. })
+        ));
+        assert!(matches!(
+            snapshot
+                .plugin_payload_for_apply("bad_container", 1, super::StoredStateScope::Session,),
+            Err(super::SessionStateError::InvalidPluginContainer { .. })
+        ));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), raw);
+
+        let temp = TempDir::new().unwrap();
+        let mut session: TestSession = Session::new("model", "/project");
+        session.meta.state_snapshot = Some(snapshot);
+        session.save_to(temp.path()).unwrap();
+        let loaded = TestSession::load_from(session.id, temp.path()).unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded.meta.state_snapshot).unwrap(),
+            raw
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_persists_through_session_log() {
+        let temp = TempDir::new().unwrap();
+        let mut session: TestSession = Session::new("model", "/project");
+        let mut snapshot = super::StoredSessionStateSnapshot::new(4);
+        snapshot
+            .set_plugin_state(
+                "todo_write",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "todos": [{ "content": "ship", "status": "in_progress" }] }),
+            )
+            .unwrap();
+        session.meta.state_snapshot = Some(snapshot.clone());
+        session.save_to(temp.path()).unwrap();
+
+        let loaded = TestSession::load_from(session.id, temp.path()).unwrap();
+        assert_eq!(loaded.meta.state_snapshot, Some(snapshot));
+    }
+
+    #[test]
+    fn session_state_snapshot_supports_both_scopes_for_one_plugin() {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(1);
+        snapshot
+            .set_plugin_state(
+                "plugin",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "root": true }),
+            )
+            .unwrap();
+        snapshot
+            .set_plugin_state(
+                "plugin",
+                2,
+                super::StoredStateScope::Session,
+                serde_json::json!({ "session": true }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("plugin", 1, super::StoredStateScope::Root)
+                .unwrap(),
+            Some(&serde_json::json!({ "root": true }))
+        );
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("plugin", 2, super::StoredStateScope::Session)
+                .unwrap(),
+            Some(&serde_json::json!({ "session": true }))
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_absent_requested_scope_is_none() {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(1);
+        snapshot
+            .set_plugin_state(
+                "todo_write",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "todos": [] }),
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("todo_write", 1, super::StoredStateScope::Session)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_enumerates_only_valid_supported_entries() {
+        let snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "state_revision": 3,
+                "plugins": {
+                    "plugin": {
+                        "root": { "schema_version": 1, "payload": { "valid": true } },
+                        "session": { "schema_version": 2, "payload": { "future": true } },
+                        "future_scope": { "schema_version": 1, "payload": { "opaque": true } }
+                    },
+                    "malformed": {
+                        "root": { "schema_version": "invalid", "payload": null }
+                    },
+                    "malformed_container": null
+                }
+            }))
+            .unwrap();
+
+        let entries = snapshot.plugin_entries_for_apply(1).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].plugin, "plugin");
+        assert_eq!(entries[0].scope, super::StoredStateScope::Root);
+        assert_eq!(entries[0].payload, &serde_json::json!({ "valid": true }));
+    }
+
+    #[test]
+    fn session_state_snapshot_mutations_preserve_opaque_data() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "future_envelope": { "kept": true },
+            "plugins": {
+                "target": {
+                    "root": { "schema_version": 1, "payload": "old", "state_extra": 7 },
+                    "future_scope": { "opaque": true },
+                    "session": { "malformed": true }
+                },
+                "malformed_sibling": null,
+                "unknown_sibling": { "other": [1, 2, 3] }
+            }
+        });
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+
+        snapshot.set_state_revision(4).unwrap();
+        snapshot
+            .set_plugin_state(
+                "target",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!("new"),
+            )
+            .unwrap();
+        let after_set = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(after_set["state_revision"], 4);
+        assert_eq!(
+            after_set["plugins"]["target"]["root"]["state_extra"],
+            raw["plugins"]["target"]["root"]["state_extra"]
+        );
+        assert_eq!(after_set["future_envelope"], raw["future_envelope"]);
+        assert_eq!(
+            after_set["plugins"]["target"]["future_scope"],
+            raw["plugins"]["target"]["future_scope"]
+        );
+        assert_eq!(
+            after_set["plugins"]["target"]["session"],
+            raw["plugins"]["target"]["session"]
+        );
+        assert_eq!(
+            after_set["plugins"]["malformed_sibling"],
+            raw["plugins"]["malformed_sibling"]
+        );
+        assert_eq!(
+            after_set["plugins"]["unknown_sibling"],
+            raw["plugins"]["unknown_sibling"]
+        );
+
+        snapshot
+            .remove_plugin_state("target", super::StoredStateScope::Root)
+            .unwrap();
+        let after_remove = serde_json::to_value(snapshot).unwrap();
+        assert!(after_remove["plugins"]["target"].get("root").is_none());
+        assert_eq!(
+            after_remove["plugins"]["target"]["future_scope"],
+            raw["plugins"]["target"]["future_scope"]
+        );
+        assert_eq!(
+            after_remove["plugins"]["target"]["session"],
+            raw["plugins"]["target"]["session"]
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_rejects_mutating_malformed_plugin_container() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "plugins": {"target": null}
+        });
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(matches!(
+            snapshot.set_plugin_state(
+                "target",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({"new": true}),
+            ),
+            Err(super::SessionStateError::InvalidPluginContainer { .. })
+        ));
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), raw);
+    }
+
+    #[test]
+    fn session_state_snapshot_counts_opaque_state_fields_toward_entry_limit() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "plugins": {
+                "target": {
+                    "root": {
+                        "schema_version": 1,
+                        "payload": null,
+                        "opaque": "x".repeat(super::MAX_PLUGIN_STATE_BYTES)
+                    }
+                }
+            }
+        });
+
+        assert!(serde_json::from_value::<super::StoredSessionStateSnapshot>(raw).is_err());
+    }
+
+    #[test]
+    fn session_state_snapshot_counts_malformed_version_as_opaque_state() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "plugins": {
+                "target": {
+                    "root": {
+                        "schema_version": "x".repeat(super::MAX_PLUGIN_STATE_BYTES),
+                        "payload": null
+                    }
+                }
+            }
+        });
+
+        assert!(serde_json::from_value::<super::StoredSessionStateSnapshot>(raw).is_err());
+    }
+
+    #[test]
+    fn session_state_snapshot_mutations_are_atomic() {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(5);
+        snapshot
+            .set_plugin_state(
+                "kept",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "value": true }),
+            )
+            .unwrap();
+        let before = serde_json::to_value(&snapshot).unwrap();
+
+        assert!(matches!(
+            snapshot.set_state_revision(4),
+            Err(super::SessionStateError::StateRevisionRegression { .. })
+        ));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+
+        assert!(matches!(
+            snapshot.set_plugin_state(
+                "oversized",
+                1,
+                super::StoredStateScope::Session,
+                Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES)),
+            ),
+            Err(super::SessionStateError::PluginStateTooLarge { .. })
+        ));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+
+        assert!(matches!(
+            snapshot.remove_plugin_state("bad/name", super::StoredStateScope::Root),
+            Err(super::SessionStateError::InvalidPluginName { .. })
+        ));
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), before);
+    }
+
+    #[test]
+    fn session_state_snapshot_unsupported_envelope_mutations_fail_unchanged() {
+        let raw = serde_json::json!({
+            "schema_version": 2,
+            "state_revision": 9,
+            "opaque": { "kept": true }
+        });
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(matches!(
+            snapshot.plugin_entries_for_apply(1),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert!(matches!(
+            snapshot.set_state_revision(10),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert!(matches!(
+            snapshot.set_plugin_state(
+                "plugin",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!(null),
+            ),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert!(matches!(
+            snapshot.remove_plugin_state("plugin", super::StoredStateScope::Root),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), raw);
+    }
+
+    #[test]
+    fn malformed_session_state_does_not_invalidate_session_meta() {
+        let raw = serde_json::json!({
+            "mode": "plan",
+            "plan_written": true,
+            "state_snapshot": {
+                "schema_version": 1,
+                "plugins": {"todo_write": {"root": {"schema_version": 1}}}
+            }
+        });
+        let meta: super::SessionMeta = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(meta.mode, Some(super::StoredMode::Plan));
+        assert!(meta.plan_written);
+        let snapshot = meta.state_snapshot.as_ref().unwrap();
+        assert!(matches!(
+            snapshot.validate_for_apply(),
+            Err(super::SessionStateError::InvalidEnvelope)
+        ));
+        assert_eq!(
+            serde_json::to_value(meta).unwrap()["state_snapshot"],
+            raw["state_snapshot"]
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_requires_envelope_fields() {
+        let json = r#"{"schema_version":1,"plugins":{}}"#;
+        assert!(serde_json::from_str::<super::StoredSessionStateSnapshot>(json).is_err());
+    }
+
+    #[test_case(r#"{"schema_version":1,"state_revision":1,"plugins":{"p":{"root":{"payload":{}}}}}"# ; "missing_plugin_version")]
+    #[test_case(r#"{"schema_version":1,"state_revision":1,"plugins":{"p":{"root":{"schema_version":1}}}}"# ; "missing_plugin_payload")]
+    fn session_state_snapshot_quarantines_malformed_plugin_fields(json: &str) {
+        let snapshot: super::StoredSessionStateSnapshot = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            snapshot.plugin_payload_for_apply("p", 1, super::StoredStateScope::Root),
+            Err(super::SessionStateError::InvalidPluginState { .. })
+        ));
+        assert_eq!(serde_json::to_string(&snapshot).unwrap(), json);
+    }
+
+    #[test]
+    fn session_state_snapshot_empty_plugin_scope_is_absent() {
+        let json = r#"{"schema_version":1,"state_revision":1,"plugins":{"p":{}}}"#;
+        let snapshot: super::StoredSessionStateSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("p", 1, super::StoredStateScope::Root)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_enforces_name_and_entry_boundaries() {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(1);
+        let maximum_name = "x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES);
+        snapshot
+            .set_plugin_state(
+                &maximum_name,
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!(null),
+            )
+            .unwrap();
+        assert!(matches!(
+            snapshot.set_plugin_state(
+                &"x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES + 1),
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!(null),
+            ),
+            Err(super::SessionStateError::InvalidPluginName { .. })
+        ));
+
+        let mut entries = super::StoredSessionStateSnapshot::new(1);
+        for index in 0..super::MAX_PLUGIN_STATE_ENTRIES {
+            entries
+                .set_plugin_state(
+                    &format!("plugin_{index}"),
+                    1,
+                    super::StoredStateScope::Root,
+                    serde_json::json!(null),
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            entries.set_plugin_state(
+                "one_too_many",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!(null),
+            ),
+            Err(super::SessionStateError::TooManyPlugins { .. })
+        ));
+    }
+
+    #[test_case("" ; "empty")]
+    #[test_case("bad/name" ; "path_separator")]
+    #[test_case("bad name" ; "whitespace")]
+    #[test_case("bad\0name" ; "null_byte")]
+    #[test_case("pluginé" ; "non_ascii")]
+    fn session_state_snapshot_rejects_unsafe_plugin_names(plugin: &str) {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(1);
+        assert!(matches!(
+            snapshot.set_plugin_state(
+                plugin,
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!(null),
+            ),
+            Err(super::SessionStateError::InvalidPluginName { .. })
+        ));
+    }
+
+    #[test]
+    fn empty_plugin_scope_maps_do_not_consume_state_entry_quota() {
+        let mut plugins = serde_json::Map::new();
+        for index in 0..super::MAX_PLUGIN_STATE_ENTRIES {
+            plugins.insert(format!("empty_{index}"), serde_json::json!({}));
+        }
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "state_revision": 1,
+                "plugins": plugins,
+            }))
+            .unwrap();
+        snapshot
+            .set_plugin_state(
+                "usable",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "value": true }),
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("usable", 1, super::StoredStateScope::Root)
+                .unwrap(),
+            Some(&serde_json::json!({ "value": true }))
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_enforces_payload_and_aggregate_boundaries() {
+        let mut payload = super::StoredSessionStateSnapshot::new(1);
+        payload
+            .set_plugin_state(
+                "maximum",
+                1,
+                super::StoredStateScope::Root,
+                Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES - 2)),
+            )
+            .unwrap();
+        assert!(matches!(
+            payload.set_plugin_state(
+                "oversized",
+                1,
+                super::StoredStateScope::Root,
+                Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES - 1)),
+            ),
+            Err(super::SessionStateError::PluginStateTooLarge { .. })
+        ));
+
+        let mut aggregate = super::StoredSessionStateSnapshot::new(1);
+        for index in 0..4 {
+            aggregate
+                .set_plugin_state(
+                    &format!("large_{index}"),
+                    1,
+                    super::StoredStateScope::Root,
+                    Value::String("x".repeat(240_000)),
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            aggregate.set_plugin_state(
+                "aggregate_overflow",
+                1,
+                super::StoredStateScope::Root,
+                Value::String("x".repeat(240_000)),
+            ),
+            Err(super::SessionStateError::SnapshotTooLarge { .. })
+        ));
+    }
+
+    #[test]
     fn session_meta_backward_compat_defaults() {
         let json = r#"{"mode":"build"}"#;
         let meta: super::SessionMeta = serde_json::from_str(json).unwrap();
@@ -5075,5 +6535,105 @@ mod tests {
         let list = TestSession::list_in("/project", dir).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "huge-output");
+    }
+
+    #[test]
+    fn session_load_tolerates_corrupt_fusion_in_meta() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.title = "old".into();
+        session.meta.fusion = Some(StoredFusionUsage {
+            lead_cost: 0.12,
+            sidekick_cost: 0.34,
+            lead_usage: StoredTokenUsage {
+                input: 1,
+                output: 2,
+                cache_creation: 0,
+                cache_read: 0,
+            },
+            sidekick_usage: StoredTokenUsage::default(),
+            delegation_count: 1,
+            compact_count: 0,
+            final_lane: "lead".into(),
+        });
+        session.save_to(dir).unwrap();
+
+        // Append a corrupt meta record where lead_cost is a map instead of an f64.
+        let bad_meta = br#"{"t":"meta","title":"updated","token_usage":null,"updated_at":1,"log_appends":0,"fusion":{"lead_cost":{"foo":"bar"}}}"#;
+        let path = jsonl_path(dir, session.id);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        encode_frame(&mut file, bad_meta).unwrap();
+        drop(file);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.title, "updated");
+        assert!(loaded.meta.fusion.is_none());
+    }
+
+    #[test_case(EffortDialectId::Standard ; "standard")]
+    #[test_case(EffortDialectId::OpenaiExtended ; "openai_extended")]
+    #[test_case(EffortDialectId::PreferHigh ; "prefer_high")]
+    #[test_case(EffortDialectId::HighOnly ; "high_only")]
+    #[test_case(EffortDialectId::Glm ; "glm")]
+    #[test_case(EffortDialectId::DeepSeek ; "deep_seek")]
+    #[test_case(EffortDialectId::AnthropicAdaptive ; "anthropic_adaptive")]
+    #[test_case(EffortDialectId::TensorX ; "tensor_x")]
+    fn effort_dialect_id_round_trip(id: EffortDialectId) {
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(serde_json::from_str::<EffortDialectId>(&json).unwrap(), id);
+    }
+
+    #[test]
+    fn effort_dialect_id_parses_kebab_case() {
+        let parsed: EffortDialectId = serde_json::from_str("\"prefer-high\"").unwrap();
+        assert_eq!(parsed, EffortDialectId::PreferHigh);
+    }
+
+    #[test]
+    fn thinking_field_config_round_trip() {
+        let config = ThinkingFieldConfig {
+            effort_path: Some("reasoning.effort".into()),
+            budget_path: Some("generationConfig.thinkingConfig.thinkingBudget".into()),
+            budget_max: Some(32_768),
+            toggles: vec![ToggleEntry {
+                path: "thinking".into(),
+                on: Some(serde_json::json!({"type": "enabled"})),
+                off: Some(serde_json::json!({"type": "disabled"})),
+                adaptive: Some(serde_json::json!({"type": "adaptive"})),
+                budget_key: Some("budget_tokens".into()),
+            }],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ThinkingFieldConfig>(&json).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn empty_thinking_config_and_body_override_serialize_empty() {
+        assert_eq!(
+            serde_json::to_string(&ThinkingFieldConfig::default()).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            serde_json::to_string(&BodyOverride::default()).unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn body_override_round_trip() {
+        let override_config = BodyOverride {
+            defaults: Some(serde_json::json!({"chat_template_kwargs": {"enable_thinking": true}})),
+            replace: Some(serde_json::json!({"max_tokens": 8192})),
+            filter: vec!["context_management".into()],
+        };
+        let json = serde_json::to_string(&override_config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<BodyOverride>(&json).unwrap(),
+            override_config
+        );
     }
 }
