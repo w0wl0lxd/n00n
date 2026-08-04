@@ -109,7 +109,7 @@ n00n-markdown = { path = "n00n-markdown" }
 n00n-daemon = { path = "n00n-daemon" }
 n00n-token-profile = { path = "n00n-token-profile" }
 serde = { version = "1", features = ["derive", "rc"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 sonic-rs = "0.5.8"
 toon-format = { version = "0.5", default-features = false }
 tiktoken-rs = "0.12"
@@ -198,7 +198,6 @@ futures-lite = "2"
 futures = "0.3"
 pin-project-lite = "0.2"
 bytes = "1"
-prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 tokio = { version = "1", default-features = false, features = [
   "rt",
   "time",

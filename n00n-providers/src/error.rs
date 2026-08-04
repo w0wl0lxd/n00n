@@ -32,6 +32,9 @@ pub enum RequestDeliveryPhase {
 pub struct RequestDeliveryMetadata {
     pub phase: RequestDeliveryPhase,
     pub response_id: Option<String>,
+    /// Client-generated idempotency key sent with the request. When present,
+    /// retrying the same request is safe because the provider can deduplicate.
+    pub idempotency_key: Option<String>,
     pub close_code: Option<u16>,
     pub close_reason: Option<String>,
     pub emitted_event: bool,
@@ -42,6 +45,7 @@ impl RequestDeliveryMetadata {
         Self {
             phase,
             response_id: None,
+            idempotency_key: None,
             close_code: None,
             close_reason: None,
             emitted_event: false,
