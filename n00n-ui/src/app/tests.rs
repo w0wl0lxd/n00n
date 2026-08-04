@@ -44,6 +44,8 @@ fn build_app_with_mcp(
     mcp_reader: McpSnapshotReader,
 ) -> App {
     let model = test_model();
+    n00n_storage::atomic_write(&dir.path().join("welcome-seen"), b"test\n")
+        .expect("mark welcome guide seen for app tests");
     App::new(AppInit {
         model,
         session: AppSession::new("test-model", "/tmp/test"),
@@ -649,6 +651,27 @@ fn paste_works_regardless_of_status(status: Status) {
     app.status = status;
     app.update(Msg::Paste("pasted".into()));
     assert_eq!(app.input_box.buffer.value(), "pasted");
+}
+
+#[test]
+fn onboarding_blocks_pasted_input() {
+    let mut app = test_app();
+    app.onboarding.open();
+    app.update(Msg::Paste("hidden input".into()));
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn closing_all_overlays_persists_onboarding_dismissal() {
+    let mut app = test_app();
+    let marker = app.storage.path().join("welcome-seen");
+    std::fs::remove_file(&marker).expect("remove existing onboarding marker");
+    app.onboarding.open();
+
+    app.close_all_overlays();
+
+    assert!(marker.is_file());
+    assert!(!app.onboarding.is_open());
 }
 
 #[test_case("a\rb\rc",       "a\nb\nc"       ; "bare_cr")]

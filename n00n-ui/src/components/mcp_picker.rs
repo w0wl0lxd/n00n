@@ -8,6 +8,11 @@ use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 const TITLE: &str = " MCP Servers ";
+const FOOTER_HINTS: &[(&str, &str)] = &[
+    ("Enter", "enable/disable selected server"),
+    ("type", "search by server name"),
+    ("Esc", "close"),
+];
 
 fn build_entries(infos: &[McpServerInfo]) -> (Vec<McpEntry>, Vec<bool>) {
     let entries = infos
@@ -16,10 +21,16 @@ fn build_entries(infos: &[McpServerInfo]) -> (Vec<McpEntry>, Vec<bool>) {
             name: info.name.clone(),
             detail_text: match &info.status {
                 McpServerStatus::Connecting => {
-                    format!("{} \u{00b7} connecting\u{2026}", info.transport_kind)
+                    format!(
+                        "Status: connecting \u{00b7} transport: {}",
+                        info.transport_kind
+                    )
                 }
                 McpServerStatus::Running => {
-                    let mut parts = vec![info.transport_kind.to_string()];
+                    let mut parts = vec![format!(
+                        "Status: running \u{00b7} transport: {}",
+                        info.transport_kind
+                    )];
                     if info.tool_count > 0 {
                         parts.push(format!("{} tools", info.tool_count));
                     }
@@ -32,15 +43,21 @@ fn build_entries(infos: &[McpServerInfo]) -> (Vec<McpEntry>, Vec<bool>) {
                     parts.join(" \u{00b7} ")
                 }
                 McpServerStatus::Disabled => {
-                    format!("{} \u{00b7} disabled", info.transport_kind)
+                    format!(
+                        "Status: disabled \u{00b7} transport: {}",
+                        info.transport_kind
+                    )
                 }
                 McpServerStatus::Failed(e) => {
-                    format!("{} \u{00b7} error: {}", info.transport_kind, e)
+                    format!(
+                        "Status: error \u{00b7} transport: {} \u{00b7} {}",
+                        info.transport_kind, e
+                    )
                 }
                 McpServerStatus::NeedsAuth { .. } => {
                     format!(
-                        "{} \u{00b7} needs auth \u{00b7} run 'n00n mcp auth {}'",
-                        info.transport_kind, info.name
+                        "Status: needs authentication \u{00b7} run `n00n mcp auth {}`",
+                        info.name
                     )
                 }
             },
@@ -81,7 +98,10 @@ pub struct McpPicker {
 impl McpPicker {
     pub fn new(snapshot: McpSnapshotReader, config_errors: McpConfigErrors) -> Self {
         Self {
-            picker: ListPicker::new(),
+            picker: ListPicker::new().with_footer_builder(|| {
+                let t = crate::theme::current();
+                crate::components::hint_line(FOOTER_HINTS).style(t.tool_dim)
+            }),
             snapshot,
             config_errors,
             last_generation: 0,
@@ -187,6 +207,16 @@ mod tests {
             pids: Vec::new(),
             generation: 0,
         })
+    }
+
+    #[test]
+    fn rows_name_status_and_action_in_plain_language() {
+        let snapshot = test_snapshot();
+        let guard = snapshot.load();
+        let (entries, enabled) = build_entries(&guard.infos);
+        assert!(entries[0].detail_text.contains("Status: running"));
+        assert!(entries[1].detail_text.contains("Status: disabled"));
+        assert_eq!(enabled, vec![true, false]);
     }
 
     #[test]

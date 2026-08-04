@@ -7,22 +7,115 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 33 built-in tools in this full reference, including opt-in edit sub-tools.
 
-## File Operations
+Use `explore_code` first for a general codebase question. Choose `index_file` for one-file structure, `map_code` for graph relationships, `map_codegraph` for cross-file structure or impact, and `search_text` for ranked search. Do not treat `explore_code` intents as separate tools.
 
-### `run_shell` *(lua plugin)*
+## Explore & Search
 
-Execute a bash command.
-Commands run in <cwd> by default.
+### `explore_code` *(lua plugin)*
+
+Unified codebase exploration router. Picks the best backend for the question:
+- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
+- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
+- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
+- **search** intent: keyword or natural-language search via `semblem`
+- **symbol** intent: symbol drill-down via `codegraph node`
+- **impact** intent: blast-radius analysis via `codegraph impact`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `token_budget` | integer | no |  |
+| `path` | string | no | File path for skeleton queries. A file extension selects the index backend in auto mode. |
+| `from_symbol` | string | no |  |
+| `symbol` | string | no |  |
+| `use_cache` | boolean | no |  |
+| `intent` | string | no |  |
+| `to_symbol` | string | no |  |
+| `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
+| `command` | string | no |  |
+| `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
+| `project` | string | no | Project root for arbor/codegraph queries (defaults to cwd). |
+
+### `index_file` *(lua plugin)*
+
+Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes |  |
+
+### `search_files` *(lua plugin)*
+
+Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pattern` | string | yes |  |
+| `path` | string | no |  |
+
+### `search_code` *(lua plugin)*
+
+Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `include` | string | no |  |
+| `path` | string | no |  |
+| `pattern` | string | yes |  |
+| `context_after` | integer | no |  |
+| `limit` | integer | no |  |
+| `context_before` | integer | no |  |
+
+### `search_text` *(lua plugin)*
+
+Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo` | string | no | Project root (defaults to cwd) |
+| `line` | integer | no |  |
+| `file_path` | string | no |  |
+| `query` | string | no |  |
+| `command` | string | yes |  |
+| `mode` | string | no |  |
+| `content` | string | no | Content filter for search (docs, config, code, or all) |
+| `top_k` | integer | no |  |
+
+### `map_codegraph` *(lua plugin)*
+
+Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `workdir` | string | no | cwd | Working directory |
-| `timeout` | integer | no | 120 | Timeout seconds |
-| `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
-| `description` | string | no |  | Short description (3-5 words) of what the command does |
+| `node_id` | string | no |  | Node ID for node command |
+| `symbol` | string | no |  | Symbol name for callers/callees/impact/node commands |
+| `projectPath` | string | no |  | Absolute path to the project (defaults to current workspace) |
+| `name` | string | no |  | Symbol name for node command |
+| `query` | string | no |  | Natural language question or symbol/file names to explore (for explore/query commands) |
+| `command` | string | yes |  | CodeGraph command to run |
+| `timeout_secs` | integer | no | 30 | Timeout in seconds for CodeGraph operations |
+| `files` | array | no |  | Array of file paths for affected command |
+| `search` | string | no |  | Search query for query command |
+
+### `map_code` *(lua plugin)*
+
+Graph-based code analysis using Arbor. Returns structured, compact
+caller/callee/project maps; prefer it over broad grep or unfiltered reads
+for relationship and impact questions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `token_budget` | integer | no |  |
+| `path` | string | no |  |
+| `from_symbol` | string | no |  |
+| `symbol` | string | no |  |
+| `command` | string | yes |  |
+| `project` | string | no |  |
+| `operation` | string | no |  |
+| `to_symbol` | string | no |  |
+
+## Files & Images
 
 ### `read_file` *(lua plugin)*
 
@@ -36,7 +129,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 ### `write_file` *(lua plugin)*
 
-Write content to a file. Prefer edit_file or edit_file_lines for existing files.
+Write content to a file. Prefer edit or edit_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -50,9 +143,9 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `replace_all` | boolean | no |  |
-| `path` | string | yes | File path. |
-| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
-| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
+| `path` | string | yes |  |
+| `old_string` | string | yes |  |
+| `new_string` | string | yes |  |
 
 ### `edit_file_bulk` *(lua plugin)*
 
@@ -84,63 +177,9 @@ Insert lines before `line` number. Existing lines shift down.
 | `line` | integer | yes |  |
 | `new_string` | string | yes |  |
 
-### `explore_code` *(lua plugin)*
-
-Unified codebase exploration router. Picks the best backend for the question:
-- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
-- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
-- **search** intent: keyword or natural-language search via `semblem`
-- **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `codegraph impact`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `token_budget` | integer | no |  |
-| `path` | string | no | File path for skeleton queries. A file extension selects the index backend in auto mode. |
-| `from_symbol` | string | no |  |
-| `symbol` | string | no |  |
-| `use_cache` | boolean | no |  |
-| `intent` | string | no |  |
-| `to_symbol` | string | no |  |
-| `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
-| `command` | string | no |  |
-| `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
-| `project` | string | no | Project root for arbor/codegraph queries (defaults to cwd). |
-
-### `search_files` *(lua plugin)*
-
-Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | yes |  |
-| `path` | string | no |  |
-
-### `search_code` *(lua plugin)*
-
-Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `include` | string | no | Glob pattern (e.g. '*.rs'). |
-| `path` | string | no | Directory or file to search. |
-| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
-| `context_after` | integer | no |  |
-| `limit` | integer | no |  |
-| `context_before` | integer | no |  |
-
-### `index_file` *(lua plugin)*
-
-Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | yes |  |
-
 ### `view_image` *(lua plugin)*
 
-View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_file` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
+View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -152,55 +191,29 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_
 | `static_image` | boolean | no | First-frame PNG. |
 | `tile_height` | integer | no | Default 2000; max 4MP. |
 
-### `map_codegraph` *(lua plugin)*
+## Shell & Execution
 
-Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+### `run_shell` *(lua plugin)*
+
+Execute a bash command.
+Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `node_id` | string | no |  | Node ID for node command |
-| `symbol` | string | no |  | Symbol name for callers/callees/impact/node commands |
-| `projectPath` | string | no |  | Absolute path to the project (defaults to current workspace) |
-| `name` | string | no |  | Symbol name for node command |
-| `query` | string | no |  | Natural language question or symbol/file names to explore (for explore/query commands) |
-| `command` | string | yes |  | CodeGraph command to run |
-| `timeout_secs` | integer | no | 30 | Timeout in seconds for CodeGraph operations |
-| `files` | array | no |  | Array of file paths for affected command |
-| `search` | string | no |  | Search query for query command |
+| `workdir` | string | no | cwd | Working directory |
+| `timeout` | integer | no | 120 | Timeout seconds |
+| `command` | string | yes |  | Bash command to execute |
+| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `description` | string | no |  | Short description (3-5 words) of what the command does |
 
-### `search_text` *(lua plugin)*
+### `run_python` *(lua plugin)*
 
-Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repo` | string | no | Project root (defaults to cwd) |
-| `line` | integer | no |  |
-| `file_path` | string | no |  |
-| `query` | string | no |  |
-| `command` | string | yes |  |
-| `mode` | string | no |  |
-| `content` | string | no | Content filter for search (docs, config, code, or all) |
-| `top_k` | integer | no |  |
-
-### `map_code` *(lua plugin)*
-
-Graph-based code analysis using Arbor. Returns structured, compact
-caller/callee/project maps; prefer it over broad grep or unfiltered reads
-for relationship and impact questions.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `token_budget` | integer | no |  |
-| `path` | string | no |  |
-| `from_symbol` | string | no |  |
-| `symbol` | string | no |  |
-| `command` | string | yes |  |
-| `project` | string | no |  |
-| `operation` | string | no |  |
-| `to_symbol` | string | no |  |
-
-## Execution & Control
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `timeout` | integer | no | 30 | Script timeout seconds |
+| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `run_batch` *(lua plugin)*
 
@@ -208,16 +221,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
-
-### `run_python` *(lua plugin)*
-
-Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read_file(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `timeout` | integer | no | 30 | Script timeout seconds |
-| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read_file(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
+| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
 
 ### `ask_user` *(lua plugin)*
 
@@ -227,7 +231,7 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
 
-## Agent & Knowledge
+## Agents & Coordination
 
 ### `list_agents` *(lua plugin)*
 
@@ -335,6 +339,21 @@ Create or update a structured todo list to track tasks. Use after EACH completed
 |-----------|------|----------|-------------|
 | `todos` | array | yes | The updated todo list |
 
+### `delegate_fusion` *(lua plugin)*
+
+Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `description` | string | yes | Short label (3-5 words). |
+| `constraints` | string | no | Scope and patterns. |
+| `definition_of_done` | string | yes | Success checks (tests, artifacts). |
+| `goal` | string | yes | What to accomplish. |
+| `escalation_triggers` | string | no | When to escalate to the lead. |
+| `subagent_type` | string | no | research (read-only) or general (edit). Default: general. |
+
+## Context & Discovery
+
 ### `use_memory` *(lua plugin)*
 
 Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information.
@@ -391,19 +410,6 @@ Load all deferred tools from a namespace when several sibling tools are needed. 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `namespace` | string | yes | Namespace to load |
-
-### `delegate_fusion` *(lua plugin)*
-
-Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `description` | string | yes | Short label (3-5 words). |
-| `constraints` | string | no | Scope and patterns. |
-| `definition_of_done` | string | yes | Success checks (tests, artifacts). |
-| `goal` | string | yes | What to accomplish. |
-| `escalation_triggers` | string | no | When to escalate to the lead. |
-| `subagent_type` | string | no | research (read-only) or general (can edit). Default: general. |
 
 ## Web
 

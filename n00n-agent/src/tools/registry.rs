@@ -298,8 +298,10 @@ impl ToolsSnapshot {
         let mut by_name = HashMap::new();
         for (i, tool) in tools.iter().enumerate() {
             by_name.insert(tool.name().to_owned(), i);
+        }
+        for (i, tool) in tools.iter().enumerate() {
             for alias in tool.tool.aliases() {
-                by_name.insert(alias.to_owned(), i);
+                by_name.entry(alias.to_owned()).or_insert(i);
             }
         }
         Self { tools, by_name }
@@ -351,10 +353,31 @@ impl Default for ToolRegistry {
     }
 }
 
+const SAME_TOOL_ALIAS: &str = "same tool alias";
+
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
     #[error("tool '{name}' is already registered (existing source: {existing})")]
     NameConflict { name: String, existing: String },
+}
+
+/// Validates candidate tool names (canonical + aliases) and returns the colliding candidate if any.
+fn validate_candidate_names(
+    tool: &Arc<dyn Tool>,
+    existing_check: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), (String, String)> {
+    let mut names = vec![tool.name().to_owned()];
+    names.extend(tool.aliases().into_iter().map(ToOwned::to_owned));
+    let mut seen = HashSet::new();
+    for candidate in names {
+        if !seen.insert(candidate.clone()) {
+            return Err((candidate, SAME_TOOL_ALIAS.to_owned()));
+        }
+        if let Some(existing) = existing_check(&candidate) {
+            return Err((candidate, existing));
+        }
+    }
+    Ok(())
 }
 
 impl ToolRegistry {
@@ -410,24 +433,19 @@ impl ToolRegistry {
     /// # Errors
     /// Returns an error if a tool with the same name is already registered.
     pub fn register(&self, tool: &Arc<dyn Tool>, source: &ToolSource) -> Result<(), RegistryError> {
-        let name = tool.name().to_owned();
         let defer_loading = tool.defer_loading();
         let namespace = tool.namespace().map(Arc::from);
         let mut conflict = None;
         self.tools.rcu(|current| {
             conflict = None;
-            let mut names = vec![name.clone()];
-            names.extend(tool.aliases().into_iter().map(ToOwned::to_owned));
-            let mut seen = HashSet::new();
-            for candidate in names {
-                if !seen.insert(candidate.clone()) {
-                    conflict = Some("same tool alias".to_owned());
-                    return Arc::clone(current);
-                }
-                if let Some(existing) = current.get(&candidate) {
-                    conflict = Some(existing.source.as_log_field().into_owned());
-                    return Arc::clone(current);
-                }
+            let existing_check = |name: &str| -> Option<String> {
+                current
+                    .get(name)
+                    .map(|t| t.source.as_log_field().into_owned())
+            };
+            if let Err((candidate, existing)) = validate_candidate_names(tool, &existing_check) {
+                conflict = Some((candidate, existing));
+                return Arc::clone(current);
             }
             let mut next_tools = current.tools.clone();
             next_tools.push(RegisteredTool {
@@ -438,7 +456,7 @@ impl ToolRegistry {
             });
             Arc::new(ToolsSnapshot::from_tools(next_tools))
         });
-        if let Some(existing) = conflict {
+        if let Some((name, existing)) = conflict {
             return Err(RegistryError::NameConflict { name, existing });
         }
         Ok(())
@@ -461,31 +479,29 @@ impl ToolRegistry {
             let mut new_sources: HashMap<String, ToolSource> =
                 HashMap::with_capacity(entries.len());
             for (tool, source) in &entries {
-                let mut names = vec![tool.name().to_owned()];
-                names.extend(tool.aliases().into_iter().map(ToOwned::to_owned));
-                let mut seen = HashSet::new();
-                for name in names {
-                    if !seen.insert(name.clone()) {
-                        conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: "same tool alias".to_owned(),
-                        });
-                        return Arc::clone(current);
-                    }
-                    if let Some(existing_source) = new_sources.get(&name) {
-                        conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: existing_source.as_log_field().into_owned(),
-                        });
-                        return Arc::clone(current);
-                    }
-                    if let Some(existing) = current.get(&name) {
-                        conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: existing.source.as_log_field().into_owned(),
-                        });
-                        return Arc::clone(current);
-                    }
+                let existing_check = |name: &str| -> Option<String> {
+                    new_sources
+                        .get(name)
+                        .map(|s| s.as_log_field().into_owned())
+                        .or_else(|| {
+                            current
+                                .get(name)
+                                .map(|t| t.source.as_log_field().into_owned())
+                        })
+                };
+                if let Err((candidate, existing)) = validate_candidate_names(tool, &existing_check)
+                {
+                    conflict = Some(RegistryError::NameConflict {
+                        name: candidate,
+                        existing,
+                    });
+                    return Arc::clone(current);
+                }
+                for name in [tool.name()]
+                    .iter()
+                    .chain(tool.aliases().iter())
+                    .map(|s| s.to_string())
+                {
                     new_sources.insert(name, source.clone());
                 }
                 next_tools.push(RegisteredTool {
@@ -538,34 +554,30 @@ impl ToolRegistry {
             let mut new_sources: HashMap<String, ToolSource> =
                 HashMap::with_capacity(new_entries.len());
             for (tool, source) in new_entries {
-                let mut names = vec![tool.name().to_owned()];
-                names.extend(tool.aliases().into_iter().map(ToOwned::to_owned));
-                let mut seen = HashSet::new();
-                for name in names {
-                    if !seen.insert(name.clone()) {
-                        conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: "same tool alias".to_owned(),
-                        });
-                        return Arc::clone(current);
-                    }
-                    if let Some(existing_source) = new_sources.get(&name) {
-                        conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: existing_source.as_log_field().into_owned(),
-                        });
-                        return Arc::clone(current);
-                    }
-                    if let Some(existing) = next_tools
-                        .iter()
-                        .find(|t| t.name() == name || t.tool.aliases().contains(&name.as_str()))
-                    {
-                        conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: existing.source.as_log_field().into_owned(),
-                        });
-                        return Arc::clone(current);
-                    }
+                let existing_check = |name: &str| -> Option<String> {
+                    new_sources
+                        .get(name)
+                        .map(|s| s.as_log_field().into_owned())
+                        .or_else(|| {
+                            next_tools
+                                .iter()
+                                .find(|t| t.name() == name || t.tool.aliases().contains(&name))
+                                .map(|t| t.source.as_log_field().into_owned())
+                        })
+                };
+                if let Err((candidate, existing)) = validate_candidate_names(tool, &existing_check)
+                {
+                    conflict = Some(RegistryError::NameConflict {
+                        name: candidate,
+                        existing,
+                    });
+                    return Arc::clone(current);
+                }
+                for name in [tool.name()]
+                    .iter()
+                    .chain(tool.aliases().iter())
+                    .map(|s| s.to_string())
+                {
                     new_sources.insert(name, source.clone());
                 }
                 next_tools.push(RegisteredTool {
