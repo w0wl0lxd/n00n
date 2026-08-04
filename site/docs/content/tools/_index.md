@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 34 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -21,7 +21,7 @@ Commands run in <cwd> by default.
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
@@ -50,9 +50,9 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `replace_all` | boolean | no |  |
-| `path` | string | yes |  |
-| `old_string` | string | yes |  |
-| `new_string` | string | yes |  |
+| `path` | string | yes | File path. |
+| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
+| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
 
 ### `multiedit` *(lua plugin)*
 
@@ -87,9 +87,12 @@ Insert lines before `line` number. Existing lines shift down.
 ### `explore` *(lua plugin)*
 
 Unified codebase exploration router. Picks the best backend for the question:
-- **file** intent (or a file path): compact single-file skeleton via `index`
-- **relations** intent: caller/callee maps, trace paths, blast radius via `arbor`
+- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
+- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
 - **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
+- **search** intent: keyword or natural-language search via `semblem`
+- **symbol** intent: symbol drill-down via `codegraph node`
+- **impact** intent: blast-radius analysis via `codegraph impact`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -100,8 +103,9 @@ Unified codebase exploration router. Picks the best backend for the question:
 | `use_cache` | boolean | no |  |
 | `intent` | string | no |  |
 | `to_symbol` | string | no |  |
-| `query` | string | yes | Question, symbol, or file path to explore. |
+| `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
 | `command` | string | no |  |
+| `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
 | `project` | string | no | Project root for arbor/codegraph queries (defaults to cwd). |
 
 ### `glob` *(lua plugin)*
@@ -119,9 +123,9 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no |  |
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| `include` | string | no | Glob pattern (e.g. '*.rs'). |
+| `path` | string | no | Directory or file to search. |
+| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
 | `context_before` | integer | no |  |
@@ -152,10 +156,17 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 
 Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `projectPath` | string | no | Absolute path to the project (defaults to current workspace) |
-| `query` | string | yes | Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact') |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `node_id` | string | no |  | Node ID for node command |
+| `symbol` | string | no |  | Symbol name for callers/callees/impact/node commands |
+| `projectPath` | string | no |  | Absolute path to the project (defaults to current workspace) |
+| `name` | string | no |  | Symbol name for node command |
+| `query` | string | no |  | Natural language question or symbol/file names to explore (for explore/query commands) |
+| `command` | string | yes |  | CodeGraph command to run |
+| `timeout_secs` | integer | no | 30 | Timeout in seconds for CodeGraph operations |
+| `files` | array | no |  | Array of file paths for affected command |
+| `search` | string | no |  | Search query for query command |
 
 ### `semblem` *(lua plugin)*
 
@@ -165,10 +176,11 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 |-----------|------|----------|-------------|
 | `repo` | string | no | Project root (defaults to cwd) |
 | `line` | integer | no |  |
+| `file_path` | string | no |  |
 | `query` | string | no |  |
 | `command` | string | yes |  |
 | `mode` | string | no |  |
-| `file_path` | string | no |  |
+| `content` | string | no | Content filter for search (docs, config, code, or all) |
 | `top_k` | integer | no |  |
 
 ### `arbor` *(lua plugin)*
@@ -180,10 +192,12 @@ for relationship and impact questions.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `token_budget` | integer | no |  |
+| `path` | string | no |  |
 | `from_symbol` | string | no |  |
 | `symbol` | string | no |  |
 | `command` | string | yes |  |
 | `project` | string | no |  |
+| `operation` | string | no |  |
 | `to_symbol` | string | no |  |
 
 ## Execution & Control
@@ -194,7 +208,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
+| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `code_execution` *(lua plugin)*
 
@@ -212,6 +226,28 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
+
+### `tmux` *(lua plugin)*
+
+Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_name` | string | no |  |
+| `source` | string | no |  |
+| `timeout` | integer | no |  |
+| `destination` | string | no |  |
+| `window` | string | no |  |
+| `height` | integer | no |  |
+| `width` | integer | no |  |
+| `raw_command` | string | no |  |
+| `window_name` | string | no |  |
+| `keys` | string | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `command_text` | string | no |  |
+| `session` | string | no |  |
+| `pane` | string | no |  |
 
 ## Agent & Knowledge
 
@@ -380,7 +416,7 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 ### `fusion_delegate` *(lua plugin)*
 
-Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
