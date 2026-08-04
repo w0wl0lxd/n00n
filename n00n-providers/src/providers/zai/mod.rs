@@ -308,12 +308,17 @@ impl Provider for Zai {
                 opts.fast,
             );
             if model.supports_thinking() {
-                opts.thinking
-                    .apply_reasoning_effort(&mut body, &dialect::GLM, model);
+                opts.thinking.apply_thinking(
+                    &mut body,
+                    model,
+                    &dialect::GLM,
+                    &super::reasoning_effort_fields(),
+                );
             }
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             match self
                 .compat
-                .do_stream(model, &[], &body, event_tx, &auth, &opts)
+                .do_stream(model, &[], &body, event_tx, &auth)
                 .await
             {
                 Err(AgentError::Api { status, message })
