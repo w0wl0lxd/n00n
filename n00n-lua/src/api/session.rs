@@ -293,7 +293,7 @@ mod tests {
                 Some(SessionIdentity::root(caller_id.clone())),
             ),
         );
-        let expected_caller_id = caller_id.clone();
+        let expected_caller_id = caller_id;
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
                 req:
@@ -355,7 +355,7 @@ mod tests {
                 Some(SessionIdentity::root(caller_id.clone())),
             ),
         );
-        let expected_caller_id = caller_id.clone();
+        let expected_caller_id = caller_id;
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
                 req:

@@ -145,6 +145,7 @@ fn restored_submission(
 }
 
 impl App {
+    #[allow(dead_code)]
     pub(crate) fn has_content(&self) -> bool {
         session_has_content(&self.state.session)
     }
@@ -385,6 +386,7 @@ impl App {
         ))]
     }
 
+    #[allow(dead_code)]
     pub(crate) fn apply_loaded_session(
         &mut self,
         session: AppSession,
@@ -406,6 +408,7 @@ impl App {
         self.loaded_session_snapshot()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn load_session(&mut self, session_id: n00nId) -> Vec<Action> {
         let mut session = match AppSession::load(session_id, &self.storage) {
             Ok(s) => s,

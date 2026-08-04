@@ -181,8 +181,14 @@ fn build_team_resume_prompt(run_info: &Value) -> ControlResult<String> {
 }
 
 fn stop_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
-    session_call(tx, SessionRequest::Cancel { id: id.to_owned() })
-        .map_err(|e| map_not_found(id, e))?;
+    session_call(
+        tx,
+        SessionRequest::Cancel {
+            id: id.to_owned(),
+            caller_id: None,
+        },
+    )
+    .map_err(|e| map_not_found(id, e))?;
     Ok(())
 }
 
