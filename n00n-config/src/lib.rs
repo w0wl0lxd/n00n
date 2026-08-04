@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -353,6 +354,7 @@ pub struct PluginFileConfig {
 #[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiFileConfig {
+    pub reduced_motion: Option<bool>,
     pub splash_animation: Option<bool>,
     pub mascot: Option<bool>,
     pub scrollbar: Option<bool>,
@@ -370,6 +372,7 @@ impl UiFileConfig {
         merge_option!(
             self,
             overlay,
+            reduced_motion,
             splash_animation,
             mascot,
             scrollbar,
@@ -897,6 +900,12 @@ pub struct Config {
 #[derive(Debug, Clone, ConfigSection)]
 #[config(section = "ui")]
 pub struct UiConfig {
+    #[config(
+        default = false,
+        desc = "Reduce motion and reveal streamed text immediately"
+    )]
+    pub reduced_motion: bool,
+
     #[config(default = true, desc = "Show splash animation on startup")]
     pub splash_animation: bool,
 
@@ -942,6 +951,9 @@ impl UiConfig {
 
     fn from_file(f: UiFileConfig) -> Self {
         Self {
+            reduced_motion: reduced_motion_from_env()
+                .or(f.reduced_motion)
+                .unwrap_or_else(|| false),
             splash_animation: f.splash_animation.is_none_or(|v| v),
             mascot: f.mascot.is_none_or(|v| v),
             scrollbar: f.scrollbar.is_none_or(|v| v),
@@ -969,6 +981,15 @@ impl UiConfig {
         self.validate()?;
         self.tool_output_lines.validate()?;
         Ok(())
+    }
+}
+
+fn reduced_motion_from_env() -> Option<bool> {
+    let value = env::var("N00N_REDUCED_MOTION").ok()?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -2273,6 +2294,15 @@ mod tests {
             !config.agent.fusion.enabled,
             "agent Fusion must default off independently"
         );
+    }
+
+    #[test]
+    fn reduced_motion_config_is_opt_in() {
+        let defaults = RawConfig::default().into_config(false).unwrap();
+        assert!(!defaults.ui.reduced_motion);
+
+        let raw: RawConfig = toml::from_str("[ui]\nreduced_motion = true\n").unwrap();
+        assert!(raw.into_config(false).unwrap().ui.reduced_motion);
     }
 
     #[test]

@@ -45,11 +45,49 @@ fn load_images(paths: &[PathBuf]) -> Result<Vec<ImageSource>> {
         .collect()
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     Text,
     Json,
     StreamJson,
+}
+
+#[must_use]
+pub fn command_result_value(action: &str, status: &str, message: &str) -> Value {
+    serde_json::json!({
+        "ok": status == "success" || status == "dry-run",
+        "action": action,
+        "status": status,
+        "message": message,
+    })
+}
+
+pub fn emit_command_result(format: OutputFormat, action: &str, status: &str, message: &str) {
+    if matches!(format, OutputFormat::Json | OutputFormat::StreamJson) {
+        println!("{}", command_result_value(action, status, message));
+    } else {
+        println!("{message}");
+    }
+}
+
+pub fn confirm_destructive(
+    format: OutputFormat,
+    action: &str,
+    target: &str,
+) -> std::io::Result<bool> {
+    eprint!("{action} {target}? This cannot be undone easily. [y/N] ");
+    std::io::Write::flush(&mut std::io::stderr())?;
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input)? == 0 {
+        emit_command_result(format, action, "cancelled", "cancelled");
+        return Ok(false);
+    }
+    if input.trim().eq_ignore_ascii_case("y") {
+        Ok(true)
+    } else {
+        emit_command_result(format, action, "cancelled", "cancelled");
+        Ok(false)
+    }
 }
 
 #[derive(Serialize)]
@@ -570,6 +608,17 @@ mod tests {
         "error",
         "session_id",
     ];
+
+    #[test]
+    fn command_result_status_is_structured_for_dry_run_and_errors() {
+        let dry_run = command_result_value("agent stop", "dry-run", "would stop agent");
+        assert_eq!(dry_run["ok"], true);
+        assert_eq!(dry_run["status"], "dry-run");
+
+        let cancelled = command_result_value("rollback", "cancelled", "cancelled");
+        assert_eq!(cancelled["ok"], false);
+        assert_eq!(cancelled["action"], "rollback");
+    }
 
     #[test]
     fn wire_format_required_fields() {

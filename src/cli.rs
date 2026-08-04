@@ -83,6 +83,28 @@ pub struct PluginFlags {
 }
 
 #[derive(Args)]
+pub struct DestructiveFlags {
+    /// Show what would happen without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip the confirmation prompt.
+    #[arg(long = "no-confirm")]
+    pub no_confirm: bool,
+
+    /// Deprecated alias for --no-confirm.
+    #[arg(short = 'y', long = "yes", hide = true)]
+    pub legacy_yes: bool,
+}
+
+impl DestructiveFlags {
+    #[must_use]
+    pub fn no_confirm(&self) -> bool {
+        self.no_confirm || self.legacy_yes
+    }
+}
+
+#[derive(Args)]
 pub struct PermissionFlags {
     /// Skip all permission prompts (allow everything)
     #[arg(long = "no-confirm")]
@@ -123,8 +145,14 @@ pub struct Cli {
     #[arg(short = 's', long, alias = "resume")]
     pub session: Option<String>,
 
-    /// Output format for --print mode
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    /// Output format. `--output-format` remains a compatibility alias.
+    #[arg(
+        long = "output",
+        visible_alias = "output-format",
+        global = true,
+        value_enum,
+        default_value_t = OutputFormat::Text
+    )]
     pub output_format: OutputFormat,
 
     /// Input format (text or stream-json for SDK mode)
@@ -234,6 +262,10 @@ impl Cli {
             ("max-budget-usd", self.max_budget_usd.is_some()),
             ("thinking", self.thinking.is_some()),
             ("thinking-display", self.thinking_display.is_some()),
+            (
+                "permission-prompt-tool",
+                self.permission_prompt_tool.is_some(),
+            ),
         ];
         let ignored = ignored
             .into_iter()
@@ -249,6 +281,26 @@ impl Cli {
         );
         if self.permission_flags.legacy_yolo || legacy_acp_no_confirm {
             warnings.push("a legacy permission flag is deprecated; use --no-confirm".to_owned());
+        }
+        let legacy_yes = match self.command.as_ref() {
+            Some(Command::Update { safety, .. } | Command::Rollback { safety }) => {
+                safety.legacy_yes
+            }
+            Some(
+                Command::Auth {
+                    action: AuthAction::Logout { safety, .. },
+                }
+                | Command::Mcp {
+                    action: McpAction::Logout { safety, .. },
+                }
+                | Command::Agent {
+                    action: AgentCommand::Stop { safety, .. },
+                },
+            ) => safety.legacy_yes,
+            _ => false,
+        };
+        if legacy_yes {
+            warnings.push("a legacy destructive flag is deprecated; use --no-confirm".to_owned());
         }
         let mut legacy_tool_names = self
             .allowed_tools
@@ -302,18 +354,20 @@ pub enum Command {
         action: McpAction,
     },
     /// Update n00n to the latest version
-    #[command(after_help = "Example: n00n update --yes")]
+    #[command(after_help = "Example: n00n update --dry-run --output json")]
     Update {
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long)]
-        yes: bool,
+        #[command(flatten)]
+        safety: DestructiveFlags,
         /// Disable syntax highlighting
         #[arg(long)]
         no_color: bool,
     },
     /// Rollback to the previous version
-    #[command(after_help = "Example: n00n rollback")]
-    Rollback,
+    #[command(after_help = "Example: n00n rollback --dry-run --output json")]
+    Rollback {
+        #[command(flatten)]
+        safety: DestructiveFlags,
+    },
     /// Run as an ACP (Agent Client Protocol) server over stdio
     #[command(after_help = "Example: n00n acp --model anthropic/claude-sonnet-4-6")]
     Acp {
@@ -445,6 +499,8 @@ pub enum AgentCommand {
     #[command(after_help = "Example: n00n agent stop agent-id")]
     Stop {
         id: String,
+        #[command(flatten)]
+        safety: DestructiveFlags,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
@@ -466,10 +522,12 @@ pub enum McpAction {
         server: String,
     },
     /// Remove stored OAuth credentials for an MCP server
-    #[command(after_help = "Example: n00n mcp logout github")]
+    #[command(after_help = "Example: n00n mcp logout github --dry-run --output json")]
     Logout {
         /// Server name from config
         server: String,
+        #[command(flatten)]
+        safety: DestructiveFlags,
     },
 }
 
@@ -482,10 +540,12 @@ pub enum AuthAction {
         provider: Option<String>,
     },
     /// Remove stored credentials for a provider
-    #[command(after_help = "Example: n00n auth logout openai")]
+    #[command(after_help = "Example: n00n auth logout openai --dry-run --output json")]
     Logout {
         /// Provider slug (e.g. openai)
         provider: String,
+        #[command(flatten)]
+        safety: DestructiveFlags,
     },
     /// Show authentication status for all providers
     #[command(after_help = "Example: n00n auth status")]
@@ -536,6 +596,40 @@ mod tests {
     }
 
     #[test]
+    fn output_aliases_and_destructive_flags_parse() {
+        let canonical = Cli::parse_from([
+            "n00n",
+            "auth",
+            "logout",
+            "openai",
+            "--dry-run",
+            "--no-confirm",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(canonical.output_format, OutputFormat::Json);
+        assert!(matches!(
+            canonical.command,
+            Some(Command::Auth {
+                action: AuthAction::Logout { safety, .. }
+            }) if safety.dry_run && safety.no_confirm && !safety.legacy_yes
+        ));
+
+        let compatibility = Cli::parse_from([
+            "n00n",
+            "rollback",
+            "--yes",
+            "--output-format",
+            "stream-json",
+        ]);
+        assert_eq!(compatibility.output_format, OutputFormat::StreamJson);
+        assert!(matches!(
+            compatibility.command,
+            Some(Command::Rollback { safety }) if safety.no_confirm() && !safety.dry_run
+        ));
+    }
+
+    #[test]
     fn no_confirm_and_legacy_yolo_are_equivalent() {
         let canonical = Cli::parse_from(["n00n", "--no-confirm"]);
         let legacy = Cli::parse_from(["n00n", "--yolo"]);
@@ -573,12 +667,12 @@ mod tests {
     }
 
     #[test]
-    fn sdk_tool_flag_aliases_remain_compatible() {
+    fn sdk_tool_flags_parse_canonical_names() {
         let cli = Cli::parse_from([
             "n00n",
-            "--allowedTools",
+            "--allowed-tools",
             "Read,Bash",
-            "--disallowedTools",
+            "--disallowed-tools",
             "Write",
         ]);
         assert_eq!(cli.allowed_tools, ["Read", "Bash"]);
@@ -763,7 +857,15 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Agent {
-                action: AgentCommand::Stop { id, state_dir: None }
+                action: AgentCommand::Stop {
+                    id,
+                    safety: DestructiveFlags {
+                        dry_run: false,
+                        no_confirm: false,
+                        legacy_yes: false,
+                    },
+                    state_dir: None,
+                }
             }) if id == "agent-id"
         ));
     }

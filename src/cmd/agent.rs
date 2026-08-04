@@ -49,6 +49,7 @@ use serde_json::json;
 use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
+use crate::print::{OutputFormat, confirm_destructive, emit_command_result};
 use crate::setup;
 
 fn status_label(status: &str) -> &str {
@@ -1186,7 +1187,25 @@ pub fn message_client(
     }
 }
 
-pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+pub fn stop_client(
+    id: &str,
+    state_dir_override: Option<PathBuf>,
+    no_confirm: bool,
+    dry_run: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    if dry_run {
+        emit_command_result(
+            format,
+            "agent stop",
+            "dry-run",
+            &format!("would stop agent '{id}'"),
+        );
+        return Ok(());
+    }
+    if !no_confirm && !confirm_destructive(format, "agent stop", id)? {
+        return Ok(());
+    }
     let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
         &state_dir,
@@ -1195,7 +1214,10 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
             backend: None,
         },
     ) {
-        return print_control_response(&result?, false);
+        return print_control_response(
+            &result?,
+            matches!(format, OutputFormat::Json | OutputFormat::StreamJson),
+        );
     }
 
     let storage = agent_storage(&state_dir);
@@ -1204,8 +1226,14 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
         Ok(s) => s,
         Err(e) if e.to_string().contains("not found") || e.to_string().contains("No such file") => {
             let agent_dir_path = agent_dir(&storage, id)?;
-            let _ = fs::remove_dir_all(&agent_dir_path);
-            eprintln!("Agent {id} not found, cleaned up directory");
+            fs::remove_dir_all(&agent_dir_path)
+                .wrap_err("failed to clean up missing agent directory")?;
+            emit_command_result(
+                format,
+                "agent stop",
+                "success",
+                &format!("agent '{id}' was not found; cleaned up its directory"),
+            );
             return Ok(());
         }
         Err(e) => return Err(e.wrap_err("failed to read agent state")),
@@ -1242,7 +1270,12 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
                 serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
-                Some(true) => println!("Agent {id} stopped"),
+                Some(true) => emit_command_result(
+                    format,
+                    "agent stop",
+                    "success",
+                    &format!("agent '{id}' stopped"),
+                ),
                 Some(false) => {
                     let message = match response.get("error").and_then(serde_json::Value::as_str) {
                         Some(message) => message.to_string(),

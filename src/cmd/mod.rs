@@ -34,7 +34,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 AuthAction::Login { provider } => {
                     subcmd::auth_login(provider.as_deref(), &storage)?;
                 }
-                AuthAction::Logout { provider } => subcmd::auth_logout(&provider, &storage)?,
+                AuthAction::Logout { provider, safety } => subcmd::auth_logout(
+                    &provider,
+                    &storage,
+                    safety.no_confirm() || cli.permission_flags.no_confirm(),
+                    safety.dry_run,
+                    cli.output_format,
+                )?,
                 AuthAction::Status => subcmd::auth_status(&storage),
             }
         }
@@ -48,14 +54,31 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let storage = StateDir::resolve().context("resolve data directory")?;
             match action {
                 McpAction::Auth { server } => subcmd::mcp_auth(&server, &storage)?,
-                McpAction::Logout { server } => subcmd::mcp_logout(&server, &storage)?,
+                McpAction::Logout { server, safety } => subcmd::mcp_logout(
+                    &server,
+                    &storage,
+                    safety.no_confirm() || cli.permission_flags.no_confirm(),
+                    safety.dry_run,
+                    cli.output_format,
+                )?,
             }
         }
-        Some(Command::Update { yes, no_color }) => {
-            update::update(yes, no_color).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+        Some(Command::Update { safety, no_color }) => {
+            update::update(
+                safety.no_confirm() || cli.permission_flags.no_confirm(),
+                no_color,
+                safety.dry_run,
+                cli.output_format,
+            )
+            .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
-        Some(Command::Rollback) => {
-            update::rollback().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+        Some(Command::Rollback { safety }) => {
+            update::rollback(
+                safety.no_confirm() || cli.permission_flags.no_confirm(),
+                safety.dry_run,
+                cli.output_format,
+            )
+            .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Acp {
             model,
@@ -152,8 +175,18 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             AgentCommand::Resume { id, state_dir } => {
                 agent::resume_client(&id, state_dir)?;
             }
-            AgentCommand::Stop { id, state_dir } => {
-                agent::stop_client(&id, state_dir)?;
+            AgentCommand::Stop {
+                id,
+                safety,
+                state_dir,
+            } => {
+                agent::stop_client(
+                    &id,
+                    state_dir,
+                    safety.no_confirm() || cli.permission_flags.no_confirm(),
+                    safety.dry_run,
+                    cli.output_format,
+                )?;
             }
             AgentCommand::Daemon { state_dir } => {
                 agent::daemon_serve(state_dir)?;

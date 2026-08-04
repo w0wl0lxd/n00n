@@ -25,6 +25,8 @@ use n00n_storage::auth::{
 };
 use n00n_storage::model::persist_model;
 
+use crate::print::{OutputFormat, confirm_destructive, emit_command_result};
+
 fn env_key_populated(var: &str) -> bool {
     env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
 }
@@ -440,17 +442,42 @@ fn prompt_api_key(url: Option<&str>, display_name: &str, optional: bool) -> Resu
     Ok(api_key)
 }
 
-pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
+pub fn auth_logout(
+    provider: &str,
+    storage: &StateDir,
+    no_confirm: bool,
+    dry_run: bool,
+    format: OutputFormat,
+) -> Result<()> {
     let slug = slugify(provider);
+    if dry_run {
+        emit_command_result(
+            format,
+            "auth logout",
+            "dry-run",
+            &format!("would remove credentials for '{slug}'"),
+        );
+        return Ok(());
+    }
+    if !no_confirm && !confirm_destructive(format, "auth logout", &slug)? {
+        return Ok(());
+    }
+    let mut message = format!("no stored credentials for '{slug}'");
     match provider {
-        "openai" | "codex" => openai_auth::logout(storage)?,
-        "copilot" => copilot_auth::logout(storage)?,
+        "openai" | "codex" => {
+            openai_auth::logout(storage)?;
+            message = format!("removed credentials for '{slug}'");
+        }
+        "copilot" => {
+            copilot_auth::logout(storage)?;
+            message = format!("removed credentials for '{slug}'");
+        }
         _ => {
             let mut config = ProvidersConfig::load();
             let deleted =
                 delete_provider_credentials(storage, &slug).context("delete credentials")?;
             if deleted {
-                println!("Removed credentials for '{slug}'.");
+                message = format!("removed credentials for '{slug}'");
             }
             if config.remove(&slug) {
                 config.save().context("save providers.toml")?;
@@ -460,6 +487,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
             }
         }
     }
+    emit_command_result(format, "auth logout", "success", &message);
     Ok(())
 }
 
@@ -647,13 +675,32 @@ pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
     })
 }
 
-pub fn mcp_logout(server: &str, storage: &StateDir) -> Result<()> {
-    let deleted = n00n_storage::auth::delete_mcp_auth(storage, server)?;
-    if deleted {
-        eprintln!("Removed OAuth credentials for MCP server '{server}'");
-    } else {
-        eprintln!("No stored credentials for MCP server '{server}'");
+pub fn mcp_logout(
+    server: &str,
+    storage: &StateDir,
+    no_confirm: bool,
+    dry_run: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    if dry_run {
+        emit_command_result(
+            format,
+            "mcp logout",
+            "dry-run",
+            &format!("would remove OAuth credentials for MCP server '{server}'"),
+        );
+        return Ok(());
     }
+    if !no_confirm && !confirm_destructive(format, "mcp logout", server)? {
+        return Ok(());
+    }
+    let deleted = n00n_storage::auth::delete_mcp_auth(storage, server)?;
+    let message = if deleted {
+        format!("removed OAuth credentials for MCP server '{server}'")
+    } else {
+        format!("no stored credentials for MCP server '{server}'")
+    };
+    emit_command_result(format, "mcp logout", "success", &message);
     Ok(())
 }
 
