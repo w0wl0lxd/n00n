@@ -700,7 +700,12 @@ fn handle_data_frame(
         status: 502,
         message: message.to_string(),
     })?;
-    if let Ok(Some(op)) = parse_kv_server_message(&server_msg.kv_server_message) {
+    if let Some(op) =
+        parse_kv_server_message(&server_msg.kv_server_message).map_err(|e| AgentError::Api {
+            status: 502,
+            message: e,
+        })?
+    {
         queue_checkpoint_reply(op, checkpoints, outbound)?;
         return Ok(FrameHandleOutcome {
             exec_skipped: false,
