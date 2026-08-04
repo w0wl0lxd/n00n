@@ -10,6 +10,7 @@ pub mod language;
 mod loader;
 pub(crate) mod plugin_permissions;
 mod runtime;
+mod state;
 
 pub use api::keymap::{KeymapEntry, KeymapReader, KeymapSnapshot};
 pub use api::options::{OptionSpec, OptionType, PluginOptionSpecs};
