@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 34 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -226,6 +226,28 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
+
+### `tmux` *(lua plugin)*
+
+Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_name` | string | no |  |
+| `source` | string | no |  |
+| `timeout` | integer | no |  |
+| `destination` | string | no |  |
+| `window` | string | no |  |
+| `height` | integer | no |  |
+| `width` | integer | no |  |
+| `raw_command` | string | no |  |
+| `window_name` | string | no |  |
+| `keys` | string | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `command_text` | string | no |  |
+| `session` | string | no |  |
+| `pane` | string | no |  |
 
 ## Agent & Knowledge
 
