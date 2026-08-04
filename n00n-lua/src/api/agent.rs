@@ -720,7 +720,7 @@ async fn session(
             &vars,
             &ctx,
             model.supports_tool_examples(),
-            &n00n_agent::tools::default_active_tools(),
+            &n00n_agent::tools::default_active_tools(&agent_ctx.config),
         );
         let tools_json =
             serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
@@ -860,6 +860,7 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
+        active_tools: n00n_agent::tools::default_active_tools(&agent_ctx.config),
         allow_dynamic_mcp_tools,
         thinking,
         fast,
@@ -1368,6 +1369,7 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
+    active_tools: n00n_agent::tools::ActiveTools,
     allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
@@ -1534,6 +1536,7 @@ async fn prompt(
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
                 tool_filter: s.tool_filter.clone(),
+                active_tools: s.active_tools.clone(),
             },
         )
         .with_user_response_rx(Arc::clone(&s.answer_rx))
