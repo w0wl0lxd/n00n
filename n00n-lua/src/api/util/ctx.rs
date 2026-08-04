@@ -398,11 +398,9 @@ impl UserData for LuaCtx {
         methods.add_method(
             "state_replace",
             |lua, this, (scope, value): (String, LuaValue)| {
-                let Some(scope) = PluginStateScope::parse(&scope) else {
-                    return Ok((
-                        LuaValue::Nil,
-                        Some("state scope must be 'session' or 'root'".to_owned()),
-                    ));
+                let scope = match parse_state_scope(&scope) {
+                    Ok(scope) => scope,
+                    Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
                 };
                 let access = match this.plugin_state("state_replace") {
                     Ok(access) => access,

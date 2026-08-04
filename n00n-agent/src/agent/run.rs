@@ -1451,12 +1451,8 @@ mod tests {
         let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
         let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
         agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
-        agent = agent
-            .with_mcp(Some(mcp.clone()))
-            .with_dynamic_mcp_tools(false);
+        agent = agent.with_mcp(Some(mcp)).with_dynamic_mcp_tools(false);
 
-        // tool_search is always included when MCP is present, even with
-        // ToolFilter::Only and allow_dynamic_mcp_tools=false
         let effective_filter = agent.effective_tool_filter();
         assert!(effective_filter.matches("tool_search"));
         assert!(effective_filter.matches("read"));
@@ -1496,9 +1492,7 @@ mod tests {
 
         mcp.search_tools("issue").unwrap();
         let effective_filter = agent.effective_tool_filter();
-        // tool_search is always included when MCP is present
         assert!(effective_filter.matches("tool_search"));
-        // Loaded MCP tools are included when allow_dynamic_mcp_tools=true
         assert!(effective_filter.matches("srv__fetch_issue"));
         assert!(effective_filter.matches("read"));
         assert!(!effective_filter.matches("write"));
