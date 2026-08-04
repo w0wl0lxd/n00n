@@ -16,13 +16,16 @@ enum Commands {
     /// Build or rebuild the smell index for a repository
     Index {
         /// Path to the repository
+        #[arg(allow_hyphen_values = true)]
         repo: PathBuf,
     },
     /// Search the smell index for a repository
     Search {
         /// Path to the repository
+        #[arg(allow_hyphen_values = true)]
         repo: PathBuf,
         /// Query text
+        #[arg(allow_hyphen_values = true)]
         query: String,
         /// Filter by kind
         #[arg(short, long)]
