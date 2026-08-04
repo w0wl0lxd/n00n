@@ -6,6 +6,7 @@ use n00n_agent::{McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshotRea
 
 use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
+use crate::theme::SemanticRole;
 
 const TITLE: &str = " MCP Servers ";
 const FOOTER_HINTS: &[(&str, &str)] = &[
@@ -19,50 +20,61 @@ const COMPACT_FOOTER_HINTS: &[(&str, &str)] =
 fn build_entries(infos: &[McpServerInfo]) -> (Vec<McpEntry>, Vec<bool>) {
     let entries = infos
         .iter()
-        .map(|info| McpEntry {
-            name: info.name.clone(),
-            detail_text: match &info.status {
-                McpServerStatus::Connecting => {
-                    format!(
-                        "Status: connecting \u{00b7} transport: {}",
-                        info.transport_kind
-                    )
-                }
-                McpServerStatus::Running => {
-                    let mut parts = vec![format!(
-                        "Status: running \u{00b7} transport: {}",
-                        info.transport_kind
-                    )];
-                    if info.tool_count > 0 {
-                        parts.push(format!("{} tools", info.tool_count));
+        .map(|info| {
+            let (icon, icon_role) = match &info.status {
+                McpServerStatus::Connecting => ("◌", SemanticRole::Activity),
+                McpServerStatus::Running => ("●", SemanticRole::Success),
+                McpServerStatus::Disabled => ("○", SemanticRole::Muted),
+                McpServerStatus::Failed(_) => ("!", SemanticRole::Error),
+                McpServerStatus::NeedsAuth { .. } => ("?", SemanticRole::Activity),
+            };
+            McpEntry {
+                name: info.name.clone(),
+                icon,
+                icon_role,
+                detail_text: match &info.status {
+                    McpServerStatus::Connecting => {
+                        format!(
+                            "Status: connecting \u{00b7} transport: {}",
+                            info.transport_kind
+                        )
                     }
-                    if info.prompt_count > 0 {
-                        parts.push(format!("{} prompts", info.prompt_count));
+                    McpServerStatus::Running => {
+                        let mut parts = vec![format!(
+                            "Status: running \u{00b7} transport: {}",
+                            info.transport_kind
+                        )];
+                        if info.tool_count > 0 {
+                            parts.push(format!("{} tools", info.tool_count));
+                        }
+                        if info.prompt_count > 0 {
+                            parts.push(format!("{} prompts", info.prompt_count));
+                        }
+                        if info.tool_count == 0 && info.prompt_count == 0 {
+                            parts.push("no capabilities".into());
+                        }
+                        parts.join(" \u{00b7} ")
                     }
-                    if info.tool_count == 0 && info.prompt_count == 0 {
-                        parts.push("no capabilities".into());
+                    McpServerStatus::Disabled => {
+                        format!(
+                            "Status: disabled \u{00b7} transport: {}",
+                            info.transport_kind
+                        )
                     }
-                    parts.join(" \u{00b7} ")
-                }
-                McpServerStatus::Disabled => {
-                    format!(
-                        "Status: disabled \u{00b7} transport: {}",
-                        info.transport_kind
-                    )
-                }
-                McpServerStatus::Failed(e) => {
-                    format!(
-                        "Status: error \u{00b7} transport: {} \u{00b7} {}",
-                        info.transport_kind, e
-                    )
-                }
-                McpServerStatus::NeedsAuth { .. } => {
-                    format!(
-                        "Status: needs authentication \u{00b7} run `n00n mcp auth {}`",
-                        info.name
-                    )
-                }
-            },
+                    McpServerStatus::Failed(e) => {
+                        format!(
+                            "Status: error \u{00b7} transport: {} \u{00b7} {}",
+                            info.transport_kind, e
+                        )
+                    }
+                    McpServerStatus::NeedsAuth { .. } => {
+                        format!(
+                            "Status: needs authentication \u{00b7} run `n00n mcp auth {}`",
+                            info.name
+                        )
+                    }
+                },
+            }
         })
         .collect();
     let enabled = infos.iter().map(|info| info.status.is_active()).collect();
@@ -77,12 +89,22 @@ pub enum McpPickerAction {
 
 struct McpEntry {
     name: String,
+    icon: &'static str,
+    icon_role: SemanticRole,
     detail_text: String,
 }
 
 impl PickerItem for McpEntry {
     fn label(&self) -> &str {
         &self.name
+    }
+
+    fn icon(&self) -> Option<&str> {
+        Some(self.icon)
+    }
+
+    fn icon_role(&self) -> Option<SemanticRole> {
+        Some(self.icon_role)
     }
 
     fn detail(&self) -> Option<&str> {
@@ -220,9 +242,28 @@ mod tests {
         let snapshot = test_snapshot();
         let guard = snapshot.load();
         let (entries, enabled) = build_entries(&guard.infos);
+        assert_eq!(entries[0].icon, "●");
+        assert_eq!(entries[1].icon, "○");
         assert!(entries[0].detail_text.contains("Status: running"));
         assert!(entries[1].detail_text.contains("Status: disabled"));
         assert_eq!(enabled, vec![true, false]);
+    }
+
+    #[test]
+    fn auth_rows_include_actionable_hint() {
+        let info = McpServerInfo {
+            name: "github".into(),
+            transport_kind: "http",
+            tool_count: 0,
+            prompt_count: 0,
+            status: McpServerStatus::NeedsAuth { url: None },
+            config_path: PathBuf::new(),
+            url: None,
+        };
+        let (entries, _) = build_entries(&[info]);
+
+        assert_eq!(entries[0].icon, "?");
+        assert!(entries[0].detail_text.contains("n00n mcp auth github"));
     }
 
     #[test]

@@ -31,6 +31,12 @@ pub trait PickerItem {
     fn suffix(&self) -> Option<&str> {
         None
     }
+    fn icon(&self) -> Option<&str> {
+        None
+    }
+    fn icon_role(&self) -> Option<theme::SemanticRole> {
+        None
+    }
     fn detail(&self) -> Option<&str> {
         None
     }
@@ -747,19 +753,25 @@ fn render_list<T: PickerItem>(
             Span::styled(sym, sty)
         });
         let checkbox_width = checkbox.as_ref().map_or(0, Span::width);
+        let icon = item.icon();
+        let icon_width = icon.map_or(0, |value| value.width() + 1);
         let label = format!("  {}", item.label());
         let suffix = item.suffix();
-        let detail: Option<&str> = if item.is_spinning() {
-            Some(spinner_str(animation_elapsed_ms()))
+        let detail: Option<String> = if item.is_spinning() {
+            Some(spinner_str(animation_elapsed_ms()).to_owned())
         } else {
-            item.detail()
+            item.detail().map(|value| {
+                let max_width = usize::from(area.width)
+                    .saturating_sub(checkbox_width + icon_width + DETAIL_RIGHT_PAD as usize + 1);
+                truncate_label(value, max_width)
+            })
         };
         let suffix_gap = 2usize;
         let suffix_w = suffix.map_or(0, unicode_width::UnicodeWidthStr::width);
         let trailing_gap = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
-        let line = if let Some(detail) = detail {
+        let line = if let Some(detail) = detail.as_deref() {
             let max_label = area.width.saturating_sub(
-                u16::try_from(checkbox_width).unwrap_or_else(|_| u16::MAX)
+                u16::try_from(checkbox_width + icon_width).unwrap_or_else(|_| u16::MAX)
                     + u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
                     + u16::try_from(trailing_gap).unwrap_or_else(|_| u16::MAX)
                     + 1
@@ -768,15 +780,20 @@ fn render_list<T: PickerItem>(
             let label = truncate_label(&label, max_label);
             let pad = (area.width as usize).saturating_sub(
                 checkbox_width
+                    + icon_width
                     + label.width()
                     + trailing_gap
                     + detail.width()
                     + DETAIL_RIGHT_PAD as usize
                     + 1,
             );
-            let mut spans = Vec::with_capacity(7);
+            let mut spans = Vec::with_capacity(8);
             if let Some(cb) = checkbox {
                 spans.push(cb);
+            }
+            if let Some(icon) = icon {
+                let icon_style = item.icon_role().map_or(style, theme::semantic_style);
+                spans.push(Span::styled(format!("{icon} "), icon_style));
             }
             spans.push(Span::styled(label, style));
             if let Some(s) = suffix {
@@ -788,9 +805,13 @@ fn render_list<T: PickerItem>(
             spans.push(Span::styled(" ".repeat(DETAIL_RIGHT_PAD as usize), style));
             Line::from(spans)
         } else {
-            let mut spans: Vec<Span> = Vec::with_capacity(4);
+            let mut spans: Vec<Span> = Vec::with_capacity(5);
             if let Some(cb) = checkbox {
                 spans.push(cb);
+            }
+            if let Some(icon) = icon {
+                let icon_style = item.icon_role().map_or(style, theme::semantic_style);
+                spans.push(Span::styled(format!("{icon} "), icon_style));
             }
             spans.push(Span::styled(label, style));
             if let Some(s) = suffix {

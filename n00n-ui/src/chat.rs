@@ -559,8 +559,21 @@ impl Chat {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn in_progress_count(&self) -> usize {
         self.messages_panel.in_progress_count()
+    }
+
+    pub(crate) fn activity_phase(&self) -> &'static str {
+        self.messages_panel.activity_phase()
+    }
+
+    pub(crate) fn activity_elapsed(&self) -> Duration {
+        self.messages_panel.activity_elapsed()
+    }
+
+    pub(crate) fn activity_detail(&self) -> Option<&str> {
+        self.messages_panel.activity_detail()
     }
 
     #[cfg(test)]
