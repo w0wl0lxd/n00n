@@ -469,6 +469,9 @@ pub(crate) fn test_model() -> n00n_providers::Model {
         pricing: test_pricing(),
         max_output_tokens: Some(8192),
         context_window: TEST_CONTEXT_WINDOW,
+        thinking_dialect: None,
+        thinking_fields: None,
+        body_override: None,
     }
 }
 

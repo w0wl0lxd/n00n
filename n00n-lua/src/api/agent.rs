@@ -722,7 +722,7 @@ async fn session(
             audience,
             workflow: false,
         };
-        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+        let tools = agent_ctx.registry.definitions_active(
             &vars,
             &ctx,
             model.supports_tool_examples(),
@@ -869,7 +869,7 @@ async fn session(
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
-            registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
+            registry: Arc::clone(&agent_ctx.registry),
             audience,
         },
         system: system.unwrap_or_else(String::new),
