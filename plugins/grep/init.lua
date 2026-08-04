@@ -212,12 +212,21 @@ n00n.api.register_tool({
     additionalProperties = false,
     required = { "pattern", "path", "include", "context_before", "context_after", "limit" },
     properties = {
-      pattern = { type = "string", required = true },
-      path = { type = { "string", "null" }, required = true },
-      include = { type = { "string", "null" }, required = true },
-      context_before = { type = { "integer", "null" }, required = true },
-      context_after = { type = { "integer", "null" }, required = true },
-      limit = { type = { "integer", "null" }, required = true },
+      pattern = { type = "string", required = true, description = "Regex pattern. Do not wrap in quotes." },
+      path = { type = { "string", "null" }, required = true, description = "Directory or file to search." },
+      include = {
+        type = { "string", "null" },
+        required = true,
+        alias = "glob",
+        description = "Glob pattern (e.g. '*.rs').",
+      },
+      context_before = {
+        type = { "integer", "null" },
+        required = true,
+        description = "Lines of context before matches.",
+      },
+      context_after = { type = { "integer", "null" }, required = true, description = "Lines of context after matches." },
+      limit = { type = { "integer", "null" }, required = true, description = "Max match groups per search." },
     },
   },
 
