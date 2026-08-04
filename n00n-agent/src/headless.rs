@@ -12,7 +12,7 @@ use n00n_providers::model::Model;
 use n00n_providers::provider::{self, Provider};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::{Session, StoredMode};
+use n00n_storage::sessions::{Session, StoredMode, StoredSessionStateSnapshot};
 use serde_json::Value;
 use tracing::{error, warn};
 
@@ -31,20 +31,69 @@ use crate::{
 type StoredSession = Session<Message, TokenUsage, ToolOutput>;
 
 const NON_UTF8_PLAN_PATH_ERR: &str = "plan path must be valid UTF-8";
+const INITIAL_STATE_REVISION: u64 = 0;
+
+pub trait SessionStatePersistence: Send + Sync {
+    /// # Errors
+    /// Returns an error when the runtime cannot restore the snapshot.
+    fn hydrate(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+    ) -> Result<u64, String>;
+
+    /// # Errors
+    /// Returns an error when the runtime cannot capture its current state.
+    fn capture(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+    ) -> Result<StoredSessionStateSnapshot, String>;
+
+    /// # Errors
+    /// Returns an error when the runtime cannot remove the owner state.
+    fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String>;
+}
+fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u64 {
+    let Some(snapshot) = snapshot else {
+        return INITIAL_STATE_REVISION;
+    };
+    let Some(revision) = snapshot.state_revision() else {
+        return INITIAL_STATE_REVISION;
+    };
+    revision
+}
 
 struct SessionStore {
     dir: StateDir,
     session: StoredSession,
+    state_persistence: Option<Arc<dyn SessionStatePersistence>>,
+    identity: SessionIdentity,
+    state_lease: Option<u64>,
 }
 
 impl SessionStore {
-    fn open(session_id: n00nId, cwd: &str, model_spec: &str, mode: &AgentMode) -> Option<Self> {
+    fn open(
+        session_id: n00nId,
+        cwd: &str,
+        model_spec: &str,
+        mode: &AgentMode,
+        state_persistence: Option<Arc<dyn SessionStatePersistence>>,
+    ) -> Option<Self> {
         let dir = StateDir::resolve()
             .map_err(|e| warn!(error = %e, "state dir unavailable; session will not be persisted"))
             .ok()?;
-        Some(Self::open_in(dir, session_id, cwd, model_spec, mode))
+        Some(Self::open_in_with_state(
+            dir,
+            session_id,
+            cwd,
+            model_spec,
+            mode,
+            state_persistence,
+        ))
     }
 
+    #[cfg(test)]
     fn open_in(
         dir: StateDir,
         session_id: n00nId,
@@ -52,22 +101,78 @@ impl SessionStore {
         model_spec: &str,
         mode: &AgentMode,
     ) -> Self {
-        if let Ok(session) = StoredSession::load(session_id, &dir) {
-            Self { dir, session }
+        Self::open_in_with_state(dir, session_id, cwd, model_spec, mode, None)
+    }
+
+    fn open_in_with_state(
+        dir: StateDir,
+        session_id: n00nId,
+        cwd: &str,
+        model_spec: &str,
+        mode: &AgentMode,
+        state_persistence: Option<Arc<dyn SessionStatePersistence>>,
+    ) -> Self {
+        let mut is_new = false;
+        let session = if let Ok(session) = StoredSession::load(session_id, &dir) {
+            session
         } else {
+            is_new = true;
             let mut session = StoredSession::new(model_spec, cwd);
             session.id = session_id;
-            let mut store = Self { dir, session };
+            session
+        };
+        let identity = SessionIdentity::root(SessionRef::from(session_id));
+        let mut store = Self {
+            dir,
+            session,
+            state_persistence,
+            identity,
+            state_lease: None,
+        };
+        store.hydrate_plugin_state();
+        if is_new {
             if let Err(error) = store.update_turn_metadata(mode, None) {
                 warn!(error, "session metadata was not persisted");
             } else {
                 store.save();
             }
-            store
+        }
+        store
+    }
+
+    fn hydrate_plugin_state(&mut self) {
+        let Some(state_persistence) = &self.state_persistence else {
+            return;
+        };
+        match state_persistence.hydrate(&self.identity, self.session.meta.state_snapshot.clone()) {
+            Ok(lease) => self.state_lease = Some(lease),
+            Err(error) => {
+                warn!(session_id = %self.session.id, %error, "failed to restore plugin session state");
+            }
+        }
+    }
+
+    fn capture_plugin_state(&mut self) {
+        let Some(state_persistence) = &self.state_persistence else {
+            return;
+        };
+        let persisted_revision =
+            state_revision_or_initial(self.session.meta.state_snapshot.as_ref());
+        let revision = self
+            .session
+            .meta
+            .revision
+            .max(persisted_revision.saturating_add(1));
+        match state_persistence.capture(&self.identity, revision) {
+            Ok(snapshot) => self.session.meta.state_snapshot = Some(snapshot),
+            Err(error) => {
+                warn!(session_id = %self.session.id, %error, "failed to capture plugin session state");
+            }
         }
     }
 
     fn save(&mut self) {
+        self.capture_plugin_state();
         if let Err(e) = self.session.save(&self.dir) {
             warn!(error = %e, session_id = %self.session.id, "failed to persist session");
         }
@@ -92,6 +197,7 @@ impl SessionStore {
             .transpose()?;
         self.session.meta.mode = Some(stored_mode);
         self.session.meta.plan_path = stored_plan_path;
+        self.session.meta.revision = self.session.meta.revision.saturating_add(1);
         Ok(())
     }
 
@@ -121,6 +227,18 @@ impl SessionStore {
     }
 }
 
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        let (Some(state_persistence), Some(lease)) = (&self.state_persistence, self.state_lease)
+        else {
+            return;
+        };
+        if let Err(error) = state_persistence.drop_owner(self.session.id, lease) {
+            warn!(session_id = %self.session.id, %error, "failed to drop plugin session state");
+        }
+    }
+}
+
 pub struct HeadlessParams {
     pub model: Model,
     pub config: Arc<AgentConfig>,
@@ -130,6 +248,7 @@ pub struct HeadlessParams {
     pub prompt: String,
     pub images: Vec<ImageSource>,
     pub prompt_slots: ResolvedSlots,
+    pub state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     pub excluded_tools: Vec<&'static str>,
     pub mcp_handle: Option<McpHandle>,
     pub initial_wd: PathBuf,
@@ -251,8 +370,13 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
             let model_spec = model.spec();
-            let mut session_store =
-                SessionStore::open(session_ref_clone.id(), &session_cwd, &model_spec, &mode);
+            let mut session_store = SessionStore::open(
+                session_ref_clone.id(),
+                &session_cwd,
+                &model_spec,
+                &mode,
+                params.state_persistence,
+            );
             let mut agent = Agent::new(
                 AgentParams {
                     provider,
@@ -347,6 +471,7 @@ pub struct InteractiveParams {
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
     pub prompt_slots: Arc<ResolvedSlots>,
+    pub state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     pub excluded_tools: Vec<&'static str>,
     pub mcp_handle: Option<McpHandle>,
     pub initial_wd: PathBuf,
@@ -401,7 +526,13 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     };
 
     let working_dir = params.initial_wd.to_string_lossy().into_owned();
-    let store = SessionStore::open(session_id, &working_dir, &params.model.spec(), &params.mode);
+    let store = SessionStore::open(
+        session_id,
+        &working_dir,
+        &params.model.spec(),
+        &params.mode,
+        params.state_persistence.clone(),
+    );
     let permissions = Arc::new(PermissionManager::new(
         params.permissions_config.clone(),
         params.initial_wd.clone(),
@@ -602,6 +733,60 @@ mod tests {
     const CWD: &str = "/project";
     const MODEL_SPEC: &str = "anthropic/claude-test";
 
+    const PLUGIN: &str = "todo_write";
+
+    #[derive(Default)]
+    struct StatePersistenceProbe {
+        hydrated_revisions: std::sync::Mutex<Vec<Option<u64>>>,
+        captured_revisions: std::sync::Mutex<Vec<u64>>,
+        dropped_owners: std::sync::Mutex<Vec<(n00nId, u64)>>,
+        next_lease: std::sync::atomic::AtomicU64,
+        fail_capture: std::sync::atomic::AtomicBool,
+    }
+
+    impl SessionStatePersistence for StatePersistenceProbe {
+        fn hydrate(
+            &self,
+            _identity: &SessionIdentity,
+            snapshot: Option<StoredSessionStateSnapshot>,
+        ) -> Result<u64, String> {
+            self.hydrated_revisions.lock().unwrap().push(
+                snapshot
+                    .as_ref()
+                    .and_then(StoredSessionStateSnapshot::state_revision),
+            );
+            Ok(self
+                .next_lease
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        }
+
+        fn capture(
+            &self,
+            _identity: &SessionIdentity,
+            revision: u64,
+        ) -> Result<StoredSessionStateSnapshot, String> {
+            self.captured_revisions.lock().unwrap().push(revision);
+            if self.fail_capture.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("capture failed".into());
+            }
+            let mut snapshot = StoredSessionStateSnapshot::new(revision);
+            snapshot
+                .set_plugin_state(
+                    PLUGIN,
+                    1,
+                    n00n_storage::sessions::StoredStateScope::Root,
+                    serde_json::json!({"todos": []}),
+                )
+                .unwrap();
+            Ok(snapshot)
+        }
+
+        fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String> {
+            self.dropped_owners.lock().unwrap().push((owner, lease));
+            Ok(())
+        }
+    }
+
     fn session_id() -> n00nId {
         SESSION_ID.parse().unwrap()
     }
@@ -728,8 +913,96 @@ mod tests {
             store.update_turn_metadata(&AgentMode::Plan(path), None),
             Err(NON_UTF8_PLAN_PATH_ERR)
         );
+
         assert_eq!(store.session.meta.mode, original.mode);
         assert_eq!(store.session.meta.plan_path, original.plan_path);
+    }
+
+    #[test]
+    fn session_store_hydrates_and_captures_plugin_state() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        let mut snapshot = StoredSessionStateSnapshot::new(7);
+        snapshot
+            .set_plugin_state(
+                PLUGIN,
+                1,
+                n00n_storage::sessions::StoredStateScope::Root,
+                serde_json::json!({"todos": [{"content": "resume", "status": "pending"}]}),
+            )
+            .unwrap();
+        persisted.meta.state_snapshot = Some(snapshot);
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        );
+        assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(7)]);
+
+        store
+            .record_turn(&[], MODEL_SPEC.into(), &AgentMode::Build, None)
+            .unwrap();
+        assert_eq!(*probe.captured_revisions.lock().unwrap(), vec![8]);
+        assert_eq!(
+            StoredSession::load(session_id(), &dir)
+                .unwrap()
+                .meta
+                .state_snapshot
+                .as_ref()
+                .and_then(StoredSessionStateSnapshot::state_revision),
+            Some(8)
+        );
+        drop(store);
+        assert_eq!(
+            *probe.dropped_owners.lock().unwrap(),
+            vec![(session_id(), 0)]
+        );
+    }
+
+    #[test]
+    fn failed_plugin_state_capture_preserves_persisted_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(11));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        probe
+            .fail_capture
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        );
+        store
+            .record_turn(&[], MODEL_SPEC.into(), &AgentMode::Build, None)
+            .unwrap();
+
+        assert_eq!(
+            StoredSession::load(session_id(), &dir)
+                .unwrap()
+                .meta
+                .state_snapshot
+                .as_ref()
+                .and_then(StoredSessionStateSnapshot::state_revision),
+            Some(11)
+        );
     }
 
     #[test]
