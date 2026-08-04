@@ -257,6 +257,7 @@ pub(crate) fn build_request_body_with_system(
     });
 
     thinking.apply_to_body(&mut body, model);
+    super::super::apply_body_overrides(&mut body, model, &[super::super::MESSAGES_FIELD]);
     body
 }
 
@@ -634,10 +635,83 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        LONG_CONTEXT_SUFFIX, LONG_CONTEXT_WINDOW, build_wire_messages, long_context_window,
-        strip_long_context,
+        LONG_CONTEXT_SUFFIX, LONG_CONTEXT_WINDOW, build_request_body_with_system,
+        build_wire_messages, long_context_window, strip_long_context,
     };
+    use crate::model::{Model, ModelFamily, ModelPricing, ModelTier};
+    use crate::types::{BodyOverride, ThinkingConfig};
     use crate::{ContentBlock, Message, Role};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn override_model(body_override: Option<BodyOverride>) -> Model {
+        Model {
+            id: "claude-opus-4-8".into(),
+            provider: Arc::from("anthropic"),
+            tier: ModelTier::Strong,
+            family: ModelFamily::Claude,
+            supports_tool_examples_override: None,
+            supports_thinking_override: None,
+            supports_vision_override: None,
+            supports_files_override: None,
+            pricing: ModelPricing::default(),
+            max_output_tokens: Some(8192),
+            context_window: 200_000,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override,
+        }
+    }
+
+    /// End-to-end through the real Anthropic body builder: `defaults` cannot
+    /// undo what the thinking setup already wrote, `filter` can.
+    #[test]
+    fn body_override_runs_after_thinking_setup() {
+        let defaults = json!({"thinking": {"type": "enabled", "budget_tokens": 2048}});
+        let model = override_model(Some(BodyOverride {
+            defaults: Some(defaults.clone()),
+            ..Default::default()
+        }));
+        let body = build_request_body_with_system(
+            &model,
+            &[],
+            &[],
+            &json!([]),
+            ThinkingConfig::Adaptive,
+            0,
+        );
+        assert_eq!(body["thinking"]["type"], "adaptive");
+
+        let stripping = override_model(Some(BodyOverride {
+            defaults: Some(defaults),
+            filter: vec!["thinking".into()],
+            ..Default::default()
+        }));
+        let body = build_request_body_with_system(
+            &stripping,
+            &[],
+            &[],
+            &json!([]),
+            ThinkingConfig::Adaptive,
+            0,
+        );
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["max_tokens"], 8192);
+    }
+
+    #[test]
+    fn no_body_override_keeps_the_standard_body() {
+        let body = build_request_body_with_system(
+            &override_model(None),
+            &[],
+            &[],
+            &json!([]),
+            ThinkingConfig::Adaptive,
+            0,
+        );
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["messages"], json!([]));
+    }
 
     #[test_case("claude-opus-4-8-1m", "claude-opus-4-8" ; "strips_suffix")]
     #[test_case("claude-opus-4-8", "claude-opus-4-8" ; "leaves_plain_id")]
