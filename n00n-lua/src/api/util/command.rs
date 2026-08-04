@@ -434,6 +434,11 @@ impl SessionCaller {
     }
 
     #[must_use]
+    pub fn is_agent(&self) -> bool {
+        !self.host
+    }
+
+    #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }

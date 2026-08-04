@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -26,7 +26,7 @@ use n00n_storage::id::SessionRef;
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
-use crate::api::r#fn::{JobOwner, JobStore, deliver_job_event};
+use crate::api::r#fn::{JobStore, deliver_job_event};
 use crate::api::keymap::KeymapReader;
 use crate::api::keymap::{KeymapStore, KeymapWriter};
 use crate::api::options::{PluginOptionSpecs, PluginOpts, collect_plugin_options};
@@ -39,15 +39,10 @@ use crate::api::util::command::{LuaCommandReader, LuaCommandWriter, SessionCalle
 use crate::api::util::convert::json_to_lua;
 use crate::api::util::ctx::LuaCtx;
 use crate::api::util::setup::ConfigStore;
-use crate::api::util::state_convert::json_to_lua as state_json_to_lua;
 use crate::docs_render;
 use crate::error::PluginError;
 use crate::plugin_permissions::{PluginPermissions, load_plugin_permissions};
 
-use n00n_storage::id::n00nId;
-use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
-
-use crate::state::{PLUGIN_STATE_SCHEMA_VERSION, PluginStateIdentity, PluginStateStore};
 fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginError> {
     let tools: [(Arc<dyn Tool>, ToolSource); 2] = [
         (
@@ -113,9 +108,6 @@ const TURN_END_EVENT: &str = "TurnEnd";
 /// Without a cap, a runaway plugin OOM-kills the whole process.
 /// With one, it hits a catchable Lua error instead.
 const LUA_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
-/// Distinguishes tasks in the shared [`JobStore`] so one scope's cleanup
-/// never reaches another scope's jobs.
-static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
 pub type LoadResult = Result<(), PluginError>;
 pub(crate) enum HintContent {
@@ -183,24 +175,6 @@ pub enum Request {
     },
     CollectPluginOptions {
         reply: flume::Sender<PluginOptionSpecs>,
-    },
-    HydrateState {
-        identity: PluginStateIdentity,
-        snapshot: Option<StoredSessionStateSnapshot>,
-        reply: flume::Sender<Result<(), String>>,
-    },
-    CaptureState {
-        identity: PluginStateIdentity,
-        revision: u64,
-        reply: flume::Sender<Result<StoredSessionStateSnapshot, String>>,
-    },
-    ResetState {
-        identity: PluginStateIdentity,
-        reply: flume::Sender<()>,
-    },
-    DropStateOwner {
-        owner: n00nId,
-        reply: flume::Sender<()>,
     },
     Shutdown,
     RestoreToolAsync {
@@ -308,21 +282,14 @@ pub struct LiveCtx {
     pub event_tx: n00n_agent::EventSender,
     pub tool_use_id: String,
 }
-struct ContextLivenessGuard(Arc<AtomicBool>);
-
-impl Drop for ContextLivenessGuard {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
 
 /// Lua is single-threaded so this Mutex never contends, but
 /// `Lua::app_data` requires `Send + Sync` with the `send` feature.
 pub(crate) struct TaskCell {
-    pub(crate) id: u64,
     pub(crate) cancel: CancelToken,
     pub(crate) deadline: Cell<Option<Instant>>,
     pub(crate) deadline_secs: Cell<Option<u64>>,
+    pub(crate) jobs: JobStore,
     pub(crate) bufs: BufferStore,
     pub(crate) live: Option<LiveCtx>,
     pub(crate) caller_session_id: Option<SessionRef>,
@@ -353,10 +320,10 @@ impl TaskCell {
         live: Option<LiveCtx>,
     ) -> Self {
         Self {
-            id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
             cancel,
             deadline: Cell::new(deadline),
             deadline_secs: Cell::new(None),
+            jobs: JobStore::new(),
             bufs: BufferStore::new(),
             live,
             caller_session_id: None,
@@ -551,14 +518,21 @@ impl TaskScope {
 /// job output, like Neovim firing callbacks from its idle event loop.
 ///
 /// [detached]: TaskScope::detached
-pub(crate) async fn run_detached<F: std::future::Future>(lua: &Lua, fut: F) -> F::Output {
+pub(crate) async fn run_detached<F: std::future::Future>(
+    lua: &Lua,
+    fut: F,
+    caller_tool: Option<Arc<str>>,
+) -> F::Output {
     let scope = TaskScope::detached(lua);
+    if let Some(tool) = caller_tool {
+        let mut cell = lock_cell(scope.handle());
+        cell.caller_tool = Some(tool);
+    }
     let handle = Arc::clone(scope.handle());
-    let owner = JobOwner::Task(lock_cell(&handle).id);
     let pump = async {
         let mut event_buf = Vec::new();
         loop {
-            with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
+            lock_cell(&handle).jobs.drain_events(&mut event_buf);
             for (job_id, event) in event_buf.drain(..) {
                 if let Err(e) = deliver_job_event(lua, job_id, &event) {
                     tracing::warn!(error = %strip_traceback(&e), "detached job callback failed");
@@ -574,10 +548,11 @@ pub(crate) async fn run_detached<F: std::future::Future>(lua: &Lua, fut: F) -> F
 
 impl Drop for TaskScope {
     fn drop(&mut self) {
-        let task_id = lock_cell(&self.handle).id;
-        with_jobs(&self.lua, |store| {
-            store.kill_owner(&self.lua, &JobOwner::Task(task_id));
-        });
+        {
+            let mut cell = lock_cell(&self.handle);
+            cell.jobs.kill_all();
+            cell.jobs.clear(&self.lua);
+        }
         match self.prev.take() {
             Some(p) => {
                 self.lua.set_app_data(p);
@@ -630,21 +605,8 @@ pub(crate) fn active_task(lua: &Lua) -> TaskHandle {
     )
 }
 
-/// The job store is process-wide, not per task: a job outlives the call
-/// that started it whenever its owner is a plugin.
-pub(crate) fn with_jobs<R>(lua: &Lua, f: impl FnOnce(&mut JobStore) -> R) -> R {
-    if lua.app_data_ref::<JobStore>().is_none() {
-        lua.set_app_data(JobStore::new());
-    }
-    let mut store = lua
-        .app_data_mut::<JobStore>()
-        .unwrap_or_else(|| unreachable!("job store installed above"));
-    f(&mut store)
-}
-
-pub(crate) fn active_task_id(lua: &Lua) -> Option<u64> {
-    let handle = lua.app_data_ref::<TaskHandle>()?;
-    Some(lock_cell(&handle).id)
+pub(crate) fn with_task_jobs<R>(lua: &Lua, f: impl FnOnce(&mut JobStore) -> R) -> R {
+    f(&mut lock_cell(&active_task(lua)).jobs)
 }
 
 pub(crate) fn with_task_bufs<R>(lua: &Lua, f: impl FnOnce(&mut BufferStore) -> R) -> R {
@@ -727,40 +689,6 @@ pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), 
 
 /// Caps concurrent coroutines to avoid blowing the Lua stack.
 /// Also serves as a drain barrier for load/clear ops.
-#[derive(Default)]
-struct LifecycleGate {
-    count: Cell<usize>,
-    event: Event,
-}
-
-impl LifecycleGate {
-    fn start(self: &Rc<Self>) -> LifecycleGuard {
-        self.count.set(self.count.get() + 1);
-        LifecycleGuard(Rc::clone(self))
-    }
-
-    fn is_idle(&self) -> bool {
-        self.count.get() == 0
-    }
-
-    async fn changed(&self) {
-        let listener = self.event.listen();
-        if self.is_idle() {
-            return;
-        }
-        listener.await;
-    }
-}
-
-struct LifecycleGuard(Rc<LifecycleGate>);
-
-impl Drop for LifecycleGuard {
-    fn drop(&mut self) {
-        self.0.count.set(self.0.count.get().saturating_sub(1));
-        self.0.event.notify(usize::MAX);
-    }
-}
-
 struct InflightGate {
     lua: Lua,
     count: Cell<usize>,
@@ -1049,271 +977,10 @@ async fn drain_barrier(
     }
 }
 
-fn spawn_runtime_request(
-    rt: &LuaRuntime,
-    ex: &Rc<smol::LocalExecutor<'_>>,
-    gate: &Rc<InflightGate>,
-    lifecycle: &Rc<LifecycleGate>,
-    request: Request,
-) -> Option<Request> {
-    match request {
-        Request::CallTool {
-            plugin,
-            tool,
-            input,
-            mut ctx,
-            deadline,
-            reply,
-            live,
-        } => {
-            ctx.attach_plugin_state(Arc::clone(&plugin), Arc::clone(&rt.state));
-            let lua = rt.lua.clone();
-            let plugins = Rc::clone(&rt.plugins);
-            let live_tasks = Rc::clone(&rt.live_tasks);
-            let warm_tools = Rc::clone(&rt.warm_tools);
-            let shutdown = Arc::clone(&rt.shutdown);
-            let gate = Rc::clone(gate);
-            let lifecycle = lifecycle.start();
-            ex.spawn(async move {
-                let result = run_tool_call(
-                    lua, plugin, tool, input, ctx, deadline, live, live_tasks, warm_tools, plugins,
-                    shutdown, gate, lifecycle,
-                )
-                .await;
-                let _ = reply.send(result);
-            })
-            .detach();
-            None
-        }
-        Request::ComputeHeader {
-            plugin,
-            tool,
-            input,
-            reply,
-        } => {
-            let lua = rt.lua.clone();
-            let plugins = Rc::clone(&rt.plugins);
-            let lifecycle = lifecycle.start();
-            ex.spawn(async move {
-                let result = compute_header(&lua, &plugins, &plugin, &tool, input).await;
-                let _ = reply.send(result);
-                drop(lifecycle);
-            })
-            .detach();
-            None
-        }
-        Request::ComputePermissionScopes {
-            plugin,
-            tool,
-            input,
-            reply,
-        } => {
-            let lua = rt.lua.clone();
-            let plugins = Rc::clone(&rt.plugins);
-            let lifecycle = lifecycle.start();
-            ex.spawn(async move {
-                let result =
-                    LuaRuntime::compute_permission_scopes(&lua, &plugins, &plugin, &tool, input)
-                        .await;
-                let _ = reply.send(result);
-                drop(lifecycle);
-            })
-            .detach();
-            None
-        }
-        Request::StartTool {
-            plugin,
-            tool,
-            input,
-            live,
-            ctx,
-            reply,
-        } => {
-            let func = {
-                let plugins = rt.plugins.borrow();
-                plugins
-                    .get(&*plugin)
-                    .and_then(|tools| tools.get(&*tool))
-                    .and_then(|keys| keys.start.as_ref())
-                    .and_then(|key| rt.lua.registry_value::<Function>(key).ok())
-            };
-            let Some(func) = func else {
-                let _ = reply.send(());
-                return None;
-            };
-            let lua = rt.lua.clone();
-            let gate = Rc::clone(gate);
-            ex.spawn(async move {
-                let _gate_guard = gate.acquire().await;
-                run_tool_start(&lua, func, &tool, input, live, ctx).await;
-                let _ = reply.send(());
-            })
-            .detach();
-            None
-        }
-        request => Some(request),
-    }
-}
-
-enum RuntimeWake {
-    Lifecycle,
-    Spawn(PendingAsyncTask),
-    Request(Box<Request>),
-    Priority(Box<Request>),
-    SpawnClosed,
-    RequestClosed,
-    PriorityClosed,
-}
-
-// Reentrant agents may dispatch Lua tools from another executor thread. Service every tool
-// request while a lifecycle is active; thread-local origin markers cannot classify them safely.
-async fn drain_runtime(
-    rt: &LuaRuntime,
-    ex: &Rc<smol::LocalExecutor<'_>>,
-    gate: &Rc<InflightGate>,
-    lifecycle: &Rc<LifecycleGate>,
-    spawn_rx: &flume::Receiver<PendingAsyncTask>,
-    request_rx: &flume::Receiver<Request>,
-    priority_rx: &flume::Receiver<Request>,
-    deferred: &mut VecDeque<Request>,
-) -> bool {
-    let mut spawn_closed = false;
-    let mut request_closed = false;
-    let mut priority_closed = false;
-    while !lifecycle.is_idle() {
-        if rt.shutdown.load(Ordering::Acquire) {
-            return true;
-        }
-        while !priority_closed {
-            match priority_rx.try_recv() {
-                Ok(Request::Shutdown) => return true,
-                Ok(request) => deferred.push_back(request),
-                Err(flume::TryRecvError::Empty) => break,
-                Err(flume::TryRecvError::Disconnected) => {
-                    priority_closed = true;
-                    break;
-                }
-            }
-        }
-        while !spawn_closed {
-            match spawn_rx.try_recv() {
-                Ok(task) => spawn_async_task(&rt.lua, ex, gate, task),
-                Err(flume::TryRecvError::Empty) => break,
-                Err(flume::TryRecvError::Disconnected) => {
-                    spawn_closed = true;
-                    break;
-                }
-            }
-        }
-        while !request_closed {
-            match request_rx.try_recv() {
-                Ok(request) => {
-                    if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, request) {
-                        deferred.push_back(request);
-                    }
-                }
-                Err(flume::TryRecvError::Empty) => break,
-                Err(flume::TryRecvError::Disconnected) => {
-                    request_closed = true;
-                    break;
-                }
-            }
-        }
-        if lifecycle.is_idle() {
-            break;
-        }
-        let wake = smol::future::or(
-            async {
-                lifecycle.changed().await;
-                RuntimeWake::Lifecycle
-            },
-            smol::future::or(
-                async {
-                    if priority_closed {
-                        smol::future::pending::<RuntimeWake>().await
-                    } else {
-                        priority_rx.recv_async().await.map_or_else(
-                            |_| RuntimeWake::PriorityClosed,
-                            |request| RuntimeWake::Priority(Box::new(request)),
-                        )
-                    }
-                },
-                smol::future::or(
-                    async {
-                        if spawn_closed {
-                            smol::future::pending::<RuntimeWake>().await
-                        } else {
-                            spawn_rx
-                                .recv_async()
-                                .await
-                                .map_or(RuntimeWake::SpawnClosed, RuntimeWake::Spawn)
-                        }
-                    },
-                    async {
-                        if request_closed {
-                            smol::future::pending::<RuntimeWake>().await
-                        } else {
-                            request_rx.recv_async().await.map_or_else(
-                                |_| RuntimeWake::RequestClosed,
-                                |request| RuntimeWake::Request(Box::new(request)),
-                            )
-                        }
-                    },
-                ),
-            ),
-        )
-        .await;
-        match wake {
-            RuntimeWake::Spawn(task) => spawn_async_task(&rt.lua, ex, gate, task),
-            RuntimeWake::Request(request) => {
-                if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, *request) {
-                    deferred.push_back(request);
-                }
-            }
-            RuntimeWake::Priority(request) => {
-                if matches!(*request, Request::Shutdown) {
-                    return true;
-                }
-                deferred.push_back(*request);
-            }
-            RuntimeWake::SpawnClosed => spawn_closed = true,
-            RuntimeWake::RequestClosed => request_closed = true,
-            RuntimeWake::PriorityClosed => priority_closed = true,
-            RuntimeWake::Lifecycle => {}
-        }
-    }
-    if rt.shutdown.load(Ordering::Acquire) {
-        return true;
-    }
-    drain_barrier(&rt.lua, ex, gate, spawn_rx).await;
-    false
-}
-
-fn validate_snapshot_lua_values(
-    lua: &Lua,
-    identity: &PluginStateIdentity,
-    snapshot: Option<&StoredSessionStateSnapshot>,
-) -> Result<(), String> {
-    let Some(snapshot) = snapshot else {
-        return Ok(());
-    };
-    let entries = snapshot
-        .plugin_entries_for_apply(PLUGIN_STATE_SCHEMA_VERSION)
-        .map_err(|error| error.to_string())?;
-    for entry in entries {
-        if !identity.is_root() && matches!(entry.scope, StoredStateScope::Root) {
-            continue;
-        }
-        state_json_to_lua(lua, entry.payload).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
 struct ToolKeys {
     handler: RegistryKey,
     header: Option<RegistryKey>,
     restore: Option<RegistryKey>,
-
     start: Option<RegistryKey>,
     permission_scopes: Option<RegistryKey>,
     describe: Option<RegistryKey>,
@@ -1331,7 +998,6 @@ struct LuaRuntime {
     live_tasks: LiveTasks,
     warm_tools: WarmTools,
     registry: Arc<ToolRegistry>,
-    state: Arc<PluginStateStore>,
     tx: flume::Sender<Request>,
     shutdown: Arc<AtomicBool>,
     bundled_dirs: &'static [&'static Dir<'static>],
@@ -1381,7 +1047,6 @@ impl LuaRuntime {
         })?;
 
         lua.set_app_data(CommandHandlerMap::new());
-        lua.set_app_data(JobStore::new());
         lua.set_app_data(SpawnQueue::new());
         lua.set_app_data(command_writer);
         lua.set_app_data(PromptHintCallbacks::default());
@@ -1425,7 +1090,6 @@ impl LuaRuntime {
             live_tasks: Rc::new(RefCell::new(HashMap::new())),
             warm_tools: Rc::new(RefCell::new(VecDeque::new())),
             registry,
-            state: Arc::new(PluginStateStore::default()),
             tx,
             shutdown,
             bundled_dirs,
@@ -1435,9 +1099,6 @@ impl LuaRuntime {
 
     fn drop_plugin_keys(&mut self, name: &str) {
         self.warm_tools.borrow_mut().clear();
-        with_jobs(&self.lua, |store| {
-            store.kill_owner(&self.lua, &JobOwner::Plugin(Arc::from(name)));
-        });
         if let Some(mut store) = self.lua.app_data_mut::<PluginOptionSpecs>() {
             store.remove(name);
         }
@@ -1504,10 +1165,14 @@ impl LuaRuntime {
     }
 
     async fn run_hint_callback(&self, plugin: &str, func: Function) -> Option<String> {
-        let result: mlua::Result<LuaValue> = run_detached(&self.lua, async {
-            let thread = self.lua.create_thread(func)?;
-            thread.into_async::<LuaValue>(())?.await
-        })
+        let result: mlua::Result<LuaValue> = run_detached(
+            &self.lua,
+            async {
+                let thread = self.lua.create_thread(func)?;
+                thread.into_async::<LuaValue>(())?.await
+            },
+            None,
+        )
         .await;
         match result {
             Ok(LuaValue::String(s)) => Some(s.to_string_lossy()),
@@ -1933,22 +1598,22 @@ impl LuaRuntime {
     }
 
     async fn compute_permission_scopes(
-        lua: &Lua,
-        plugins: &PluginMap,
+        &self,
         plugin: &str,
         tool: &str,
         input: Value,
     ) -> Option<PermissionScopes> {
         let (func, lua_input) = plugin_fn(
-            lua,
-            plugins,
+            &self.lua,
+            &self.plugins,
             plugin,
             tool,
             "permission_scopes",
             |tk| tk.permission_scopes.as_ref(),
             &input,
         )?;
-        let result: LuaValue = match run_detached(lua, func.call_async(lua_input)).await {
+        let result: LuaValue = match run_detached(&self.lua, func.call_async(lua_input), None).await
+        {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(plugin, tool, error = %e, "permission_scopes callback failed");
@@ -2052,7 +1717,7 @@ async fn compute_header(
         return HeaderResult::plain(tool.to_string());
     };
 
-    let result = run_detached(lua, func.call_async::<LuaValue>(input_lua)).await;
+    let result = run_detached(lua, func.call_async::<LuaValue>(input_lua), None).await;
 
     match result {
         Ok(LuaValue::String(s)) => match s.to_str() {
@@ -2109,10 +1774,8 @@ async fn restore_item(
         }),
     );
 
-    let ctx = LuaCtx::restore(item.tool_output_lines, item.state);
-    let _context_liveness = ContextLivenessGuard(ctx.context_liveness());
     let ctx = lua
-        .create_userdata(ctx)
+        .create_userdata(LuaCtx::restore(item.tool_output_lines, item.state))
         .map_err(|e| format!("restore context creation failed: {e}"))?;
     let inner = thread
         .into_async::<LuaValue>((input_lua, &*item.output, item.is_error, ctx))
@@ -2262,7 +1925,6 @@ async fn dispatch_async(
     finish_rx: flume::Receiver<ToolCallReply>,
 ) -> ToolCallReply {
     let cancel = lock_cell(&handle).cancel.clone();
-    let owner = JobOwner::Task(lock_cell(&handle).id);
 
     let timed_out = || {
         lock_cell(&handle)
@@ -2288,11 +1950,13 @@ async fn dispatch_async(
             Err(flume::TryRecvError::Empty) => {}
         }
 
-        with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
+        lock_cell(&handle).jobs.drain_events(&mut event_buf);
 
         if event_buf.is_empty() {
-            let has_work = !with_jobs(lua, |store| store.is_empty(&owner))
-                || lock_cell(&handle).async_tasks.get() > 0;
+            let has_work = {
+                let cell = lock_cell(&handle);
+                cell.jobs.has_alive_jobs() || cell.async_tasks.get() > 0
+            };
             if !has_work {
                 smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
                 return match finish_rx.try_recv() {
@@ -2392,7 +2056,6 @@ async fn run_tool_start(
     live: LiveCtx,
     ctx: Box<LuaCtx>,
 ) {
-    let _context_liveness = ContextLivenessGuard(ctx.context_liveness());
     let scope = TaskScope::new(lua, TaskCell::new(ctx.cancel.clone(), None, Some(live)));
     let run = async {
         let input_lua = json_to_lua(lua, &input)?;
@@ -2422,9 +2085,7 @@ async fn run_tool_call(
     plugins: PluginMap,
     shutdown: Arc<AtomicBool>,
     gate: Rc<InflightGate>,
-    _lifecycle: LifecycleGuard,
 ) -> ToolCallReply {
-    let _context_liveness = ContextLivenessGuard(ctx.context_liveness());
     let handler: Function = {
         let plugins_ref = plugins.borrow();
         let Some(keys) = plugins_ref.get(&*plugin) else {
@@ -2622,33 +2283,7 @@ pub fn spawn(
             };
 
             let ex = Rc::new(smol::LocalExecutor::new());
-            {
-                let lua = rt.lua.clone();
-                ex.spawn(async move {
-                    let mut event_buf = Vec::new();
-                    loop {
-                        with_jobs(&lua, |store| {
-                            store.drain_plugin_events(&mut event_buf);
-                        });
-                        if !event_buf.is_empty() {
-                            let scope = TaskScope::detached(&lua);
-                            for (job_id, event) in event_buf.drain(..) {
-                                if let Err(e) = deliver_job_event(&lua, job_id, &event) {
-                                    tracing::warn!(
-                                        error = %strip_traceback(&e),
-                                        "plugin job callback failed"
-                                    );
-                                }
-                            }
-                            drop(scope);
-                        }
-                        smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
-                    }
-                })
-                .detach();
-            }
             let gate = Rc::new(InflightGate::new(rt.lua.clone()));
-            let lifecycle = Rc::new(LifecycleGate::default());
             let restores = Rc::new(RestoreTracker::default());
             let spawn_rx = rt
                 .lua
@@ -2658,7 +2293,6 @@ pub fn spawn(
                 .clone();
 
             smol::block_on(ex.run(async {
-                let mut deferred = VecDeque::new();
                 loop {
                     while let Ok(task) = spawn_rx.try_recv() {
                         spawn_async_task(&rt.lua, &ex, &gate, task);
@@ -2667,29 +2301,25 @@ pub fn spawn(
                     // ahead of bulk work like session restores so the UI stays
                     // snappy, and queued `n00n.async.run` tasks jump ahead of
                     // plain requests.
-                    let msg = if let Some(request) = deferred.pop_front() {
-                        request
-                    } else {
-                        let next = smol::future::or(
-                            async { prio_rx.recv_async().await.map(Some) },
-                            smol::future::or(
-                                async {
-                                    let task = spawn_rx.recv_async().await?;
-                                    spawn_async_task(&rt.lua, &ex, &gate, task);
-                                    Ok(None)
-                                },
-                                async { rx.recv_async().await.map(Some) },
-                            ),
-                        )
-                        .await;
-                        match next {
-                            Ok(Some(request)) => request,
-                            Ok(None) => {
-                                smol::future::yield_now().await;
-                                continue;
-                            }
-                            Err(_) => break,
+                    let next = smol::future::or(
+                        async { prio_rx.recv_async().await.map(Some) },
+                        smol::future::or(
+                            async {
+                                let task = spawn_rx.recv_async().await?;
+                                spawn_async_task(&rt.lua, &ex, &gate, task);
+                                Ok(None)
+                            },
+                            async { rx.recv_async().await.map(Some) },
+                        ),
+                    )
+                    .await;
+                    let msg = match next {
+                        Ok(Some(m)) => m,
+                        Ok(None) => {
+                            smol::future::yield_now().await;
+                            continue;
                         }
+                        Err(_) => break,
                     };
                     match msg {
                         Request::Shutdown => break,
@@ -2701,43 +2331,47 @@ pub fn spawn(
                             opts,
                             reply,
                         } => {
-                            if drain_runtime(
-                                &rt,
-                                &ex,
-                                &gate,
-                                &lifecycle,
-                                &spawn_rx,
-                                &rx,
-                                &prio_rx,
-                                &mut deferred,
-                            )
-                            .await
-                            {
-                                break;
-                            }
+                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
                             let res = rt.load_source(Arc::clone(&name), &source, plugin_dir, &permissions, opts, None).await;
                             let _ = reply.send(res);
                         }
-                        request @ (Request::CallTool { .. } | Request::StartTool { .. }) => {
-                            let deferred_request =
-                                spawn_runtime_request(&rt, &ex, &gate, &lifecycle, request);
-                            debug_assert!(deferred_request.is_none());
+                        Request::CallTool {
+                            plugin,
+                            tool,
+                            input,
+                            ctx,
+                            deadline,
+                            reply,
+                            live,
+                        } => {
+                            let lua = rt.lua.clone();
+                            let plugins = Rc::clone(&rt.plugins);
+                            let live_tasks = Rc::clone(&rt.live_tasks);
+                            let warm_tools = Rc::clone(&rt.warm_tools);
+                            let shutdown_ref = Arc::clone(&rt.shutdown);
+                            let g = Rc::clone(&gate);
+                            ex.spawn(async move {
+                                let res = run_tool_call(
+                                    lua.clone(),
+                                    plugin,
+                                    tool,
+                                    input,
+                                    ctx,
+                                    deadline,
+                                    live,
+                                    live_tasks,
+                                    warm_tools,
+                                    plugins,
+                                    shutdown_ref,
+                                    g,
+                                )
+                                .await;
+                                let _ = reply.send(res);
+                            })
+                            .detach();
                         }
                         Request::ClearPlugin { plugin, reply } => {
-                            if drain_runtime(
-                                &rt,
-                                &ex,
-                                &gate,
-                                &lifecycle,
-                                &spawn_rx,
-                                &rx,
-                                &prio_rx,
-                                &mut deferred,
-                            )
-                            .await
-                            {
-                                break;
-                            }
+                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
                             rt.clear_plugin(&plugin);
                             let _ = reply.send(());
                         }
@@ -2758,7 +2392,7 @@ pub fn spawn(
                                         let thread = lua.create_thread(func)?;
                                         thread.into_async::<()>(args)?.await
                                     };
-                                    if let Err(e) = run_detached(&lua, run).await {
+                                    if let Err(e) = run_detached(&lua, run, Some(Arc::clone(&plugin))).await {
                                         tracing::warn!(plugin = %plugin, command = %command, error = %e, "command handler failed");
                                     }
                                 })
@@ -2781,14 +2415,7 @@ pub fn spawn(
                             input,
                             reply,
                         } => {
-                            let res = LuaRuntime::compute_permission_scopes(
-                                &rt.lua,
-                                &rt.plugins,
-                                &plugin,
-                                &tool,
-                                input,
-                            )
-                            .await;
+                            let res = rt.compute_permission_scopes(&plugin, &tool, input).await;
                             let _ = reply.send(res);
                         }
                         Request::RunInitLua {
@@ -2797,20 +2424,7 @@ pub fn spawn(
                             plugin_dir,
                             reply,
                         } => {
-                            if drain_runtime(
-                                &rt,
-                                &ex,
-                                &gate,
-                                &lifecycle,
-                                &spawn_rx,
-                                &rx,
-                                &prio_rx,
-                                &mut deferred,
-                            )
-                            .await
-                            {
-                                break;
-                            }
+                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
                             let res = rt.run_init_lua(&source, &source_name, plugin_dir).await;
                             let _ = reply.send(res);
                         }
@@ -2820,98 +2434,6 @@ pub fn spawn(
                         }
                         Request::CollectPluginOptions { reply } => {
                             let _ = reply.send(collect_plugin_options(&rt.lua));
-                        }
-                        Request::HydrateState {
-                            identity,
-                            snapshot,
-                            reply,
-                        } => {
-                            if drain_runtime(
-                                &rt,
-                                &ex,
-                                &gate,
-                                &lifecycle,
-                                &spawn_rx,
-                                &rx,
-                                &prio_rx,
-                                &mut deferred,
-                            )
-                            .await
-                            {
-                                break;
-                            }
-                            let result = validate_snapshot_lua_values(
-                                &rt.lua,
-                                &identity,
-                                snapshot.as_ref(),
-                            )
-                                .and_then(|()| {
-                                    rt.state
-                                        .hydrate(identity, snapshot)
-                                        .map_err(|error| error.to_string())
-                                });
-                            let _ = reply.send(result);
-                        }
-                        Request::CaptureState {
-                            identity,
-                            revision,
-                            reply,
-                        } => {
-                            if drain_runtime(
-                                &rt,
-                                &ex,
-                                &gate,
-                                &lifecycle,
-                                &spawn_rx,
-                                &rx,
-                                &prio_rx,
-                                &mut deferred,
-                            )
-                            .await
-                            {
-                                break;
-                            }
-                            let result = rt
-                                .state
-                                .capture(&identity, revision)
-                                .map_err(|error| error.to_string());
-                            let _ = reply.send(result);
-                        }
-                        Request::ResetState { identity, reply } => {
-                            if drain_runtime(
-                                &rt,
-                                &ex,
-                                &gate,
-                                &lifecycle,
-                                &spawn_rx,
-                                &rx,
-                                &prio_rx,
-                                &mut deferred,
-                            )
-                            .await
-                            {
-                                break;
-                            }
-                            rt.state.reset(&identity);
-                            let _ = reply.send(());
-                        }
-                        Request::DropStateOwner { owner, reply } => {
-                            if drain_runtime(
-                                &rt,
-                                &ex,
-                                &gate,
-                                &lifecycle,
-                                &spawn_rx,
-                                &rx,
-                                &prio_rx,
-                                &mut deferred,
-                            )
-                            .await
-                            {
-                                break;
-                            }
-                            rt.state.drop_owner(owner);
-                            let _ = reply.send(());
                         }
                         Request::RestoreToolAsync { item, event_tx } => {
                             spawn_restore(&ex, &gate, &restores, &rt, item, event_tx);
@@ -3007,6 +2529,35 @@ pub fn spawn(
                             let _ = reply
                                 .send(run_describe(&rt.lua, &rt.plugins, &plugin, &tool, &dctx));
                         }
+                        Request::StartTool {
+                            plugin,
+                            tool,
+                            input,
+                            live,
+                            ctx,
+                            reply,
+                        } => {
+                            let func = {
+                                let plugins = rt.plugins.borrow();
+                                plugins
+                                    .get(&*plugin)
+                                    .and_then(|p| p.get(&*tool))
+                                    .and_then(|tk| tk.start.as_ref())
+                                    .and_then(|key| rt.lua.registry_value::<Function>(key).ok())
+                            };
+                            let Some(func) = func else {
+                                let _ = reply.send(());
+                                continue;
+                            };
+                            let lua = rt.lua.clone();
+                            let g = Rc::clone(&gate);
+                            ex.spawn(async move {
+                                let _gate_guard = g.acquire().await;
+                                run_tool_start(&lua, func, &tool, input, live, ctx).await;
+                                let _ = reply.send(());
+                            })
+                            .detach();
+                        }
                         Request::RunKeybindCallback { id } => {
                             let func = rt.lua.app_data_ref::<KeymapStore>().and_then(|store| {
                                 let key = store.callback_for_id(id)?;
@@ -3015,7 +2566,7 @@ pub fn spawn(
                             if let Some(func) = func {
                                 let lua = rt.lua.clone();
                                 ex.spawn(async move {
-                                    if let Err(e) = run_detached(&lua, func.call_async::<()>(())).await {
+                                    if let Err(e) = run_detached(&lua, func.call_async::<()>(()), None).await {
                                         tracing::warn!(keybind_id = id, error = %e, "keybind callback failed");
                                     }
                                 }).detach();
@@ -3057,7 +2608,6 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::r#fn::JobSpec;
     use crate::api::tool::ToolCallReply;
 
     fn make_buf_handle(text: &str) -> BufHandle {
@@ -3129,7 +2679,7 @@ mod tests {
     }
 
     #[test]
-    fn task_scope_clears_bufs_on_drop() {
+    fn task_scope_clears_jobs_and_bufs_on_drop() {
         let lua = Lua::new();
         let scope = TaskScope::new(&lua, task_cell(None));
         let handle = Arc::clone(scope.handle());
@@ -3137,55 +2687,6 @@ mod tests {
         assert!(lock_cell(&handle).bufs.live_buf().is_some());
         drop(scope);
         assert!(lock_cell(&handle).bufs.live_buf().is_none());
-    }
-
-    #[test]
-    fn task_scope_clears_only_its_jobs_on_drop() {
-        let lua = Lua::new();
-        let scope = TaskScope::new(&lua, task_cell(None));
-        let task_owner = JobOwner::Task(lock_cell(scope.handle()).id);
-        let plugin_owner = JobOwner::Plugin(Arc::from("test-plugin"));
-        with_jobs(&lua, |store| {
-            for owner in [task_owner.clone(), plugin_owner.clone()] {
-                store
-                    .start(
-                        owner,
-                        JobSpec::Shell("exit 0".to_owned()),
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .unwrap();
-            }
-        });
-
-        drop(scope);
-
-        with_jobs(&lua, |store| {
-            assert!(store.is_empty(&task_owner));
-            assert!(!store.is_empty(&plugin_owner));
-            store.kill_owner(&lua, &plugin_owner);
-        });
-    }
-
-    #[test]
-    fn task_cells_get_distinct_ids() {
-        let first = task_cell(None);
-        let second = task_cell(None);
-        assert_ne!(first.id, second.id);
-    }
-
-    #[test]
-    fn active_task_id_follows_the_scope() {
-        let lua = Lua::new();
-        assert!(active_task_id(&lua).is_none());
-        let scope = TaskScope::new(&lua, task_cell(None));
-        let id = lock_cell(scope.handle()).id;
-        assert_eq!(active_task_id(&lua), Some(id));
-        drop(scope);
-        assert!(active_task_id(&lua).is_none());
     }
 
     #[test]

@@ -3,12 +3,13 @@ use std::time::Instant;
 
 use async_lock::{Semaphore, SemaphoreGuardArc};
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::cancel::CancelToken;
 
 pub const DEFAULT_PROCESS_SLOTS: usize = 4;
 pub const DEFAULT_AGENT_SLOTS: usize = 8;
+pub const ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolWorkload {
@@ -36,7 +37,11 @@ impl ToolWorkload {
             Some("execute" | "process") => Self::Process,
             Some("agent") => Self::Agent,
             Some("orchestrator") => Self::Orchestrator,
-            _ => Self::Cheap,
+            Some("cheap") | None => Self::Cheap,
+            Some(unknown) => {
+                warn!(tool_kind = unknown, "unknown tool kind; treating as Cheap");
+                Self::Cheap
+            }
         }
     }
 
@@ -55,6 +60,8 @@ impl ToolWorkload {
 pub enum AdmissionError {
     #[error("cancelled")]
     Cancelled,
+    #[error("admission timeout")]
+    Timeout,
 }
 
 /// Shared admission control for all calls that use one tool registry.
@@ -101,10 +108,19 @@ impl ToolAdmission {
             ToolWorkload::Agent => Arc::clone(&self.agents),
         };
         let started = Instant::now();
-        let permit = cancel
-            .race(semaphore.acquire_arc())
-            .await
-            .map_err(|_| AdmissionError::Cancelled)?;
+        let permit = futures_lite::future::race(
+            async {
+                cancel
+                    .race(semaphore.acquire_arc())
+                    .await
+                    .map_err(|_| AdmissionError::Cancelled)
+            },
+            async {
+                smol::Timer::after(ADMISSION_TIMEOUT).await;
+                Err(AdmissionError::Timeout)
+            },
+        )
+        .await?;
         debug!(
             workload = workload.as_str(),
             wait_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX),

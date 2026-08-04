@@ -494,6 +494,7 @@ async fn run_authorized(
         {
             Ok(guard) => guard,
             Err(error) => {
+                warn!(tool = %name, error = %error, "tool admission denied");
                 return tool_done_error(id.clone(), Arc::clone(&tool_id), error.to_string());
             }
         };
@@ -547,13 +548,18 @@ async fn run_authorized(
     } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
         run_tool_search(mcp, id, input, ctx, emit)
     } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
-        let _admission_guard = match registry
-            .admission()
-            .acquire(ToolWorkload::Process, &ctx.cancel)
-            .await
+        let workload = if mcp
+            .as_ref()
+            .is_some_and(|m| m.is_tool_read_only(&mcp_lookup))
         {
+            ToolWorkload::Cheap
+        } else {
+            ToolWorkload::Process
+        };
+        let _admission_guard = match registry.admission().acquire(workload, &ctx.cancel).await {
             Ok(guard) => guard,
             Err(error) => {
+                warn!(tool = %mcp_lookup, error = %error, "tool admission denied");
                 return tool_done_error(id, tool_id, error.to_string());
             }
         };
