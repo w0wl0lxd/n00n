@@ -856,12 +856,13 @@ impl<'h> Agent<'h> {
         // Always include tool_search when MCP is present so agents with
         // ToolFilter::Only can still discover and run MCP tools via search.
         let mut filter = self.tool_filter.clone();
-        if crate::tools::is_tool_enabled(
-            &self.config.disabled_tools,
-            crate::mcp::TOOL_SEARCH_TOOL_NAME,
-        ) && !filter.matches(crate::mcp::TOOL_SEARCH_TOOL_NAME)
-        {
-            filter = filter.including([crate::mcp::TOOL_SEARCH_TOOL_NAME.to_string()]);
+        let tool_search = crate::mcp::TOOL_SEARCH_TOOL_NAME;
+        if crate::tools::is_tool_enabled(&self.config.disabled_tools, tool_search) {
+            if !filter.matches(tool_search) {
+                filter = filter.including([tool_search.to_owned()]);
+            }
+        } else {
+            filter = filter.excluding(&[tool_search]);
         }
         if !self.allow_dynamic_mcp_tools {
             return filter;
@@ -1474,7 +1475,6 @@ mod tests {
             .disabled_tools
             .push(crate::mcp::TOOL_SEARCH_TOOL_NAME.into());
         agent.config = Arc::new(config);
-        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
         agent = agent.with_mcp(Some(mcp)).with_dynamic_mcp_tools(true);
 
         assert!(!agent.effective_tool_filter().matches("tool_search"));
