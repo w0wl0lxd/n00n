@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 34 built-in tools. This is the full reference.
 
 Required nullable parameters must still be included. Pass `null` to choose the listed default, such as for `bash.workdir` or `bash.timeout`.
 
@@ -20,21 +20,21 @@ Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `workdir` | string/null | yes | cwd | Working directory |
-| `timeout` | integer/null | yes | 120 | Timeout seconds |
+| `workdir` | string | no | cwd | Working directory |
+| `timeout` | integer | no | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string/null | yes |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
-| `description` | string/null | yes |  | Short description (3-5 words) of what the command does |
+| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
+| `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
 
 Read a file or directory. Returns contents with line numbers (1-indexed).
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `offset` | integer/null | yes |  | Starting line number (1-indexed, default 1) |
-| `path` | string | yes |  | File or directory path (absolute, relative, or ~/) |
-| `limit` | integer/null | yes | 500 | Maximum number of lines to read |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `offset` | integer | no |  |
+| `path` | string | yes |  |
+| `limit` | integer | no |  |
 
 ### `write` *(lua plugin)*
 
@@ -125,12 +125,12 @@ Search file contents using ripgrep-compatible regex. This is not a shell. Use `p
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string/null | yes |  |
-| `path` | string/null | yes |  |
-| `pattern` | string | yes |  |
-| `context_after` | integer/null | yes |  |
-| `limit` | integer/null | yes |  |
-| `context_before` | integer/null | yes |  |
+| `include` | string/null | yes | Glob pattern (e.g. '*.rs'). |
+| `path` | string/null | yes | Directory or file to search. |
+| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
+| `context_after` | integer/null | yes | Lines of context after matches. |
+| `limit` | integer/null | yes | Max match groups per search. |
+| `context_before` | integer/null | yes | Lines of context before matches. |
 
 ### `index` *(lua plugin)*
 
@@ -210,7 +210,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes |  |
+| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `code_execution` *(lua plugin)*
 
@@ -228,6 +228,28 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
+
+### `tmux` *(lua plugin)*
+
+Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_name` | string | no |  |
+| `source` | string | no |  |
+| `timeout` | integer | no |  |
+| `destination` | string | no |  |
+| `window` | string | no |  |
+| `height` | integer | no |  |
+| `width` | integer | no |  |
+| `raw_command` | string | no |  |
+| `window_name` | string | no |  |
+| `keys` | string | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `command_text` | string | no |  |
+| `session` | string | no |  |
+| `pane` | string | no |  |
 
 ## Agent & Knowledge
 
@@ -396,7 +418,7 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 ### `fusion_delegate` *(lua plugin)*
 
-Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
