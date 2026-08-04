@@ -4928,10 +4928,12 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
     let (_reg, host) = builtins_host();
     let rx = host.ui_action_rx().unwrap();
     let handle = host.event_handle().unwrap();
-    handle.run_command(
+    let session_id = n00n_storage::id::n00nId::generate().to_string();
+    handle.run_command_with_session(
         Arc::from("team"),
         Arc::from("/team"),
         "fix the parser".into(),
+        Some(session_id),
     );
 
     let action = rx
@@ -5025,7 +5027,13 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let (_reg, host) = builtins_host();
     let rx = host.ui_action_rx().unwrap();
     let handle = host.event_handle().unwrap();
-    handle.run_command(Arc::from("team"), Arc::from("/team"), String::new());
+    let session_id = n00n_storage::id::n00nId::generate().to_string();
+    handle.run_command_with_session(
+        Arc::from("team"),
+        Arc::from("/team"),
+        String::new(),
+        Some(session_id),
+    );
 
     let action = rx
         .recv_timeout(Duration::from_secs(5))

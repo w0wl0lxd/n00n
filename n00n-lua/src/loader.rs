@@ -584,10 +584,21 @@ impl EventHandle {
     }
 
     pub fn run_command(&self, plugin: Arc<str>, command: Arc<str>, args: String) {
+        self.run_command_with_session(plugin, command, args, None);
+    }
+
+    pub fn run_command_with_session(
+        &self,
+        plugin: Arc<str>,
+        command: Arc<str>,
+        args: String,
+        session_id: Option<String>,
+    ) {
         let _ = self.prio_tx.try_send(Request::RunCommand {
             plugin,
             command,
             args,
+            session_id,
         });
     }
 
@@ -832,10 +843,12 @@ mod tests {
                 plugin,
                 command,
                 args,
+                session_id,
             } => {
                 assert_eq!(plugin.as_ref(), "myplugin");
                 assert_eq!(command.as_ref(), "/greet");
                 assert_eq!(args, "world");
+                assert!(session_id.is_none());
             }
             _ => panic!("expected RunCommand"),
         }

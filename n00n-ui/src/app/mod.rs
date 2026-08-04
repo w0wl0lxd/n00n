@@ -2158,7 +2158,13 @@ impl App {
         let Some(handle) = &self.lua_event_handle else {
             return;
         };
-        handle.run_command(Arc::clone(&lua_cmd.plugin), Arc::clone(&lua_cmd.name), args);
+        let session_id = self.state.session.id.to_string();
+        handle.run_command_with_session(
+            Arc::clone(&lua_cmd.plugin),
+            Arc::clone(&lua_cmd.name),
+            args,
+            Some(session_id),
+        );
     }
 
     fn execute_mcp_prompt(&mut self, name: &str, args: &str) -> Vec<Action> {
