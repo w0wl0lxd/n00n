@@ -221,8 +221,9 @@ impl<'h> Agent<'h> {
         let supports_tool_examples = params.model.supports_tool_examples();
         let fusion_enabled = params.config.fusion.enabled;
         let admission_scope = params
-            .session_id
+            .identity
             .as_ref()
+            .map(SessionIdentity::session_id)
             .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
                 Arc::<str>::from(id.to_string())
             });
