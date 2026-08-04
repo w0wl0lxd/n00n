@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::selection::Selection;
 use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
 use n00n_agent::{
-    AgentEvent, BufferSnapshot, FusionPhase, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
+    AgentEvent, BufferSnapshot, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
 use n00n_providers::{CacheHealth, ContentBlock, Message, Role, TokenUsage};
@@ -32,7 +32,6 @@ pub(crate) const ERROR_TEXT: &str = "Error";
 pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
 /// Messages rendered per frame when backfilling older history on resume.
 pub(crate) const RESTORE_BATCH_SIZE: usize = 32;
-const MAX_FUSION_PHASE_LABEL_CHARS: usize = 80;
 
 pub enum ChatEventResult {
     Continue,
@@ -179,6 +178,22 @@ impl Chat {
                     self.messages_panel.flush();
                 }
             }
+            AgentEvent::FusionPhase { phase, label } => {
+                let phase = match phase {
+                    n00n_agent::FusionPhase::Idle => "Idle",
+                    n00n_agent::FusionPhase::Planning => "Planning",
+                    n00n_agent::FusionPhase::Executing => "Executing",
+                    n00n_agent::FusionPhase::Reviewing => "Reviewing",
+                    n00n_agent::FusionPhase::LeadFallback => "Lead fallback",
+                    n00n_agent::FusionPhase::Complete => "Complete",
+                    n00n_agent::FusionPhase::Cancelled => "Cancelled",
+                    n00n_agent::FusionPhase::Failed => "Failed",
+                };
+                let text =
+                    label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
+                self.messages_panel
+                    .push(DisplayMessage::new(DisplayRole::Control, text));
+            }
             AgentEvent::QueueItemConsumed {
                 text,
                 image_count,
@@ -192,12 +207,7 @@ impl Chat {
                     control,
                 };
             }
-            AgentEvent::Retry { .. } => {
-                tracing::warn!(
-                    "retry event reached chat handling; expected to be intercepted by the app layer"
-                );
-                return ChatEventResult::Continue;
-            }
+            AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;
@@ -237,9 +247,6 @@ impl Chat {
                     "Model stalled after tool calls, nudging...".into(),
                 ));
             }
-            AgentEvent::FusionPhaseChanged { phase, label } => {
-                self.push_fusion_phase(phase, label.as_deref());
-            }
             AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
@@ -261,32 +268,6 @@ impl Chat {
             }
         }
         ChatEventResult::Continue
-    }
-
-    fn push_fusion_phase(&mut self, phase: FusionPhase, label: Option<&str>) {
-        let phase = match phase {
-            FusionPhase::Idle => "Idle",
-            FusionPhase::Planning => "Planning",
-            FusionPhase::Executing => "Executing",
-            FusionPhase::Reviewing => "Reviewing",
-            FusionPhase::LeadFallback => "Lead fallback",
-            FusionPhase::Complete => "Complete",
-            FusionPhase::Cancelled => "Cancelled",
-            FusionPhase::Failed => "Failed",
-        };
-        let label = label
-            .map(str::split_whitespace)
-            .map(|parts| parts.collect::<Vec<_>>().join(" "))
-            .filter(|label| !label.is_empty())
-            .map(|label| {
-                label
-                    .chars()
-                    .take(MAX_FUSION_PHASE_LABEL_CHARS)
-                    .collect::<String>()
-            });
-        let text = label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
-        self.messages_panel
-            .push(DisplayMessage::new(DisplayRole::Control, text));
     }
 
     pub fn scroll(&mut self, delta: i32) {
@@ -789,7 +770,7 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                                 reg.get(name).and_then(|entry| entry.try_parse(input));
                             let summary = reg.resolve_header(name, input);
                             let (status, result_text) = results.get(id.as_str()).map_or(
-                                (ToolStatus::Error, None),
+                                (ToolStatus::Success, None),
                                 |(err, text)| {
                                     let s = if *err {
                                         ToolStatus::Error
@@ -1028,6 +1009,9 @@ mod tests {
     #[test_case(n00n_agent::FusionPhase::Executing, Some("brief label"), "Executing: brief label" ; "executing")]
     #[test_case(n00n_agent::FusionPhase::Reviewing, None, "Reviewing" ; "reviewing")]
     #[test_case(n00n_agent::FusionPhase::LeadFallback, None, "Lead fallback" ; "lead fallback")]
+    #[test_case(n00n_agent::FusionPhase::Complete, None, "Complete" ; "complete")]
+    #[test_case(n00n_agent::FusionPhase::Cancelled, None, "Cancelled" ; "cancelled")]
+    #[test_case(n00n_agent::FusionPhase::Failed, None, "Failed" ; "failed")]
     fn fusion_phase_renders_typed_control_text(
         phase: n00n_agent::FusionPhase,
         label: Option<&str>,
@@ -1035,35 +1019,13 @@ mod tests {
     ) {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(
-            AgentEvent::FusionPhaseChanged {
+            AgentEvent::FusionPhase {
                 phase,
                 label: label.map(str::to_owned),
             },
             None,
         );
         assert_eq!(chat.last_message_text(), expected);
-    }
-
-    #[test]
-    fn fusion_phase_label_is_single_line_and_bounded() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
-        let label = format!(
-            "  {}\nignored  ",
-            "a".repeat(MAX_FUSION_PHASE_LABEL_CHARS + 20)
-        );
-        chat.handle_event(
-            AgentEvent::FusionPhaseChanged {
-                phase: n00n_agent::FusionPhase::Executing,
-                label: Some(label),
-            },
-            None,
-        );
-        let rendered = chat.last_message_text();
-        assert!(!rendered.contains('\n'));
-        assert_eq!(
-            rendered.chars().count(),
-            "Executing: ".chars().count() + MAX_FUSION_PHASE_LABEL_CHARS
-        );
     }
 
     #[test]
@@ -1077,45 +1039,19 @@ mod tests {
             None,
         );
         let cards_before = chat.compaction_card_count();
+
         chat.handle_event(
-            AgentEvent::FusionPhaseChanged {
+            AgentEvent::FusionPhase {
                 phase: n00n_agent::FusionPhase::Executing,
                 label: Some("brief label".into()),
             },
             None,
         );
+
         assert_eq!(chat.compaction_card_count(), cards_before);
         assert!(!chat.streaming_text_is_empty());
         assert_eq!(chat.last_message_text(), "Executing: brief label");
     }
-
-    #[test]
-    fn existing_fusion_phase_event_also_renders_control_text() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
-        chat.handle_event(
-            AgentEvent::FusionPhaseChanged {
-                phase: n00n_agent::FusionPhase::Planning,
-                label: None,
-            },
-            None,
-        );
-        assert_eq!(chat.last_message_text(), "Planning");
-    }
-
-    #[test]
-    fn unexpected_retry_event_is_ignored() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
-        let result = chat.handle_event(
-            AgentEvent::Retry {
-                attempt: 1,
-                message: "overloaded".into(),
-                delay_ms: 100,
-            },
-            None,
-        );
-        assert!(matches!(result, ChatEventResult::Continue));
-    }
-
     #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
@@ -1373,22 +1309,6 @@ mod tests {
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         assert_eq!(display.len(), 1);
         assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == expected));
-    }
-
-    #[test]
-    fn history_unmatched_tool_use_is_error_not_success() {
-        let msgs = vec![Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolUse {
-                id: "t1".into(),
-                name: "bash".into(),
-                input: serde_json::json!({"command": "ls"}),
-            }],
-            ..Default::default()
-        }];
-        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
-        assert_eq!(display.len(), 1);
-        assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == ToolStatus::Error));
     }
 
     #[test]

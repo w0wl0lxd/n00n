@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::types::{ProviderUsage, System, UsageLimit};
+use crate::types::{ProviderUsage, System, ThinkingFieldConfig, ToggleEntry, UsageLimit};
 use crate::{
     AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, ThinkingConfig, dialect,
 };
@@ -21,6 +21,19 @@ const V4_MARKER: &str = "deepseek-v4";
 const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/deepseek.rs"));
+
+fn deepseek_fields() -> ThinkingFieldConfig {
+    ThinkingFieldConfig {
+        effort_path: Some("reasoning_effort".into()),
+        toggles: vec![ToggleEntry {
+            path: "thinking".into(),
+            on: Some(serde_json::json!({"type": "enabled"})),
+            off: Some(serde_json::json!({"type": "disabled"})),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "deepseek",
@@ -180,17 +193,15 @@ impl Provider for DeepSeek {
                 opts.fast,
             );
 
+            opts.thinking
+                .apply_thinking(&mut body, model, &dialect::DEEPSEEK, &deepseek_fields());
             if opts.thinking.is_enabled() {
-                body["thinking"] = serde_json::json!({"type": "enabled"});
-                opts.thinking
-                    .apply_reasoning_effort(&mut body, &dialect::DEEPSEEK, model);
                 if matches!(opts.thinking, ThinkingConfig::Budget(_)) {
                     warn!("DeepSeek reasoning does not support token budgets");
                 }
                 pad_reasoning_content(&model.id, &mut body);
-            } else {
-                body["thinking"] = serde_json::json!({"type": "disabled"});
             }
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
             let response = self
                 .compat

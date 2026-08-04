@@ -6,12 +6,34 @@ use serde_json::{Value, json};
 
 use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
+use crate::types::{ThinkingFieldConfig, ToggleEntry};
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System, dialect};
 
 use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/tensorx.rs"));
+
+/// `TensorX` routes heterogeneous models: the discovered capabilities decide
+/// whether the body carries a `thinking` toggle, a `reasoning_effort` string,
+/// or both.
+fn tensorx_fields(has_thinking: bool, has_reasoning_effort: bool) -> ThinkingFieldConfig {
+    let toggles = if has_thinking {
+        vec![ToggleEntry {
+            path: "thinking".into(),
+            on: Some(json!(true)),
+            off: Some(json!(false)),
+            ..Default::default()
+        }]
+    } else {
+        Vec::new()
+    };
+    ThinkingFieldConfig {
+        effort_path: has_reasoning_effort.then(|| "reasoning_effort".into()),
+        toggles,
+        ..Default::default()
+    }
+}
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "tensorx",
@@ -126,20 +148,18 @@ impl Provider for TensorX {
                 }
             };
 
-            if has_thinking {
-                body["thinking"] = json!(opts.thinking.is_enabled());
-            }
-            if has_reasoning_effort {
-                opts.thinking
-                    .apply_reasoning_effort(&mut body, &dialect::TENSORX, model);
-            }
+            let fields = tensorx_fields(has_thinking, has_reasoning_effort);
+            opts.thinking
+                .apply_thinking(&mut body, model, &dialect::TENSORX, &fields);
             // Fallback for deepseek models that use chat_template_kwargs
-            else if !has_thinking
+            if !has_thinking
+                && !has_reasoning_effort
                 && opts.thinking.is_enabled()
                 && model.id.starts_with("deepseek/deepseek-v4")
             {
                 body["chat_template_kwargs"] = json!({"thinking": true});
             }
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
             let response = self
                 .compat
