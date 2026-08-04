@@ -281,7 +281,13 @@ fn is_basic_auth_credential(value: &str) -> bool {
             && character != '/'
             && character != '='
     });
+    let has_base64_like_entropy = (trimmed.chars().any(|c| c.is_ascii_uppercase())
+        && trimmed.chars().any(|c| c.is_ascii_lowercase()))
+        || trimmed
+            .chars()
+            .any(|character| character.is_ascii_digit() || "+/=".contains(character));
     trimmed.len() >= AUTH_CREDENTIAL_MIN_CHARS
+        && has_base64_like_entropy
         && trimmed.chars().all(|character| {
             character.is_ascii_alphanumeric()
                 || character == '+'
@@ -303,10 +309,22 @@ fn contains_unescaped_quote(value: &str, quote: char) -> bool {
 
 fn is_sensitive_key(value: &str) -> bool {
     let normalized = normalize_key(value);
-    super::SECRET_KEYS.contains(&normalized.as_str())
-        || SENSITIVE_KEY_FRAGMENTS
-            .iter()
-            .any(|fragment| normalized.contains(fragment))
+    if super::SECRET_KEYS.contains(&normalized.as_str()) {
+        return true;
+    }
+    let tokens = crate::words(value);
+    SENSITIVE_KEY_FRAGMENTS.iter().any(|fragment| {
+        for start in 0..tokens.len() {
+            let mut combined = String::with_capacity(fragment.len());
+            for token in &tokens[start..] {
+                combined.push_str(token);
+                if combined.ends_with(fragment) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
 }
 
 fn is_secret_token(value: &str) -> bool {
@@ -327,7 +345,6 @@ fn is_secret_token(value: &str) -> bool {
         })
         || super::is_aws_access_key_id(trimmed)
         || lower.starts_with("aiza")
-        || super::is_jwt_like(&lower)
 }
 
 fn normalize_key(value: &str) -> String {
@@ -423,6 +440,31 @@ mod tests {
     }
 
     #[test]
+    fn preserves_secretary_as_an_ordinary_word() {
+        let sanitized = sanitize_text("ask the secretary for the schedule", 80);
+        assert_eq!(sanitized, "ask the secretary for the schedule");
+    }
+
+    #[test]
+    fn preserves_passwordless_as_an_ordinary_word() {
+        let sanitized = sanitize_text("this endpoint uses passwordless login", 80);
+        assert_eq!(sanitized, "this endpoint uses passwordless login");
+    }
+
+    #[test]
+    fn redacts_separator_split_compound_secret_keys() {
+        let sanitized = sanitize_text("client_secret=abc123 clientSecret=xyz789", 80);
+        assert!(!sanitized.contains("abc123"));
+        assert!(!sanitized.contains("xyz789"));
+    }
+
+    #[test]
+    fn redacts_unseparated_compound_ending_in_a_sensitive_fragment() {
+        let sanitized = sanitize_text("vaultsecret=abc123", 80);
+        assert!(!sanitized.contains("abc123"));
+    }
+
+    #[test]
     fn short_secret_prefix_requires_word_boundary() {
         let sanitized = sanitize_text("desk-top risk-taking sk-visible", 80);
         assert_eq!(sanitized, "desk-top risk-taking [redacted]");
@@ -464,6 +506,12 @@ mod tests {
     fn preserves_basic_in_prose() {
         let sanitized = sanitize_text("the basic idea is simple", 80);
         assert_eq!(sanitized, "the basic idea is simple");
+    }
+
+    #[test]
+    fn preserves_standalone_basic_prose_of_eight_or_more_letters() {
+        let sanitized = sanitize_text("value Basic training is required", 80);
+        assert_eq!(sanitized, "value Basic training is required");
     }
 
     #[test]

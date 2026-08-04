@@ -159,11 +159,11 @@ fn has_secret_key_qualifier(normalized: &str) -> bool {
     })
 }
 
-/// Returns the last separator- or case-delimited word of `key`, lowercased.
-fn last_word(key: &str) -> Option<String> {
+/// Splits `key` into separator- or case-delimited words, lowercased.
+pub(crate) fn words(key: &str) -> Vec<String> {
     let characters = key.chars().collect::<Vec<_>>();
     let mut current = String::new();
-    let mut last = None;
+    let mut result = Vec::new();
     for (index, character) in characters.iter().copied().enumerate() {
         let separator = !character.is_ascii_alphanumeric();
         let previous = index
@@ -176,7 +176,7 @@ fn last_word(key: &str) -> Option<String> {
                     && next.is_some_and(char::is_ascii_lowercase)));
         if separator || case_boundary {
             if !current.is_empty() {
-                last = Some(mem::take(&mut current));
+                result.push(mem::take(&mut current));
             }
             if separator {
                 continue;
@@ -185,9 +185,17 @@ fn last_word(key: &str) -> Option<String> {
         current.push(character);
     }
     if !current.is_empty() {
-        last = Some(current);
+        result.push(current);
     }
-    last.map(|word| word.to_ascii_lowercase())
+    result
+        .into_iter()
+        .map(|word| word.to_ascii_lowercase())
+        .collect()
+}
+
+/// Returns the last separator- or case-delimited word of `key`, lowercased.
+fn last_word(key: &str) -> Option<String> {
+    words(key).pop()
 }
 
 fn normalize_key(key: &str) -> String {

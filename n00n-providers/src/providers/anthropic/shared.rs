@@ -399,7 +399,13 @@ impl EventParser {
                 {
                     *input = match serde_json::from_str(&self.current_tool_json) {
                         Ok(v) => {
-                            debug!(tool = %name, json = %redact_json_value_for_log(&v), "tool input JSON");
+                            debug!(
+                                tool_index = self.current_block_idx,
+                                has_tool_name = !name.is_empty(),
+                                tool_name_length = name.len(),
+                                json = %redact_json_value_for_log(&v),
+                                "tool input JSON"
+                            );
                             v
                         }
                         Err(e) => {
