@@ -186,8 +186,8 @@ impl SmellIndex {
             fs::remove_dir_all(&index_path)?;
         }
         fs::create_dir_all(&index_path)?;
-        self.index = Index::create_in_dir(&index_path, schema.clone())?;
-        *self = Self::from_parts(self.path.clone(), self.index.clone(), &schema)?;
+        let index = Index::create_in_dir(&index_path, schema.clone())?;
+        *self = Self::from_parts(self.path.clone(), index, &schema)?;
 
         let mut writer = self.writer()?;
         for (processed, smell) in smells.iter().enumerate() {
@@ -237,7 +237,7 @@ impl SmellIndex {
             .try_into()?;
         let searcher = reader.searcher();
 
-        let mut fields = vec![
+        let fields = vec![
             self.content_field,
             self.message_field,
             self.kind_field,
@@ -260,7 +260,6 @@ impl SmellIndex {
                         message: err.to_string(),
                     })?
             } else {
-                fields.push(self.kind_field);
                 let parser = QueryParser::for_index(&self.index, fields);
                 let combined = format!("{text_query} AND {kind_query}");
                 parser
