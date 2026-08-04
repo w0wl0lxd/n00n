@@ -316,7 +316,7 @@ impl SessionIdentity {
     }
 
     #[must_use]
-    pub fn child(session_id: SessionRef, root_session_id: n00n_storage::id::SessionRef) -> Self {
+    pub fn child(session_id: SessionRef, root_session_id: SessionRef) -> Self {
         Self {
             session_id,
             root_session_id,

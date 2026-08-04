@@ -1115,7 +1115,10 @@ enum RuntimeWake {
     Lifecycle,
     Spawn(PendingAsyncTask),
     Request(Box<Request>),
-    Closed,
+    Priority(Box<Request>),
+    SpawnClosed,
+    RequestClosed,
+    PriorityClosed,
 }
 
 // Reentrant agents may dispatch Lua tools from another executor thread. Service every tool
@@ -1127,11 +1130,27 @@ async fn drain_runtime(
     lifecycle: &Rc<LifecycleGate>,
     spawn_rx: &flume::Receiver<PendingAsyncTask>,
     request_rx: &flume::Receiver<Request>,
+    priority_rx: &flume::Receiver<Request>,
     deferred: &mut VecDeque<Request>,
-) {
+) -> bool {
     let mut spawn_closed = false;
     let mut request_closed = false;
+    let mut priority_closed = false;
     while !lifecycle.is_idle() {
+        if rt.shutdown.load(Ordering::Acquire) {
+            return true;
+        }
+        while !priority_closed {
+            match priority_rx.try_recv() {
+                Ok(Request::Shutdown) => return true,
+                Ok(request) => deferred.push_back(request),
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => {
+                    priority_closed = true;
+                    break;
+                }
+            }
+        }
         while !spawn_closed {
             match spawn_rx.try_recv() {
                 Ok(task) => spawn_async_task(&rt.lua, ex, gate, task),
@@ -1159,14 +1178,21 @@ async fn drain_runtime(
         if lifecycle.is_idle() {
             break;
         }
-        let wake = if spawn_closed && request_closed {
-            lifecycle.changed().await;
-            RuntimeWake::Lifecycle
-        } else {
+        let wake = smol::future::or(
+            async {
+                lifecycle.changed().await;
+                RuntimeWake::Lifecycle
+            },
             smol::future::or(
                 async {
-                    lifecycle.changed().await;
-                    RuntimeWake::Lifecycle
+                    if priority_closed {
+                        smol::future::pending::<RuntimeWake>().await
+                    } else {
+                        priority_rx.recv_async().await.map_or_else(
+                            |_| RuntimeWake::PriorityClosed,
+                            |request| RuntimeWake::Priority(Box::new(request)),
+                        )
+                    }
                 },
                 smol::future::or(
                     async {
@@ -1176,7 +1202,7 @@ async fn drain_runtime(
                             spawn_rx
                                 .recv_async()
                                 .await
-                                .map_or(RuntimeWake::Closed, RuntimeWake::Spawn)
+                                .map_or(RuntimeWake::SpawnClosed, RuntimeWake::Spawn)
                         }
                     },
                     async {
@@ -1184,15 +1210,15 @@ async fn drain_runtime(
                             smol::future::pending::<RuntimeWake>().await
                         } else {
                             request_rx.recv_async().await.map_or_else(
-                                |_| RuntimeWake::Closed,
+                                |_| RuntimeWake::RequestClosed,
                                 |request| RuntimeWake::Request(Box::new(request)),
                             )
                         }
                     },
                 ),
-            )
-            .await
-        };
+            ),
+        )
+        .await;
         match wake {
             RuntimeWake::Spawn(task) => spawn_async_task(&rt.lua, ex, gate, task),
             RuntimeWake::Request(request) => {
@@ -1200,17 +1226,23 @@ async fn drain_runtime(
                     deferred.push_back(request);
                 }
             }
-            RuntimeWake::Closed => {
-                if !spawn_closed {
-                    spawn_closed = true;
-                } else if !request_closed {
-                    request_closed = true;
+            RuntimeWake::Priority(request) => {
+                if matches!(*request, Request::Shutdown) {
+                    return true;
                 }
+                deferred.push_back(*request);
             }
+            RuntimeWake::SpawnClosed => spawn_closed = true,
+            RuntimeWake::RequestClosed => request_closed = true,
+            RuntimeWake::PriorityClosed => priority_closed = true,
             RuntimeWake::Lifecycle => {}
         }
     }
+    if rt.shutdown.load(Ordering::Acquire) {
+        return true;
+    }
     drain_barrier(&rt.lua, ex, gate, spawn_rx).await;
+    false
 }
 
 fn validate_snapshot_lua_values(
@@ -2593,16 +2625,20 @@ pub fn spawn(
                             opts,
                             reply,
                         } => {
-                            drain_runtime(
+                            if drain_runtime(
                                 &rt,
                                 &ex,
                                 &gate,
                                 &lifecycle,
                                 &spawn_rx,
                                 &rx,
+                                &prio_rx,
                                 &mut deferred,
                             )
-                            .await;
+                            .await
+                            {
+                                break;
+                            }
                             let res = rt.load_source(Arc::clone(&name), &source, plugin_dir, &permissions, opts, None).await;
                             let _ = reply.send(res);
                         }
@@ -2612,16 +2648,20 @@ pub fn spawn(
                             debug_assert!(deferred_request.is_none());
                         }
                         Request::ClearPlugin { plugin, reply } => {
-                            drain_runtime(
+                            if drain_runtime(
                                 &rt,
                                 &ex,
                                 &gate,
                                 &lifecycle,
                                 &spawn_rx,
                                 &rx,
+                                &prio_rx,
                                 &mut deferred,
                             )
-                            .await;
+                            .await
+                            {
+                                break;
+                            }
                             rt.clear_plugin(&plugin);
                             let _ = reply.send(());
                         }
@@ -2681,16 +2721,20 @@ pub fn spawn(
                             plugin_dir,
                             reply,
                         } => {
-                            drain_runtime(
+                            if drain_runtime(
                                 &rt,
                                 &ex,
                                 &gate,
                                 &lifecycle,
                                 &spawn_rx,
                                 &rx,
+                                &prio_rx,
                                 &mut deferred,
                             )
-                            .await;
+                            .await
+                            {
+                                break;
+                            }
                             let res = rt.run_init_lua(&source, &source_name, plugin_dir).await;
                             let _ = reply.send(res);
                         }
@@ -2706,16 +2750,20 @@ pub fn spawn(
                             snapshot,
                             reply,
                         } => {
-                            drain_runtime(
+                            if drain_runtime(
                                 &rt,
                                 &ex,
                                 &gate,
                                 &lifecycle,
                                 &spawn_rx,
                                 &rx,
+                                &prio_rx,
                                 &mut deferred,
                             )
-                            .await;
+                            .await
+                            {
+                                break;
+                            }
                             let result = validate_snapshot_lua_values(
                                 &rt.lua,
                                 &identity,
@@ -2733,16 +2781,20 @@ pub fn spawn(
                             revision,
                             reply,
                         } => {
-                            drain_runtime(
+                            if drain_runtime(
                                 &rt,
                                 &ex,
                                 &gate,
                                 &lifecycle,
                                 &spawn_rx,
                                 &rx,
+                                &prio_rx,
                                 &mut deferred,
                             )
-                            .await;
+                            .await
+                            {
+                                break;
+                            }
                             let result = rt
                                 .state
                                 .capture(&identity, revision)
@@ -2750,30 +2802,38 @@ pub fn spawn(
                             let _ = reply.send(result);
                         }
                         Request::ResetState { identity, reply } => {
-                            drain_runtime(
+                            if drain_runtime(
                                 &rt,
                                 &ex,
                                 &gate,
                                 &lifecycle,
                                 &spawn_rx,
                                 &rx,
+                                &prio_rx,
                                 &mut deferred,
                             )
-                            .await;
+                            .await
+                            {
+                                break;
+                            }
                             rt.state.reset(&identity);
                             let _ = reply.send(());
                         }
                         Request::DropStateOwner { owner, reply } => {
-                            drain_runtime(
+                            if drain_runtime(
                                 &rt,
                                 &ex,
                                 &gate,
                                 &lifecycle,
                                 &spawn_rx,
                                 &rx,
+                                &prio_rx,
                                 &mut deferred,
                             )
-                            .await;
+                            .await
+                            {
+                                break;
+                            }
                             rt.state.drop_owner(owner);
                             let _ = reply.send(());
                         }
