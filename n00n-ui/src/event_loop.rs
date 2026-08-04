@@ -335,7 +335,13 @@ impl RuntimeDescriptor {
                 "output".to_owned(),
                 output.map_or(Value::Null, |text| Value::String(text.to_owned())),
             );
-            object.insert("paused_team".to_owned(), paused_team.unwrap_or(Value::Null));
+            object.insert(
+                "paused_team".to_owned(),
+                match paused_team {
+                    Some(team) => team,
+                    None => Value::Null,
+                },
+            );
         }
         descriptor
     }
@@ -396,7 +402,10 @@ fn continued_subagent_session(
     let mut session = AppSession::new(model, &parent.cwd);
     session.title = normalize_title(&format!("continued: {name}"));
     session.meta.parent_id = Some(parent.id);
-    session.meta.root_id = Some(parent.meta.root_id.unwrap_or(parent.id));
+    session.meta.root_id = Some(match parent.meta.root_id {
+        Some(root_id) => root_id,
+        None => parent.id,
+    });
     session.transcript = messages
         .iter()
         .cloned()
@@ -1399,13 +1408,16 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                     session.meta.root_id = Some(
-                        self.sessions[parent_position]
+                        match self.sessions[parent_position]
                             .app
                             .state
                             .session
                             .meta
                             .root_id
-                            .unwrap_or(parent_id),
+                        {
+                            Some(root_id) => root_id,
+                            None => parent_id,
+                        },
                     );
                 }
                 session.meta.parent_id = parent_id;
@@ -1586,7 +1598,7 @@ impl<'t> EventLoop<'t> {
                         SessionLifecycle::Running | SessionLifecycle::WaitingInput
                     )
             })
-            .map(|runtime| runtime.id())
+            .map(SessionRuntime::id)
             .collect();
         let cancelled = targets.len();
         for target_id in targets {

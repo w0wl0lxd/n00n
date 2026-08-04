@@ -742,6 +742,23 @@ async fn execute_mcp_tool(
         );
     }
 
+    // Check exclusion before asking the user for permission; an excluded tool
+    // must not surface a permission prompt.
+    let Some(mcp) = &ctx.mcp else {
+        return tool_done_error(
+            id.to_owned(),
+            Arc::clone(&tool_id),
+            format!("MCP manager not available for {tool_name}"),
+        );
+    };
+    if mcp.is_excluded(tool_name) {
+        return tool_done_error(
+            id.to_owned(),
+            Arc::clone(&tool_id),
+            TOOL_FILTER_DENIED.into(),
+        );
+    }
+
     // Plan-mode read-only classification only bypasses the mutation gate above.
     // Configured MCP allow/deny rules still apply.
     let perm_tool = match ToolKey::parse(tool_name) {
@@ -778,21 +795,6 @@ async fn execute_mcp_tool(
         .await
     {
         return tool_done_error(id.to_owned(), Arc::clone(&tool_id), e.to_string());
-    }
-
-    let Some(mcp) = &ctx.mcp else {
-        return tool_done_error(
-            id.to_owned(),
-            Arc::clone(&tool_id),
-            format!("MCP manager not available for {tool_name}"),
-        );
-    };
-    if mcp.is_excluded(tool_name) {
-        return tool_done_error(
-            id.to_owned(),
-            Arc::clone(&tool_id),
-            TOOL_FILTER_DENIED.into(),
-        );
     }
 
     // A permitted call to a deferred tool counts as loading it, so its full
