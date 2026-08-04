@@ -6,9 +6,10 @@ use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, trans
 use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
+use n00n_agent::tools::SessionIdentity;
 use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Model, TokenUsage};
-use n00n_storage::id::n00nId;
+use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
     StoredDelivery, StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode,
     StoredQueuedMessage, StoredSubagent, StoredThinking,
@@ -150,7 +151,7 @@ impl App {
     }
 
     pub(crate) fn save_session(&mut self) {
-        let snapshot = self.session_snapshot();
+        let snapshot = self.session_snapshot_with_plugin_state();
         if !session_has_content(&snapshot) {
             return;
         }
@@ -166,6 +167,77 @@ impl App {
         );
         self.sync_ephemeral_state();
         self.state.session.clone()
+    }
+
+    fn session_snapshot_with_plugin_state(&mut self) -> AppSession {
+        let mut snapshot = self.session_snapshot();
+        self.capture_plugin_state();
+        snapshot.meta.state_snapshot = self.state.session.meta.state_snapshot.clone();
+        snapshot
+    }
+
+    pub(crate) fn checkpoint_session(&mut self) {
+        let snapshot = self.session_snapshot();
+        if session_has_content(&snapshot) {
+            self.storage_writer.send(Box::new(snapshot));
+        }
+    }
+
+    pub(crate) fn hydrate_plugin_state(&mut self) {
+        let Some(handle) = &self.lua_event_handle else {
+            return;
+        };
+        let session_id = self.state.session.id;
+        let identity = SessionIdentity::root(SessionRef::from_id(session_id));
+        if let Err(error) = handle.drop_state_owner(session_id) {
+            tracing::warn!(%session_id, %error, "failed to clear stale plugin session state");
+            return;
+        }
+        if let Err(error) =
+            handle.hydrate_state(&identity, self.state.session.meta.state_snapshot.clone())
+        {
+            tracing::warn!(%session_id, %error, "failed to restore plugin session state");
+        }
+    }
+
+    fn capture_plugin_state(&mut self) {
+        let Some(handle) = &self.lua_event_handle else {
+            return;
+        };
+        let session_id = self.state.session.id;
+        let identity = SessionIdentity::root(SessionRef::from_id(session_id));
+        let persisted_revision = match self
+            .state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.state_revision())
+        {
+            Some(revision) => revision,
+            None => 0,
+        };
+        let revision = self
+            .state
+            .session
+            .meta
+            .revision
+            .max(persisted_revision.saturating_add(1));
+        match handle.capture_state(&identity, revision) {
+            Ok(snapshot) => self.state.session.meta.state_snapshot = Some(snapshot),
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "failed to capture plugin session state");
+            }
+        }
+    }
+
+    pub(crate) fn drop_plugin_state(&self, session_id: n00nId) {
+        let Some(handle) = &self.lua_event_handle else {
+            return;
+        };
+        if let Err(error) = handle.drop_state_owner(session_id) {
+            tracing::warn!(%session_id, %error, "failed to drop plugin session state");
+        }
     }
 
     fn sync_ephemeral_state(&mut self) {
@@ -332,6 +404,7 @@ impl App {
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
         self.save_session();
+        self.drop_plugin_state(self.state.session.id);
         self.reset_ui_chrome();
         self.state.token_usage = TokenUsage::default();
         self.state.context_size = 0;
@@ -340,6 +413,7 @@ impl App {
             self.enter_plan();
         }
         self.state.session = AppSession::new(&self.state.session.model, &self.state.session.cwd);
+        self.hydrate_plugin_state();
         self.fire_session_autocmd("SessionReset", serde_json::json!({}));
         vec![Action::NewSession]
     }
@@ -392,7 +466,12 @@ impl App {
     ) -> LoadedSession {
         self.permissions
             .load_session_rules(stored_to_rules(&session.meta.session_rules));
+        let previous_session_id = self.state.session.id;
         self.state = SessionState::from_session(session, fallback_model, &self.storage);
+        if previous_session_id != self.state.session.id {
+            self.drop_plugin_state(previous_session_id);
+        }
+        self.hydrate_plugin_state();
         self.state
             .session
             .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());

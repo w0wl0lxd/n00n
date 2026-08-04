@@ -251,6 +251,7 @@ impl SpawnCtx {
             picker: Arc::clone(&self.picker),
         });
         app.lua_event_handle.clone_from(&self.lua_event_handle);
+        app.hydrate_plugin_state();
         handles.apply_to_app(&mut app);
         if resumed {
             restore_session(&mut app, &handles);
@@ -710,7 +711,7 @@ impl<'t> EventLoop<'t> {
         }
         for rt in &mut self.sessions {
             if should_save_periodically(&rt.app.status) {
-                rt.app.save_session();
+                rt.app.checkpoint_session();
             }
         }
         self.last_save = Instant::now();
@@ -866,6 +867,7 @@ impl<'t> EventLoop<'t> {
                     }
                     let rt = self.remove_runtime(i);
                     rt.handles.cancel();
+                    rt.app.drop_plugin_state(id);
                 }
                 self.ctx.storage_writer.delete(id, move |res| {
                     let reply = match res {

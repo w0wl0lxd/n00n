@@ -23,6 +23,7 @@ use n00n_providers::{
     StreamResponse, System, TokenUsage,
 };
 use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::StoredStateScope;
 
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 46_000;
 
@@ -5336,6 +5337,46 @@ fn bundled_todo_panel_keeps_current_todo_stable_in_hint() {
     handle.fire_autocmd(
         "ToolDone",
         serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+    );
+    handle.fire_autocmd("TurnEnd", serde_json::json!({}));
+    barrier(&host);
+    let hints = host.hint_reader().load();
+    let text = hints
+        .entries
+        .iter()
+        .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
+        .collect::<String>();
+    assert!(text.contains("Run tests"), "turn end cleared todos: {text}");
+}
+
+#[test]
+fn bundled_todo_persists_root_scoped_state() {
+    let (reg, host) = builtins_host();
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let entry = reg.get("todo_write").unwrap();
+    let invocation = entry
+        .tool
+        .parse(&serde_json::json!({
+            "todos": [{ "content": "Resume work", "status": "in_progress", "priority": "high" }]
+        }))
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    ctx.identity = Some(identity.clone());
+
+    smol::block_on(invocation.execute(&ctx)).output.unwrap();
+
+    let snapshot = host
+        .event_handle()
+        .unwrap()
+        .capture_state(&identity, 1)
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+            .unwrap(),
+        Some(&serde_json::json!({
+            "todos": [{ "content": "Resume work", "status": "in_progress", "priority": "high" }]
+        }))
     );
 }
 

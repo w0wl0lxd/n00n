@@ -222,8 +222,17 @@ n00n.api.register_tool({
     return ToolView.restore_lines(build_lines(), { max_lines = DEFAULT_PREVIEW_LINES, keep = "head" })
   end,
 
-  handler = function(input)
+  handler = function(input, ctx)
     items = input.todos or {}
+    local _, state_err
+    if #items == 0 then
+      _, state_err = ctx:state_remove("root")
+    else
+      _, state_err = ctx:state_replace("root", { todos = items })
+    end
+    if state_err then
+      error(state_err)
+    end
     if #items == 0 then
       if win and win:is_open() then
         win:hide()
@@ -308,16 +317,22 @@ n00n.api.create_autocmd("ToolDone", {
   end,
 })
 
-local function clear_todos()
-  items = {}
-  seen_first = false
+local function clear_activity()
   running = {}
   running_order = {}
   activity_expanded = false
+  refresh_activity()
+end
+
+local function clear_todos()
+  items = {}
+  seen_first = false
+  clear_activity()
   if win and win:is_open() then
     win:hide()
   end
   n00n.ui.set_status_hint(nil)
 end
 
-n00n.api.create_autocmd({ "TurnEnd", "TurnError", "SessionReset" }, { callback = clear_todos })
+n00n.api.create_autocmd({ "TurnEnd", "TurnError" }, { callback = clear_activity })
+n00n.api.create_autocmd("SessionReset", { callback = clear_todos })

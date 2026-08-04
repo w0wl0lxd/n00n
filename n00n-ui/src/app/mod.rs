@@ -1596,6 +1596,7 @@ impl App {
                 self.subagent_answers.remove(&e.id);
                 self.subagent_prompts.remove(&e.id);
             }
+            self.save_session();
         }
 
         if let AgentEvent::Retry {
