@@ -143,7 +143,7 @@ local function dispatch(input)
       table.insert(args, "--max-hunk-lines")
       table.insert(args, tostring(input.max_hunk_lines))
     end
-    if input.kinds then
+    if input.kinds and #input.kinds > 0 then
       table.insert(args, "--kinds")
       table.insert(args, table.concat(input.kinds, ","))
     end
