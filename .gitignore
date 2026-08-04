@@ -43,6 +43,7 @@ hk.local.pkl
 /.arbor/
 /.codegraph/
 /.n00n/search/
+/.specify/workflows/runs/
 
 # Throwaway validation spikes
 /spikes/

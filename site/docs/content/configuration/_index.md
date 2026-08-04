@@ -237,6 +237,13 @@ n00n.setup({
 |-------|------|---------|-----|-------------|
 | `plugin_dev` | boolean | `true` | - | Offer the builtin n00n-plugin-dev skill for writing n00n plugins. |
 
+### `plugins.smell`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+
 ### `plugins.task`
 
 | Field | Type | Default | Min | Description |

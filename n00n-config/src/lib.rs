@@ -79,6 +79,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "semblem",
     "sessions",
     "skill",
+    "smell",
     "task",
     "team",
     "todo_write",
