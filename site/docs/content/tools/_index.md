@@ -119,19 +119,12 @@ Find files by glob pattern. Respects .gitignore. Returns matching paths sorted b
 
 ### `grep` *(lua plugin)*
 
-Search file contents using regex patterns. Results are grouped by file and sorted by modification time.
-
-Key points:
-- Respects .gitignore
-- Prefer speculative parallel searches over sequential glob+grep
-- Use Rust regex syntax (PCRE look-around like `(?!...)` or `(?<!...)` is not supported)
-- Do NOT wrap pattern in quotes or double-escape (e.g. use `\[` not `\\[`)
-- Multi-line matching is auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`
+Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: PCRE look-around (e.g. `(?!...)`, `(?<!...)`) is not supported. Use Rust regex syntax.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `include` | string | no | Glob pattern (e.g. '*.rs'). |
-| `path` | string \| array | no | Directory or file(s) to search. |
+| `path` | object | no |  |
 | `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
