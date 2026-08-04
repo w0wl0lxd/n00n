@@ -128,9 +128,6 @@ impl AgentError {
 
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        if matches!(self, Self::RequestSent { .. }) {
-            return false;
-        }
         if self.is_context_overflow() {
             return false;
         }
@@ -140,33 +137,22 @@ impl AgentError {
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
-            Self::Config { .. }
-            | Self::Tool { .. }
-            | Self::Storage
-            | Self::Channel
-            | Self::Json(_)
-            | Self::Cancelled
-            | Self::HttpRequest(_)
-            | Self::CredentialLockTimeout { .. }
-            | Self::CodingPlanAdmissionTimeout { .. }
-            | Self::ResponseChainBusy { .. }
-            | Self::CodingPlanAdmissionScopeChanged
-            | Self::CodingPlanAdmission { .. }
-            | Self::HistoryReplayRequired { .. }
-            | Self::RequestSent { .. } => false,
+            _ => false,
         }
     }
 
     /// Converts failures that may have occurred after the provider accepted the
-    /// request or emitted output into [`AgentError::RequestSent`], which is not
-    /// retryable. Transport-level failures are treated as request-sent once the
-    /// request has left the client. API/server errors are only suppressed when
-    /// output has already been emitted or the request was accepted, preserving
-    /// retryability when no output has been accepted.
+    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
+    /// failures are treated as request-sent once the request has left the client.
+    /// API/server errors are only suppressed when output has already been emitted
+    /// or the request was accepted, preserving retryability when no output has been
+    /// accepted.
     ///
-    /// `server_is_overloaded` is preserved on requests that were not sent. Once
-    /// a request may have been accepted, `RequestSent` remains non-retryable to
-    /// prevent an automatic duplicate request.
+    /// `server_is_overloaded` is preserved on requests that were not sent. Once a
+    /// request may have been accepted, `RequestSent` is normally non-retryable to
+    /// prevent an automatic duplicate request, but a `server_is_overloaded` message
+    /// inside `RequestSent` is still retryable so capacity errors can back off and
+    /// resubmit.
     #[must_use]
     pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
         let emitted_or_accepted = metadata
@@ -479,18 +465,18 @@ mod tests {
     }
 
     #[test]
-    fn request_sent_with_server_overload_is_not_retryable() {
+    fn request_sent_with_server_overload_is_retryable() {
         let err = AgentError::RequestSent {
             message: "request may have been accepted before the connection failed: API error (400): server_is_overloaded".into(),
             metadata: None,
         };
         assert!(err.is_server_overloaded());
-        assert!(!err.is_retryable());
+        assert!(err.is_retryable());
         assert_eq!(err.retry_message(), "Provider is overloaded");
     }
 
     #[test]
-    fn accepted_server_overload_is_suppressed_to_request_sent() {
+    fn accepted_server_overload_is_suppressed_to_request_sent_but_still_retryable() {
         let err = api_msg(
             400,
             "server_is_overloaded: Our servers are currently overloaded. Please try again later.",
@@ -499,7 +485,7 @@ mod tests {
         let err = err.suppress_retry_after_send(metadata);
 
         assert!(matches!(err, AgentError::RequestSent { .. }));
-        assert!(!err.is_retryable());
+        assert!(err.is_retryable());
     }
 
     #[test]
