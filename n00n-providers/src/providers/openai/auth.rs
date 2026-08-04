@@ -76,6 +76,19 @@ struct TokenResponse {
     expires_in: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct CodexAuthFile {
+    tokens: CodexTokens,
+}
+
+#[derive(Deserialize)]
+struct CodexTokens {
+    access_token: String,
+    refresh_token: String,
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
 struct CredentialsLock {
     _file: File,
 }
@@ -199,7 +212,7 @@ fn open_credentials_lock(path: &Path) -> Result<File, AgentError> {
     let mut options = OpenOptions::new();
     options.create_new(true).read(true).write(true);
     #[cfg(unix)]
-    options.mode(AUTH_LOCK_MODE);
+    options.mode(AUTH_LOCK_MODE).custom_flags(libc::O_CLOEXEC);
     let file = match options.open(path) {
         Ok(file) => file,
         Err(error)
@@ -333,7 +346,9 @@ fn open_admission_slot(path: &Path) -> Result<File, AgentError> {
     let mut create = OpenOptions::new();
     create.create_new(true).read(true).write(true);
     #[cfg(unix)]
-    create.mode(AUTH_LOCK_MODE).custom_flags(libc::O_NOFOLLOW);
+    create
+        .mode(AUTH_LOCK_MODE)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     match create.open(path) {
         Ok(file) => {
             validate_lock_metadata(&file.metadata()?)?;
@@ -352,7 +367,7 @@ fn open_admission_slot(path: &Path) -> Result<File, AgentError> {
             let mut open = OpenOptions::new();
             open.read(true).write(true);
             #[cfg(unix)]
-            open.custom_flags(libc::O_NOFOLLOW);
+            open.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
             let file = open.open(path)?;
             let opened = file.metadata()?;
             validate_lock_metadata(&opened)?;
@@ -474,12 +489,7 @@ fn http_client(timeout: Duration) -> Result<isahc::HttpClient, AgentError> {
 }
 
 fn extract_account_id(token: &str) -> Option<String> {
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    let claims = decode_jwt_claims(token)?;
 
     claims
         .get("chatgpt_account_id")
@@ -498,6 +508,29 @@ fn extract_account_id(token: &str) -> Option<String> {
                 .and_then(|v| v.as_str())
         })
         .map(String::from)
+}
+
+fn token_exp(token: &str) -> Option<u64> {
+    let claims = decode_jwt_claims(token)?;
+    claims.get("exp").and_then(serde_json::Value::as_u64)
+}
+
+fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let mut parts = token.split('.');
+    parts.next()?;
+    let payload = parts.next()?;
+    parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let Ok(decoded) = URL_SAFE_NO_PAD.decode(payload) else {
+        return None;
+    };
+    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&decoded) else {
+        return None;
+    };
+    Some(claims)
 }
 
 fn extract_account_id_from_tokens(resp: &TokenResponse) -> Option<String> {
@@ -772,6 +805,54 @@ pub fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
+fn ensure_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
+    if let Some(tokens) = load_tokens(dir, PROVIDER) {
+        return Ok(Some(tokens));
+    }
+    import_codex_tokens(dir)?;
+    Ok(load_tokens(dir, PROVIDER))
+}
+
+fn import_codex_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
+    // Only migrate into the user's real state directory, never a test temp dir.
+    let user = StateDir::resolve()?;
+    if dir.path() != user.path() {
+        return Ok(None);
+    }
+
+    let Some(home) = n00n_storage::paths::home() else {
+        return Ok(None);
+    };
+    let codex_path = home.join(".codex").join("auth.json");
+
+    let Ok(data) = fs::read_to_string(&codex_path) else {
+        debug!(path = %codex_path.display(), "no Codex auth file to migrate");
+        return Ok(None);
+    };
+
+    let Ok(file) = serde_json::from_str::<CodexAuthFile>(&data) else {
+        debug!(path = %codex_path.display(), "malformed Codex auth file");
+        return Ok(None);
+    };
+
+    let Some(exp) = token_exp(&file.tokens.access_token) else {
+        return Ok(None);
+    };
+    let expires = exp.checked_mul(1000).ok_or_else(|| AgentError::Config {
+        message: "OpenAI token expiry overflow".into(),
+    })?;
+
+    let n00n_tokens = OAuthTokens {
+        access: file.tokens.access_token,
+        refresh: file.tokens.refresh_token,
+        expires,
+        account_id: file.tokens.account_id,
+    };
+    save_tokens(dir, PROVIDER, &n00n_tokens)?;
+    debug!("migrated Codex OpenAI tokens");
+    Ok(Some(n00n_tokens))
+}
+
 /// Resolve cached `OpenAI` authentication without network access.
 ///
 /// # Errors
@@ -830,7 +911,7 @@ pub(crate) fn resolve_api_key(dir: &StateDir) -> Result<ResolvedAuth, AgentError
 }
 
 pub(crate) fn resolve_coding_plan(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
-    let tokens = load_tokens(dir, PROVIDER).ok_or_else(|| AgentError::Config {
+    let tokens = ensure_tokens(dir)?.ok_or_else(|| AgentError::Config {
         message: "not authenticated, run `n00n auth login codex`".into(),
     })?;
 

@@ -11,7 +11,8 @@ use n00n_config::providers::Protocol;
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System};
+use crate::types::{ThinkingFieldConfig, ToggleEntry};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System, dialect};
 
 use super::openai::responses;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
@@ -37,6 +38,25 @@ fn resolve_protocol_for_local(slug: &str) -> Option<Protocol> {
     )
 }
 
+const THINKING_BUDGET_FIELD: &str = "thinking_budget_tokens";
+/// llama.cpp-style sentinels for the budget field: 0 disables reasoning, -1
+/// hands the depth back to the server.
+const THINKING_DISABLED: i64 = 0;
+const THINKING_ADAPTIVE: i64 = -1;
+
+fn local_fields() -> ThinkingFieldConfig {
+    ThinkingFieldConfig {
+        budget_path: Some(THINKING_BUDGET_FIELD.into()),
+        toggles: vec![ToggleEntry {
+            path: THINKING_BUDGET_FIELD.into(),
+            off: Some(json!(THINKING_DISABLED)),
+            adaptive: Some(json!(THINKING_ADAPTIVE)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
 pub(crate) struct LocalEndpoint {
     compat: OpenAiCompatProvider,
     auth: Arc<Mutex<ResolvedAuth>>,
@@ -45,6 +65,10 @@ pub(crate) struct LocalEndpoint {
     thinking_budget_field: bool,
     discovery_mode: DiscoveryMode,
     protocol: Option<Protocol>,
+    /// `true` when the endpoint has an explicit host, `base_url`, or cloud key.
+    /// Unconfigured local providers are still usable for explicit model specs,
+    /// but discovery returns empty instead of warning about a missing server.
+    configured: bool,
 }
 
 impl LocalEndpoint {
@@ -79,6 +103,7 @@ impl LocalEndpoint {
             thinking_budget_field: cfg.thinking_budget_field,
             discovery_mode: cfg.discovery_mode,
             protocol: resolve_protocol_for_local(cfg.slug),
+            configured: true,
         })
     }
 
@@ -95,16 +120,21 @@ impl LocalEndpoint {
         protocol: Option<Protocol>,
     ) -> Result<Self, AgentError> {
         let api_key = key_pool.as_ref().map(|p| p.current().to_string());
-        let base_url = match host {
-            Some(h) => format!("{h}/v1"),
-            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => cfg
-                .cloud_fallback_url
-                .as_ref()
-                .ok_or_else(|| AgentError::Config {
-                    message: "missing cloud fallback url".into(),
-                })?
-                .to_string(),
-            None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
+        let (base_url, configured) = match host {
+            Some(h) => (format!("{h}/v1"), true),
+            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => {
+                let url = cfg
+                    .cloud_fallback_url
+                    .as_ref()
+                    .ok_or_else(|| AgentError::Config {
+                        message: "missing cloud fallback url".into(),
+                    })?;
+                (url.to_string(), true)
+            }
+            None => (
+                format!("{}/v1", cfg.default_host.trim_end_matches('/')),
+                false,
+            ),
         };
         let headers = match api_key {
             Some(key) => vec![("authorization".into(), format!("Bearer {key}"))],
@@ -122,6 +152,7 @@ impl LocalEndpoint {
             thinking_budget_field: cfg.thinking_budget_field,
             discovery_mode: cfg.discovery_mode,
             protocol,
+            configured,
         })
     }
 }
@@ -158,7 +189,8 @@ impl Provider for LocalEndpoint {
                     None,
                     None,
                     false,
-                    opts.thinking,
+                    &opts,
+                    self.compat.config().supports_parallel_tool_calls,
                 );
                 body["return_progress"] = serde_json::Value::Bool(true);
                 return responses::do_stream(
@@ -180,11 +212,15 @@ impl Provider for LocalEndpoint {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
+                opts.message_cache_breakpoints,
+                opts.fast,
             );
 
             if self.thinking_budget_field {
-                opts.thinking.apply_local_thinking(&mut body, model);
+                opts.thinking
+                    .apply_thinking(&mut body, model, &dialect::STANDARD, &local_fields());
             }
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
             self.compat
                 .do_stream(model, &[], &body, event_tx, &auth)
@@ -194,6 +230,9 @@ impl Provider for LocalEndpoint {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
+            if !self.configured {
+                return Ok(Vec::new());
+            }
             let auth = self
                 .auth
                 .lock()
@@ -556,6 +595,57 @@ pub(crate) const LLAMACPP: LocalEndpointConfig = LocalEndpointConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ModelFamily, ModelPricing, ModelTier};
+    use crate::types::ThinkingConfig;
+    use test_case::test_case;
+
+    fn budget_model(max_output_tokens: Option<u32>) -> Model {
+        Model {
+            id: "local-model".into(),
+            provider: Arc::from("llama-cpp"),
+            tier: ModelTier::Medium,
+            family: ModelFamily::Generic,
+            supports_tool_examples_override: None,
+            supports_thinking_override: None,
+            supports_vision_override: None,
+            supports_files_override: None,
+            pricing: ModelPricing::default(),
+            max_output_tokens,
+            context_window: 128_000,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
+        }
+    }
+
+    #[test_case(ThinkingConfig::Off,           THINKING_DISABLED ; "off_disables")]
+    #[test_case(ThinkingConfig::Adaptive,      THINKING_ADAPTIVE ; "adaptive_hands_back_to_server")]
+    #[test_case(ThinkingConfig::Budget(4096),  4096              ; "budget")]
+    #[test_case(ThinkingConfig::Budget(10_000), 4096             ; "budget_clamped_to_half_window")]
+    fn local_thinking_budget_field(config: ThinkingConfig, expected: i64) {
+        let mut body = json!({});
+        config.apply_thinking(
+            &mut body,
+            &budget_model(Some(8192)),
+            &dialect::STANDARD,
+            &local_fields(),
+        );
+        assert_eq!(body[THINKING_BUDGET_FIELD], expected);
+    }
+
+    /// llama.cpp models have no known output window; the budget the user
+    /// asked for must reach the server untouched.
+    #[test]
+    fn local_thinking_unknown_window_passes_budget_through() {
+        let mut body = json!({});
+        ThinkingConfig::Budget(16_384).apply_thinking(
+            &mut body,
+            &budget_model(None),
+            &dialect::STANDARD,
+            &local_fields(),
+        );
+        assert_eq!(body[THINKING_BUDGET_FIELD], 16_384);
+    }
 
     const TEST_TIMEOUTS: super::super::Timeouts = super::super::Timeouts {
         connect: std::time::Duration::from_secs(10),

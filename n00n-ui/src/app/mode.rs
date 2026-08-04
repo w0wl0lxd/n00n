@@ -132,6 +132,7 @@ impl App {
             workflow: self.state.workflow,
             control: msg.control,
             prompt: None,
+            plan_path: self.state.plan.path().map(Path::to_path_buf),
         }
     }
 

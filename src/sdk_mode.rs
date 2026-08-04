@@ -747,6 +747,7 @@ fn handle_user_message(
         workflow,
         control: false,
         prompt: None,
+        plan_path: None,
     };
     handle.input_tx.send(input).is_ok()
 }
@@ -1053,6 +1054,7 @@ impl EventPump {
             | AgentEvent::QueueItemConsumed { .. }
             | AgentEvent::AutoCompacting
             | AgentEvent::CompactionDone
+            | AgentEvent::FusionPhase { .. }
             | AgentEvent::AuthRequired
             | AgentEvent::SubagentInputRequired { .. }
             | AgentEvent::SubagentHistory { .. }

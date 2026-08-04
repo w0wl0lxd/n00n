@@ -9,8 +9,8 @@ pub mod tool_dispatch;
 pub use compaction::compact;
 pub use history::{History, SharedMessages, SharedTranscript, rebuild_transcript};
 pub use instructions::{
-    Instructions, LoadedInstructions, build_system_prompt, find_subdirectory_instructions,
-    is_instruction_file, load_instruction_text, load_instructions,
+    Instructions, LoadedInstructions, append_build_plan_prompt, build_system_prompt,
+    find_subdirectory_instructions, is_instruction_file, load_instruction_text, load_instructions,
 };
 pub use run::{
     Agent, AgentParams, AgentRunParams, estimate_message_tokens, resolve_compaction_model,

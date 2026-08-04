@@ -19,7 +19,6 @@ use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
 use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
-use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -70,12 +69,40 @@ fn build_app_with_mcp(
     })
 }
 
+fn isolated_app() -> App {
+    let tmp = TempDir::new().unwrap();
+    let dir = StateDir::from_path(tmp.path().to_path_buf());
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
+    let mut app = build_app(dir, Arc::clone(&writer));
+    app.test_state_dir = Some(TestStateDir {
+        dir: Some(tmp),
+        writer: Some(writer),
+    });
+    app
+}
+
 fn test_app() -> App {
-    let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
+    let mut app = isolated_app();
     let (shared_queue, _rx) = shared_queue::queue();
     app.queue.set_shared(shared_queue);
     app
+}
+
+#[test]
+fn test_app_cleans_up_isolated_state_directory() {
+    let path = {
+        let mut app = test_app();
+        let path = app.storage.path().to_path_buf();
+        app.state
+            .session
+            .messages
+            .push(Message::user("persist before cleanup".into()));
+        app.save_session();
+        assert!(path.exists());
+        path
+    };
+
+    assert!(!path.exists());
 }
 
 fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
@@ -762,8 +789,7 @@ fn submit_prompt_rejects(mk: fn() -> App, text: &str, expected: &str) {
 }
 
 fn streaming_app_without_queue() -> App {
-    let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
+    let mut app = isolated_app();
     app.status = Status::Streaming;
     app
 }
@@ -2211,6 +2237,37 @@ fn stale_events_ignored_after_run_id_increment() {
 }
 
 #[test]
+fn active_main_fusion_phase_is_visible() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::FusionPhase {
+        phase: n00n_agent::FusionPhase::Executing,
+        label: Some("brief label".into()),
+    }));
+    assert_eq!(
+        app.main_chat().last_message_text(),
+        "Executing: brief label"
+    );
+}
+
+#[test]
+fn stale_fusion_phase_is_ignored() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 2;
+    let count_before = app.main_chat().message_count();
+    app.update(agent_msg_with_run_id(
+        AgentEvent::FusionPhase {
+            phase: n00n_agent::FusionPhase::Reviewing,
+            label: None,
+        },
+        1,
+    ));
+    assert_eq!(app.main_chat().message_count(), count_before);
+}
+
+#[test]
 fn stale_done_does_not_drain_queue() {
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -2638,6 +2695,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let mcp_reader = McpSnapshotReader::from_snapshot(McpSnapshot {
@@ -3354,6 +3412,7 @@ fn mcp_command_opens_picker() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_toggle_dispatches_action() {
     let mut app = test_app();
     app.mcp_picker = McpPicker::new(
@@ -3368,7 +3427,7 @@ fn mcp_toggle_dispatches_action() {
                 url: None,
             }],
             prompts: vec![],
-            pids: vec![],
+            pids: Vec::new(),
             generation: 0,
         }),
         McpConfigErrors::new(PathBuf::new()),
@@ -3663,7 +3722,11 @@ fn plan_form_menu_options(
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.plan_form.is_visible());
     assert_eq!(app.state.mode, expected_mode);
-    assert_eq!(app.state.plan, PlanState::None);
+    if has_new_session {
+        assert_eq!(app.state.plan, PlanState::None);
+    } else {
+        assert!(matches!(app.state.plan, PlanState::Ready(_)));
+    }
     assert_eq!(
         actions.iter().any(|a| matches!(a, Action::NewSession)),
         has_new_session

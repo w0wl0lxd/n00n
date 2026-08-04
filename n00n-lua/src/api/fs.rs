@@ -1,6 +1,12 @@
 use std::collections::{HashSet, VecDeque};
+#[cfg(unix)]
+use std::fs::File;
 use std::fs::FileType;
-use std::io::ErrorKind;
+#[cfg(unix)]
+use std::fs::Permissions;
+use std::io::{Error, ErrorKind, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::time::UNIX_EPOCH;
 
 use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -41,6 +47,10 @@ fn path_to_string(p: &Path) -> LuaResult<String> {
     p.to_str()
         .map(std::borrow::ToOwned::to_owned)
         .ok_or_else(|| mlua::Error::runtime("non-utf8 path"))
+}
+
+fn is_permission_denied_walk_error(kind: Option<ErrorKind>) -> bool {
+    kind == Some(ErrorKind::PermissionDenied)
 }
 
 fn filetype_str(ft: FileType) -> &'static str {
@@ -696,7 +706,50 @@ async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, V
 #[lua_fn(guard = FsWrite)]
 async fn write(lua: Lua, path: String, content: String) -> LuaResult<(Value, Value)> {
     let abs = make_absolute(&path)?;
-    result_pair(&lua, smol::fs::write(&abs, content).await.map(|()| true))
+    let result = smol::unblock(move || atomic_write(&abs, content.as_bytes())).await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "destination has no parent directory",
+        )
+    })?;
+    let existing_permissions = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "destination must not be a symbolic link",
+            ));
+        }
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let mut temporary = new_atomic_tempfile(parent)?;
+    if let Some(permissions) = existing_permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
+    temporary.write_all(content)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn new_atomic_tempfile(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o666))
+        .tempfile_in(parent)
+}
+
+#[cfg(not(unix))]
+fn new_atomic_tempfile(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    tempfile::NamedTempFile::new_in(parent)
 }
 
 /// Delete the file, symlink, or directory at {path}.
@@ -826,8 +879,12 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             for entry in walker {
                 let entry = match entry {
                     Ok(e) => e,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "glob: walk error");
+                    Err(error) => {
+                        if is_permission_denied_walk_error(error.io_error().map(Error::kind)) {
+                            tracing::debug!(error = %error, "glob: permission denied while walking");
+                        } else {
+                            tracing::warn!(error = %error, "glob: unexpected walk error");
+                        }
                         continue;
                     }
                 };
@@ -836,7 +893,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 }
                 let p = entry.into_path();
                 let Some(s) = p.to_str() else {
-                    tracing::warn!(path = %p.display(), "glob: skipping non-UTF-8 path");
+                    tracing::debug!(path = %p.display(), "glob: skipping non-UTF-8 path");
                     continue;
                 };
                 let mt = n00n_agent::tools::mtime(&p);
@@ -856,8 +913,12 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             for entry in walker {
                 let entry = match entry {
                     Ok(e) => e,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "glob: walk error");
+                    Err(error) => {
+                        if is_permission_denied_walk_error(error.io_error().map(Error::kind)) {
+                            tracing::debug!(error = %error, "glob: permission denied while walking");
+                        } else {
+                            tracing::warn!(error = %error, "glob: unexpected walk error");
+                        }
                         continue;
                     }
                 };
@@ -866,7 +927,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 }
                 let p = entry.into_path();
                 let Some(s) = p.to_str() else {
-                    tracing::warn!(path = %p.display(), "glob: skipping non-UTF-8 path");
+                    tracing::debug!(path = %p.display(), "glob: skipping non-UTF-8 path");
                     continue;
                 };
                 if let Some(lim) = limit
@@ -992,6 +1053,15 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
+
+    #[test]
+    fn glob_walk_error_classification_distinguishes_permission_denied() {
+        assert!(is_permission_denied_walk_error(Some(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(!is_permission_denied_walk_error(Some(ErrorKind::Other)));
+        assert!(!is_permission_denied_walk_error(None));
+    }
     use crate::plugin_permissions::PluginPermissions;
     use mlua::Lua;
     use tempfile::TempDir;
@@ -1281,6 +1351,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "second");
+    }
+
+    #[cfg(unix)]
+    #[test_case::test_case(())]
+    fn atomic_write_preserves_permissions_and_rejects_symlinks(_case: ()) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("existing.txt");
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, Permissions::from_mode(0o640)).unwrap();
+
+        atomic_write(&file, b"new").unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+
+        let link = tmp.path().join("link.txt");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let error = atomic_write(&link, b"rejected").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
     }
 
     #[test]

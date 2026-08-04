@@ -9,14 +9,22 @@ use std::ops::AddAssign;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use n00n_storage::sessions::{MIN_THINKING_BUDGET, StoredTokenUsage};
+use n00n_storage::sessions::{
+    BodyOverride, EffortDialectId, MIN_THINKING_BUDGET, StoredTokenUsage, ThinkingFieldConfig,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{ManifestRegistry, ProviderManifest};
 use crate::model_registry::model_registry;
 use crate::providers::{anthropic, custom, dynamic};
+use crate::types::{EffortDialect, effort_dialect_for};
 
 const PER_MILLION: f64 = 1_000_000.0;
+const GPT_MODEL_PREFIX: &str = "gpt-";
+const OPENAI_MODEL_PREFIX: &str = "openai/";
+const GPT_CODEX_MARKER: &str = "-codex";
+const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
+const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
@@ -209,7 +217,7 @@ impl ModelFamily {
     }
 }
 
-const FAST_PROVIDER: &str = "anthropic";
+const FAST_PROVIDERS: &[&str] = &["anthropic", "openai"];
 
 #[derive(Debug, Clone)]
 pub struct Model {
@@ -220,10 +228,18 @@ pub struct Model {
     pub supports_tool_examples_override: Option<bool>,
     pub supports_thinking_override: Option<bool>,
     pub supports_vision_override: Option<bool>,
+    pub supports_files_override: Option<bool>,
     pub pricing: ModelPricing,
     /// `None` when unknown, see [`ProviderManifest::fallback_max_output`].
     pub max_output_tokens: Option<u32>,
     pub context_window: u32,
+    /// Effort dialect override. `None` keeps the base provider's dialect.
+    pub thinking_dialect: Option<EffortDialectId>,
+    /// Request-body layout override for thinking values. `None` keeps the base
+    /// provider's hardcoded layout.
+    pub thinking_fields: Option<ThinkingFieldConfig>,
+    /// Body overrides applied after all typed thinking setup.
+    pub body_override: Option<BodyOverride>,
 }
 
 impl Model {
@@ -262,9 +278,13 @@ impl Model {
             supports_tool_examples_override: None,
             supports_thinking_override: None,
             supports_vision_override: None,
+            supports_files_override: None,
             pricing,
             max_output_tokens,
             context_window,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 
@@ -308,10 +328,42 @@ impl Model {
             .unwrap_or_else(|| self.family.supports_vision())
     }
 
+    fn normalized_openai_model_id(&self) -> Option<&str> {
+        let model_id = self
+            .id
+            .strip_prefix(OPENAI_MODEL_PREFIX)
+            .map_or(self.id.as_str(), std::convert::identity);
+        (model_id.starts_with(GPT_MODEL_PREFIX) && !model_id.contains(GPT_CODEX_MARKER))
+            .then_some(model_id)
+    }
+
+    #[must_use]
+    pub fn supports_files(&self) -> bool {
+        if let Some(files) = self.supports_files_override {
+            return files;
+        }
+        // For now, only OpenAI Responses API supports file input
+        // TODO: Add per-model file support flags as they become available
+        self.provider.as_ref() == "openai"
+            && self
+                .normalized_openai_model_id()
+                .is_some_and(|model_id| model_id.starts_with("gpt-5.6"))
+    }
+
     #[must_use]
     pub fn supports_tool_examples(&self) -> bool {
         self.supports_tool_examples_override
             .unwrap_or_else(|| self.family.supports_tool_examples())
+    }
+
+    /// The effort dialect for this model: the model's override when set,
+    /// otherwise the provider's default.
+    #[must_use]
+    pub fn effort_dialect<'a>(&self, default: &'a EffortDialect<'a>) -> &'a EffortDialect<'a> {
+        match self.thinking_dialect {
+            Some(id) => effort_dialect_for(id),
+            None => default,
+        }
     }
 
     /// Half the output window, so the answer always has room after the
@@ -326,13 +378,51 @@ impl Model {
 
     /// A model supports fast mode exactly when it carries fast-tier pricing, so
     /// capability and billing can never disagree. The provider gate keeps fast
-    /// mode to Anthropic-based providers, resolved through the base manifest so
-    /// oauth scripts keep it; Bedrock separately ignores `opts.fast` at request
-    /// time.
+    /// mode to Anthropic- and OpenAI-based providers, resolved through the base
+    /// manifest so oauth scripts keep it; Bedrock separately ignores `opts.fast`
+    /// at request time.
     #[must_use]
     pub fn supports_fast(&self) -> bool {
         self.pricing.fast.is_some()
-            && ManifestRegistry::for_slug(&self.provider).is_some_and(|m| m.slug == FAST_PROVIDER)
+            && ManifestRegistry::for_slug(&self.provider)
+                .is_some_and(|m| FAST_PROVIDERS.contains(&m.slug))
+    }
+
+    /// Check if the model supports the `OpenAI` Responses API.
+    #[must_use]
+    pub fn supports_responses(&self) -> bool {
+        self.family == ModelFamily::Gpt
+            && self.normalized_openai_model_id().is_some_and(|model_id| {
+                model_id.starts_with("gpt-5.6") || model_id.starts_with("gpt-5.5")
+            })
+    }
+
+    /// Check if the model supports explicit prompt-cache breakpoints.
+    #[must_use]
+    pub fn supports_prompt_cache_breakpoint(&self) -> bool {
+        let Some(model_id) = self.normalized_openai_model_id() else {
+            return false;
+        };
+        let Some(version_and_suffix) = model_id.strip_prefix(GPT_MODEL_PREFIX) else {
+            return false;
+        };
+        let version = version_and_suffix
+            .split_once('-')
+            .map_or(version_and_suffix, |(version, _)| version);
+        let (major, minor) = version
+            .split_once('.')
+            .map_or((version, "0"), std::convert::identity);
+        let (Ok(major), Ok(minor)) = (major.parse::<u16>(), minor.parse::<u16>()) else {
+            return false;
+        };
+        major > MIN_BREAKPOINT_MODEL_MAJOR
+            || major == MIN_BREAKPOINT_MODEL_MAJOR && minor >= MIN_BREAKPOINT_MODEL_MINOR
+    }
+
+    /// Check if the model supports provider-managed Responses tools.
+    #[must_use]
+    pub fn supports_responses_built_in_tools(&self) -> bool {
+        self.supports_prompt_cache_breakpoint()
     }
 
     #[must_use]
@@ -378,7 +468,7 @@ impl Model {
         // protocol default under the custom slug, keeping its tier and pricing),
         // or no such provider.
         match custom::resolve_tier(slug, tier) {
-            custom::TierLookup::Model(model) => return Ok(model),
+            custom::TierLookup::Model(model) => return Ok(*model),
             custom::TierLookup::NoModelForTier(base) => {
                 let manifest = ManifestRegistry::get(&base.to_string())
                     .ok_or_else(|| ModelError::NoDefault(slug.to_string(), tier))?;
@@ -405,7 +495,18 @@ impl Model {
     ///
     /// Returns a `ModelError` if the spec is malformed or the provider is unsupported.
     pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
-        let (slug, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
+        let Some((slug, model_id)) = spec.split_once('/') else {
+            // Provider-only spec: resolve the provider's default model.
+            if let Some(manifest) = ManifestRegistry::get(spec) {
+                let entry = manifest
+                    .models
+                    .iter()
+                    .find(|e| e.default)
+                    .ok_or(ModelError::NoDefault(spec.to_string(), ModelTier::Weak))?;
+                return Self::from_spec(&format!("{spec}/{}", entry.prefixes[0]));
+            }
+            return Err(ModelError::InvalidFormat);
+        };
 
         // Precedence: builtin, then dynamic script, then providers.toml custom.
         // Discovery drops any script slug a builtin or custom entry already owns,
@@ -1038,6 +1139,51 @@ mod tests {
             output: 150.0,
         });
         assert!(!model.supports_fast());
+    }
+
+    #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
+    #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
+    #[test_case("openai/gpt-5.5", true ; "gpt_5_5")]
+    #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
+    #[test_case("openai/gpt-4.1", false ; "gpt_4_1")]
+    fn supports_responses_for_gpt_5_6_and_5_5(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_responses(), expected);
+    }
+
+    #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
+    #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
+    #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
+    #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
+    fn supports_prompt_cache_breakpoint_for_gpt_5_6_only(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_prompt_cache_breakpoint(), expected);
+    }
+
+    #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
+    #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
+    fn supports_files_for_non_codex_gpt_5_6(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_files(), expected);
+    }
+
+    #[test]
+    fn supports_files_override_takes_precedence() {
+        let mut supported = Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        supported.supports_files_override = Some(false);
+        assert!(!supported.supports_files());
+
+        let mut unsupported = Model::from_spec("openai/gpt-5.6-codex").unwrap();
+        unsupported.supports_files_override = Some(true);
+        assert!(unsupported.supports_files());
     }
 
     #[test]

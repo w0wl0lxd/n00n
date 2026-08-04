@@ -78,6 +78,8 @@ function ActivityPreview:set_row(key, label, message, status)
 end
 
 function ActivityPreview:update(progress, label, session_key)
+  label = label or self.description
+  session_key = session_key or progress.session_id or self.description
   local previous_ids = self.activity_ids[session_key] or {}
   local current_ids = {}
   for _, activity in ipairs(progress.activities or {}) do
@@ -89,6 +91,7 @@ function ActivityPreview:update(progress, label, session_key)
     end
   end
   self.activity_ids[session_key] = current_ids
+  self:render()
 end
 
 function ActivityPreview:prompt(sess, message, label)

@@ -47,20 +47,49 @@ function M.normalize_intent(input)
     return "cross_file"
   end
 
+  if query:match("trace.?path") or query:match("call path") or query:match("^trace%s") or query:match("trace from") then
+    return "trace"
+  end
+
   if
     query:match("caller")
     or query:match("callee")
     or query:match("who calls")
     or query:match("what calls")
     or query:match("what does%s+.-call$")
-    or query:match("trace.?path")
-    or query:match("call path")
     or query:match("^map$")
     or query:match("project map")
     or query:match("^status$")
     or query:match("^diff$")
   then
     return "relations"
+  end
+
+  -- New intents for auto-detection
+  if query:match("^impact") or query:match("blast.?radius") or query:match("affected") then
+    local symbol = input.symbol or M.extract_symbol(input.query, "impact")
+    if symbol and not looks_like_file_path(symbol, false) then
+      return "impact"
+    end
+  end
+
+  if query:match("symbol") or query:match("definition") or query:match("decl") then
+    return "symbol"
+  end
+
+  if query:match("search") or query:match("find") then
+    return "search"
+  end
+
+  if query:match("skeleton") or query:match("structure") then
+    local skeleton_path = input.path or M.extract_file_path(input.query)
+    if skeleton_path and looks_like_file_path(skeleton_path, false) then
+      return "skeleton"
+    end
+  end
+
+  if query:match("trace") then
+    return "trace"
   end
 
   return "cross_file"
@@ -78,7 +107,7 @@ function M.parse_arbor_command(input)
   if query:match("callee") or query:match("what does%s+.-call$") then
     return "callees"
   end
-  if query:match("trace.?path") or query:match("call path") then
+  if query:match("trace.?path") or query:match("call path") or query:match("^trace%s") or query:match("trace from") then
     return "trace_path"
   end
   if query:match("^diff") then
@@ -102,6 +131,7 @@ function M.extract_symbol(query, command)
   local lowered = lower(query)
 
   local token = "[%w_%.:%->]+"
+  local token_with_slash = "[%w_%.:%->/]+"
 
   local patterns = {
     callers = {
@@ -116,6 +146,19 @@ function M.extract_symbol(query, command)
     query = {
       "^query%s+()(.-)%s*$",
       "^search%s+()(.-)%s*$",
+    },
+    impact = {
+      "^impact%s+of%s+changing%s+()(" .. token_with_slash .. ")%s*$",
+      "^impact%s+of%s+()(" .. token_with_slash .. ")%s*$",
+      "^blast%s*radius%s+of%s+()(" .. token_with_slash .. ")%s*$",
+      "^affected%s+by%s+change%s+in%s+()(" .. token_with_slash .. ")%s*$",
+      "^affected%s+by%s+()(" .. token_with_slash .. ")%s*$",
+    },
+    symbol = {
+      "^symbol%s+()(" .. token .. ")%s*$",
+      "^()(" .. token .. ")%s+symbol%s*$",
+      "^definition%s+of%s+()(" .. token .. ")%s*$",
+      "^decl%w*%s+of%s+()(" .. token .. ")%s*$",
     },
   }
 
@@ -148,18 +191,45 @@ function M.extract_trace_symbols(query)
   return nil, nil
 end
 
+function M.extract_file_path(query)
+  if not query or query == "" then
+    return nil
+  end
+
+  local trimmed = trim(query)
+  for token in trimmed:gmatch("%S+") do
+    if looks_like_file_path(token, false) then
+      return token
+    end
+  end
+  return nil
+end
+
 function M.build_backend_input(input, intent)
   local project = input.project or "."
 
-  if intent == "file" then
+  if intent == "file" or intent == "skeleton" then
     local path = trim(input.path)
     if path == "" then
-      path = trim(input.query)
+      path = M.extract_file_path(input.query)
+    end
+    if not path then
+      return nil, { llm_output = "error: file path required for " .. intent, is_error = true }
     end
     return "index", { path = path }
   end
 
-  if intent == "relations" then
+  if intent == "search" then
+    return "semblem",
+      {
+        command = "search",
+        query = input.query,
+        repo = project,
+        mode = input.mode or "bm25",
+      }
+  end
+
+  if intent == "relations" or intent == "trace" then
     local command = M.parse_arbor_command(input)
     local backend_input = {
       command = command,
@@ -183,7 +253,26 @@ function M.build_backend_input(input, intent)
     return "arbor", backend_input
   end
 
+  if intent == "symbol" then
+    local symbol = input.symbol or M.extract_symbol(input.query, "symbol")
+    return "codegraph", {
+      command = "node",
+      name = symbol,
+      projectPath = project,
+    }
+  end
+
+  if intent == "impact" then
+    local symbol = input.symbol or M.extract_symbol(input.query, "impact")
+    return "codegraph", {
+      command = "impact",
+      symbol = symbol,
+      projectPath = project,
+    }
+  end
+
   return "codegraph", {
+    command = "explore",
     query = input.query,
     projectPath = project,
   }

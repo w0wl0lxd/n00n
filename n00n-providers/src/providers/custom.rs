@@ -12,11 +12,11 @@ use super::ResolvedAuth;
 use super::openai::responses;
 use super::openai_compat::OpenAiCompatProvider;
 use crate::manifest::ManifestRegistry;
-use crate::model::{FastPricing, Model, ModelPricing, ModelTier};
+use crate::model::{FastPricing, Model, ModelPricing, ModelTier, lookup_entry};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
 use crate::providers::Timeouts;
-use crate::types::{System, ThinkingConfig};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
+use crate::types::System;
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/custom.rs"));
 
@@ -133,45 +133,64 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
 
 /// Build a model from an already-loaded provider definition so tier resolution
 /// and id lookup can share one `providers.toml` read instead of loading twice.
+///
+/// When the definition does not declare a model, metadata is inherited from the
+/// base protocol's manifest so custom providers (e.g. a second Devin account)
+/// share the canonical model registry instead of duplicating it.
 fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &str) -> Model {
     let declared = def.models.iter().find(|m| m.id == model_id);
-    let tier = declared.map_or(ModelTier::Medium, |m| ModelTier::from(m.tier));
+    let base_manifest = ManifestRegistry::get(&kind.to_string());
+    let base_entry = base_manifest.and_then(|m| lookup_entry(m.models, model_id).ok());
+
+    let tier = declared
+        .map(|m| ModelTier::from(m.tier))
+        .or(base_entry.map(|e| e.tier))
+        .unwrap_or_else(|| ModelTier::Medium);
     let max_output_tokens = declared
         .and_then(|m| m.max_output_tokens)
+        .or(base_entry.map(|e| e.max_output_tokens))
         .or_else(|| kind.fallback_max_output());
     let context_window = declared
         .and_then(|m| m.context_window)
+        .or(base_entry.map(|e| e.context_window))
         .unwrap_or_else(|| kind.fallback_context_window());
-    let supports_tool_examples_override = declared.and_then(|m| m.supports_tool_examples);
+    let supports_tool_examples_override = declared
+        .and_then(|m| m.supports_tool_examples)
+        .or(base_entry.map(|e| e.family.supports_tool_examples()));
     let supports_thinking_override = declared
         .and_then(|m| m.supports_thinking)
-        .or_else(|| ManifestRegistry::get(&kind.to_string()).map(|m| m.supports_thinking));
-    let supports_vision_override = declared.and_then(|m| m.supports_vision);
-    let pricing = declared
-        .filter(|m| m.has_pricing())
-        .map_or_else(Default::default, |m| ModelPricing {
+        .or_else(|| base_manifest.map(|m| m.supports_thinking));
+    let supports_vision_override = declared
+        .and_then(|m| m.supports_vision)
+        .or(base_entry.map(|e| e.vision));
+    let pricing = declared.filter(|m| m.has_pricing()).map_or_else(
+        || base_entry.map_or_else(ModelPricing::default, |e| e.pricing),
+        |m| ModelPricing {
             input: m.pricing_input.unwrap_or_else(|| 0.0),
             output: m.pricing_output.unwrap_or_else(|| 0.0),
             cache_write: m.pricing_cache_write.unwrap_or_else(|| 0.0),
             cache_read: m.pricing_cache_read.unwrap_or_else(|| 0.0),
-            fast: declared
-                .filter(|d| d.has_fast_pricing())
-                .map(|d| FastPricing {
-                    input: d.pricing_fast_input.unwrap_or_else(|| 0.0),
-                    output: d.pricing_fast_output.unwrap_or_else(|| 0.0),
-                }),
-        });
+            fast: m.has_fast_pricing().then(|| FastPricing {
+                input: m.pricing_fast_input.unwrap_or_else(|| 0.0),
+                output: m.pricing_fast_output.unwrap_or_else(|| 0.0),
+            }),
+        },
+    );
     Model {
         id: model_id.to_string(),
         provider: Arc::from(slug),
         tier,
-        family: kind.family(),
+        family: base_entry.map_or_else(|| kind.family(), |e| e.family),
         supports_tool_examples_override,
         supports_thinking_override,
         supports_vision_override,
+        supports_files_override: None,
         pricing,
         max_output_tokens,
         context_window,
+        thinking_dialect: declared.and_then(|m| m.thinking_dialect),
+        thinking_fields: declared.and_then(|m| m.thinking_fields.clone()),
+        body_override: declared.and_then(|m| m.body_override.clone()),
     }
 }
 
@@ -186,9 +205,26 @@ fn declared_specs_from(config: &ProvidersConfig) -> Vec<String> {
         if is_builtin_slug(slug) {
             continue;
         }
-        if resolve_protocol(slug, Some(def)).is_none() {
+        let Some(protocol) = resolve_protocol(slug, Some(def)) else {
             continue;
+        };
+        let kind = protocol_kind(protocol);
+
+        // When a custom provider doesn't declare any models and isn't doing
+        // live discovery, share the base protocol's static registry instead of
+        // leaving the provider empty.
+        if def.models.is_empty()
+            && !def.discover_models
+            && let Some(manifest) = ManifestRegistry::get(&kind.to_string())
+        {
+            specs.extend(manifest.models.iter().flat_map(|entry| {
+                entry
+                    .prefixes
+                    .iter()
+                    .map(|&prefix| format!("{slug}/{prefix}"))
+            }));
         }
+
         for m in &def.models {
             specs.push(format!("{slug}/{}", m.id));
         }
@@ -198,7 +234,7 @@ fn declared_specs_from(config: &ProvidersConfig) -> Vec<String> {
 
 /// Outcome of resolving a tier against `providers.toml` in a single read.
 pub enum TierLookup {
-    Model(Model),
+    Model(Box<Model>),
     /// Provider exists but declares no model at this tier; carries the base kind
     /// so the caller can inherit the base protocol's default.
     NoModelForTier(ProviderKind),
@@ -220,7 +256,9 @@ pub fn resolve_tier(slug: &str, tier: ModelTier) -> TierLookup {
     };
     let kind = protocol_kind(protocol);
     match def.models.iter().find(|m| ModelTier::from(m.tier) == tier) {
-        Some(declared) => TierLookup::Model(model_from_def(def, kind, slug, &declared.id)),
+        Some(declared) => {
+            TierLookup::Model(Box::new(model_from_def(def, kind, slug, &declared.id)))
+        }
         None => TierLookup::NoModelForTier(kind),
     }
 }
@@ -300,7 +338,8 @@ impl Provider for CustomOpenAiProvider {
                     None,
                     None,
                     false,
-                    opts.thinking,
+                    &opts,
+                    self.compat.config().supports_parallel_tool_calls,
                 );
                 return responses::do_stream(
                     self.compat.client(),
@@ -321,10 +360,19 @@ impl Provider for CustomOpenAiProvider {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 None,
+                opts.message_cache_breakpoints,
+                opts.fast,
             );
-            if matches!(opts.thinking, ThinkingConfig::Off) {
-                body["thinking"] = serde_json::json!({"type": "disabled"});
-            }
+            // Custom OpenAI-compatible endpoints get the plain
+            // `reasoning_effort` field; anything else a model needs is
+            // declared per model in `providers.toml`.
+            opts.thinking.apply_thinking(
+                &mut body,
+                model,
+                &dialect::PREFER_HIGH,
+                &super::reasoning_effort_fields(),
+            );
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             self.compat
                 .do_stream(model, &[], &body, event_tx, &auth)
                 .await
@@ -356,6 +404,56 @@ mod tests {
     // inventory; the old guard leaked it into the picker, where it then resolved
     // as the builtin and silently dropped the custom model. Listing must skip
     // every builtin slug so a providers.toml entry can never shadow one.
+    #[test]
+    fn custom_openai_protocol_omits_parallel_tool_calls() {
+        let provider = OpenAiCompatProvider::new(&CONFIG, Timeouts::default()).unwrap();
+        let model = Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = serde_json::json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            0,
+            false,
+        );
+
+        assert!(body.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn custom_openai_responses_protocol_omits_parallel_tool_calls() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let tools = serde_json::json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let opts = crate::RequestOptions::default();
+        let body = responses::build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            false,
+            &opts,
+            CONFIG.supports_parallel_tool_calls,
+        );
+
+        assert!(body.get("parallel_tool_calls").is_none());
+    }
+
     #[test]
     fn declared_specs_skip_builtin_named_entries_but_keep_custom() {
         let mut config = ProvidersConfig::default();

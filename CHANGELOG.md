@@ -57,7 +57,6 @@ See `changelog.d/README.md` for the fragment convention.
 ### Fixed
 
 - Fix hang when models emit only reasoning without final text.
-- Capture thinking deltas in Devin's `handle_session_update` and append to `thinking` buffer
 - Build assistant message with both `Thinking` and `Text` content blocks
 - Remove invalid `reasoning_content` field from OpenAI compat message conversion
 - Add nudge logic in agent when assistant produces only reasoning without text
@@ -92,7 +91,7 @@ See `changelog.d/README.md` for the fragment convention.
 - Fixed Lua plugin compatibility with mlua 0.12 while preserving existing plugin behavior.
 - Nix packages now embed runtime library paths so copied `n00n` binaries run without wrapper-provided environment variables.
 - Fix Nix binary wrapping on macOS by using `DYLD_LIBRARY_PATH` instead of `LD_LIBRARY_PATH`, and scope wrapping to the computed package binary path.
-- Fixed OpenAI Responses disconnect handling so sent requests are never replayed, stale WebSockets are replaced before writes, and ambiguous stream failures retain safe delivery details.
+- Fixed OpenAI Responses disconnect handling so sent requests require replay approval, stale WebSockets are replaced before writes, and ambiguous stream failures retain safe delivery details.
 - Fixed OpenAI session continuity by serializing OAuth refreshes across processes, preserving valid credentials on refresh failures, keeping ephemeral subagent chains in memory, and replacing stale Responses WebSockets before sending.
 - Use the current 272K served context window consistently for OpenAI coding-plan and Codex models.
 - Pass Devin API keys through ACP initialize/authenticate metadata and harden the terminal-bench-2.1 harness for local providers.
@@ -101,8 +100,6 @@ See `changelog.d/README.md` for the fragment convention.
 - Fixed strict workspace lint failures while preserving the established `n00nId` public API.
 - Fixed team wave validation resolving model tiers as literal model IDs, which caused repeated validation failures and exhausted agent-call budgets.
 - Fix hang when models emit only reasoning without final text.
-- Add `thinking: Arc<AsyncMutex<String>>` field to Devin's `DevinInner`
-- Capture thinking deltas in `handle_session_update` and append to `thinking` buffer
 - Build assistant message with both `Thinking` and `Text` content blocks
 - Remove invalid `reasoning_content` field from OpenAI compat message conversion
 - Add nudge logic in agent when assistant produces only reasoning without text
