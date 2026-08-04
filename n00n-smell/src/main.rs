@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use n00n_smell::{Query, SearchConfig, SmellIndex};
@@ -33,6 +33,14 @@ enum Commands {
     },
 }
 
+fn resolve_repo(repo: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if !repo.is_dir() {
+        return Err(format!("{} is not a directory", repo.display()).into());
+    }
+    repo.canonicalize()
+        .map_err(|err| format!("failed to resolve {}: {err}", repo.display()).into())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     color_eyre::install().ok();
 
@@ -40,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let output = match cli.command {
         Commands::Index { repo } => {
+            let repo = resolve_repo(&repo)?;
             let index_dir = SmellIndex::index_dir(&repo);
             let mut index = SmellIndex::open_or_create(&index_dir, &SearchConfig::default())?;
             index.update(&repo, |progress| {
@@ -56,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             kind,
             top_k,
         } => {
+            let repo = resolve_repo(&repo)?;
             if !SmellIndex::has_index(&repo) {
                 return Err(format!(
                     "no smell index for {}; run `n00n-smell index`",
