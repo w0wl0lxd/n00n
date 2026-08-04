@@ -235,6 +235,7 @@ const UNKNOWN_FIELD_ERR: &str = "unknown field";
 const PERMISSION_DENIED_MSG: &str = "permission denied";
 const VALIDATION_PROMPT_NO_PROVIDER_ERR: &str =
     "validation prompt error: no provider configured — run /login or `n00n auth login`";
+const STALE_CTX_ERR: &str = "state context is no longer active";
 const TOOLS_MUST_BE_ARRAY_ERR: &str = "tools must be an array";
 
 #[test]
@@ -3004,6 +3005,29 @@ fn restore_rebuilds_body_from_input_content(
         "restored body should show content, not the summary: {text}"
     );
 }
+#[test_case::test_case("list_sessions", None, "tmux.read", false ; "read_without_prompt")]
+#[test_case::test_case("kill_session", None, "tmux.kill", true ; "dedicated_kill_forces_prompt")]
+#[test_case::test_case("send_keys", None, "tmux.write", true ; "send_keys_forces_prompt")]
+#[test_case::test_case("run_command", Some("kill-server"), "tmux.raw", true ; "raw_command_forces_prompt")]
+fn tmux_permission_scopes(
+    command: &str,
+    command_text: Option<&str>,
+    expected_scope: &str,
+    expected_force_prompt: bool,
+) {
+    let (registry, _host) = builtins_host();
+    let mut input = serde_json::json!({ "command": command });
+    if let Some(command_text) = command_text {
+        input["command_text"] = serde_json::Value::String(command_text.to_owned());
+    }
+    let entry = registry.get("tmux").expect("tmux registered");
+    let invocation = entry.tool.parse(&input).expect("tmux input parses");
+    let scopes =
+        smol::block_on(invocation.permission_scopes()).expect("tmux permission scopes are present");
+
+    assert_eq!(scopes.scopes, [expected_scope]);
+    assert_eq!(scopes.force_prompt, expected_force_prompt);
+}
 
 /// Guards the stale-cancelled-handle bug: `permission_scopes` must call
 /// the plugin callback and return parsed scopes, not fall back to raw JSON.
@@ -4106,7 +4130,7 @@ fn plugin_state_capture_waits_for_inflight_handler_callbacks() {
                 buf:set_lines({{ "waiting" }})
                 ctx:live_buf(buf)
                 n00n.async.run(function()
-                    local id = n00n.fn.jobstart("sleep 0.05")
+                    local id = n00n.fn.jobstart("sleep 0.5")
                     n00n.fn.jobwait(id)
                     return "finished"
                 end, function(err)
@@ -4262,6 +4286,107 @@ fn plugin_state_capture_services_nested_lua_tool_calls() {
 }
 
 #[test]
+fn plugin_state_capture_services_lua_session_tool_calls() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let source = format!(
+        r#"
+        n00n.api.register_tool({{
+            name = "session_state_writer", description = "test", schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main", "general_sub" }},
+            handler = function(input, ctx)
+                local _, err = ctx:state_replace("root", {{ value = "session-nested" }})
+                return err or "written"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "session_state_parent", description = "test", schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local buf = n00n.ui.buf()
+                buf:set_lines({{ "waiting" }})
+                ctx:live_buf(buf)
+                local id = n00n.fn.jobstart("sleep 0.5")
+                n00n.fn.jobwait(id)
+                local session, session_err = n00n.agent.session(ctx, {{}})
+                if session_err then return session_err end
+                local result, prompt_err = session:prompt("write state")
+                session:close()
+                if prompt_err then return prompt_err end
+                local state, state_err = ctx:state_get("root")
+                if state_err then return state_err end
+                return state and state.value or result.text
+            end,
+        }})
+        "#
+    );
+    host.load_source("session_nested_state", &source).unwrap();
+    let provider = ScriptedSessionProvider::new([
+        Ok(session_response(
+            vec![ContentBlock::ToolUse {
+                id: "session-state-call".to_owned(),
+                name: "session_state_writer".to_owned(),
+                input: serde_json::json!({}),
+            }],
+            TokenUsage::default(),
+            StopReason::ToolUse,
+        )),
+        Ok(session_response(
+            vec![ContentBlock::Text {
+                text: "finished".to_owned(),
+            }],
+            TokenUsage::default(),
+            StopReason::EndTurn,
+        )),
+    ]);
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let entry = reg.get("session_state_parent").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let sender = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&sender),
+        Some("session-nested-state"),
+    );
+    ctx.identity = Some(identity.clone());
+    ctx.registry = Arc::clone(&reg);
+    ctx.provider = Arc::new(provider);
+    ctx.model = Arc::new(Model::from_spec("anthropic/claude-opus-4-8").unwrap());
+    let worker = std::thread::spawn(move || smol::block_on(invocation.execute(&ctx)));
+
+    loop {
+        let event = event_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if matches!(
+            event.event,
+            n00n_agent::AgentEvent::LiveToolBuf { ref id, .. } if id == "session-nested-state"
+        ) {
+            break;
+        }
+    }
+
+    let snapshot = host
+        .event_handle()
+        .unwrap()
+        .capture_state(&identity, 1)
+        .unwrap();
+    assert_eq!(
+        worker.join().unwrap().output.unwrap().as_text(),
+        "session-nested"
+    );
+    assert_eq!(
+        snapshot
+            .plugin_payload_for_apply(
+                "session_nested_state",
+                1,
+                n00n_storage::sessions::StoredStateScope::Root,
+            )
+            .unwrap(),
+        Some(&serde_json::json!({"value": "session-nested"}))
+    );
+}
+
+#[test]
 fn plugin_state_isolates_namespaces_and_session_scope_while_sharing_root_scope() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -4361,16 +4486,26 @@ fn plugin_state_isolates_namespaces_and_session_scope_while_sharing_root_scope()
     assert_eq!(execute("a_read_session", &root), "session-a");
 
     host.unload("plugin_a").unwrap();
-    let unloaded = handle.capture_state(&root, 8).unwrap();
-    assert!(
+    let unloaded = handle.capture_state(&root, 9).unwrap();
+    assert_eq!(
         unloaded
             .plugin_payload_for_apply(
                 "plugin_a",
                 1,
                 n00n_storage::sessions::StoredStateScope::Root,
             )
-            .unwrap()
-            .is_none()
+            .unwrap(),
+        Some(&serde_json::json!({"name": "root-a"}))
+    );
+    assert_eq!(
+        unloaded
+            .plugin_payload_for_apply(
+                "plugin_a",
+                1,
+                n00n_storage::sessions::StoredStateScope::Session,
+            )
+            .unwrap(),
+        Some(&serde_json::json!({"name": "session-a"}))
     );
 }
 
@@ -4436,18 +4571,9 @@ fn plugin_state_rejects_context_reuse_after_handler_finishes() {
     };
 
     assert_eq!(execute("save_state_ctx"), "saved");
-    assert_eq!(
-        execute("reuse_state_ctx"),
-        "state context is no longer active"
-    );
-    assert_eq!(
-        execute("reuse_state_ctx_dispatch"),
-        "state context is no longer active"
-    );
-    assert_eq!(
-        execute("reuse_state_ctx_deadline"),
-        "state context is no longer active"
-    );
+    assert_eq!(execute("reuse_state_ctx"), STALE_CTX_ERR);
+    assert_eq!(execute("reuse_state_ctx_dispatch"), STALE_CTX_ERR);
+    assert_eq!(execute("reuse_state_ctx_deadline"), STALE_CTX_ERR);
 
     let execute_without_identity = |name: &str| {
         let entry = reg.get(name).unwrap();
@@ -4464,7 +4590,7 @@ fn plugin_state_rejects_context_reuse_after_handler_finishes() {
     assert_eq!(execute_without_identity("save_dispatch_ctx"), "saved");
     assert_eq!(
         execute_without_identity("reuse_state_ctx_dispatch"),
-        "state context is no longer active"
+        STALE_CTX_ERR
     );
 
     let snapshot = host

@@ -20,6 +20,7 @@ use tracing::warn;
 use crate::id::{n00nId, n00nIdParseError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use zstd::stream::{Decoder, Encoder};
 
 use crate::{
@@ -545,8 +546,14 @@ impl StoredSessionStateSnapshot {
                 requested: state_revision,
             });
         }
+        let current_size = serde_json::to_vec(snapshot).map(|v| v.len()).ok();
         let mut candidate = snapshot.clone();
         candidate.state_revision = state_revision;
+        let new_size = serde_json::to_vec(&candidate).map(|v| v.len()).ok();
+        if new_size.is_some_and(|new| current_size.is_some_and(|cur| new <= cur)) {
+            self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+            return Ok(());
+        }
         validate_supported_snapshot(&candidate)?;
         self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
         Ok(())
@@ -576,20 +583,6 @@ impl StoredSessionStateSnapshot {
         validate_supported_snapshot(&candidate)?;
         self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
         Ok(())
-    }
-
-    /// Adds or replaces one exact plugin scope after enforcing snapshot bounds.
-    ///
-    /// # Errors
-    /// Returns a typed error for unsupported envelopes, invalid names, or exceeded bounds.
-    pub fn insert_plugin_state(
-        &mut self,
-        plugin: &str,
-        schema_version: u32,
-        scope: StoredStateScope,
-        payload: serde_json::Value,
-    ) -> Result<(), SessionStateError> {
-        self.set_plugin_state(plugin, schema_version, scope, payload)
     }
 
     /// Removes one exact plugin scope while preserving every sibling entry.
@@ -1255,6 +1248,71 @@ impl FromStr for Effort {
             .find(|e| e.as_str() == s)
             .ok_or_else(|| ThinkingParseError::Unknown(s.to_string()))
     }
+}
+
+/// Serializable identifier for a built-in effort dialect, resolved to the
+/// actual dialect by `n00n_providers::effort_dialect_for`. Lives here so both
+/// `n00n-config` (providers.toml) and `n00n-providers` (dynamic provider
+/// script JSON) can deserialize it without a cross-dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EffortDialectId {
+    Standard,
+    OpenaiExtended,
+    PreferHigh,
+    HighOnly,
+    Glm,
+    DeepSeek,
+    AnthropicAdaptive,
+    TensorX,
+}
+
+/// One toggle object written to a request body based on the thinking state.
+/// `on` is merged for Effort/Budget, `adaptive` for Adaptive (falling back to
+/// `on`), `off` is set for Off. `budget_key` nests the resolved budget inside
+/// this toggle's object when no explicit budget path is configured.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToggleEntry {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_key: Option<String>,
+}
+
+/// Where thinking values go in a request body. When set on a model it
+/// overrides the base provider's hardcoded layout. Supports multiple toggle
+/// objects, dot-separated nested paths (`reasoning.effort`), budgets nested
+/// inside a toggle (Anthropic's `budget_tokens`), and budget caps (Google's
+/// family-specific limits).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ThinkingFieldConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_max: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toggles: Vec<ToggleEntry>,
+}
+
+/// Per-model request body manipulation. Three operations run in order:
+/// `defaults` (fills absent keys), `replace` (deep-merges, overwriting), and
+/// `filter` (strips keys). Every provider guards its conversation field, so
+/// none of the three can touch `messages`, `input`, or `contents`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BodyOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3280,6 +3338,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::ThinkingParseError;
+    use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
         SESSION_VERSION, StoredDelivery, StoredQueuedMessage, StoredSubagent, append_record,
@@ -4796,7 +4855,7 @@ mod tests {
     fn session_state_snapshot_round_trips_unknown_plugin_entries() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(7);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "future_plugin",
                 99,
                 super::StoredStateScope::Root,
@@ -4899,7 +4958,7 @@ mod tests {
         let mut session: TestSession = Session::new("model", "/project");
         let mut snapshot = super::StoredSessionStateSnapshot::new(4);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "todo_write",
                 1,
                 super::StoredStateScope::Root,
@@ -4917,7 +4976,7 @@ mod tests {
     fn session_state_snapshot_supports_both_scopes_for_one_plugin() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "plugin",
                 1,
                 super::StoredStateScope::Root,
@@ -4925,7 +4984,7 @@ mod tests {
             )
             .unwrap();
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "plugin",
                 2,
                 super::StoredStateScope::Session,
@@ -4951,7 +5010,7 @@ mod tests {
     fn session_state_snapshot_absent_requested_scope_is_none() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "todo_write",
                 1,
                 super::StoredStateScope::Root,
@@ -5248,7 +5307,7 @@ mod tests {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         let maximum_name = "x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 &maximum_name,
                 1,
                 super::StoredStateScope::Root,
@@ -5256,7 +5315,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            snapshot.insert_plugin_state(
+            snapshot.set_plugin_state(
                 &"x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES + 1),
                 1,
                 super::StoredStateScope::Root,
@@ -5268,7 +5327,7 @@ mod tests {
         let mut entries = super::StoredSessionStateSnapshot::new(1);
         for index in 0..super::MAX_PLUGIN_STATE_ENTRIES {
             entries
-                .insert_plugin_state(
+                .set_plugin_state(
                     &format!("plugin_{index}"),
                     1,
                     super::StoredStateScope::Root,
@@ -5277,7 +5336,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            entries.insert_plugin_state(
+            entries.set_plugin_state(
                 "one_too_many",
                 1,
                 super::StoredStateScope::Root,
@@ -5295,7 +5354,7 @@ mod tests {
     fn session_state_snapshot_rejects_unsafe_plugin_names(plugin: &str) {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         assert!(matches!(
-            snapshot.insert_plugin_state(
+            snapshot.set_plugin_state(
                 plugin,
                 1,
                 super::StoredStateScope::Root,
@@ -5319,7 +5378,7 @@ mod tests {
             }))
             .unwrap();
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "usable",
                 1,
                 super::StoredStateScope::Root,
@@ -5338,7 +5397,7 @@ mod tests {
     fn session_state_snapshot_enforces_payload_and_aggregate_boundaries() {
         let mut payload = super::StoredSessionStateSnapshot::new(1);
         payload
-            .insert_plugin_state(
+            .set_plugin_state(
                 "maximum",
                 1,
                 super::StoredStateScope::Root,
@@ -5346,7 +5405,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            payload.insert_plugin_state(
+            payload.set_plugin_state(
                 "oversized",
                 1,
                 super::StoredStateScope::Root,
@@ -5358,7 +5417,7 @@ mod tests {
         let mut aggregate = super::StoredSessionStateSnapshot::new(1);
         for index in 0..4 {
             aggregate
-                .insert_plugin_state(
+                .set_plugin_state(
                     &format!("large_{index}"),
                     1,
                     super::StoredStateScope::Root,
@@ -5367,7 +5426,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            aggregate.insert_plugin_state(
+            aggregate.set_plugin_state(
                 "aggregate_overflow",
                 1,
                 super::StoredStateScope::Root,
@@ -5613,5 +5672,71 @@ mod tests {
         let loaded = TestSession::load_from(session.id, dir).unwrap();
         assert_eq!(loaded.title, "updated");
         assert!(loaded.meta.fusion.is_none());
+    }
+
+    #[test_case(EffortDialectId::Standard ; "standard")]
+    #[test_case(EffortDialectId::OpenaiExtended ; "openai_extended")]
+    #[test_case(EffortDialectId::PreferHigh ; "prefer_high")]
+    #[test_case(EffortDialectId::HighOnly ; "high_only")]
+    #[test_case(EffortDialectId::Glm ; "glm")]
+    #[test_case(EffortDialectId::DeepSeek ; "deep_seek")]
+    #[test_case(EffortDialectId::AnthropicAdaptive ; "anthropic_adaptive")]
+    #[test_case(EffortDialectId::TensorX ; "tensor_x")]
+    fn effort_dialect_id_round_trip(id: EffortDialectId) {
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(serde_json::from_str::<EffortDialectId>(&json).unwrap(), id);
+    }
+
+    #[test]
+    fn effort_dialect_id_parses_kebab_case() {
+        let parsed: EffortDialectId = serde_json::from_str("\"prefer-high\"").unwrap();
+        assert_eq!(parsed, EffortDialectId::PreferHigh);
+    }
+
+    #[test]
+    fn thinking_field_config_round_trip() {
+        let config = ThinkingFieldConfig {
+            effort_path: Some("reasoning.effort".into()),
+            budget_path: Some("generationConfig.thinkingConfig.thinkingBudget".into()),
+            budget_max: Some(32_768),
+            toggles: vec![ToggleEntry {
+                path: "thinking".into(),
+                on: Some(serde_json::json!({"type": "enabled"})),
+                off: Some(serde_json::json!({"type": "disabled"})),
+                adaptive: Some(serde_json::json!({"type": "adaptive"})),
+                budget_key: Some("budget_tokens".into()),
+            }],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ThinkingFieldConfig>(&json).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn empty_thinking_config_and_body_override_serialize_empty() {
+        assert_eq!(
+            serde_json::to_string(&ThinkingFieldConfig::default()).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            serde_json::to_string(&BodyOverride::default()).unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn body_override_round_trip() {
+        let override_config = BodyOverride {
+            defaults: Some(serde_json::json!({"chat_template_kwargs": {"enable_thinking": true}})),
+            replace: Some(serde_json::json!({"max_tokens": 8192})),
+            filter: vec!["context_management".into()],
+        };
+        let json = serde_json::to_string(&override_config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<BodyOverride>(&json).unwrap(),
+            override_config
+        );
     }
 }
