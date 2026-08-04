@@ -235,6 +235,7 @@ const UNKNOWN_FIELD_ERR: &str = "unknown field";
 const PERMISSION_DENIED_MSG: &str = "permission denied";
 const VALIDATION_PROMPT_NO_PROVIDER_ERR: &str =
     "validation prompt error: no provider configured — run /login or `n00n auth login`";
+const STALE_CTX_ERR: &str = "state context is no longer active";
 const TOOLS_MUST_BE_ARRAY_ERR: &str = "tools must be an array";
 
 #[test]
@@ -4106,7 +4107,7 @@ fn plugin_state_capture_waits_for_inflight_handler_callbacks() {
                 buf:set_lines({{ "waiting" }})
                 ctx:live_buf(buf)
                 n00n.async.run(function()
-                    local id = n00n.fn.jobstart("sleep 0.05")
+                    local id = n00n.fn.jobstart("sleep 0.5")
                     n00n.fn.jobwait(id)
                     return "finished"
                 end, function(err)
@@ -4462,13 +4463,23 @@ fn plugin_state_isolates_namespaces_and_session_scope_while_sharing_root_scope()
     assert_eq!(execute("a_read_session", &root), "session-a");
 
     host.unload("plugin_a").unwrap();
-    let unloaded = handle.capture_state(&root, 8).unwrap();
+    let unloaded = handle.capture_state(&root, 9).unwrap();
     assert!(
         unloaded
             .plugin_payload_for_apply(
                 "plugin_a",
                 1,
                 n00n_storage::sessions::StoredStateScope::Root,
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        unloaded
+            .plugin_payload_for_apply(
+                "plugin_a",
+                1,
+                n00n_storage::sessions::StoredStateScope::Session,
             )
             .unwrap()
             .is_none()
@@ -4537,18 +4548,9 @@ fn plugin_state_rejects_context_reuse_after_handler_finishes() {
     };
 
     assert_eq!(execute("save_state_ctx"), "saved");
-    assert_eq!(
-        execute("reuse_state_ctx"),
-        "state context is no longer active"
-    );
-    assert_eq!(
-        execute("reuse_state_ctx_dispatch"),
-        "state context is no longer active"
-    );
-    assert_eq!(
-        execute("reuse_state_ctx_deadline"),
-        "state context is no longer active"
-    );
+    assert_eq!(execute("reuse_state_ctx"), STALE_CTX_ERR);
+    assert_eq!(execute("reuse_state_ctx_dispatch"), STALE_CTX_ERR);
+    assert_eq!(execute("reuse_state_ctx_deadline"), STALE_CTX_ERR);
 
     let execute_without_identity = |name: &str| {
         let entry = reg.get(name).unwrap();
@@ -4565,7 +4567,7 @@ fn plugin_state_rejects_context_reuse_after_handler_finishes() {
     assert_eq!(execute_without_identity("save_dispatch_ctx"), "saved");
     assert_eq!(
         execute_without_identity("reuse_state_ctx_dispatch"),
-        "state context is no longer active"
+        STALE_CTX_ERR
     );
 
     let snapshot = host
