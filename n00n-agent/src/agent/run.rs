@@ -492,6 +492,10 @@ impl<'h> Agent<'h> {
                     .await
                     .map_err(|error| match error {
                         AdmissionError::Cancelled => AgentError::Cancelled,
+                        AdmissionError::Timeout => AgentError::Api {
+                            status: 503,
+                            message: "tool admission timed out".into(),
+                        },
                     })?,
             )
         } else {

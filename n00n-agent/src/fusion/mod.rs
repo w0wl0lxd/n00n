@@ -4,7 +4,7 @@
 use n00n_providers::TokenUsage;
 use serde::Serialize;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::tools::ToolAudience;
 
@@ -145,18 +145,23 @@ impl FusionDispatchGuard {
     /// caller is not the main agent, invocation is indirect, or the guard was consumed.
     pub fn authorize(&mut self, origin: FusionInvocationOrigin) -> Result<(), FusionDispatchError> {
         if !self.enabled {
+            debug!(origin = ?origin, "fusion dispatch rejected: disabled");
             return Err(FusionDispatchError::Disabled);
         }
         if self.classification != DelegationKind::Delegate {
+            debug!(classification = ?self.classification, "fusion dispatch rejected: not a delegate");
             return Err(FusionDispatchError::Ineligible);
         }
         if self.audience != ToolAudience::MAIN {
+            debug!(audience = ?self.audience, "fusion dispatch rejected: not main audience");
             return Err(FusionDispatchError::InvalidAudience);
         }
         if origin != FusionInvocationOrigin::Direct {
+            debug!(origin = ?origin, "fusion dispatch rejected: indirect invocation");
             return Err(FusionDispatchError::IndirectInvocation);
         }
         if self.dispatched {
+            debug!("fusion dispatch rejected: already dispatched");
             return Err(FusionDispatchError::AlreadyDispatched);
         }
         self.dispatched = true;

@@ -509,6 +509,7 @@ async fn run_authorized(
         {
             Ok(guard) => guard,
             Err(error) => {
+                warn!(tool = %name, error = %error, "tool admission denied");
                 return tool_done_error(id.clone(), Arc::clone(&tool_id), error.to_string());
             }
         };
@@ -573,6 +574,7 @@ async fn run_authorized(
         let _admission_guard = match registry.admission().acquire(workload, &ctx.cancel).await {
             Ok(guard) => guard,
             Err(error) => {
+                warn!(tool = %mcp_lookup, error = %error, "tool admission denied");
                 return tool_done_error(id, tool_id, error.to_string());
             }
         };
