@@ -60,9 +60,9 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no |  |
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| `include` | string | no | Glob pattern (e.g. '*.rs'). |
+| `path` | string | no | Directory or file to search. |
+| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
 | `context_before` | integer | no |  |
@@ -143,9 +143,9 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `replace_all` | boolean | no |  |
-| `path` | string | yes |  |
-| `old_string` | string | yes |  |
-| `new_string` | string | yes |  |
+| `path` | string | yes | File path. |
+| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
+| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
 
 ### `edit_file_bulk` *(lua plugin)*
 
@@ -203,7 +203,7 @@ Commands run in <cwd> by default.
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `run_python` *(lua plugin)*
@@ -217,11 +217,11 @@ Execute Python in sandboxed interpreter with tools as callable functions. Use fo
 
 ### `run_batch` *(lua plugin)*
 
-Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations. Prefer batch over sequential tool calls when operations are independent.
+Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
+| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `ask_user` *(lua plugin)*
 
@@ -250,7 +250,7 @@ Show status for one live background agent.
 
 ### `control_agent` *(lua plugin)*
 
-Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.
+Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -341,7 +341,7 @@ Create or update a structured todo list to track tasks. Use after EACH completed
 
 ### `delegate_fusion` *(lua plugin)*
 
-Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
