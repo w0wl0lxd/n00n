@@ -12,8 +12,6 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::providers::Tier;
-
 const PROJECT_DIR: &str = ".n00n";
 const PERMISSIONS_FILE: &str = "permissions.toml";
 
@@ -79,6 +77,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "skill",
     "task",
     "team",
+    "tmux",
     "todo_write",
     "view_image",
     "webfetch",
@@ -148,7 +147,7 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
         ty: "bool",
         default: ConfigValue::Bool(false),
         min: None,
-        description: "Start every session with beta Fusion orchestration (off by default)",
+        description: "Start every session with Fusion dual-lane routing (lead + sidekick)",
     },
     ConfigField {
         name: "always_thinking",
@@ -190,7 +189,7 @@ pub enum ConfigError {
     #[error(
         "invalid config: agent.fusion.sidekick_tier must be weak, medium, or strong, got {tier:?}"
     )]
-    InvalidFusionSidekickTier { tier: Tier },
+    InvalidFusionSidekickTier { tier: crate::providers::Tier },
 }
 
 fn check(
@@ -502,7 +501,7 @@ pub struct AgentFileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct FusionFileConfig {
     pub enabled: Option<bool>,
-    pub sidekick_tier: Option<Tier>,
+    pub sidekick_tier: Option<crate::providers::Tier>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -1123,14 +1122,14 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusionConfig {
     pub enabled: bool,
-    pub sidekick_tier: Tier,
+    pub sidekick_tier: crate::providers::Tier,
 }
 
 impl Default for FusionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            sidekick_tier: Tier::Weak,
+            sidekick_tier: crate::providers::Tier::Weak,
         }
     }
 }
@@ -1176,7 +1175,9 @@ impl AgentConfig {
         let fusion = if let Some(ff) = file.fusion {
             FusionConfig {
                 enabled: ff.enabled.map_or(false, |enabled| enabled),
-                sidekick_tier: ff.sidekick_tier.map_or(Tier::Weak, |tier| tier),
+                sidekick_tier: ff
+                    .sidekick_tier
+                    .map_or(crate::providers::Tier::Weak, |tier| tier),
             }
         } else {
             FusionConfig::default()
@@ -1380,13 +1381,13 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
-        if self.agent.fusion.sidekick_tier == Tier::Compaction {
+        self.provider.validate()?;
+        self.provider.validate_openai_coding_plan_slots()?;
+        if self.agent.fusion.sidekick_tier == crate::providers::Tier::Compaction {
             return Err(ConfigError::InvalidFusionSidekickTier {
                 tier: self.agent.fusion.sidekick_tier,
             });
         }
-        self.provider.validate()?;
-        self.provider.validate_openai_coding_plan_slots()?;
         self.storage.validate()?;
         Ok(())
     }
@@ -2167,7 +2168,6 @@ mod tests {
     use tempfile::TempDir;
     use test_case::test_case;
 
-    const UNKNOWN_FUSION_FIELD: &str = "implicit_model_switch";
     fn plugin_enabled(enabled: bool) -> PluginFileConfig {
         PluginFileConfig {
             enabled: Some(enabled),
@@ -2450,6 +2450,15 @@ mod tests {
         }
         let err = config.validate().unwrap_err();
         assert!(matches!(err, ConfigError::BelowMinimum { field: f, .. } if f == field));
+    }
+    #[test]
+    fn validate_rejects_compaction_as_fusion_sidekick_tier() {
+        let mut config = RawConfig::default().into_config(false).unwrap();
+        config.agent.fusion.sidekick_tier = crate::providers::Tier::Compaction;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickTier { .. })
+        ));
     }
 
     #[test]
