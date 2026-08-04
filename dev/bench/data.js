@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785822734937,
+  "lastUpdate": 1785848696962,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -14035,6 +14035,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 159835,
             "range": "± 13085",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "adfb916440c9442e00028a40d8275075238d5a1c",
+          "message": "Merge pull request #334 from w0wl0lxd/feat/n00n-providers-thinking-config\n\nfeat(providers): per-model thinking config and body overrides for dynamic providers",
+          "timestamp": "2026-08-04T08:49:10-04:00",
+          "tree_id": "a1133f52d4d4b1de5d76b52e75d190727fcbc892",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/adfb916440c9442e00028a40d8275075238d5a1c"
+        },
+        "date": 1785848695499,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6618172,
+            "range": "± 15920",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2219900,
+            "range": "± 12316",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2221197,
+            "range": "± 4199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8083515,
+            "range": "± 47527",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4316992,
+            "range": "± 25732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4316964,
+            "range": "± 35630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 590772,
+            "range": "± 1256",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191733,
+            "range": "± 339",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191751,
+            "range": "± 948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045019,
+            "range": "± 5163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582154,
+            "range": "± 14567",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581951,
+            "range": "± 1940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80190,
+            "range": "± 558",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 112231,
+            "range": "± 3354",
             "unit": "ns/iter"
           }
         ]
