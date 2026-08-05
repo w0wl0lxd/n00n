@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785902373492,
+  "lastUpdate": 1785907491892,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -14575,6 +14575,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 173895,
             "range": "± 16237",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "814c2f0c1beaf3a68e604a6885d76b0b68e7047a",
+          "message": "Merge pull request #287 from w0wl0lxd/fix/log-audit-runtime-noise-followup\n\nfix(lua,providers): demote debug logs and add setup-required error variant",
+          "timestamp": "2026-08-05T00:59:15-04:00",
+          "tree_id": "13896de74dce5e8513dbb9c80df7f715c336aed5",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/814c2f0c1beaf3a68e604a6885d76b0b68e7047a"
+        },
+        "date": 1785907491184,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6550595,
+            "range": "± 134462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2450980,
+            "range": "± 3319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2443619,
+            "range": "± 56651",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7676636,
+            "range": "± 167865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3843179,
+            "range": "± 14203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4340659,
+            "range": "± 31262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554225,
+            "range": "± 1349",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168147,
+            "range": "± 3888",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167974,
+            "range": "± 435",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1039316,
+            "range": "± 12012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 630109,
+            "range": "± 12515",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 631124,
+            "range": "± 8781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 77434,
+            "range": "± 4180",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 109815,
+            "range": "± 17773",
             "unit": "ns/iter"
           }
         ]
