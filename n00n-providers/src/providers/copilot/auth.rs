@@ -44,7 +44,7 @@ pub(crate) fn load_token() -> Result<ProviderCredentials, AgentError> {
         return Ok(creds);
     }
 
-    Err(AgentError::Config {
+    Err(AgentError::SetupRequired {
         message: "not authenticated, run `n00n auth login copilot` or set GH_COPILOT_TOKEN".into(),
     })
 }
@@ -72,7 +72,7 @@ fn discover_token() -> Result<ProviderCredentials, AgentError> {
         }
     }
 
-    Err(AgentError::Config {
+    Err(AgentError::SetupRequired {
         message: "Copilot token not found. Run `gh auth login --web`, sign in with the Copilot \
             client, or set GH_COPILOT_TOKEN."
             .into(),
