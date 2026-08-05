@@ -451,7 +451,8 @@ Listen for one or more events. Returns an id you can pass to
 `del_autocmd` later to remove the listener.
 
 Built-in events fired by the host: `"TurnStart"`, `"TurnEnd"`,
-`"TurnError"`, `"ToolStart"`, `"ToolDone"`, `"SessionReset"`.
+`"TurnError"`, `"ToolStart"`, `"ToolDone"`, `"SessionReset"`,
+`"SessionFocus"`.
 Plugins can also fire their own
 events with `exec_autocmds`.
 
