@@ -223,8 +223,9 @@ impl<'h> Agent<'h> {
         let admission_scope = params
             .identity
             .as_ref()
-            .map_or_else(crate::tools::ToolAdmission::new_scope, |identity| {
-                Arc::<str>::from(identity.session_id().to_string())
+            .map(SessionIdentity::session_id)
+            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
+                Arc::<str>::from(id.to_string())
             });
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
