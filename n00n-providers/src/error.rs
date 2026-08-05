@@ -69,6 +69,8 @@ pub enum AgentError {
     Api { status: u16, message: String },
     #[error("{message}")]
     Config { message: String },
+    #[error("{message}")]
+    SetupRequired { message: String },
     #[error("tool error in {tool}: {message}")]
     Tool { tool: String, message: String },
     #[error(transparent)]
@@ -141,7 +143,21 @@ impl AgentError {
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
-            _ => false,
+            Self::Config { .. }
+            | Self::SetupRequired { .. }
+            | Self::Tool { .. }
+            | Self::Storage
+            | Self::Channel
+            | Self::Json(_)
+            | Self::Cancelled
+            | Self::HttpRequest(_)
+            | Self::CredentialLockTimeout { .. }
+            | Self::CodingPlanAdmissionTimeout { .. }
+            | Self::ResponseChainBusy { .. }
+            | Self::CodingPlanAdmissionScopeChanged
+            | Self::CodingPlanAdmission { .. }
+            | Self::HistoryReplayRequired { .. }
+            | Self::RequestSent { .. } => false,
         }
     }
 
@@ -229,13 +245,24 @@ impl AgentError {
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
             | Self::HistoryReplayRequired { .. }
-            | Self::RequestSent { .. } => false,
+            | Self::RequestSent { .. }
+            | Self::SetupRequired { .. } => false,
         }
     }
 
     #[must_use]
     pub fn is_auth_error(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. })
+    }
+
+    #[must_use]
+    pub fn is_setup_required(&self) -> bool {
+        matches!(self, Self::SetupRequired { .. })
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
     }
 
     #[must_use]
@@ -246,7 +273,7 @@ impl AgentError {
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            Self::Config { message } => message.clone(),
+            Self::Config { message } | Self::SetupRequired { message } => message.clone(),
             Self::Api { status: 429, .. } => "rate limited, try again in a moment".into(),
             Self::Api { status: 529, .. } => "provider is overloaded, try again later".into(),
             Self::Api { message, .. } if Self::is_overload_message(message) => {
@@ -503,5 +530,31 @@ mod tests {
 
         assert!(matches!(err, AgentError::Api { status: 400, .. }));
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn setup_required_error_is_recognized() {
+        let err = AgentError::SetupRequired {
+            message: "missing API key".into(),
+        };
+        assert!(err.is_setup_required());
+        assert!(!err.is_cancelled());
+        assert!(!err.is_auth_error());
+    }
+
+    #[test]
+    fn unexpected_config_error_is_not_setup_required() {
+        let err = AgentError::Config {
+            message: "invalid provider URL".into(),
+        };
+        assert!(!err.is_setup_required());
+    }
+
+    #[test]
+    fn cancelled_error_is_recognized() {
+        let err = AgentError::Cancelled;
+        assert!(err.is_cancelled());
+        assert!(!err.is_setup_required());
+        assert!(!err.is_auth_error());
     }
 }
