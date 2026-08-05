@@ -1091,6 +1091,7 @@ n00n.api.register_tool({
   name = "team",
   description = description,
   kind = "execute",
+  workload = "orchestrator",
   audiences = { "main", "workflow" },
   schema = schema,
   timeout = TEAM_TIMEOUT_SECS,
