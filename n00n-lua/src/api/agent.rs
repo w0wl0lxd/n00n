@@ -711,8 +711,7 @@ async fn session(
 
     let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
-        let tools =
-            normalize_tool_definitions(lua_to_json(&lua, &val)?).map_err(mlua::Error::runtime)?;
+        let tools = try_pair!(normalize_tool_definitions(lua_to_json(&lua, &val)?));
         (tools, ToolFilter::All)
     } else {
         let vars = n00n_agent::template::Vars::new();
@@ -732,10 +731,6 @@ async fn session(
             serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         (tools_json, filter)
     };
-
-    if explicit_tools {
-        tool_filter = ToolFilter::All;
-    }
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
