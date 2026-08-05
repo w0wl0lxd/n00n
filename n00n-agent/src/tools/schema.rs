@@ -756,7 +756,7 @@ fn validate_object(
         }
     } else {
         for (extra_key, _) in map {
-            warn!(path = %path, key = %extra_key, "dropped unknown tool parameter");
+            debug!(path = %path, key = %extra_key, "dropped unknown tool parameter");
         }
     }
     Ok(Value::Object(out))
