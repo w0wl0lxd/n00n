@@ -205,6 +205,7 @@ n00n.api.register_tool({
   kind = "search",
   workload = "cheap",
   modes = { "default", "research", "build", "compact" },
+  audiences = { "main", "research_sub", "general_sub" },
   description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
 
   schema = {

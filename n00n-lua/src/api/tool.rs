@@ -1031,7 +1031,7 @@ fn is_valid_tool_name(name: &str) -> bool {
 
 fn parse_audience(audiences: Option<mlua::Table>) -> LuaResult<ToolAudience> {
     let Some(audiences) = audiences else {
-        return Ok(ToolAudience::all());
+        return Ok(ToolAudience::MAIN);
     };
     let mut flags = ToolAudience::empty();
     let mut count = 0;

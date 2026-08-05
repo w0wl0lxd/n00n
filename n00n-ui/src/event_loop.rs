@@ -901,6 +901,13 @@ impl<'t> EventLoop<'t> {
             // flushes, so the loop never blocks on disk and a queued save
             // cannot resurrect the files.
             SessionRequest::Delete { id } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let id = match parse_session_id(&id) {
                     Ok(id) => id,
                     Err(e) => {
@@ -908,6 +915,11 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
+                if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                    let _ = reply_tx
+                        .send(Err("caller is not authorized to delete this session".into()));
+                    return;
+                }
                 if let Some(i) = self.position(id) {
                     if i == self.focused {
                         let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
@@ -956,7 +968,17 @@ impl<'t> EventLoop<'t> {
                 let _ = reply_tx.send(Ok(json!(list)));
             }
             SessionRequest::Status { id } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let reply = parse_session_id(&id).and_then(|id| {
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to read this session".into());
+                    }
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
@@ -1061,18 +1083,40 @@ impl<'t> EventLoop<'t> {
                 steer,
                 control,
             } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let idx = match id {
                     None => Ok(self.focused),
                     Some(id) => parse_session_id(&id).and_then(|id| {
-                        self.position(id)
-                            .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
+                        let idx = self
+                            .position(id)
+                            .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                        if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                            return Err("caller is not authorized to prompt this session".into());
+                        }
+                        Ok(idx)
                     }),
                 };
                 let _ =
                     reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer, control)));
             }
             SessionRequest::Cancel { id } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let reply = parse_session_id(&id).and_then(|id| {
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to cancel this session".into());
+                    }
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
@@ -1086,15 +1130,35 @@ impl<'t> EventLoop<'t> {
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::Focus { id } => {
-                let reply = parse_session_id(&id)
-                    .and_then(|id| self.focus_session(id))
-                    .map(|()| json!(true));
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let reply = parse_session_id(&id).and_then(|id| {
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to focus this session".into());
+                    }
+                    self.focus_session(id).map(|()| json!(true))
+                });
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::SetTitle { id, title } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let title = normalize_title(&title);
                 let reply = (|| {
                     let id = parse_session_id(&id)?;
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to set title on this session".into());
+                    }
                     if let Some(i) = self.position(id) {
                         let app = &mut self.sessions[i].app;
                         app.state.session.title = title;

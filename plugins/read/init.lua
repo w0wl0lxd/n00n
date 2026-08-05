@@ -208,6 +208,7 @@ n00n.api.register_tool({
   kind = "read",
   workload = "cheap",
   modes = { "default", "research", "build", "compact" },
+  audiences = { "main", "research_sub", "general_sub" },
   description = DESCRIPTION,
 
   schema = {

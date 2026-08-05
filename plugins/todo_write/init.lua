@@ -192,6 +192,7 @@ n00n.api.register_prompt_hint({
 n00n.api.register_tool({
   name = "todo_write",
   description = DESCRIPTION,
+  audiences = { "main", "research_sub", "general_sub" },
   schema = {
     type = "object",
     required = { "todos" },
@@ -218,7 +219,6 @@ n00n.api.register_tool({
       },
     },
   },
-  audiences = { "main", "research_sub", "general_sub" },
 
   header = function(input)
     return string.format("%d todos", #(input.todos or {}))

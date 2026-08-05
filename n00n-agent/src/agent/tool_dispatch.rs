@@ -434,7 +434,6 @@ pub async fn run(
                 warn!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    input_preview = %crate::tools::schema::preview(&input.to_string()),
                     error = %e,
                     "tool input parse failed"
                 );
