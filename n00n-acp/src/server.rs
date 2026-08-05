@@ -25,7 +25,7 @@ use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::Session;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Deserializer, Result as JsonResult, Value};
 use smol::io::AsyncBufReadExt;
 use tracing::{debug, warn};
 
@@ -135,8 +135,8 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 }
 
 /// Parses one or more JSON-RPC messages concatenated on a single stdin line.
-fn parse_stdin_line(line: &str) -> impl Iterator<Item = serde_json::Result<Value>> + '_ {
-    serde_json::Deserializer::from_str(line).into_iter::<Value>()
+fn parse_stdin_line(line: &str) -> impl Iterator<Item = JsonResult<Value>> + '_ {
+    Deserializer::from_str(line).into_iter::<Value>()
 }
 
 fn request_id(v: &Value) -> RequestId {
@@ -632,8 +632,8 @@ mod tests {
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
     }
 
-    #[test]
-    fn parse_stdin_line_splits_multiple_json_rpc_messages_on_one_line() {
+    #[test_case::test_case(())]
+    fn parse_stdin_line_splits_multiple_json_rpc_messages_on_one_line(_case: ()) {
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}{"jsonrpc":"2.0","id":2,"method":"b"}"#;
         let values: Vec<Value> = parse_stdin_line(line)
             .map(|r| r.expect("each message is valid JSON"))
@@ -643,8 +643,8 @@ mod tests {
         assert_eq!(values[1]["id"], 2);
     }
 
-    #[test]
-    fn parse_stdin_line_parses_single_message() {
+    #[test_case::test_case(())]
+    fn parse_stdin_line_parses_single_message(_case: ()) {
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}"#;
         let values: Vec<Value> = parse_stdin_line(line)
             .map(|r| r.expect("message is valid JSON"))
@@ -653,8 +653,8 @@ mod tests {
         assert_eq!(values[0]["id"], 1);
     }
 
-    #[test]
-    fn parse_stdin_line_reports_error_for_invalid_json() {
+    #[test_case::test_case(())]
+    fn parse_stdin_line_reports_error_for_invalid_json(_case: ()) {
         let mut values = parse_stdin_line("not json");
         assert!(values.next().expect("one item").is_err());
     }
