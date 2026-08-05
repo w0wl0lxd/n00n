@@ -183,12 +183,12 @@ pub fn find(path: &Path, options: &ConflictsOptions) -> Result<GitConflicts, Git
             continue;
         }
 
-        let rela_bstr: &gix::bstr::BStr = rela_path.as_ref();
-        let is_unmerged = is_unmerged(&index, rela_bstr);
+        let rel_bstr: &gix::bstr::BStr = rela_path.as_ref();
+        let is_unmerged = is_unmerged(&index, rel_bstr);
 
-        let rela = gix::path::try_from_bstr(rela_path)
+        let rel = gix::path::try_from_bstr(rela_path)
             .map_err(|e| GitError::GitOperation(format!("invalid relative path: {e}")))?;
-        let file_path = workdir.join(rela.as_ref());
+        let file_path = workdir.join(rel.as_ref());
         let canonical_file = file_path
             .canonicalize()
             .unwrap_or_else(|_| file_path.clone());
