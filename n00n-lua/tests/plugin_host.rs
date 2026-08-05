@@ -4111,7 +4111,10 @@ fn session_rejects_nonempty_lua_tools_object() {
             schema = {MINIMAL_SCHEMA},
             audiences = {{ "main" }},
             handler = function(input, ctx)
-                return n00n.agent.session(ctx, {{ tools = {{ unexpected = true }} }})
+                local _, err = n00n.agent.session(ctx, {{ tools = {{ unexpected = true }} }})
+                if err then
+                    return {{ llm_output = err, is_error = true }}
+                end
             end
         }})"#
     );

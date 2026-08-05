@@ -5,6 +5,7 @@
 //! quotes, camelCase keys, extra wrappers). Plan mode rejects writes to
 //! anything but the plan file before they reach the tool.
 
+pub mod admission;
 mod file_tracker;
 pub mod grep;
 pub mod interpreter_bridge;
@@ -12,6 +13,7 @@ pub mod registry;
 pub mod schema;
 pub mod tool_search;
 
+pub use admission::{AdmissionError, ToolAdmission, ToolAdmissionClass, ToolAdmissionGuard};
 pub use file_tracker::FileReadTracker;
 pub use registry::{
     ActiveTools, BoxFuture, ExecFuture, HeaderFuture, HeaderResult, ParseError, PermissionScopes,
@@ -358,6 +360,9 @@ pub struct ToolContext {
     /// Immutable session and root identity of the agent executing this tool.
     pub identity: Option<SessionIdentity>,
     pub registry: Arc<ToolRegistry>,
+    /// Stable identity used by registry-scoped per-agent admission. Child
+    /// sessions receive their own scope, while nested calls in one agent share it.
+    pub admission_scope: Arc<str>,
     pub tool_filter: ToolFilter,
     pub workflow: bool,
     pub audience: ToolAudience,
@@ -499,22 +504,34 @@ pub(crate) fn truncate_bytes(line: &str, max_bytes: usize) -> String {
 #[must_use]
 pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String {
     const TRUNCATED_MARKER: &str = "[truncated]";
+    if max_bytes == 0 || max_lines == 0 {
+        return String::new();
+    }
     let mut lines = text.lines();
     let mut result = String::new();
     let mut truncated = false;
 
     for _ in 0..max_lines {
         let Some(line) = lines.next() else { break };
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(line);
-        if result.len() > max_bytes {
-            let boundary = result.floor_char_boundary(max_bytes);
-            result.truncate(boundary);
+        let separator = usize::from(!result.is_empty());
+        if result
+            .len()
+            .saturating_add(separator)
+            .saturating_add(line.len())
+            > max_bytes
+        {
+            let remaining = max_bytes.saturating_sub(result.len().saturating_add(separator));
+            if separator != 0 && remaining > 0 {
+                result.push('\n');
+            }
+            result.push_str(&line[..line.floor_char_boundary(remaining)]);
             truncated = true;
             break;
         }
+        if separator != 0 {
+            result.push('\n');
+        }
+        result.push_str(line);
     }
 
     if !truncated && lines.next().is_some() {
@@ -522,8 +539,19 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
     }
 
     if truncated {
-        result.push('\n');
-        result.push_str(TRUNCATED_MARKER);
+        let suffix = if result.is_empty() {
+            TRUNCATED_MARKER.to_owned()
+        } else {
+            format!("\n{TRUNCATED_MARKER}")
+        };
+        if suffix.len() >= max_bytes {
+            result.clear();
+            suffix[..suffix.floor_char_boundary(max_bytes)].clone_into(&mut result);
+        } else {
+            let content_limit = max_bytes - suffix.len();
+            result.truncate(result.floor_char_boundary(content_limit));
+            result.push_str(&suffix);
+        }
     }
     result
 }
@@ -631,6 +659,7 @@ pub fn interpreter_ctx(
         subagent_cancels: Arc::new(CancelMap::new()),
         identity: None,
         registry,
+        admission_scope: crate::tools::ToolAdmission::new_scope(),
         tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,
@@ -869,6 +898,13 @@ mod tests {
         assert_eq!(result, expected);
     }
 
+    #[test_case("abcdefghij\nklmno", 2, 15, "abc\n[truncated]" ; "short_byte_limit_keeps_marker")]
+    #[test_case("one\ntwo", 0, 10, "" ; "zero_line_limit")]
+    #[test_case("one", 10, 0, "" ; "zero_byte_limit")]
+    fn truncate_output_edge_cases(input: &str, max_lines: usize, max_bytes: usize, expected: &str) {
+        assert_eq!(truncate_output(input, max_lines, max_bytes), expected);
+    }
+
     #[test]
     fn truncate_output_respects_line_and_byte_limits() {
         const MAX_LINES: usize = 2000;
@@ -880,10 +916,12 @@ mod tests {
             .join("\n");
         let result = truncate_output(&many_lines, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
+        assert!(result.len() <= MAX_BYTES);
 
         let many_bytes = "x".repeat(MAX_BYTES + 1000);
         let result = truncate_output(&many_bytes, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
+        assert!(result.len() <= MAX_BYTES);
     }
 
     #[test]
