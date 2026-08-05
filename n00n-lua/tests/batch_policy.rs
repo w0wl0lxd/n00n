@@ -220,7 +220,7 @@ fn nested_parameters_passed_to_child() {
 }
 
 #[test_case::test_case(json!([]), EMPTY_ERROR ; "empty_list")]
-#[test_case::test_case(json!([{ "tool": "ok", "parameters": { "tag": "x" }, "tag": "y" }]), "unexpected parameter" ; "flat_key_rejected")]
+#[test_case::test_case(json!([{ "tool": "ok", "parameters": { "tag": "x" }, "tag": "y" }]), "duplicate parameter" ; "flat_key_rejected")]
 fn invalid_input_errors_without_dispatch(tool_calls: Value, expected_err: &str) {
     let (reg, _host) = load_batch_host();
     let err = run_batch(&reg, tool_calls).unwrap_err();

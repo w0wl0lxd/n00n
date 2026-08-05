@@ -781,7 +781,10 @@ fn fusion_and_blackboard_headers_render_prose() {
         .parse(&json!({
             "description": "brief label",
             "goal": "g",
+            "constraints": null,
             "definition_of_done": "d",
+            "escalation_triggers": null,
+            "subagent_type": null,
         }))
         .unwrap();
     assert_eq!(
