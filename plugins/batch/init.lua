@@ -506,6 +506,7 @@ n00n.api.register_tool({
   name = "batch",
   description = description,
   kind = "execute",
+  workload = "orchestrator",
   audiences = { "main", "research_sub", "general_sub" },
   defer_loading = true,
   schema = schema,

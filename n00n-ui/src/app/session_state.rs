@@ -9,6 +9,7 @@ use n00n_config::Effect;
 use n00n_providers::{Message, Model, ThinkingConfig, TokenUsage};
 use n00n_storage::sessions::{StoredEffect, StoredMode, StoredRule};
 use n00n_storage::{StateDir, TranscriptEntry};
+use serde_json::Value;
 
 use crate::AppSession;
 
@@ -27,6 +28,7 @@ pub(crate) struct SessionState {
     pub workflow: bool,
     transcript_revision: u64,
     shared_transcript_snapshot: Option<Arc<Vec<TranscriptEntry<Message>>>>,
+    last_snapshot: Option<Value>,
 }
 
 const PLAN_FILE_MISSING_WARNING: &str = "Plan file was deleted \u{2014} started a new plan";
@@ -71,6 +73,13 @@ impl SessionState {
 
         let token_usage = session.token_usage;
         let context_size = session.meta.context_size;
+        let last_snapshot = match serde_json::to_value(&session) {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                tracing::warn!(%error, "session change detection baseline failed");
+                None
+            }
+        };
 
         Self {
             // Saved model may differ from the live one (updated, removed, etc).
@@ -92,6 +101,7 @@ impl SessionState {
             warnings,
             transcript_revision: 0,
             shared_transcript_snapshot: None,
+            last_snapshot,
         }
     }
 
@@ -139,9 +149,31 @@ impl SessionState {
         self.session.meta.thinking = Some(self.thinking.into());
         self.session.meta.fast = self.fast;
         self.session.meta.workflow = self.workflow;
-        self.session.meta.revision = self.session.meta.revision.saturating_add(1);
-        self.session.updated_at = n00n_storage::now_epoch();
         self.session.update_title_if_default();
+    }
+
+    pub fn finish_snapshot(&mut self) {
+        let current = self.serialized_session();
+        let changed = current.as_ref().is_none_or(|current| {
+            self.last_snapshot
+                .as_ref()
+                .is_none_or(|previous| previous != current)
+        });
+        if changed {
+            self.session.meta.revision = self.session.meta.revision.saturating_add(1);
+            self.session.updated_at = n00n_storage::now_epoch();
+            self.last_snapshot = self.serialized_session();
+        }
+    }
+
+    fn serialized_session(&self) -> Option<Value> {
+        match serde_json::to_value(&self.session) {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                tracing::warn!(%error, "session change detection failed; advancing revision");
+                None
+            }
+        }
     }
 
     pub fn update_model(&mut self, model: &Model) {
