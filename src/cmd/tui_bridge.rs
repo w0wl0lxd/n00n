@@ -284,7 +284,11 @@ mod tests {
 
     fn respond_live(rx: flume::Receiver<UiAction>, body: Value) {
         thread::spawn(move || {
-            if let Ok(UiAction::Session { req, reply_tx }) = rx.recv_timeout(Duration::from_secs(2))
+            if let Ok(UiAction::Session {
+                req,
+                reply_tx,
+                caller: _,
+            }) = rx.recv_timeout(Duration::from_secs(2))
             {
                 match req {
                     SessionRequest::Live => {
@@ -357,7 +361,11 @@ mod tests {
     fn message_forwards_steer_and_control_opts() -> Result<(), String> {
         let (tx, rx) = flume::unbounded();
         thread::spawn(move || {
-            if let Ok(UiAction::Session { req, reply_tx }) = rx.recv_timeout(Duration::from_secs(2))
+            if let Ok(UiAction::Session {
+                req,
+                reply_tx,
+                caller: _,
+            }) = rx.recv_timeout(Duration::from_secs(2))
             {
                 match req {
                     SessionRequest::Prompt {
@@ -399,8 +407,11 @@ mod tests {
         let (tx, rx) = flume::unbounded();
         thread::spawn(move || {
             let mut saw_status = false;
-            while let Ok(UiAction::Session { req, reply_tx }) =
-                rx.recv_timeout(Duration::from_secs(2))
+            while let Ok(UiAction::Session {
+                req,
+                reply_tx,
+                caller: _,
+            }) = rx.recv_timeout(Duration::from_secs(2))
             {
                 match req {
                     SessionRequest::Status { id } if id == "sess-1" => {

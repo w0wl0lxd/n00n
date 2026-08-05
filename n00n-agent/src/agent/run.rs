@@ -1401,6 +1401,9 @@ mod tests {
                     source: ImageSource {
                         media_type: ImageMediaType::Png,
                         data: Arc::from("data"),
+                        detail: None,
+                        file_id: None,
+                        url: None,
                     },
                 },
             ],

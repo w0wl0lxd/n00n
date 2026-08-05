@@ -271,6 +271,7 @@ mod tests {
             let Ok(UiAction::Session {
                 req: SessionRequest::Focus { id },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected focus request");
@@ -291,6 +292,7 @@ mod tests {
             let Ok(UiAction::Session {
                 req: SessionRequest::Status { id },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected status request");
@@ -315,6 +317,7 @@ mod tests {
             let Ok(UiAction::Session {
                 req: SessionRequest::Cancel { id },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected cancel request");
@@ -352,6 +355,7 @@ mod tests {
                         control,
                     },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected prompt request");

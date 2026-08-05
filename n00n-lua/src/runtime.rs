@@ -981,8 +981,8 @@ fn spawn_async_task(
 
         let scope = TaskScope::new(&lua, {
             let mut cell = TaskCell::new(task.cancel.clone(), task.deadline, task.live_ctx.clone());
-            cell.caller_session_id = task.caller_session_id.clone();
-            cell.caller_tool = task.caller_tool.clone();
+            cell.caller_session_id.clone_from(&task.caller_session_id);
+            cell.caller_tool.clone_from(&task.caller_tool);
             cell
         });
         let result = scope
@@ -3396,6 +3396,8 @@ mod tests {
             live_ctx: None,
             owner: None,
             parent: None,
+            caller_session_id: None,
+            caller_tool: None,
         }
     }
 
