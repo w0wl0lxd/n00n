@@ -71,15 +71,15 @@ impl PluginPermissions {
         for perm in Permission::ALL {
             if let Some(perm_table) = perms {
                 if let Some(value) = perm_table.get(perm.manifest_key()) {
-                    if !value.is_bool() {
+                    if let Some(b) = value.as_bool() {
+                        allowed[perm as usize] = b;
+                    } else {
                         warn!(
                             permission = %perm,
                             value = %value,
                             "invalid permission value in manifest (expected boolean), denying"
                         );
                         allowed[perm as usize] = DEFAULT_PERMISSION;
-                    } else {
-                        allowed[perm as usize] = value.as_bool().unwrap();
                     }
                 } else {
                     allowed[perm as usize] = DEFAULT_PERMISSION;
