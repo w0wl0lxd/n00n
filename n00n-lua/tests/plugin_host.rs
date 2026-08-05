@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
     ActiveTools, DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
@@ -23,6 +24,7 @@ use n00n_providers::{
     StreamResponse, System, TokenUsage,
 };
 use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
 
@@ -5359,6 +5361,174 @@ fn bundled_todo_panel_keeps_current_todo_stable_in_hint() {
     handle.fire_autocmd(
         "ToolDone",
         serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+    );
+    handle.fire_autocmd("TurnEnd", serde_json::json!({}));
+    barrier(&host);
+    let hints = host.hint_reader().load();
+    let text = hints
+        .entries
+        .iter()
+        .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
+        .collect::<String>();
+    assert!(text.contains("Run tests"), "turn end cleared todos: {text}");
+}
+
+#[test]
+fn stale_session_state_lease_cannot_drop_replacement_state() {
+    let (_registry, host) = builtins_host();
+    let handle = host.event_handle().unwrap();
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let mut first_snapshot = StoredSessionStateSnapshot::new(1);
+    first_snapshot
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({ "todos": [{ "content": "old", "status": "pending" }] }),
+        )
+        .unwrap();
+    let first_lease =
+        SessionStatePersistence::hydrate(&handle, &identity, Some(first_snapshot)).unwrap();
+    let mut replacement_snapshot = StoredSessionStateSnapshot::new(2);
+    replacement_snapshot
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({ "todos": [{ "content": "replacement", "status": "pending" }] }),
+        )
+        .unwrap();
+    let replacement_lease =
+        SessionStatePersistence::hydrate(&handle, &identity, Some(replacement_snapshot)).unwrap();
+
+    SessionStatePersistence::drop_owner(&handle, identity.session_id().id(), first_lease).unwrap();
+
+    let captured = handle.capture_state(&identity, 3).unwrap();
+    assert_eq!(
+        captured
+            .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+            .unwrap(),
+        Some(&serde_json::json!({
+            "todos": [{ "content": "replacement", "status": "pending" }]
+        }))
+    );
+    SessionStatePersistence::drop_owner(&handle, identity.session_id().id(), replacement_lease)
+        .unwrap();
+}
+
+#[test]
+fn bundled_todo_focus_uses_persisted_session_state() {
+    let (reg, host) = builtins_host();
+    let handle = host.event_handle().unwrap();
+    let ui_rx = host.ui_action_rx().unwrap();
+    let focused = SessionIdentity::root(SessionRef::generate());
+    let background = SessionIdentity::root(SessionRef::generate());
+    handle.fire_autocmd(
+        "SessionFocus",
+        serde_json::json!({
+            "session_id": focused.session_id().to_string(),
+            "state_snapshot": null,
+        }),
+    );
+    barrier(&host);
+
+    let entry = reg.get("todo_write").unwrap();
+    let invocation = entry
+        .tool
+        .parse(&serde_json::json!({
+            "todos": [{ "content": "Background work", "status": "in_progress" }]
+        }))
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    ctx.identity = Some(background.clone());
+    smol::block_on(invocation.execute(&ctx)).output.unwrap();
+    assert!(host.hint_reader().load().entries.is_empty());
+
+    let snapshot = handle.capture_state(&background, 1).unwrap();
+    handle.fire_autocmd(
+        "SessionFocus",
+        serde_json::json!({
+            "session_id": background.session_id().to_string(),
+            "state_snapshot": serde_json::to_value(snapshot).unwrap(),
+        }),
+    );
+    barrier(&host);
+
+    let hint = host
+        .hint_reader()
+        .load()
+        .entries
+        .iter()
+        .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
+        .collect::<String>();
+    assert!(
+        hint.contains("Background work"),
+        "focused todo missing: {hint}"
+    );
+
+    handle.fire_autocmd(
+        "ToolStart",
+        serde_json::json!({
+            "id": "other-session-tool",
+            "tool": "bash",
+            "summary": "must stay hidden",
+            "session_id": focused.session_id().to_string(),
+        }),
+    );
+    barrier(&host);
+    let toggle_id = host
+        .keymap_reader()
+        .load()
+        .entries
+        .iter()
+        .find(|entry| entry.desc == "Toggle todo panel")
+        .unwrap()
+        .id;
+    assert!(handle.run_keybind_callback(toggle_id));
+    let n00n_lua::UiAction::OpenWin { buf, .. } =
+        ui_rx.recv_timeout(Duration::from_secs(2)).unwrap()
+    else {
+        panic!("todo panel did not open");
+    };
+    let panel = buf
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
+    assert!(
+        !panel.contains("must stay hidden"),
+        "panel leaked activity: {panel}"
+    );
+}
+
+#[test]
+fn bundled_todo_persists_root_scoped_state() {
+    let (reg, host) = builtins_host();
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let entry = reg.get("todo_write").unwrap();
+    let invocation = entry
+        .tool
+        .parse(&serde_json::json!({
+            "todos": [{ "content": "Resume work", "status": "in_progress", "priority": "high" }]
+        }))
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    ctx.identity = Some(identity.clone());
+
+    smol::block_on(invocation.execute(&ctx)).output.unwrap();
+
+    let snapshot = host
+        .event_handle()
+        .unwrap()
+        .capture_state(&identity, 1)
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+            .unwrap(),
+        Some(&serde_json::json!({
+            "todos": [{ "content": "Resume work", "status": "in_progress", "priority": "high" }]
+        }))
     );
 }
 

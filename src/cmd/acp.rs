@@ -4,6 +4,7 @@ use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
+use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::tools::ToolRegistry;
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
@@ -56,9 +57,13 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
         config.agent.mcp_tool_desc_max_chars,
     ));
 
-    let prompt_slots = plugin_host
-        .event_handle()
-        .map_or_else(Default::default, |h| h.collect_prompt_slots());
+    let event_handle = plugin_host.event_handle();
+    let prompt_slots = event_handle.as_ref().map_or_else(
+        Default::default,
+        n00n_lua::EventHandle::collect_prompt_slots,
+    );
+    let state_persistence =
+        event_handle.map(|handle| Arc::new(handle) as Arc<dyn SessionStatePersistence>);
 
     n00n_acp::run(n00n_acp::AcpParams {
         model,
@@ -69,6 +74,7 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
         initial_wd: cwd,
         mcp_handle,
         prompt_slots: Arc::new(prompt_slots),
+        state_persistence,
         yolo,
         session_daemon_register: Some(|state_dir, handle, model| {
             crate::cmd::session_daemon::register_acp_session(state_dir, handle, model)
