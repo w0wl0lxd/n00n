@@ -892,7 +892,7 @@ pub fn resolve_cached(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
         });
     }
 
-    Err(AgentError::Config {
+    Err(AgentError::SetupRequired {
         message: "not authenticated, run `n00n auth login openai` or set OPENAI_API_KEY".into(),
     })
 }
@@ -914,13 +914,13 @@ pub(crate) fn resolve_api_key(dir: &StateDir) -> Result<ResolvedAuth, AgentError
         });
     }
 
-    Err(AgentError::Config {
+    Err(AgentError::SetupRequired {
         message: "not authenticated, set OPENAI_API_KEY or run `n00n auth login openai`".into(),
     })
 }
 
 pub(crate) fn resolve_coding_plan(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
-    let tokens = ensure_tokens(dir)?.ok_or_else(|| AgentError::Config {
+    let tokens = ensure_tokens(dir)?.ok_or_else(|| AgentError::SetupRequired {
         message: "not authenticated, run `n00n auth login codex`".into(),
     })?;
 

@@ -379,6 +379,10 @@ pub fn from_model_fallback_with_openai_options(
 ) -> Box<dyn Provider> {
     match from_model_with_openai_options(model, timeouts, openai_options) {
         Ok(provider) => provider,
+        Err(e) if e.is_setup_required() => {
+            info!(error = %e, "provider setup required, using unconfigured provider");
+            Box::new(UnconfiguredProvider)
+        }
         Err(e) => {
             warn!(error = %e, "provider creation failed, using unconfigured provider");
             unconfigured_provider()
