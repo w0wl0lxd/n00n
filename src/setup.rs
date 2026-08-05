@@ -4,14 +4,16 @@ use color_eyre::Result;
 use color_eyre::eyre::Context;
 
 use n00n_providers::model::{Model, ModelTier};
+use n00n_providers::provider;
 use n00n_storage::StateDir;
 use n00n_storage::log::RotatingFileWriter;
-use n00n_storage::model::read_model;
+use n00n_storage::model::{read_model, read_recents};
 use tracing_subscriber::EnvFilter;
 
 const PROVIDER_PRIORITY: &[&str] = &[
     "anthropic",
     "openai",
+    "codex",
     "copilot",
     "zai",
     "synthetic",
@@ -43,14 +45,31 @@ pub fn resolve_model(
     })
 }
 
-fn auto_detect_model() -> Option<Model> {
+pub fn auto_detect_model() -> Option<Model> {
+    auto_detect_model_preferred(None)
+}
+
+pub fn auto_detect_model_preferred(preferred: Option<&[&str]>) -> Option<Model> {
+    let providers = preferred.unwrap_or_else(|| PROVIDER_PRIORITY);
     for tier in [ModelTier::Strong, ModelTier::Medium] {
-        for &slug in PROVIDER_PRIORITY {
-            if n00n_providers::provider::provider_available(slug)
+        for &slug in providers {
+            if provider::provider_available(slug)
                 && let Ok(model) = Model::from_tier(slug, tier)
             {
                 return Some(model);
             }
+        }
+    }
+    None
+}
+
+pub fn fallback_to_recent_model(storage: &StateDir) -> Option<Model> {
+    let recents = read_recents(storage);
+    for spec in recents {
+        if let Ok(model) = Model::from_spec(&spec)
+            && provider::provider_available(&model.provider)
+        {
+            return Some(model);
         }
     }
     None
