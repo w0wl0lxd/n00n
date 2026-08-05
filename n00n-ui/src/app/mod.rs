@@ -1596,6 +1596,7 @@ impl App {
                 self.subagent_answers.remove(&e.id);
                 self.subagent_prompts.remove(&e.id);
             }
+            self.save_session();
         }
 
         if let AgentEvent::Retry {
@@ -1645,7 +1646,7 @@ impl App {
 
         if chat_idx == 0 {
             match &envelope.event {
-                AgentEvent::FusionPhaseChanged { phase, .. } => {
+                AgentEvent::FusionPhase { phase, .. } => {
                     self.fusion_phase = match phase {
                         FusionPhase::Idle
                         | FusionPhase::Complete
