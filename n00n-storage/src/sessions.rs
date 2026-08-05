@@ -38,7 +38,6 @@ const MAX_SCAN_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_LOG: u32 = 27;
 const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
-const MAX_LAST_FRAME_DECODER_ATTEMPTS: usize = 1_024;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
@@ -2353,7 +2352,7 @@ where
     };
     let mut got_header = false;
 
-    let recovered_tail = visit_zstd_lines_with_limits(path, DecodeLimits::LOAD, |line| {
+    let recovered_tail = visit_zstd_lines_with_limits(path, limits, |line| {
         line_count += 1;
         if line.is_empty() {
             return Ok(());
@@ -2444,6 +2443,7 @@ where
         saw_legacy_transcript || hydrated_messages,
         recovered_tail,
         log_appends,
+        line_count,
     ))
 }
 
@@ -2680,44 +2680,15 @@ fn classify_decoder_error(error: IoError) -> LineReadError {
     }
 }
 
-fn visit_zstd_lines_for_scan(
-    path: &Path,
-    budget: &mut DecodedWorkBudget,
-    mut visit: impl FnMut(&str) -> Result<(), SessionError>,
-) -> Result<(), SessionError> {
-    let Some((limits, allowance)) = budget.limits(DecodeLimits::SCAN) else {
-        return Ok(());
-    };
-    let mut reader = BoundedZstdLines::open(path, 0, limits)?;
-    let (result, exhausted) = loop {
-        match reader.next(true) {
-            Ok(DecodedLine::Eof) => break (Ok(()), false),
-            Ok(DecodedLine::Oversized) => {}
-            Ok(DecodedLine::Line(line)) => {
-                if let Err(error) = visit(&line) {
-                    break (Err(error), false);
-                }
-            }
-            Err(error) => {
-                let exhausted = matches!(error, LineReadError::BudgetExceeded);
-                break (Err(reader.limit_error(error)), exhausted);
-            }
-        }
-    };
-    budget.finish_attempt(reader.decoded_bytes, allowance, exhausted);
-    result
-}
-
-#[cfg(test)]
-fn visit_zstd_lines_with_limits(
+fn visit_zstd_lines_with_decoded_bytes(
     path: &Path,
     limits: DecodeLimits,
     mut visit: impl FnMut(&str) -> Result<(), SessionError>,
-) -> Result<bool, SessionError> {
+) -> Result<(bool, usize), SessionError> {
     let mut reader = BoundedZstdLines::open(path, 0, limits)?;
-    loop {
+    let recovered = loop {
         match reader.next(false) {
-            Ok(DecodedLine::Eof) => return Ok(false),
+            Ok(DecodedLine::Eof) => break false,
             Ok(DecodedLine::Line(line)) => visit(&line)?,
             Ok(DecodedLine::Oversized) => {
                 return Err(reader.limit_error(LineReadError::RecordTooLarge));
@@ -2728,106 +2699,20 @@ fn visit_zstd_lines_with_limits(
                     error = %error,
                     "recovering records before corrupt zstd tail",
                 );
-                return Ok(true);
+                break true;
             }
             Err(error) => return Err(reader.limit_error(error)),
         }
-    }
+    };
+    Ok((recovered, reader.decoded_bytes))
 }
 
-const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
-const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
-const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
-
-struct DecodedWorkBudget {
-    remaining: usize,
-}
-
-impl DecodedWorkBudget {
-    const fn new(limit: usize) -> Self {
-        Self { remaining: limit }
-    }
-
-    fn finish_attempt(&mut self, decoded_bytes: usize, allowance: usize, exhausted: bool) {
-        let spent = if exhausted {
-            allowance
-        } else {
-            decoded_bytes.min(allowance)
-        };
-        self.remaining = self.remaining.saturating_sub(spent);
-    }
-}
-
-fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
-    let mut reader = BoundedZstdLines::open(path, offset, DecodeLimits::SCAN).ok()?;
-    loop {
-        match reader.next(false) {
-            Ok(DecodedLine::Line(line)) if line.is_empty() => {}
-            Ok(DecodedLine::Line(line)) => return serde_json::from_str(&line).ok(),
-            Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(_) => return None,
-        }
-    }
-}
-
-fn try_decode_last_meta_at<M>(path: &Path, offset: u64) -> Option<(String, u64, Option<String>)>
-where
-    M: TitleSource + DeserializeOwned + Default,
-{
-    let mut budget = DecodedWorkBudget::new(DecodeLimits::SCAN.decoded_bytes);
-    try_decode_last_meta_at_with_budget::<M>(path, offset, DecodeLimits::SCAN, &mut budget)
-}
-
-fn try_decode_last_meta_at_with_budget<M>(
+fn visit_zstd_lines_with_limits(
     path: &Path,
-    offset: u64,
     limits: DecodeLimits,
-    budget: &mut DecodedWorkBudget,
-) -> Option<(String, u64, Option<String>)>
-where
-    M: TitleSource + DeserializeOwned + Default,
-{
-    let mut reader = BoundedZstdLines::open(path, offset, limits).ok()?;
-    let mut title = String::new();
-    let mut updated_at = 0u64;
-    let mut first_message = None;
-    loop {
-        match reader.next(true) {
-            Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(LineReadError::BudgetExceeded) => {
-                break;
-            }
-            Ok(DecodedLine::Line(line)) => {
-                let trimmed = line.trim_end_matches(['\r', '\n']);
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if trimmed.starts_with(META_RECORD_PREFIX)
-                    && let Ok(MetaScan {
-                        title: t,
-                        updated_at: u,
-                    }) = serde_json::from_str(trimmed)
-                {
-                    title = t;
-                    updated_at = u;
-                }
-                if offset == 0
-                    && first_message.is_none()
-                    && trimmed.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
-                    && trimmed.starts_with(MSG_RECORD_PREFIX)
-                    && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
-                        serde_json::from_str(trimmed)
-                    && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
-                {
-                    first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
-                }
-            }
-            Err(_) => return None,
-        }
-    }
-    budget.finish_attempt(reader.decoded_bytes, limits.decoded_bytes, false);
-    if updated_at == 0 && title.is_empty() {
-        return None;
-    }
-    Some((title, updated_at, first_message))
+    visit: impl FnMut(&str) -> Result<(), SessionError>,
+) -> Result<bool, SessionError> {
+    visit_zstd_lines_with_decoded_bytes(path, limits, visit).map(|(recovered, _)| recovered)
 }
 
 // -- CWD index --
