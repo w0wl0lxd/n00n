@@ -2806,7 +2806,10 @@ Starts a new session in the current project.
 
   to submit right away; focus (boolean) switch the UI to the new session;
 
-  - `parent_id` (`string?`) session that spawned this session.
+  - `parent_id` (`string?`) session that spawned this session; tool (string),
+
+  input (table), and title (string?) for a direct host-executed bootstrap.
+
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 
@@ -6013,6 +6016,7 @@ function M.make_local_tool(schema, on_submit)
 --   include_mcp: Include MCP tools (default: true)
 --   only_tools: Optional allowlist of tool names
 --   except_tools: Optional denylist of tool names
+--   allow_orchestration: Expose recursive orchestration tools (default: false)
 --   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)

@@ -238,20 +238,6 @@ impl PluginStateStore {
             identity.session_id != owner && identity.root_session_id != owner
         });
     }
-
-    pub(crate) fn drop_plugin(&self, plugin: &str) {
-        let mut inner = self.lock();
-        let keys = inner
-            .values
-            .keys()
-            .filter(|key| key.plugin == plugin)
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in keys {
-            inner.values.remove(&key);
-            inner.managed.insert(key);
-        }
-    }
 }
 
 fn validate_replacement(
