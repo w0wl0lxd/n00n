@@ -46,7 +46,7 @@ fn send_live_buf(lua: &mlua::Lua, buf: &mlua::AnyUserData) -> mlua::Result<()> {
         });
     }
     if let Some(sink) = sink {
-        let _ = sink.send(ToolLive::Buf(shared));
+        let _ = sink.try_send(ToolLive::Buf(shared));
     }
     Ok(())
 }
@@ -393,6 +393,19 @@ impl UserData for LuaCtx {
                 Ok(value) => Ok((value, None)),
                 Err(error) => Ok((LuaValue::Nil, Some(error.to_string()))),
             }
+        });
+
+        methods.add_method("state_owner", |lua, this, scope: String| {
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
+            };
+            let access = match this.plugin_state("state_owner") {
+                Ok(access) => access,
+                Err(error) => return Ok((LuaValue::Nil, Some(error))),
+            };
+            let owner = access.identity.owner(scope).to_string();
+            Ok((LuaValue::String(lua.create_string(owner)?), None))
         });
 
         methods.add_method(

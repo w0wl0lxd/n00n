@@ -297,10 +297,13 @@ fn run_sdk_mode(
     openai_options: n00n_providers::OpenAiOptions,
 ) -> Result<()> {
     let fast = stack.config.always_fast && stack.model.supports_fast();
-    let prompt_slots = stack
-        .plugin_host
-        .event_handle()
-        .map_or_else(Default::default, |h| h.collect_prompt_slots());
+    let event_handle = stack.plugin_host.event_handle();
+    let prompt_slots = event_handle.as_ref().map_or_else(
+        Default::default,
+        n00n_lua::EventHandle::collect_prompt_slots,
+    );
+    let state_persistence = event_handle
+        .map(|handle| Arc::new(handle) as Arc<dyn n00n_agent::headless::SessionStatePersistence>);
     let timeouts = stack.timeouts();
     crate::sdk_mode::run(crate::sdk_mode::SdkParams {
         cli,
@@ -310,6 +313,7 @@ fn run_sdk_mode(
         timeouts,
         openai_options,
         prompt_slots,
+        state_persistence,
         fast,
         workflow: stack.config.always_workflow,
     })

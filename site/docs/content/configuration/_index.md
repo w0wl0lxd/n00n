@@ -244,6 +244,14 @@ n00n.setup({
 | `auto_tier` | boolean | `false` | - | Route each subagent's model tier from its prompt (opt-in, off by default). |
 | `max_concurrent` | integer | `4` | 1 | Concurrent subagents (hard max 8). |
 
+### `plugins.tmux`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+| `timeout_secs` | integer | `30` | 1 | Kill the tmux command after this many seconds. |
+
 ### `plugins.webfetch`
 
 | Field | Type | Default | Min | Description |
@@ -264,7 +272,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (default 24, no hard maximum). |
+| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (default 24, hard maximum 64). |
 | `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (default 4, hard max 8). |
 | `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (default 2, hard max 4). |
 | `timeout_secs` | integer | `600` | 60 | Maximum deadline for one workflow run; per-run timeout_secs may only shorten it. |
