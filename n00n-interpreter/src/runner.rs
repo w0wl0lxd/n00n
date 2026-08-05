@@ -20,7 +20,12 @@ use crate::convert::{json_to_monty, monty_to_json};
 use crate::error::InterpreterError;
 
 const DEFAULT_MAX_RECURSION: usize = 100;
+<<<<<<< HEAD
 const MAX_PENDING_ASYNC_CALLS: usize = 64;
+=======
+const MAX_STDOUT_BYTES: usize = 16 * 1024;
+const MAX_RESULT_BYTES: usize = 16 * 1024;
+>>>>>>> origin/main
 const SCRIPT_NAME: &str = "agent.py";
 
 pub type ToolFn = Box<dyn Fn(&str, Vec<Value>, Vec<(String, Value)>) -> Result<Value, String>>;
@@ -44,22 +49,56 @@ pub struct InterpreterResult {
 struct StreamingWriter<'a> {
     buffer: String,
     flushed_pos: usize,
+    truncated: bool,
     on_line: &'a mut dyn FnMut(&str),
 }
 
 impl PrintWriterCallback for StreamingWriter<'_> {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        self.buffer.push_str(&output);
+        if self.truncated {
+            return Ok(());
+        }
+        let remaining = MAX_STDOUT_BYTES.saturating_sub(self.buffer.len());
+        let boundary = output.floor_char_boundary(remaining);
+        self.buffer.push_str(&output[..boundary]);
+        if boundary < output.len() {
+            self.truncated = true;
+        }
         Ok(())
     }
 
     fn stdout_push(&mut self, ch: char) -> Result<(), MontyException> {
+        if self.truncated {
+            return Ok(());
+        }
+        let mut encoded = [0; 4];
+        let text = ch.encode_utf8(&mut encoded);
+        if self.buffer.len().saturating_add(text.len()) > MAX_STDOUT_BYTES {
+            self.truncated = true;
+            return Ok(());
+        }
         self.buffer.push(ch);
         if ch == '\n' {
             (self.on_line)(&self.buffer[self.flushed_pos..]);
             self.flushed_pos = self.buffer.len();
         }
         Ok(())
+    }
+}
+
+impl StreamingWriter<'_> {
+    fn finish(&mut self) {
+        if self.flushed_pos < self.buffer.len() {
+            (self.on_line)(&self.buffer[self.flushed_pos..]);
+            self.flushed_pos = self.buffer.len();
+        }
+        if self.truncated {
+            const MARKER: &str = "[truncated]";
+            let keep = MAX_STDOUT_BYTES.saturating_sub(MARKER.len());
+            self.buffer.truncate(self.buffer.floor_char_boundary(keep));
+            self.buffer.push_str(MARKER);
+            (self.on_line)(MARKER);
+        }
     }
 }
 
@@ -77,10 +116,23 @@ pub fn run<S: BuildHasher>(
     resolver: Option<&AsyncResolver>,
     limits: ResourceLimits,
 ) -> Result<InterpreterResult, InterpreterError> {
-    let mut stdout = String::new();
-    let mut print_writer = PrintWriter::CollectString(&mut stdout);
-    let output = run_inner(code, tools, resolver, limits, &mut print_writer)?;
-    Ok(InterpreterResult { output, stdout })
+    let mut on_line = |_line: &str| {};
+    let mut writer = StreamingWriter {
+        buffer: String::new(),
+        flushed_pos: 0,
+        truncated: false,
+        on_line: &mut on_line,
+    };
+    let result = {
+        let mut print_writer = PrintWriter::Callback(&mut writer);
+        run_inner(code, tools, resolver, limits, &mut print_writer)
+    };
+    writer.finish();
+    let output = result?;
+    Ok(InterpreterResult {
+        output,
+        stdout: writer.buffer,
+    })
 }
 
 /// Runs Python code with streaming stdout output via a callback.
@@ -101,10 +153,15 @@ pub fn run_streaming<S: BuildHasher>(
     let mut writer = StreamingWriter {
         buffer: String::new(),
         flushed_pos: 0,
+        truncated: false,
         on_line: on_output,
     };
-    let mut print_writer = PrintWriter::Callback(&mut writer);
-    let output = run_inner(code, tools, resolver, limits, &mut print_writer)?;
+    let result = {
+        let mut print_writer = PrintWriter::Callback(&mut writer);
+        run_inner(code, tools, resolver, limits, &mut print_writer)
+    };
+    writer.finish();
+    let output = result?;
     let stdout = writer.buffer;
     Ok(InterpreterResult { output, stdout })
 }
@@ -131,9 +188,19 @@ fn run_inner<S: BuildHasher>(
     loop {
         match progress {
             RunProgress::Complete(obj) => {
-                let output = match &obj {
-                    MontyObject::None => None,
-                    _ => Some(monty_to_json(&obj)),
+                let output = if matches!(obj, MontyObject::None) {
+                    None
+                } else {
+                    let value = monty_to_json(&obj);
+                    let size = serde_json::to_vec(&value)
+                        .map_err(|e| InterpreterError::Runtime(e.to_string()))?
+                        .len();
+                    if size > MAX_RESULT_BYTES {
+                        return Err(InterpreterError::Runtime(format!(
+                            "result exceeds the {MAX_RESULT_BYTES} byte limit"
+                        )));
+                    }
+                    Some(value)
                 };
                 return Ok(output);
             }
@@ -397,6 +464,7 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
     fn async_gather_rejects_oversized_tool_batch_before_resolver() {
         let calls = std::iter::repeat_n("tool()", MAX_PENDING_ASYNC_CALLS + 1)
             .collect::<Vec<_>>()
@@ -420,6 +488,18 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
+=======
+    fn stdout_is_bounded_and_marked() {
+        let result = run("print('x' * 20000)", &empty_tools(), None, default_limits()).unwrap();
+        assert!(result.stdout.len() <= MAX_STDOUT_BYTES);
+        assert!(result.stdout.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn oversized_result_is_rejected() {
+        let err = run("'x' * 20000", &empty_tools(), None, default_limits()).unwrap_err();
+        assert!(err.to_string().contains("result exceeds"));
+>>>>>>> origin/main
     }
 
     #[test]

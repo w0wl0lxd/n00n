@@ -333,6 +333,7 @@ n00n.api.register_tool({
   name = "task",
   description = description,
   kind = "execute",
+  workload = "orchestrator",
   audiences = { "main", "workflow" },
   schema = schema,
   handler = handler,
