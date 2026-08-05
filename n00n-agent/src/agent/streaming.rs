@@ -8,6 +8,8 @@ use tracing::{info, warn};
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender};
 
+const PROVIDER_EVENT_QUEUE_CAPACITY: usize = 256;
+
 pub(crate) struct StreamContext<'a> {
     pub provider: &'a dyn Provider,
     pub model: &'a Model,
@@ -63,11 +65,23 @@ pub(crate) async fn stream_with_retry(
     let messages = &*messages;
     let mut retry = RetryState::new();
     loop {
-        let (ptx, prx) = flume::unbounded();
+        let (ptx, prx) = flume::bounded(PROVIDER_EVENT_QUEUE_CAPACITY);
         let forwarder = smol::spawn({
             let event_tx = ctx.event_tx.clone();
             async move { forward_provider_events(prx, &event_tx).await }
         });
+        let Ok(permit) = ctx
+            .cancel
+            .race(
+                n00n_providers::admission::ProviderAdmission::global()
+                    .acquire(ctx.model.provider.as_ref()),
+            )
+            .await
+        else {
+            drop(ptx);
+            let _ = forwarder.await;
+            return Err(AgentError::Cancelled);
+        };
         let result = futures_lite::future::race(
             ctx.provider.stream_message(
                 ctx.model,
@@ -84,6 +98,7 @@ pub(crate) async fn stream_with_retry(
             },
         )
         .await;
+        drop(permit);
         drop(ptx);
         let emitted_output = forwarder.await;
         match result {
