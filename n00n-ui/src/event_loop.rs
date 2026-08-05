@@ -1597,10 +1597,12 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 mod tests {
     use super::{
         DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
-        should_save_periodically, startup_provider_with, take_painted_submissions,
+        should_save_periodically, spawn_model_fetch, startup_provider_with,
+        take_painted_submissions,
     };
     use crate::components::Status;
-    use n00n_providers::{AgentError, ContentBlock, Message, Model, Role};
+    use arc_swap::ArcSwap;
+    use n00n_providers::{AgentError, ContentBlock, Message, Model, OpenAiOptions, Role, Timeouts};
     use n00n_storage::id::n00nId;
     use ratatui::{
         Terminal,
