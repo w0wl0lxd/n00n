@@ -2740,8 +2740,8 @@ n00n.api.register_tool({
     );
 }
 
-#[test]
-fn sessions_picker_groups_descendants_by_category_without_dropping_orphans() {
+#[test_case::test_case(())]
+fn sessions_picker_groups_descendants_by_category_without_dropping_orphans(_: ()) {
     let registry = fresh_registry();
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
     let mut source = include_str!("../../plugins/sessions/init.lua").to_string();
