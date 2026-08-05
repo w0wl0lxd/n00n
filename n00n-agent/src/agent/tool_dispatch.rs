@@ -13,7 +13,7 @@ use crate::permissions::PermissionCheckContext;
 use crate::skill_policy::SKILL_POLICY_DENIED_PREFIX;
 use crate::task_set::TaskSet;
 use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
-use crate::tools::{LocalToolFn, ToolContext};
+use crate::tools::{LocalToolFn, ToolAdmissionClass, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
 
@@ -395,6 +395,16 @@ async fn run_authorized(
         return tool_done_error(id.clone(), Arc::from(name), reason);
     }
     if let Some(local) = ctx.local_tools.get(name) {
+        let class = ToolAdmissionClass::for_tool(name, None);
+        let _admission = match ctx
+            .registry
+            .admission()
+            .acquire(&ctx.admission_scope, class, &ctx.cancel)
+            .await
+        {
+            Ok(guard) => guard,
+            Err(error) => return tool_done_error(id, Arc::from(name), error.to_string()),
+        };
         return run_local_tool(local, id, name, input, ctx, emit);
     }
     let entry = registry.get(name);
@@ -497,6 +507,19 @@ async fn run_authorized(
             return tool_done_error(id.clone(), Arc::clone(&tool_id), e);
         }
 
+        let _admission = match ctx
+            .registry
+            .admission()
+            .acquire(
+                &ctx.admission_scope,
+                entry.tool.admission_class(),
+                &ctx.cancel,
+            )
+            .await
+        {
+            Ok(guard) => guard,
+            Err(error) => return tool_done_error(id, Arc::clone(&tool_id), error.to_string()),
+        };
         let result = invocation.execute(ctx).await;
 
         let elapsed = started.elapsed();
@@ -511,7 +534,8 @@ async fn run_authorized(
                 let output = match result.telemetry {
                     Some(telemetry) => output.with_telemetry(Some(telemetry)),
                     None => output,
-                };
+                }
+                .bounded(ctx.config.max_output_lines, ctx.config.max_output_bytes);
                 ToolDoneEvent {
                     id,
                     tool: tool_id,
@@ -535,7 +559,11 @@ async fn run_authorized(
                     id,
                     tool: tool_id,
                     output: ToolOutput::Plain(crate::TextOutput {
-                        text: message,
+                        text: crate::tools::truncate_output(
+                            &message,
+                            ctx.config.max_output_lines,
+                            ctx.config.max_output_bytes,
+                        ),
                         instructions: None,
                         state: None,
                         telemetry: result.telemetry,
@@ -547,8 +575,30 @@ async fn run_authorized(
             }
         }
     } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
+        let _admission = match ctx
+            .registry
+            .admission()
+            .acquire(&ctx.admission_scope, ToolAdmissionClass::Cheap, &ctx.cancel)
+            .await
+        {
+            Ok(guard) => guard,
+            Err(error) => return tool_done_error(id, tool_id, error.to_string()),
+        };
         run_tool_search(mcp, id, input, ctx, emit)
     } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
+        let _admission = match ctx
+            .registry
+            .admission()
+            .acquire(
+                &ctx.admission_scope,
+                ToolAdmissionClass::Standard,
+                &ctx.cancel,
+            )
+            .await
+        {
+            Ok(guard) => guard,
+            Err(error) => return tool_done_error(id, tool_id, error.to_string()),
+        };
         execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
@@ -596,8 +646,22 @@ fn run_tool_search(
     let query = input["query"].as_str().unwrap_or_else(Default::default);
     emit_raw_start(ctx, emit, &id, &tool_id, query.to_owned(), input);
     let (output, is_error) = match mcp.search_tools(query) {
-        Ok(out) => (out, false),
-        Err(e) => (e, true),
+        Ok(out) => (
+            crate::tools::truncate_output(
+                &out,
+                ctx.config.max_output_lines,
+                ctx.config.max_output_bytes,
+            ),
+            false,
+        ),
+        Err(e) => (
+            crate::tools::truncate_output(
+                &e,
+                ctx.config.max_output_lines,
+                ctx.config.max_output_bytes,
+            ),
+            true,
+        ),
     };
     ToolDoneEvent {
         id,
@@ -620,10 +684,24 @@ fn run_local_tool(
     let tool_id: Arc<str> = Arc::from(name);
     emit_raw_start(ctx, emit, &id, &tool_id, name.to_owned(), input);
     let (output, is_error) = match local(input) {
-        Ok(output) => (output, false),
+        Ok(output) => (
+            crate::tools::truncate_output(
+                &output,
+                ctx.config.max_output_lines,
+                ctx.config.max_output_bytes,
+            ),
+            false,
+        ),
         Err(e) => {
             warn!(tool = %name, error = %e, "local tool failed");
-            (e, true)
+            (
+                crate::tools::truncate_output(
+                    &e,
+                    ctx.config.max_output_lines,
+                    ctx.config.max_output_bytes,
+                ),
+                true,
+            )
         }
     };
     ToolDoneEvent {
@@ -777,8 +855,24 @@ async fn execute_mcp_tool(
     // definition joins the next request; a denied call must not load anything.
     mcp.mark_loaded(tool_name);
     match mcp.call_tool(tool_name, input).await {
-        Ok(text) => tool_done_plain(id.to_owned(), tool_id, text),
-        Err(e) => tool_done_error(id.to_owned(), tool_id, e.to_string()),
+        Ok(text) => tool_done_plain(
+            id.to_owned(),
+            tool_id,
+            crate::tools::truncate_output(
+                &text,
+                ctx.config.max_output_lines,
+                ctx.config.max_output_bytes,
+            ),
+        ),
+        Err(e) => tool_done_error(
+            id.to_owned(),
+            tool_id,
+            crate::tools::truncate_output(
+                &e.to_string(),
+                ctx.config.max_output_lines,
+                ctx.config.max_output_bytes,
+            ),
+        ),
     }
 }
 
