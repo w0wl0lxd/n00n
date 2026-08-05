@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_or_default)]
 #![allow(clippy::default_trait_access)]
 
+pub mod admission;
 pub(crate) mod error;
 pub mod manifest;
 pub mod model;
