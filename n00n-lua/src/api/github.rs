@@ -5,6 +5,7 @@ use std::env;
 
 use crate::api::util::convert::json_to_lua;
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
+use crate::plugin_permissions::PluginPermissions;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubIssue {
@@ -70,6 +71,25 @@ fn map_err(e: reqwest::Error) -> mlua::Error {
     mlua::Error::external(format!("GitHub API error: {e}"))
 }
 
+fn validate_repo_segment(segment: &str) -> Result<(), mlua::Error> {
+    if segment.is_empty() {
+        return Err(mlua::Error::external(
+            "repository owner and name must be non-empty",
+        ));
+    }
+    if segment.contains('/') || segment.contains('\\') {
+        return Err(mlua::Error::external(
+            "repository owner and name must not contain path separators",
+        ));
+    }
+    if segment == "." || segment == ".." {
+        return Err(mlua::Error::external(
+            "repository owner and name must not be '.' or '..'",
+        ));
+    }
+    Ok(())
+}
+
 fn value_or_err<T: serde::Serialize>(
     lua: &Lua,
     result: Result<T, reqwest::Error>,
@@ -79,10 +99,12 @@ fn value_or_err<T: serde::Serialize>(
     json_to_lua(lua, &json)
 }
 
-pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
+pub(crate) fn create_github_table(lua: &Lua, permissions: &PluginPermissions) -> LuaResult<Table> {
     let t = lua.create_table()?;
 
     let list_issues_fn = lua.create_function(|lua, (owner, repo): (String, String)| {
+        validate_repo_segment(&owner)?;
+        validate_repo_segment(&repo)?;
         let client = create_client()?;
         let token = get_token();
 
@@ -105,10 +127,19 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let issues: Vec<GitHubIssue> = response.json().map_err(map_err)?;
         value_or_err(lua, Ok(issues))
     })?;
-    t.set("list_issues", list_issues_fn)?;
+    t.set(
+        "list_issues",
+        permissions.guard(
+            crate::plugin_permissions::Permission::GitHubRead,
+            lua,
+            list_issues_fn,
+        )?,
+    )?;
 
     let create_issue_fn = lua.create_function(
         |lua, (owner, repo, title, body): (String, String, String, String)| {
+            validate_repo_segment(&owner)?;
+            validate_repo_segment(&repo)?;
             let client = create_client()?;
             let token = get_token().ok_or_else(|| {
                 mlua::Error::external("GITHUB_TOKEN environment variable not set")
@@ -140,9 +171,18 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             value_or_err(lua, Ok(issue))
         },
     )?;
-    t.set("create_issue", create_issue_fn)?;
+    t.set(
+        "create_issue",
+        permissions.guard(
+            crate::plugin_permissions::Permission::GitHubWrite,
+            lua,
+            create_issue_fn,
+        )?,
+    )?;
 
     let list_prs_fn = lua.create_function(|lua, (owner, repo): (String, String)| {
+        validate_repo_segment(&owner)?;
+        validate_repo_segment(&repo)?;
         let client = create_client()?;
         let token = get_token();
 
@@ -165,9 +205,18 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let prs: Vec<GitHubPullRequest> = response.json().map_err(map_err)?;
         value_or_err(lua, Ok(prs))
     })?;
-    t.set("list_prs", list_prs_fn)?;
+    t.set(
+        "list_prs",
+        permissions.guard(
+            crate::plugin_permissions::Permission::GitHubRead,
+            lua,
+            list_prs_fn,
+        )?,
+    )?;
 
     let get_repo_fn = lua.create_function(|lua, (owner, repo): (String, String)| {
+        validate_repo_segment(&owner)?;
+        validate_repo_segment(&repo)?;
         let client = create_client()?;
         let token = get_token();
 
@@ -190,7 +239,14 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let repo_info: GitHubRepository = response.json().map_err(map_err)?;
         value_or_err(lua, Ok(repo_info))
     })?;
-    t.set("get_repo", get_repo_fn)?;
+    t.set(
+        "get_repo",
+        permissions.guard(
+            crate::plugin_permissions::Permission::GitHubRead,
+            lua,
+            get_repo_fn,
+        )?,
+    )?;
 
     Ok(t)
 }
