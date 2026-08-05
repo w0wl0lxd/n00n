@@ -744,16 +744,8 @@ fn validate_object(
             None => {}
         }
     }
-    if !additional_properties && !map.is_empty() {
-        let names: Vec<String> = map.keys().cloned().collect();
-        return Err(path.with_field("", |p| {
-            ToolInputError::at(p, ToolInputErrorKind::UnexpectedProperties { names })
-        }));
-    }
-    if additional_properties {
-        for (extra_key, extra_val) in map {
-            out.insert(extra_key, extra_val);
-        }
+    for (extra_key, _) in map {
+        debug!(path = %path, key = %extra_key, "dropped unknown tool parameter");
     }
     Ok(Value::Object(out))
 }
