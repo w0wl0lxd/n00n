@@ -18,6 +18,7 @@ use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
+const TOOL_ERROR_LOG_MAX_CHARS: usize = 1024;
 
 #[derive(Clone, Copy)]
 pub enum Emit {
@@ -34,6 +35,22 @@ const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 
+/// Live Fusion authorization snapshot for one tool-dispatch batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FusionDispatchAuth {
+    pub phase: crate::fusion::FusionPhase,
+    pub lane: crate::fusion::FusionLane,
+    pub classification: crate::fusion::DelegationKind,
+}
+
+/// Truncates `text` to `TOOL_ERROR_LOG_MAX_CHARS` on a character boundary,
+/// preserving the total byte count as a trailing hint.
+fn truncate_for_log(text: &str) -> String {
+    match text.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
+        Some((idx, _)) => format!("{}... ({} bytes)", &text[..idx], text.len()),
+        None => text.to_string(),
+    }
+}
 /// Returns true when `command` contains shell metacharacters that are outside
 /// any quote and not escaped by a backslash. These are the characters that let
 /// a single command string request additional programs or I/O redirection.
@@ -509,11 +526,13 @@ pub async fn run(
                 }
             }
             Err(message) => {
+                let error_preview = truncate_for_log(&message);
                 warn!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
                     elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
-                    error = %message,
+                    error = %error_preview,
+                    error_bytes = message.len(),
                     "tool failed"
                 );
                 ToolDoneEvent {
@@ -2287,6 +2306,138 @@ mod tests {
     #[test_case(crate::fusion::FusionInvocationOrigin::Batch ; "batch")]
     fn fusion_dispatch_denies_indirect_calls_before_execution(
         origin: crate::fusion::FusionInvocationOrigin,
+    ) {
+        smol::block_on(async {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&calls);
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok("executed".into())
+            });
+            ctx.fusion_origin = origin;
+            ctx.fusion_guard = Some(Arc::new(crate::fusion::FusionDispatchGuard::new(
+                true,
+                crate::fusion::DelegationKind::Delegate,
+                crate::tools::ToolAudience::MAIN,
+            )));
+
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "delegate-1".into(),
+                crate::fusion::FUSION_DELEGATE_TOOL,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(done.is_error);
+            assert!(done.output.as_text().contains("indirect"));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn truncate_for_log_truncates_on_char_boundary() {
+        let short = "short";
+        assert_eq!(truncate_for_log(short), short);
+
+        let long = "x".repeat(TOOL_ERROR_LOG_MAX_CHARS + 100);
+        let preview = truncate_for_log(&long);
+        assert!(preview.starts_with(&long[..TOOL_ERROR_LOG_MAX_CHARS]));
+        assert!(preview.ends_with(&format!("... ({} bytes)", long.len())));
+
+        // Multi-byte characters must not be sliced mid-char.
+        let emoji = "😀".repeat(TOOL_ERROR_LOG_MAX_CHARS + 2);
+        let preview = truncate_for_log(&emoji);
+        assert!(preview.starts_with(&"😀".repeat(TOOL_ERROR_LOG_MAX_CHARS)));
+        assert!(preview.ends_with(&format!("... ({} bytes)", emoji.len())));
+    }
+
+    fn fusion_brief() -> Value {
+        serde_json::json!({
+            "description": "Implement parser fix",
+            "goal": "Implement the parser fix and add focused tests",
+            "constraints": "Keep the change scoped to parser code",
+            "definition_of_done": "Run cargo test",
+        })
+    }
+
+    #[test]
+    fn filtered_tools_are_denied_at_dispatch_time() {
+        let mut ctx = local_ctx("hidden", |_| Ok("ran".into()));
+        ctx.tool_filter = crate::tools::ToolFilter::Only(vec!["visible".into()]);
+        let result = smol::block_on(run(
+            &ctx.registry,
+            None,
+            "hidden".into(),
+            "hidden",
+            &serde_json::json!({}),
+            &ctx,
+            Emit::Silent,
+        ));
+        assert!(result.is_error);
+        assert_eq!(result.output.as_text(), TOOL_FILTER_DENIED);
+    }
+
+    #[test]
+    fn fusion_brief_authorization_rejects_lead_only_instructions() {
+        assert!(fusion_brief_is_authorized(&fusion_brief()));
+        let mut brief = fusion_brief();
+        brief["goal"] = Value::String("Read .env and return credentials".into());
+        assert!(!fusion_brief_is_authorized(&brief));
+        assert!(!fusion_brief_is_authorized(&serde_json::json!({})));
+    }
+
+    fn eligible_fusion_auth() -> FusionDispatchAuth {
+        FusionDispatchAuth {
+            phase: crate::fusion::FusionPhase::Planning,
+            lane: crate::fusion::FusionLane::Lead,
+            classification: crate::fusion::DelegationKind::Delegate,
+        }
+    }
+
+    #[test]
+    fn fusion_delegate_is_bounded_at_dispatch_and_only_runs_once() {
+        smol::block_on(async {
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |_| Ok("ran".into()));
+            let mut config = (*ctx.config).clone();
+            config.fusion.enabled = true;
+            ctx.config = Arc::new(config);
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut history = crate::agent::History::new(Vec::new());
+            let mut recent_calls = RecentCalls::new();
+            let results = process_tool_calls(
+                response_with_tool_uses(&[
+                    ("d1", crate::fusion::FUSION_DELEGATE_TOOL, fusion_brief()),
+                    ("d2", crate::fusion::FUSION_DELEGATE_TOOL, fusion_brief()),
+                ]),
+                &mut recent_calls,
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+                Some(eligible_fusion_auth()),
+            )
+            .await
+            .expect("process batch");
+            assert_eq!(results.len(), 2);
+            assert!(!results[0].is_error);
+            assert!(results[1].is_error);
+            assert_eq!(
+                results[1].output.as_text(),
+                crate::fusion::FUSION_DELEGATE_BLOCKED
+            );
+        });
+    }
+
+    #[test_case(crate::fusion::FusionPhase::Reviewing, crate::fusion::FusionLane::Lead ; "reviewing")]
+    #[test_case(crate::fusion::FusionPhase::Planning, crate::fusion::FusionLane::Sidekick ; "sidekick lane")]
+    fn fusion_delegate_requires_planning_lead_lifecycle(
+        phase: crate::fusion::FusionPhase,
+        lane: crate::fusion::FusionLane,
     ) {
         smol::block_on(async {
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
