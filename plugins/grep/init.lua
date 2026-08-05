@@ -217,6 +217,7 @@ n00n.api.register_prompt_hint({
 n00n.api.register_tool({
   name = "grep",
   kind = "search",
+  workload = "cheap",
   modes = { "default", "research", "build", "compact" },
   description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: PCRE look-around (e.g. `(?!...)`, `(?<!...)`) is not supported. Use Rust regex syntax.]],
 
