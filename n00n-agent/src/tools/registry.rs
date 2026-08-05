@@ -16,8 +16,9 @@ use serde_json::{Value, json};
 use crate::template::Vars;
 use crate::{BufferSnapshot, ToolOutput};
 
+use super::admission::{ToolAdmission, ToolAdmissionClass};
 use super::schema::sanitize_tool_input_schema;
-use super::{DescriptionContext, ToolAdmission, ToolContext, ToolWorkload};
+use super::{DescriptionContext, ToolContext};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,8 +242,8 @@ pub trait Tool: Send + Sync + 'static {
     fn tool_kind(&self) -> Option<&str> {
         None
     }
-    fn workload(&self) -> ToolWorkload {
-        ToolWorkload::from_kind(self.tool_kind())
+    fn admission_class(&self) -> ToolAdmissionClass {
+        ToolAdmissionClass::for_tool(self.name(), self.tool_kind())
     }
     fn defer_loading(&self) -> bool {
         false
@@ -261,7 +262,6 @@ pub trait Tool: Send + Sync + 'static {
 pub struct RegisteredTool {
     pub tool: Arc<dyn Tool>,
     pub source: ToolSource,
-    pub workload: ToolWorkload,
     pub defer_loading: bool,
     pub namespace: Option<Arc<str>>,
 }
@@ -361,10 +361,6 @@ impl ToolRegistry {
         Self::with_admission(Arc::new(ToolAdmission::new()))
     }
 
-    /// Build a registry with an explicitly shared admission scope.
-    ///
-    /// This is useful when several registry views must participate in one
-    /// process and agent budget. Ordinary callers should use [`Self::new`].
     #[must_use]
     pub fn with_admission(admission: Arc<ToolAdmission>) -> Self {
         Self {
@@ -374,8 +370,8 @@ impl ToolRegistry {
     }
 
     #[must_use]
-    pub fn admission(&self) -> Arc<ToolAdmission> {
-        Arc::clone(&self.admission)
+    pub fn admission(&self) -> &ToolAdmission {
+        &self.admission
     }
 
     /// The process-wide registry. Every tool in it comes from a Lua plugin
@@ -419,7 +415,6 @@ impl ToolRegistry {
             next_tools.push(RegisteredTool {
                 tool: Arc::clone(tool),
                 source: source.clone(),
-                workload: tool.workload(),
                 defer_loading,
                 namespace: namespace.clone(),
             });
@@ -467,7 +462,6 @@ impl ToolRegistry {
                 next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
-                    workload: tool.workload(),
                     defer_loading: tool.defer_loading(),
                     namespace: tool.namespace().map(Arc::from).clone(),
                 });
@@ -534,7 +528,6 @@ impl ToolRegistry {
                 next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
-                    workload: tool.workload(),
                     defer_loading: tool.defer_loading(),
                     namespace: tool.namespace().map(Arc::from).clone(),
                 });

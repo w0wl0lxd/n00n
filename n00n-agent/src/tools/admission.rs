@@ -1,129 +1,106 @@
-use std::sync::Arc;
-use std::time::Instant;
+//! Cancellation-safe admission for work that can fan out or hold process resources.
 
 use async_lock::{Semaphore, SemaphoreGuardArc};
-use thiserror::Error;
-use tracing::debug;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::cancel::CancelToken;
 
-pub const DEFAULT_PROCESS_SLOTS: usize = 4;
-pub const DEFAULT_AGENT_SLOTS: usize = 8;
+pub const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 8;
+pub const DEFAULT_MAX_CONCURRENT_CHEAP_TOOLS: usize = 32;
+pub const DEFAULT_MAX_CONCURRENT_AGENT_TOOLS: usize = 4;
+
+const ORCHESTRATOR_TOOLS: &[&str] = &["agent_control", "batch", "task", "team", "workflow"];
+static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
+const CHEAP_TOOL_KINDS: &[&str] = &["cheap", "read", "metadata", "search"];
+const ORCHESTRATOR_TOOL_KINDS: &[&str] = &["orchestrator", "fanout"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolWorkload {
+pub enum ToolAdmissionClass {
+    /// A bounded, low-cost read. Cheap calls have their own wider lane and do
+    /// not consume a slot from the expensive work budget.
     Cheap,
-    Process,
-    Agent,
+    /// Work that may invoke a process, network request, interpreter, or MCP.
+    Standard,
+    /// A wrapper that is expected to acquire admission for its children.
+    /// Wrappers themselves do not hold a slot, which avoids parent-child
+    /// deadlocks when the process budget is full.
     Orchestrator,
 }
 
-impl ToolWorkload {
+impl ToolAdmissionClass {
     #[must_use]
-    pub fn parse_name(name: &str) -> Option<Self> {
-        match name {
+    pub fn from_workload(value: &str) -> Option<Self> {
+        match value {
             "cheap" => Some(Self::Cheap),
-            "process" => Some(Self::Process),
-            "agent" => Some(Self::Agent),
-            "orchestrator" => Some(Self::Orchestrator),
+            "standard" | "expensive" => Some(Self::Standard),
+            "orchestrator" | "fanout" => Some(Self::Orchestrator),
             _ => None,
         }
     }
 
     #[must_use]
-    pub fn from_kind(kind: Option<&str>) -> Self {
-        match kind {
-            Some("execute" | "process") => Self::Process,
-            Some("agent") => Self::Agent,
-            Some("orchestrator") => Self::Orchestrator,
-            _ => Self::Cheap,
+    pub fn for_tool(name: &str, kind: Option<&str>) -> Self {
+        if ORCHESTRATOR_TOOLS.contains(&name)
+            || kind.is_some_and(|k| ORCHESTRATOR_TOOL_KINDS.contains(&k))
+        {
+            return Self::Orchestrator;
         }
+        if matches!(
+            name,
+            "read" | "glob" | "grep" | "view_image" | "tool_search"
+        ) || kind.is_some_and(|k| CHEAP_TOOL_KINDS.contains(&k))
+        {
+            return Self::Cheap;
+        }
+        Self::Standard
     }
 
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cheap => "cheap",
-            Self::Process => "process",
-            Self::Agent => "agent",
-            Self::Orchestrator => "orchestrator",
-        }
+    pub const fn is_orchestrator(self) -> bool {
+        matches!(self, Self::Orchestrator)
     }
 }
 
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AdmissionError {
-    #[error("cancelled")]
+    #[error("tool admission cancelled")]
     Cancelled,
 }
 
-/// Shared admission control for all calls that use one tool registry.
-///
-/// Cheap calls and orchestration wrappers do not consume a permit. Their child
-/// calls acquire the process or agent budget at the shared dispatch boundary.
+struct AgentSlot {
+    semaphore: Arc<Semaphore>,
+    users: AtomicUsize,
+}
+
+struct AdmissionState {
+    agents: Mutex<HashMap<String, Arc<AgentSlot>>>,
+}
+
+/// A registry-owned admission controller. The process and per-agent lanes are
+/// independent from Lua's user-facing semaphores, so every dispatch path is
+/// covered even when a plugin forgets to opt into a Lua semaphore.
 pub struct ToolAdmission {
     process: Arc<Semaphore>,
-    agents: Arc<Semaphore>,
+    cheap: Arc<Semaphore>,
+    agent_limit: usize,
+    state: AdmissionState,
+    process_active: AtomicUsize,
+    cheap_active: AtomicUsize,
 }
 
-pub struct AdmissionGuard {
-    workload: ToolWorkload,
-    _permit: Option<SemaphoreGuardArc>,
-}
-
-impl ToolAdmission {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_limits(DEFAULT_PROCESS_SLOTS, DEFAULT_AGENT_SLOTS)
-    }
-
-    #[must_use]
-    pub fn with_limits(process_slots: usize, agent_slots: usize) -> Self {
-        Self {
-            process: Arc::new(Semaphore::new(process_slots.max(1))),
-            agents: Arc::new(Semaphore::new(agent_slots.max(1))),
-        }
-    }
-
-    /// # Errors
-    ///
-    /// Returns [`AdmissionError::Cancelled`] when cancellation wins the permit race.
-    pub async fn acquire(
-        &self,
-        workload: ToolWorkload,
-        cancel: &CancelToken,
-    ) -> Result<AdmissionGuard, AdmissionError> {
-        let semaphore = match workload {
-            ToolWorkload::Cheap | ToolWorkload::Orchestrator => {
-                return Ok(AdmissionGuard::none(workload));
-            }
-            ToolWorkload::Process => Arc::clone(&self.process),
-            ToolWorkload::Agent => Arc::clone(&self.agents),
-        };
-        let started = Instant::now();
-        let permit = cancel
-            .race(semaphore.acquire_arc())
-            .await
-            .map_err(|_| AdmissionError::Cancelled)?;
-        debug!(
-            workload = workload.as_str(),
-            wait_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX),
-            "tool admission granted"
-        );
-        Ok(AdmissionGuard {
-            workload,
-            _permit: Some(permit),
-        })
-    }
-
-    /// # Errors
-    ///
-    /// Returns [`AdmissionError::Cancelled`] when cancellation wins the permit race.
-    pub async fn acquire_agent(
-        &self,
-        cancel: &CancelToken,
-    ) -> Result<AdmissionGuard, AdmissionError> {
-        self.acquire(ToolWorkload::Agent, cancel).await
+impl fmt::Debug for ToolAdmission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolAdmission")
+            .field("agent_limit", &self.agent_limit)
+            .field(
+                "process_active",
+                &self.process_active.load(Ordering::Relaxed),
+            )
+            .field("cheap_active", &self.cheap_active.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
     }
 }
 
@@ -133,146 +110,334 @@ impl Default for ToolAdmission {
     }
 }
 
-impl AdmissionGuard {
-    fn none(workload: ToolWorkload) -> Self {
+impl ToolAdmission {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_limits(
+            DEFAULT_MAX_CONCURRENT_TOOLS,
+            DEFAULT_MAX_CONCURRENT_AGENT_TOOLS,
+            DEFAULT_MAX_CONCURRENT_CHEAP_TOOLS,
+        )
+    }
+
+    #[must_use]
+    pub fn new_scope() -> Arc<str> {
+        Arc::from(format!(
+            "agent-{}",
+            NEXT_SCOPE.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[must_use]
+    pub fn with_limits(process_limit: usize, agent_limit: usize, cheap_limit: usize) -> Self {
         Self {
-            workload,
-            _permit: None,
+            process: Arc::new(Semaphore::new(process_limit.max(1))),
+            cheap: Arc::new(Semaphore::new(cheap_limit.max(1))),
+            agent_limit: agent_limit.max(1),
+            state: AdmissionState {
+                agents: Mutex::new(HashMap::new()),
+            },
+            process_active: AtomicUsize::new(0),
+            cheap_active: AtomicUsize::new(0),
+        }
+    }
+
+    /// Wait for admission while allowing cancellation to remove the waiter.
+    /// All guards release on drop, including when the tool future panics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdmissionError::Cancelled`] when cancellation wins the race
+    /// while waiting for a permit.
+    pub async fn acquire(
+        &self,
+        scope: &str,
+        class: ToolAdmissionClass,
+        cancel: &CancelToken,
+    ) -> Result<ToolAdmissionGuard<'_>, AdmissionError> {
+        if class.is_orchestrator() {
+            return Ok(ToolAdmissionGuard::empty());
+        }
+
+        if matches!(class, ToolAdmissionClass::Cheap) {
+            let permit = cancel
+                .race(self.cheap.acquire_arc())
+                .await
+                .map_err(|_| AdmissionError::Cancelled)?;
+            self.cheap_active.fetch_add(1, Ordering::Relaxed);
+            return Ok(ToolAdmissionGuard {
+                _process: None,
+                _cheap: Some(ActivePermit {
+                    guard: permit,
+                    active: &self.cheap_active,
+                }),
+                agent: None,
+                state: None,
+                scope: None,
+            });
+        }
+
+        let process = ActivePermit {
+            guard: cancel
+                .race(self.process.acquire_arc())
+                .await
+                .map_err(|_| AdmissionError::Cancelled)?,
+            active: &self.process_active,
+        };
+        self.process_active.fetch_add(1, Ordering::Relaxed);
+
+        let scope = scope.to_owned();
+        let agent = {
+            let mut agents = self
+                .state
+                .agents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let slot = Arc::clone(agents.entry(scope.clone()).or_insert_with(|| {
+                Arc::new(AgentSlot {
+                    semaphore: Arc::new(Semaphore::new(self.agent_limit)),
+                    users: AtomicUsize::new(0),
+                })
+            }));
+            slot.users.fetch_add(1, Ordering::Relaxed);
+            slot
+        };
+
+        let Ok(agent_guard) = cancel.race(agent.semaphore.acquire_arc()).await else {
+            self.release_agent(&scope, &agent);
+            return Err(AdmissionError::Cancelled);
+        };
+
+        Ok(ToolAdmissionGuard {
+            _process: Some(process),
+            _cheap: None,
+            agent: Some(agent_guard),
+            state: Some(&self.state),
+            scope: Some(scope),
+        })
+    }
+
+    fn release_agent(&self, scope: &str, slot: &Arc<AgentSlot>) {
+        let mut agents = self
+            .state
+            .agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !agents
+            .get(scope)
+            .is_some_and(|current| Arc::ptr_eq(current, slot))
+        {
+            return;
+        }
+        if slot.users.fetch_sub(1, Ordering::Relaxed) == 1 {
+            agents.remove(scope);
         }
     }
 
     #[must_use]
-    pub const fn workload(&self) -> ToolWorkload {
-        self.workload
+    pub fn process_active(&self) -> usize {
+        self.process_active.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn cheap_active(&self) -> usize {
+        self.cheap_active.load(Ordering::Relaxed)
+    }
+}
+
+struct ActivePermit<'a> {
+    guard: SemaphoreGuardArc,
+    active: &'a AtomicUsize,
+}
+
+impl Drop for ActivePermit<'_> {
+    fn drop(&mut self) {
+        let _ = &self.guard;
+        self.active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+pub struct ToolAdmissionGuard<'a> {
+    _process: Option<ActivePermit<'a>>,
+    _cheap: Option<ActivePermit<'a>>,
+    agent: Option<SemaphoreGuardArc>,
+    state: Option<&'a AdmissionState>,
+    scope: Option<String>,
+}
+
+impl ToolAdmissionGuard<'_> {
+    fn empty() -> Self {
+        Self {
+            _process: None,
+            _cheap: None,
+            agent: None,
+            state: None,
+            scope: None,
+        }
+    }
+}
+
+impl Drop for ToolAdmissionGuard<'_> {
+    fn drop(&mut self) {
+        self.agent.take();
+        let (Some(state), Some(scope)) = (self.state, self.scope.take()) else {
+            return;
+        };
+        let mut agents = state
+            .agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(slot) = agents.get(&scope).cloned() else {
+            return;
+        };
+        if slot.users.fetch_sub(1, Ordering::Relaxed) == 1
+            && agents
+                .get(&scope)
+                .is_some_and(|current| Arc::ptr_eq(current, &slot))
+        {
+            agents.remove(&scope);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancel::CancelToken;
 
     #[test]
-    fn kind_defaults_to_process_only_for_execute_tools() {
+    fn classifies_wrappers_without_consuming_expensive_lane() {
         assert_eq!(
-            ToolWorkload::from_kind(Some("execute")),
-            ToolWorkload::Process
+            ToolAdmissionClass::for_tool("batch", Some("execute")),
+            ToolAdmissionClass::Orchestrator
         );
-        assert_eq!(ToolWorkload::from_kind(Some("read")), ToolWorkload::Cheap);
-        assert_eq!(ToolWorkload::from_kind(None), ToolWorkload::Cheap);
+        assert_eq!(
+            ToolAdmissionClass::for_tool("read", Some("filesystem")),
+            ToolAdmissionClass::Cheap
+        );
+        assert_eq!(
+            ToolAdmissionClass::for_tool("webfetch", Some("network")),
+            ToolAdmissionClass::Standard
+        );
     }
 
     #[test]
-    fn explicit_names_are_strict() {
-        assert_eq!(
-            ToolWorkload::parse_name("process"),
-            Some(ToolWorkload::Process)
-        );
-        assert_eq!(ToolWorkload::parse_name("PROCESS"), None);
-        assert_eq!(ToolWorkload::parse_name("unknown"), None);
-    }
-
-    #[test]
-    fn process_permit_blocks_until_release() {
+    fn cancelled_wait_does_not_leak_process_or_agent_slot() {
         smol::block_on(async {
-            let admission = ToolAdmission::with_limits(1, 1);
+            let admission = Arc::new(ToolAdmission::with_limits(1, 1, 1));
+            let cancel = CancelToken::none();
             let first = admission
-                .acquire(ToolWorkload::Process, &CancelToken::none())
+                .acquire("agent", ToolAdmissionClass::Standard, &cancel)
                 .await
                 .expect("first permit");
-            let (trigger, cancel) = CancelToken::new();
-            trigger.cancel();
-            assert!(matches!(
-                admission.acquire(ToolWorkload::Process, &cancel).await,
-                Err(AdmissionError::Cancelled)
-            ));
-            drop(first);
-            assert!(
-                admission
-                    .acquire(ToolWorkload::Process, &CancelToken::none())
-                    .await
-                    .is_ok()
-            );
-        });
-    }
-
-    #[test]
-    fn agent_permit_blocks_until_release() {
-        smol::block_on(async {
-            let admission = Arc::new(ToolAdmission::with_limits(1, 1));
-            let first = admission
-                .acquire(ToolWorkload::Agent, &CancelToken::none())
-                .await
-                .expect("first agent permit");
-            let waiter_admission = Arc::clone(&admission);
+            let (trigger, waiter_cancel) = CancelToken::new();
+            let (started_tx, started_rx) = flume::bounded(1);
+            let admission_for_waiter = Arc::clone(&admission);
             let waiter = smol::spawn(async move {
-                waiter_admission
-                    .acquire(ToolWorkload::Agent, &CancelToken::none())
+                started_tx
+                    .send_async(())
                     .await
+                    .expect("test receiver remains available");
+                assert!(matches!(
+                    admission_for_waiter
+                        .acquire("agent", ToolAdmissionClass::Standard, &waiter_cancel)
+                        .await,
+                    Err(AdmissionError::Cancelled)
+                ));
             });
-            smol::future::yield_now().await;
-            assert!(!waiter.is_finished());
+            started_rx
+                .recv_async()
+                .await
+                .expect("waiter reached admission");
+            trigger.cancel();
+            waiter.await;
             drop(first);
-            assert!(waiter.await.is_ok());
+            assert_eq!(admission.process_active(), 0);
         });
     }
 
     #[test]
-    fn cheap_and_orchestrator_calls_bypass_other_budgets() {
+    fn cancelled_agent_wait_releases_process_permit() {
         smol::block_on(async {
-            let admission = ToolAdmission::with_limits(1, 1);
-            let process = admission
-                .acquire(ToolWorkload::Process, &CancelToken::none())
+            let admission = Arc::new(ToolAdmission::with_limits(2, 1, 1));
+            let first = admission
+                .acquire("agent", ToolAdmissionClass::Standard, &CancelToken::none())
                 .await
-                .expect("process permit");
-
-            let cheap = admission
-                .acquire(ToolWorkload::Cheap, &CancelToken::none())
+                .expect("first permit");
+            let (trigger, waiter_cancel) = CancelToken::new();
+            let (started_tx, started_rx) = flume::bounded(1);
+            let admission_for_waiter = Arc::clone(&admission);
+            let waiter = smol::spawn(async move {
+                started_tx
+                    .send_async(())
+                    .await
+                    .expect("test receiver remains available");
+                assert!(matches!(
+                    admission_for_waiter
+                        .acquire("agent", ToolAdmissionClass::Standard, &waiter_cancel)
+                        .await,
+                    Err(AdmissionError::Cancelled)
+                ));
+            });
+            started_rx
+                .recv_async()
                 .await
-                .expect("cheap call");
-            let orchestrator = admission
-                .acquire(ToolWorkload::Orchestrator, &CancelToken::none())
-                .await
-                .expect("orchestrator call");
-            assert_eq!(cheap.workload(), ToolWorkload::Cheap);
-            assert_eq!(orchestrator.workload(), ToolWorkload::Orchestrator);
-            drop((cheap, orchestrator, process));
+                .expect("waiter reached admission");
+            trigger.cancel();
+            waiter.await;
+            assert_eq!(admission.process_active(), 1);
+            drop(first);
+            assert_eq!(admission.process_active(), 0);
         });
     }
 
     #[test]
-    fn agent_and_process_budgets_are_independent() {
+    fn permit_releases_when_work_returns_error() {
         smol::block_on(async {
-            let admission = ToolAdmission::with_limits(1, 1);
-            let process = admission
-                .acquire(ToolWorkload::Process, &CancelToken::none())
-                .await
-                .expect("process permit");
-            let agent = admission
-                .acquire(ToolWorkload::Agent, &CancelToken::none())
-                .await
-                .expect("agent permit");
-            assert_eq!(agent.workload(), ToolWorkload::Agent);
-            drop((process, agent));
+            let admission = ToolAdmission::with_limits(1, 1, 1);
+            let result: Result<(), AdmissionError> = async {
+                let _permit = admission
+                    .acquire("agent", ToolAdmissionClass::Standard, &CancelToken::none())
+                    .await?;
+                Err(AdmissionError::Cancelled)
+            }
+            .await;
+            assert_eq!(result, Err(AdmissionError::Cancelled));
+            assert_eq!(admission.process_active(), 0);
         });
     }
 
     #[test]
-    fn a_dropped_guard_releases_after_panic_unwind() {
-        let admission = ToolAdmission::with_limits(1, 1);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard =
-                smol::block_on(admission.acquire(ToolWorkload::Process, &CancelToken::none()))
-                    .expect("process permit");
-            panic!("test unwind");
+    fn permit_releases_when_work_panics() {
+        let admission = Arc::new(ToolAdmission::with_limits(1, 1, 1));
+        let admission_for_work = Arc::clone(&admission);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            smol::block_on(async move {
+                let _permit = admission_for_work
+                    .acquire("agent", ToolAdmissionClass::Standard, &CancelToken::none())
+                    .await
+                    .expect("permit");
+                panic!("simulated tool panic");
+            });
         }));
         assert!(result.is_err());
+        assert_eq!(admission.process_active(), 0);
+    }
+
+    #[test]
+    fn orchestrator_is_a_noop_guard() {
         smol::block_on(async {
-            assert!(
-                admission
-                    .acquire(ToolWorkload::Process, &CancelToken::none())
-                    .await
-                    .is_ok()
-            );
+            let admission = ToolAdmission::with_limits(1, 1, 1);
+            let permit = admission
+                .acquire(
+                    "agent",
+                    ToolAdmissionClass::Orchestrator,
+                    &CancelToken::none(),
+                )
+                .await
+                .expect("orchestrator bypass");
+            assert_eq!(admission.process_active(), 0);
+            drop(permit);
         });
     }
 }

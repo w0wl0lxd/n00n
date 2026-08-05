@@ -2490,7 +2490,7 @@ async fn run_tool_call(
                         });
                     }
                     if let Some(sink) = sink {
-                        let _ = sink.send(ToolLive::Buf(buf));
+                        let _ = sink.try_send(ToolLive::Buf(buf));
                     }
                 }
                 dispatch_async(&lua, Arc::clone(&handle), &plugin, &tool, finish_rx).await

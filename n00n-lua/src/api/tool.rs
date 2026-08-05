@@ -19,8 +19,8 @@ use n00n_agent::tools::registry::{RegisteredTool, ToolRegistry};
 use n00n_agent::tools::schema::{ParamSchema, to_json_schema, try_from_json, validate};
 use n00n_agent::tools::{
     BoxFuture, Deadline, DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError,
-    PermissionScopes, ToolAudience, ToolContext, ToolExecResult, ToolFilter, ToolInvocation,
-    ToolWorkload, is_tool_enabled, timeout_annotation,
+    PermissionScopes, ToolAdmissionClass, ToolAudience, ToolContext, ToolExecResult, ToolFilter,
+    ToolInvocation, is_tool_enabled, timeout_annotation,
 };
 use n00n_agent::{
     AgentEvent, BufferSnapshot, ImageMediaType, ImageSource, InstructionBlock, SharedBuf,
@@ -126,7 +126,7 @@ pub(crate) struct PendingTool {
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
     pub(crate) kind: Option<Arc<str>>,
-    pub(crate) workload: ToolWorkload,
+    pub(crate) workload: Option<ToolAdmissionClass>,
     pub(crate) handler_key: RegistryKey,
     pub(crate) header_key: Option<RegistryKey>,
     pub(crate) restore_key: Option<RegistryKey>,
@@ -149,7 +149,7 @@ pub(crate) struct LuaTool {
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
     pub(crate) kind: Option<Arc<str>>,
-    pub(crate) workload: ToolWorkload,
+    pub(crate) workload: Option<ToolAdmissionClass>,
     pub(crate) tx: Sender<Request>,
     pub(crate) plugin: Arc<str>,
     pub(crate) has_header_fn: bool,
@@ -216,8 +216,9 @@ impl Tool for LuaTool {
         self.kind.as_deref()
     }
 
-    fn workload(&self) -> ToolWorkload {
+    fn admission_class(&self) -> ToolAdmissionClass {
         self.workload
+            .unwrap_or_else(|| ToolAdmissionClass::for_tool(&self.name, self.kind.as_deref()))
     }
 
     fn examples(&self) -> Option<Value> {
@@ -1051,7 +1052,7 @@ fn parse_audience(audiences: Option<mlua::Table>) -> LuaResult<ToolAudience> {
     Ok(flags)
 }
 
-fn parse_workload(spec: &Table, kind: Option<&str>) -> LuaResult<ToolWorkload> {
+fn parse_workload(spec: &Table, kind: Option<&str>) -> LuaResult<Option<ToolAdmissionClass>> {
     let admission: Option<String> = spec.get("admission")?;
     let workload: Option<String> = spec.get("workload")?;
     if admission.is_some() && workload.is_some() {
@@ -1061,12 +1062,12 @@ fn parse_workload(spec: &Table, kind: Option<&str>) -> LuaResult<ToolWorkload> {
     }
     let explicit = admission.or(workload);
     match explicit {
-        Some(name) => ToolWorkload::parse_name(&name).ok_or_else(|| {
+        Some(name) => ToolAdmissionClass::from_workload(&name).ok_or_else(|| {
             mlua::Error::runtime(format!(
-                "register_tool: unknown admission '{name}' (expected cheap, process, agent, or orchestrator)"
+                "register_tool: unknown admission '{name}' (expected cheap, standard, expensive, or orchestrator)"
             ))
-        }),
-        None => Ok(ToolWorkload::from_kind(kind)),
+        }).map(Some),
+        None => Ok(None),
     }
 }
 
@@ -1669,11 +1670,11 @@ mod tests {
         assert_eq!(is_valid_tool_name(name), expected);
     }
 
-    #[test_case::test_case("cheap", ToolWorkload::Cheap ; "cheap")]
-    #[test_case::test_case("process", ToolWorkload::Process ; "process")]
-    #[test_case::test_case("agent", ToolWorkload::Agent ; "agent")]
-    #[test_case::test_case("orchestrator", ToolWorkload::Orchestrator ; "orchestrator")]
-    fn explicit_workload_is_parsed(name: &str, expected: ToolWorkload) {
+    #[test_case::test_case("cheap", Some(ToolAdmissionClass::Cheap) ; "cheap")]
+    #[test_case::test_case("standard", Some(ToolAdmissionClass::Standard) ; "standard")]
+    #[test_case::test_case("expensive", Some(ToolAdmissionClass::Standard) ; "expensive")]
+    #[test_case::test_case("orchestrator", Some(ToolAdmissionClass::Orchestrator) ; "orchestrator")]
+    fn explicit_workload_is_parsed(name: &str, expected: Option<ToolAdmissionClass>) {
         let lua = Lua::new();
         let spec = lua.create_table().unwrap();
         spec.set("admission", name).unwrap();
@@ -1684,10 +1685,7 @@ mod tests {
     fn workload_defaults_from_kind_and_rejects_alias_conflicts() {
         let lua = Lua::new();
         let spec = lua.create_table().unwrap();
-        assert_eq!(
-            parse_workload(&spec, Some("execute")).unwrap(),
-            ToolWorkload::Process
-        );
+        assert_eq!(parse_workload(&spec, Some("execute")).unwrap(), None);
 
         spec.set("admission", "cheap").unwrap();
         spec.set("workload", "agent").unwrap();
@@ -1779,7 +1777,7 @@ mod tests {
             schema,
             audience: ToolAudience::default(),
             kind: None,
-            workload: ToolWorkload::Cheap,
+            workload: None,
             tx,
             plugin: Arc::from("test"),
             has_header_fn: false,

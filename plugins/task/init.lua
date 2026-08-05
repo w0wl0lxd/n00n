@@ -334,7 +334,7 @@ n00n.api.register_tool({
   name = "task",
   description = description,
   kind = "execute",
-  admission = "orchestrator",
+  workload = "orchestrator",
   audiences = { "main", "workflow" },
   schema = schema,
   handler = handler,
