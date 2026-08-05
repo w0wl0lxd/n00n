@@ -269,11 +269,11 @@ pub struct KeyPool {
 impl KeyPool {
     pub fn from_env(env_var: &str) -> Result<Self, AgentError> {
         let raw = std::env::var(env_var).map_err(|error| match error {
-            std::env::VarError::NotPresent => AgentError::Config {
+            std::env::VarError::NotPresent => AgentError::SetupRequired {
                 message: format!("{env_var} not set"),
             },
             std::env::VarError::NotUnicode(_) => AgentError::Config {
-                message: format!("{env_var} contains invalid Unicode"),
+                message: format!("{env_var} is not valid Unicode"),
             },
         })?;
         let keys: Vec<String> = raw
@@ -282,7 +282,7 @@ impl KeyPool {
             .filter(|s| !s.is_empty())
             .collect();
         if keys.is_empty() {
-            return Err(AgentError::Config {
+            return Err(AgentError::SetupRequired {
                 message: format!("{env_var} is empty"),
             });
         }
@@ -308,14 +308,11 @@ impl KeyPool {
             debug!(slug, "resolved API key from providers.toml");
             return Ok(Self::from_keys(vec![key]));
         }
-        match env_error {
-            AgentError::Config { .. } => Err(AgentError::Config {
-                message: format!(
-                    "{env_var} not set and no saved credentials for '{slug}' — run `n00n auth login {slug}`"
-                ),
-            }),
-            error => Err(error),
-        }
+        Err(AgentError::SetupRequired {
+            message: format!(
+                "{env_var} not set and no saved credentials for '{slug}' — run `n00n auth login {slug}`"
+            ),
+        })
     }
 
     fn key_from_file(slug: &str) -> Option<String> {
