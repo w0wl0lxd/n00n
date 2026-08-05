@@ -18,6 +18,7 @@ say so; do not offer to look it up.\n</system-reminder>";
 
 const BTW_FALLBACK_SYSTEM: &str = "You are a helpful coding assistant. Answer concisely \
 from the conversation context.";
+const PROVIDER_EVENT_QUEUE_CAPACITY: usize = 256;
 
 /// The reminder leads so the model treats the question as a quick aside, not a task to act on.
 pub(crate) fn btw_question(question: &str) -> Message {
@@ -52,11 +53,14 @@ async fn run_btw(
     messages: Vec<Message>,
     btw_tx: Sender<BtwEvent>,
 ) {
-    let (event_tx, event_rx) = flume::unbounded();
+    let (event_tx, event_rx) = flume::bounded(PROVIDER_EVENT_QUEUE_CAPACITY);
     let tools = Value::Array(vec![]);
     let messages = n00n_providers::adapt_images_for_model(&model, &messages);
     let messages = n00n_providers::adapt_files_for_model(&model, &messages);
 
+    let _permit = n00n_providers::admission::ProviderAdmission::global()
+        .acquire(model.provider.as_ref())
+        .await;
     let stream_fut = provider.stream_message(
         &model,
         &messages,
