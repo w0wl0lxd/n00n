@@ -139,6 +139,8 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             }
         } else if let Some(id) = id {
             server.respond(id, Err(AcpError::invalid_request()));
+        } else {
+            server.respond(RequestId::Null, Err(AcpError::invalid_request()));
         }
     }
 
@@ -209,11 +211,11 @@ async fn handle_load_session(
     let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
         .map_err(|error| AcpError::internal_error().data(json_str(&error)))?;
     let history = stored.messages;
+    retire_session(srv).await;
     let sid = SessionId::from(session_ref.to_string());
     for update in translate::replay_history(&history) {
         session_update(&srv.out_tx, &sid, update);
     }
-    retire_session(srv).await;
     let handle = spawn_session(params, req.cwd, Some(session_ref), history);
     let spec = params.model.spec();
     let resp = methods::load_session_response()
@@ -239,7 +241,15 @@ async fn retire_session(srv: &mut Server) {
             Response::new(id, Ok(AgentResponse::PromptResponse(response))),
         );
     }
-    let _ = handle.cancel_tx.try_send(());
+    match handle.cancel_tx.try_send(()) {
+        Ok(()) => {}
+        Err(flume::TrySendError::Full(())) => {
+            debug!("cancellation already requested");
+        }
+        Err(flume::TrySendError::Disconnected(())) => {
+            warn!("cancellation channel disconnected, falling back to direct task cancellation");
+        }
+    }
     event_pump.cancel().await;
     handle.task.cancel().await;
 }
@@ -678,5 +688,11 @@ mod tests {
         let raw = json!({"id": 1, "method": "test", "params": {"invalid": "type"}});
         let result: Result<String, _> = parse_params(&raw);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn request_id_rejects_empty_object_and_array() {
+        assert!(request_id(&json!({})).is_err());
+        assert!(request_id(&json!([])).is_err());
     }
 }
