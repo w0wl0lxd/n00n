@@ -2715,7 +2715,6 @@ pub fn spawn(
                                 break;
                             }
                             rt.clear_plugin(&plugin);
-                            rt.state.drop_plugin(&plugin);
                             let _ = reply.send(());
                         }
                         Request::RunCommand {
