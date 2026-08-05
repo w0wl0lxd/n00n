@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785907491892,
+  "lastUpdate": 1785920339051,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -14683,6 +14683,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 109815,
             "range": "± 17773",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8d5809e1e049e41fd7c044000a90d9d8bbd50b38",
+          "message": "Merge pull request #281 from w0wl0lxd/fix/team-runner-empty-tools\n\nfix(agent): allow null and empty object as empty tool list in n00n.agent.session",
+          "timestamp": "2026-08-05T04:34:09-04:00",
+          "tree_id": "52eeb10d91a89b7dc6427c96e1c86bd7572ef2f4",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/8d5809e1e049e41fd7c044000a90d9d8bbd50b38"
+        },
+        "date": 1785920338186,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6678342,
+            "range": "± 253554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220199,
+            "range": "± 12990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218881,
+            "range": "± 33232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8091425,
+            "range": "± 114645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4326050,
+            "range": "± 14651",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4302519,
+            "range": "± 21751",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585064,
+            "range": "± 2008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191572,
+            "range": "± 450",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191410,
+            "range": "± 393",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1047263,
+            "range": "± 5989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 586663,
+            "range": "± 8150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582762,
+            "range": "± 1557",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48447,
+            "range": "± 2593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 159346,
+            "range": "± 17058",
             "unit": "ns/iter"
           }
         ]
