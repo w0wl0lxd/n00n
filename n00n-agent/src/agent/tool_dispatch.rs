@@ -18,6 +18,7 @@ use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
+const TOOL_ERROR_LOG_MAX_CHARS: usize = 1024;
 
 #[derive(Clone, Copy)]
 pub enum Emit {
@@ -43,6 +44,15 @@ pub(super) struct FusionDispatchAuth {
     pub phase: crate::fusion::FusionPhase,
     pub lane: crate::fusion::FusionLane,
     pub classification: crate::fusion::DelegationKind,
+}
+
+/// Truncates `text` to `TOOL_ERROR_LOG_MAX_CHARS` on a character boundary,
+/// preserving the total byte count as a trailing hint.
+fn truncate_for_log(text: &str) -> String {
+    match text.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
+        Some((idx, _)) => format!("{}... ({} bytes)", &text[..idx], text.len()),
+        None => text.to_string(),
+    }
 }
 
 /// Returns true when `command` contains shell metacharacters that are outside
@@ -536,11 +546,13 @@ async fn run_authorized(
                 }
             }
             Err(message) => {
+                let error_preview = truncate_for_log(&message);
                 warn!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
                     elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
-                    error = %message,
+                    error = %error_preview,
+                    error_bytes = message.len(),
                     "tool failed"
                 );
                 ToolDoneEvent {
@@ -2390,6 +2402,23 @@ mod tests {
             assert!(results[0].is_error);
             assert_eq!(results[0].output.as_text(), ERROR_MSG);
         });
+    }
+
+    #[test]
+    fn truncate_for_log_truncates_on_char_boundary() {
+        let short = "short";
+        assert_eq!(truncate_for_log(short), short);
+
+        let long = "x".repeat(TOOL_ERROR_LOG_MAX_CHARS + 100);
+        let preview = truncate_for_log(&long);
+        assert!(preview.starts_with(&long[..TOOL_ERROR_LOG_MAX_CHARS]));
+        assert!(preview.ends_with(&format!("... ({} bytes)", long.len())));
+
+        // Multi-byte characters must not be sliced mid-char.
+        let emoji = "😀".repeat(TOOL_ERROR_LOG_MAX_CHARS + 2);
+        let preview = truncate_for_log(&emoji);
+        assert!(preview.starts_with(&"😀".repeat(TOOL_ERROR_LOG_MAX_CHARS)));
+        assert!(preview.ends_with(&format!("... ({} bytes)", emoji.len())));
     }
 
     fn fusion_brief() -> Value {
