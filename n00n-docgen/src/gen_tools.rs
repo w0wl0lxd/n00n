@@ -34,7 +34,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
     ),
     (
         "Execution & Control",
-        &["batch", "code_execution", "question"],
+        &["batch", "code_execution", "question", "tmux"],
     ),
     (
         "Agent & Knowledge",
@@ -422,7 +422,7 @@ mod tests {
     }
 
     // Room for fusion_delegate + skill-system + memory-system + explore-stack tools; keep definitions lean.
-    const MAX_TOOL_DEFINITION_BYTES: usize = 46_000;
+    const MAX_TOOL_DEFINITION_BYTES: usize = 50_000;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {

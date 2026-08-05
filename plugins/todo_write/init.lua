@@ -10,6 +10,7 @@ local seen_first = false
 local running = {}
 local running_order = {}
 local activity_expanded = false
+local focused_session = nil
 local render_panel
 
 local STATUS_MARKERS = {
@@ -45,10 +46,14 @@ local function current_todo()
   return nil
 end
 
+local function session_is_focused(session_id)
+  return focused_session == nil or session_id == nil or session_id == focused_session
+end
+
 local function running_count()
   local count = 0
   for _, activity in pairs(running) do
-    if activity.tool ~= "todo_write" then
+    if activity.tool ~= "todo_write" and session_is_focused(activity.session_id) then
       count = count + 1
     end
   end
@@ -58,7 +63,7 @@ end
 local function current_activity()
   for i = #running_order, 1, -1 do
     local activity = running[running_order[i]]
-    if activity and activity.tool ~= "todo_write" then
+    if activity and activity.tool ~= "todo_write" and session_is_focused(activity.session_id) then
       local label = compact_text(activity.summary ~= "" and activity.summary or activity.tool)
       if activity.subagent and activity.subagent ~= "" then
         label = activity.subagent .. ": " .. label
@@ -66,6 +71,10 @@ local function current_activity()
       return label
     end
   end
+end
+
+local function activity_key(data)
+  return (data.session_id or "") .. "\0" .. data.id
 end
 
 local function prune_running_order()
@@ -126,9 +135,10 @@ local function ensure_win(visible)
   })
 end
 
-local function build_lines()
+local function build_lines(todo_items, include_activity)
+  todo_items = todo_items or items
   local lines = {}
-  local activity = current_activity()
+  local activity = include_activity ~= false and current_activity() or nil
   if activity then
     local width = (win and win.width or n00n.ui.terminal_size().cols) - 16
     local truncated = n00n.ui.truncate_text(activity, math.max(width, 8))
@@ -141,7 +151,7 @@ local function build_lines()
     if activity_expanded then
       for _, id in ipairs(running_order) do
         local detail = running[id]
-        if detail and detail.tool ~= "todo_write" then
+        if detail and detail.tool ~= "todo_write" and session_is_focused(detail.session_id) then
           local summary = compact_text(detail.summary ~= "" and detail.summary or detail.tool)
           local owner = detail.subagent and detail.subagent ~= "" and (detail.subagent .. " · ") or ""
           lines[#lines + 1] = {
@@ -153,7 +163,7 @@ local function build_lines()
       end
     end
   end
-  for _, item in ipairs(items) do
+  for _, item in ipairs(todo_items) do
     local marker = STATUS_MARKERS[item.status] or STATUS_MARKERS.pending
     lines[#lines + 1] = {
       { marker[1] .. " " .. item.content, marker[2] },
@@ -197,6 +207,7 @@ n00n.api.register_tool({
             status = {
               type = "string",
               enum = { "pending", "in_progress", "completed", "cancelled" },
+              description = "One of: pending, in_progress, completed, cancelled.",
             },
             priority = {
               type = "string",
@@ -214,29 +225,56 @@ n00n.api.register_tool({
   end,
 
   restore = function(input)
-    items = input.todos or {}
-    if #items == 0 then
+    local restored_items = input.todos or {}
+    if #restored_items == 0 then
       return nil
     end
-    update_hint()
-    return ToolView.restore_lines(build_lines(), { max_lines = DEFAULT_PREVIEW_LINES, keep = "head" })
+    return ToolView.restore_lines(build_lines(restored_items, false), {
+      max_lines = DEFAULT_PREVIEW_LINES,
+      keep = "head",
+    })
   end,
 
-  handler = function(input)
-    items = input.todos or {}
-    if #items == 0 then
-      if win and win:is_open() then
-        win:hide()
+  handler = function(input, ctx)
+    local owner, owner_err = ctx:state_owner("root")
+    if owner_err then
+      error(owner_err)
+    end
+    local next_items = input.todos or {}
+    local _, state_err
+    if #next_items == 0 then
+      _, state_err = ctx:state_remove("root")
+    else
+      _, state_err = ctx:state_replace("root", { todos = next_items })
+    end
+    if state_err then
+      error(state_err)
+    end
+    local is_focused = focused_session == nil or owner == focused_session
+    if is_focused then
+      focused_session = owner
+      items = next_items
+    end
+    if #next_items == 0 then
+      if is_focused then
+        if win and win:is_open() then
+          win:hide()
+        end
+        n00n.ui.set_status_hint(nil)
       end
-      n00n.ui.set_status_hint(nil)
       return "Todos cleared"
     end
-    local first = not seen_first
-    seen_first = true
-    render_panel(first)
+    if is_focused then
+      local first = not seen_first
+      seen_first = true
+      render_panel(first)
+    end
     return {
       llm_output = "",
-      body = ToolView.restore_lines(build_lines(), { max_lines = DEFAULT_PREVIEW_LINES, keep = "head" }),
+      body = ToolView.restore_lines(build_lines(next_items, false), {
+        max_lines = DEFAULT_PREVIEW_LINES,
+        keep = "head",
+      }),
     }
   end,
 })
@@ -280,17 +318,21 @@ n00n.api.create_autocmd("ToolStart", {
     if not data.id or data.tool == "todo_write" then
       return
     end
-    if running[data.id] then
-      running[data.id] = nil
+    local key = activity_key(data)
+    if running[key] then
+      running[key] = nil
       prune_running_order()
     end
-    running[data.id] = {
+    running[key] = {
       tool = data.tool or "tool",
       summary = data.summary or "",
       subagent = data.subagent,
+      session_id = data.session_id,
     }
-    running_order[#running_order + 1] = data.id
-    refresh_activity()
+    running_order[#running_order + 1] = key
+    if session_is_focused(data.session_id) then
+      refresh_activity()
+    end
   end,
 })
 
@@ -298,26 +340,74 @@ n00n.api.create_autocmd("ToolDone", {
   callback = function(ev)
     local data = ev.data or {}
     if data.id then
-      running[data.id] = nil
+      running[activity_key(data)] = nil
       prune_running_order()
       if running_count() == 0 then
         activity_expanded = false
       end
-      refresh_activity()
+      if session_is_focused(data.session_id) then
+        refresh_activity()
+      end
+    end
+  end,
+})
+local function focused_items(data)
+  local snapshot = data.state_snapshot
+  local plugins = type(snapshot) == "table" and snapshot.plugins or nil
+  local plugin = type(plugins) == "table" and plugins.todo_write or nil
+  local root = type(plugin) == "table" and plugin.root or nil
+  local payload = type(root) == "table" and root.payload or nil
+  return type(payload) == "table" and type(payload.todos) == "table" and payload.todos or {}
+end
+
+n00n.api.create_autocmd("SessionFocus", {
+  callback = function(ev)
+    local data = ev.data or {}
+    focused_session = data.session_id
+    items = focused_items(data)
+    seen_first = #items > 0
+    activity_expanded = false
+    if #items == 0 then
+      if win and win:is_open() then
+        win:hide()
+      end
+      n00n.ui.set_status_hint(nil)
+    elseif win and win:is_open() and win:is_visible() then
+      render_panel(true)
+    else
+      update_hint()
     end
   end,
 })
 
-local function clear_todos()
+local function clear_activity(ev)
+  local data = ev and ev.data or {}
+  for id, activity in pairs(running) do
+    if data.session_id == nil or activity.session_id == data.session_id then
+      running[id] = nil
+    end
+  end
+  prune_running_order()
+  if session_is_focused(data.session_id) then
+    activity_expanded = false
+    refresh_activity()
+  end
+end
+
+local function clear_todos(ev)
+  local data = ev and ev.data or {}
+  if not session_is_focused(data.session_id) then
+    clear_activity(ev)
+    return
+  end
   items = {}
   seen_first = false
-  running = {}
-  running_order = {}
-  activity_expanded = false
+  clear_activity(ev)
   if win and win:is_open() then
     win:hide()
   end
   n00n.ui.set_status_hint(nil)
 end
 
-n00n.api.create_autocmd({ "TurnEnd", "TurnError", "SessionReset" }, { callback = clear_todos })
+n00n.api.create_autocmd({ "TurnEnd", "TurnError" }, { callback = clear_activity })
+n00n.api.create_autocmd("SessionReset", { callback = clear_todos })
