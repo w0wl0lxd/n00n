@@ -1206,7 +1206,7 @@ async fn drain_runtime(
             match request_rx.try_recv() {
                 Ok(request) => {
                     if let Some(request) =
-                        spawn_runtime_request(rt, ex, gate, lifecycle, request, true)
+                        spawn_runtime_request(rt, ex, gate, lifecycle, request, false)
                     {
                         deferred.push_back(request);
                     }
@@ -1266,7 +1266,7 @@ async fn drain_runtime(
             RuntimeWake::Spawn(task) => spawn_async_task(&rt.lua, ex, gate, task),
             RuntimeWake::Request(request) => {
                 if let Some(request) =
-                    spawn_runtime_request(rt, ex, gate, lifecycle, *request, true)
+                    spawn_runtime_request(rt, ex, gate, lifecycle, *request, false)
                 {
                     deferred.push_back(request);
                 }
