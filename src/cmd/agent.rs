@@ -363,6 +363,8 @@ struct PreparedEnv {
     openai_options: OpenAiOptions,
     mcp_handle: Option<McpHandle>,
     prompt_slots: ResolvedSlots,
+    state_persistence: Arc<dyn headless::SessionStatePersistence>,
+    _plugin_host: PluginHost,
 }
 
 fn prepare_agent_env(
@@ -423,9 +425,11 @@ fn prepare_agent_env(
         config.agent.mcp_tool_desc_max_chars,
     ));
 
-    let prompt_slots = plugin_host
+    let event_handle = plugin_host
         .event_handle()
-        .map_or_else(Default::default, |h| h.collect_prompt_slots());
+        .ok_or_else(|| eyre!("lua plugin host is unavailable"))?;
+    let prompt_slots = event_handle.collect_prompt_slots();
+    let state_persistence = Arc::new(event_handle) as Arc<dyn headless::SessionStatePersistence>;
 
     Ok(PreparedEnv {
         storage,
@@ -438,6 +442,8 @@ fn prepare_agent_env(
         openai_options: OpenAiOptions::from(&config.provider),
         mcp_handle,
         prompt_slots,
+        state_persistence,
+        _plugin_host: plugin_host,
     })
 }
 
@@ -483,6 +489,7 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
         prompt: message,
         images: Vec::new(),
         prompt_slots: env.prompt_slots,
+        state_persistence: Some(Arc::clone(&env.state_persistence)),
         excluded_tools,
         mcp_handle: env.mcp_handle,
         initial_wd: env.cwd,
@@ -734,6 +741,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         timeouts: env.timeouts,
         openai_options: env.openai_options,
         prompt_slots: Arc::new(env.prompt_slots),
+        state_persistence: Some(Arc::clone(&env.state_persistence)),
         excluded_tools,
         mcp_handle: env.mcp_handle,
         initial_wd: env.cwd,
