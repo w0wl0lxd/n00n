@@ -658,4 +658,25 @@ mod tests {
         // Use a valid u64 value that serde_json will reject as a RequestId
         assert!(request_id(&json!(18_446_744_073_709_551_615_u64)).is_err());
     }
+
+    #[test]
+    fn parse_params_handles_null_params() {
+        let raw = json!({"id": 1, "method": "test", "params": null});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_params_handles_missing_params() {
+        let raw = json!({"id": 1, "method": "test"});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_params_handles_invalid_json_params() {
+        let raw = json!({"id": 1, "method": "test", "params": {"invalid": "type"}});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
 }

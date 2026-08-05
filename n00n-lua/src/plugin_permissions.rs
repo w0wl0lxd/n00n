@@ -69,10 +69,24 @@ impl PluginPermissions {
         let perms = manifest.get("permissions");
         let mut allowed = [false; 5];
         for perm in Permission::ALL {
-            allowed[perm as usize] = perms
-                .and_then(|p| p.get(perm.manifest_key()))
-                .and_then(toml::Value::as_bool)
-                .unwrap_or_else(|| DEFAULT_PERMISSION);
+            if let Some(perm_table) = perms {
+                if let Some(value) = perm_table.get(perm.manifest_key()) {
+                    if !value.is_bool() {
+                        warn!(
+                            permission = %perm,
+                            value = %value,
+                            "invalid permission value in manifest (expected boolean), denying"
+                        );
+                        allowed[perm as usize] = DEFAULT_PERMISSION;
+                    } else {
+                        allowed[perm as usize] = value.as_bool().unwrap();
+                    }
+                } else {
+                    allowed[perm as usize] = DEFAULT_PERMISSION;
+                }
+            } else {
+                allowed[perm as usize] = DEFAULT_PERMISSION;
+            }
         }
         Self { allowed }
     }
@@ -215,6 +229,23 @@ mod tests {
         .unwrap();
         let p = PluginPermissions::from_manifest(&val);
         assert!(p.is_allowed(Permission::FsRead));
+        assert!(!p.is_allowed(Permission::FsWrite));
+        assert!(!p.is_allowed(Permission::Net));
+        assert!(!p.is_allowed(Permission::Run));
+        assert!(!p.is_allowed(Permission::Env));
+    }
+
+    #[test]
+    fn from_manifest_invalid_type_denies() {
+        let val: toml::Value = toml::from_str(
+            r#"
+            [permissions]
+            fs_read = "true"
+            "#,
+        )
+        .unwrap();
+        let p = PluginPermissions::from_manifest(&val);
+        assert!(!p.is_allowed(Permission::FsRead));
         assert!(!p.is_allowed(Permission::FsWrite));
         assert!(!p.is_allowed(Permission::Net));
         assert!(!p.is_allowed(Permission::Run));
