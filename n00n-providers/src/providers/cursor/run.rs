@@ -728,36 +728,60 @@ fn handle_data_frame(
         message,
     };
 
-    if let Some(op) = parse_kv_server_message(&payload).map_err(bad_frame)? {
-        queue_checkpoint_reply(op, checkpoints, outbound)?;
-        return Ok(FrameHandleOutcome {
+    match parse_kv_server_message(&payload) {
+        Ok(Some(op)) => {
+            queue_checkpoint_reply(op, checkpoints, outbound)?;
+            return Ok(FrameHandleOutcome {
+                exec_skipped: false,
+                text_deltas: 0,
+                kv_op: true,
+            });
+        }
+        Ok(None) => {}
+        Err(_) if frame.end_stream => {
+            return Ok(FrameHandleOutcome {
+                exec_skipped: false,
+                text_deltas: 0,
+                kv_op: false,
+            });
+        }
+        Err(message) => return Err(bad_frame(message)),
+    }
+
+    let outcome: Result<FrameHandleOutcome, String> = (|| {
+        if has_exec_server_message(&payload)? {
+            // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
+            // Aborting the whole turn drops text deltas that often follow.
+            return Ok(FrameHandleOutcome {
+                exec_skipped: true,
+                text_deltas: 0,
+                kv_op: false,
+            });
+        }
+        let mut deltas = 0u32;
+        for delta in extract_text_deltas(&payload)? {
+            text.push_str(&delta);
+            deltas = deltas.saturating_add(1);
+        }
+        for delta in extract_thinking_deltas(&payload)? {
+            thinking.push_str(&delta);
+        }
+        Ok(FrameHandleOutcome {
+            exec_skipped: false,
+            text_deltas: deltas,
+            kv_op: false,
+        })
+    })();
+
+    match outcome {
+        Ok(outcome) => Ok(outcome),
+        Err(_) if frame.end_stream => Ok(FrameHandleOutcome {
             exec_skipped: false,
             text_deltas: 0,
-            kv_op: true,
-        });
-    }
-    if has_exec_server_message(&payload).map_err(bad_frame)? {
-        // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
-        // Aborting the whole turn drops text deltas that often follow.
-        return Ok(FrameHandleOutcome {
-            exec_skipped: true,
-            text_deltas: 0,
             kv_op: false,
-        });
+        }),
+        Err(message) => Err(bad_frame(message)),
     }
-    let mut deltas = 0u32;
-    for delta in extract_text_deltas(&payload).map_err(bad_frame)? {
-        text.push_str(&delta);
-        deltas = deltas.saturating_add(1);
-    }
-    for delta in extract_thinking_deltas(&payload).map_err(bad_frame)? {
-        thinking.push_str(&delta);
-    }
-    Ok(FrameHandleOutcome {
-        exec_skipped: false,
-        text_deltas: deltas,
-        kv_op: false,
-    })
 }
 
 fn queue_checkpoint_reply(
