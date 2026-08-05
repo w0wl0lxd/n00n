@@ -203,6 +203,7 @@ n00n.api.register_prompt_hint({
 n00n.api.register_tool({
   name = "grep",
   kind = "search",
+  workload = "cheap",
   modes = { "default", "research", "build", "compact" },
   strict = true,
   description = [[Search file contents using ripgrep-compatible regex. Respects .gitignore. Results grouped by file, sorted by modification time. This is not a shell: use `pattern` and a single `path`. For multiple paths, search each in a batch call. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
