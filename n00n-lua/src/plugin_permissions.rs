@@ -76,7 +76,7 @@ impl PluginPermissions {
                     } else {
                         warn!(
                             permission = %perm,
-                            value = %value,
+                            value_type = value.type_str(),
                             "invalid permission value in manifest (expected boolean), denying"
                         );
                         allowed[perm as usize] = DEFAULT_PERMISSION;
