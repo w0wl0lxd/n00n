@@ -8,9 +8,12 @@ use futures_lite::io::AsyncBufRead;
 use isahc::config::Configurable;
 use isahc::http::request::Builder;
 use serde::Deserialize;
+use serde_json::Value;
 use tracing::debug;
 
 use crate::AgentError;
+use crate::model::Model;
+use crate::types::ThinkingFieldConfig;
 
 pub(crate) mod anthropic;
 pub(crate) mod copilot;
@@ -36,6 +39,8 @@ pub(crate) mod tensorx;
 pub(crate) mod zai;
 
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
+const REASONING_EFFORT_FIELD: &str = "reasoning_effort";
+pub(crate) const MESSAGES_FIELD: &str = "messages";
 
 pub(crate) fn user_agent() -> &'static str {
     concat!(
@@ -115,6 +120,82 @@ pub(crate) fn urlenc(s: &str) -> String {
     out
 }
 
+/// The `reasoning_effort` layout shared by every OpenAI-compatible provider.
+pub(crate) fn reasoning_effort_fields() -> ThinkingFieldConfig {
+    ThinkingFieldConfig {
+        effort_path: Some(REASONING_EFFORT_FIELD.into()),
+        ..Default::default()
+    }
+}
+
+/// Apply a model's body overrides after all typed thinking setup. Runs
+/// `defaults` (fills absent keys), then `replace` (deep-merges, overwriting),
+/// then `filter` (strips keys). `protected` names this protocol's
+/// conversation field (`messages`, `input`, or `contents`), which none of the
+/// three may touch. A model without overrides costs one `Option` check.
+pub(crate) fn apply_body_overrides(body: &mut Value, model: &Model, protected: &[&str]) {
+    let Some(override_config) = model.body_override.as_ref() else {
+        return;
+    };
+    if let Some(defaults) = &override_config.defaults {
+        fill_absent(body, defaults, protected);
+    }
+    if let Some(replace) = &override_config.replace {
+        deep_merge(body, replace, protected);
+    }
+    if !override_config.filter.is_empty() {
+        strip_keys(body, &override_config.filter, protected);
+    }
+}
+
+fn fill_absent(body: &mut Value, defaults: &Value, protected: &[&str]) {
+    let (Some(target), Some(source)) = (body.as_object_mut(), defaults.as_object()) else {
+        return;
+    };
+    for (key, value) in source {
+        if protected.contains(&key.as_str()) || target.contains_key(key) {
+            continue;
+        }
+        target.insert(key.clone(), value.clone());
+    }
+}
+
+fn deep_merge(body: &mut Value, replace: &Value, protected: &[&str]) {
+    let (Some(target), Some(source)) = (body.as_object_mut(), replace.as_object()) else {
+        return;
+    };
+    for (key, value) in source {
+        if protected.contains(&key.as_str()) {
+            continue;
+        }
+        match (
+            target.get_mut(key).and_then(Value::as_object_mut),
+            value.as_object(),
+        ) {
+            (Some(existing), Some(incoming)) => {
+                for (nested_key, nested_value) in incoming {
+                    existing.insert(nested_key.clone(), nested_value.clone());
+                }
+            }
+            _ => {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+fn strip_keys(body: &mut Value, filter: &[String], protected: &[&str]) {
+    let Some(target) = body.as_object_mut() else {
+        return;
+    };
+    for key in filter {
+        if protected.contains(&key.as_str()) {
+            continue;
+        }
+        target.remove(key);
+    }
+}
+
 #[derive(Deserialize)]
 pub(crate) struct SseErrorPayload {
     pub error: SseErrorDetail,
@@ -187,8 +268,13 @@ pub struct KeyPool {
 
 impl KeyPool {
     pub fn from_env(env_var: &str) -> Result<Self, AgentError> {
-        let raw = std::env::var(env_var).map_err(|_| AgentError::Config {
-            message: format!("{env_var} not set"),
+        let raw = std::env::var(env_var).map_err(|error| match error {
+            std::env::VarError::NotPresent => AgentError::SetupRequired {
+                message: format!("{env_var} not set"),
+            },
+            std::env::VarError::NotUnicode(_) => AgentError::Config {
+                message: format!("{env_var} is not valid Unicode"),
+            },
         })?;
         let keys: Vec<String> = raw
             .split(',')
@@ -196,7 +282,7 @@ impl KeyPool {
             .filter(|s| !s.is_empty())
             .collect();
         if keys.is_empty() {
-            return Err(AgentError::Config {
+            return Err(AgentError::SetupRequired {
                 message: format!("{env_var} is empty"),
             });
         }
@@ -219,7 +305,7 @@ impl KeyPool {
             debug!(slug, "resolved API key from providers.toml");
             return Ok(Self::from_keys(vec![key]));
         }
-        Err(AgentError::Config {
+        Err(AgentError::SetupRequired {
             message: format!(
                 "{env_var} not set and no saved credentials for '{slug}' — run `n00n auth login {slug}`"
             ),
@@ -292,8 +378,90 @@ impl KeyPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::BodyOverride;
     use futures_lite::io::AsyncBufReadExt;
+    use serde_json::json;
     use test_case::test_case;
+
+    fn override_model(body_override: Option<BodyOverride>) -> Model {
+        Model {
+            id: "test-model".into(),
+            provider: Arc::from("anthropic"),
+            tier: crate::model::ModelTier::Medium,
+            family: crate::model::ModelFamily::Claude,
+            supports_tool_examples_override: None,
+            supports_thinking_override: None,
+            supports_vision_override: None,
+            supports_files_override: None,
+            pricing: crate::model::ModelPricing::default(),
+            max_output_tokens: Some(8192),
+            context_window: 200_000,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override,
+        }
+    }
+
+    #[test]
+    fn body_overrides_run_defaults_then_replace_then_filter() {
+        let model = override_model(Some(BodyOverride {
+            defaults: Some(json!({"temperature": 0.7, "poison": "bad"})),
+            replace: Some(json!({"temperature": 0.1})),
+            filter: vec!["poison".into()],
+        }));
+        let mut body = json!({"messages": [], "temperature": 0.5});
+        apply_body_overrides(&mut body, &model, &[MESSAGES_FIELD]);
+        assert_eq!(body["temperature"], 0.1);
+        assert!(body.get("poison").is_none());
+        assert_eq!(body["messages"], json!([]));
+    }
+
+    #[test]
+    fn body_override_defaults_never_clobber_existing_keys() {
+        let model = override_model(Some(BodyOverride {
+            defaults: Some(json!({"thinking": {"type": "enabled"}, "max_tokens": 4096})),
+            ..Default::default()
+        }));
+        let mut body = json!({"thinking": {"type": "adaptive"}});
+        apply_body_overrides(&mut body, &model, &[MESSAGES_FIELD]);
+        assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+        assert_eq!(body["max_tokens"], 4096);
+    }
+
+    #[test]
+    fn body_override_replace_deep_merges_nested_objects() {
+        let model = override_model(Some(BodyOverride {
+            replace: Some(json!({"generationConfig": {"thinkingBudget": 8192}})),
+            ..Default::default()
+        }));
+        let mut body = json!({"generationConfig": {"includeThoughts": true}});
+        apply_body_overrides(&mut body, &model, &[]);
+        assert_eq!(body["generationConfig"]["thinkingBudget"], 8192);
+        assert_eq!(body["generationConfig"]["includeThoughts"], true);
+    }
+
+    #[test_case(&["messages"] ; "messages")]
+    #[test_case(&["input"] ; "input")]
+    #[test_case(&["contents"] ; "contents")]
+    fn body_override_cannot_touch_the_conversation_field(protected: &[&str]) {
+        let field = protected[0];
+        let model = override_model(Some(BodyOverride {
+            defaults: Some(json!({field: "clobbered"})),
+            replace: Some(json!({field: "clobbered"})),
+            filter: vec![field.to_string()],
+        }));
+        let mut body = json!({field: [{"role": "user"}]});
+        apply_body_overrides(&mut body, &model, protected);
+        assert_eq!(body[field], json!([{"role": "user"}]));
+    }
+
+    #[test]
+    fn no_body_override_leaves_body_untouched() {
+        let model = override_model(None);
+        let mut body = json!({"messages": [], "temperature": 0.5});
+        apply_body_overrides(&mut body, &model, &[MESSAGES_FIELD]);
+        assert_eq!(body, json!({"messages": [], "temperature": 0.5}));
+    }
 
     #[allow(unsafe_code)]
     fn set_env(var: &str, value: &str) {

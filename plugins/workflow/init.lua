@@ -44,6 +44,15 @@ local DEFAULT_CONCURRENT_WORKFLOWS = 2
 local HARD_MAX_CONCURRENT_AGENTS = 8
 local HARD_MAX_CONCURRENT_WORKFLOWS = 4
 local HARD_MAX_AGGREGATE_AGENTS = 12
+local HARD_MAX_AGENTS_PER_RUN = 64
+local MAX_PARALLEL_BRANCHES = 32
+local MAX_PIPELINE_ITEMS = 32
+local MAX_PIPELINE_STAGES = 16
+local MAX_SCRIPT_BYTES = 64 * 1024
+local MAX_INPUT_BYTES = 64 * 1024
+local MAX_JOURNAL_BYTES = 1024 * 1024
+local MAX_RESULT_BYTES = 32 * 1024
+local RESULT_TRUNCATED_MARKER = "\n[truncated]"
 local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, no path separators)"
 local RUN_ID_PATTERN = "^[%x]+$"
 local DEFAULT_TIMEOUT_SECS = 600
@@ -53,7 +62,7 @@ local description = [[Run sandboxed Lua workflow for multi-stage agent orchestra
 
 Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
+`inputs` is `{}` when omitted. Lua tables have no `.map`; use `pipeline(items, stages)` or `ipairs`. No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, hard maximum 64) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
 
 local schema = {
   type = "object",
@@ -62,10 +71,10 @@ local schema = {
   properties = {
     script = {
       type = "string",
-      description = "Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string.",
+      description = "Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs.",
     },
     inputs = {
-      description = "Free-form object exposed as global `inputs`.",
+      description = "Free-form object exposed as global `inputs`; defaults to `{}` when omitted.",
     },
     resume = {
       type = "string",
@@ -83,7 +92,7 @@ local opts = n00n.api.register_options({
   max_agents_per_run = {
     default = DEFAULT_AGENTS_PER_RUN,
     min = 1,
-    desc = "Agent-call budget per workflow (default 24, no hard maximum).",
+    desc = "Agent-call budget per workflow (default 24, hard maximum 64).",
   },
   max_concurrent_agents = {
     default = DEFAULT_CONCURRENT_AGENTS,
@@ -102,7 +111,7 @@ local opts = n00n.api.register_options({
   },
 })
 
-local max_agents_per_run = opts.max_agents_per_run or DEFAULT_AGENTS_PER_RUN
+local max_agents_per_run = math.min(opts.max_agents_per_run or DEFAULT_AGENTS_PER_RUN, HARD_MAX_AGENTS_PER_RUN)
 local max_concurrent_agents = math.min(opts.max_concurrent_agents, HARD_MAX_CONCURRENT_AGENTS)
 local max_concurrent_workflows = math.min(opts.max_concurrent_workflows, HARD_MAX_CONCURRENT_WORKFLOWS)
 local workflow_semaphore = n00n.async.semaphore(max_concurrent_workflows)
@@ -275,6 +284,13 @@ local function load_journal(run_id, required)
     end
     return cache, path, ""
   end
+  local metadata, metadata_err = n00n.fs.metadata(path)
+  if not metadata then
+    return nil, path, nil, "failed to inspect workflow journal: " .. tostring(metadata_err)
+  end
+  if metadata.size and metadata.size > MAX_JOURNAL_BYTES then
+    return nil, path, nil, "workflow journal exceeds the " .. MAX_JOURNAL_BYTES .. " byte limit"
+  end
   local text, read_err = n00n.fs.read(path)
   if type(text) ~= "string" then
     return nil, path, nil, "failed to read workflow journal: " .. tostring(read_err)
@@ -386,9 +402,22 @@ local function new_run_id(script)
   return n00n.workflow.hash(script .. "\0" .. tostring(os.time()) .. "\0" .. tostring(run_seq))
 end
 
+local function bounded_text(text, limit)
+  if #text <= limit then
+    return text
+  end
+  if limit <= #RESULT_TRUNCATED_MARKER then
+    return RESULT_TRUNCATED_MARKER:sub(1, limit)
+  end
+  return text:sub(1, limit - #RESULT_TRUNCATED_MARKER) .. RESULT_TRUNCATED_MARKER
+end
+
 local function parallel(fns, popts)
   if type(fns) ~= "table" then
     error("parallel: fns must be an array of functions", 0)
+  end
+  if #fns > MAX_PARALLEL_BRANCHES then
+    error("parallel: branch count exceeds " .. MAX_PARALLEL_BRANCHES, 0)
   end
   popts = popts or {}
   local concurrency = max_concurrent_agents
@@ -436,6 +465,12 @@ local function pipeline(items, stages, popts)
   end
   if type(stages) ~= "table" then
     error("pipeline: stages must be an array of functions", 0)
+  end
+  if #items > MAX_PIPELINE_ITEMS then
+    error("pipeline: item count exceeds " .. MAX_PIPELINE_ITEMS, 0)
+  end
+  if #stages > MAX_PIPELINE_STAGES then
+    error("pipeline: stage count exceeds " .. MAX_PIPELINE_STAGES, 0)
   end
   for i, stage in ipairs(stages) do
     if type(stage) ~= "function" then
@@ -561,6 +596,7 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
       else
         out = ""
       end
+      out = bounded_text(out, MAX_RESULT_BYTES)
 
       local gate = journal.lock:acquire()
       local io_ok, io_err = pcall(function()
@@ -579,6 +615,9 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
           error("failed to encode workflow journal entry: " .. tostring(encode_err), 0)
         end
         local next_text = (journal.text or "") .. line .. "\n"
+        if #next_text > MAX_JOURNAL_BYTES then
+          error("workflow journal exceeds the " .. MAX_JOURNAL_BYTES .. " byte limit", 0)
+        end
         local write_ok, write_err = n00n.fs.write(journal.path, next_text)
         if not write_ok then
           error("failed to write workflow journal: " .. tostring(write_err), 0)
@@ -800,6 +839,24 @@ local function handler(input, ctx)
   if type(input.script) ~= "string" or input.script == "" then
     return { llm_output = SCRIPT_REQUIRED_ERROR, is_error = true }
   end
+  if #input.script > MAX_SCRIPT_BYTES then
+    return {
+      llm_output = "workflow script exceeds the " .. MAX_SCRIPT_BYTES .. " byte limit",
+      is_error = true,
+    }
+  end
+  if input.inputs then
+    local encoded_inputs, inputs_err = n00n.json.encode(input.inputs)
+    if not encoded_inputs then
+      return { llm_output = "workflow inputs are not serializable: " .. tostring(inputs_err), is_error = true }
+    end
+    if #encoded_inputs > MAX_INPUT_BYTES then
+      return {
+        llm_output = "workflow inputs exceed the " .. MAX_INPUT_BYTES .. " byte limit",
+        is_error = true,
+      }
+    end
+  end
   if input.timeout_secs and input.timeout_secs < ASYNC_RUNTIME_MIN_TIMEOUT_SECS then
     return {
       llm_output = "timeout_secs must be at least " .. ASYNC_RUNTIME_MIN_TIMEOUT_SECS,
@@ -922,7 +979,9 @@ local function handler(input, ctx)
       if type(output) ~= "string" then
         output = tostring(output)
       end
-      return output .. "\n\n_run_id: `" .. run_id .. "` (pass as `resume` to continue)_"
+      local run_suffix = "\n\n_run_id: `" .. run_id .. "` (pass as `resume` to continue)_"
+      output = bounded_text(output, MAX_RESULT_BYTES - #run_suffix)
+      return output .. run_suffix
     end)
     if permit then
       permit:release()
@@ -975,6 +1034,7 @@ n00n.api.register_tool({
   name = "workflow",
   description = description,
   kind = "execute",
+  workload = "orchestrator",
   audiences = { "main" },
   schema = schema,
   handler = handler,
