@@ -46,7 +46,7 @@ fn send_live_buf(lua: &mlua::Lua, buf: &mlua::AnyUserData) -> mlua::Result<()> {
         });
     }
     if let Some(sink) = sink {
-        let _ = sink.send(ToolLive::Buf(shared));
+        let _ = sink.try_send(ToolLive::Buf(shared));
     }
     Ok(())
 }
