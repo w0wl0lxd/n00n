@@ -470,6 +470,22 @@ fn lines_remaining_after(total: usize, start_line: usize, shown: usize) -> usize
     total.saturating_sub(end)
 }
 
+fn bounded_text_output(mut output: TextOutput, max_lines: usize, max_bytes: usize) -> TextOutput {
+    output.text = crate::tools::truncate_output(&output.text, max_lines, max_bytes);
+    let state_limit = max_bytes.saturating_sub(output.text.len());
+    let state_too_large = match output.state.as_ref() {
+        Some(state) => match serde_json::to_vec(state) {
+            Ok(encoded) => encoded.len() > state_limit,
+            Err(_) => true,
+        },
+        None => false,
+    };
+    if state_too_large {
+        output.state = None;
+    }
+    output
+}
+
 impl ToolOutput {
     fn grep_summary(entries: &[GrepFileEntry]) -> String {
         let matches: usize = entries.iter().map(GrepFileEntry::match_count).sum();
@@ -611,6 +627,98 @@ impl ToolOutput {
             }
             Self::Diff { telemetry, .. } | Self::Image { telemetry, .. } => telemetry.as_ref(),
             _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn bounded(self, max_lines: usize, max_bytes: usize) -> Self {
+        let bounded = match self {
+            Self::Plain(output) => Self::Plain(bounded_text_output(output, max_lines, max_bytes)),
+            Self::Markdown(output) => {
+                Self::Markdown(bounded_text_output(output, max_lines, max_bytes))
+            }
+            Self::ReadDir(output) => {
+                Self::ReadDir(bounded_text_output(output, max_lines, max_bytes))
+            }
+            Self::ReadCode {
+                path,
+                start_line,
+                mut lines,
+                total_lines,
+                instructions,
+            } => {
+                lines.truncate(max_lines);
+                let max_line_bytes = max_bytes.clamp(1, 4096);
+                for line in &mut lines {
+                    *line = crate::tools::truncate_output(line, 1, max_line_bytes);
+                }
+                Self::ReadCode {
+                    path,
+                    start_line,
+                    lines,
+                    total_lines,
+                    instructions,
+                }
+            }
+            Self::Diff {
+                path,
+                before,
+                after,
+                summary,
+                telemetry,
+            } => Self::Diff {
+                path,
+                before: crate::tools::truncate_output(&before, max_lines, max_bytes / 2),
+                after: crate::tools::truncate_output(&after, max_lines, max_bytes / 2),
+                summary: crate::tools::truncate_output(&summary, max_lines, max_bytes),
+                telemetry,
+            },
+            Self::TodoList(mut items) => {
+                items.truncate(max_lines);
+                for item in &mut items {
+                    item.content = crate::tools::truncate_output(&item.content, 1, max_bytes);
+                }
+                Self::TodoList(items)
+            }
+            Self::WriteCode {
+                path,
+                byte_count,
+                mut lines,
+            } => {
+                lines.truncate(max_lines);
+                for line in &mut lines {
+                    *line = crate::tools::truncate_output(line, 1, max_bytes);
+                }
+                Self::WriteCode {
+                    path,
+                    byte_count,
+                    lines,
+                }
+            }
+            Self::GrepResult { entries } => {
+                let text = Self::GrepResult { entries }.as_display_text();
+                Self::Plain(crate::tools::truncate_output(&text, max_lines, max_bytes).into())
+            }
+            Self::Batch { text } => Self::Batch {
+                text: crate::tools::truncate_output(&text, max_lines, max_bytes),
+            },
+            Self::Instructions { blocks } => Self::Instructions { blocks },
+            Self::Image {
+                source,
+                text,
+                telemetry,
+            } => Self::Image {
+                source,
+                text: crate::tools::truncate_output(&text, max_lines, max_bytes),
+                telemetry,
+            },
+        };
+        let text = bounded.as_text();
+        let limited = crate::tools::truncate_output(&text, max_lines, max_bytes);
+        if limited == text {
+            bounded
+        } else {
+            Self::Plain(limited.into())
         }
     }
 
@@ -1367,6 +1475,47 @@ mod tests {
     fn summary_cases(output: ToolOutput, expected_text: &str) {
         let summary = output.summary();
         assert_eq!(summary.as_text(), expected_text);
+    }
+
+    #[test]
+    fn bounded_output_limits_structured_display() {
+        let output = ToolOutput::ReadCode {
+            path: "a.rs".into(),
+            start_line: 1,
+            lines: vec!["x".repeat(200); 100],
+            total_lines: 100,
+            instructions: None,
+        };
+        let bounded = output.bounded(10, 100);
+        assert!(bounded.as_text().len() <= 100);
+        assert!(bounded.as_text().lines().count() <= 11);
+    }
+
+    #[test]
+    fn bounded_output_drops_oversized_state() {
+        let output = ToolOutput::Plain(TextOutput {
+            text: "body".into(),
+            instructions: None,
+            state: Some(serde_json::json!({ "payload": "x".repeat(100) })),
+            telemetry: None,
+        });
+        let bounded = output.bounded(10, 16);
+        assert!(bounded.state().is_none());
+    }
+
+    #[test]
+    fn bounded_output_preserves_instructions_when_room_allows() {
+        let output = ToolOutput::Plain(TextOutput {
+            text: "body".into(),
+            instructions: Some(vec![InstructionBlock {
+                path: "AGENTS.md".into(),
+                content: "do stuff".into(),
+            }]),
+            state: None,
+            telemetry: None,
+        });
+        let bounded = output.bounded(10, 100);
+        assert!(bounded.as_text().contains("Instructions from: AGENTS.md"));
     }
 
     #[test]
