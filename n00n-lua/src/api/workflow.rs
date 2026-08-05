@@ -8,6 +8,8 @@ use mlua::{Function, Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_fn, lua_table};
 use sha2::{Digest, Sha256};
 
+const WORKFLOW_CHUNK_NAME: &str = "workflow";
+
 type Pair = (Option<Function>, Option<String>);
 
 /// Compile {source} into a function whose global environment is exactly {env}.
@@ -24,7 +26,12 @@ type Pair = (Option<Function>, Option<String>);
 /// if fn then print(fn()) end
 #[lua_fn]
 fn compile(lua: &Lua, source: String, env: Table) -> LuaResult<Pair> {
-    match lua.load(&source).set_environment(env).into_function() {
+    match lua
+        .load(&source)
+        .set_name(WORKFLOW_CHUNK_NAME)
+        .set_environment(env)
+        .into_function()
+    {
         Ok(f) => Ok((Some(f), None)),
         Err(e) => Ok((None, Some(e.to_string()))),
     }
@@ -110,7 +117,25 @@ mod tests {
         let (func, err): (Option<Function>, Option<String>) =
             compile.call(("return (", env)).unwrap();
         assert!(func.is_none());
-        assert!(err.is_some());
+        let err = err.unwrap();
+        assert!(err.contains("[string \"workflow\"]:1"), "{err}");
+        assert!(!err.contains("workflow.rs"), "{err}");
+    }
+
+    #[test]
+    fn compile_names_runtime_errors_as_workflow_source() {
+        let lua = Lua::new();
+        let t = create_workflow_table(&lua).unwrap();
+        let compile: Function = t.get("compile").unwrap();
+        let env = lua.create_table().unwrap();
+        let (func, err): (Option<Function>, Option<String>) = compile
+            .call(("local value = nil\nreturn value.map", env))
+            .unwrap();
+        assert!(err.is_none(), "compile failed: {err:?}");
+
+        let err = func.unwrap().call::<Value>(()).unwrap_err().to_string();
+        assert!(err.contains("[string \"workflow\"]:2"), "{err}");
+        assert!(!err.contains("workflow.rs"), "{err}");
     }
 
     #[test]

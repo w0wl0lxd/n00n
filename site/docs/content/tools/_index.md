@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 34 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -21,7 +21,7 @@ Commands run in <cwd> by default.
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
@@ -50,9 +50,9 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `replace_all` | boolean | no |  |
-| `path` | string | yes |  |
-| `old_string` | string | yes |  |
-| `new_string` | string | yes |  |
+| `path` | string | yes | File path. |
+| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
+| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
 
 ### `multiedit` *(lua plugin)*
 
@@ -123,9 +123,9 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no |  |
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| `include` | string | no | Glob pattern (e.g. '*.rs'). |
+| `path` | string | no | Directory or file to search. |
+| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
 | `context_before` | integer | no |  |
@@ -208,7 +208,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
+| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `code_execution` *(lua plugin)*
 
@@ -226,6 +226,28 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
+
+### `tmux` *(lua plugin)*
+
+Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_name` | string | no |  |
+| `source` | string | no |  |
+| `timeout` | integer | no |  |
+| `destination` | string | no |  |
+| `window` | string | no |  |
+| `height` | integer | no |  |
+| `width` | integer | no |  |
+| `raw_command` | string | no |  |
+| `window_name` | string | no |  |
+| `keys` | string | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `command_text` | string | no |  |
+| `session` | string | no |  |
+| `pane` | string | no |  |
 
 ## Agent & Knowledge
 
@@ -323,8 +345,8 @@ Run sandboxed Lua workflow for multi-stage agent orchestration.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `resume` | string | no | Paused run_id. Replays journaled agent() calls. |
-| `inputs` | object | no | Free-form object exposed as global `inputs`. |
-| `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. |
+| `inputs` | object | no | Free-form object exposed as global `inputs`; defaults to `{}` when omitted. |
+| `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs. |
 | `timeout_secs` | integer | no | Wall-clock timeout for this run (minimum 60s). May shorten, but cannot exceed, the configured workflow timeout. |
 
 ### `todo_write` *(lua plugin)*
@@ -394,7 +416,7 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 ### `fusion_delegate` *(lua plugin)*
 
-Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
