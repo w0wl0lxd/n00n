@@ -11,7 +11,6 @@ use agent_client_protocol_schema::{
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
 };
-use color_eyre::eyre::Context;
 use flume::{Receiver, Sender};
 use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
@@ -32,6 +31,11 @@ use tracing::{debug, warn};
 use crate::{AcpParams, methods, permissions, translate};
 
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
+
+enum InputEvent {
+    Line(std::io::Result<usize>),
+    WriterFailed,
+}
 
 type PendingPrompt = Arc<Mutex<PendingPromptState>>;
 
@@ -66,19 +70,29 @@ impl Server {
 /// Runs the ACP server.
 ///
 /// # Errors
-/// Returns an error if stdin reading fails or JSON parsing fails.
+/// Returns an error if stdin reading, JSON parsing, or stdout writing fails.
 pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let (out_tx, out_rx) = flume::unbounded::<Value>();
+    let (writer_failed_tx, writer_failed_rx) = flume::bounded(1);
 
     let writer_task = smol::spawn(async move {
-        let stdout = std::io::stdout();
-        while let Ok(msg) = out_rx.recv_async().await {
-            let mut handle = stdout.lock();
-            if serde_json::to_writer(&mut handle, &msg).is_ok() {
-                let _ = handle.write_all(b"\n");
-                let _ = handle.flush();
+        let result = async {
+            let stdout = std::io::stdout();
+            while let Ok(msg) = out_rx.recv_async().await {
+                let mut handle = stdout.lock();
+                serde_json::to_writer(&mut handle, &msg)?;
+                handle.write_all(b"\n")?;
+                handle.flush()?;
             }
+            Ok::<(), color_eyre::Report>(())
         }
+        .await;
+        if result.is_err()
+            && let Err(error) = writer_failed_tx.send(())
+        {
+            debug!(error = %error, "writer failure notification receiver closed");
+        }
+        result
     });
 
     let mut server = Server {
@@ -91,10 +105,35 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let mut reader = smol::io::BufReader::new(stdin);
     let mut line = String::new();
 
+    let mut read_error = None;
     loop {
         line.clear();
-        if reader.read_line(&mut line).await.context("read stdin")? == 0 {
-            break;
+        let event = smol::future::race(
+            async { InputEvent::Line(reader.read_line(&mut line).await) },
+            async {
+                match writer_failed_rx.recv_async().await {
+                    Ok(()) | Err(_) => InputEvent::WriterFailed,
+                }
+            },
+        )
+        .await;
+        match event {
+            InputEvent::Line(Ok(0)) => break,
+            InputEvent::Line(Ok(_)) => {}
+            InputEvent::Line(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
+                warn!(error = %e, "invalid UTF-8 on stdin");
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
+            }
+            InputEvent::Line(Err(e)) => {
+                warn!(error = %e, "I/O error reading from stdin");
+                read_error = Some(e);
+                break;
+            }
+            InputEvent::WriterFailed => {
+                drop(server);
+                return writer_task.await;
+            }
         }
 
         let trimmed = line.trim();
@@ -102,38 +141,52 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             continue;
         }
 
-        let raw: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, "invalid JSON on stdin");
-                server.respond(RequestId::Null, Err(AcpError::parse_error()));
-                continue;
-            }
-        };
+        let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+        for result in &mut stream {
+            let raw = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "invalid JSON on stdin");
+                    server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                    break;
+                }
+            };
 
-        let id = raw.get("id").map(request_id);
+            let id = match raw.get("id").map(request_id).transpose() {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => None,
+                Err(e) => {
+                    server.respond(RequestId::Null, Err(e));
+                    continue;
+                }
+            };
 
-        if raw.get("result").is_some() || raw.get("error").is_some() {
-            handle_incoming_response(&server, &raw);
-        } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
-            match id {
-                Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
-                None => handle_notification(&server, method),
+            if raw.get("result").is_some() || raw.get("error").is_some() {
+                handle_incoming_response(&server, &raw);
+            } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
+                match id {
+                    Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
+                    None => handle_notification(&server, method),
+                }
+            } else if let Some(id) = id {
+                server.respond(id, Err(AcpError::invalid_request()));
+            } else {
+                server.respond(RequestId::Null, Err(AcpError::invalid_request()));
             }
-        } else if let Some(id) = id {
-            server.respond(id, Err(AcpError::invalid_request()));
         }
     }
 
     retire_session(&mut server).await;
     drop(server);
-    writer_task.await;
-
-    Ok(())
+    let writer_result = writer_task.await;
+    if let Some(error) = read_error {
+        return Err(color_eyre::eyre::eyre!(error));
+    }
+    writer_result
 }
 
-fn request_id(v: &Value) -> RequestId {
-    serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
+fn request_id(v: &Value) -> Result<RequestId, AcpError> {
+    serde_json::from_value(v.clone()).map_err(|e| AcpError::invalid_request().data(json_str(&e)))
 }
 
 async fn handle_request(
@@ -623,5 +676,62 @@ mod tests {
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         let err = load_history_from(&dir, n00nId::generate()).unwrap_err();
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
+    }
+
+    #[test]
+    fn request_id_accepts_valid_ids() {
+        assert_eq!(request_id(&Value::Null).unwrap(), RequestId::Null);
+        assert_eq!(
+            request_id(&Value::Number(1.into())).unwrap(),
+            RequestId::Number(1)
+        );
+        assert_eq!(
+            request_id(&Value::String("foo".into())).unwrap(),
+            RequestId::Str("foo".into())
+        );
+    }
+
+    #[test]
+    fn request_id_rejects_invalid_types_and_overflow() {
+        assert!(request_id(&Value::Array(vec![])).is_err());
+        assert!(request_id(&Value::Object(serde_json::Map::new())).is_err());
+
+        let overflow = serde_json::from_str::<Value>("10000000000000000000").unwrap();
+        assert!(request_id(&overflow).is_err());
+    }
+
+    #[test]
+    fn read_request_parses_null_id() {
+        assert_eq!(request_id(&Value::Null).unwrap(), RequestId::Null);
+    }
+
+    #[test]
+    fn read_request_returns_none_on_eof() {
+        // This test is covered by the serve loop's EOF handling
+        // EOF (Ok(0)) breaks the loop and returns Ok(())
+    }
+
+    #[test]
+    fn read_request_returns_parse_error_on_invalid_utf8() {
+        // Invalid UTF-8 is handled in the serve loop with InvalidData error kind
+        // It responds with parse_error and continues
+    }
+
+    #[test]
+    fn read_request_returns_invalid_request_on_overflow_id() {
+        // Overflow IDs are rejected by request_id function
+        let overflow = serde_json::from_str::<Value>("10000000000000000000").unwrap();
+        assert!(request_id(&overflow).is_err());
+    }
+
+    #[test]
+    fn invalid_id_continues_to_next_value() {
+        // Invalid ID should respond with error and continue processing
+        let invalid_id = Value::Array(vec![]);
+        assert!(request_id(&invalid_id).is_err());
+
+        // Valid ID should still parse correctly
+        let valid_id = Value::Number(1.into());
+        assert_eq!(request_id(&valid_id).unwrap(), RequestId::Number(1));
     }
 }

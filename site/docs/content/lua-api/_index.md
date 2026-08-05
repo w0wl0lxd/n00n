@@ -5919,6 +5919,23 @@ function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 function M.route_tier(prompt)
 ```
 
+### `require("n00n.secret_check")`
+
+```lua
+-- Heuristic secret pattern detection for tool content validation.
+--
+-- This is intentionally conservative: it flags common secret-bearing keywords and
+-- patterns so tools can surface a warning or require a justification. It does not
+-- attempt to be exhaustive, and it may false-positive on example keys in docs.
+
+-- Returns (ok, reason). If ok is false, reason explains what triggered.
+function M.check(text)
+
+-- Convenience: returns a warning string if triggered, nil otherwise.
+function M.reason(text)
+function M.require_justification(text, justification, tool_name)
+```
+
 ### `require("n00n.shorten_path")`
 
 ```lua

@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use async_lock::Mutex;
@@ -43,7 +43,8 @@ pub struct StdioTransport {
     alive: Arc<AtomicBool>,
     _reader_task: smol::Task<()>,
     _stderr_task: smol::Task<()>,
-    child: StdMutex<ChildGuard>,
+    pid: u32,
+    child: Mutex<ChildGuard>,
 }
 
 impl StdioTransport {
@@ -79,6 +80,7 @@ impl StdioTransport {
             server: name.into(),
             reason: e.to_string(),
         })?;
+        let pid = child.id();
 
         let stdin = child.stdin.take().ok_or_else(|| McpError::StartFailed {
             server: name.into(),
@@ -151,7 +153,8 @@ impl StdioTransport {
             alive,
             _reader_task: reader_task,
             _stderr_task: stderr_task,
-            child: StdMutex::new(ChildGuard::new(child)),
+            pid,
+            child: Mutex::new(ChildGuard::new(child)),
         })
     }
 
@@ -211,17 +214,7 @@ impl StdioTransport {
     }
 
     fn server(&self) -> String {
-        self.name.to_string()
-    }
-
-    fn child_guard(&self) -> MutexGuard<'_, ChildGuard> {
-        match self.child.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                warn!(server = %self.name, "child guard lock poisoned");
-                poisoned.into_inner()
-            }
-        }
+        (*self.name).into()
     }
 
     async fn write_line(&self, line: &[u8]) -> Result<(), McpError> {
@@ -314,18 +307,17 @@ impl McpTransport for StdioTransport {
         })
     }
 
-    fn begin_shutdown(&self) {
-        self.alive.store(false, Ordering::Release);
-        self.child_guard().begin_shutdown();
+    fn shutdown(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.alive.store(false, Ordering::Release);
+        })
     }
 
-    fn shutdown(&self) -> BoxFuture<'_, ()> {
-        self.begin_shutdown();
-        let reap = {
-            let mut child = self.child_guard();
-            child.reap()
-        };
-        Box::pin(reap)
+    fn force_shutdown(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.alive.store(false, Ordering::Release);
+            self.child.lock().await.kill_and_reap().await;
+        })
     }
 
     fn server_name(&self) -> &Arc<str> {
@@ -334,6 +326,10 @@ impl McpTransport for StdioTransport {
 
     fn transport_kind(&self) -> &'static str {
         "stdio"
+    }
+
+    fn child_pids(&self) -> Vec<u32> {
+        vec![self.pid]
     }
 }
 
@@ -380,36 +376,6 @@ mod tests {
                 read_single_response(input).await,
                 Err(McpError::RpcError { code: -32600, .. })
             ));
-        });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    #[allow(unsafe_code)]
-    fn shutdown_kills_and_reaps_owned_child_while_transport_clone_exists() {
-        smol::block_on(async {
-            let transport = Arc::new(
-                StdioTransport::spawn(
-                    "test",
-                    "sleep",
-                    &["60".into()],
-                    &HashMap::new(),
-                    Duration::from_secs(1),
-                )
-                .unwrap(),
-            );
-            let outstanding_clone = Arc::clone(&transport);
-            let pid = i32::try_from(transport.child_guard().id()).unwrap();
-
-            // SAFETY: pid was captured before reaping; kill(pid, 0) only checks process liveness without sending a signal.
-            assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
-            transport.shutdown().await;
-            // SAFETY: pid was captured before reaping; kill(pid, 0) only checks process liveness without sending a signal.
-            assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
-
-            outstanding_clone.shutdown().await;
-            // SAFETY: pid was captured before reaping; kill(pid, 0) only checks process liveness without sending a signal.
-            assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
         });
     }
 }

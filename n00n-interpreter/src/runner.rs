@@ -582,4 +582,28 @@ await main()
             "expected error message containing 'boom', got {msg}"
         );
     }
+
+    #[test]
+    fn sandbox_blocks_open() {
+        let err = run(
+            "open('/etc/passwd')",
+            &empty_tools(),
+            None,
+            default_limits(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, InterpreterError::Sandboxed(_)));
+    }
+
+    #[test]
+    fn sandbox_blocks_write() {
+        let err = run(
+            "open('/tmp/n00n_test','w').write('x')",
+            &empty_tools(),
+            None,
+            default_limits(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, InterpreterError::Sandboxed(_)));
+    }
 }

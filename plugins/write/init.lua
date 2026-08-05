@@ -1,4 +1,5 @@
 local shorten_path = require("n00n.shorten_path")
+local secret_check = require("n00n.secret_check")
 local ToolView = require("n00n.tool_view")
 
 local DESCRIPTION = [[Write content to a file. Prefer edit or edit_lines for existing files.]]
@@ -40,6 +41,10 @@ n00n.api.register_tool({
         type = "string",
         required = true,
       },
+      justification = {
+        type = "string",
+        description = "Required when content may contain secret patterns or authorization headers. Explain why this content is safe to write.",
+      },
     },
   },
 
@@ -65,6 +70,11 @@ n00n.api.register_tool({
     local content = input.content
     if not content then
       return { llm_output = "error: content is required", is_error = true }
+    end
+
+    local secret_error = secret_check.require_justification(content, input.justification, "write")
+    if secret_error then
+      return secret_error
     end
 
     local path = n00n.fs.abspath(raw)
