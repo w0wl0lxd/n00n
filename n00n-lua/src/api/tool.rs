@@ -19,8 +19,8 @@ use n00n_agent::tools::registry::{RegisteredTool, ToolRegistry};
 use n00n_agent::tools::schema::{ParamSchema, to_json_schema, try_from_json, validate};
 use n00n_agent::tools::{
     BoxFuture, Deadline, DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError,
-    PermissionScopes, ToolAudience, ToolContext, ToolExecResult, ToolFilter, ToolInvocation,
-    is_tool_enabled, timeout_annotation,
+    PermissionScopes, ToolAdmissionClass, ToolAudience, ToolContext, ToolExecResult, ToolFilter,
+    ToolInvocation, is_tool_enabled, timeout_annotation,
 };
 use n00n_agent::{
     AgentEvent, BufferSnapshot, ImageMediaType, ImageSource, InstructionBlock, SharedBuf,
@@ -126,6 +126,7 @@ pub(crate) struct PendingTool {
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
     pub(crate) kind: Option<Arc<str>>,
+    pub(crate) workload: Option<ToolAdmissionClass>,
     pub(crate) handler_key: RegistryKey,
     pub(crate) header_key: Option<RegistryKey>,
     pub(crate) restore_key: Option<RegistryKey>,
@@ -149,6 +150,7 @@ pub(crate) struct LuaTool {
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
     pub(crate) kind: Option<Arc<str>>,
+    pub(crate) workload: Option<ToolAdmissionClass>,
     pub(crate) tx: Sender<Request>,
     pub(crate) plugin: Arc<str>,
     pub(crate) has_header_fn: bool,
@@ -214,6 +216,11 @@ impl Tool for LuaTool {
 
     fn tool_kind(&self) -> Option<&str> {
         self.kind.as_deref()
+    }
+
+    fn admission_class(&self) -> ToolAdmissionClass {
+        self.workload
+            .unwrap_or_else(|| ToolAdmissionClass::for_tool(&self.name, self.kind.as_deref()))
     }
 
     fn examples(&self) -> Option<Value> {
@@ -1188,6 +1195,14 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<String>("kind")
         .ok()
         .map(|s| Arc::from(s.as_str()));
+    let workload = match spec.get::<Option<String>>("workload")? {
+        Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
+            mlua::Error::runtime(
+                "register_tool: workload must be cheap, standard, expensive, or orchestrator",
+            )
+        })?),
+        None => None,
+    };
     let audience = parse_audience(audiences)?;
     let timeout = parse_timeout(spec)?;
     let start_annotation = parse_start_annotation(spec, &schema_val)?;
@@ -1233,6 +1248,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             schema: param_schema,
             audience,
             kind,
+            workload,
             handler_key,
             header_key,
             restore_key,
@@ -1740,6 +1756,7 @@ mod tests {
             schema,
             audience: ToolAudience::default(),
             kind: None,
+            workload: None,
             tx,
             plugin: Arc::from("test"),
             has_header_fn: false,

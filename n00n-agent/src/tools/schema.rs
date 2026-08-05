@@ -819,6 +819,10 @@ fn validate_object(
         for (extra_key, extra_val) in map {
             out.insert(extra_key, extra_val);
         }
+    } else {
+        for (extra_key, _) in map {
+            debug!(path = %path, key = %extra_key, "dropped unknown tool parameter");
+        }
     }
     Ok(Value::Object(out))
 }
