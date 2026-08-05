@@ -1009,9 +1009,6 @@ mod tests {
     #[test_case(n00n_agent::FusionPhase::Executing, Some("brief label"), "Executing: brief label" ; "executing")]
     #[test_case(n00n_agent::FusionPhase::Reviewing, None, "Reviewing" ; "reviewing")]
     #[test_case(n00n_agent::FusionPhase::LeadFallback, None, "Lead fallback" ; "lead fallback")]
-    #[test_case(n00n_agent::FusionPhase::Complete, None, "Complete" ; "complete")]
-    #[test_case(n00n_agent::FusionPhase::Cancelled, None, "Cancelled" ; "cancelled")]
-    #[test_case(n00n_agent::FusionPhase::Failed, None, "Failed" ; "failed")]
     fn fusion_phase_renders_typed_control_text(
         phase: n00n_agent::FusionPhase,
         label: Option<&str>,
@@ -1052,20 +1049,6 @@ mod tests {
         assert!(!chat.streaming_text_is_empty());
         assert_eq!(chat.last_message_text(), "Executing: brief label");
     }
-    #[test]
-    fn unexpected_retry_event_is_ignored() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
-        let result = chat.handle_event(
-            AgentEvent::Retry {
-                attempt: 1,
-                message: "overloaded".into(),
-                delay_ms: 100,
-            },
-            None,
-        );
-        assert!(matches!(result, ChatEventResult::Continue));
-    }
-
     #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());

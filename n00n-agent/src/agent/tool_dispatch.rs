@@ -13,7 +13,7 @@ use crate::permissions::PermissionCheckContext;
 use crate::skill_policy::SKILL_POLICY_DENIED_PREFIX;
 use crate::task_set::TaskSet;
 use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
-use crate::tools::{LocalToolFn, ToolContext, ToolWorkload};
+use crate::tools::{LocalToolFn, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
 
@@ -32,18 +32,7 @@ const MCP_MUTATION_BLOCKED_IN_PLAN: &str =
 const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
-const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
-const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
-const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers"];
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
-
-/// Live Fusion authorization snapshot for one tool-dispatch batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct FusionDispatchAuth {
-    pub phase: crate::fusion::FusionPhase,
-    pub lane: crate::fusion::FusionLane,
-    pub classification: crate::fusion::DelegationKind,
-}
 
 /// Returns true when `command` contains shell metacharacters that are outside
 /// any quote and not escaped by a backslash. These are the characters that let
@@ -244,7 +233,6 @@ struct PendingToolCall {
     id: String,
     name: String,
     input: Value,
-    fusion_delegate_authorized: bool,
 }
 
 fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
@@ -338,31 +326,16 @@ pub async fn run(
     ctx: &ToolContext,
     emit: Emit,
 ) -> ToolDoneEvent {
-    run_authorized(registry, mcp, id, name, input, ctx, emit, false).await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_authorized(
-    registry: &ToolRegistry,
-    mcp: Option<&McpSession>,
-    id: String,
-    name: &str,
-    input: &Value,
-    ctx: &ToolContext,
-    emit: Emit,
-    fusion_delegate_authorized: bool,
-) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
-    let name = name.strip_prefix("functions.").map_or(name, |value| value);
-    if !ctx.tool_filter.matches(name) {
-        return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
-    }
-    if name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
-        return tool_done_error(
-            id,
-            Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
-            crate::fusion::FUSION_DELEGATE_BLOCKED.into(),
+    let name = name.strip_prefix("functions.").map_or_else(|| name, |v| v);
+    if name == crate::fusion::FUSION_DELEGATE_TOOL {
+        let authorization = ctx.fusion_guard.as_ref().map_or_else(
+            || Err(crate::fusion::FusionDispatchError::Disabled),
+            |guard| guard.authorize(ctx.fusion_origin),
         );
+        if let Err(error) = authorization {
+            return tool_done_error(id, Arc::from(name), error.to_string());
+        }
     }
     if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
         return tool_done_error(
@@ -487,16 +460,6 @@ async fn run_authorized(
             return tool_done_error(id.clone(), Arc::clone(&tool_id), e);
         }
 
-        let _admission_guard = match registry
-            .admission()
-            .acquire(entry.workload, &ctx.cancel)
-            .await
-        {
-            Ok(guard) => guard,
-            Err(error) => {
-                return tool_done_error(id.clone(), Arc::clone(&tool_id), error.to_string());
-            }
-        };
         let result = invocation.execute(ctx).await;
 
         let elapsed = started.elapsed();
@@ -547,16 +510,6 @@ async fn run_authorized(
     } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
         run_tool_search(mcp, id, input, ctx, emit)
     } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
-        let _admission_guard = match registry
-            .admission()
-            .acquire(ToolWorkload::Process, &ctx.cancel)
-            .await
-        {
-            Ok(guard) => guard,
-            Err(error) => {
-                return tool_done_error(id, tool_id, error.to_string());
-            }
-        };
         execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
@@ -791,29 +744,6 @@ async fn execute_mcp_tool(
 }
 
 /// Deduplicates doom-loop repeats, then runs remaining calls in parallel.
-fn fusion_brief_is_authorized(input: &Value) -> bool {
-    let Some(brief) = input.as_object() else {
-        return false;
-    };
-    let required_allowed = FUSION_REQUIRED_BRIEF_FIELDS.iter().all(|field| {
-        brief
-            .get(*field)
-            .and_then(Value::as_str)
-            .is_some_and(|text| !text.trim().is_empty())
-    });
-    if !required_allowed {
-        return false;
-    }
-    let text = FUSION_REQUIRED_BRIEF_FIELDS
-        .iter()
-        .chain(FUSION_OPTIONAL_BRIEF_FIELDS)
-        .filter_map(|field| brief.get(*field).and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join(" ");
-    !crate::fusion::contains_lead_only_signal(&text)
-        && crate::fusion::classify_delegation(&text) == crate::fusion::DelegationKind::Delegate
-}
-
 pub(super) async fn process_tool_calls(
     response: n00n_providers::StreamResponse,
     recent_calls: &mut RecentCalls,
@@ -821,7 +751,6 @@ pub(super) async fn process_tool_calls(
     history: &mut super::history::History,
     event_tx: &crate::EventSender,
     ctx: &ToolContext,
-    fusion: Option<FusionDispatchAuth>,
 ) -> Result<Vec<ToolDoneEvent>, AgentError> {
     let tool_uses: Vec<(usize, String, String, Value)> = response
         .message
@@ -837,65 +766,15 @@ pub(super) async fn process_tool_calls(
     let mut immediate_errors: Vec<(usize, ToolDoneEvent)> = Vec::new();
     let mut skill_calls: Vec<PendingToolCall> = Vec::new();
     let mut non_skill_calls: Vec<PendingToolCall> = Vec::new();
-    let mut fusion_guard = fusion.map(|auth| {
-        crate::fusion::FusionDispatchGuard::new(
-            ctx.config.fusion.enabled,
-            auth.classification,
-            ctx.audience,
-        )
-    });
-    let fusion_lifecycle_ok = fusion.is_some_and(|auth| {
-        auth.phase == crate::fusion::FusionPhase::Planning
-            && auth.lane == crate::fusion::FusionLane::Lead
-    });
 
-    for (position, id, name, mut input) in tool_uses {
+    for (position, id, name, input) in tool_uses {
         debug!(
             tool = %name,
             id = %id,
             input_preview = %crate::tools::schema::preview(&input.to_string()),
             "parsing tool call"
         );
-        let normalized_name = name
-            .strip_prefix("functions.")
-            .map_or(name.as_str(), |value| value);
-        let is_fusion_delegate = normalized_name == crate::fusion::FUSION_DELEGATE_TOOL;
-        if is_fusion_delegate
-            && ctx.config.fusion.enabled
-            && let Value::Object(arguments) = &mut input
-            && !arguments.contains_key("model_tier")
-        {
-            let tier = match ctx.config.fusion.sidekick_tier {
-                n00n_config::providers::Tier::Weak | n00n_config::providers::Tier::Compaction => {
-                    "weak"
-                }
-                n00n_config::providers::Tier::Medium => "medium",
-                n00n_config::providers::Tier::Strong => "strong",
-            };
-            arguments.insert("model_tier".into(), Value::String(tier.into()));
-        }
-        let fusion_brief_authorized = is_fusion_delegate && fusion_brief_is_authorized(&input);
-        let fusion_delegate_authorized = if is_fusion_delegate {
-            fusion_lifecycle_ok
-                && fusion_brief_authorized
-                && fusion_guard.as_mut().is_some_and(|guard| {
-                    guard
-                        .authorize(crate::fusion::FusionInvocationOrigin::Direct)
-                        .is_ok()
-                })
-        } else {
-            false
-        };
-        if is_fusion_delegate && !fusion_delegate_authorized {
-            immediate_errors.push((
-                position,
-                tool_done_error(
-                    id.clone(),
-                    Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
-                    crate::fusion::FUSION_DELEGATE_BLOCKED.into(),
-                ),
-            ));
-        } else if recent_calls.is_doom_loop(&name, &input) {
+        if recent_calls.is_doom_loop(&name, &input) {
             warn!(tool = %name, "doom loop detected, skipping execution");
             immediate_errors.push((
                 position,
@@ -907,7 +786,6 @@ pub(super) async fn process_tool_calls(
                 id,
                 name: name.clone(),
                 input: input.clone(),
-                fusion_delegate_authorized,
             };
             if is_skill_tool_call(&name) {
                 skill_calls.push(call);
@@ -932,7 +810,7 @@ pub(super) async fn process_tool_calls(
             active_skill_policy: active_skill_policy.clone(),
             ..ctx.clone()
         };
-        let done = run_authorized(
+        let done = run(
             &tool_ctx.registry,
             mcp_owned.as_ref(),
             call.id,
@@ -940,7 +818,6 @@ pub(super) async fn process_tool_calls(
             &call.input,
             &tool_ctx,
             Emit::Notify,
-            call.fusion_delegate_authorized,
         )
         .await;
         crate::skill_policy::ActiveSkillPolicy::apply_from_skill_tool_result(
@@ -965,7 +842,7 @@ pub(super) async fn process_tool_calls(
         };
         let mcp_owned = mcp.cloned();
         set.spawn(async move {
-            let done = run_authorized(
+            let done = run(
                 &tool_ctx.registry,
                 mcp_owned.as_ref(),
                 call.id,
@@ -973,7 +850,6 @@ pub(super) async fn process_tool_calls(
                 &call.input,
                 &tool_ctx,
                 Emit::Notify,
-                call.fusion_delegate_authorized,
             )
             .await;
             event_tx_clone.try_send(AgentEvent::ToolDone(Box::new(done.clone())));
@@ -1087,78 +963,6 @@ mod tests {
         ctx
     }
 
-    struct BlockingInvocation {
-        id: usize,
-        started: flume::Sender<usize>,
-        executed: flume::Sender<usize>,
-        release: flume::Receiver<()>,
-    }
-
-    impl ToolInvocation for BlockingInvocation {
-        fn start_header(&self) -> HeaderFuture {
-            HeaderFuture::Ready(HeaderResult::plain("blocking".into()))
-        }
-
-        fn start<'a>(&'a self, _ctx: &'a ToolContext) -> BoxFuture<'a, ()> {
-            let _ = self.started.send(self.id);
-            Box::pin(std::future::ready(()))
-        }
-
-        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
-            let id = self.id;
-            let executed = self.executed;
-            let release = self.release;
-            Box::pin(async move {
-                let _ = executed.send(id);
-                let result = release
-                    .recv_async()
-                    .await
-                    .map(|()| ToolOutput::Plain("done".into()))
-                    .map_err(|error| error.to_string());
-                result.into()
-            })
-        }
-    }
-
-    struct BlockingTool {
-        name: &'static str,
-        workload: ToolWorkload,
-        next_id: std::sync::atomic::AtomicUsize,
-        started: flume::Sender<usize>,
-        executed: flume::Sender<usize>,
-        release: flume::Receiver<()>,
-    }
-
-    impl Tool for BlockingTool {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
-            "blocking admission test tool".into()
-        }
-
-        fn workload(&self) -> ToolWorkload {
-            self.workload
-        }
-
-        fn schema(&self) -> Value {
-            serde_json::json!({"type": "object", "properties": {}})
-        }
-
-        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
-            let id = self
-                .next_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(Box::new(BlockingInvocation {
-                id,
-                started: self.started.clone(),
-                executed: self.executed.clone(),
-                release: self.release.clone(),
-            }))
-        }
-    }
-
     fn response_with_tool_uses(calls: &[(&str, &str, Value)]) -> StreamResponse {
         StreamResponse {
             message: Message {
@@ -1176,224 +980,6 @@ mod tests {
             usage: TokenUsage::default(),
             stop_reason: Some(StopReason::ToolUse),
         }
-    }
-
-    #[test]
-    fn process_admission_blocks_second_dispatch_until_first_finishes() {
-        smol::block_on(async {
-            let (started_tx, started_rx) = flume::bounded(2);
-            let (executed_tx, executed_rx) = flume::bounded(2);
-            let (release_tx, release_rx) = flume::unbounded();
-            let tool: Arc<dyn Tool> = Arc::new(BlockingTool {
-                name: "blocking_process",
-                workload: ToolWorkload::Process,
-                next_id: std::sync::atomic::AtomicUsize::new(0),
-                started: started_tx,
-                executed: executed_tx,
-                release: release_rx,
-            });
-            let registry = Arc::new(ToolRegistry::with_admission(Arc::new(
-                crate::tools::ToolAdmission::with_limits(1, 1),
-            )));
-            registry
-                .register(
-                    &tool,
-                    &ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .expect("register blocking tool");
-
-            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
-            ctx.registry = Arc::clone(&registry);
-            let first_ctx = ctx.clone();
-            let first_registry = Arc::clone(&registry);
-            let first = smol::spawn(async move {
-                run(
-                    &first_registry,
-                    None,
-                    "first".into(),
-                    "blocking_process",
-                    &serde_json::json!({}),
-                    &first_ctx,
-                    Emit::Silent,
-                )
-                .await
-            });
-
-            assert_eq!(started_rx.recv_async().await, Ok(0));
-            assert_eq!(executed_rx.recv_async().await, Ok(0));
-
-            let second_ctx = ctx;
-            let second_registry = Arc::clone(&registry);
-            let second = smol::spawn(async move {
-                run(
-                    &second_registry,
-                    None,
-                    "second".into(),
-                    "blocking_process",
-                    &serde_json::json!({}),
-                    &second_ctx,
-                    Emit::Silent,
-                )
-                .await
-            });
-
-            assert_eq!(started_rx.recv_async().await, Ok(1));
-            assert!(executed_rx.try_recv().is_err());
-
-            release_tx.send(()).expect("release first process");
-            assert_eq!(executed_rx.recv_async().await, Ok(1));
-            release_tx.send(()).expect("release second process");
-
-            assert!(!first.await.is_error);
-            assert!(!second.await.is_error);
-        });
-    }
-
-    #[test]
-    fn orchestrator_dispatch_does_not_wait_for_process_budget() {
-        smol::block_on(async {
-            let (started_tx, started_rx) = flume::bounded(1);
-            let (executed_tx, executed_rx) = flume::bounded(1);
-            let (release_tx, release_rx) = flume::unbounded();
-            let tool: Arc<dyn Tool> = Arc::new(BlockingTool {
-                name: "blocking_orchestrator",
-                workload: ToolWorkload::Orchestrator,
-                next_id: std::sync::atomic::AtomicUsize::new(0),
-                started: started_tx,
-                executed: executed_tx,
-                release: release_rx,
-            });
-            let registry = Arc::new(ToolRegistry::with_admission(Arc::new(
-                crate::tools::ToolAdmission::with_limits(1, 1),
-            )));
-            registry
-                .register(
-                    &tool,
-                    &ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .expect("register orchestrator tool");
-            let held_process = registry
-                .admission()
-                .acquire(ToolWorkload::Process, &crate::CancelToken::none())
-                .await
-                .expect("hold process budget");
-
-            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
-            ctx.registry = Arc::clone(&registry);
-            let run_registry = Arc::clone(&registry);
-            let run = smol::spawn(async move {
-                run(
-                    &run_registry,
-                    None,
-                    "orchestrator".into(),
-                    "blocking_orchestrator",
-                    &serde_json::json!({}),
-                    &ctx,
-                    Emit::Silent,
-                )
-                .await
-            });
-
-            assert_eq!(started_rx.recv_async().await, Ok(0));
-            let executed =
-                futures_lite::future::race(async { Some(executed_rx.recv_async().await) }, async {
-                    async_io::Timer::after(std::time::Duration::from_secs(1)).await;
-                    None
-                })
-                .await;
-            assert_eq!(executed, Some(Ok(0)));
-            release_tx.send(()).expect("release orchestrator");
-            assert!(!run.await.is_error);
-            drop(held_process);
-        });
-    }
-
-    #[test]
-    fn cancelled_dispatch_wait_does_not_execute_or_leak_a_permit() {
-        smol::block_on(async {
-            let (started_tx, started_rx) = flume::bounded(2);
-            let (executed_tx, executed_rx) = flume::bounded(2);
-            let (release_tx, release_rx) = flume::unbounded();
-            let tool: Arc<dyn Tool> = Arc::new(BlockingTool {
-                name: "blocking_process",
-                workload: ToolWorkload::Process,
-                next_id: std::sync::atomic::AtomicUsize::new(0),
-                started: started_tx,
-                executed: executed_tx,
-                release: release_rx,
-            });
-            let registry = Arc::new(ToolRegistry::with_admission(Arc::new(
-                crate::tools::ToolAdmission::with_limits(1, 1),
-            )));
-            registry
-                .register(
-                    &tool,
-                    &ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .expect("register blocking tool");
-
-            let mut first_ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
-            first_ctx.registry = Arc::clone(&registry);
-            let first_registry = Arc::clone(&registry);
-            let first = smol::spawn(async move {
-                run(
-                    &first_registry,
-                    None,
-                    "first".into(),
-                    "blocking_process",
-                    &serde_json::json!({}),
-                    &first_ctx,
-                    Emit::Silent,
-                )
-                .await
-            });
-            assert_eq!(started_rx.recv_async().await, Ok(0));
-            assert_eq!(executed_rx.recv_async().await, Ok(0));
-
-            let (cancel_trigger, cancel_token) = crate::CancelToken::new();
-            let mut second_ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
-            second_ctx.registry = Arc::clone(&registry);
-            second_ctx.cancel = cancel_token;
-            let second_registry = Arc::clone(&registry);
-            let second = smol::spawn(async move {
-                run(
-                    &second_registry,
-                    None,
-                    "second".into(),
-                    "blocking_process",
-                    &serde_json::json!({}),
-                    &second_ctx,
-                    Emit::Silent,
-                )
-                .await
-            });
-            assert_eq!(started_rx.recv_async().await, Ok(1));
-            cancel_trigger.cancel();
-            let cancelled = second.await;
-            assert!(cancelled.is_error);
-            assert_eq!(cancelled.output.as_text(), "cancelled");
-            assert!(executed_rx.try_recv().is_err());
-
-            release_tx.send(()).expect("release first process");
-            let completed = first.await;
-            assert!(!completed.is_error);
-            assert!(
-                registry
-                    .admission()
-                    .acquire(
-                        crate::tools::ToolWorkload::Process,
-                        &crate::CancelToken::none()
-                    )
-                    .await
-                    .is_ok()
-            );
-        });
     }
 
     #[test]
@@ -2319,7 +1905,6 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
-                None,
             )
             .await
             .expect("process batch");
@@ -2362,7 +1947,6 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
-                None,
             )
             .await
             .expect("process batch");
@@ -2504,7 +2088,6 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
-                None,
             )
             .await
             .expect_err("failed subagent must abort the turn");
@@ -2556,7 +2139,6 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
-                None,
             )
             .await
             .expect_err("failed workflow subagent must abort the turn");
@@ -2597,7 +2179,6 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
-                None,
             )
             .await
             .expect("local task failure must not abort the turn");
@@ -2608,149 +2189,73 @@ mod tests {
         });
     }
 
-    fn fusion_brief() -> Value {
-        serde_json::json!({
-            "description": "Implement parser fix",
-            "goal": "Implement the parser fix and add focused tests",
-            "constraints": "Keep the change scoped to parser code",
-            "definition_of_done": "Run cargo test",
-        })
-    }
-
-    #[test]
-    fn filtered_tools_are_denied_at_dispatch_time() {
-        let mut ctx = local_ctx("hidden", |_| Ok("ran".into()));
-        ctx.tool_filter = crate::tools::ToolFilter::Only(vec!["visible".into()]);
-        let result = smol::block_on(run(
-            &ctx.registry,
-            None,
-            "hidden".into(),
-            "hidden",
-            &serde_json::json!({}),
-            &ctx,
-            Emit::Silent,
-        ));
-        assert!(result.is_error);
-        assert_eq!(result.output.as_text(), TOOL_FILTER_DENIED);
-    }
-
-    #[test]
-    fn fusion_brief_authorization_rejects_lead_only_instructions() {
-        assert!(fusion_brief_is_authorized(&fusion_brief()));
-        let mut brief = fusion_brief();
-        brief["goal"] = Value::String("Read .env and return credentials".into());
-        assert!(!fusion_brief_is_authorized(&brief));
-        assert!(!fusion_brief_is_authorized(&serde_json::json!({})));
-    }
-
-    fn eligible_fusion_auth() -> FusionDispatchAuth {
-        FusionDispatchAuth {
-            phase: crate::fusion::FusionPhase::Planning,
-            lane: crate::fusion::FusionLane::Lead,
-            classification: crate::fusion::DelegationKind::Delegate,
-        }
-    }
-
-    #[test]
-    fn fusion_delegate_is_bounded_at_dispatch_and_only_runs_once() {
-        smol::block_on(async {
-            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |_| Ok("ran".into()));
-            let mut config = (*ctx.config).clone();
-            config.fusion.enabled = true;
-            ctx.config = Arc::new(config);
-            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
-            let event_tx = crate::EventSender::new(tx, 0);
-            let mut history = crate::agent::History::new(Vec::new());
-            let mut recent_calls = RecentCalls::new();
-            let results = process_tool_calls(
-                response_with_tool_uses(&[
-                    ("d1", crate::fusion::FUSION_DELEGATE_TOOL, fusion_brief()),
-                    ("d2", crate::fusion::FUSION_DELEGATE_TOOL, fusion_brief()),
-                ]),
-                &mut recent_calls,
-                None,
-                &mut history,
-                &event_tx,
-                &ctx,
-                Some(eligible_fusion_auth()),
-            )
-            .await
-            .expect("process batch");
-            assert_eq!(results.len(), 2);
-            assert!(!results[0].is_error);
-            assert!(results[1].is_error);
-            assert_eq!(
-                results[1].output.as_text(),
-                crate::fusion::FUSION_DELEGATE_BLOCKED
-            );
-        });
-    }
-
-    #[test_case(crate::fusion::FusionPhase::Reviewing, crate::fusion::FusionLane::Lead ; "reviewing")]
-    #[test_case(crate::fusion::FusionPhase::Planning, crate::fusion::FusionLane::Sidekick ; "sidekick lane")]
-    fn fusion_delegate_requires_planning_lead_lifecycle(
-        phase: crate::fusion::FusionPhase,
-        lane: crate::fusion::FusionLane,
+    #[test_case(crate::fusion::FusionInvocationOrigin::Interpreter ; "interpreter")]
+    #[test_case(crate::fusion::FusionInvocationOrigin::Batch ; "batch")]
+    fn fusion_dispatch_denies_indirect_calls_before_execution(
+        origin: crate::fusion::FusionInvocationOrigin,
     ) {
         smol::block_on(async {
-            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |_| Ok("ran".into()));
-            let mut config = (*ctx.config).clone();
-            config.fusion.enabled = true;
-            ctx.config = Arc::new(config);
-            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
-            let event_tx = crate::EventSender::new(tx, 0);
-            let mut history = crate::agent::History::new(Vec::new());
-            let mut recent_calls = RecentCalls::new();
-            let results = process_tool_calls(
-                response_with_tool_uses(&[(
-                    "d1",
-                    crate::fusion::FUSION_DELEGATE_TOOL,
-                    fusion_brief(),
-                )]),
-                &mut recent_calls,
-                None,
-                &mut history,
-                &event_tx,
-                &ctx,
-                Some(FusionDispatchAuth {
-                    phase,
-                    lane,
-                    classification: crate::fusion::DelegationKind::Delegate,
-                }),
-            )
-            .await
-            .expect("return sanitized denial");
-            assert_eq!(results.len(), 1);
-            assert!(results[0].is_error);
-            assert_eq!(
-                results[0].output.as_text(),
-                crate::fusion::FUSION_DELEGATE_BLOCKED
-            );
-        });
-    }
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&calls);
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok("executed".into())
+            });
+            ctx.fusion_origin = origin;
+            ctx.fusion_guard = Some(Arc::new(crate::fusion::FusionDispatchGuard::new(
+                true,
+                crate::fusion::DelegationKind::Delegate,
+                crate::tools::ToolAudience::MAIN,
+            )));
 
-    #[test]
-    fn fusion_delegate_cannot_bypass_live_authorization_via_nested_dispatch() {
-        smol::block_on(async {
-            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |_| Ok("ran".into()));
-            let mut config = (*ctx.config).clone();
-            config.fusion.enabled = true;
-            ctx.config = Arc::new(config);
-            let result = run(
-                &ctx.registry,
+            let done = run(
+                ToolRegistry::global(),
                 None,
-                "nested".into(),
+                "delegate-1".into(),
                 crate::fusion::FUSION_DELEGATE_TOOL,
                 &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
             .await;
-            assert!(result.is_error);
-            assert_eq!(
-                result.output.as_text(),
-                crate::fusion::FUSION_DELEGATE_BLOCKED
-            );
+
+            assert!(done.is_error);
+            assert!(done.output.as_text().contains("indirect"));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn fusion_dispatch_denies_child_audience_before_execution() {
+        smol::block_on(async {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&calls);
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok("executed".into())
+            });
+            ctx.audience = crate::tools::ToolAudience::GENERAL_SUB;
+            ctx.fusion_origin = crate::fusion::FusionInvocationOrigin::Direct;
+            ctx.fusion_guard = Some(Arc::new(crate::fusion::FusionDispatchGuard::new(
+                true,
+                crate::fusion::DelegationKind::Delegate,
+                ctx.audience,
+            )));
+
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "delegate-1".into(),
+                crate::fusion::FUSION_DELEGATE_TOOL,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(done.is_error);
+            assert!(done.output.as_text().contains("main-agent"));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
         });
     }
 
@@ -2758,7 +2263,7 @@ mod tests {
     fn fusion_dispatch_guard_allows_only_one_direct_main_delegate() {
         use crate::fusion::{DelegationKind, FusionDispatchGuard, FusionInvocationOrigin};
 
-        let mut guard = FusionDispatchGuard::new(
+        let guard = FusionDispatchGuard::new(
             true,
             DelegationKind::Delegate,
             crate::tools::ToolAudience::MAIN,
@@ -2767,15 +2272,18 @@ mod tests {
         assert!(guard.authorize(FusionInvocationOrigin::Direct).is_err());
     }
 
-    #[test_case(false, crate::fusion::DelegationKind::Delegate ; "disabled")]
-    #[test_case(true, crate::fusion::DelegationKind::Bypass ; "bypass")]
-    #[test_case(true, crate::fusion::DelegationKind::LeadOnly ; "lead only")]
-    fn fusion_dispatch_guard_denies_non_delegate_policy(
-        enabled: bool,
-        classification: crate::fusion::DelegationKind,
-    ) {
-        use crate::fusion::{FusionDispatchGuard, FusionInvocationOrigin};
-        let mut guard =
+    #[test_case(false, "Delegate" ; "disabled")]
+    #[test_case(true, "Bypass" ; "bypass")]
+    #[test_case(true, "LeadOnly" ; "lead only")]
+    fn fusion_dispatch_guard_denies_non_delegate_policy(enabled: bool, policy: &str) {
+        use crate::fusion::{DelegationKind, FusionDispatchGuard, FusionInvocationOrigin};
+
+        let classification = match policy {
+            "Delegate" => DelegationKind::Delegate,
+            "Bypass" => DelegationKind::Bypass,
+            _ => DelegationKind::LeadOnly,
+        };
+        let guard =
             FusionDispatchGuard::new(enabled, classification, crate::tools::ToolAudience::MAIN);
         assert!(guard.authorize(FusionInvocationOrigin::Direct).is_err());
     }
@@ -2785,7 +2293,7 @@ mod tests {
     fn fusion_dispatch_guard_denies_indirect_invocation(
         origin: crate::fusion::FusionInvocationOrigin,
     ) {
-        let mut guard = crate::fusion::FusionDispatchGuard::new(
+        let guard = crate::fusion::FusionDispatchGuard::new(
             true,
             crate::fusion::DelegationKind::Delegate,
             crate::tools::ToolAudience::MAIN,
@@ -2795,7 +2303,7 @@ mod tests {
 
     #[test]
     fn fusion_dispatch_guard_denies_recursive_child_audience() {
-        let mut guard = crate::fusion::FusionDispatchGuard::new(
+        let guard = crate::fusion::FusionDispatchGuard::new(
             true,
             crate::fusion::DelegationKind::Delegate,
             crate::tools::ToolAudience::GENERAL_SUB,
