@@ -184,7 +184,10 @@ pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
         let author = decoded
             .author()
             .map_err(|e| GitError::GitOperation(format!("failed to decode author: {e}")))?;
-        let time = author.time.parse::<i64>().unwrap_or(0);
+        let time = author.time.parse::<i64>().unwrap_or_else(|e| {
+            tracing::warn!("failed to parse author time '{}': {e}", author.time);
+            0
+        });
         commits.push(GitCommit {
             id: commit.id.to_hex().to_string(),
             author: author.name.to_string(),
@@ -530,7 +533,10 @@ pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
         .author()
         .map_err(|e| GitError::GitOperation(format!("failed to decode author: {e}")))?;
     let author_name = author.name.to_string();
-    let author_time = author.time.parse::<i64>().unwrap_or(0);
+    let author_time = author.time.parse::<i64>().unwrap_or_else(|e| {
+        tracing::warn!("failed to parse author time '{}': {e}", author.time);
+        0
+    });
 
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| GitError::FileNotFound(format!("failed to read file: {e}")))?;
