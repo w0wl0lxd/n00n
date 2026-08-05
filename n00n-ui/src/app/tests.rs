@@ -8,15 +8,19 @@ use crate::selection::{SelectableZone, SelectionState, SelectionZone};
 use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use n00n_agent::permissions::PermissionManager;
+use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_agent::{
     ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
     McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
     ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
-use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
+use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
+use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::{
+    StoredMode, StoredSessionStateSnapshot, StoredStateScope, StoredThinking, TranscriptEntry,
+};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
 use std::path::{Path, PathBuf};
@@ -2548,6 +2552,80 @@ fn drain_writer(app: App, writer: Arc<StorageWriter>) {
         .ok()
         .expect("app must hold the only other writer reference")
         .shutdown(WRITER_DRAIN_TIMEOUT);
+}
+
+#[test]
+fn save_session_captures_plugin_state_snapshot() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    let handle = host.event_handle().unwrap();
+    let session_id = app.state.session.id;
+    let mut snapshot = StoredSessionStateSnapshot::new(3);
+    snapshot
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({"todos": [{"content": "ship", "status": "in_progress"}]}),
+        )
+        .unwrap();
+    app.state.session.meta.state_snapshot = Some(snapshot);
+    app.lua_event_handle = Some(handle);
+    app.hydrate_plugin_state();
+    app.state
+        .session
+        .messages
+        .push(Message::user("persist state".into()));
+
+    app.save_session();
+    assert!(app.state.session.meta.state_snapshot.is_some());
+    drain_writer(app, writer);
+
+    let loaded = AppSession::load(session_id, &dir).unwrap();
+    let payload = loaded
+        .meta
+        .state_snapshot
+        .as_ref()
+        .unwrap()
+        .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+        .unwrap();
+    assert_eq!(
+        payload,
+        Some(&serde_json::json!({"todos": [{"content": "ship", "status": "in_progress"}]}))
+    );
+}
+
+#[test]
+fn apply_loaded_session_hydrates_plugin_state_snapshot() {
+    let mut app = test_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    let handle = host.event_handle().unwrap();
+    app.lua_event_handle = Some(handle.clone());
+    let mut loaded = AppSession::new("test-model", "/tmp/test");
+    loaded.messages.push(Message::user("restore state".into()));
+    let loaded_id = loaded.id;
+    let mut snapshot = StoredSessionStateSnapshot::new(9);
+    snapshot
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({"todos": [{"content": "resume", "status": "pending"}]}),
+        )
+        .unwrap();
+    loaded.meta.state_snapshot = Some(snapshot);
+    let model = app.state.model.clone();
+
+    app.apply_loaded_session(loaded, &model);
+
+    let identity = SessionIdentity::root(SessionRef::from_id(loaded_id));
+    let captured = handle.capture_state(&identity, 10).unwrap();
+    assert_eq!(
+        captured
+            .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+            .unwrap(),
+        Some(&serde_json::json!({"todos": [{"content": "resume", "status": "pending"}]}))
+    );
 }
 
 #[test]
