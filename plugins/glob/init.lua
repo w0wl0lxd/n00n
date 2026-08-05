@@ -17,6 +17,7 @@ end
 n00n.api.register_tool({
   name = "glob",
   kind = "search",
+  workload = "cheap",
   modes = { "default", "research", "build", "compact" },
   description = "Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.",
   strict = true,

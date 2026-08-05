@@ -1093,6 +1093,7 @@ n00n.api.register_tool({
   kind = "execute",
   defer_loading = true,
   namespace = "agent",
+  workload = "orchestrator",
   audiences = { "main", "workflow" },
   schema = schema,
   timeout = TEAM_TIMEOUT_SECS,
