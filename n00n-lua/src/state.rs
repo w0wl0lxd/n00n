@@ -52,7 +52,7 @@ pub(crate) struct PluginStateIdentity {
 }
 
 impl PluginStateIdentity {
-    fn owner(&self, scope: PluginStateScope) -> n00nId {
+    pub(crate) fn owner(&self, scope: PluginStateScope) -> n00nId {
         match scope {
             PluginStateScope::Session => self.session_id,
             PluginStateScope::Root => self.root_session_id,
