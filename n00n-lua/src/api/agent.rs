@@ -128,6 +128,12 @@ fn normalize_tool_definitions(tools: JsonValue) -> Result<JsonValue, String> {
 }
 
 fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
+    if matches!(tools, JsonValue::Null)
+        || tools.as_array().is_some_and(std::vec::Vec::is_empty)
+        || tools.as_object().is_some_and(serde_json::Map::is_empty)
+    {
+        return Ok(ToolFilter::Only(Vec::new()));
+    }
     let definitions = tools
         .as_array()
         .ok_or_else(|| "tools must be an array".to_owned())?;
@@ -162,7 +168,8 @@ fn attach_tool_exclusions(lua: &Lua, tools: &LuaValue, exclusions: &[String]) ->
         return Ok(());
     }
     let LuaValue::Table(tools) = tools else {
-        return Err(mlua::Error::runtime("tools must be an array"));
+        // No tools table to mark; the exclusions will still be applied by the session filter.
+        return Ok(());
     };
     let metadata = lua.create_table_with_capacity(0, 2)?;
     metadata.raw_set(JSON_ARRAY_META_FIELD, true)?;
@@ -1774,6 +1781,22 @@ mod tests {
         assert_eq!(
             explicit_tool_filter(&tools).unwrap(),
             ToolFilter::Only(vec!["read".into(), "local_result".into()])
+        );
+    }
+
+    #[test]
+    fn explicit_session_filter_treats_null_and_empty_object_as_empty() {
+        assert_eq!(
+            explicit_tool_filter(&JsonValue::Null).unwrap(),
+            ToolFilter::Only(Vec::new())
+        );
+        assert_eq!(
+            explicit_tool_filter(&json!({})).unwrap(),
+            ToolFilter::Only(Vec::new())
+        );
+        assert_eq!(
+            explicit_tool_filter(&json!([])).unwrap(),
+            ToolFilter::Only(Vec::new())
         );
     }
 
