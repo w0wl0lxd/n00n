@@ -27,6 +27,117 @@ pub(crate) fn field_str(field: u64, value: &str) -> Vec<u8> {
     field_ld(field, value.as_bytes())
 }
 
+/// Length-delimited bytes field.
+#[must_use]
+pub(crate) fn field_bytes(field: u64, data: &[u8]) -> Vec<u8> {
+    field_ld(field, data)
+}
+
+/// Varint field (wire type 0).
+#[must_use]
+pub(crate) fn field_varint(field: u64, value: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(20);
+    prost::encoding::encode_varint(field << 3, &mut out);
+    prost::encoding::encode_varint(value, &mut out);
+    out
+}
+
+/// Decode a varint from the front of `data`, returning the value and the
+/// unconsumed remainder.
+pub(crate) fn decode_varint(data: &[u8]) -> Result<(u64, &[u8]), String> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    for (index, &byte) in data.iter().enumerate() {
+        let chunk = u64::from(byte & 0x7f);
+        if shift >= 64 || (shift == 63 && chunk > 1) {
+            return Err("varint overflow".to_string());
+        }
+        value |= chunk << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            return Ok((value, &data[index + 1..]));
+        }
+    }
+    Err("truncated varint".to_string())
+}
+
+/// Iterate over protobuf fields in `payload`.
+///
+/// Each item yields `(field_number, wire_type, field_data)`. For wire type 2
+/// (length-delimited) `field_data` is the delimited payload; for other wire
+/// types it is empty.
+pub(crate) fn iter_fields(
+    payload: &[u8],
+) -> impl Iterator<Item = Result<(u64, u8, &[u8]), String>> + use<'_> {
+    let mut rest = payload;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (tag, after) = match decode_varint(rest) {
+            Ok(pair) => pair,
+            Err(error) => {
+                rest = &[];
+                return Some(Err(error));
+            }
+        };
+        rest = after;
+        let field = tag >> 3;
+        let wire = (tag & 7) as u8;
+        match wire {
+            0 => match decode_varint(rest) {
+                Ok((_, after)) => {
+                    rest = after;
+                    Some(Ok((field, wire, &[][..])))
+                }
+                Err(error) => {
+                    rest = &[];
+                    Some(Err(error))
+                }
+            },
+            2 => match decode_varint(rest) {
+                Ok((len, after)) => {
+                    let Ok(len) = usize::try_from(len) else {
+                        rest = &[];
+                        return Some(Err("length overflow".to_string()));
+                    };
+                    if after.len() < len {
+                        rest = &[];
+                        return Some(Err("truncated field".to_string()));
+                    }
+                    let (data, after) = after.split_at(len);
+                    rest = after;
+                    Some(Ok((field, wire, data)))
+                }
+                Err(error) => {
+                    rest = &[];
+                    Some(Err(error))
+                }
+            },
+            1 => {
+                if rest.len() < 8 {
+                    rest = &[];
+                    return Some(Err("truncated 64-bit field".to_string()));
+                }
+                rest = &rest[8..];
+                Some(Ok((field, wire, &[][..])))
+            }
+            5 => {
+                if rest.len() < 4 {
+                    rest = &[];
+                    return Some(Err("truncated 32-bit field".to_string()));
+                }
+                rest = &rest[4..];
+                Some(Ok((field, wire, &[][..])))
+            }
+            _ => {
+                rest = &[];
+                Some(Err(format!("unsupported wire type {wire}")))
+            }
+        }
+    })
+}
+
 /// `AgentMode`: `AGENT` = 1, `ASK` = 2, `PLAN` = 3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
 #[repr(i32)]
