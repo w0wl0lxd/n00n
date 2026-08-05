@@ -1,0 +1,1 @@
+Bounded model-emitted tool calls so excess work queues instead of starting every command at once. Cheap reads use a wider lane, while process-backed tools share an eight-call limit and nested agents share a four-call limit.
