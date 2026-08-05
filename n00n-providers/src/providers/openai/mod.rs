@@ -549,13 +549,20 @@ pub(crate) fn sort_models(models: &mut [ModelInfo], entries: &[ModelEntry]) {
     fn key<'a>(
         info: &'a ModelInfo,
         entries: &[ModelEntry],
-    ) -> (Reverse<u32>, Reverse<u32>, Reverse<u8>, &'a str) {
-        let tier = match lookup_entry(entries, &info.id) {
-            Ok(entry) => Some(entry.tier),
-            Err(_) => None,
+    ) -> (
+        Reverse<bool>,
+        Reverse<u32>,
+        Reverse<u32>,
+        Reverse<u8>,
+        &'a str,
+    ) {
+        let (is_known, tier) = match lookup_entry(entries, &info.id) {
+            Ok(entry) => (true, Some(entry.tier)),
+            Err(_) => (false, None),
         };
         let (major, minor) = parse_model_version(&info.id);
         (
+            Reverse(is_known),
             Reverse(major),
             Reverse(minor),
             Reverse(tier_strength(tier)),
