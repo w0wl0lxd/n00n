@@ -35,6 +35,7 @@ pub(crate) mod openai;
 pub(crate) mod openai_compat;
 pub mod opencode;
 pub(crate) mod openrouter;
+pub(crate) mod proto_test_util;
 pub(crate) mod synthetic;
 pub(crate) mod tensorx;
 pub(crate) mod zai;
