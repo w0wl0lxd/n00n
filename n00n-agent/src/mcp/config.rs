@@ -449,7 +449,7 @@ mod tests {
             r#"
 defer_tools = 30
 
-[mcp.github]
+[mcp.gh-server]
 command = ["gh", "mcp-server"]
 always_load = true
 
@@ -459,9 +459,9 @@ command = ["other"]
         )
         .unwrap();
         assert_eq!(config.defer_tools, Some(30));
-        assert!(config.mcp["github"].always_load);
+        assert!(config.mcp["gh-server"].always_load);
         assert!(!config.mcp["other"].always_load);
-        let parsed = parse_server("github".into(), config.mcp["github"].clone()).unwrap();
+        let parsed = parse_server("gh-server".into(), config.mcp["gh-server"].clone()).unwrap();
         assert!(parsed.always_load);
 
         let bare: McpConfig = toml::from_str("[mcp.srv]\ncommand = [\"x\"]").unwrap();
