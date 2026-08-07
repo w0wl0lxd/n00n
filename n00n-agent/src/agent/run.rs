@@ -1620,6 +1620,17 @@ mod tests {
         config: AgentConfig,
     ) -> (Agent<'_>, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
+        let vars = crate::template::env_vars();
+        let filter = ToolFilter::from_config(&config, &default_model(), &[]);
+        let tools = registry.definitions(
+            &vars,
+            &crate::tools::DescriptionContext {
+                filter: &filter,
+                audience: ToolAudience::MAIN,
+                workflow: false,
+            },
+            false,
+        );
         let agent = Agent::new(
             AgentParams {
                 provider: Arc::new(provider),
@@ -1647,8 +1658,8 @@ mod tests {
                 history,
                 system: System::from("system"),
                 event_tx: EventSender::new(raw_tx, 0),
-                tools: serde_json::json!([]),
-                tool_filter: ToolFilter::All,
+                tools,
+                tool_filter: filter,
             },
         );
         (agent, event_rx)
