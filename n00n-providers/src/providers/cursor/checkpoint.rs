@@ -76,83 +76,76 @@ pub(crate) enum KvServerOp {
 pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerOp>, String> {
     use super::proto::{decode_varint, iter_fields};
 
-    for field in iter_fields(payload) {
-        let (num, wire, data) = field?;
-        if num != 4 || wire != 2 {
-            continue;
-        }
-        let mut id = 0u32;
-        let mut get_blob: Option<Vec<u8>> = None;
-        let mut set_blob: Option<(Vec<u8>, Vec<u8>)> = None;
-        let mut rest = data;
-        while !rest.is_empty() {
-            let (tag, after) = decode_varint(rest)?;
-            rest = after;
-            let field_no = tag >> 3;
-            let wire_ty = (tag & 7) as u8;
-            match (field_no, wire_ty) {
-                (1, 0) => {
-                    let (value, after) = decode_varint(rest)?;
-                    id = u32::try_from(value).map_err(|_| "kv id overflow".to_string())?;
-                    rest = after;
-                }
-                (2, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated get_blob_args".into());
-                    }
-                    let (args, after) = after.split_at(len);
-                    rest = after;
-                    for arg in iter_fields(args) {
-                        let (anum, awire, adata) = arg?;
-                        if anum == 1 && awire == 2 {
-                            get_blob = Some(adata.to_vec());
-                        }
-                    }
-                }
-                (3, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated set_blob_args".into());
-                    }
-                    let (args, after) = after.split_at(len);
-                    rest = after;
-                    let mut blob_id = Vec::new();
-                    let mut blob_data = Vec::new();
-                    for arg in iter_fields(args) {
-                        let (anum, awire, adata) = arg?;
-                        if anum == 1 && awire == 2 {
-                            blob_id = adata.to_vec();
-                        } else if anum == 2 && awire == 2 {
-                            blob_data = adata.to_vec();
-                        }
-                    }
-                    set_blob = Some((blob_id, blob_data));
-                }
-                (_, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated kv field".into());
-                    }
-                    rest = &after[len..];
-                }
-                (_, 0) => {
-                    let (_, after) = decode_varint(rest)?;
-                    rest = after;
-                }
-                _ => return Err(format!("unsupported kv wire {wire_ty}")),
+    let mut id = 0u32;
+    let mut get_blob: Option<Vec<u8>> = None;
+    let mut set_blob: Option<(Vec<u8>, Vec<u8>)> = None;
+    let mut rest = payload;
+    while !rest.is_empty() {
+        let (tag, after) = decode_varint(rest)?;
+        rest = after;
+        let field_no = tag >> 3;
+        let wire_ty = (tag & 7) as u8;
+        match (field_no, wire_ty) {
+            (1, 0) => {
+                let (value, after) = decode_varint(rest)?;
+                id = u32::try_from(value).map_err(|_| "kv id overflow".to_string())?;
+                rest = after;
             }
+            (2, 2) => {
+                let (len, after) = decode_varint(rest)?;
+                let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
+                if after.len() < len {
+                    return Err("truncated get_blob_args".into());
+                }
+                let (args, after) = after.split_at(len);
+                rest = after;
+                for arg in iter_fields(args) {
+                    let (anum, awire, adata) = arg?;
+                    if anum == 1 && awire == 2 {
+                        get_blob = Some(adata.to_vec());
+                    }
+                }
+            }
+            (3, 2) => {
+                let (len, after) = decode_varint(rest)?;
+                let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
+                if after.len() < len {
+                    return Err("truncated set_blob_args".into());
+                }
+                let (args, after) = after.split_at(len);
+                rest = after;
+                let mut blob_id = Vec::new();
+                let mut blob_data = Vec::new();
+                for arg in iter_fields(args) {
+                    let (anum, awire, adata) = arg?;
+                    if anum == 1 && awire == 2 {
+                        blob_id = adata.to_vec();
+                    } else if anum == 2 && awire == 2 {
+                        blob_data = adata.to_vec();
+                    }
+                }
+                set_blob = Some((blob_id, blob_data));
+            }
+            (_, 2) => {
+                let (len, after) = decode_varint(rest)?;
+                let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
+                if after.len() < len {
+                    return Err("truncated kv field".into());
+                }
+                rest = &after[len..];
+            }
+            (_, 0) => {
+                let (_, after) = decode_varint(rest)?;
+                rest = after;
+            }
+            _ => return Err(format!("unsupported kv wire {wire_ty}")),
         }
-        if let Some(blob_id) = get_blob {
-            return Ok(Some(KvServerOp::Get { id, blob_id }));
-        }
-        if let Some((blob_id, data)) = set_blob {
-            return Ok(Some(KvServerOp::Set { id, blob_id, data }));
-        }
-        return Ok(None);
+    }
+    if let Some(blob_id) = get_blob {
+        return Ok(Some(KvServerOp::Get { id, blob_id }));
+    }
+    if let Some((blob_id, data)) = set_blob {
+        return Ok(Some(KvServerOp::Set { id, blob_id, data }));
     }
     Ok(None)
 }
@@ -175,8 +168,7 @@ mod tests {
         args.extend(field_bytes(2, b"blob-data"));
         let mut kv = field_varint(1, 7);
         kv.extend(field_ld(3, &args));
-        let msg = field_ld(4, &kv);
-        let op = parse_kv_server_message(&msg).expect("parse").expect("op");
+        let op = parse_kv_server_message(&kv).expect("parse").expect("op");
         assert_eq!(
             op,
             KvServerOp::Set {
