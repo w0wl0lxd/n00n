@@ -11,7 +11,6 @@ use agent_client_protocol_schema::{
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
 };
-use color_eyre::eyre::Context;
 use flume::{Receiver, Sender};
 use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
@@ -93,8 +92,18 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 
     loop {
         line.clear();
-        if reader.read_line(&mut line).await.context("read stdin")? == 0 {
-            break;
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                warn!(error = %e, "invalid UTF-8 on stdin");
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
+            }
+            Err(e) => {
+                warn!(error = %e, "I/O error reading from stdin");
+                return Err(color_eyre::eyre::eyre!(e));
+            }
         }
 
         let trimmed = line.trim();
@@ -102,26 +111,36 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             continue;
         }
 
-        let raw: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, "invalid JSON on stdin");
-                server.respond(RequestId::Null, Err(AcpError::parse_error()));
-                continue;
-            }
-        };
+        let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+        for result in &mut stream {
+            let raw = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "invalid JSON on stdin");
+                    server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                    break;
+                }
+            };
 
-        let id = raw.get("id").map(request_id);
+            let id = match raw.get("id").map(request_id).transpose() {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => None,
+                Err(e) => {
+                    server.respond(RequestId::Null, Err(e));
+                    break;
+                }
+            };
 
-        if raw.get("result").is_some() || raw.get("error").is_some() {
-            handle_incoming_response(&server, &raw);
-        } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
-            match id {
-                Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
-                None => handle_notification(&server, method),
+            if raw.get("result").is_some() || raw.get("error").is_some() {
+                handle_incoming_response(&server, &raw);
+            } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
+                match id {
+                    Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
+                    None => handle_notification(&server, method),
+                }
+            } else if let Some(id) = id {
+                server.respond(id, Err(AcpError::invalid_request()));
             }
-        } else if let Some(id) = id {
-            server.respond(id, Err(AcpError::invalid_request()));
         }
     }
 
@@ -132,8 +151,8 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn request_id(v: &Value) -> RequestId {
-    serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
+fn request_id(v: &Value) -> Result<RequestId, AcpError> {
+    serde_json::from_value(v.clone()).map_err(|e| AcpError::invalid_request().data(json_str(&e)))
 }
 
 async fn handle_request(

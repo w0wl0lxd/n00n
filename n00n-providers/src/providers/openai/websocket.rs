@@ -363,7 +363,7 @@ impl ResponsesWebSocket {
             ));
         }
 
-        let mut acc = ResponseAccumulator::new();
+        let mut acc = ResponseAccumulator::new(None);
         let mut keepalive_deadline = Instant::now() + keepalive_interval;
         loop {
             let now = Instant::now();
@@ -997,7 +997,7 @@ mod tests {
     fn accumulator_captures_response_id_from_websocket_event() {
         smol::block_on(async {
             let (event_tx, _) = flume::unbounded();
-            let mut accumulator = ResponseAccumulator::new();
+            let mut accumulator = ResponseAccumulator::new(None);
             let completed = accumulator
                 .handle_event(
                     "response.created",

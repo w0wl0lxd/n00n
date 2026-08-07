@@ -304,6 +304,9 @@ pub struct McpHandle {
     /// Never changes after startup, so it lives here instead of being
     /// copied into every republished `ToolIndex`.
     defer_tools: usize,
+    /// Handle to the command loop task. Held so we can cancel it if shutdown
+    /// times out and the ack is never sent.
+    task: Arc<Mutex<Option<smol::Task<()>>>>,
 }
 
 /// One session's view of MCP: the shared handle plus the deferred tools
@@ -626,6 +629,14 @@ impl McpHandle {
         .await;
         if !finished {
             warn!("MCP shutdown timed out after {MCP_SHUTDOWN_TIMEOUT:?}");
+            let task = self
+                .task
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(task) = task {
+                let _ = task.cancel().await;
+            }
         }
     }
 }
@@ -655,13 +666,19 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
     publish(&inner, &index, &snapshot, max_desc_chars);
 
     let (cmd_tx, cmd_rx) = flume::unbounded();
+    let task = smol::spawn(run(
+        inner,
+        Arc::clone(&index),
+        Arc::clone(&snapshot),
+        cmd_rx,
+    ));
     let handle = McpHandle {
         cmd_tx,
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        task: Arc::new(Mutex::new(Some(task))),
     };
-    smol::spawn(run(inner, index, snapshot, cmd_rx)).detach();
     Some(handle)
 }
 
@@ -1164,6 +1181,7 @@ pub(crate) fn stub_session_with_read_only(tools: &[(&str, &str)], read_only: boo
             index,
             snapshot,
             defer_tools: 0,
+            task: Arc::new(Mutex::new(None)),
         },
         &[],
     )
@@ -1332,6 +1350,7 @@ fn prepare_manager(config: McpConfig) -> Option<PreparedManager> {
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        task: Arc::new(Mutex::new(None)),
     };
     Some(PreparedManager {
         inner,
@@ -1577,6 +1596,7 @@ mod tests {
             index,
             snapshot,
             defer_tools,
+            task: Arc::new(Mutex::new(None)),
         };
         (inner, McpSession::new(handle, &[]))
     }

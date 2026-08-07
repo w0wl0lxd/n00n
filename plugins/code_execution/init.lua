@@ -12,7 +12,7 @@ local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
 local MAX_SCRIPT_LINES = 2000
 local NO_OUTPUT = "(no output)"
 local SEPARATOR = "──────"
-local PREAMBLE = "import re\nimport asyncio\nimport sys\nimport os\nimport json\n"
+local PREAMBLE = "import re\nimport asyncio\nimport json\n"
 local TOOLS_HEADER =
   "\n\nAvailable tools (called as Python functions with keyword arguments). Optional params are marked with '?'.\n"
 local WORKFLOW_TOOLS_NOTE =

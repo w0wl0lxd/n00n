@@ -1556,6 +1556,7 @@ impl OpenAi {
                         event_tx,
                         &fallback_auth.resolved,
                         stream_timeout,
+                        &opts,
                     )
                     .await
                     {
@@ -1737,6 +1738,7 @@ impl OpenAi {
                 event_tx,
                 &auth,
                 self.compat.stream_timeout(),
+                &opts,
             )
             .await
         })
@@ -2123,7 +2125,7 @@ impl Provider for OpenAi {
             self.with_oauth_retry(|| async {
                 let auth = self.current_auth();
                 self.compat
-                    .do_stream(model, &[], &body, event_tx, &auth)
+                    .do_stream(model, &[], &body, event_tx, &auth, &opts)
                     .await
             })
             .await

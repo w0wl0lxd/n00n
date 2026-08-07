@@ -200,6 +200,7 @@ impl Provider for LocalEndpoint {
                     event_tx,
                     &auth,
                     self.compat.stream_timeout(),
+                    &opts,
                 )
                 .await
                 .map(|(_, response)| response);
@@ -223,7 +224,7 @@ impl Provider for LocalEndpoint {
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }

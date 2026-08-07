@@ -1234,6 +1234,11 @@ pub struct RequestOptions {
     pub safety_identifier: Option<String>,
     /// Whether moderation is enabled for this request.
     pub moderation: bool,
+    /// Client-generated idempotency key for the request. When present, the
+    /// provider layer can safely retry transport failures that occur after
+    /// the request has left the client because the server can deduplicate
+    /// repeated requests with the same key.
+    pub idempotency_key: Option<String>,
 }
 
 impl Default for RequestOptions {
@@ -1246,11 +1251,23 @@ impl Default for RequestOptions {
             allow_history_replay: false,
             safety_identifier: None,
             moderation: false,
+            idempotency_key: None,
         }
     }
 }
 
 impl RequestOptions {
+    /// Generates a client-side idempotency key for this request if one is not
+    /// already set. The same key is reused across retries so the provider can
+    /// safely deduplicate repeated requests after transport failures.
+    #[must_use]
+    pub fn with_idempotency_key(mut self) -> Self {
+        if self.idempotency_key.is_none() {
+            self.idempotency_key = Some(n00n_storage::id::n00nId::generate().to_string());
+        }
+        self
+    }
+
     /// Strips options the model does not support. Called once before every
     /// request so UI state, restored sessions, and subagent flags all go
     /// through the same gate.
@@ -1268,6 +1285,7 @@ impl RequestOptions {
             allow_history_replay: self.allow_history_replay,
             safety_identifier: self.safety_identifier,
             moderation: self.moderation,
+            idempotency_key: self.idempotency_key,
         }
     }
 }
@@ -1780,6 +1798,7 @@ mod tests {
             allow_history_replay: false,
             safety_identifier: None,
             moderation: false,
+            idempotency_key: None,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1795,6 +1814,7 @@ mod tests {
             allow_history_replay: false,
             safety_identifier: None,
             moderation: false,
+            idempotency_key: None,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -1921,6 +1941,7 @@ mod tests {
             allow_history_replay: false,
             safety_identifier: Some("test-id".to_string()),
             moderation: true,
+            idempotency_key: None,
         };
         let clamped = opts.clamped(&model);
         assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));

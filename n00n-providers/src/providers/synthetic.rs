@@ -149,7 +149,7 @@ impl Provider for Synthetic {
             );
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }

@@ -23,6 +23,7 @@ extend-ignore-re = [
   'splash_animaton = false',
   'HaaA',
   'TruLayer',
+  '\[Ss\]ecret',
   'cli-2026\.07\.26-[a-f0-9]{7}',
   '2026\.07\.26-[a-f0-9]{7}',
 ]

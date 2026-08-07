@@ -156,8 +156,12 @@ impl AgentError {
             | Self::ResponseChainBusy { .. }
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
-            | Self::HistoryReplayRequired { .. }
-            | Self::RequestSent { .. } => false,
+            | Self::HistoryReplayRequired { .. } => false,
+            Self::RequestSent { metadata, .. } => metadata.as_ref().is_some_and(|m| {
+                m.idempotency_key.is_some()
+                    && m.phase == RequestDeliveryPhase::SentAwaitingAcceptance
+                    && !m.emitted_event
+            }),
         }
     }
 
@@ -316,9 +320,12 @@ impl AgentError {
             Self::Storage => "local storage error, try again".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
-            Self::RequestSent { .. } => {
-                "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
-            }
+            Self::RequestSent { metadata, .. } => match metadata.as_ref() {
+                Some(m) if m.idempotency_key.is_some() => {
+                    "connection failed after the request was sent; retrying with idempotency key".into()
+                }
+                _ => "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into(),
+            },
         }
     }
 
@@ -409,6 +416,44 @@ mod tests {
     #[test_case(500, "Server error (500)"  ; "server_error")]
     fn retry_message_api(status: u16, expected: &str) {
         assert_eq!(api(status).retry_message(), expected);
+    }
+
+    #[test_case(RequestDeliveryPhase::NotSent, false  ; "not_sent")]
+    #[test_case(RequestDeliveryPhase::SentAwaitingAcceptance, true  ; "sent_awaiting")]
+    #[test_case(RequestDeliveryPhase::Accepted, false ; "accepted")]
+    fn request_sent_with_idempotency_key_is_retryable(phase: RequestDeliveryPhase, expected: bool) {
+        let mut metadata = RequestDeliveryMetadata::new(phase);
+        metadata.idempotency_key = Some("n00n-test".into());
+        let error = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert_eq!(error.is_retryable(), expected);
+    }
+
+    #[test]
+    fn request_sent_without_idempotency_key_is_not_retryable() {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = None;
+        let error = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn request_sent_after_emitted_event_is_not_retryable() {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = Some("n00n-test".into());
+        metadata.emitted_event = true;
+        let error = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(!error.is_retryable());
     }
 
     #[test_case(429, "rate limited, try again in a moment"                              ; "user_msg_429")]
