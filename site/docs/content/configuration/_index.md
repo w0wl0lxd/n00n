@@ -118,9 +118,12 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable beta Fusion planning, sidekick execution, and lead review for this session |
-| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |
+| `lead_model` | string | `codex/gpt-5.6-sol` | Lead and supervisor model when Fusion is enabled without an explicit model override. |
+| `sidekick_model` | string | `codex/gpt-5.6-luna` | Exact routine-coding sidekick model. Tier routing cannot replace it. |
+| `sidekick_thinking` | string | `max` | Sidekick reasoning setting. |
+| `sidekick_tier` | string | `weak` | Legacy compatibility field; ignored when `sidekick_model` is set. |
 
-Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. `sidekick_tier` selects a conservative sidekick model. Optional `plugins.fusion.auto_tier` lets trusted configuration choose the tier from the brief.
+Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. The exact sidekick model and thinking setting are used for every delegation, so tier routing cannot redirect routine coding. Explicit `--model` choices take precedence over the Fusion lead default.
 
 ### `provider`
 
@@ -194,7 +197,6 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `auto_tier` | boolean | `true` | - | Allow trusted configuration to route the sidekick tier. |
 | `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`
