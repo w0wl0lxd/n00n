@@ -77,8 +77,9 @@ impl LocalEndpoint {
         timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
         let key_pool = KeyPool::resolve(cfg.slug, cfg.api_key_env).ok();
-        let host = n00n_config::providers::ProvidersConfig::load()
-            .get(cfg.slug)
+        let provider_config = n00n_config::providers::ProvidersConfig::load();
+        let provider_entry = provider_config.get(cfg.slug);
+        let host = provider_entry
             .and_then(|d| d.base_url.clone())
             .or_else(|| std::env::var(cfg.host_env).ok());
         Self::build(
@@ -86,6 +87,7 @@ impl LocalEndpoint {
             timeouts,
             key_pool,
             host,
+            provider_entry.is_some(),
             resolve_protocol_for_local(cfg.slug),
         )
     }
@@ -117,25 +119,25 @@ impl LocalEndpoint {
         timeouts: super::Timeouts,
         key_pool: Option<KeyPool>,
         host: Option<String>,
+        provider_entry: bool,
         protocol: Option<Protocol>,
     ) -> Result<Self, AgentError> {
         let api_key = key_pool.as_ref().map(|p| p.current().to_string());
-        let (base_url, configured) = match host {
-            Some(h) => (format!("{h}/v1"), true),
-            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => {
-                let url = cfg
-                    .cloud_fallback_url
-                    .as_ref()
-                    .ok_or_else(|| AgentError::Config {
-                        message: "missing cloud fallback url".into(),
-                    })?;
-                (url.to_string(), true)
-            }
-            None => (
-                format!("{}/v1", cfg.default_host.trim_end_matches('/')),
-                false,
-            ),
+        let host_is_set = host.is_some();
+        let base_url = match host {
+            Some(h) => format!("{h}/v1"),
+            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => cfg
+                .cloud_fallback_url
+                .as_ref()
+                .ok_or_else(|| AgentError::Config {
+                    message: "missing cloud fallback url".into(),
+                })?
+                .to_string(),
+            None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
         };
+        let configured = host_is_set
+            || api_key.is_some()
+            || (provider_entry && cfg.cloud_fallback_url.is_none());
         let headers = match api_key {
             Some(key) => vec![("authorization".into(), format!("Bearer {key}"))],
             None => Vec::new(),
@@ -655,7 +657,7 @@ mod tests {
 
     #[test]
     fn from_env_without_host_or_api_key_uses_default_host() {
-        let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, None, None).unwrap();
+        let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, None, false, None).unwrap();
         assert_eq!(
             ep.auth
                 .lock()
@@ -664,6 +666,7 @@ mod tests {
                 .as_deref(),
             Some("http://localhost:11434/v1")
         );
+        assert!(!ep.configured);
     }
 
     #[test]
@@ -673,6 +676,7 @@ mod tests {
             TEST_TIMEOUTS,
             None,
             Some("http://x:1234".into()),
+            false,
             None,
         )
         .unwrap();
@@ -682,12 +686,14 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
+        assert!(ep.configured);
     }
 
     #[test]
     fn from_env_with_api_key_uses_cloud_for_ollama() {
         let pool = KeyPool::from_keys(vec!["test-key".into()]);
-        let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, Some(pool), None, None).unwrap();
+        let ep =
+            LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, Some(pool), None, false, None).unwrap();
         let auth = ep
             .auth
             .lock()
@@ -695,6 +701,7 @@ mod tests {
         assert_eq!(auth.base_url.as_deref(), Some("https://ollama.com/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
+        assert!(ep.configured);
     }
 
     #[test]
@@ -705,6 +712,7 @@ mod tests {
             TEST_TIMEOUTS,
             Some(pool),
             Some("http://local:1234".into()),
+            false,
             None,
         )
         .unwrap();
@@ -715,11 +723,12 @@ mod tests {
         assert_eq!(auth.base_url.as_deref(), Some("http://local:1234/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
+        assert!(ep.configured);
     }
 
     #[test]
     fn llamacpp_without_host_uses_default_host() {
-        let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, None, None).unwrap();
+        let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, None, false, None).unwrap();
         assert_eq!(
             ep.auth
                 .lock()
@@ -728,6 +737,7 @@ mod tests {
                 .as_deref(),
             Some("http://localhost:8080/v1")
         );
+        assert!(!ep.configured);
     }
 
     #[test]
@@ -737,6 +747,7 @@ mod tests {
             TEST_TIMEOUTS,
             None,
             Some("http://x:1234".into()),
+            false,
             None,
         )
         .unwrap();
@@ -746,12 +757,14 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
+        assert!(ep.configured);
     }
 
     #[test]
     fn llamacpp_with_key_uses_default_host_without_cloud_fallback() {
         let pool = KeyPool::from_keys(vec!["key".into()]);
-        let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, Some(pool), None, None).unwrap();
+        let ep =
+            LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, Some(pool), None, false, None).unwrap();
         let auth = ep
             .auth
             .lock()
@@ -761,6 +774,13 @@ mod tests {
             auth.headers,
             vec![("authorization".into(), "Bearer key".into())]
         );
+        assert!(ep.configured);
+    }
+
+    #[test]
+    fn provider_entry_without_host_enables_discovery() {
+        let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, None, true, None).unwrap();
+        assert!(ep.configured);
     }
 
     #[test]
@@ -770,6 +790,7 @@ mod tests {
             TEST_TIMEOUTS,
             None,
             Some("http://x:1234".into()),
+            false,
             None,
         )
         .unwrap();
@@ -783,6 +804,7 @@ mod tests {
             TEST_TIMEOUTS,
             None,
             Some("http://x:1234".into()),
+            false,
             None,
         )
         .unwrap();
