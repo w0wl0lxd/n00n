@@ -93,7 +93,8 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
-        if !self.delivery.emitted_event
+        if self.delivery.phase == RequestDeliveryPhase::NotSent
+            && !self.delivery.emitted_event
             && matches!(self.error, AgentError::Api { .. })
             && self.error.is_retryable()
         {
@@ -1026,53 +1027,42 @@ mod tests {
         assert!(delivery.response_id.is_none());
     }
 
-    #[test_case(400, false, false)]
-    #[test_case(401, false, true)]
-    #[test_case(429, true, false)]
-    #[test_case(500, true, false)]
-    fn provider_response_error_after_send_stays_retryable_before_output(
-        status: u16,
-        retryable: bool,
-        auth_error: bool,
-    ) {
+    #[test_case(429)]
+    #[test_case(500)]
+    fn provider_response_error_after_acceptance_becomes_ambiguous(status: u16) {
         let error = WebSocketAttemptError::response(
             AgentError::Api {
                 status,
                 message: "provider rejected an already-written create".into(),
             },
             false,
-            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::Accepted),
         )
         .into_agent_error();
 
-        assert!(!matches!(error, AgentError::RequestSent { .. }));
-        assert_eq!(error.is_retryable(), retryable);
-        assert_eq!(error.is_auth_error(), auth_error);
+        assert!(matches!(error, AgentError::RequestSent { .. }));
+        assert!(!error.is_retryable());
     }
 
     #[test]
-    fn server_overload_after_send_is_not_wrapped_in_request_sent() {
+    fn server_overload_after_send_is_wrapped_in_request_sent() {
         let error = WebSocketAttemptError::response(
             AgentError::Api {
                 status: 400,
                 message: "server_is_overloaded: Our servers are currently overloaded".into(),
             },
             false,
-            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::Accepted),
         )
         .into_agent_error();
 
-        assert!(!matches!(error, AgentError::RequestSent { .. }));
-        assert!(error.is_server_overloaded());
+        assert!(matches!(error, AgentError::RequestSent { .. }));
         assert!(error.is_retryable());
-        assert_eq!(
-            error.user_message(),
-            "provider is overloaded, try again later"
-        );
+        assert!(error.is_server_overloaded());
     }
 
     #[test]
-    fn server_error_500_after_accepted_response_id_is_not_wrapped_in_request_sent() {
+    fn server_error_500_after_accepted_response_id_stays_ambiguous() {
         let mut delivery =
             RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
         delivery.phase = RequestDeliveryPhase::Accepted;
@@ -1089,9 +1079,8 @@ mod tests {
         )
         .into_agent_error();
 
-        assert!(matches!(error, AgentError::Api { status, .. } if status == 500));
-        assert!(error.is_retryable());
-        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert!(matches!(error, AgentError::RequestSent { .. }));
+        assert!(!error.is_retryable());
     }
 
     #[test_case(
