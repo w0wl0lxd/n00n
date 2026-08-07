@@ -140,6 +140,14 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
     },
     BundledPlugin {
+        name: "git",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/git"),
+    },
+    BundledPlugin {
+        name: "github",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/github"),
+    },
+    BundledPlugin {
         name: "view_image",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
     },

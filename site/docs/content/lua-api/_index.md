@@ -88,6 +88,7 @@ a string belongs.
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.arbor`](#n00n-arbor) | Graph-based code analysis via Arbor CLI. |
 | [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
+| [`n00n.github`](#n00n-github) | GitHub REST API client using reqwest. |
 | [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
@@ -5547,6 +5548,123 @@ Show project file structure from the index using native SQLite when available, o
 - `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
 
 **Returns:** (`string?`, `string?`) output and optional error message.
+
+
+## n00n.github {#n00n-github}
+
+GitHub REST API client using reqwest. Provides structured access to GitHub issues, pull requests, and repository metadata. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
+
+---
+
+### `n00n.github.list_issues()` {#n00n-github-list_issues}
+
+```lua
+n00n.github.list_issues({owner}, {repo}[, {token}])
+```
+
+List issues in a GitHub repository.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Array of issue objects with number, title, state, user, body, and html_url.
+
+---
+
+### `n00n.github.create_issue()` {#n00n-github-create_issue}
+
+```lua
+n00n.github.create_issue({owner}, {repo}, {title}, {body}[, {token}])
+```
+
+Create a new issue in a GitHub repository. Requires authentication.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{title}` (`string`) Issue title.
+- `{body}` (`string`) Issue body (markdown).
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Created issue object with number, title, state, user, body, and html_url.
+
+---
+
+### `n00n.github.list_prs()` {#n00n-github-list_prs}
+
+```lua
+n00n.github.list_prs({owner}, {repo}[, {token}])
+```
+
+List pull requests in a GitHub repository.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Array of pull request objects with number, title, state, user, head, base, body, and html_url.
+
+---
+
+### `n00n.github.get_repo()` {#n00n-github-get_repo}
+
+```lua
+n00n.github.get_repo({owner}, {repo}[, {token}])
+```
+
+Get repository metadata from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Repository object with name, full_name, description, language, stargazers_count, forks_count, and html_url.
+
+---
+
+### `n00n.github.get_issue()` {#n00n-github-get_issue}
+
+```lua
+n00n.github.get_issue({owner}, {repo}, {issue_number}[, {token}])
+```
+
+Get a single issue from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{issue_number}` (`integer`) Issue number.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Issue object with number, title, state, user, body, and html_url.
+
+---
+
+### `n00n.github.get_pr()` {#n00n-github-get_pr}
+
+```lua
+n00n.github.get_pr({owner}, {repo}, {pr_number}[, {token}])
+```
+
+Get a single pull request from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{pr_number}` (`integer`) Pull request number.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Pull request object with number, title, state, user, head, base, body, and html_url.
 
 
 ## n00n.semblem {#n00n-semblem}

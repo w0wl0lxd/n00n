@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 34 built-in tools. This is the full reference.
+n00n ships with 36 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -447,3 +447,36 @@ Search the web for real-time information using Exa AI.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |
+
+## Repository
+
+### `git` *(lua plugin)*
+
+Query local git repositories (status, log, diff, branches, blame) by spawning the n00n-git binary.
+Set N00N_GIT_BIN to override the binary path.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ref_b` | string | no |  |
+| `path` | string | no |  |
+| `count` | integer | no |  |
+| `command` | string | yes |  |
+| `file` | string | no |  |
+| `ref_a` | string | no |  |
+
+### `github` *(lua plugin)*
+
+Query GitHub repositories, issues, and pull requests using the REST API. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo` | string | no |  |
+| `token` | string | no |  |
+| `title` | string | no |  |
+| `pr_number` | number | no |  |
+| `command` | string | yes |  |
+| `owner` | string | no |  |
+| `issue_number` | number | no |  |
+| `body` | string | no |  |

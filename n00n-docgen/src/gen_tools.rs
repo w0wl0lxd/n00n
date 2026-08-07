@@ -55,6 +55,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Web", &["webfetch", "websearch"]),
+    ("Repository", &["git", "github"]),
 ];
 
 struct ToolInfo {
@@ -421,8 +422,8 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    // Room for fusion_delegate + skill-system + memory-system + explore-stack tools; keep definitions lean.
-    const MAX_TOOL_DEFINITION_BYTES: usize = 50_000;
+    // Room for fusion_delegate + skill-system + memory-system + explore-stack + git/github tools; keep definitions lean.
+    const MAX_TOOL_DEFINITION_BYTES: usize = 60_000;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {
