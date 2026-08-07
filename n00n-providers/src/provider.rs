@@ -385,9 +385,14 @@ pub fn from_model_fallback_with_openai_options(
         }
         Err(e) => {
             warn!(error = %e, "provider creation failed, using unconfigured provider");
-            Box::new(UnconfiguredProvider)
+            unconfigured_provider()
         }
     }
+}
+
+#[must_use]
+pub fn unconfigured_provider() -> Box<dyn Provider> {
+    Box::new(UnconfiguredProvider)
 }
 
 struct UnconfiguredProvider;

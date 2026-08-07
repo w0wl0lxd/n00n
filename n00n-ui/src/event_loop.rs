@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use color_eyre::Result;
-use color_eyre::eyre::{Context, eyre};
+use color_eyre::eyre::eyre;
 
 use crossterm::event::{
     Event, KeyEventKind, MouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
@@ -27,8 +27,7 @@ use n00n_lua::{
 };
 use n00n_providers::Timeouts;
 use n00n_providers::provider::{
-    Provider, fetch_all_models, from_model_fallback_with_openai_options,
-    from_model_with_openai_options,
+    Provider, fetch_all_models, from_model_with_openai_options, unconfigured_provider,
 };
 use n00n_providers::{ContentBlock, Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
@@ -370,6 +369,7 @@ fn spawn_model_fetch(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     timeouts: Timeouts,
     openai_options: OpenAiOptions,
+    needs_login: bool,
 ) -> BackgroundModels {
     let available: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
     let bg = Arc::clone(&available);
@@ -387,6 +387,13 @@ fn spawn_model_fetch(
                     return;
                 }
             };
+            if needs_login {
+                model_slot.store(Arc::new(ModelSlot {
+                    model: resolved,
+                    provider: Arc::clone(&model_slot.load().provider),
+                }));
+                return;
+            }
             let provider = match from_model_with_openai_options(
                 &mut resolved,
                 timeouts,
@@ -438,11 +445,11 @@ impl<'t> EventLoop<'t> {
 
         let EventLoopParams {
             mut model,
-            needs_login,
+            mut needs_login,
             commands,
             sessions,
             focused,
-            startup_warnings,
+            mut startup_warnings,
             storage,
             config,
             ui_config,
@@ -468,23 +475,20 @@ impl<'t> EventLoop<'t> {
         let (mcp_handle, mcp_config_errors) =
             smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
 
-        let provider: Arc<dyn Provider> = if needs_login {
-            Arc::from(from_model_fallback_with_openai_options(
-                &mut model,
-                timeouts,
-                openai_options,
-            ))
-        } else {
-            Arc::from(
-                from_model_with_openai_options(&mut model, timeouts, openai_options)
-                    .context("create provider")?,
-            )
-        };
+        let (provider, provider_warning) =
+            startup_provider_with(&mut model, needs_login, |model| {
+                from_model_with_openai_options(model, timeouts, openai_options)
+            });
+        if let Some(warning) = provider_warning {
+            startup_warnings.push(warning);
+            needs_login = true;
+        }
+        let provider = Arc::from(provider);
         let model_slot = Arc::new(ArcSwap::from_pointee(ModelSlot {
             model: model.clone(),
             provider,
         }));
-        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options);
+        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options, needs_login);
 
         let picker = Arc::new(terminal_image::picker());
 
@@ -1562,6 +1566,23 @@ fn should_save_periodically(status: &Status) -> bool {
     matches!(status, Status::Streaming)
 }
 
+fn startup_provider_with(
+    model: &mut Model,
+    needs_login: bool,
+    create: impl FnOnce(&mut Model) -> Result<Box<dyn Provider>, n00n_providers::AgentError>,
+) -> (Box<dyn Provider>, Option<String>) {
+    if needs_login {
+        return (unconfigured_provider(), None);
+    }
+    match create(model) {
+        Ok(provider) => (provider, None),
+        Err(error) => (
+            unconfigured_provider(),
+            Some(format!("Failed to create provider: {error}")),
+        ),
+    }
+}
+
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     let lines = crate::cast::u32_to_isize(lines);
     let n = i32::try_from(lines).unwrap_or_else(|_| i32::MAX);
@@ -1576,10 +1597,12 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 mod tests {
     use super::{
         DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
-        should_save_periodically, take_painted_submissions,
+        should_save_periodically, spawn_model_fetch, startup_provider_with,
+        take_painted_submissions,
     };
     use crate::components::Status;
-    use n00n_providers::{ContentBlock, Message, Role};
+    use arc_swap::ArcSwap;
+    use n00n_providers::{AgentError, ContentBlock, Message, Model, OpenAiOptions, Role, Timeouts};
     use n00n_storage::id::n00nId;
     use ratatui::{
         Terminal,
@@ -1588,7 +1611,70 @@ mod tests {
         layout::{Position, Size},
         widgets::Paragraph,
     };
+    use std::cell::Cell as Counter;
     use std::io;
+
+    #[test]
+    fn startup_provider_failure_preserves_model_and_requests_login_once() {
+        let mut model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let original_spec = model.spec();
+        let calls = Counter::new(0);
+
+        let (_, warning) = startup_provider_with(&mut model, false, |_| {
+            calls.set(calls.get() + 1);
+            Err(AgentError::Config {
+                message: "missing credentials".into(),
+            })
+        });
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(model.spec(), original_spec);
+        assert_eq!(
+            warning.as_deref(),
+            Some("Failed to create provider: missing credentials")
+        );
+    }
+
+    #[test]
+    fn startup_provider_skips_construction_while_login_is_required() {
+        let mut model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let calls = Counter::new(0);
+
+        let (_, warning) = startup_provider_with(&mut model, true, |_| {
+            calls.set(calls.get() + 1);
+            Err(AgentError::Config {
+                message: "must not run".into(),
+            })
+        });
+
+        assert_eq!(calls.get(), 0);
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn spawn_model_fetch_preserves_unconfigured_provider_while_login_is_required() {
+        use crate::agent::ModelSlot;
+        use n00n_providers::provider::unconfigured_provider;
+        use std::sync::Arc;
+
+        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let provider = Arc::from(unconfigured_provider());
+        let model_slot = Arc::new(ArcSwap::from_pointee(ModelSlot {
+            model: model.clone(),
+            provider: Arc::clone(&provider),
+        }));
+
+        let _bg = spawn_model_fetch(
+            &model_slot,
+            Timeouts::default(),
+            OpenAiOptions::default(),
+            true,
+        );
+
+        let stored = model_slot.load();
+        assert_eq!(stored.model.spec(), model.spec());
+        assert!(Arc::ptr_eq(&stored.provider, &provider));
+    }
 
     #[test]
     fn paused_team_run_requires_matching_team_tool_call() {
