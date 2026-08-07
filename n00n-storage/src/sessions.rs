@@ -8,7 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Take, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -1651,7 +1651,7 @@ impl SessionLog {
         let path = locate_session_file(dir, session_id)
             .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
         let (session, saw_legacy_transcript, recovered_tail, log_appends, decoded_bytes) =
-            parse_records_with_limits::<M, U, T>(&path, limits.clone())?;
+            parse_records_with_limits::<M, U, T>(&path, limits)?;
 
         if session.id != session_id {
             return Err(SessionError::IdMismatch {
@@ -2146,8 +2146,7 @@ impl<W: Write> Write for RecordLimitWriter<'_, W> {
         let remaining = self.limit.saturating_sub(self.written);
         if bytes.len() > remaining {
             self.exceeded = true;
-            return Err(IoError::new(
-                ErrorKind::Other,
+            return Err(IoError::other(
                 "serialized session record exceeded its limit",
             ));
         }
@@ -2567,18 +2566,21 @@ enum LineReadError {
 }
 
 struct BoundedZstdLines {
-    reader: BufReader<Decoder<'static, BufReader<File>>>,
+    reader: BufReader<Decoder<'static, BufReader<Take<File>>>>,
     path: String,
     limits: DecodeLimits,
     decoded_bytes: usize,
+    unterminated: bool,
 }
 
 impl BoundedZstdLines {
     fn open(path: &Path, offset: u64, limits: DecodeLimits) -> Result<Self, SessionError> {
         let mut file = File::open(path).map_err(StorageError::from)?;
+        let end = file.metadata().map_err(StorageError::from)?.len();
+        let limit = end.saturating_sub(offset);
         file.seek(SeekFrom::Start(offset))
             .map_err(StorageError::from)?;
-        let mut decoder = Decoder::new(file).map_err(StorageError::from)?;
+        let mut decoder = Decoder::new(file.take(limit)).map_err(StorageError::from)?;
         decoder
             .window_log_max(limits.window_log)
             .map_err(StorageError::from)?;
@@ -2587,6 +2589,7 @@ impl BoundedZstdLines {
             path: path.display().to_string(),
             limits,
             decoded_bytes: 0,
+            unterminated: false,
         })
     }
 
@@ -2603,7 +2606,10 @@ impl BoundedZstdLines {
                     Ok(DecodedLine::Oversized)
                 } else {
                     String::from_utf8(line)
-                        .map(DecodedLine::Line)
+                        .map(|line| {
+                            self.unterminated = true;
+                            DecodedLine::Line(line)
+                        })
                         .map_err(|error| {
                             LineReadError::Io(IoError::new(ErrorKind::InvalidData, error))
                         })
@@ -2689,7 +2695,12 @@ fn visit_zstd_lines_with_decoded_bytes(
     let recovered = loop {
         match reader.next(false) {
             Ok(DecodedLine::Eof) => break false,
-            Ok(DecodedLine::Line(line)) => visit(&line)?,
+            Ok(DecodedLine::Line(line)) => {
+                visit(&line)?;
+                if reader.unterminated {
+                    break true;
+                }
+            }
             Ok(DecodedLine::Oversized) => {
                 return Err(reader.limit_error(LineReadError::RecordTooLarge));
             }
@@ -4492,7 +4503,7 @@ mod tests {
         let limits = super::DecodeLimits::new(1_024, log.decoded_bytes, 27);
 
         session.messages.push(Value::String("new record".into()));
-        let result = log.append_with_limits(&session, limits.clone());
+        let result = log.append_with_limits(&session, limits);
         assert!(matches!(
             result,
             Err(SessionError::DecodedBudgetExceeded { .. })
