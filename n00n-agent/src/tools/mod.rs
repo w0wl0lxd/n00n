@@ -49,7 +49,7 @@ pub struct DescriptionContext<'a> {
     pub workflow: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum ToolFilter {
     #[default]
     All,
@@ -207,12 +207,22 @@ pub fn capability_exclusions(model: &Model) -> &'static [&'static str] {
 
 /// Deferred tools that should be active by default so new features are not
 /// silently disabled. `view_image` is still filtered out for non-vision models.
+///
+/// Users can bake extra namespaces or tool names into the initial active set
+/// via `[agent] active_namespaces` and `[agent] active_tool_names`.
 #[must_use]
-pub fn default_active_tools() -> ActiveTools {
+pub fn default_active_tools(config: &AgentConfig) -> ActiveTools {
     let mut active = ActiveTools::default();
+    active.namespaces.insert("agent".to_owned());
+    active
+        .namespaces
+        .extend(config.active_namespaces.iter().cloned());
     active.names.insert(AGENT_CONTROL_TOOL_NAME.to_owned());
     active.names.insert(BATCH_TOOL_NAME.to_owned());
     active.names.insert(VIEW_IMAGE_TOOL_NAME.to_owned());
+    active
+        .names
+        .extend(config.active_tool_names.iter().cloned());
     active
 }
 
@@ -226,6 +236,7 @@ pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
 pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
 pub const BATCH_TOOL_NAME: &str = "batch";
 pub const BASH_TOOL_NAME: &str = "bash";
+pub const BLACKBOARD_TOOL_NAME: &str = "blackboard";
 pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 pub const EDIT_TOOL_NAME: &str = "edit";
 pub const GLOB_TOOL_NAME: &str = "glob";
@@ -234,8 +245,10 @@ pub const MULTIEDIT_TOOL_NAME: &str = "multiedit";
 pub const QUESTION_TOOL_NAME: &str = "question";
 pub const READ_TOOL_NAME: &str = "read";
 pub const TASK_TOOL_NAME: &str = "task";
+pub const TEAM_TOOL_NAME: &str = "team";
 pub const TODOWRITE_TOOL_NAME: &str = "todo_write";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
+pub const WORKFLOW_TOOL_NAME: &str = "workflow";
 pub const WRITE_TOOL_NAME: &str = "write";
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
@@ -1288,7 +1301,7 @@ mod tests {
 
     #[test]
     fn default_active_tools_include_deferred_tools() {
-        let active = default_active_tools();
+        let active = default_active_tools(&AgentConfig::default());
         for name in [
             AGENT_CONTROL_TOOL_NAME,
             BATCH_TOOL_NAME,
@@ -1296,5 +1309,17 @@ mod tests {
         ] {
             assert!(active.names.contains(name), "missing default tool: {name}");
         }
+    }
+
+    #[test]
+    fn default_active_tools_bakes_config_namespaces_and_names() {
+        let mut config = AgentConfig::default();
+        config.active_namespaces.push("explore".to_owned());
+        config.active_tool_names.push("memory".to_owned());
+        let active = default_active_tools(&config);
+        assert!(active.namespaces.contains("agent"));
+        assert!(active.namespaces.contains("explore"));
+        assert!(active.names.contains("memory"));
+        assert!(active.names.contains(AGENT_CONTROL_TOOL_NAME));
     }
 }

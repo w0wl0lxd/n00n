@@ -1,0 +1,1 @@
+Add active_namespaces and active_tool_names to AgentConfig/AgentFileConfig, make default_active_tools configurable, pass ActiveTools through AgentRunParams, cache ToolRegistry::definitions_active by generation, and rebaseline n00n-token-profile for the expanded default active set.

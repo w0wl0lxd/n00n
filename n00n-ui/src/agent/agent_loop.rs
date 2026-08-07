@@ -9,8 +9,8 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-    ToolsSnapshot,
+    ActiveTools, DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter,
+    ToolRegistry, ToolsSnapshot,
 };
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -45,6 +45,7 @@ pub(super) struct AgentLoop {
     instructions: Instructions,
     tools: Value,
     tool_filter: ToolFilter,
+    active_tools: ActiveTools,
     mcp: Option<McpSession>,
     history: History,
     btw_system: Arc<ArcSwap<System>>,
@@ -132,6 +133,7 @@ impl AgentLoop {
             instructions: Instructions::default(),
             tools: Value::Null,
             tool_filter: ToolFilter::All,
+            active_tools: ActiveTools::default(),
             mcp: mcp_handle.map(|h| McpSession::new(h, &initial_history)),
             history: History::restored_with_transcript(initial_history, initial_transcript)
                 .with_mirror(shared_history)
@@ -358,6 +360,7 @@ impl AgentLoop {
                 event_tx,
                 tools: self.tools.clone(),
                 tool_filter: self.tool_filter.clone(),
+                active_tools: self.active_tools.clone(),
             },
         )
         .with_loaded_instructions(self.instructions.loaded.clone())
@@ -417,17 +420,13 @@ impl AgentLoop {
         let examples = model.supports_tool_examples();
         let filter = ToolFilter::from_config(&self.config, model, &[]);
         self.tool_filter = filter.clone();
+        self.active_tools = n00n_agent::tools::default_active_tools(&self.config);
         let ctx = DescriptionContext {
             filter: &filter,
             audience: ToolAudience::MAIN,
             workflow,
         };
-        ToolRegistry::global().definitions_active(
-            &self.vars,
-            &ctx,
-            examples,
-            &n00n_agent::tools::default_active_tools(),
-        )
+        ToolRegistry::global().definitions_active(&self.vars, &ctx, examples, &self.active_tools)
     }
 
     async fn reload_instructions(&mut self) {

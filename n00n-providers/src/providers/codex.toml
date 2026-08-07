@@ -8,4 +8,5 @@ supports_prompt_cache_key = true
 supports_prompt_cache_breakpoint = true
 emit_reasoning_content = false
 supports_parallel_tool_calls = true
+cache_ttl_seconds = 300
 const_name = "CODEX_CONFIG"

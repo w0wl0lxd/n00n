@@ -22,7 +22,8 @@ use crate::permissions::PermissionManager;
 use crate::prompt::ResolvedSlots;
 use crate::template;
 use crate::tools::{
-    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
+    ActiveTools, DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter,
+    ToolRegistry,
 };
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
@@ -272,6 +273,7 @@ struct AgentSetup {
     instructions: agent::Instructions,
     tools: Value,
     tool_filter: ToolFilter,
+    active_tools: ActiveTools,
 }
 
 fn setup(
@@ -282,7 +284,7 @@ fn setup(
 ) -> AgentSetup {
     let vars = template::env_vars();
     let instructions = agent::load_instructions(&vars.apply("{cwd}"));
-    let (tools, tool_filter) = tool_definitions(
+    let (tools, tool_filter, active_tools) = tool_definitions(
         &vars,
         model,
         config,
@@ -296,6 +298,7 @@ fn setup(
         instructions,
         tools,
         tool_filter,
+        active_tools,
     }
 }
 
@@ -306,21 +309,18 @@ fn tool_definitions(
     excluded_tools: &[&'static str],
     workflow: bool,
     registry: &ToolRegistry,
-) -> (Value, ToolFilter) {
+) -> (Value, ToolFilter, ActiveTools) {
     let filter = ToolFilter::from_config(config, model, excluded_tools);
+    let active_tools = crate::tools::default_active_tools(config);
     let ctx = DescriptionContext {
         filter: &filter,
         audience: ToolAudience::MAIN,
         workflow,
     };
-    let tools = registry.definitions_active(
-        vars,
-        &ctx,
-        model.supports_tool_examples(),
-        &crate::tools::default_active_tools(),
-    );
+    let tools =
+        registry.definitions_active(vars, &ctx, model.supports_tool_examples(), &active_tools);
 
-    (tools, filter)
+    (tools, filter, active_tools)
 }
 
 #[must_use]
@@ -332,6 +332,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         instructions,
         tools,
         tool_filter,
+        active_tools,
     } = setup(
         &params.model,
         &params.config,
@@ -404,6 +405,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     event_tx,
                     tools,
                     tool_filter,
+                    active_tools,
                 },
             )
             .with_loaded_instructions(instructions.loaded)
@@ -505,6 +507,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         instructions,
         mut tools,
         tool_filter,
+        mut active_tools,
     } = setup(
         &params.model,
         &params.config,
@@ -587,7 +590,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         params.timeouts,
                         params.openai_options,
                     ));
-                    let (new_tools, new_filter) = tool_definitions(
+                    let (new_tools, new_filter, new_active) = tool_definitions(
                         &vars,
                         &new_model,
                         &params.config,
@@ -597,6 +600,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     );
                     tools = new_tools;
                     tool_filter = new_filter;
+                    active_tools = new_active;
                     model = new_model;
                 }
 
@@ -666,6 +670,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         event_tx,
                         tools: tools.clone(),
                         tool_filter: tool_filter.clone(),
+                        active_tools: active_tools.clone(),
                     },
                 )
                 .with_loaded_instructions(instructions.loaded.clone())

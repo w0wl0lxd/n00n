@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 34 built-in tools. This is the full reference.
+n00n ships with 33 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -18,21 +18,21 @@ Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `workdir` | string | no | cwd | Working directory |
-| `timeout` | integer | no | 120 | Timeout seconds |
+| `workdir` | object | yes | cwd | Working directory |
+| `timeout` | object | yes | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
-| `description` | string | no |  | Short description (3-5 words) of what the command does |
+| `justification` | object | yes |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `description` | object | yes |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
 
 Read a file or directory. Returns contents with line numbers (1-indexed).
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `offset` | integer | no |  |
-| `path` | string | yes |  |
-| `limit` | integer | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `offset` | object | yes |  | Starting line number (1-indexed, default 1) |
+| `path` | string | yes |  | File or directory path (absolute, relative, or ~/) |
+| `limit` | object | yes | 500 | Maximum number of lines to read |
 
 ### `write` *(lua plugin)*
 
@@ -49,10 +49,10 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `replace_all` | boolean | no |  |
-| `path` | string | yes | File path. |
-| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
-| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
+| `replace_all` | object | yes |  |
+| `path` | string | yes |  |
+| `old_string` | string | yes |  |
+| `new_string` | object | yes |  |
 
 ### `multiedit` *(lua plugin)*
 
@@ -112,23 +112,23 @@ Unified codebase exploration router. Picks the best backend for the question:
 
 Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | yes |  |
-| `path` | string | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `pattern` | string | yes |  | Glob pattern (e.g. '*.rs', 'src/**/*.lua') |
+| `path` | object | yes | cwd | Directory to search |
 
 ### `grep` *(lua plugin)*
 
-Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
+Search file contents using ripgrep-compatible regex. Respects .gitignore. Results grouped by file, sorted by modification time. This is not a shell: use `pattern` and a single `path`. For multiple paths, search each in a batch call. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no | Glob pattern (e.g. '*.rs'). |
-| `path` | string | no | Directory or file to search. |
-| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
-| `context_after` | integer | no |  |
-| `limit` | integer | no |  |
-| `context_before` | integer | no |  |
+| `include` | object | yes |  |
+| `path` | object | yes |  |
+| `pattern` | string | yes |  |
+| `context_after` | object | yes |  |
+| `limit` | object | yes |  |
+| `context_before` | object | yes |  |
 
 ### `index` *(lua plugin)*
 
@@ -136,21 +136,21 @@ Return a compact overview of a source file: imports, types, function signatures,
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
+| `path` | string | yes | File path to index (absolute, relative, or ~/) |
 
 ### `view_image` *(lua plugin)*
 
 View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `crop` | array | no | [x,y,w,h]; <=8000 edge/4MP. |
-| `path` | string | yes |  |
-| `allow_gif_animation` | boolean | no | Raw GIF opt-in. |
-| `tile_width` | integer | no | Default 2000; max 4MP. |
-| `tile_index` | integer | no | One-based tile. |
-| `static_image` | boolean | no | First-frame PNG. |
-| `tile_height` | integer | no | Default 2000; max 4MP. |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `crop` | array/null | yes |  | Crop region as [x, y, width, height] |
+| `path` | string | yes |  | Image file path (absolute, relative, or ~/) |
+| `allow_gif_animation` | object | yes |  | Allow GIF animation (provider must support it) |
+| `tile_width` | object | yes | 2000; max 8000 | Tile width in pixels |
+| `tile_index` | object | yes |  | One-based tile index for tiling large images |
+| `static_image` | object | yes |  | Force static PNG (for animated GIF/webp) |
+| `tile_height` | object | yes | 2000; max 8000 | Tile height in pixels |
 
 ### `codegraph` *(lua plugin)*
 
@@ -172,16 +172,16 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 
 Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repo` | string | no | Project root (defaults to cwd) |
-| `line` | integer | no |  |
-| `file_path` | string | no |  |
-| `query` | string | no |  |
-| `command` | string | yes |  |
-| `mode` | string | no |  |
-| `content` | string | no | Content filter for search (docs, config, code, or all) |
-| `top_k` | integer | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `repo` | object | yes |  | Project root (defaults to cwd) |
+| `line` | object | yes |  | Line number (for find_related command) |
+| `file_path` | object | yes |  | File path (for find_related command) |
+| `query` | object | yes |  | Search query (for search command) |
+| `command` | string | yes |  | Semblem command: search, find_related, or savings |
+| `mode` | string/null | yes |  | Search mode: bm25 (default), hybrid, or semantic |
+| `content` | string/null | yes | code | Content filter: docs, config, code, or all |
+| `top_k` | object | yes | 5 | Number of results to return |
 
 ### `arbor` *(lua plugin)*
 
@@ -208,7 +208,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
+| `tool_calls` | array | yes |  |
 
 ### `code_execution` *(lua plugin)*
 
@@ -216,7 +216,7 @@ Execute Python in sandboxed interpreter with tools as callable functions. Use fo
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `timeout` | integer | no | 30 | Script timeout seconds |
+| `timeout` | object | yes | 30 | Script timeout seconds |
 | `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `question` *(lua plugin)*
@@ -226,28 +226,6 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
-
-### `tmux` *(lua plugin)*
-
-Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `session_name` | string | no |  |
-| `source` | string | no |  |
-| `timeout` | integer | no |  |
-| `destination` | string | no |  |
-| `window` | string | no |  |
-| `height` | integer | no |  |
-| `width` | integer | no |  |
-| `raw_command` | string | no |  |
-| `window_name` | string | no |  |
-| `keys` | string | no |  |
-| `target` | string | no |  |
-| `command` | string | yes |  |
-| `command_text` | string | no |  |
-| `session` | string | no |  |
-| `pane` | string | no |  |
 
 ## Agent & Knowledge
 
@@ -416,16 +394,16 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 ### `fusion_delegate` *(lua plugin)*
 
-Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
+Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `description` | string | yes | Short label (3-5 words). |
-| `constraints` | string | no | Scope and patterns. |
+| `constraints` | object | yes | Scope and patterns. |
 | `definition_of_done` | string | yes | Success checks (tests, artifacts). |
 | `goal` | string | yes | What to accomplish. |
-| `escalation_triggers` | string | no | When to escalate to the lead. |
-| `subagent_type` | string | no | research (read-only) or general (edit). Default: general. |
+| `escalation_triggers` | object | yes | When to escalate to lead. |
+| `subagent_type` | string/null | yes | Sidekick type: research (read-only) or general. |
 
 ## Web
 
@@ -436,8 +414,8 @@ Fetch a URL and return its contents. Supports markdown (default), text, or html.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes |  | URL to fetch (http:// or https://) |
-| `timeout` | integer | no | 30, max 120 | Timeout in seconds |
-| `format` | string | no |  | Output format: markdown (default), text, or html |
+| `timeout` | object | yes | 30, max 120 | Timeout in seconds |
+| `format` | string/null | yes |  | Output format: markdown (default), text, or html |
 
 ### `websearch` *(lua plugin)*
 
@@ -445,5 +423,5 @@ Search the web for real-time information using Exa AI.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `num_results` | integer | no | 8 | Number of results to return |
+| `num_results` | object | yes | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |

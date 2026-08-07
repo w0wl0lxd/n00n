@@ -493,6 +493,8 @@ pub struct AgentFileConfig {
     pub max_continuation_turns: Option<u32>,
     pub compaction_buffer: Option<CompactionBuffer>,
     pub mcp_tool_desc_max_chars: Option<usize>,
+    pub active_namespaces: Option<Vec<String>>,
+    pub active_tool_names: Option<Vec<String>>,
     pub dynamic_tools: Option<DynamicToolFileConfig>,
     pub fusion: Option<FusionFileConfig>,
 }
@@ -522,6 +524,14 @@ impl AgentFileConfig {
             compaction_buffer,
             mcp_tool_desc_max_chars
         );
+        if overlay.active_namespaces.is_some() {
+            self.active_namespaces
+                .clone_from(&overlay.active_namespaces);
+        }
+        if overlay.active_tool_names.is_some() {
+            self.active_tool_names
+                .clone_from(&overlay.active_tool_names);
+        }
         match (self.dynamic_tools.as_mut(), overlay.dynamic_tools.clone()) {
             (Some(base), Some(over)) => {
                 if over.enabled.is_some() {
@@ -1112,6 +1122,12 @@ pub struct AgentConfig {
     #[config(skip, default = "Vec::new()")]
     pub disabled_tools: Vec<String>,
 
+    #[config(skip, default = "Vec::new()")]
+    pub active_namespaces: Vec<String>,
+
+    #[config(skip, default = "Vec::new()")]
+    pub active_tool_names: Vec<String>,
+
     #[config(skip, default = "DynamicToolConfig::default()")]
     pub dynamic_tools: DynamicToolConfig,
 
@@ -1203,6 +1219,8 @@ impl AgentConfig {
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,
+            active_namespaces: file.active_namespaces.unwrap_or_else(Vec::new),
+            active_tool_names: file.active_tool_names.unwrap_or_else(Vec::new),
             dynamic_tools,
             fusion,
         }

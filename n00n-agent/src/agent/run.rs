@@ -165,6 +165,7 @@ pub struct AgentRunParams<'h> {
     pub event_tx: EventSender,
     pub tools: Value,
     pub tool_filter: ToolFilter,
+    pub active_tools: ActiveTools,
 }
 
 pub struct Agent<'h> {
@@ -275,7 +276,7 @@ impl<'h> Agent<'h> {
             active_skill_policy: None,
             tool_filter: run.tool_filter,
             allow_dynamic_mcp_tools: false,
-            active_tools: ActiveTools::default(),
+            active_tools: run.active_tools,
             supports_tool_examples,
             fusion_state,
         };
@@ -2064,6 +2065,7 @@ mod tests {
                 event_tx: EventSender::new(raw_tx, 0),
                 tools,
                 tool_filter: filter,
+                active_tools: ActiveTools::default(),
             },
         );
         (agent, event_rx)
@@ -2829,6 +2831,7 @@ mod tests {
                     event_tx: EventSender::new(raw_tx, 0),
                     tools: serde_json::json!([]),
                     tool_filter: ToolFilter::All,
+                    active_tools: ActiveTools::default(),
                 },
             )
             .with_cancel(cancel);

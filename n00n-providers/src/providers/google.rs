@@ -21,7 +21,10 @@ use crate::{
     StopReason, StreamResponse, System, ThinkingConfig, TokenUsage, dialect,
 };
 
-use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
+use super::{
+    DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, KeyPool, ResolvedAuth, http_client, next_sse_line,
+    trim_tool_description,
+};
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const ENV_VAR: &str = "GEMINI_API_KEY";
@@ -887,14 +890,16 @@ fn convert_tools(tools: &Value) -> Vec<Value> {
     arr.iter()
         .filter_map(|t| {
             let name = t.get("name")?.as_str()?;
-            let description = t.get("description")?.as_str().unwrap_or_else(|| "");
+            let raw_description = t.get("description")?.as_str()?;
+            let description =
+                trim_tool_description(raw_description, DEFAULT_TOOL_DESCRIPTION_MAX_CHARS);
             let parameters = t
                 .get("input_schema")
                 .cloned()
                 .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
             Some(json!({
                 "name": name,
-                "description": description,
+                "description": description.as_ref(),
                 "parameters": parameters,
             }))
         })

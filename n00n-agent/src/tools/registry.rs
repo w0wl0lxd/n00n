@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::task::{Context, Poll};
 
 use arc_swap::ArcSwap;
@@ -21,7 +22,7 @@ use super::schema::sanitize_tool_input_schema;
 use super::{DescriptionContext, ToolContext};
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ToolAudience: u8 {
         const MAIN         = 0b0000_0001;
         const RESEARCH_SUB = 0b0000_0010;
@@ -251,6 +252,12 @@ pub trait Tool: Send + Sync + 'static {
     fn namespace(&self) -> Option<&str> {
         None
     }
+    /// Whether to ask the provider to enforce the tool schema at the token
+    /// level. Providers that support strict mode (`OpenAI`, `Anthropic`, etc.)
+    /// will then guarantee the JSON matches the schema.
+    fn strict(&self) -> bool {
+        false
+    }
     /// Parse tool input into an invocation.
     ///
     /// # Errors
@@ -337,9 +344,46 @@ impl<'a> IntoIterator for &'a ToolsSnapshot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct DefinitionsCacheKey {
+    generation: u64,
+    snapshot_id: usize,
+    vars_hash: u64,
+    supports_examples: bool,
+    filter: super::ToolFilter,
+    audience: ToolAudience,
+    workflow: bool,
+    active_names: Vec<String>,
+    active_namespaces: Vec<String>,
+}
+
+fn sorted_clone(items: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut v: Vec<String> = items.iter().cloned().collect();
+    v.sort();
+    v
+}
+
+fn normalize_filter(filter: &super::ToolFilter) -> super::ToolFilter {
+    match filter {
+        super::ToolFilter::All => super::ToolFilter::All,
+        super::ToolFilter::Only(names) => {
+            let mut v = names.clone();
+            v.sort();
+            super::ToolFilter::Only(v)
+        }
+        super::ToolFilter::AllExcept(names) => {
+            let mut v = names.clone();
+            v.sort();
+            super::ToolFilter::AllExcept(v)
+        }
+    }
+}
+
 /// Lock-free reads via `ArcSwap`, writes swap in a new snapshot atomically.
 pub struct ToolRegistry {
     tools: ArcSwap<ToolsSnapshot>,
+    definitions_cache: Mutex<HashMap<DefinitionsCacheKey, Value>>,
+    generation: AtomicU64,
     admission: Arc<ToolAdmission>,
 }
 
@@ -365,6 +409,8 @@ impl ToolRegistry {
     pub fn with_admission(admission: Arc<ToolAdmission>) -> Self {
         Self {
             tools: ArcSwap::from_pointee(ToolsSnapshot::empty()),
+            definitions_cache: Mutex::new(HashMap::new()),
+            generation: AtomicU64::new(0),
             admission,
         }
     }
@@ -396,6 +442,13 @@ impl ToolRegistry {
         self.tools.load().has(name)
     }
 
+    fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut cache) = self.definitions_cache.lock() {
+            cache.clear();
+        }
+    }
+
     /// Register a tool with the registry.
     ///
     /// # Errors
@@ -405,6 +458,7 @@ impl ToolRegistry {
         let defer_loading = tool.defer_loading();
         let namespace = tool.namespace().map(Arc::from);
         let mut conflict = None;
+        let before = self.tools.load_full();
         self.tools.rcu(|current| {
             conflict = None;
             if let Some(existing) = current.get(&name) {
@@ -420,6 +474,9 @@ impl ToolRegistry {
             });
             Arc::new(ToolsSnapshot::from_tools(next_tools))
         });
+        if !Arc::ptr_eq(&before, &self.tools.load_full()) {
+            self.bump_generation();
+        }
         if let Some(existing) = conflict {
             return Err(RegistryError::NameConflict { name, existing });
         }
@@ -437,6 +494,7 @@ impl ToolRegistry {
     ) -> Result<(), RegistryError> {
         let entries: Vec<_> = entries.into_iter().collect();
         let mut conflict = None;
+        let before = self.tools.load_full();
         self.tools.rcu(|current| {
             conflict = None;
             let mut next_tools = current.tools.clone();
@@ -468,6 +526,9 @@ impl ToolRegistry {
             }
             Arc::new(ToolsSnapshot::from_tools(next_tools))
         });
+        if !Arc::ptr_eq(&before, &self.tools.load_full()) {
+            self.bump_generation();
+        }
         if let Some(e) = conflict {
             return Err(e);
         }
@@ -475,6 +536,7 @@ impl ToolRegistry {
     }
 
     pub fn clear_mcp_server(&self, server: &str) {
+        let before = self.tools.load_full();
         self.tools.rcu(|current| {
             let filtered: Vec<_> = current
                 .iter()
@@ -485,6 +547,9 @@ impl ToolRegistry {
                 .collect();
             Arc::new(ToolsSnapshot::from_tools(filtered))
         });
+        if !Arc::ptr_eq(&before, &self.tools.load_full()) {
+            self.bump_generation();
+        }
     }
 
     /// Replace all tools from a plugin with new entries.
@@ -497,6 +562,7 @@ impl ToolRegistry {
         new_entries: &[(Arc<dyn Tool>, ToolSource)],
     ) -> Result<(), RegistryError> {
         let mut conflict = None;
+        let before = self.tools.load_full();
         self.tools.rcu(|current| {
             conflict = None;
             let mut next_tools: Vec<RegisteredTool> = current
@@ -534,6 +600,9 @@ impl ToolRegistry {
             }
             Arc::new(ToolsSnapshot::from_tools(next_tools))
         });
+        if !Arc::ptr_eq(&before, &self.tools.load_full()) {
+            self.bump_generation();
+        }
         if let Some(e) = conflict {
             return Err(e);
         }
@@ -541,6 +610,7 @@ impl ToolRegistry {
     }
 
     pub fn clear_lua(&self) {
+        let before = self.tools.load_full();
         self.tools.rcu(|current| {
             let filtered: Vec<_> = current
                 .iter()
@@ -549,9 +619,13 @@ impl ToolRegistry {
                 .collect();
             Arc::new(ToolsSnapshot::from_tools(filtered))
         });
+        if !Arc::ptr_eq(&before, &self.tools.load_full()) {
+            self.bump_generation();
+        }
     }
 
     pub fn clear_plugin(&self, plugin: &str) {
+        let before = self.tools.load_full();
         self.tools.rcu(|current| {
             let filtered: Vec<_> = current
                 .iter()
@@ -562,6 +636,9 @@ impl ToolRegistry {
                 .collect();
             Arc::new(ToolsSnapshot::from_tools(filtered))
         });
+        if !Arc::ptr_eq(&before, &self.tools.load_full()) {
+            self.bump_generation();
+        }
     }
 
     /// Human-friendly summary of an invocation; the raw tool name when
@@ -604,6 +681,7 @@ impl ToolRegistry {
                 "name": entry.name(),
                 "description": description,
                 "input_schema": sanitized_schema,
+                "strict": entry.tool.strict(),
             });
             if let Some(examples) = entry.tool.examples() {
                 if supports_examples {
@@ -666,7 +744,29 @@ impl ToolRegistry {
         supports_examples: bool,
         active: &ActiveTools,
     ) -> Value {
-        let snapshot = self.tools.load();
+        let snapshot = self.tools.load_full();
+        let key = DefinitionsCacheKey {
+            generation: self.generation.load(Ordering::Acquire),
+            snapshot_id: Arc::as_ptr(&snapshot).cast::<()>() as usize,
+            vars_hash: vars.content_hash(),
+            supports_examples,
+            filter: normalize_filter(ctx.filter),
+            audience: ctx.audience,
+            workflow: ctx.workflow,
+            active_names: sorted_clone(&active.names),
+            active_namespaces: sorted_clone(&active.namespaces),
+        };
+
+        {
+            let cache = match self.definitions_cache.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if let Some(cached) = cache.get(&key) {
+                return cached.clone();
+            }
+        }
+
         let mut out = Vec::with_capacity(snapshot.len());
         for entry in snapshot.iter() {
             if !entry.tool.audience().contains(ctx.audience) {
@@ -691,6 +791,7 @@ impl ToolRegistry {
                 "name": entry.name(),
                 "description": description,
                 "input_schema": sanitized_schema,
+                "strict": entry.tool.strict(),
             });
             if let Some(examples) = entry.tool.examples() {
                 if supports_examples {
@@ -706,7 +807,17 @@ impl ToolRegistry {
             }
             out.push(def);
         }
-        Value::Array(out)
+        let value = Value::Array(out);
+
+        {
+            let mut cache = match self.definitions_cache.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            cache.insert(key, value.clone());
+        }
+
+        value
     }
 
     #[must_use]
@@ -1061,6 +1172,59 @@ mod tests {
         assert_eq!(names_for(ToolAudience::GENERAL_SUB), vec!["everywhere"]);
     }
 
+    #[test]
+    fn defer_loading_and_namespace_filtering() {
+        let reg = ToolRegistry::new();
+        let deferred_ns: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "deferred_tool".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: true,
+            namespace: Some("explore".to_owned()),
+        });
+        let active_tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "active_tool".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let p = lua_source("p");
+        reg.register(&deferred_ns, &p).unwrap();
+        reg.register(&active_tool, &p).unwrap();
+
+        let vars = Vars::new();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        // Default active tools should exclude deferred tools
+        let active = ActiveTools::default();
+        let defs_active = reg.definitions_active(&vars, &ctx, true, &active);
+        let names_active: Vec<_> = defs_active
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names_active.contains(&"active_tool".to_owned()));
+        assert!(!names_active.contains(&"deferred_tool".to_owned()));
+
+        // With namespace active, deferred tool should be included
+        let mut with_ns = ActiveTools::default();
+        with_ns.namespaces.insert("explore".to_owned());
+        let defs_with_ns = reg.definitions_active(&vars, &ctx, true, &with_ns);
+        let names_with_ns: Vec<_> = defs_with_ns
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names_with_ns.contains(&"active_tool".to_owned()));
+        assert!(names_with_ns.contains(&"deferred_tool".to_owned()));
+    }
+
     #[test_case(Err("boom".into()), Some("/tmp/foo".into()), None          ; "clears_on_error")]
     #[test_case(Ok(ToolOutput::Plain("ok".into())), Some("/tmp/foo".into()), Some("/tmp/foo") ; "sets_on_success")]
     fn with_written_path(
@@ -1099,6 +1263,34 @@ mod tests {
 
         let results = reg.search("active");
         assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn definitions_cache_tracks_registry_snapshot_before_generation_bump() {
+        let reg = ToolRegistry::new();
+        reg.register(&mock("old_tool"), &lua_source("p")).unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let context = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let vars = Vars::new();
+        let active = ActiveTools::default();
+        let initial = reg.definitions_active(&vars, &context, false, &active);
+        assert_eq!(initial[0]["name"], "old_tool");
+
+        let replacement = RegisteredTool {
+            tool: mock("new_tool"),
+            source: lua_source("p"),
+            defer_loading: false,
+            namespace: None,
+        };
+        reg.tools
+            .store(Arc::new(ToolsSnapshot::from_tools(vec![replacement])));
+
+        let refreshed = reg.definitions_active(&vars, &context, false, &active);
+        assert_eq!(refreshed[0]["name"], "new_tool");
     }
 
     #[test]

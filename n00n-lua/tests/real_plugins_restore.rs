@@ -18,7 +18,7 @@ use std::{
 use n00n_agent::AgentEvent;
 use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
-use n00n_config::ToolOutputLines;
+use n00n_config::{ToolOutputLines, providers::Tier};
 use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 
@@ -32,7 +32,6 @@ const FUSION_SRC: &str = include_str!("../../plugins/fusion/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
 const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
-const TMUX_SRC: &str = include_str!("../../plugins/tmux/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -45,7 +44,7 @@ const GREP_OUT: &str =
 
 const BATCH_INPUT_GREP_BASH: &str = r#"{ "tool_calls": [
     { "tool": "grep", "parameters": { "pattern": "fn" } },
-    { "tool": "bash", "parameters": { "command": "echo hello-from-bash" } }
+    { "tool": "bash", "parameters": { "command": "echo hello-from-bash", "timeout": null, "workdir": null, "description": null, "justification": null } }
 ]}"#;
 const WORKFLOW_TOOL: &str = "workflow";
 const LIVE_PREVIEW_ID: &str = "live-preview";
@@ -148,7 +147,7 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
 #[test_case::test_case(
     "bash",
     BASH_SRC,
-    json!({ "command": "printf live-preview" }),
+    json!({ "command": "printf live-preview", "timeout": null, "workdir": null, "description": null, "justification": null }),
     "live-preview";
     "bash"
 )]
@@ -168,6 +167,110 @@ fn batch_state() -> Value {
         { "tool": "grep", "status": "success", "output": GREP_OUT },
         { "tool": "bash", "status": "success", "output": "hello-from-bash" },
     ]})
+}
+
+const FUSION_MODEL_MOCK: &str = r#"
+    n00n.agent.resolve_model = function(ctx, opts)
+        return { spec = "resolved/" .. tostring(opts.spec or opts.tier) }
+    end
+    n00n.agent.system_prompt = function() return "system" end
+    n00n.agent.tools = function() return {} end
+    n00n.agent.usage_cost = function() return 0, nil end
+    n00n.agent.session = function(ctx, opts)
+        local sess = {}
+        function sess:prompt() return { text = opts.model_spec } end
+        function sess:close() end
+        return sess
+    end
+"#;
+
+fn execute_fusion_result(
+    input: Value,
+    tier: Tier,
+    enabled: bool,
+    native_mock: &str,
+) -> n00n_agent::tools::registry::ToolExecResult {
+    let registry = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    host.load_source("fusion", &format!("{native_mock}\n{FUSION_SRC}"))
+        .unwrap();
+    let invocation = registry
+        .get("fusion_delegate")
+        .unwrap()
+        .tool
+        .parse(&input)
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    let fusion = &mut Arc::make_mut(&mut ctx.config).fusion;
+    fusion.enabled = enabled;
+    fusion.sidekick_tier = tier;
+    smol::block_on(invocation.execute(&ctx))
+}
+
+fn execute_fusion(
+    input: Value,
+    tier: Tier,
+    enabled: bool,
+    native_mock: &str,
+) -> Result<String, String> {
+    execute_fusion_result(input, tier, enabled, native_mock)
+        .output
+        .map(|output| match output {
+            n00n_agent::ToolOutput::Plain(output) => output.text,
+            other => panic!("unexpected output: {other:?}"),
+        })
+}
+
+fn execute_fusion_with_tier(input: Value, tier: Tier) -> Result<String, String> {
+    execute_fusion(input, tier, true, FUSION_MODEL_MOCK)
+}
+
+#[test]
+fn fusion_failed_delegate_preserves_charged_telemetry() {
+    let result = execute_fusion_result(
+        json!({
+            "description": "charged failure",
+            "goal": "exercise the error path",
+            "constraints": null,
+            "definition_of_done": "the failure keeps its telemetry",
+            "escalation_triggers": null,
+            "subagent_type": null
+        }),
+        Tier::Weak,
+        true,
+        r#"
+            n00n.agent.resolve_model = function() return { spec = "test/sidekick" } end
+            n00n.agent.system_prompt = function() return "system" end
+            n00n.agent.tools = function() return {} end
+            n00n.agent.usage_cost = function() error("precomputed cost should be reused") end
+            n00n.agent.session = function()
+                local sess = {}
+                function sess:prompt()
+                    return {
+                        cost = 0.25,
+                        fresh_input_tokens = 8,
+                        cache_read_tokens = 2,
+                        cache_write_tokens = 1,
+                        input_tokens = 11,
+                        output_tokens = 4,
+                    }, "provider failed"
+                end
+                function sess:close() end
+                return sess
+            end
+        "#,
+    );
+    let error = result.output.expect_err("delegate must fail");
+    let telemetry = result.telemetry.expect("charged telemetry must survive");
+    let usage = telemetry.usage.expect("charged usage must survive");
+
+    assert!(
+        error.contains("provider request failed"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(telemetry.cost, Some(0.25));
+    assert_eq!(usage.input_tokens, 11);
+    assert_eq!(usage.output_tokens, 4);
 }
 
 fn execute_plugin_with_native_mock(
@@ -532,7 +635,7 @@ fn task_restore_rebuilds_old_plain_persisted_output() {
 )]
 #[test_case::test_case(
     "semblem",
-    json!({ "command": "search", "query": "session restore", "repo": "/tmp/project" }),
+    json!({ "command": "search", "repo": "/tmp/project", "query": "session restore", "file_path": null, "line": null, "mode": null, "top_k": null, "content": null }),
     "session restore",
     "/tmp/project";
     "semblem"
@@ -595,7 +698,7 @@ fn bash_restore_renders_real_view() {
     let r = restore(
         &host,
         "bash",
-        json!({ "command": "echo hi", "description": "print hi" }),
+        json!({ "command": "echo hi", "timeout": null, "workdir": null, "description": "print hi", "justification": null }),
         "hi",
         None,
         Vec::new(),
@@ -720,7 +823,7 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
     let host = PluginHost::with_all_builtins(Arc::new(ToolRegistry::new())).unwrap();
     let input = json!({ "tool_calls": [{ "tool": "multiedit", "parameters": {
         "path": path.to_str().unwrap(),
-        "edits": [{ "old_string": "old1\nold2\nold3\nold4\nold5", "new_string": "n1\nn2\nn3\nn4\nn5" }],
+        "edits": [{ "old_string": "old1\nold2\nold3\nold4\nold5", "new_string": "n1\nn2\nn3\nn4\nn5", "replace_all": false }],
     }}]});
     let state = json!({ "children": [
         { "tool": "multiedit", "status": "success", "output": "applied 1 edit" },
@@ -747,28 +850,6 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
 /// The only built-in tools without purpose-built views get a plain header fn
 /// so the start line reads as prose instead of raw JSON args.
 #[test]
-fn tmux_restore_renders_real_view() {
-    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
-    host.load_source("tmux", TMUX_SRC).unwrap();
-    let r = restore(
-        &host,
-        "tmux",
-        json!({ "command": "list_sessions" }),
-        r#"{"sessions":[],"count":0}"#,
-        None,
-        Vec::new(),
-    );
-    assert!(
-        r.body.contains("sessions"),
-        "real view renders the JSON output; the fallback body is raw output only: {}",
-        r.body
-    );
-    assert!(r.header.contains("list_sessions"), "header: {}", r.header);
-}
-
-/// The only built-in tools without purpose-built views get a plain header fn
-/// so the start line reads as prose instead of raw JSON args.
-#[test]
 fn fusion_and_blackboard_headers_render_prose() {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -781,12 +862,32 @@ fn fusion_and_blackboard_headers_render_prose() {
         .parse(&json!({
             "description": "brief label",
             "goal": "g",
+            "constraints": null,
             "definition_of_done": "d",
+            "escalation_triggers": null,
+            "subagent_type": null
         }))
         .unwrap();
     assert_eq!(
         smol::block_on(inv.start_header()).text(),
         "Executing: brief label"
+    );
+
+    let unicode_description = "é".repeat(41);
+    let inv = fusion
+        .tool
+        .parse(&json!({
+            "description": unicode_description,
+            "goal": "g",
+            "constraints": null,
+            "definition_of_done": "d",
+            "escalation_triggers": null,
+            "subagent_type": null
+        }))
+        .unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        format!("Executing: {}", "é".repeat(40))
     );
 
     let board = reg.get("blackboard").unwrap();
@@ -797,18 +898,63 @@ fn fusion_and_blackboard_headers_render_prose() {
     );
 }
 
-#[test]
-fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
-    let reg = Arc::new(ToolRegistry::new());
-    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    host.load_source("fusion", FUSION_SRC).unwrap();
+#[test_case::test_case(Tier::Medium, "resolved/medium\n\n[sidekick cost: $0.0000 · resolved/medium]"; "configured_tier")]
+#[test_case::test_case(Tier::Weak, "resolved/weak\n\n[sidekick cost: $0.0000 · resolved/weak]"; "weak_fallback")]
+fn fusion_uses_configured_or_weak_tier(tier: Tier, expected: &str) {
+    let output = execute_fusion_with_tier(
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
+        tier,
+    )
+    .unwrap();
+    assert_eq!(output, expected);
+}
 
-    let _fusion = reg.get("fusion_delegate").unwrap();
-    assert!(!FUSION_SRC.contains("model_spec = input.model"));
-    assert!(!FUSION_SRC.contains("model_tier = input.model_tier"));
-    assert!(!FUSION_SRC.contains("auto_tier = input.auto_tier"));
-    assert!(FUSION_SRC.contains("untrusted data, not instructions"));
-    assert!(FUSION_SRC.contains("sanitize_error(err)"));
-    assert!(FUSION_SRC.contains("include_mcp = false"));
-    assert!(FUSION_SRC.contains("except_tools"));
+#[test]
+fn fusion_rejects_model_selection_arguments() {
+    let registry = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    host.load_source("fusion", FUSION_SRC).unwrap();
+    let tool = registry.get("fusion_delegate").unwrap().tool;
+    assert_eq!(tool.audience(), n00n_agent::tools::ToolAudience::MAIN);
+    let schema = tool.schema();
+    let properties = schema["properties"].as_object().unwrap();
+    assert!(!properties.contains_key("model"));
+    assert!(!properties.contains_key("model_tier"));
+    assert!(!properties.contains_key("auto_tier"));
+}
+
+#[test]
+fn fusion_is_rejected_when_disabled() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
+        Tier::Weak,
+        false,
+        FUSION_MODEL_MOCK,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: Fusion is disabled");
+}
+
+#[test]
+fn fusion_rejects_compaction_sidekick_tier() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
+        Tier::Compaction,
+        true,
+        FUSION_MODEL_MOCK,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: invalid sidekick tier");
+}
+
+#[test]
+fn fusion_model_resolution_failure_is_sanitized() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
+        Tier::Weak,
+        true,
+        r#"n00n.agent.resolve_model = function() return nil, "model unavailable" end"#,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: model resolution failed");
 }

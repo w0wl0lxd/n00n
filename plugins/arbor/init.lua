@@ -406,6 +406,8 @@ end
 n00n.api.register_tool({
   name = "arbor",
   kind = "read",
+  defer_loading = true,
+  namespace = "explore",
   description = [[
 Graph-based code analysis using Arbor. Returns structured, compact
 caller/callee/project maps; prefer it over broad grep or unfiltered reads

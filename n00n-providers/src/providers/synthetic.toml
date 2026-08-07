@@ -8,4 +8,5 @@ supports_prompt_cache_key = false
 supports_prompt_cache_breakpoint = false
 emit_reasoning_content = false
 supports_parallel_tool_calls = true
+cache_ttl_seconds = 0
 const_name = "CONFIG"

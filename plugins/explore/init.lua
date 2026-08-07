@@ -53,6 +53,8 @@ end
 n00n.api.register_tool({
   name = "explore",
   kind = "read",
+  defer_loading = true,
+  namespace = "explore",
   description = [[Unified codebase exploration router. Picks the best backend for the question:
 - **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
 - **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`

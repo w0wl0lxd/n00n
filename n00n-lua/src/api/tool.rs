@@ -139,6 +139,7 @@ pub(crate) struct PendingTool {
     pub(crate) describe_key: Option<RegistryKey>,
     pub(crate) defer_loading: bool,
     pub(crate) namespace: Option<Arc<str>>,
+    pub(crate) strict: bool,
 }
 
 pub(crate) type PendingTools = Arc<Mutex<Vec<PendingTool>>>;
@@ -162,6 +163,7 @@ pub(crate) struct LuaTool {
     pub(crate) has_describe_fn: bool,
     pub(crate) defer_loading: bool,
     pub(crate) namespace: Option<Arc<str>>,
+    pub(crate) strict: bool,
 }
 
 impl Tool for LuaTool {
@@ -231,6 +233,10 @@ impl Tool for LuaTool {
 
     fn namespace(&self) -> Option<&str> {
         self.namespace.as_deref()
+    }
+
+    fn strict(&self) -> bool {
+        self.strict
     }
 
     fn parse(&self, input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
@@ -1073,13 +1079,23 @@ fn spec_opt<T: mlua::FromLua>(spec: &Table, key: &str, expected: &str) -> LuaRes
         .map_err(|_| mlua::Error::runtime(format!("register_tool: '{key}' must be {expected}")))
 }
 
+fn schema_field_type_matches(field_schema: &Value, expected: &str) -> bool {
+    match field_schema.get("type").and_then(|t| t.as_array()) {
+        Some(types) => types
+            .iter()
+            .any(|t| t.as_str().is_some_and(|t| t == expected)),
+        None => field_schema
+            .get("type")
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| t == expected),
+    }
+}
+
 fn check_schema_field(schema: &Value, key: &str, field: &str, expected: &str) -> LuaResult<()> {
     let matches = schema
         .get("properties")
         .and_then(|p| p.get(field))
-        .and_then(|s| s.get("type"))
-        .and_then(|t| t.as_str())
-        .is_some_and(|t| t == expected);
+        .is_some_and(|s| schema_field_type_matches(s, expected));
     if matches {
         Ok(())
     } else {
@@ -1214,6 +1230,8 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<Option<bool>>("defer_loading")?
         .unwrap_or_else(|| false);
 
+    let strict: bool = spec.get::<Option<bool>>("strict")?.unwrap_or_else(|| false);
+
     let namespace: Option<Arc<str>> = spec
         .get("namespace")
         .ok()
@@ -1243,6 +1261,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             describe_key,
             defer_loading,
             namespace,
+            strict,
         });
 
     Ok(())
@@ -1750,6 +1769,7 @@ mod tests {
             has_describe_fn: false,
             defer_loading: false,
             namespace: None,
+            strict: false,
         }
     }
 

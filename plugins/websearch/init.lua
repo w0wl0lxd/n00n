@@ -29,17 +29,26 @@ end
 n00n.api.register_tool({
   name = "websearch",
   kind = "fetch",
+  defer_loading = true,
+  namespace = "research",
   description = [[Search the web for real-time information using Exa AI.
 
 - Use for current events, documentation, APIs, or anything not in local files.
 - Prefer specific, targeted queries over broad ones.
 - Results include page titles, URLs, and content snippets.]],
+  strict = true,
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "query", "num_results" },
     properties = {
-      query = { type = "string", description = "Search query", required = true },
-      num_results = { type = "integer", description = "Number of results to return (default 8)" },
+      query = { type = "string", required = true, description = "Search query" },
+      num_results = {
+        type = { "integer", "null" },
+        required = true,
+        description = "Number of results to return (default 8)",
+      },
     },
   },
   permission_scopes = "query",

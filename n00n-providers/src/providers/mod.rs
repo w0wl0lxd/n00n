@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -119,6 +120,28 @@ pub(crate) fn urlenc(s: &str) -> String {
         }
     }
     out
+}
+
+/// Maximum characters to keep for tool descriptions sent to providers.
+/// Longer descriptions are truncated at the nearest sentence or word boundary.
+pub(crate) const DEFAULT_TOOL_DESCRIPTION_MAX_CHARS: usize = 256;
+
+/// Trim a tool description to `max` characters, preferring sentence and then
+/// word boundaries so the result remains readable.
+pub(crate) fn trim_tool_description(desc: &str, max: usize) -> Cow<'_, str> {
+    if desc.len() <= max {
+        return Cow::Borrowed(desc);
+    }
+    // Include as many full sentences as fit, leaving room for the trailing period.
+    if let Some(idx) = desc[..desc.floor_char_boundary(max.saturating_sub(1))].rfind(". ") {
+        return Cow::Owned(format!("{}.", &desc[..idx]));
+    }
+    // Otherwise break at the last word that leaves room for an ellipsis.
+    let boundary = desc.floor_char_boundary(max.saturating_sub(3));
+    if let Some(idx) = desc[..boundary].rfind(' ') {
+        return Cow::Owned(format!("{}...", &desc[..idx]));
+    }
+    Cow::Owned(format!("{}...", &desc[..boundary]))
 }
 
 /// The `reasoning_effort` layout shared by every OpenAI-compatible provider.

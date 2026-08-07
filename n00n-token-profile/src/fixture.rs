@@ -8,7 +8,7 @@ use n00n_agent::agent::build_system_prompt;
 use n00n_agent::prompt::ResolvedSlots;
 use n00n_agent::template::Vars;
 use n00n_agent::tokenize::{count_json_for_model, count_tokens_for_model};
-use n00n_agent::tools::{ActiveTools, DescriptionContext, ToolAudience, ToolFilter, ToolRegistry};
+use n00n_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, ToolRegistry};
 use n00n_providers::{CacheControl, Model, System};
 use serde_json::{Value, json};
 
@@ -35,7 +35,7 @@ pub fn profile_cold_start() -> Result<ProfileReport, ProfileError> {
 
     let vars = pinned_vars();
     let filter = ToolFilter::from_config(&AgentConfig::default(), &model, &[]);
-    let active = ActiveTools::default();
+    let active = n00n_agent::tools::default_active_tools(&AgentConfig::default());
     let ctx = DescriptionContext {
         filter: &filter,
         audience: ToolAudience::MAIN,
