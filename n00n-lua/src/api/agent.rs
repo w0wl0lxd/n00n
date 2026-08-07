@@ -15,10 +15,9 @@ use mlua::{Function, IntoLuaMulti, Lua, Result as LuaResult, Table, Value as Lua
 use n00n_agent::agent::tool_dispatch::{self, Emit};
 use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
-use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, SessionIdentity,
-    ToolAudience, ToolContext, ToolFilter, ToolLive,
+    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
+    ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -523,8 +522,9 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         audience,
         workflow,
     };
-    let mut defs =
-        ToolRegistry::global().definitions(&vars, &ctx_desc, model.supports_tool_examples());
+    let mut defs = agent
+        .registry
+        .definitions(&vars, &ctx_desc, model.supports_tool_examples());
 
     n00n_agent::tools::filter_definitions(&mut defs, &filter);
     let base_count = defs.as_array().map_or(0, Vec::len);
@@ -661,7 +661,7 @@ async fn session(
     opts: Table,
 ) -> LuaResult<Pair<mlua::AnyUserData>> {
     let agent_ctx = try_pair!(dispatch_ctx(&ctx, "session")).clone();
-    let Some(parent_identity) = agent_ctx.identity.clone() else {
+    let Some(_parent_identity) = agent_ctx.identity.clone() else {
         return Ok(err_pair("session identity is unavailable"));
     };
     let plugin_state_store = try_pair!(ctx.plugin_state_store());
@@ -775,10 +775,6 @@ async fn session(
     if explicit_tools {
         tool_filter = try_pair!(explicit_tool_filter(&tools_json));
     }
-    let allow_dynamic_mcp_tools = explicit_tools
-        && include_mcp
-        && tool_filter.matches(n00n_agent::mcp::TOOL_SEARCH_TOOL_NAME);
-
     let thinking = match thinking_val {
         Some(LuaValue::String(s)) => match StoredThinking::parse_setting(&s.to_str()?) {
             Ok(stored) => ThinkingConfig::from(stored),
@@ -860,10 +856,7 @@ async fn session(
             config: session_config(&agent_ctx.config, excluded_tools.clone()),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
-            identity: Some(SessionIdentity::child(
-                session_id.into(),
-                parent_identity.root_session_id().clone(),
-            )),
+            session_id: Some(session_id.into()),
             timeouts: agent_ctx.timeouts,
             openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
@@ -875,7 +868,6 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
-        allow_dynamic_mcp_tools,
         thinking,
         fast,
         mode,
@@ -1385,7 +1377,6 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
-    allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
     mode: AgentMode,
@@ -1565,7 +1556,6 @@ async fn prompt(
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
-        .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {

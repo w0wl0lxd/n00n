@@ -343,7 +343,7 @@ impl AgentLoop {
                 config: Arc::new(self.config.clone()),
                 tool_output_lines: self.tool_output_lines,
                 permissions: Arc::clone(&self.permissions),
-                identity: self.identity.clone(),
+                session_id: self.identity.as_ref().map(|i| i.session_id().clone()),
                 timeouts: self.timeouts,
                 file_tracker: Arc::clone(&self.file_tracker),
                 prompt_slots: Arc::new(prompt_slots),

@@ -284,6 +284,9 @@ n00n.api.register_tool({
   describe = describe,
   schema = schema,
   kind = "execute",
+  -- The interpreter is a wrapper around nested tool calls. It must not hold a
+  -- process permit while those child calls acquire their own permits.
+  admission = "orchestrator",
   audiences = { "main", "research_sub", "general_sub" },
   start_annotation = { field = "timeout", kind = "timeout" },
   start = start,

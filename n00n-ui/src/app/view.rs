@@ -132,9 +132,10 @@ impl App {
 
     pub(crate) fn resolve_render_chat(&self) -> usize {
         if self.task_picker.is_open() {
-            self.task_picker
-                .selected_index()
-                .unwrap_or_else(|| self.active_chat)
+            match self.selected_task_chat() {
+                Some(chat) => chat,
+                None => self.active_chat,
+            }
         } else {
             self.active_chat
         }

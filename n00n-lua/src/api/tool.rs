@@ -646,6 +646,8 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 ///                                usage       (table)   Token counts: fresh_input_tokens, cache_read_tokens, cache_write_tokens, input_tokens, output_tokens.
 ///   audiences       (string[]) Which model audiences see the tool. Values: "main", "sub", "all". Default: all audiences.
 ///   kind            (string)   Optional grouping label (e.g. "filesystem").
+///   admission       (string)   Optional workload class: "cheap", "process", "agent", or "orchestrator".
+///   workload        (string)   Alias for admission. Do not provide both.
 ///   timeout         (number)   Execution timeout in seconds. 0 or false disables. Default: inherits agent deadline.
 ///   header          (function) Optional. Called before execution, returns a string or BufHandle for the one-line header.
 ///   restore         (function) Optional. Called to re-render a previous tool result. Receives `(tool_name, input, output, ctx)`.
@@ -686,7 +688,8 @@ fn register_tool(lua: &Lua, #[ctx] pending: PendingTools, spec: Table) -> LuaRes
 /// browsing memory files or toggling settings.
 ///
 /// @param spec table Command specification:
-///   name        (string)   Required. The command name (without the leading slash).
+///   name        (string)   Required. The command name (e.g. "/hello"; a leading
+///                            slash is added when missing).
 ///   description (string)   Optional. Short description shown in the command palette.
 ///   handler     (function) Required. Called when the user runs the command.
 ///   max_args    (integer)  Optional. Maximum number of arguments the command accepts.
@@ -1027,12 +1030,12 @@ fn is_valid_tool_name(name: &str) -> bool {
 }
 
 fn parse_audience(audiences: Option<mlua::Table>) -> LuaResult<ToolAudience> {
-    let Some(arr) = audiences else {
-        return Ok(ToolAudience::default());
+    let Some(audiences) = audiences else {
+        return Ok(ToolAudience::MAIN);
     };
     let mut flags = ToolAudience::empty();
     let mut count = 0;
-    for item in arr.sequence_values::<String>() {
+    for item in audiences.sequence_values::<String>() {
         let s = item?;
         count += 1;
         flags |= match s.as_str() {
@@ -1047,6 +1050,25 @@ fn parse_audience(audiences: Option<mlua::Table>) -> LuaResult<ToolAudience> {
         ));
     }
     Ok(flags)
+}
+
+fn parse_workload(spec: &Table, kind: Option<&str>) -> LuaResult<Option<ToolAdmissionClass>> {
+    let admission: Option<String> = spec.get("admission")?;
+    let workload: Option<String> = spec.get("workload")?;
+    if admission.is_some() && workload.is_some() {
+        return Err(mlua::Error::runtime(
+            "register_tool: use only one of 'admission' or 'workload'",
+        ));
+    }
+    let explicit = admission.or(workload);
+    match explicit {
+        Some(name) => ToolAdmissionClass::from_workload(&name).ok_or_else(|| {
+            mlua::Error::runtime(format!(
+                "register_tool: unknown admission '{name}' (expected cheap, standard, expensive, or orchestrator)"
+            ))
+        }).map(Some),
+        None => Ok(None),
+    }
 }
 
 fn parse_timeout(spec: &Table) -> LuaResult<Option<Duration>> {
@@ -1179,14 +1201,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<String>("kind")
         .ok()
         .map(|s| Arc::from(s.as_str()));
-    let workload = match spec.get::<Option<String>>("workload")? {
-        Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
-            mlua::Error::runtime(
-                "register_tool: workload must be cheap, standard, expensive, or orchestrator",
-            )
-        })?),
-        None => None,
-    };
+    let workload = parse_workload(spec, kind.as_deref())?;
     let audience = parse_audience(audiences)?;
     let timeout = parse_timeout(spec)?;
     let start_annotation = parse_start_annotation(spec, &schema_val)?;
@@ -1249,13 +1264,16 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
 }
 
 fn register_command_from_lua(lua: &Lua, spec: &Table, plugin: Arc<str>) -> LuaResult<()> {
-    let name: String = spec
+    let mut name: String = spec
         .get("name")
         .map_err(|_| mlua::Error::runtime("register_command: missing 'name'"))?;
     if name.is_empty() {
         return Err(mlua::Error::runtime(
             "register_command: name must be non-empty",
         ));
+    }
+    if !name.starts_with('/') {
+        name.insert(0, '/');
     }
     let description: String = spec.get("description").unwrap_or_else(|_| String::new());
     let handler: Function = spec
@@ -1650,6 +1668,28 @@ mod tests {
     #[test_case::test_case(&"a".repeat(TOOL_NAME_MAX + 1), false ; "too_long")]
     fn tool_name_validation(name: &str, expected: bool) {
         assert_eq!(is_valid_tool_name(name), expected);
+    }
+
+    #[test_case::test_case("cheap", Some(ToolAdmissionClass::Cheap) ; "cheap")]
+    #[test_case::test_case("standard", Some(ToolAdmissionClass::Standard) ; "standard")]
+    #[test_case::test_case("expensive", Some(ToolAdmissionClass::Standard) ; "expensive")]
+    #[test_case::test_case("orchestrator", Some(ToolAdmissionClass::Orchestrator) ; "orchestrator")]
+    fn explicit_workload_is_parsed(name: &str, expected: Option<ToolAdmissionClass>) {
+        let lua = Lua::new();
+        let spec = lua.create_table().unwrap();
+        spec.set("admission", name).unwrap();
+        assert_eq!(parse_workload(&spec, None).unwrap(), expected);
+    }
+
+    #[test]
+    fn workload_defaults_from_kind_and_rejects_alias_conflicts() {
+        let lua = Lua::new();
+        let spec = lua.create_table().unwrap();
+        assert_eq!(parse_workload(&spec, Some("execute")).unwrap(), None);
+
+        spec.set("admission", "cheap").unwrap();
+        spec.set("workload", "agent").unwrap();
+        assert!(parse_workload(&spec, None).is_err());
     }
 
     #[test_case::test_case(

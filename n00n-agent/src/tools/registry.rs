@@ -848,6 +848,13 @@ mod tests {
     }
 
     #[test]
+    fn explicit_admission_scope_is_retained_by_registry() {
+        let admission = Arc::new(ToolAdmission::with_limits(1, 1));
+        let registry = ToolRegistry::with_admission(Arc::clone(&admission));
+        assert!(Arc::ptr_eq(&admission, &registry.admission()));
+    }
+
+    #[test]
     fn name_conflict_is_rejected() {
         let reg = ToolRegistry::new();
         let tool = mock("dupe");

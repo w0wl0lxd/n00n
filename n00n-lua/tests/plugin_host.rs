@@ -14,9 +14,9 @@ use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
     ActiveTools, DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-    ToolSource, timeout_annotation,
+    ToolSource, ToolWorkload, timeout_annotation,
 };
-use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
+use n00n_config::{AgentConfig, AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
 use n00n_providers::provider::{BoxFuture, Provider};
 use n00n_providers::{
@@ -359,6 +359,34 @@ fn tool_kind_flows_to_trait() {
     assert_eq!(entry.tool.tool_kind(), Some("fetch"));
 }
 
+#[test_case::test_case("admission", "cheap", ToolWorkload::Cheap ; "cheap")]
+#[test_case::test_case("admission", "process", ToolWorkload::Process ; "process")]
+#[test_case::test_case("admission", "agent", ToolWorkload::Agent ; "agent")]
+#[test_case::test_case("admission", "orchestrator", ToolWorkload::Orchestrator ; "orchestrator")]
+#[test_case::test_case("workload", "agent", ToolWorkload::Agent ; "workload_alias")]
+fn explicit_admission_flows_to_registered_workload(
+    field: &str,
+    value: &str,
+    expected: ToolWorkload,
+) {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "admission_probe",
+            description = "admission probe",
+            schema = {MINIMAL_SCHEMA},
+            kind = "read",
+            {field} = "{value}",
+            handler = function() return "" end
+        }})"#,
+    );
+    host.load_source("admission_plugin", &src).unwrap();
+    let entry = reg.get("admission_probe").expect("tool not registered");
+    assert_eq!(entry.workload, expected);
+}
+
 /// `get_tool` handles are the boundary between plugins: they never throw
 /// (errors become nil) and their returns are normalized, so a composing
 /// caller like batch needs no pcall of its own.
@@ -674,6 +702,42 @@ fn restore_ctx_is_userdata_with_gated_capabilities() {
         text.contains("hi tol_ok config_err finish_err deadline_err cancelled_ok"),
         "restore ctx capability matrix mismatch: {text}"
     );
+}
+
+#[test]
+fn handler_ctx_serializes_fusion_sidekick_tier() {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    host.load_source(
+        "fusion_config_probe",
+        r#"
+            n00n.api.register_tool({
+                name = "fusion_config_probe",
+                description = "probe",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function(_, ctx)
+                    return ctx:config("fusion").sidekick_tier
+                end,
+            })
+        "#,
+    )
+    .unwrap();
+    let mut config = AgentConfig::default();
+    config.fusion.sidekick_tier = n00n_config::providers::Tier::Strong;
+    let invocation = registry
+        .get("fusion_config_probe")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({}))
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    ctx.config = Arc::new(config);
+
+    let output = smol::block_on(invocation.execute(&ctx)).output.unwrap();
+    match output {
+        n00n_agent::ToolOutput::Plain(output) => assert_eq!(output.text, "strong"),
+        other => panic!("unexpected output: {other:?}"),
+    }
 }
 
 #[test]
@@ -5696,7 +5760,7 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
     let action = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
-    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = action else {
         panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
@@ -5740,7 +5804,7 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let action = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
-    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = action else {
         panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { id, text, .. } = req else {
@@ -5780,7 +5844,7 @@ fn agent_control_resume_preserves_paused_team_mode() {
         )
     });
 
-    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("agent_control did not request session status")
     else {
@@ -5800,7 +5864,7 @@ fn agent_control_resume_preserves_paused_team_mode() {
         })))
         .unwrap();
 
-    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("agent_control did not submit resume prompt")
     else {

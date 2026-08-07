@@ -733,6 +733,7 @@ n00n.api.register_tool({
   name = "blackboard",
   description = description,
   kind = "execute",
+  admission = "cheap",
   audiences = { "main", "general_sub", "workflow" },
   schema = schema,
   handler = handler,

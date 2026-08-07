@@ -1440,6 +1440,32 @@ fn agent_picker_exposes_names_models_and_status() {
 }
 
 #[test]
+fn background_runtime_appears_in_tasks_and_navigates_by_session_id() {
+    let mut app = test_app();
+    let id = n00n_storage::id::n00nId::generate();
+    app.set_runtime_tasks(vec![super::RuntimeTaskEntry {
+        id,
+        title: "inspect registration".into(),
+        kind: "task".into(),
+        status: super::RuntimeTaskStatus::Running,
+        model: Some("openai/test-model".into()),
+    }]);
+
+    open_tasks_picker(&mut app);
+    let task = app.task_picker.item(1).expect("background task entry");
+    assert_eq!(task.label(), "Task: inspect registration");
+    assert_eq!(task.detail(), Some(TASK_RUNNING_DETAIL));
+
+    app.update(Msg::Key(key(KeyCode::Down)));
+    assert_eq!(
+        app.resolve_render_chat(),
+        0,
+        "external sessions have no local preview"
+    );
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(matches!(actions.as_slice(), [Action::FocusSession(target)] if *target == id));
+}
+#[test]
 fn ctrl_x_toggles_tasks_picker() {
     let mut app = test_app();
     app.update(Msg::Key(kb::TASKS.to_key_event()));
@@ -2245,7 +2271,7 @@ fn active_main_fusion_phase_is_visible() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.update(agent_msg(AgentEvent::FusionPhase {
+    app.update(agent_msg(AgentEvent::FusionPhaseChanged {
         phase: n00n_agent::FusionPhase::Executing,
         label: Some("brief label".into()),
     }));
@@ -2262,7 +2288,7 @@ fn stale_fusion_phase_is_ignored() {
     app.run_id = 2;
     let count_before = app.main_chat().message_count();
     app.update(agent_msg_with_run_id(
-        AgentEvent::FusionPhase {
+        AgentEvent::FusionPhaseChanged {
             phase: n00n_agent::FusionPhase::Reviewing,
             label: None,
         },
@@ -3922,6 +3948,33 @@ fn ctrl_t_noop_when_plan_not_ready() {
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
     assert!(!app.plan_form.is_visible());
+}
+
+#[test]
+fn ctrl_t_reopens_dismissed_plan_despite_plugin_override() {
+    let mut app = plan_app();
+    dismiss_plan_esc(&mut app);
+    assert!(!app.plan_form.is_visible());
+    assert!(app.state.plan.is_ready());
+
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::PLAN_TOGGLE.code,
+        modifiers: kb::PLAN_TOGGLE.modifiers,
+        desc: "plugin ctrl-t override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 1,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+
+    assert!(
+        app.plan_form.is_visible(),
+        "Ctrl+T must reopen a dismissed plan even when a plugin binds <C-t>"
+    );
 }
 
 #[test]

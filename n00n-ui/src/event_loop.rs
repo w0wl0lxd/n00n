@@ -23,7 +23,8 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, mcp};
 use n00n_config::UiConfig;
 use n00n_lua::{
-    EventHandle, HintReader, KeymapReader, LuaCommandReader, SessionReply, SessionRequest, UiAction,
+    EventHandle, HintReader, KeymapReader, LuaCommandReader, SessionCaller, SessionReply,
+    SessionRequest, UiAction,
 };
 use n00n_providers::Timeouts;
 use n00n_providers::provider::{
@@ -41,7 +42,9 @@ use tracing::warn;
 use crate::AppSession;
 use crate::agent::{AgentCommand, AgentHandles, ModelSlot, shared_queue::QueueItem};
 use crate::app::shell::{ShellEvent, spawn_shell};
-use crate::app::{App, AppInit, Msg, QueuedMessage, SubmitOutcome};
+use crate::app::{
+    App, AppInit, Msg, QueuedMessage, RuntimeTaskEntry, RuntimeTaskStatus, SubmitOutcome,
+};
 use crate::components::input::Submission;
 use crate::components::usage_modal::UsageFetchState;
 use crate::components::{
@@ -65,6 +68,9 @@ const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 const TEAM_TOOL_NAME: &str = "team";
+const MAX_SESSION_DEPTH: usize = 4;
+const MAX_ROOT_DESCENDANTS: usize = 16;
+const MAX_ACTIVE_ROOT_DESCENDANTS: usize = 8;
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -181,6 +187,34 @@ struct SessionRuntime {
     shell_tx: flume::Sender<ShellEvent>,
     shell_rx: flume::Receiver<ShellEvent>,
     last_status: SessionStatus,
+    kind: String,
+    task_status: RuntimeTaskStatus,
+}
+
+fn runtime_kind(session: &AppSession) -> String {
+    if session.meta.parent_id.is_none() {
+        return "main".to_owned();
+    }
+    let title = session.title.to_ascii_lowercase();
+    if title.starts_with("team:") {
+        "team".to_owned()
+    } else if title.starts_with("workflow:") {
+        "workflow".to_owned()
+    } else if title.starts_with("task:") {
+        "task".to_owned()
+    } else {
+        "agent".to_owned()
+    }
+}
+
+fn runtime_kind_for_tool(tool: Option<&str>) -> String {
+    match tool {
+        Some("task") => "task",
+        Some("team") => "team",
+        Some("workflow") => "workflow",
+        _ => "agent",
+    }
+    .to_owned()
 }
 
 impl SessionRuntime {
@@ -216,6 +250,12 @@ struct SpawnCtx {
 impl SpawnCtx {
     fn spawn_runtime(&self, session: AppSession) -> SessionRuntime {
         let resumed = crate::app::session_has_content(&session);
+        let kind = runtime_kind(&session);
+        let task_status = if session.meta.parent_id.is_some() {
+            RuntimeTaskStatus::Done
+        } else {
+            RuntimeTaskStatus::Running
+        };
         let permissions = Arc::new(self.permissions.fork());
         let initial_plan_path = session.meta.plan_path.as_ref().map(PathBuf::from);
         let handles = AgentHandles::spawn(
@@ -263,6 +303,8 @@ impl SpawnCtx {
             shell_tx,
             shell_rx,
             last_status: SessionStatus::Idle,
+            kind,
+            task_status,
         }
     }
 }
@@ -785,8 +827,12 @@ impl<'t> EventLoop<'t> {
                     .pick_model_for_lua(current.as_deref(), reply_tx);
                 self.handle_action(self.focused, Action::RefreshModels);
             }
-            UiAction::Session { req, reply_tx } => {
-                self.handle_session_request(req, reply_tx);
+            UiAction::Session {
+                caller,
+                req,
+                reply_tx,
+            } => {
+                self.handle_session_request(&caller, req, reply_tx);
             }
         }
     }
@@ -834,6 +880,7 @@ impl<'t> EventLoop<'t> {
     /// the live runtimes.
     fn handle_session_request(
         &mut self,
+        caller: &SessionCaller,
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,
     ) {
@@ -854,6 +901,13 @@ impl<'t> EventLoop<'t> {
             // flushes, so the loop never blocks on disk and a queued save
             // cannot resurrect the files.
             SessionRequest::Delete { id } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let id = match parse_session_id(&id) {
                     Ok(id) => id,
                     Err(e) => {
@@ -861,6 +915,11 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
+                if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                    let _ = reply_tx
+                        .send(Err("caller is not authorized to delete this session".into()));
+                    return;
+                }
                 if let Some(i) = self.position(id) {
                     if i == self.focused {
                         let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
@@ -881,14 +940,24 @@ impl<'t> EventLoop<'t> {
                 });
             }
             SessionRequest::Live => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let list: Vec<_> = self
                     .sessions
                     .iter()
                     .enumerate()
+                    .filter(|(_, rt)| caller_id.is_none_or(|id| self.lineage_related(id, rt.id())))
                     .map(|(i, rt)| {
                         json!({
                             "id": rt.id(),
                             "title": rt.app.state.session.title,
+                            "kind": rt.kind,
+                            "parent_id": rt.app.state.session.meta.parent_id,
                             "status": SessionStatus::of(&rt.app).as_str(),
                             "updated_at": rt.app.state.session.updated_at,
                             "focused": i == self.focused,
@@ -899,7 +968,17 @@ impl<'t> EventLoop<'t> {
                 let _ = reply_tx.send(Ok(json!(list)));
             }
             SessionRequest::Status { id } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let reply = parse_session_id(&id).and_then(|id| {
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to read this session".into());
+                    }
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
@@ -929,30 +1008,70 @@ impl<'t> EventLoop<'t> {
             }
             SessionRequest::New {
                 prompt,
+                title,
                 focus,
                 parent_id,
             } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let requested_parent = match parent_id.map(|id| parse_session_id(&id)).transpose() {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let parent_id = if let Some(caller_id) = caller_id {
+                    if requested_parent.is_some_and(|requested| requested != caller_id) {
+                        let _ = reply_tx.send(Err(
+                            "session parent does not match the invoking session".into(),
+                        ));
+                        return;
+                    }
+                    Some(caller_id)
+                } else if caller.is_host() {
+                    requested_parent
+                } else if requested_parent.is_some() {
+                    let _ = reply_tx.send(Err("session parent requires a trusted caller".into()));
+                    return;
+                } else {
+                    None
+                };
+                if let Some(parent) = parent_id
+                    && let Err(error) = self.admit_child(parent)
+                {
+                    let _ = reply_tx.send(Err(error));
+                    return;
+                }
                 let mut session = {
                     let slot = self.ctx.model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
                 };
-                let parent_id = match parent_id {
-                    Some(id) => match parse_session_id(&id) {
-                        Ok(id) => Some(id),
-                        Err(error) => {
-                            let _ = reply_tx.send(Err(error));
-                            return;
-                        }
-                    },
-                    None => None,
-                };
                 session.meta.parent_id = parent_id;
+                if let Some(title) = title {
+                    session.title = normalize_title(&title);
+                }
                 let idx = self.push_runtime(self.ctx.spawn_runtime(session));
+                self.sessions[idx].kind = runtime_kind_for_tool(caller.tool());
+                self.sessions[idx].task_status = RuntimeTaskStatus::Running;
                 let id = self.sessions[idx].id();
                 if let Some(prompt) = prompt {
-                    let _ = self.submit_text(idx, prompt, false, false);
+                    if let Err(error) = self.submit_text(idx, prompt, false, false) {
+                        let rt = self.remove_runtime(idx);
+                        rt.handles.cancel();
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                } else {
+                    self.sessions[idx].app.save_session();
                 }
+                self.sync_runtime_tasks();
                 if focus {
                     self.set_focus(idx);
                 }
@@ -964,18 +1083,40 @@ impl<'t> EventLoop<'t> {
                 steer,
                 control,
             } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let idx = match id {
                     None => Ok(self.focused),
                     Some(id) => parse_session_id(&id).and_then(|id| {
-                        self.position(id)
-                            .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
+                        let idx = self
+                            .position(id)
+                            .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                        if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                            return Err("caller is not authorized to prompt this session".into());
+                        }
+                        Ok(idx)
                     }),
                 };
                 let _ =
                     reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer, control)));
             }
             SessionRequest::Cancel { id } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let reply = parse_session_id(&id).and_then(|id| {
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to cancel this session".into());
+                    }
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
@@ -989,15 +1130,35 @@ impl<'t> EventLoop<'t> {
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::Focus { id } => {
-                let reply = parse_session_id(&id)
-                    .and_then(|id| self.focus_session(id))
-                    .map(|()| json!(true));
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let reply = parse_session_id(&id).and_then(|id| {
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to focus this session".into());
+                    }
+                    self.focus_session(id).map(|()| json!(true))
+                });
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::SetTitle { id, title } => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let title = normalize_title(&title);
                 let reply = (|| {
                     let id = parse_session_id(&id)?;
+                    if caller_id.is_some_and(|caller_id| !self.lineage_related(caller_id, id)) {
+                        return Err("caller is not authorized to set title on this session".into());
+                    }
                     if let Some(i) = self.position(id) {
                         let app = &mut self.sessions[i].app;
                         app.state.session.title = title;
@@ -1013,6 +1174,107 @@ impl<'t> EventLoop<'t> {
                 })();
                 let _ = reply_tx.send(reply);
             }
+        }
+    }
+
+    fn caller_id_result(&self, caller: &SessionCaller) -> Result<Option<n00nId>, String> {
+        let Some(id) = caller.session_id() else {
+            return Ok(None);
+        };
+        let id = parse_session_id(id)?;
+        self.position(id)
+            .ok_or_else(|| format!("invoking session is not live: {id}"))?;
+        Ok(Some(id))
+    }
+
+    fn parent_of(&self, id: n00nId) -> Option<n00nId> {
+        self.position(id)
+            .and_then(|index| self.sessions[index].app.state.session.meta.parent_id)
+    }
+
+    fn is_ancestor(&self, ancestor: n00nId, mut session: n00nId) -> bool {
+        for _ in 0..self.sessions.len() {
+            let Some(parent) = self.parent_of(session) else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            session = parent;
+        }
+        false
+    }
+
+    fn lineage_related(&self, left: n00nId, right: n00nId) -> bool {
+        left == right || self.is_ancestor(left, right) || self.is_ancestor(right, left)
+    }
+
+    fn root_and_depth(&self, mut session: n00nId) -> (n00nId, usize) {
+        let mut depth = 0;
+        for _ in 0..self.sessions.len() {
+            let Some(parent) = self.parent_of(session) else {
+                break;
+            };
+            session = parent;
+            depth += 1;
+        }
+        (session, depth)
+    }
+
+    fn admit_child(&self, parent: n00nId) -> Result<(), String> {
+        if self.position(parent).is_none() {
+            return Err(format!("parent session is not live: {parent}"));
+        }
+        let (root, parent_depth) = self.root_and_depth(parent);
+        if parent_depth + 1 > MAX_SESSION_DEPTH {
+            return Err(format!("session depth limit ({MAX_SESSION_DEPTH}) reached"));
+        }
+        let descendants = self
+            .sessions
+            .iter()
+            .filter(|runtime| self.is_ancestor(root, runtime.id()))
+            .count();
+        if descendants >= MAX_ROOT_DESCENDANTS {
+            return Err(format!(
+                "session descendant limit ({MAX_ROOT_DESCENDANTS}) reached"
+            ));
+        }
+        let active = self
+            .sessions
+            .iter()
+            .filter(|runtime| {
+                self.is_ancestor(root, runtime.id())
+                    && runtime.task_status == RuntimeTaskStatus::Running
+            })
+            .count();
+        if active >= MAX_ACTIVE_ROOT_DESCENDANTS {
+            return Err(format!(
+                "active session descendant limit ({MAX_ACTIVE_ROOT_DESCENDANTS}) reached"
+            ));
+        }
+        Ok(())
+    }
+
+    fn sync_runtime_tasks(&mut self) {
+        let projected: Vec<Vec<RuntimeTaskEntry>> = self
+            .sessions
+            .iter()
+            .map(|owner| {
+                self.sessions
+                    .iter()
+                    .filter(|runtime| self.is_ancestor(owner.id(), runtime.id()))
+                    .map(|runtime| RuntimeTaskEntry {
+                        id: runtime.id(),
+                        title: runtime.app.state.session.title.clone(),
+                        kind: runtime.kind.clone(),
+                        status: runtime.task_status,
+                        model: Some(runtime.app.state.session.model.clone()),
+                    })
+                    .collect()
+            })
+            .collect();
+        for (runtime, tasks) in self.sessions.iter_mut().zip(projected) {
+            runtime.app.set_runtime_tasks(tasks);
         }
     }
 
@@ -1290,6 +1552,11 @@ impl<'t> EventLoop<'t> {
                     .handles
                     .cmd_tx
                     .try_send(AgentCommand::CancelSubagent { tool_use_id });
+            }
+            Action::FocusSession(id) => {
+                if let Err(error) = self.focus_session(id) {
+                    self.sessions[idx].app.flash(error);
+                }
             }
             Action::NewSession => {
                 self.respawn_agent(idx, Vec::new(), Vec::new());

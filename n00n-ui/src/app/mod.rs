@@ -61,6 +61,7 @@ use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{Effort, Message, Model, System, ThinkingConfig};
 use n00n_storage::StateDir;
+use n00n_storage::id::n00nId;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
 use n00n_storage::sessions::StoredTokenUsage;
@@ -128,11 +129,35 @@ pub(super) enum TaskStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum RuntimeTaskStatus {
+    Running,
+    Done,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeTaskEntry {
+    pub id: n00nId,
+    pub title: String,
+    pub kind: String,
+    pub status: RuntimeTaskStatus,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskTarget {
+    Chat(usize),
+    Session(n00nId),
+}
+
 #[derive(Clone)]
 pub(super) struct TaskEntry {
     name: String,
     status: TaskStatus,
     usage: Option<String>,
+    target: TaskTarget,
 }
 
 impl PickerItem for TaskEntry {
@@ -152,6 +177,15 @@ impl PickerItem for TaskEntry {
     }
     fn is_spinning(&self) -> bool {
         self.status == TaskStatus::Running
+    }
+}
+
+fn task_kind_label(kind: &str) -> &str {
+    match kind {
+        "team" => "Team",
+        "workflow" => "Workflow",
+        "task" | "agent" => "Task",
+        _ => "Agent",
     }
 }
 
@@ -238,6 +272,7 @@ pub struct App {
     pub(super) command_palette: CommandPalette,
     pub(super) task_picker: ListPicker<TaskEntry>,
     pub(super) task_picker_original: Option<usize>,
+    runtime_tasks: Vec<RuntimeTaskEntry>,
     pub(super) theme_picker: ThemePicker,
     pub(super) model_picker: ModelPicker,
     model_picker_reply: Option<flume::Sender<Option<String>>>,
@@ -356,6 +391,7 @@ impl App {
             ),
             task_picker: ListPicker::new(),
             task_picker_original: None,
+            runtime_tasks: Vec::new(),
             theme_picker: ThemePicker::new(),
             model_picker: ModelPicker::new(available_models),
             model_picker_reply: None,
@@ -644,8 +680,19 @@ impl App {
         }
     }
 
+    pub(crate) fn set_runtime_tasks(&mut self, tasks: Vec<RuntimeTaskEntry>) {
+        self.runtime_tasks = tasks;
+    }
+    pub(crate) fn selected_task_chat(&self) -> Option<usize> {
+        let index = self.task_picker.selected_index()?;
+        match self.task_picker.item(index)?.target {
+            TaskTarget::Chat(chat) => Some(chat),
+            TaskTarget::Session(_) => None,
+        }
+    }
+
     fn open_tasks(&mut self) {
-        let entries: Vec<TaskEntry> = self
+        let mut entries: Vec<TaskEntry> = self
             .chats
             .iter()
             .enumerate()
@@ -678,9 +725,20 @@ impl App {
                     },
                     status,
                     usage,
+                    target: TaskTarget::Chat(i),
                 }
             })
             .collect();
+        entries.extend(self.runtime_tasks.iter().map(|task| TaskEntry {
+            name: format!("{}: {}", task_kind_label(&task.kind), task.title),
+            status: match task.status {
+                RuntimeTaskStatus::Running => TaskStatus::Running,
+                RuntimeTaskStatus::Done => TaskStatus::Done,
+                RuntimeTaskStatus::Error => TaskStatus::Error,
+            },
+            usage: task.model.clone(),
+            target: TaskTarget::Session(task.id),
+        }));
         self.task_picker_original = Some(self.active_chat);
         self.task_picker.set_footer(TASK_PANEL_FOOTER);
         self.task_picker.open(entries, " Agents & Teams ");
@@ -735,13 +793,6 @@ impl App {
         }
         if key::SCROLL_BOTTOM.matches(key) {
             self.active_chat().jump_to_bottom();
-            return Some(vec![]);
-        }
-        if key::PLAN_TOGGLE.matches(key)
-            && self.state.mode == Mode::Plan
-            && self.state.plan.is_ready()
-        {
-            self.plan_form.toggle();
             return Some(vec![]);
         }
         None
@@ -874,8 +925,14 @@ impl App {
                 PickerAction::Consumed | PickerAction::Toggle(..) => vec![],
                 PickerAction::Select(idx, _) => {
                     self.task_picker_original = None;
-                    self.active_chat = idx;
-                    vec![]
+                    match self.task_picker.item(idx).map(|entry| entry.target) {
+                        Some(TaskTarget::Chat(chat)) => {
+                            self.active_chat = chat;
+                            vec![]
+                        }
+                        Some(TaskTarget::Session(id)) => vec![Action::FocusSession(id)],
+                        None => vec![],
+                    }
                 }
                 PickerAction::Close => {
                     self.active_chat = self.task_picker_original.take().unwrap_or_else(|| 0);
@@ -945,6 +1002,17 @@ impl App {
                     vec![Action::ToggleMcp(server_name, enabled)]
                 }
             });
+        }
+
+        // Open modals above win, but a dismissed plan form should still reopen
+        // on Ctrl+T even when a plugin binds `<C-t>`: this runs before overrides,
+        // so the reopen hint works again (regressed when overrides moved ahead).
+        if key::PLAN_TOGGLE.matches(key)
+            && self.state.mode == Mode::Plan
+            && self.state.plan.is_ready()
+        {
+            self.plan_form.toggle();
+            return Some(vec![]);
         }
 
         None
@@ -1646,7 +1714,7 @@ impl App {
 
         if chat_idx == 0 {
             match &envelope.event {
-                AgentEvent::FusionPhase { phase, .. } => {
+                AgentEvent::FusionPhaseChanged { phase, .. } => {
                     self.fusion_phase = match phase {
                         FusionPhase::Idle
                         | FusionPhase::Complete

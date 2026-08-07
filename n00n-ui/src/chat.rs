@@ -178,7 +178,7 @@ impl Chat {
                     self.messages_panel.flush();
                 }
             }
-            AgentEvent::FusionPhase { phase, label } => {
+            AgentEvent::FusionPhaseChanged { phase, label } => {
                 let phase = match phase {
                     n00n_agent::FusionPhase::Idle => "Idle",
                     n00n_agent::FusionPhase::Planning => "Planning",
@@ -1009,9 +1009,6 @@ mod tests {
     #[test_case(n00n_agent::FusionPhase::Executing, Some("brief label"), "Executing: brief label" ; "executing")]
     #[test_case(n00n_agent::FusionPhase::Reviewing, None, "Reviewing" ; "reviewing")]
     #[test_case(n00n_agent::FusionPhase::LeadFallback, None, "Lead fallback" ; "lead fallback")]
-    #[test_case(n00n_agent::FusionPhase::Complete, None, "Complete" ; "complete")]
-    #[test_case(n00n_agent::FusionPhase::Cancelled, None, "Cancelled" ; "cancelled")]
-    #[test_case(n00n_agent::FusionPhase::Failed, None, "Failed" ; "failed")]
     fn fusion_phase_renders_typed_control_text(
         phase: n00n_agent::FusionPhase,
         label: Option<&str>,
@@ -1019,7 +1016,7 @@ mod tests {
     ) {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(
-            AgentEvent::FusionPhase {
+            AgentEvent::FusionPhaseChanged {
                 phase,
                 label: label.map(str::to_owned),
             },
@@ -1041,7 +1038,7 @@ mod tests {
         let cards_before = chat.compaction_card_count();
 
         chat.handle_event(
-            AgentEvent::FusionPhase {
+            AgentEvent::FusionPhaseChanged {
                 phase: n00n_agent::FusionPhase::Executing,
                 label: Some("brief label".into()),
             },

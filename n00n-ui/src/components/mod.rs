@@ -205,6 +205,7 @@ pub enum Action {
     CancelSubagent {
         tool_use_id: String,
     },
+    FocusSession(n00n_storage::id::n00nId),
     NewSession,
     LoadSession(Box<LoadedSession>),
     ChangeModel(String),

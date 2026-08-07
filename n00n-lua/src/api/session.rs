@@ -24,8 +24,16 @@ async fn roundtrip(
     let Some(tx) = tx else {
         return Ok(err_pair(NO_UI_ERR));
     };
+    let caller = crate::runtime::active_session_caller(&lua);
     let (reply_tx, reply_rx) = flume::bounded::<SessionReply>(1);
-    if tx.try_send(UiAction::Session { req, reply_tx }).is_err() {
+    if tx
+        .try_send(UiAction::Session {
+            caller,
+            req,
+            reply_tx,
+        })
+        .is_err()
+    {
         return Ok(err_pair(NO_UI_ERR));
     }
     match reply_rx.recv_async().await {
@@ -127,19 +135,21 @@ async fn new(
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
-    let (prompt, focus, parent_id) = match opts {
+    let (prompt, title, focus, parent_id) = match opts {
         Some(opts) => (
             opts.get("prompt")?,
+            opts.get("title")?,
             opts.get("focus").unwrap_or_else(|_| false),
             opts.get("parent_id")?,
         ),
-        None => (None, false, None),
+        None => (None, None, false, None),
     };
     roundtrip(
         lua,
         tx,
         SessionRequest::New {
             prompt,
+            title,
             focus,
             parent_id,
         },
@@ -261,6 +271,7 @@ mod tests {
             let Ok(UiAction::Session {
                 req: SessionRequest::Focus { id },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected focus request");
@@ -281,6 +292,7 @@ mod tests {
             let Ok(UiAction::Session {
                 req: SessionRequest::Status { id },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected status request");
@@ -305,6 +317,7 @@ mod tests {
             let Ok(UiAction::Session {
                 req: SessionRequest::Cancel { id },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected cancel request");
@@ -342,6 +355,7 @@ mod tests {
                         control,
                     },
                 reply_tx,
+                caller: _,
             }) = rx.recv()
             else {
                 panic!("expected prompt request");

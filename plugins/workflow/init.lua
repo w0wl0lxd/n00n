@@ -38,6 +38,7 @@ local RESEARCH_PROMPT = "research"
 local JOURNAL_DIRNAME = "workflows"
 local JOURNAL_FILENAME = "journal.jsonl"
 local META_FILENAME = "meta.json"
+local MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 local DEFAULT_AGENTS_PER_RUN = 24
 local DEFAULT_CONCURRENT_AGENTS = 4
 local DEFAULT_CONCURRENT_WORKFLOWS = 2
@@ -272,6 +273,7 @@ end
 
 local function load_journal(run_id, required)
   local cache = {}
+  local order = {}
   local dir = run_dir(run_id)
   if not dir then
     return nil, nil, nil, "cannot resolve workflow run directory"
@@ -295,6 +297,9 @@ local function load_journal(run_id, required)
   if type(text) ~= "string" then
     return nil, path, nil, "failed to read workflow journal: " .. tostring(read_err)
   end
+  if #text > MAX_JOURNAL_BYTES then
+    return nil, path, nil, "workflow journal exceeds the 4 MiB limit"
+  end
   if text == "" then
     return cache, path, ""
   end
@@ -306,9 +311,35 @@ local function load_journal(run_id, required)
     if type(row) ~= "table" or type(row.k) ~= "string" or type(row.v) ~= "string" then
       return nil, path, nil, "invalid workflow journal JSON: " .. tostring(decode_err or "invalid journal row")
     end
+    if cache[row.k] == nil then
+      order[#order + 1] = row.k
+    end
     cache[row.k] = row.v
   end
-  return cache, path, text
+
+  if #order == 0 then
+    return cache, path, ""
+  end
+
+  -- Older runs could append the same key more than once. Keep the last value
+  -- for replay, but rewrite the file once so retention is bounded by unique
+  -- agent calls rather than by every retry.
+  local lines = {}
+  for _, key in ipairs(order) do
+    local encoded, encode_err = n00n.json.encode({ k = key, v = cache[key] })
+    if not encoded then
+      return nil, path, nil, "failed to encode compact workflow journal: " .. tostring(encode_err)
+    end
+    lines[#lines + 1] = encoded
+  end
+  local compact_text = table.concat(lines, "\n") .. "\n"
+  if compact_text ~= text then
+    local write_ok, write_err = n00n.fs.write(path, compact_text)
+    if not write_ok then
+      return nil, path, nil, "failed to compact workflow journal: " .. tostring(write_err)
+    end
+  end
+  return cache, path, compact_text
 end
 
 local function load_run_meta(run_id, script_hash)

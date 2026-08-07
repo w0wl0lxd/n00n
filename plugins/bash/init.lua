@@ -634,6 +634,8 @@ local opts = n00n.api.register_options(output_limits.extend({
 n00n.api.register_tool({
   name = "bash",
   kind = "execute",
+  admission = "process",
+  audiences = { "main", "research_sub", "general_sub" },
   description = description,
   schema = {
     type = "object",

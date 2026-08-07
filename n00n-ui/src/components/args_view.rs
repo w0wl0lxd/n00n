@@ -24,14 +24,15 @@ pub(crate) fn render_args(
     expanded_limit: usize,
     expanded: bool,
 ) -> ArgView {
-    let (limit, budget) = if expanded {
-        (expanded_limit, EXPANDED_LINE_BUDGET)
+    let (limit, budget, by_chars) = if expanded {
+        (expanded_limit, EXPANDED_LINE_BUDGET, false)
     } else {
-        (collapsed_limit, COLLAPSED_LINE_BUDGET)
+        (collapsed_limit, COLLAPSED_LINE_BUDGET, true)
     };
     let mut builder = ArgsBuilder {
         lines: Vec::new(),
         budget,
+        by_chars,
     };
     if let serde_json::Value::Object(map) = input {
         for (key, value) in map {
@@ -148,6 +149,7 @@ fn search_value(value: &serde_json::Value) -> String {
 struct ArgsBuilder {
     lines: Vec<Line<'static>>,
     budget: usize,
+    by_chars: bool,
 }
 
 impl ArgsBuilder {
@@ -286,13 +288,23 @@ impl ArgsBuilder {
                 _ => out.push(ch),
             }
         }
-        if out.len() > self.budget {
-            let mut end = self.budget.saturating_sub(1);
-            while !out.is_char_boundary(end) {
-                end -= 1;
-            }
-            let mut head: String = out[..end].to_owned();
-            head.push('…');
+        let needs_truncation = if self.by_chars {
+            out.chars().count() > self.budget
+        } else {
+            out.len() > self.budget
+        };
+        if needs_truncation {
+            let ellipsis = '…';
+            let mut head: String = if self.by_chars {
+                out.chars().take(self.budget.saturating_sub(1)).collect()
+            } else {
+                let mut end = self.budget.saturating_sub(ellipsis.len_utf8());
+                while !out.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out[..end].to_owned()
+            };
+            head.push(ellipsis);
             head
         } else {
             out
@@ -433,7 +445,25 @@ mod tests {
         let view = render_args(&json!({ "content": long }), 1, usize::MAX, true);
         let text = lines_text(&view);
         assert!(text.contains('…'));
-        assert!(text.chars().count() <= EXPANDED_LINE_BUDGET + "content: ".len());
+        assert!(text.len() <= EXPANDED_LINE_BUDGET + "content: ".len());
+    }
+
+    #[test]
+    fn non_ascii_values_truncate_by_chars_not_bytes() {
+        let long = "汉".repeat(200);
+        let view = render_args(&json!({ "content": long }), 1, usize::MAX, false);
+        let text = lines_text(&view);
+        assert!(text.contains('…'));
+        assert!(
+            text.chars().count() > COLLAPSED_LINE_BUDGET / 2,
+            "char budget must keep ~159 chars, got {}",
+            text.chars().count()
+        );
+        assert!(
+            text.len() > COLLAPSED_LINE_BUDGET,
+            "kept bytes must exceed the byte budget, got {}",
+            text.len()
+        );
     }
 
     #[test]

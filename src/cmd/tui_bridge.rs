@@ -11,7 +11,7 @@ use n00n_daemon::lock::DaemonRole;
 use n00n_daemon::protocol::{AgentRecord, BackendKind, MessageOpts};
 use n00n_daemon::registry::{ControlPlane, TuiCallbackBackend};
 use n00n_daemon::server;
-use n00n_lua::{SessionRequest, UiAction};
+use n00n_lua::{SessionCaller, SessionRequest, UiAction};
 use serde_json::Value;
 
 const SESSION_ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -195,8 +195,12 @@ fn map_not_found(id: &str, err: ControlError) -> ControlError {
 
 fn session_call(tx: &flume::Sender<UiAction>, req: SessionRequest) -> ControlResult<Value> {
     let (reply_tx, reply_rx) = flume::bounded(1);
-    tx.try_send(UiAction::Session { req, reply_tx })
-        .map_err(|_| ControlError::Unavailable(UI_CHANNEL_CLOSED.into()))?;
+    tx.try_send(UiAction::Session {
+        caller: SessionCaller::host(),
+        req,
+        reply_tx,
+    })
+    .map_err(|_| ControlError::Unavailable(UI_CHANNEL_CLOSED.into()))?;
     match reply_rx.recv_timeout(SESSION_ROUNDTRIP_TIMEOUT) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(ControlError::Unavailable(e)),
@@ -280,7 +284,11 @@ mod tests {
 
     fn respond_live(rx: flume::Receiver<UiAction>, body: Value) {
         thread::spawn(move || {
-            if let Ok(UiAction::Session { req, reply_tx }) = rx.recv_timeout(Duration::from_secs(2))
+            if let Ok(UiAction::Session {
+                req,
+                reply_tx,
+                caller: _,
+            }) = rx.recv_timeout(Duration::from_secs(2))
             {
                 match req {
                     SessionRequest::Live => {
@@ -353,7 +361,11 @@ mod tests {
     fn message_forwards_steer_and_control_opts() -> Result<(), String> {
         let (tx, rx) = flume::unbounded();
         thread::spawn(move || {
-            if let Ok(UiAction::Session { req, reply_tx }) = rx.recv_timeout(Duration::from_secs(2))
+            if let Ok(UiAction::Session {
+                req,
+                reply_tx,
+                caller: _,
+            }) = rx.recv_timeout(Duration::from_secs(2))
             {
                 match req {
                     SessionRequest::Prompt {
@@ -395,8 +407,11 @@ mod tests {
         let (tx, rx) = flume::unbounded();
         thread::spawn(move || {
             let mut saw_status = false;
-            while let Ok(UiAction::Session { req, reply_tx }) =
-                rx.recv_timeout(Duration::from_secs(2))
+            while let Ok(UiAction::Session {
+                req,
+                reply_tx,
+                caller: _,
+            }) = rx.recv_timeout(Duration::from_secs(2))
             {
                 match req {
                     SessionRequest::Status { id } if id == "sess-1" => {

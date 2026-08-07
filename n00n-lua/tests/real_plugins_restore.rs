@@ -316,6 +316,53 @@ fn workflow_script_mismatch_starts_zero_agents() {
     );
 }
 
+#[test]
+fn workflow_duplicate_journal_compaction_preserves_latest_value() {
+    let error = execute_plugin_with_native_mock(
+        WORKFLOW_TOOL,
+        WORKFLOW_SRC,
+        r#"
+            n00n.env.state_dir = function() return "/state" end
+            n00n.workflow.hash = function() return "script-id" end
+            local run_dir = n00n.fs.joinpath("/state", "workflows", "aabbccdd")
+            local meta_path = n00n.fs.joinpath(run_dir, "meta.json")
+            local journal_path = n00n.fs.joinpath(run_dir, "journal.jsonl")
+            n00n.fs.metadata = function(path)
+                if path == run_dir then return { is_dir = true }, nil end
+                if path == meta_path or path == journal_path then return { is_file = true }, nil end
+                return nil, nil
+            end
+            n00n.fs.read = function(path)
+                if path == meta_path then
+                    return '{"run_id":"aabbccdd","script_hash":"script-id"}', nil
+                end
+                return '{"k":"script-id","v":"old"}\n{"k":"script-id","v":"new"}\n', nil
+            end
+            n00n.fs.write = function(path, content)
+                if path == journal_path then return nil, "compaction: " .. content end
+                return true, nil
+            end
+            n00n.agent.session = function() error("paid agent call must not start") end
+        "#,
+        json!({
+            "script": "meta({ name = 'resume' }); return agent({ prompt = 'paid' })",
+            "resume": "aabbccdd",
+        }),
+    )
+    .expect_err("duplicate journal rows must trigger compaction");
+
+    assert!(error.contains("compaction:"), "unexpected error: {error}");
+    assert!(
+        error.contains(r#""v":"new""#),
+        "latest value missing: {error}"
+    );
+    assert!(!error.contains(r#""v":"old""#), "stale value kept: {error}");
+    assert!(
+        !error.contains("paid agent call"),
+        "paid call started: {error}"
+    );
+}
+
 #[test_case::test_case(
     json!({ "command": "callers", "symbol": "target", "project": "/fixture" }),
     "callers of target\n  caller (function) src/lib.rs:7";
@@ -776,6 +823,11 @@ fn fusion_and_blackboard_headers_render_prose() {
     host.load_source("blackboard", BLACKBOARD_SRC).unwrap();
 
     let fusion = reg.get("fusion_delegate").unwrap();
+    assert_eq!(
+        fusion.tool.audience(),
+        n00n_agent::tools::ToolAudience::MAIN
+    );
+    assert_eq!(fusion.tool.tool_kind(), Some("execute"));
     let inv = fusion
         .tool
         .parse(&json!({
