@@ -18,7 +18,7 @@ use std::{
 use n00n_agent::AgentEvent;
 use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
-use n00n_config::ToolOutputLines;
+use n00n_config::{ToolOutputLines, providers::Tier};
 use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 
@@ -168,6 +168,58 @@ fn batch_state() -> Value {
         { "tool": "grep", "status": "success", "output": GREP_OUT },
         { "tool": "bash", "status": "success", "output": "hello-from-bash" },
     ]})
+}
+
+const FUSION_MODEL_MOCK: &str = r#"
+    n00n.agent.resolve_model = function(ctx, opts)
+        return { spec = "resolved/" .. tostring(opts.spec or opts.tier) }
+    end
+    n00n.agent.system_prompt = function() return "system" end
+    n00n.agent.tools = function() return {} end
+    n00n.agent.usage_cost = function() return 0, nil end
+    n00n.agent.session = function(ctx, opts)
+        local sess = {}
+        function sess:prompt() return { text = opts.model_spec } end
+        function sess:close() end
+        return sess
+    end
+"#;
+
+fn execute_fusion_result(
+    input: Value,
+    tier: Tier,
+    enabled: bool,
+    native_mock: &str,
+) -> n00n_agent::tools::registry::ToolExecResult {
+    let registry = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    host.load_source("fusion", &format!("{native_mock}\n{FUSION_SRC}"))
+        .unwrap();
+    let invocation = registry
+        .get("fusion_delegate")
+        .unwrap()
+        .tool
+        .parse(&input)
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    let fusion = &mut Arc::make_mut(&mut ctx.config).fusion;
+    fusion.enabled = enabled;
+    fusion.sidekick_tier = tier;
+    smol::block_on(invocation.execute(&ctx))
+}
+
+fn execute_fusion(
+    input: Value,
+    tier: Tier,
+    enabled: bool,
+    native_mock: &str,
+) -> Result<String, String> {
+    execute_fusion_result(input, tier, enabled, native_mock)
+        .output
+        .map(|output| match output {
+            n00n_agent::ToolOutput::Plain(output) => output.text,
+            other => panic!("unexpected output: {other:?}"),
+        })
 }
 
 fn execute_plugin_with_native_mock(
@@ -810,4 +862,64 @@ fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
     assert!(FUSION_SRC.contains("sanitize_error(err)"));
     assert!(FUSION_SRC.contains("include_mcp = false"));
     assert!(FUSION_SRC.contains("except_tools"));
+}
+
+#[test]
+fn fusion_is_rejected_when_disabled() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        Tier::Weak,
+        false,
+        FUSION_MODEL_MOCK,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: Fusion is disabled");
+}
+
+#[test]
+fn grep_header_accepts_multiple_paths() {
+    let host = load_host();
+    let restored = restore(
+        &host,
+        "grep",
+        json!({ "pattern": "fn", "path": ["src", "tests"] }),
+        "src/main.rs:\n  1: fn main",
+        None,
+        vec![],
+    );
+
+    assert!(
+        restored.header.contains("src"),
+        "header: {}",
+        restored.header
+    );
+    assert!(
+        restored.header.contains("tests"),
+        "header: {}",
+        restored.header
+    );
+}
+
+#[test]
+fn fusion_rejects_compaction_sidekick_tier() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        Tier::Compaction,
+        true,
+        FUSION_MODEL_MOCK,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: invalid sidekick tier");
+}
+
+#[test]
+fn fusion_model_resolution_failure_is_sanitized() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        Tier::Weak,
+        true,
+        r#"n00n.agent.resolve_model = function() return nil, "model unavailable" end"#,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: model resolution failed");
 }

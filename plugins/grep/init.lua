@@ -24,6 +24,20 @@ local function unquote(s)
   return s
 end
 
+local function format_input_path(path)
+  if type(path) == "table" then
+    local paths = {}
+    for _, item in ipairs(path) do
+      paths[#paths + 1] = type(item) == "string" and shorten_path(item) or tostring(item)
+    end
+    return table.concat(paths, ", ")
+  end
+  if type(path) == "string" then
+    return shorten_path(path)
+  end
+  return tostring(path)
+end
+
 local function has_context(groups)
   for _, group in ipairs(groups) do
     if #group.lines > 1 then
@@ -197,7 +211,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use the **grep** tool when searching for specific content across files.",
+  content = '- Use the **grep** tool when searching for specific content across files. Use the `pattern` parameter (not `command`). Avoid PCRE look-around like `(?!...)` or `(?<!...)` — they are not supported. For multiple paths, pass an array: `{"path": ["src", "tests"]}`.',
 })
 
 n00n.api.register_tool({
@@ -205,19 +219,25 @@ n00n.api.register_tool({
   kind = "search",
   workload = "cheap",
   modes = { "default", "research", "build", "compact" },
-  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
+  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: PCRE look-around (e.g. `(?!...)`, `(?<!...)`) is not supported. Use Rust regex syntax.]],
 
   schema = {
     type = "object",
     required = { "pattern" },
     properties = {
       pattern = { type = "string", required = true, description = "Regex pattern. Do not wrap in quotes." },
-      path = { type = "string", description = "Directory or file to search." },
+      path = {
+        oneOf = {
+          { type = "string", description = "Directory or file to search." },
+          { type = "array", items = { type = "string" }, description = "Multiple directories or files to search." },
+        },
+      },
       include = { type = "string", alias = "glob", description = "Glob pattern (e.g. '*.rs')." },
       context_before = { type = "integer" },
       context_after = { type = "integer" },
       limit = { type = "integer" },
     },
+    additionalProperties = false,
   },
 
   header = function(input)
@@ -228,7 +248,7 @@ n00n.api.register_tool({
       spans[#spans + 1] = { " [" .. input.include .. "]", "dim" }
     end
     if input.path then
-      spans[#spans + 1] = { " " .. shorten_path(input.path), "path" }
+      spans[#spans + 1] = { " " .. format_input_path(input.path), "path" }
     end
     buf:line(spans)
     return buf
@@ -255,34 +275,71 @@ n00n.api.register_tool({
 
     local max_line_bytes = opts.max_line_bytes
 
-    local entries, err = n00n.fs.grep(pattern, {
-      path = input.path,
-      include = input.include,
-      context_before = input.context_before or 0,
-      context_after = input.context_after or 0,
-      limit = limit,
-      max_line_bytes = max_line_bytes,
-    })
+    -- Handle path as either string or array of strings
+    local path = input.path
+    local path_type = type(path)
+    local all_entries = {}
+    local all_errors = {}
+    local success_count = 0
 
-    if not entries then
-      return { llm_output = "error: " .. tostring(err), is_error = true }
+    local function search_single_path(p)
+      local entries, err = n00n.fs.grep(pattern, {
+        path = p,
+        include = input.include,
+        context_before = input.context_before or 0,
+        context_after = input.context_after or 0,
+        limit = limit,
+        max_line_bytes = max_line_bytes,
+      })
+      if entries then
+        success_count = success_count + 1
+        for _, entry in ipairs(entries) do
+          table.insert(all_entries, entry)
+        end
+      else
+        table.insert(all_errors, tostring(err))
+      end
     end
 
-    if #entries == 0 then
+    if path_type == "string" then
+      search_single_path(path)
+    elseif path_type == "table" then
+      for _, p in ipairs(path) do
+        search_single_path(p)
+      end
+    elseif path == nil then
+      search_single_path(nil)
+    else
+      return { llm_output = "error: path must be a string or array of strings, got " .. path_type, is_error = true }
+    end
+
+    if success_count == 0 and #all_errors > 0 then
+      -- If all paths failed, return the first error
+      return { llm_output = "error: " .. all_errors[1], is_error = true }
+    end
+
+    if #all_entries == 0 then
       return { llm_output = NO_MATCHES }
     end
 
-    for _, entry in ipairs(entries) do
+    -- Sort by modification time across all paths
+    table.sort(all_entries, function(a, b)
+      local mtime_a = a.mtime or 0
+      local mtime_b = b.mtime or 0
+      return mtime_a > mtime_b
+    end)
+
+    for _, entry in ipairs(all_entries) do
       ctx:record_read(entry.path)
     end
 
-    local llm_output = format_llm_output(entries)
+    local llm_output = format_llm_output(all_entries)
     llm_output = truncate(llm_output, max_lines, max_bytes)
 
     return {
       llm_output = llm_output,
-      body = build_grep_view(entries, ctx),
-      annotation = count_matches(entries),
+      body = build_grep_view(all_entries, ctx),
+      annotation = count_matches(all_entries),
     }
   end,
 })
