@@ -6,8 +6,9 @@ use std::sync::Arc;
 use flume::Sender;
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
+use n00n_redact::demoted;
 use n00n_storage::id::SessionRef;
 
 use crate::model::{Model, ModelFamily, ModelInfo};
@@ -532,7 +533,7 @@ pub async fn fetch_all_models(
                     }
                 }
                 Err(e) => {
-                    info!(provider = slug, error = %e, "failed to list models, using static fallback");
+                    demoted!(provider = slug, error = %e, "failed to list models, using static fallback");
                     let fallback: Vec<String> = manifest
                         .models
                         .iter()

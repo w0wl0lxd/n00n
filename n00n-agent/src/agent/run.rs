@@ -3,6 +3,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use tracing::{error, info, warn};
 
+use n00n_redact::demoted;
+
 use n00n_providers::provider::Provider;
 use n00n_providers::{
     ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
@@ -684,7 +686,7 @@ impl<'h> Agent<'h> {
                 if !response.message.content.is_empty() {
                     self.history.push(response.message);
                 }
-                info!(
+                demoted!(
                     "empty or reasoning-only response after tool calls, nudging model to continue"
                 );
                 self.event_tx.send(AgentEvent::Nudge)?;
@@ -694,7 +696,7 @@ impl<'h> Agent<'h> {
 
             if !has_text && has_thinking && !after_tool_results && !self.thinking_empty_retried {
                 self.thinking_empty_retried = true;
-                info!("assistant produced only reasoning, nudging for final answer");
+                demoted!("assistant produced only reasoning, nudging for final answer");
                 self.history.push(response.message);
                 self.event_tx.send(AgentEvent::Nudge)?;
                 self.history
@@ -1511,10 +1513,21 @@ mod tests {
     #[test]
     fn ambiguous_replay_cancellation_is_not_a_denial() {
         smol::block_on(async {
+            let mut history = History::new(vec![Message::user("before".into())]);
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (_response_tx, response_rx) = flume::unbounded::<String>();
             let (trigger, cancel) = CancelToken::new();
             trigger.cancel();
-            let result = cancel.race(async { Ok::<_, ()>(()) }).await;
-            assert_eq!(result, Err("cancelled".into()));
+            let agent = agent
+                .with_cancel(cancel)
+                .with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let result = agent.approve_ambiguous_request_replay(None).await;
+
+            assert!(
+                matches!(result, Err(AgentError::Cancelled)),
+                "expected cancellation, got {result:?}"
+            );
         });
     }
 

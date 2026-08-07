@@ -14,6 +14,7 @@ n00n-config = { workspace = true }
 n00n-highlight = { workspace = true }
 n00n-markdown = { workspace = true }
 n00n-providers = { workspace = true }
+n00n-redact = { workspace = true }
 n00n-lua = { workspace = true }
 n00n-storage = { workspace = true }
 ratatui = { workspace = true }

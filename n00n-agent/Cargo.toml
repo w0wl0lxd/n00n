@@ -10,6 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 n00n-providers = { workspace = true }
+n00n-redact = { workspace = true }
 n00n-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -52,4 +53,3 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
-

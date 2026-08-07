@@ -5,11 +5,11 @@ use ratatui::text::{Line, Span};
 
 use crate::markdown::should_truncate;
 use crate::theme;
+use n00n_redact::{REDACTED, escape_value, is_secret_key, looks_like_secret_value};
 
 const COMPACT_BUDGET: usize = 40;
 const COLLAPSED_LINE_BUDGET: usize = 160;
 const EXPANDED_LINE_BUDGET: usize = n00n_markdown::render::TOOL_OUTPUT_MAX_LINE_BYTES;
-const REDACTED: &str = "[redacted]";
 const INDENT_UNIT: &str = "  ";
 const DASH_PREFIX: &str = "- ";
 
@@ -33,12 +33,13 @@ pub(crate) fn render_args(
         lines: Vec::new(),
         budget,
     };
-    if let serde_json::Value::Object(map) = input {
+    let redacted = redact_display_value(input);
+    if let serde_json::Value::Object(map) = &redacted {
         for (key, value) in map {
             builder.push_entry(key, value, 0);
         }
     } else {
-        builder.push_line(0, vec![builder.value_span(input)]);
+        builder.push_line(0, vec![builder.value_span(&redacted)]);
     }
     let hidden = builder.lines.len().saturating_sub(limit);
     let hidden = if should_truncate(hidden) { hidden } else { 0 };
@@ -50,7 +51,7 @@ pub(crate) fn render_args(
 }
 
 pub(crate) fn arg_search_text(input: &serde_json::Value) -> String {
-    let redacted = redact_value(input);
+    let redacted = redact_display_value(input);
     if let serde_json::Value::Object(map) = &redacted {
         map.iter()
             .map(|(key, value)| format!("{key}: {}", search_value(value)))
@@ -62,52 +63,14 @@ pub(crate) fn arg_search_text(input: &serde_json::Value) -> String {
 }
 
 pub(crate) fn redacted_json_text(value: &serde_json::Value) -> String {
-    let redacted = redact_value(value);
+    let redacted = redact_display_value(value);
     match serde_json::to_string_pretty(&redacted) {
         Ok(text) => text,
         Err(error) => format!("<invalid JSON: {error}>"),
     }
 }
 
-fn is_secret_key(key: &str) -> bool {
-    let normalized: String = key
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect();
-    matches!(
-        normalized.as_str(),
-        "password"
-            | "passwd"
-            | "passphrase"
-            | "pwd"
-            | "secret"
-            | "token"
-            | "accesstoken"
-            | "authtoken"
-            | "apikey"
-            | "authorization"
-            | "cookie"
-            | "credential"
-            | "credentials"
-            | "privatekey"
-            | "clientsecret"
-            | "refreshtoken"
-            | "idtoken"
-            | "sessiontoken"
-            | "secretkey"
-            | "awssecretaccesskey"
-            | "xapikey"
-            | "accesskey"
-            | "authkey"
-            | "passwordhash"
-            | "secrettoken"
-            | "privatetoken"
-            | "apisecret"
-    )
-}
-
-fn redact_value(value: &serde_json::Value) -> serde_json::Value {
+fn redact_display_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let out: serde_json::Map<String, serde_json::Value> = map
@@ -116,14 +79,30 @@ fn redact_value(value: &serde_json::Value) -> serde_json::Value {
                     let item = if is_secret_key(key) {
                         serde_json::Value::String(REDACTED.to_owned())
                     } else {
-                        redact_value(item)
+                        redact_display_value(item)
                     };
                     (key.clone(), item)
                 })
                 .collect();
             serde_json::Value::Object(out)
         }
-        serde_json::Value::Array(items) => items.iter().map(redact_value).collect(),
+        serde_json::Value::Array(items) => items.iter().map(redact_display_value).collect(),
+        serde_json::Value::String(text) if looks_like_secret_value(text) => {
+            serde_json::Value::String(REDACTED.to_owned())
+        }
+        serde_json::Value::String(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(inner) => {
+                let redacted_inner = redact_display_value(&inner);
+                match serde_json::to_string(&redacted_inner) {
+                    Ok(text) => serde_json::Value::String(text),
+                    Err(_) => serde_json::Value::String(REDACTED.to_owned()),
+                }
+            }
+            Err(_) if text.starts_with('{') || text.starts_with('[') => {
+                serde_json::Value::String(n00n_redact::redact_json_arg(text))
+            }
+            Err(_) => value.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -277,15 +256,7 @@ impl ArgsBuilder {
     }
 
     fn escaped(&self, s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for ch in s.chars() {
-            match ch {
-                '\n' => out.push_str("\\n"),
-                '\t' => out.push_str("\\t"),
-                '\r' => out.push_str("\\r"),
-                _ => out.push(ch),
-            }
-        }
+        let out = escape_value(s);
         if out.len() > self.budget {
             let mut end = self.budget.saturating_sub(1);
             while !out.is_char_boundary(end) {
@@ -535,6 +506,48 @@ mod tests {
         assert!(text.contains("[redacted]"));
         assert!(text.contains("bob"));
         assert!(!text.contains("abc"));
+    }
+
+    #[test]
+    fn secret_shaped_values_redacted_under_benign_keys() {
+        let view = render(&json!({ "note": "sk-live-0123456789abcdef0123456789ab" }));
+        let text = lines_text(&view);
+        assert!(
+            !text.contains("sk-live-0123456789abcdef0123456789ab"),
+            "secret value leaked: {text}"
+        );
+        assert!(text.contains(REDACTED), "value should be redacted: {text}");
+    }
+
+    #[test]
+    fn secret_keys_redacted_inside_stringified_json() {
+        let view = render(&json!({
+            "payload": "{\"user\":\"bob\",\"api_key\":\"sk-live-0123456789abcdef0123456789ab\"}"
+        }));
+        let text = lines_text(&view);
+        assert!(
+            !text.contains("sk-live-0123456789abcdef0123456789ab"),
+            "secret value leaked through stringified JSON: {text}"
+        );
+        assert!(text.contains("bob"));
+        assert!(text.contains(REDACTED));
+    }
+
+    #[test]
+    fn malformed_stringified_json_is_left_untouched() {
+        let view = render(&json!({ "payload": "{not valid json" }));
+        let text = lines_text(&view);
+        assert!(text.contains("{not valid json"));
+    }
+
+    #[test]
+    fn malformed_stringified_json_redacts_embedded_credentials() {
+        let view = render(&json!({ "payload": r#"{"user":"bob","api_key":"short"}"# }));
+        let text = lines_text(&view);
+        assert!(text.contains("user"));
+        assert!(text.contains("bob"));
+        assert!(text.contains(REDACTED));
+        assert!(!text.contains("short"));
     }
 
     #[test]

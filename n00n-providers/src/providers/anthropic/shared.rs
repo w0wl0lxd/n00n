@@ -1,6 +1,7 @@
 use std::ops::ControlFlow;
 
 use flume::Sender;
+use n00n_redact::{redact_json_arg, redact_json_value_for_log};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -399,11 +400,17 @@ impl EventParser {
                 {
                     *input = match serde_json::from_str(&self.current_tool_json) {
                         Ok(v) => {
-                            debug!(tool = %name, json = %self.current_tool_json, "tool input JSON");
+                            debug!(
+                                tool_index = self.current_block_idx,
+                                has_tool_name = !name.is_empty(),
+                                tool_name_length = name.len(),
+                                json = %redact_json_value_for_log(&v),
+                                "tool input JSON"
+                            );
                             v
                         }
                         Err(e) => {
-                            warn!(error = %e, json = %self.current_tool_json, "malformed tool JSON, falling back to {{}}");
+                            warn!(error = %e, json = %redact_json_arg(&self.current_tool_json), "malformed tool JSON, falling back to {{}}");
                             Value::Object(serde_json::Map::default())
                         }
                     };

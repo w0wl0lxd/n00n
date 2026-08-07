@@ -28,6 +28,7 @@ use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
 use n00n_providers::provider;
 use n00n_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
+use n00n_redact::sanitize_text;
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredThinking;
 use serde_json::Value as JsonValue;
@@ -42,7 +43,6 @@ const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
 const ACTIVITY_MESSAGE_MAX_CHARS: usize = 80;
-const REDACTED: &str = "[REDACTED]";
 const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
     "batch",
     "code_execution",
@@ -1030,101 +1030,7 @@ fn activity_message(event: &ToolStartEvent) -> Option<String> {
 }
 
 fn sanitize_activity_message(raw: &str) -> String {
-    let words = raw.split_whitespace().collect::<Vec<_>>();
-    let mut sanitized = Vec::with_capacity(words.len());
-    let mut index = 0;
-    while index < words.len() {
-        let word = words[index];
-        if word.eq_ignore_ascii_case("bearer") {
-            sanitized.push(format!("Bearer {REDACTED}"));
-            index = index.saturating_add(2);
-            continue;
-        }
-
-        let separator = word.find(['=', ':']);
-        let key = separator.map_or(word, |position| &word[..position]);
-        if is_sensitive_key(key) || is_sensitive_key(word) {
-            let separator_char =
-                separator.map_or('=', |position| word.as_bytes()[position] as char);
-            sanitized.push(format!("{key}{separator_char}{REDACTED}"));
-            let inline_value = separator.and_then(|position| word.get(position + 1..));
-            index += 1;
-            if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
-                index = index.saturating_add(1).min(words.len());
-            } else if inline_value.is_none_or(str::is_empty) {
-                if words
-                    .get(index)
-                    .is_some_and(|next| *next == "=" || *next == ":")
-                {
-                    index += 1;
-                }
-                if words
-                    .get(index)
-                    .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
-                {
-                    index += 1;
-                }
-                if index < words.len() {
-                    index += 1;
-                }
-            }
-            continue;
-        }
-
-        let secret_value = separator.map_or(word, |position| &word[position + 1..]);
-        if is_secret_token(secret_value) {
-            let prefix = separator.map_or("", |position| &word[..=position]);
-            sanitized.push(format!("{prefix}{REDACTED}"));
-        } else {
-            sanitized.push(word.to_owned());
-        }
-        index += 1;
-    }
-    truncate_activity_message(&sanitized.join(" "))
-}
-
-fn is_sensitive_key(value: &str) -> bool {
-    let normalized: String = value
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect();
-    [
-        "apikey",
-        "accesstoken",
-        "authtoken",
-        "authorization",
-        "password",
-        "passwd",
-        "secret",
-        "privatekey",
-        "clientsecret",
-    ]
-    .iter()
-    .any(|key| normalized.contains(key))
-}
-
-fn is_secret_token(value: &str) -> bool {
-    let lower = value
-        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
-        .to_ascii_lowercase();
-    ["sk-", "ghp_", "github_pat_", "glpat-", "xoxb-", "xoxp-"]
-        .iter()
-        .any(|prefix| lower.contains(prefix))
-        || lower.starts_with("akia")
-        || lower.starts_with("aiza")
-}
-
-fn truncate_activity_message(message: &str) -> String {
-    if message.chars().count() <= ACTIVITY_MESSAGE_MAX_CHARS {
-        return message.to_owned();
-    }
-    let mut truncated: String = message
-        .chars()
-        .take(ACTIVITY_MESSAGE_MAX_CHARS.saturating_sub(1))
-        .collect();
-    truncated.push('…');
-    truncated
+    sanitize_text(raw, ACTIVITY_MESSAGE_MAX_CHARS)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2008,31 +1914,6 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(state.activities[0].status, ActivityStatus::Success);
         });
-    }
-
-    #[test]
-    fn progress_redacts_separated_credentials() {
-        let sanitized = sanitize_activity_message(
-            "API_KEY = first Authorization: Bearer second --password third foo=sk-secret",
-        );
-        assert_eq!(
-            sanitized,
-            "API_KEY=[REDACTED] Authorization:[REDACTED] --password=[REDACTED] foo=[REDACTED]"
-        );
-    }
-
-    #[test]
-    fn progress_redacts_adjacent_bearer_scheme_and_token() {
-        let sanitized = sanitize_activity_message("Authorization:Bearer visible-token trailing");
-        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
-    }
-
-    #[test]
-    fn progress_redacts_credentials_embedded_in_urls_and_tokens() {
-        let sanitized = sanitize_activity_message(
-            "https://host.test/path?api_key=visible glpat-visible prefix-ghp_visible",
-        );
-        assert_eq!(sanitized, "https:[REDACTED] [REDACTED] [REDACTED]");
     }
 
     #[test]

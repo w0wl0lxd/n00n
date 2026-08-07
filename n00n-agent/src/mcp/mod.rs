@@ -32,6 +32,8 @@ use n00n_providers::{ContentBlock, Message};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
+use n00n_redact::demoted;
+
 use crate::tools::schema::{sanitize_tool_input_schema, truncate_on_word_boundary};
 
 use self::config::{
@@ -538,9 +540,18 @@ impl McpSession {
 }
 
 impl McpHandle {
-    pub fn send(&self, cmd: McpCommand) {
+    /// Send an MCP command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command channel is full or disconnected.
+    pub fn send(&self, cmd: McpCommand) -> Result<(), flume::TrySendError<McpCommand>> {
+        self.cmd_tx.try_send(cmd)
+    }
+
+    pub fn send_shutdown(&self, cmd: McpCommand) {
         if let Err(e) = self.cmd_tx.try_send(cmd) {
-            warn!(error = %e, "MCP command loop is gone");
+            warn!(error = %e, "MCP command loop is gone during shutdown");
         }
     }
 
@@ -612,7 +623,7 @@ impl McpHandle {
 
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = flume::bounded(1);
-        self.send(McpCommand::Shutdown { ack: ack_tx });
+        self.send_shutdown(McpCommand::Shutdown { ack: ack_tx });
         let finished = futures_lite::future::or(
             async {
                 let _ = ack_rx.recv_async().await;
@@ -640,10 +651,9 @@ pub async fn start(cwd: &Path, max_desc_chars: usize) -> (Option<McpHandle>, Mcp
 
 pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Option<McpHandle> {
     if config.is_empty() {
-        tracing::info!("no MCP servers configured, skipping");
+        demoted!("no MCP servers configured, skipping");
         return None;
     }
-
     let defer_tools = config.defer_tools.unwrap_or_else(|| DEFAULT_DEFER_TOOLS);
     let mut inner = parse_entries(config);
     inner.max_desc_chars = max_desc_chars;
@@ -810,10 +820,10 @@ async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
         );
         return;
     }
-    if let Err(e) = refresh_server(inner, server_name).await {
-        warn!(server = %server_name, error = %e, "reconnect failed");
+    match refresh_server(inner, server_name).await {
+        Ok(()) => demoted!(server = server_name, "MCP reconnect complete"),
+        Err(e) => warn!(server = %server_name, error = %e, "reconnect failed"),
     }
-    info!(server = server_name, "MCP reconnect complete");
 }
 
 async fn shutdown_all(inner: &mut McpManagerInner) {
@@ -838,7 +848,7 @@ async fn shutdown_all(inner: &mut McpManagerInner) {
     for task in tasks {
         task.await;
     }
-    info!("MCP command loop shutting down");
+    demoted!("MCP command loop shutting down");
 }
 
 /// Tear the old transport down and wipe tools/prompts *before* starting the new one. That way
@@ -2012,7 +2022,7 @@ mod tests {
                 handle,
             } = prepare_manager(config).unwrap();
             let (ack_tx, ack_rx) = flume::bounded(1);
-            handle.send(McpCommand::Shutdown { ack: ack_tx });
+            handle.send_shutdown(McpCommand::Shutdown { ack: ack_tx });
 
             assert!(!initialize_deferred(&mut inner, &index, &snapshot, &cmd_rx).await);
             assert_eq!(ack_rx.recv_async().await, Ok(()));

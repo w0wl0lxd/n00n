@@ -526,7 +526,7 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
                 tracing::warn!(server = %server_name, error = %e, "background OAuth failed");
                 return;
             }
-            handle.send(McpCommand::Reconnect {
+            let _ = handle.send(McpCommand::Reconnect {
                 server: server_name.clone(),
             });
             tracing::info!(server = %server_name, "MCP server authenticated via OAuth");

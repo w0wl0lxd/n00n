@@ -16,6 +16,7 @@ use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolAdmissionClass, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
+use n00n_redact::redact_json_value_for_log;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
 const TOOL_ERROR_LOG_MAX_CHARS: usize = 1024;
@@ -35,11 +36,11 @@ const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
 const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
-const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers"];
+const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers", "model_tier"];
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FusionDispatchAuth {
     pub phase: crate::fusion::FusionPhase,
     pub lane: crate::fusion::FusionLane,
@@ -452,9 +453,8 @@ async fn run_authorized(
             Ok(inv) => inv,
             Err(e) => {
                 warn!(
-                    tool = %name,
                     source = %entry.source.as_log_field(),
-                    input_preview = %crate::tools::schema::preview(&input.to_string()),
+                    input_preview = %crate::tools::schema::preview(&redact_json_value_for_log(input).to_string()),
                     error = %e,
                     "tool input parse failed"
                 );
@@ -470,7 +470,8 @@ async fn run_authorized(
             if !is_plan_target {
                 if ctx.mode.plan_path().is_some() {
                     warn!(
-                        tool = %name,
+                        has_tool_name = !name.is_empty(),
+                        tool_name_length = name.len(),
                         target = %target.display(),
                         "blocked write in plan mode"
                     );
@@ -548,7 +549,8 @@ async fn run_authorized(
             Err(message) => {
                 let error_preview = truncate_for_log(&message);
                 warn!(
-                    tool = %name,
+                    has_tool_name = !name.is_empty(),
+                    tool_name_length = name.len(),
                     source = %entry.source.as_log_field(),
                     elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     error = %error_preview,
@@ -602,7 +604,12 @@ async fn run_authorized(
         execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
-        warn!(tool = %mcp_lookup, "unknown tool");
+        warn!(
+            has_tool_name = !mcp_lookup.is_empty(),
+            tool_name_length = mcp_lookup.len(),
+            source = "unknown",
+            "unknown tool"
+        );
         tool_done_error(id, tool_id, msg)
     }
 }
@@ -881,6 +888,18 @@ fn fusion_brief_is_authorized(input: &Value) -> bool {
     let Some(brief) = input.as_object() else {
         return false;
     };
+    // Reject unknown fields to prevent lead-only work from bypassing authorization
+    let allowed_fields: std::collections::HashSet<&str> = FUSION_REQUIRED_BRIEF_FIELDS
+        .iter()
+        .chain(FUSION_OPTIONAL_BRIEF_FIELDS)
+        .copied()
+        .collect();
+    if brief
+        .keys()
+        .any(|key| !allowed_fields.contains(key.as_str()))
+    {
+        return false;
+    }
     let required_allowed = FUSION_REQUIRED_BRIEF_FIELDS.iter().all(|field| {
         brief
             .get(*field)
@@ -923,23 +942,24 @@ pub(super) async fn process_tool_calls(
     let mut immediate_errors: Vec<(usize, ToolDoneEvent)> = Vec::new();
     let mut skill_calls: Vec<PendingToolCall> = Vec::new();
     let mut non_skill_calls: Vec<PendingToolCall> = Vec::new();
-    let mut fusion_guard = fusion.map(|auth| {
+    let mut fusion_guard = fusion.as_ref().map(|auth| {
         crate::fusion::FusionDispatchGuard::new(
             ctx.config.fusion.enabled,
             auth.classification,
             ctx.audience,
         )
     });
-    let fusion_lifecycle_ok = fusion.is_some_and(|auth| {
+    let fusion_lifecycle_ok = fusion.as_ref().is_some_and(|auth| {
         auth.phase == crate::fusion::FusionPhase::Planning
             && auth.lane == crate::fusion::FusionLane::Lead
     });
 
     for (position, id, name, mut input) in tool_uses {
         debug!(
-            tool = %name,
-            id = %id,
-            input_preview = %crate::tools::schema::preview(&input.to_string()),
+            tool_index = position,
+            has_tool_name = !name.is_empty(),
+            tool_name_length = name.len(),
+            input_preview = %crate::tools::schema::preview(&redact_json_value_for_log(&input).to_string()),
             "parsing tool call"
         );
         let normalized_name = name
@@ -949,7 +969,6 @@ pub(super) async fn process_tool_calls(
         if is_fusion_delegate
             && ctx.config.fusion.enabled
             && let Value::Object(arguments) = &mut input
-            && !arguments.contains_key("model_tier")
         {
             let tier = match ctx.config.fusion.sidekick_tier {
                 n00n_config::providers::Tier::Weak | n00n_config::providers::Tier::Compaction => {
@@ -958,6 +977,7 @@ pub(super) async fn process_tool_calls(
                 n00n_config::providers::Tier::Medium => "medium",
                 n00n_config::providers::Tier::Strong => "strong",
             };
+            // Always overwrite provider-supplied model_tier to enforce policy
             arguments.insert("model_tier".into(), Value::String(tier.into()));
         }
         let fusion_brief_authorized = is_fusion_delegate && fusion_brief_is_authorized(&input);
@@ -982,7 +1002,11 @@ pub(super) async fn process_tool_calls(
                 ),
             ));
         } else if recent_calls.is_doom_loop(&name, &input) {
-            warn!(tool = %name, "doom loop detected, skipping execution");
+            warn!(
+                has_tool_name = !name.is_empty(),
+                tool_name_length = name.len(),
+                "doom loop detected, skipping execution"
+            );
             immediate_errors.push((
                 position,
                 ToolDoneEvent::error(id.clone(), DOOM_LOOP_MESSAGE),
@@ -2456,6 +2480,13 @@ mod tests {
         assert!(!fusion_brief_is_authorized(&serde_json::json!({})));
     }
 
+    #[test]
+    fn fusion_brief_authorization_rejects_unknown_fields() {
+        let mut brief = fusion_brief();
+        brief["instructions"] = Value::String("do something".into());
+        assert!(!fusion_brief_is_authorized(&brief));
+    }
+
     fn eligible_fusion_auth() -> FusionDispatchAuth {
         FusionDispatchAuth {
             phase: crate::fusion::FusionPhase::Planning,
@@ -2619,5 +2650,47 @@ mod tests {
                 .authorize(crate::fusion::FusionInvocationOrigin::Direct)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn fusion_delegate_overrides_provider_supplied_model_tier() {
+        smol::block_on(async {
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |input| {
+                // Verify the tier was overridden to "weak" from config
+                let tier = input
+                    .get("model_tier")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none");
+                assert_eq!(tier, "weak", "model_tier should be overridden to weak");
+                Ok("ran".into())
+            });
+            let mut config = (*ctx.config).clone();
+            config.fusion.enabled = true;
+            config.fusion.sidekick_tier = n00n_config::providers::Tier::Weak;
+            ctx.config = Arc::new(config);
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut history = crate::agent::History::new(Vec::new());
+            let mut recent_calls = RecentCalls::new();
+
+            // Provider supplies "strong" tier, but config is "weak"
+            let mut brief = fusion_brief();
+            brief["model_tier"] = Value::String("strong".into());
+
+            let results = process_tool_calls(
+                response_with_tool_uses(&[("d1", crate::fusion::FUSION_DELEGATE_TOOL, brief)]),
+                &mut recent_calls,
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+                Some(eligible_fusion_auth()),
+            )
+            .await
+            .expect("process batch");
+
+            assert_eq!(results.len(), 1);
+            assert!(!results[0].is_error);
+        });
     }
 }

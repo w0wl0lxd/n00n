@@ -71,6 +71,7 @@ members = [
   "n00n-lua",
   "n00n-markdown",
   "n00n-providers",
+  "n00n-redact",
   "n00n-search",
   "n00n-semble",
   "n00n-storage",
@@ -95,6 +96,7 @@ n00n-acp = { path = "n00n-acp" }
 n00n-config = { path = "n00n-config" }
 n00n-interpreter = { path = "n00n-interpreter" }
 n00n-providers = { path = "n00n-providers" }
+n00n-redact = { path = "n00n-redact" }
 n00n-storage = { path = "n00n-storage" }
 n00n-ui = { path = "n00n-ui" }
 n00n-lua = { path = "n00n-lua" }
