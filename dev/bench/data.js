@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785930033593,
+  "lastUpdate": 1786075898601,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -14899,6 +14899,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 102158,
             "range": "± 17470",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ab3f257d79cdaf8bbc10219c806131398b55cadb",
+          "message": "Merge pull request #307 from w0wl0lxd/fix/provider-token-usage-dirty\n\nfix(cleanup): fix provider-token-usage dirty follow-up",
+          "timestamp": "2026-08-06T23:56:20-04:00",
+          "tree_id": "586b6a84abc6f79e1e11347cdcf935845fe1f1e5",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/ab3f257d79cdaf8bbc10219c806131398b55cadb"
+        },
+        "date": 1786075897422,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7276716,
+            "range": "± 167646",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1494740,
+            "range": "± 52025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1486828,
+            "range": "± 112028",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8233543,
+            "range": "± 246515",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2882460,
+            "range": "± 63975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2879182,
+            "range": "± 233766",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 733658,
+            "range": "± 9006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 80574,
+            "range": "± 5571",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 89730,
+            "range": "± 3476",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1085724,
+            "range": "± 33122",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 458000,
+            "range": "± 10310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 457394,
+            "range": "± 3957",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58242,
+            "range": "± 1365",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 105330,
+            "range": "± 10670",
             "unit": "ns/iter"
           }
         ]
