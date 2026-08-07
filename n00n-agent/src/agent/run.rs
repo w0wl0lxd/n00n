@@ -19,8 +19,8 @@ use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpSession;
 use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
-    ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
-    ToolRegistry,
+    ActiveTools, Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext,
+    ToolFilter, ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -29,7 +29,6 @@ use crate::{
     fusion::{DelegationKind, FusionDispatchGuard, FusionInvocationOrigin},
 };
 use n00n_config::{ToolKey, ToolOutputLines};
-use n00n_storage::id::SessionRef;
 
 use crate::tokenize::{
     count_json_with_tokenizer, count_tokens_with_tokenizer, tokenizer_for_model,
@@ -162,7 +161,7 @@ pub struct AgentParams {
     pub config: Arc<AgentConfig>,
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
-    pub session_id: Option<SessionRef>,
+    pub identity: Option<SessionIdentity>,
     pub timeouts: n00n_providers::Timeouts,
     pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
@@ -209,7 +208,7 @@ pub struct Agent<'h> {
     thinking_empty_retried: bool,
     permissions: Arc<PermissionManager>,
     opts: RequestOptions,
-    session_id: Option<SessionRef>,
+    identity: Option<SessionIdentity>,
     timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
@@ -284,7 +283,7 @@ impl<'h> Agent<'h> {
             post_tool_empty_retried: false,
             thinking_empty_retried: false,
             opts: RequestOptions::default(),
-            session_id: params.session_id,
+            identity: params.identity,
             file_tracker: params.file_tracker,
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
@@ -449,11 +448,15 @@ impl<'h> Agent<'h> {
                 Err(AgentError::Cancelled) => {
                     if let Err(error) = state.cancel() {
                         warn!(?error, "fusion: failed to mark run cancelled");
+                    } else {
+                        self.emit_fusion_phase(FusionPhase::Cancelled)?;
                     }
                 }
                 Err(_) => {
                     if let Err(error) = state.fail() {
                         warn!(?error, "fusion: failed to mark run failed");
+                    } else {
+                        self.emit_fusion_phase(FusionPhase::Failed)?;
                     }
                 }
                 Ok(()) => {}
@@ -510,7 +513,7 @@ impl<'h> Agent<'h> {
             event_tx: &self.event_tx,
             cancel: &self.cancel,
             opts,
-            session_id: self.session_id.as_ref(),
+            session_id: self.identity.as_ref().map(SessionIdentity::session_id),
         })
         .await
     }
@@ -927,7 +930,7 @@ impl<'h> Agent<'h> {
                 },
                 self.audience,
             ))),
-            identity: None,
+            identity: self.identity.clone(),
             tool_filter: self.tool_filter.clone(),
             local_tools: Arc::clone(&self.local_tools),
             active_skill_policy: self.active_skill_policy.clone(),
@@ -1093,7 +1096,7 @@ impl<'h> Agent<'h> {
             &self.event_tx,
             &self.cancel,
             CompactionTrigger::Auto,
-            self.session_id.as_ref(),
+            self.identity.as_ref().map(SessionIdentity::session_id),
             &cwd,
             None,
         )
@@ -1275,6 +1278,7 @@ mod tests {
         ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
         Role, StopReason, StreamResponse, TokenUsage,
     };
+    use n00n_storage::id::SessionRef;
     use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
     use test_case::test_case;
@@ -1414,6 +1418,9 @@ mod tests {
                     source: ImageSource {
                         media_type: ImageMediaType::Png,
                         data: Arc::from("data"),
+                        detail: None,
+                        file_id: None,
+                        url: None,
                     },
                 },
             ],
@@ -1618,7 +1625,7 @@ mod tests {
         let (raw_tx, event_rx) = flume::unbounded();
         let vars = crate::template::env_vars();
         let filter = ToolFilter::from_config(&config, &default_model(), &[]);
-        let tools = registry.definitions(
+        let tools = crate::tools::ToolRegistry::global().definitions(
             &vars,
             &crate::tools::DescriptionContext {
                 filter: &filter,
@@ -1641,7 +1648,7 @@ mod tests {
                     },
                     std::path::PathBuf::from("/tmp"),
                 )),
-                session_id: None,
+                identity: None,
                 timeouts: n00n_providers::Timeouts::default(),
                 openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
@@ -2460,7 +2467,7 @@ mod tests {
                         },
                         std::path::PathBuf::from("/tmp"),
                     )),
-                    session_id: None,
+                    identity: None,
                     timeouts: n00n_providers::Timeouts::default(),
                     openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),

@@ -14,7 +14,6 @@ pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
 const ALREADY_DISPATCHED_MESSAGE: &str = "Fusion delegation has already been dispatched";
-const MAX_DELEGATIONS_BEFORE_LEAD_LOCK: u32 = 8;
 
 /// Results produced by `FusionDispatchGuard::authorize` before any subagent
 /// launch. They must not count as delegations, sidekick failures, or tool errors.
@@ -575,11 +574,6 @@ pub fn route_after_compact(
         .any(|signal| summary.contains(signal));
 
     match (state.lane, summary_kind) {
-        (FusionLane::Lead, DelegationKind::Delegate)
-            if state.delegation_count < MAX_DELEGATIONS_BEFORE_LEAD_LOCK =>
-        {
-            FusionRoute::Switch(FusionLane::Sidekick)
-        }
         (FusionLane::Sidekick, DelegationKind::LeadOnly) => FusionRoute::Switch(FusionLane::Lead),
         (lane, _) => FusionRoute::Stay(lane),
     }

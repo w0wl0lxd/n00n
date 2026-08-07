@@ -17,8 +17,8 @@ use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
 use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
-    ToolContext, ToolFilter, ToolLive,
+    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, SessionIdentity,
+    ToolAudience, ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -28,7 +28,7 @@ use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
 use n00n_providers::provider;
 use n00n_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
-use n00n_storage::id::n00nId;
+use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::StoredThinking;
 use serde_json::Value as JsonValue;
 use tracing::info;
@@ -799,6 +799,14 @@ async fn session(
     let session_id = n00nId::generate();
     let child_id = session_id.to_string();
     let parent_tool_use_id = child_id.clone();
+    let child_session_ref = SessionRef::from(session_id);
+    let child_identity = Some(SessionIdentity::child(
+        child_session_ref.clone(),
+        agent_ctx.identity.as_ref().map_or_else(
+            || child_session_ref.clone(),
+            |i| i.root_session_id().clone(),
+        ),
+    ));
     let start = Instant::now();
     let (sub_tx, sub_rx) = flume::bounded::<Envelope>(SUBAGENT_EVENT_QUEUE_CAPACITY);
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
@@ -856,7 +864,7 @@ async fn session(
             config: session_config(&agent_ctx.config, excluded_tools.clone()),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
-            session_id: Some(session_id.into()),
+            identity: child_identity,
             timeouts: agent_ctx.timeouts,
             openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
