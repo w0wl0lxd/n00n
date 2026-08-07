@@ -549,13 +549,20 @@ pub(crate) fn sort_models(models: &mut [ModelInfo], entries: &[ModelEntry]) {
     fn key<'a>(
         info: &'a ModelInfo,
         entries: &[ModelEntry],
-    ) -> (Reverse<u32>, Reverse<u32>, Reverse<u8>, &'a str) {
-        let tier = match lookup_entry(entries, &info.id) {
-            Ok(entry) => Some(entry.tier),
-            Err(_) => None,
+    ) -> (
+        Reverse<bool>,
+        Reverse<u32>,
+        Reverse<u32>,
+        Reverse<u8>,
+        &'a str,
+    ) {
+        let (is_known, tier) = match lookup_entry(entries, &info.id) {
+            Ok(entry) => (true, Some(entry.tier)),
+            Err(_) => (false, None),
         };
         let (major, minor) = parse_model_version(&info.id);
         (
+            Reverse(is_known),
             Reverse(major),
             Reverse(minor),
             Reverse(tier_strength(tier)),
@@ -684,6 +691,37 @@ mod tests {
         assert_eq!(model.pricing.cache_read, cache_read);
         assert_eq!(model.pricing.cache_write, cache_write);
         assert_eq!(model.pricing.output, output);
+    }
+
+    #[test]
+    fn chat_models_sort_ahead_of_dated_non_chat_models() {
+        let mut listed = vec![
+            ModelInfo::id_only("omni-moderation-2024-09-26".into()),
+            ModelInfo::id_only("gpt-5.6-sol".into()),
+        ];
+
+        sort_models(&mut listed, models());
+
+        assert_eq!(listed[0].id, "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn chat_models_sort_by_version_then_tier() {
+        let mut listed = vec![
+            ModelInfo::id_only("gpt-5.4".into()),
+            ModelInfo::id_only("gpt-5.6-luna".into()),
+            ModelInfo::id_only("gpt-5.6-sol".into()),
+        ];
+
+        sort_models(&mut listed, models());
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+        );
     }
 
     #[test]
