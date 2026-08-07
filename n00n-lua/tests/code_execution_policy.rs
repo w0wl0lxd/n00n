@@ -85,12 +85,12 @@ fn forwarded_max_concurrent(configured: Option<usize>) -> String {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let source = format!(
-        r#"
+        r"
 n00n.interpreter.run = function(_, options)
   return {{ stdout = tostring(options._max_concurrent) }}
 end
 {CODE_EXECUTION_SRC}
-"#
+"
     );
     let mut options = serde_json::Map::new();
     if let Some(value) = configured {
