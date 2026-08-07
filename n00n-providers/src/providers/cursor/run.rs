@@ -723,40 +723,65 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    if let Ok(Some(op)) = parse_kv_server_message(&payload) {
-        queue_checkpoint_reply(op, checkpoints, outbound)?;
-        return Ok(FrameHandleOutcome {
-            exec_skipped: false,
-            text_deltas: 0,
-            kv_op: true,
-        });
+    let bad_frame = |message| AgentError::Api {
+        status: 502,
+        message,
+    };
+
+    match parse_kv_server_message(&payload) {
+        Ok(Some(op)) => {
+            queue_checkpoint_reply(op, checkpoints, outbound)?;
+            return Ok(FrameHandleOutcome {
+                exec_skipped: false,
+                text_deltas: 0,
+                kv_op: true,
+            });
+        }
+        Ok(None) => {}
+        Err(_) if frame.end_stream => {
+            return Ok(FrameHandleOutcome {
+                exec_skipped: false,
+                text_deltas: 0,
+                kv_op: false,
+            });
+        }
+        Err(message) => return Err(bad_frame(message)),
     }
-    if let Ok(true) = has_exec_server_message(&payload) {
-        // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
-        // Aborting the whole turn drops text deltas that often follow.
-        return Ok(FrameHandleOutcome {
-            exec_skipped: true,
-            text_deltas: 0,
-            kv_op: false,
-        });
-    }
-    let mut deltas = 0u32;
-    if let Ok(text_deltas) = extract_text_deltas(&payload) {
-        for delta in text_deltas {
+
+    let outcome: Result<FrameHandleOutcome, String> = (|| {
+        if has_exec_server_message(&payload)? {
+            // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
+            // Aborting the whole turn drops text deltas that often follow.
+            return Ok(FrameHandleOutcome {
+                exec_skipped: true,
+                text_deltas: 0,
+                kv_op: false,
+            });
+        }
+        let mut deltas = 0u32;
+        for delta in extract_text_deltas(&payload)? {
             text.push_str(&delta);
             deltas = deltas.saturating_add(1);
         }
-    }
-    if let Ok(thinking_deltas) = extract_thinking_deltas(&payload) {
-        for delta in thinking_deltas {
+        for delta in extract_thinking_deltas(&payload)? {
             thinking.push_str(&delta);
         }
+        Ok(FrameHandleOutcome {
+            exec_skipped: false,
+            text_deltas: deltas,
+            kv_op: false,
+        })
+    })();
+
+    match outcome {
+        Ok(outcome) => Ok(outcome),
+        Err(_) if frame.end_stream => Ok(FrameHandleOutcome {
+            exec_skipped: false,
+            text_deltas: 0,
+            kv_op: false,
+        }),
+        Err(message) => Err(bad_frame(message)),
     }
-    Ok(FrameHandleOutcome {
-        exec_skipped: false,
-        text_deltas: deltas,
-        kv_op: false,
-    })
 }
 
 fn queue_checkpoint_reply(
@@ -842,6 +867,27 @@ mod tests {
     }
 
     #[test]
+    fn handle_data_frame_rejects_unknown_wire_type_three_payload() {
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: false,
+            payload: vec![0x0b, 0x0c],
+        };
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = String::new();
+        let mut thinking = String::new();
+
+        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
+        else {
+            panic!("unknown protobuf wire types must fail the frame");
+        };
+
+        assert!(matches!(error, AgentError::Api { status: 502, .. }));
+        assert!(error.to_string().contains("wire type 3"));
+    }
+
+    #[test]
     fn handle_data_frame_queues_set_blob_ack() {
         let mut args = field_bytes(1, b"blob-id");
         args.extend(field_bytes(2, b"blob-data"));
@@ -903,6 +949,7 @@ mod tests {
         };
 
         assert!(matches!(error, AgentError::Api { status: 502, .. }));
+        assert!(error.to_string().contains("gzip"));
     }
 
     #[test]
@@ -980,6 +1027,39 @@ mod tests {
             text.to_lowercase().contains("pong"),
             "capture text={text:?} thinking={thinking:?}"
         );
+    }
+
+    #[test]
+    fn extract_text_deltas_rejects_invalid_protobuf() {
+        let malformed = [0x0b, 0x0c];
+        let err = extract_text_deltas(&malformed).expect_err("must fail");
+        assert!(err.contains("wire type 3"));
+
+        let truncated = [0x0a, 0x05, 0x01, 0x02];
+        let err = extract_text_deltas(&truncated).expect_err("must fail");
+        assert!(err.contains("truncated"));
+    }
+
+    #[test]
+    fn extract_thinking_deltas_rejects_invalid_protobuf() {
+        let malformed = [0x0b, 0x0c];
+        let err = extract_thinking_deltas(&malformed).expect_err("must fail");
+        assert!(err.contains("wire type 3"));
+
+        let truncated = [0x0a, 0x05, 0x01, 0x02];
+        let err = extract_thinking_deltas(&truncated).expect_err("must fail");
+        assert!(err.contains("truncated"));
+    }
+
+    #[test]
+    fn has_exec_server_message_rejects_invalid_protobuf() {
+        let malformed = [0x0b, 0x0c];
+        let err = has_exec_server_message(&malformed).expect_err("must fail");
+        assert!(err.contains("wire type 3"));
+
+        let truncated = [0x0a, 0x05, 0x01, 0x02];
+        let err = has_exec_server_message(&truncated).expect_err("must fail");
+        assert!(err.contains("truncated"));
     }
 
     #[test]

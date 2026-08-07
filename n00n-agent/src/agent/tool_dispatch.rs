@@ -18,6 +18,12 @@ use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
+const CANCELLED_SUBAGENT_OUTPUTS: &[&str] = &[
+    "cancelled",
+    "sub-agent error: cancelled",
+    "task failed: cancelled",
+    "task failed: plugin interrupted: task cancelled",
+];
 const TOOL_ERROR_LOG_MAX_CHARS: usize = 1024;
 
 #[derive(Clone, Copy)]
@@ -296,13 +302,7 @@ fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
 }
 
 fn is_cancelled_subagent_output(output: &str) -> bool {
-    matches!(
-        output.trim(),
-        "cancelled"
-            | "sub-agent error: cancelled"
-            | "task failed: cancelled"
-            | "task failed: plugin interrupted: task cancelled"
-    )
+    CANCELLED_SUBAGENT_OUTPUTS.contains(&output.trim())
 }
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
