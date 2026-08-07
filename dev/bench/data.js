@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786075898601,
+  "lastUpdate": 1786079520118,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -15007,6 +15007,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 105330,
             "range": "± 10670",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "018429e2b013e53f1b3f222a885f6d27676763e0",
+          "message": "Merge pull request #335 from w0wl0lxd/fix/acp-stdin-multi-json\n\nfix(n00n-acp): restore multi-JSON-per-line stdin parsing",
+          "timestamp": "2026-08-07T00:54:47-04:00",
+          "tree_id": "9f7b09ed462a8cf489dcec729e4627dcc63b87a3",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/018429e2b013e53f1b3f222a885f6d27676763e0"
+        },
+        "date": 1786079519544,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6478211,
+            "range": "± 124423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2444329,
+            "range": "± 4375",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2658169,
+            "range": "± 50510",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7778433,
+            "range": "± 31130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3860242,
+            "range": "± 7486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3764943,
+            "range": "± 78061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554485,
+            "range": "± 1196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168150,
+            "range": "± 554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167757,
+            "range": "± 526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041703,
+            "range": "± 12360",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 631422,
+            "range": "± 5184",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 631134,
+            "range": "± 9749",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48392,
+            "range": "± 5838",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 185785,
+            "range": "± 3025",
             "unit": "ns/iter"
           }
         ]
