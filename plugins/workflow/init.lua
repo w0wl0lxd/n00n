@@ -1034,6 +1034,8 @@ n00n.api.register_tool({
   name = "workflow",
   description = description,
   kind = "execute",
+  defer_loading = true,
+  namespace = "agent",
   workload = "orchestrator",
   audiences = { "main" },
   schema = schema,

@@ -251,6 +251,12 @@ pub trait Tool: Send + Sync + 'static {
     fn namespace(&self) -> Option<&str> {
         None
     }
+    /// Whether to ask the provider to enforce the tool schema at the token
+    /// level. Providers that support strict mode (`OpenAI`, `Anthropic`, etc.)
+    /// will then guarantee the JSON matches the schema.
+    fn strict(&self) -> bool {
+        false
+    }
     /// Parse tool input into an invocation.
     ///
     /// # Errors
@@ -604,6 +610,7 @@ impl ToolRegistry {
                 "name": entry.name(),
                 "description": description,
                 "input_schema": sanitized_schema,
+                "strict": entry.tool.strict(),
             });
             if let Some(examples) = entry.tool.examples() {
                 if supports_examples {
@@ -676,12 +683,16 @@ impl ToolRegistry {
                 continue;
             }
             if entry.defer_loading {
+                let explicitly_allowed = matches!(
+                    ctx.filter,
+                    super::ToolFilter::Only(names) if names.iter().any(|name| name == entry.name())
+                );
                 let name_matches = active.names.contains(entry.name());
                 let namespace_matches = entry
                     .namespace
                     .as_ref()
                     .is_some_and(|ns| active.namespaces.contains(ns.as_ref()));
-                if !name_matches && !namespace_matches {
+                if !explicitly_allowed && !name_matches && !namespace_matches {
                     continue;
                 }
             }
@@ -691,6 +702,7 @@ impl ToolRegistry {
                 "name": entry.name(),
                 "description": description,
                 "input_schema": sanitized_schema,
+                "strict": entry.tool.strict(),
             });
             if let Some(examples) = entry.tool.examples() {
                 if supports_examples {
@@ -1061,6 +1073,59 @@ mod tests {
         assert_eq!(names_for(ToolAudience::GENERAL_SUB), vec!["everywhere"]);
     }
 
+    #[test]
+    fn defer_loading_and_namespace_filtering() {
+        let reg = ToolRegistry::new();
+        let deferred_ns: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "deferred_tool".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: true,
+            namespace: Some("explore".to_owned()),
+        });
+        let active_tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "active_tool".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let p = lua_source("p");
+        reg.register(&deferred_ns, &p).unwrap();
+        reg.register(&active_tool, &p).unwrap();
+
+        let vars = Vars::new();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        // Default active tools should exclude deferred tools
+        let active = ActiveTools::default();
+        let defs_active = reg.definitions_active(&vars, &ctx, true, &active);
+        let names_active: Vec<_> = defs_active
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names_active.contains(&"active_tool".to_owned()));
+        assert!(!names_active.contains(&"deferred_tool".to_owned()));
+
+        // With namespace active, deferred tool should be included
+        let mut with_ns = ActiveTools::default();
+        with_ns.namespaces.insert("explore".to_owned());
+        let defs_with_ns = reg.definitions_active(&vars, &ctx, true, &with_ns);
+        let names_with_ns: Vec<_> = defs_with_ns
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names_with_ns.contains(&"active_tool".to_owned()));
+        assert!(names_with_ns.contains(&"deferred_tool".to_owned()));
+    }
+
     #[test_case(Err("boom".into()), Some("/tmp/foo".into()), None          ; "clears_on_error")]
     #[test_case(Ok(ToolOutput::Plain("ok".into())), Some("/tmp/foo".into()), Some("/tmp/foo") ; "sets_on_success")]
     fn with_written_path(
@@ -1135,6 +1200,31 @@ mod tests {
         let defs = reg.definitions_active(&vars, &ctx, false, &active_with_deferred);
         let arr = defs.as_array().expect("definitions returns array");
         assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn definitions_active_includes_explicitly_allowed_deferred_tool() {
+        let reg = ToolRegistry::new();
+        let deferred: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "websearch".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: true,
+            namespace: Some("research".to_owned()),
+        });
+        reg.register(&deferred, &lua_source("p")).unwrap();
+
+        let filter = crate::tools::ToolFilter::Only(vec!["websearch".to_owned()]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let definitions =
+            reg.definitions_active(&Vars::new(), &ctx, false, &ActiveTools::default());
+
+        let definitions = definitions.as_array().expect("definitions returns array");
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0]["name"].as_str(), Some("websearch"));
     }
 
     #[test]

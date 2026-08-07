@@ -10,7 +10,7 @@ use isahc::{HttpClient, Request};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
-use crate::providers::ResolvedAuth;
+use crate::providers::{DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, ResolvedAuth, trim_tool_description};
 use crate::types::{
     ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX, ThinkingFieldConfig,
 };
@@ -459,12 +459,15 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
                     return Some(built_in);
                 }
                 // Regular function tool
+                let description = t.get("description").and_then(Value::as_str).map(|d| {
+                    trim_tool_description(d, DEFAULT_TOOL_DESCRIPTION_MAX_CHARS).into_owned()
+                })?;
                 Some(json!({
                     "type": "function",
                     "name": name,
-                    "description": t.get("description")?,
+                    "description": description,
                     "parameters": t.get("input_schema")?,
-                    "strict": false,
+                    "strict": t.get("strict").and_then(Value::as_bool) == Some(true),
                 }))
             })
             .collect(),

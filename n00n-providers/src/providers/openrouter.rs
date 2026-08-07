@@ -3,14 +3,13 @@ use std::sync::{Arc, Mutex};
 use flume::Sender;
 use n00n_storage::id::SessionRef;
 use serde_json::{Value, json};
-use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
 use crate::types::ThinkingFieldConfig;
 use crate::{
-    AgentError, CacheHealth, CacheKind, Effort, EffortDialect, Message, ProviderEvent,
-    RequestOptions, StreamResponse, System, dialect,
+    AgentError, Effort, EffortDialect, Message, ProviderEvent, RequestOptions, StreamResponse,
+    System, dialect,
 };
 
 use super::openai_compat::OpenAiCompatProvider;
@@ -20,7 +19,6 @@ const REASONING_EFFORT_PATH: &str = "reasoning.effort";
 const REFERER: &str = "https://github.com/w0wl0lxd/n00n";
 const APP_TITLE: &str = "n00n";
 const PER_MILLION: f64 = 1_000_000.0;
-const OPENROUTER_CACHE_TTL_SECONDS: u64 = 300;
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/openrouter.rs"));
 
@@ -241,30 +239,9 @@ impl Provider for OpenRouter {
                 .do_stream(model, &extra_headers, &body, event_tx, &auth)
                 .await?;
 
-            let hit = response.usage.cache_read > 0;
-            let cached = response.usage.cache_read > 0 || response.usage.cache_creation > 0;
-            let valid_until = if cached {
-                n00n_storage::now_epoch().saturating_add(OPENROUTER_CACHE_TTL_SECONDS)
-            } else {
-                0
-            };
-            let ttl_seconds = if cached {
-                OPENROUTER_CACHE_TTL_SECONDS
-            } else {
-                0
-            };
-            let health = CacheHealth {
-                kind: CacheKind::Prompt,
-                valid_until,
-                ttl_seconds,
-                hit,
-            };
-            if let Err(error) = event_tx
-                .send_async(ProviderEvent::CacheHealth { cache: health })
-                .await
-            {
-                warn!(error = %error, "failed to send OpenRouter cache health event");
-            }
+            self.compat
+                .emit_cache_health(&response.usage, event_tx)
+                .await;
 
             Ok(response)
         })

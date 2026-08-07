@@ -1812,6 +1812,7 @@ impl LuaRuntime {
                     has_describe_fn: t.describe_key.is_some(),
                     defer_loading: t.defer_loading,
                     namespace: t.namespace.clone(),
+                    strict: t.strict,
                 });
                 (
                     tool,

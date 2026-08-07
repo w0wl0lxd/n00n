@@ -26,7 +26,7 @@ use n00n_providers::{
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
-const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 46_000;
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 47_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
@@ -2883,10 +2883,34 @@ fn ctx_set_deadline_twice_errors() {
 }
 
 #[test]
+fn ctx_set_deadline_nil_noops() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_nil",
+            description = "calls set_deadline with nil",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local _, err = ctx:set_deadline(nil)
+                if err then
+                    return {{ llm_output = "set_deadline(nil) failed: " .. tostring(err), is_error = true }}
+                end
+                return "ok"
+            end
+        }})"#,
+    );
+    host.load_source("deadline_nil", &src).unwrap();
+    let out = exec_tool(&reg, "deadline_nil", serde_json::json!({})).unwrap();
+    assert_eq!(out, "ok");
+}
+
+#[test]
 fn restore_tool_async_ordering_and_delivery() {
     let (_reg, host) = builtins_host();
 
-    let input = serde_json::json!({"command": "echo ok", "timeout": 1});
+    let input = serde_json::json!({"command": "echo ok", "timeout": 1, "workdir": null, "description": null, "justification": null});
 
     let handle = host.event_handle().expect("event handle available");
     let (tx, rx) = flume::unbounded();
@@ -3039,7 +3063,7 @@ fn tmux_permission_scopes(
 fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": command });
+    let input = serde_json::json!({ "command": command, "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3055,7 +3079,7 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
 fn bash_permission_scopes_marks_broad_commands_for_prompt() {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": "find . -type f" });
+    let input = serde_json::json!({ "command": "find . -type f", "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3071,7 +3095,7 @@ fn bash_permission_scopes_marks_broad_commands_for_prompt() {
 fn bash_permission_scopes_marks_broad_recursive_ls_for_prompt() {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": "ls -R ." });
+    let input = serde_json::json!({ "command": "ls -R .", "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3087,7 +3111,7 @@ fn bash_permission_scopes_marks_broad_recursive_ls_for_prompt() {
 fn bash_permission_scopes_marks_broad_du_for_prompt() {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": "du ." });
+    let input = serde_json::json!({ "command": "du .", "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3103,7 +3127,7 @@ fn bash_permission_scopes_marks_broad_du_for_prompt() {
 fn bash_permission_scopes_marks_broad_tree_for_prompt() {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": "tree ." });
+    let input = serde_json::json!({ "command": "tree .", "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3119,7 +3143,7 @@ fn bash_permission_scopes_marks_broad_tree_for_prompt() {
 fn bash_permission_scopes_allows_bounded_find_without_prompt() {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": "find . -maxdepth 1 -type f" });
+    let input = serde_json::json!({ "command": "find . -maxdepth 1 -type f", "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3135,7 +3159,7 @@ fn bash_permission_scopes_allows_bounded_find_without_prompt() {
 fn bash_permission_scopes_allows_head_capped_search_without_prompt() {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3" });
+    let input = serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3", "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3151,7 +3175,7 @@ fn bash_permission_scopes_allows_head_capped_search_without_prompt() {
 fn bash_permission_scopes_allows_bounded_du_without_prompt() {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": "du -s ." });
+    let input = serde_json::json!({ "command": "du -s .", "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3172,7 +3196,7 @@ fn bash_permission_scopes_allows_bounded_du_without_prompt() {
 fn bash_permission_scopes_marks_reviewed_unbounded_commands_for_prompt(command: &str) {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": command });
+    let input = serde_json::json!({ "command": command, "timeout": null, "workdir": null, "description": null, "justification": null });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -3190,7 +3214,7 @@ fn bash_permission_scopes_marks_reviewed_unbounded_commands_for_prompt(command: 
 fn bash_handler_blocks_reviewed_unbounded_commands(command: &str) {
     let (reg, _host) = builtins_host();
 
-    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": command })).unwrap_err();
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": command, "timeout": null, "workdir": null, "description": null, "justification": null })).unwrap_err();
 
     assert!(
         err.contains("justification is required"),
@@ -3202,7 +3226,7 @@ fn bash_handler_blocks_reviewed_unbounded_commands(command: &str) {
 fn bash_handler_blocks_broad_command_without_justification() {
     let (reg, _host) = builtins_host();
 
-    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": "du ." })).unwrap_err();
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": "du .", "timeout": null, "workdir": null, "description": null, "justification": null })).unwrap_err();
 
     assert!(
         err.contains("justification is required"),
@@ -3217,7 +3241,7 @@ fn bash_handler_blocks_broad_command_later_in_chain_without_justification() {
     let err = exec_tool(
         &reg,
         "bash",
-        serde_json::json!({ "command": "echo checking && find . -type f" }),
+        serde_json::json!({ "command": "echo checking && find . -type f", "timeout": null, "workdir": null, "description": null, "justification": null }),
     )
     .unwrap_err();
 
@@ -3236,6 +3260,9 @@ fn bash_handler_allows_broad_command_with_justification() {
         "bash",
         serde_json::json!({
             "command": "du .",
+            "timeout": null,
+            "workdir": null,
+            "description": null,
             "justification": "Need a quick repository size estimate before cleanup"
         }),
     )
@@ -3254,7 +3281,7 @@ fn bash_handler_allows_head_capped_search_without_justification() {
     let out = exec_tool(
         &reg,
         "bash",
-        serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3" }),
+        serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3", "timeout": null, "workdir": null, "description": null, "justification": null }),
     )
     .unwrap();
 
@@ -4699,6 +4726,29 @@ fn session_opts_validation_rejects(opts: &str, expected: &str) {
     assert!(out.contains(expected), "got: {out}");
 }
 
+#[test]
+fn session_accepts_empty_table_as_no_tools() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_empty_tools",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, err = n00n.agent.session(ctx, {{ tools = {{}} }})
+                if err then return "session open failed: " .. err end
+                sess:close()
+                return "ok"
+            end
+        }})"#
+    );
+    host.load_source("session_empty_tools", &src).unwrap();
+    let out = exec_tool(&reg, "session_empty_tools", serde_json::json!({})).unwrap();
+    assert_eq!(out, "ok");
+}
+
 fn load_img_tool(host: &PluginHost) {
     let src = format!(
         r#"n00n.api.register_tool({{
@@ -4782,7 +4832,7 @@ fn view_image_tool_returns_image_output() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
@@ -4802,7 +4852,7 @@ fn view_image_tool_returns_image_output() {
 fn view_image_rejects_non_regular_file_before_reading() {
     let (reg, _host) = builtins_host();
     let err =
-        exec_tool_output(&reg, "view_image", serde_json::json!({"path": "/dev/zero"})).unwrap_err();
+        exec_tool_output(&reg, "view_image", serde_json::json!({"path": "/dev/zero", "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null})).unwrap_err();
     assert!(err.contains("not a regular file"), "got: {err}");
 }
 
@@ -4815,7 +4865,7 @@ fn view_image_tool_rejects_non_image() {
     let err = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap_err();
     assert!(err.contains("not an image"), "got: {err}");
@@ -4886,7 +4936,7 @@ fn view_image_rejects_decode_bomb_before_shipping_bytes() {
     let err = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap_err();
     assert!(err.contains("10000x10000"), "got: {err}");
@@ -4910,7 +4960,7 @@ fn view_image_tall_png_returns_first_lossless_tile_with_schema_guidance() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image {
@@ -4951,7 +5001,7 @@ fn view_image_provider_safe_tall_png_passes_through_byte_for_byte() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
@@ -4980,7 +5030,7 @@ fn view_image_over_transport_limit_returns_lossless_tile_without_jpeg_fallback()
     let tile = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = tile else {
@@ -5031,6 +5081,9 @@ fn view_image_lossless_tiles_cover_source_once_without_gaps() {
                 "tile_index": tile_index,
                 "tile_width": 3,
                 "tile_height": 2,
+                "crop": null,
+                "static_image": null,
+                "allow_gif_animation": null
             }),
         )
         .unwrap();
@@ -5092,7 +5145,12 @@ fn view_image_rejects_crop_area_before_allocating_or_encoding() {
         "view_image",
         serde_json::json!({
             "path": path.to_str().unwrap(),
+            "tile_index": null,
+            "tile_width": null,
+            "tile_height": null,
             "crop": [0, 0, 8000, 8000],
+            "static_image": null,
+            "allow_gif_animation": null
         }),
     )
     .unwrap_err();
@@ -5120,7 +5178,7 @@ fn view_image_rejects_incompressible_tile_at_bounded_encode_limit() {
     let err = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap_err();
     assert!(err.contains("bounded"), "got: {err}");
@@ -5141,7 +5199,12 @@ fn view_image_lossless_crop_reports_exact_source_bounds() {
         "view_image",
         serde_json::json!({
             "path": path.to_str().unwrap(),
+            "tile_index": null,
+            "tile_width": null,
+            "tile_height": null,
             "crop": [1, 1, 3, 2],
+            "static_image": null,
+            "allow_gif_animation": null
         }),
     )
     .unwrap();
@@ -5171,7 +5234,7 @@ fn view_image_unicode_path_passes_through_unchanged() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
@@ -5203,7 +5266,7 @@ fn view_image_animated_gif_requires_explicit_capability_or_static_opt_in() {
     let err = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap_err();
     assert!(err.contains("GIF"), "got: {err}");
@@ -5212,7 +5275,7 @@ fn view_image_animated_gif_requires_explicit_capability_or_static_opt_in() {
     let raw = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap(), "allow_gif_animation": true}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": true}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, .. } = raw else {
@@ -5229,7 +5292,7 @@ fn view_image_animated_gif_requires_explicit_capability_or_static_opt_in() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": true, "allow_gif_animation": null}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
@@ -5258,7 +5321,7 @@ fn view_image_animated_webp_requires_explicit_static_opt_in() {
     let err = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": null, "allow_gif_animation": null}),
     )
     .unwrap_err();
     assert!(err.contains("animated webp"), "got: {err}");
@@ -5267,7 +5330,7 @@ fn view_image_animated_webp_requires_explicit_static_opt_in() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+        serde_json::json!({"path": path.to_str().unwrap(), "tile_index": null, "tile_width": null, "tile_height": null, "crop": null, "static_image": true, "allow_gif_animation": null}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
@@ -6656,7 +6719,9 @@ fn live_debloat_tool_invocation_suite() {
         &reg,
         "read",
         serde_json::json!({
-            "path": test_path
+            "path": test_path,
+            "offset": null,
+            "limit": null
         }),
     )
     .unwrap();
@@ -6697,7 +6762,8 @@ fn live_debloat_tool_invocation_suite() {
         serde_json::json!({
             "path": test_path,
             "old_string": "line 1",
-            "new_string": "line 1 updated"
+            "new_string": "line 1 updated",
+            "replace_all": false
         }),
     )
     .unwrap();
@@ -6743,7 +6809,10 @@ fn live_followup_schema_debloat_suite() {
         "bash",
         serde_json::json!({
             "command": "echo 'followup live debloat test'",
-            "description": "test echo"
+            "timeout": null,
+            "workdir": null,
+            "description": "test echo",
+            "justification": null
         }),
     )
     .unwrap();
@@ -6766,7 +6835,10 @@ fn live_followup_schema_debloat_suite() {
     assert!(minified.get("$schema").is_none());
     assert!(minified.get("title").is_none());
     assert!(minified.get("$comment").is_none());
-    assert!(minified.get("additionalProperties").is_none());
+    assert_eq!(
+        minified.get("additionalProperties"),
+        Some(&serde_json::json!(false))
+    );
     assert!(minified["properties"]["query"].get("title").is_none());
     assert!(
         minified["properties"]["verbose"]
@@ -6905,4 +6977,58 @@ fn memory_tool_search_omits_non_matching_query() {
         out.contains("No matching memories"),
         "search should omit importance-only matches: {out}"
     );
+}
+
+#[test]
+fn defer_loading_and_namespace_filtering_in_lua_plugins() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"
+        n00n.api.register_tool({
+            name = "deferred_explore_tool",
+            defer_loading = true,
+            namespace = "explore",
+            description = "A deferred explore tool",
+            schema = { type = "object", properties = {} },
+            handler = function() return { llm_output = "ok" } end,
+        })
+        n00n.api.register_tool({
+            name = "active_tool",
+            description = "An active tool",
+            schema = { type = "object", properties = {} },
+            handler = function() return { llm_output = "ok" } end,
+        })
+    "#;
+    host.load_source("test_plugin", src).expect("load plugin");
+
+    let ctx = DescriptionContext {
+        filter: &ToolFilter::All,
+        audience: ToolAudience::MAIN,
+        workflow: false,
+    };
+
+    // Default active tools should exclude deferred tools
+    let active = ActiveTools::default();
+    let defs_active = reg.definitions_active(&env_vars(), &ctx, true, &active);
+    let names_active: Vec<_> = defs_active
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(names_active.contains(&"active_tool".to_owned()));
+    assert!(!names_active.contains(&"deferred_explore_tool".to_owned()));
+
+    // With namespace active, deferred tool should be included
+    let mut with_ns = ActiveTools::default();
+    with_ns.namespaces.insert("explore".to_owned());
+    let defs_with_ns = reg.definitions_active(&env_vars(), &ctx, true, &with_ns);
+    let names_with_ns: Vec<_> = defs_with_ns
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(names_with_ns.contains(&"active_tool".to_owned()));
+    assert!(names_with_ns.contains(&"deferred_explore_tool".to_owned()));
 }

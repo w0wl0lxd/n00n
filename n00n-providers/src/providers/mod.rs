@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -119,6 +120,40 @@ pub(crate) fn urlenc(s: &str) -> String {
         }
     }
     out
+}
+
+/// Maximum characters to keep for tool descriptions sent to providers.
+/// Longer descriptions are truncated at the nearest sentence or word boundary.
+pub(crate) const DEFAULT_TOOL_DESCRIPTION_MAX_CHARS: usize = 256;
+
+/// Trim a tool description to `max` characters, preferring sentence and then
+/// word boundaries so the result remains readable.
+pub(crate) fn trim_tool_description(desc: &str, max: usize) -> Cow<'_, str> {
+    if desc.chars().count() <= max {
+        return Cow::Borrowed(desc);
+    }
+
+    let char_boundary = |limit| {
+        desc.char_indices()
+            .nth(limit)
+            .map_or(desc.len(), |(index, _)| index)
+    };
+    if max <= 3 {
+        return Cow::Owned(desc.chars().take(max).collect());
+    }
+
+    let sentence_boundary = char_boundary(max - 1);
+    if let Some(index) = desc[..sentence_boundary].rfind(". ")
+        && desc[..index].contains(". ")
+    {
+        return Cow::Owned(format!("{}.", &desc[..index]));
+    }
+
+    let word_boundary = char_boundary(max - 3);
+    if let Some(index) = desc[..word_boundary].rfind(' ') {
+        return Cow::Owned(format!("{}...", &desc[..index]));
+    }
+    Cow::Owned(format!("{}...", &desc[..word_boundary]))
 }
 
 /// The `reasoning_effort` layout shared by every OpenAI-compatible provider.
@@ -579,5 +614,28 @@ mod tests {
         assert!(result.is_err());
         let msg = format!("{result:?}");
         assert!(msg.contains(&env_var) || msg.contains(&slug));
+    }
+
+    #[test_case("short text", 256, "short text" ; "no_trim_short")]
+    #[test_case(
+        "First sentence. Second sentence. Third sentence is quite long and would exceed the limit.",
+        80,
+        "First sentence. Second sentence." ; "trim_at_sentence"
+    )]
+    #[test_case(
+        "one two three four five six seven eight nine ten eleven twelve",
+        20,
+        "one two three..." ; "trim_at_word"
+    )]
+    #[test_case("日本語の説明", 8, "日本語の説明" ; "keep_unicode_within_character_limit")]
+    #[test_case("日本語の説明", 5, "日本..." ; "trim_unicode_by_character_limit")]
+    #[test_case(
+        "A. alpha beta gamma delta epsilon zeta eta theta",
+        24,
+        "A. alpha beta gamma..." ; "ignore_short_opening_sentence"
+    )]
+    #[test_case("abcdef", 3, "abc" ; "small_limit_without_ellipsis")]
+    fn trim_tool_description_respects_boundaries(input: &str, max: usize, expected: &str) {
+        assert_eq!(trim_tool_description(input, max).as_ref(), expected);
     }
 }

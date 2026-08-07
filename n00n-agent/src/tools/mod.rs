@@ -210,8 +210,7 @@ pub fn capability_exclusions(model: &Model) -> &'static [&'static str] {
 #[must_use]
 pub fn default_active_tools() -> ActiveTools {
     let mut active = ActiveTools::default();
-    active.names.insert(AGENT_CONTROL_TOOL_NAME.to_owned());
-    active.names.insert(BATCH_TOOL_NAME.to_owned());
+    active.namespaces.insert("agent".to_owned());
     active.names.insert(VIEW_IMAGE_TOOL_NAME.to_owned());
     active
 }
@@ -226,6 +225,7 @@ pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
 pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
 pub const BATCH_TOOL_NAME: &str = "batch";
 pub const BASH_TOOL_NAME: &str = "bash";
+pub const BLACKBOARD_TOOL_NAME: &str = "blackboard";
 pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 pub const EDIT_TOOL_NAME: &str = "edit";
 pub const GLOB_TOOL_NAME: &str = "glob";
@@ -234,8 +234,10 @@ pub const MULTIEDIT_TOOL_NAME: &str = "multiedit";
 pub const QUESTION_TOOL_NAME: &str = "question";
 pub const READ_TOOL_NAME: &str = "read";
 pub const TASK_TOOL_NAME: &str = "task";
+pub const TEAM_TOOL_NAME: &str = "team";
 pub const TODOWRITE_TOOL_NAME: &str = "todo_write";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
+pub const WORKFLOW_TOOL_NAME: &str = "workflow";
 pub const WRITE_TOOL_NAME: &str = "write";
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
@@ -1289,12 +1291,7 @@ mod tests {
     #[test]
     fn default_active_tools_include_deferred_tools() {
         let active = default_active_tools();
-        for name in [
-            AGENT_CONTROL_TOOL_NAME,
-            BATCH_TOOL_NAME,
-            VIEW_IMAGE_TOOL_NAME,
-        ] {
-            assert!(active.names.contains(name), "missing default tool: {name}");
-        }
+        assert!(active.namespaces.contains("agent"));
+        assert!(active.names.contains(VIEW_IMAGE_TOOL_NAME));
     }
 }

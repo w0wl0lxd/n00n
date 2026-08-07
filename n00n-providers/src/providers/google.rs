@@ -21,7 +21,10 @@ use crate::{
     StopReason, StreamResponse, System, ThinkingConfig, TokenUsage, dialect,
 };
 
-use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
+use super::{
+    DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, KeyPool, ResolvedAuth, http_client, next_sse_line,
+    trim_tool_description,
+};
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const ENV_VAR: &str = "GEMINI_API_KEY";
@@ -887,14 +890,19 @@ fn convert_tools(tools: &Value) -> Vec<Value> {
     arr.iter()
         .filter_map(|t| {
             let name = t.get("name")?.as_str()?;
-            let description = t.get("description")?.as_str().unwrap_or_else(|| "");
+            let raw_description = match t.get("description") {
+                Some(Value::String(description)) => description.as_str(),
+                _ => "",
+            };
+            let description =
+                trim_tool_description(raw_description, DEFAULT_TOOL_DESCRIPTION_MAX_CHARS);
             let parameters = t
                 .get("input_schema")
                 .cloned()
                 .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
             Some(json!({
                 "name": name,
-                "description": description,
+                "description": description.as_ref(),
                 "parameters": parameters,
             }))
         })
@@ -1343,6 +1351,20 @@ mod tests {
         assert_eq!(result[0]["name"], "bash");
         assert_eq!(result[0]["description"], "run a command");
         assert!(result[0]["parameters"]["properties"]["cmd"].is_object());
+    }
+
+    #[test]
+    fn convert_tools_keeps_non_string_description() {
+        let tools = json!([{
+            "name": "bash",
+            "description": null,
+            "input_schema": {"type": "object"}
+        }]);
+
+        let result = convert_tools(&tools);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["description"], "");
     }
 
     #[test]
