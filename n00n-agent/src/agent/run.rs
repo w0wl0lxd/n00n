@@ -355,6 +355,23 @@ impl<'h> Agent<'h> {
         self.total_cost
     }
 
+    pub async fn run_tool(&self, id: String, name: &str, input: &Value) -> ToolDoneEvent {
+        let ctx = self.tool_context();
+        let done = tool_dispatch::run(
+            &self.registry,
+            self.mcp.as_ref(),
+            id,
+            name,
+            input,
+            &ctx,
+            tool_dispatch::Emit::Notify,
+        )
+        .await;
+        self.event_tx
+            .try_send(AgentEvent::ToolDone(Box::new(done.clone())));
+        done
+    }
+
     /// Runs the agent loop with the given input.
     ///
     /// # Errors
@@ -2075,6 +2092,18 @@ mod tests {
             },
         );
         (agent, event_rx)
+    }
+
+    #[test]
+    fn tool_context_preserves_agent_session_identity() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let identity = SessionIdentity::root(SessionRef::generate());
+        agent.identity = Some(identity.clone());
+
+        let ctx = agent.tool_context();
+
+        assert_eq!(ctx.identity, Some(identity));
     }
 
     fn make_agent_with_config(

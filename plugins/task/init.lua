@@ -15,6 +15,7 @@ local subagent = require("n00n.subagent")
 local DONE_NAME = "done"
 local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
 local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
+local ORCHESTRATION_TOOLS = { "task", "team", "workflow", "agent_control", "batch" }
 local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
@@ -81,13 +82,13 @@ local function handler(input, ctx)
       forwarded[key] = value
     end
     forwarded.background = false
-    local forwarded_json, encode_err = n00n.json.encode(forwarded)
-    if encode_err then
-      return { llm_output = "failed to encode task input: " .. tostring(encode_err), is_error = true }
-    end
-    local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
-      .. forwarded_json
-    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    local title = "task: " .. (input.description or input.prompt or "background task"):sub(1, 60)
+    local id, err = n00n.session.new({
+      tool = "task",
+      input = forwarded,
+      title = title,
+      focus = false,
+    })
     if not id then
       return { llm_output = err, is_error = true }
     end
@@ -174,6 +175,7 @@ local function handler(input, ctx)
           output_schema = input.output_schema,
           preview = preview,
           activity_label = input.description or "task",
+          except_tools = ORCHESTRATION_TOOLS,
         })
         if err then
           return { llm_output = err, is_error = true }
@@ -212,6 +214,7 @@ local function handler(input, ctx)
         local tool_defs, tools_err = n00n.agent.tools(ctx, {
           audience = audience,
           spec = model.spec,
+          except = ORCHESTRATION_TOOLS,
         })
         if tools_err then
           return { llm_output = tools_err, is_error = true }
@@ -244,6 +247,7 @@ local function handler(input, ctx)
           name = input.description,
           thinking = input.thinking,
           mode = subagent_type,
+          except = ORCHESTRATION_TOOLS,
         })
         if sess_err then
           return { llm_output = sess_err, is_error = true }

@@ -107,6 +107,9 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_output_bytes` | usize | `16384` | 1024 | Max tool output size (bytes) |
 | `max_output_lines` | usize | `500` | 10 | Max tool output lines |
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
+| `max_depth` | usize | `4` | 1 | Maximum session lineage depth |
+| `max_total_descendants` | usize | `16` | 1 | Maximum total descendants per session lineage root |
+| `max_active_descendants` | usize | `8` | 1 | Maximum active descendants per session lineage root |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
 

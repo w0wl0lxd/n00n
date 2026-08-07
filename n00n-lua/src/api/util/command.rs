@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arc_swap::ArcSwap;
 use mlua::RegistryKey;
 use n00n_agent::SharedBuf;
+use n00n_storage::id::SessionRef;
 
 #[derive(Clone)]
 pub struct LuaCommandInfo {
@@ -404,6 +405,13 @@ pub enum WinCommand {
 }
 
 #[derive(Debug)]
+pub struct SessionBootstrap {
+    pub tool: String,
+    pub input: serde_json::Value,
+    pub title: Option<String>,
+}
+
+#[derive(Debug)]
 pub enum SessionRequest {
     List,
     Live,
@@ -415,15 +423,19 @@ pub enum SessionRequest {
         prompt: Option<String>,
         focus: bool,
         parent_id: Option<String>,
+        caller_id: Option<SessionRef>,
+        bootstrap: Option<SessionBootstrap>,
     },
     Prompt {
         id: Option<String>,
         text: String,
         steer: bool,
         control: bool,
+        caller_id: Option<SessionRef>,
     },
     Cancel {
         id: String,
+        caller_id: Option<SessionRef>,
     },
     Focus {
         id: String,

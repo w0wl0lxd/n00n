@@ -27,6 +27,9 @@ pub const MIN_MAX_INPUT_LINES: u32 = 1;
 pub const DEFAULT_MCP_TOOL_DESC_MAX_CHARS: usize = 200;
 
 pub const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
+pub const DEFAULT_MAX_DEPTH: usize = 4;
+pub const DEFAULT_MAX_TOTAL_DESCENDANTS: usize = 16;
+pub const DEFAULT_MAX_ACTIVE_DESCENDANTS: usize = 8;
 pub const DEFAULT_COMPACTION_BUFFER: CompactionBuffer = CompactionBuffer::Percent(20);
 
 pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -45,6 +48,9 @@ pub const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
 pub const MIN_OUTPUT_BYTES: usize = 1024;
 pub const MIN_OUTPUT_LINES: usize = 10;
 pub const MIN_MAX_CONTINUATION_TURNS: u32 = 1;
+pub const MIN_MAX_DEPTH: usize = 1;
+pub const MIN_MAX_TOTAL_DESCENDANTS: usize = 1;
+pub const MIN_MAX_ACTIVE_DESCENDANTS: usize = 1;
 pub const MIN_COMPACTION_BUFFER: u32 = 1_000;
 const MAX_COMPACTION_PERCENT: u8 = 99;
 const COMPACTION_BUFFER_EXPECTED: &str =
@@ -195,6 +201,16 @@ pub enum ConfigError {
         "invalid config: agent.fusion.sidekick_tier must be weak, medium, or strong, got {tier:?}"
     )]
     InvalidFusionSidekickTier { tier: crate::providers::Tier },
+    #[error(
+        "invalid config: agent lineage limits require max_depth <= max_total_descendants and \
+         max_active_descendants <= max_total_descendants (got max_depth={max_depth}, \
+         max_total_descendants={max_total_descendants}, max_active_descendants={max_active_descendants})"
+    )]
+    InvalidLineageLimits {
+        max_depth: usize,
+        max_total_descendants: usize,
+        max_active_descendants: usize,
+    },
 }
 
 fn check(
@@ -496,6 +512,9 @@ pub struct AgentFileConfig {
     pub max_output_bytes: Option<usize>,
     pub max_output_lines: Option<usize>,
     pub max_continuation_turns: Option<u32>,
+    pub max_depth: Option<usize>,
+    pub max_total_descendants: Option<usize>,
+    pub max_active_descendants: Option<usize>,
     pub compaction_buffer: Option<CompactionBuffer>,
     pub mcp_tool_desc_max_chars: Option<usize>,
     pub dynamic_tools: Option<DynamicToolFileConfig>,
@@ -527,6 +546,9 @@ impl AgentFileConfig {
             max_output_bytes,
             max_output_lines,
             max_continuation_turns,
+            max_depth,
+            max_total_descendants,
+            max_active_descendants,
             compaction_buffer,
             mcp_tool_desc_max_chars
         );
@@ -1111,6 +1133,15 @@ pub struct AgentConfig {
     #[config(default = DEFAULT_MAX_CONTINUATION_TURNS, min = MIN_MAX_CONTINUATION_TURNS, desc = "Max automatic continuation turns")]
     pub max_continuation_turns: u32,
 
+    #[config(default = DEFAULT_MAX_DEPTH, min = MIN_MAX_DEPTH, desc = "Maximum session lineage depth")]
+    pub max_depth: usize,
+
+    #[config(default = DEFAULT_MAX_TOTAL_DESCENDANTS, min = MIN_MAX_TOTAL_DESCENDANTS, desc = "Maximum total descendants per session lineage root")]
+    pub max_total_descendants: usize,
+
+    #[config(default = DEFAULT_MAX_ACTIVE_DESCENDANTS, min = MIN_MAX_ACTIVE_DESCENDANTS, desc = "Maximum active descendants per session lineage root")]
+    pub max_active_descendants: usize,
+
     #[config(default = DEFAULT_COMPACTION_BUFFER, ty = "u32 | string", default_doc = "20%", desc = "Context reserved for compaction: token count or percent of the context window (e.g. \"20%\")")]
     pub compaction_buffer: CompactionBuffer,
 
@@ -1226,6 +1257,13 @@ impl AgentConfig {
             max_continuation_turns: file
                 .max_continuation_turns
                 .unwrap_or_else(|| DEFAULT_MAX_CONTINUATION_TURNS),
+            max_depth: file.max_depth.unwrap_or_else(|| DEFAULT_MAX_DEPTH),
+            max_total_descendants: file
+                .max_total_descendants
+                .unwrap_or_else(|| DEFAULT_MAX_TOTAL_DESCENDANTS),
+            max_active_descendants: file
+                .max_active_descendants
+                .unwrap_or_else(|| DEFAULT_MAX_ACTIVE_DESCENDANTS),
             compaction_buffer: file
                 .compaction_buffer
                 .unwrap_or_else(|| DEFAULT_COMPACTION_BUFFER),
@@ -1238,6 +1276,19 @@ impl AgentConfig {
             dynamic_tools,
             fusion,
         }
+    }
+
+    fn validate_lineage_limits(&self) -> Result<(), ConfigError> {
+        if self.max_depth > self.max_total_descendants
+            || self.max_active_descendants > self.max_total_descendants
+        {
+            return Err(ConfigError::InvalidLineageLimits {
+                max_depth: self.max_depth,
+                max_total_descendants: self.max_total_descendants,
+                max_active_descendants: self.max_active_descendants,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1413,6 +1464,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
+        self.agent.validate_lineage_limits()?;
         self.provider.validate()?;
         self.provider.validate_openai_coding_plan_slots()?;
         if self.agent.fusion.sidekick_tier == crate::providers::Tier::Compaction {
