@@ -411,7 +411,12 @@ fn prepare_agent_env(
         stream: config.provider.stream_timeout,
     };
 
-    let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
+    let model = setup::resolve_model_with_fusion(
+        model_arg,
+        &config.provider,
+        &storage,
+        Some(&config.agent.fusion),
+    )?;
     let model_spec = model.spec();
     setup::install_panic_log_hook();
 

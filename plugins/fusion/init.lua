@@ -1,6 +1,6 @@
 -- Fusion sidekick delegation (Cognition Devin Fusion pattern).
 -- Lead agent delegates via spec-quality briefs; sidekick runs in an isolated
--- cached context on a cost-aware tier (auto_tier on by default).
+-- cached context on an exact, configurable sidekick model.
 
 local subagent = require("n00n.subagent")
 
@@ -27,7 +27,6 @@ local schema = {
 }
 
 local opts = n00n.api.register_options({
-  auto_tier = { default = true, desc = "Allow trusted configuration to route the sidekick tier." },
   default_subagent_type = { default = "general", desc = "Default subagent_type when omitted." },
 })
 
@@ -88,18 +87,13 @@ local function handler(input, ctx)
     return { llm_output = "Fusion sidekick error: Fusion is disabled", is_error = true }
   end
 
-  local model_tier = config.fusion.sidekick_tier or "weak"
-  if model_tier ~= "weak" and model_tier ~= "medium" and model_tier ~= "strong" then
-    return { llm_output = "Fusion sidekick error: invalid sidekick tier", is_error = true }
-  end
-
   local prompt = build_prompt(input)
   local result, err, cost, usage, model_spec = subagent.launch(ctx, {
     description = input.description,
     prompt = prompt,
     subagent_type = subagent_type,
-    model_tier = model_tier,
-    auto_tier = opts.auto_tier,
+    model_spec = config.fusion.sidekick_model,
+    thinking = config.fusion.sidekick_thinking,
     audience = "general_sub",
     include_mcp = false,
     except_tools = {

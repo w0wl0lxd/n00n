@@ -1537,6 +1537,19 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
     }
 
     #[test]
+    fn parse_sse_error_after_acceptance_is_not_retryable() {
+        smol::block_on(async {
+            let sse = "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\nevent: error\ndata: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n\n";
+
+            let (err, _) = run_sse(sse).await;
+            let err = err.unwrap_err();
+
+            assert!(matches!(err, AgentError::RequestSent { .. }));
+            assert!(!err.is_retryable());
+        });
+    }
+
+    #[test]
     fn parse_sse_response_failed() {
         smol::block_on(async {
             let sse = "\
