@@ -256,6 +256,11 @@ impl AgentError {
     }
 
     #[must_use]
+    pub fn is_history_replay_required(&self) -> bool {
+        matches!(self, Self::HistoryReplayRequired { .. })
+    }
+
+    #[must_use]
     pub fn is_setup_required(&self) -> bool {
         matches!(self, Self::SetupRequired { .. })
     }
@@ -401,6 +406,14 @@ mod tests {
     #[test_case(403, false ; "forbidden")]
     fn api_auth_error(status: u16, expected: bool) {
         assert_eq!(api(status).is_auth_error(), expected);
+    }
+
+    #[test]
+    fn history_replay_required_is_detected() {
+        let err = AgentError::HistoryReplayRequired {
+            reason: HistoryReplayReason::ContinuationNotFound,
+        };
+        assert!(err.is_history_replay_required());
     }
 
     #[test_case(429, "Rate limited"        ; "rate_limited")]
