@@ -4,6 +4,7 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use async_process::Child;
+use tracing::warn;
 
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
