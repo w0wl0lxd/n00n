@@ -47,14 +47,123 @@ pub(super) struct FusionDispatchAuth {
 }
 
 /// Truncates `text` to `TOOL_ERROR_LOG_MAX_CHARS` on a character boundary,
-/// preserving the total byte count as a trailing hint.
+/// escaping control characters and preserving the total byte count as a trailing hint.
 fn truncate_for_log(text: &str) -> String {
-    match text.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
-        Some((idx, _)) => format!("{}... ({} bytes)", &text[..idx], text.len()),
-        None => text.to_string(),
+    let escaped = escape_control_chars(&redact_sensitive_values(text));
+    match escaped.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
+        Some((idx, _)) => format!("{}... ({} bytes)", &escaped[..idx], text.len()),
+        None if text.chars().nth(TOOL_ERROR_LOG_MAX_CHARS).is_some() => {
+            format!("{escaped}... ({} bytes)", text.len())
+        }
+        None => escaped,
     }
 }
 
+fn redact_sensitive_values(s: &str) -> String {
+    const REDACTED: &str = "[REDACTED]";
+    let scan_end = s
+        .char_indices()
+        .nth(TOOL_ERROR_LOG_MAX_CHARS)
+        .map_or(s.len(), |(index, _)| index);
+    let mut redacted = s[..scan_end].to_string();
+    let markers = [
+        "api_key", "api-key", "api key", "token", "password", "secret", "bearer",
+    ];
+    for marker in markers {
+        let mut search_from = 0;
+        loop {
+            let lower = redacted.to_ascii_lowercase();
+            let Some(relative) = lower[search_from..].find(marker) else {
+                break;
+            };
+            let marker_start = search_from + relative;
+            let after_marker = marker_start + marker.len();
+            let preceded_by_word = marker_start > 0
+                && redacted[..marker_start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric());
+            let followed_by_word = redacted[after_marker..]
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric());
+            if preceded_by_word || followed_by_word {
+                search_from = after_marker;
+                continue;
+            }
+            let mut cursor = after_marker;
+            cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            let whitespace_separated = cursor > after_marker;
+            if matches!(lower[cursor..].chars().next(), Some('"' | '\'')) {
+                cursor += 1;
+                cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            }
+            let delimiter = lower[cursor..].chars().next();
+            if whitespace_separated && !matches!(delimiter, Some('=' | ':')) {
+                let value_start = cursor;
+                let value_end = lower[value_start..]
+                    .find(char::is_whitespace)
+                    .map_or(redacted.len(), |end| value_start + end);
+                if value_start < value_end {
+                    redacted.replace_range(value_start..value_end, REDACTED);
+                    search_from = value_start + REDACTED.len();
+                    continue;
+                }
+            }
+            if !matches!(delimiter, Some('=' | ':')) {
+                search_from = after_marker;
+                continue;
+            }
+            cursor += 1;
+            cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            let quote = lower[cursor..]
+                .chars()
+                .next()
+                .filter(|character| matches!(character, '"' | '\''));
+            if quote.is_some() {
+                cursor += 1;
+            }
+            let value_start = cursor;
+            let value_end = if let Some(quote) = quote {
+                lower[value_start..]
+                    .find(quote)
+                    .map_or(redacted.len(), |end| value_start + end)
+            } else {
+                lower[value_start..]
+                    .find(char::is_whitespace)
+                    .map_or(redacted.len(), |end| value_start + end)
+            };
+            if value_start < value_end {
+                redacted.replace_range(value_start..value_end, REDACTED);
+                search_from = value_start + REDACTED.len();
+            } else {
+                search_from = after_marker;
+            }
+        }
+    }
+    redacted
+}
+
+/// Escapes control characters (newlines, tabs, carriage returns, backslashes, quotes)
+/// for safe logging, similar to the schema preview escaping logic.
+fn escape_control_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let escaped = match ch {
+            '\n' => Some("\\n"),
+            '\t' => Some("\\t"),
+            '\r' => Some("\\r"),
+            '\\' => Some("\\\\"),
+            '"' => Some("\\\""),
+            _ => None,
+        };
+        match escaped {
+            Some(s) => out.push_str(s),
+            None => out.push(ch),
+        }
+    }
+    out
+}
 /// Returns true when `command` contains shell metacharacters that are outside
 /// any quote and not escaped by a backslash. These are the characters that let
 /// a single command string request additional programs or I/O redirection.
@@ -2405,6 +2514,27 @@ mod tests {
     }
 
     #[test]
+    fn truncate_for_log_redacts_sensitive_values() {
+        let preview = truncate_for_log("request API_KEY=secret-token password: hunter2");
+        assert_eq!(preview, "request API_KEY=[REDACTED] password: [REDACTED]");
+        let spaced = truncate_for_log("api_key = hunter2 token=abcdefghijklmnopqrstuv");
+        assert_eq!(spaced, "api_key = [REDACTED] token=[REDACTED]");
+        let bearer = truncate_for_log("Authorization: Bearer hunter2");
+        assert_eq!(bearer, "Authorization: Bearer [REDACTED]");
+        let flags = truncate_for_log("--password hunter2 --api-key hunter3");
+        assert_eq!(flags, "--password [REDACTED] --api-key [REDACTED]");
+        let json = truncate_for_log(r#"{"api_key": "hunter2", "token": "secret-value"}"#);
+        assert_eq!(
+            json,
+            r#"{\"api_key\": \"[REDACTED]\", \"token\": \"[REDACTED]\"}"#
+        );
+        let repeated = format!("token={} ", "x".repeat(10)).repeat(10_000);
+        let preview = truncate_for_log(&repeated);
+        assert!(preview.starts_with("token=[REDACTED]"));
+        assert!(preview.ends_with(&format!("... ({} bytes)", repeated.len())));
+    }
+
+    #[test]
     fn truncate_for_log_truncates_on_char_boundary() {
         let short = "short";
         assert_eq!(truncate_for_log(short), short);
@@ -2419,6 +2549,38 @@ mod tests {
         let preview = truncate_for_log(&emoji);
         assert!(preview.starts_with(&"😀".repeat(TOOL_ERROR_LOG_MAX_CHARS)));
         assert!(preview.ends_with(&format!("... ({} bytes)", emoji.len())));
+
+        // Control characters are escaped.
+        let with_controls = "line1\nline2\ttab\rreturn\\back\"quote";
+        let preview = truncate_for_log(with_controls);
+        assert!(preview.contains("\\n"));
+        assert!(preview.contains("\\t"));
+        assert!(preview.contains("\\r"));
+        assert!(preview.contains("\\\\"));
+        assert!(preview.contains("\\\""));
+        assert!(!preview.contains('\n'));
+        assert!(!preview.contains('\t'));
+    }
+
+    #[test]
+    fn truncate_for_log_does_not_redact_innocuous_substrings() {
+        const REDACTED: &str = "[REDACTED]";
+        assert!(
+            !truncate_for_log("contoken=abc").contains(REDACTED),
+            "substring inside a word should not match"
+        );
+        assert!(
+            !truncate_for_log("mytoken=abc").contains(REDACTED),
+            "substring at end of word should not match"
+        );
+        assert!(
+            !truncate_for_log("max_tokens=10").contains(REDACTED),
+            "token suffix should not match"
+        );
+        assert!(
+            !truncate_for_log("tokenizer=foo").contains(REDACTED),
+            "token prefix should not match"
+        );
     }
 
     fn fusion_brief() -> Value {

@@ -1026,12 +1026,20 @@ pub fn resolve_cached(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
 }
 
 pub(crate) fn resolve_api_key(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
-    if let Ok(key) = env::var("OPENAI_API_KEY") {
-        debug!("using OpenAI API key authentication");
-        return Ok(ResolvedAuth {
-            base_url: None,
-            headers: vec![("authorization".into(), format!("Bearer {key}"))],
-        });
+    match env::var("OPENAI_API_KEY") {
+        Ok(key) => {
+            debug!("using OpenAI API key authentication");
+            return Ok(ResolvedAuth {
+                base_url: None,
+                headers: vec![("authorization".into(), format!("Bearer {key}"))],
+            });
+        }
+        Err(env::VarError::NotPresent) => {}
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(AgentError::Config {
+                message: "OPENAI_API_KEY contains invalid Unicode".into(),
+            });
+        }
     }
 
     if let Some(creds) = load_provider_credentials(dir, PROVIDER) {

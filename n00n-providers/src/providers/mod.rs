@@ -294,10 +294,13 @@ impl KeyPool {
     }
 
     pub fn resolve(slug: &str, env_var: &str) -> Result<Self, AgentError> {
-        if let Ok(pool) = Self::from_env(env_var) {
-            debug!(slug, keys = pool.len(), "resolved API key from env");
-            return Ok(pool);
-        }
+        let env_error = match Self::from_env(env_var) {
+            Ok(pool) => {
+                debug!(slug, keys = pool.len(), "resolved API key from env");
+                return Ok(pool);
+            }
+            Err(error) => error,
+        };
         if let Some(key) = Self::key_from_file(slug) {
             debug!(slug, "resolved API key from saved credentials");
             return Ok(Self::from_keys(vec![key]));
@@ -382,6 +385,10 @@ mod tests {
     use crate::types::BodyOverride;
     use futures_lite::io::AsyncBufReadExt;
     use serde_json::json;
+    #[cfg(unix)]
+    use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     use test_case::test_case;
 
     fn override_model(body_override: Option<BodyOverride>) -> Model {
@@ -579,5 +586,21 @@ mod tests {
         assert!(result.is_err());
         let msg = format!("{result:?}");
         assert!(msg.contains(&env_var) || msg.contains(&slug));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn resolve_preserves_invalid_unicode_environment_error() {
+        let slug = format!("test_resolve_invalid_unicode_{}", fastrand::u32(..));
+        let env_var = format!("N00N_TEST_KEY_INVALID_UNICODE_{}", fastrand::u32(..));
+        let value = OsString::from_vec(vec![0xff]);
+        // SAFETY: This test owns its unique environment variable.
+        unsafe { std::env::set_var(&env_var, value) };
+        let result = KeyPool::resolve(&slug, &env_var);
+        // SAFETY: This test owns its unique environment variable.
+        unsafe { std::env::remove_var(&env_var) };
+
+        assert!(matches!(result, Err(AgentError::Config { .. })));
     }
 }
