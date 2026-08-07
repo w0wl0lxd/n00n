@@ -53,6 +53,8 @@ local description = string.format(
 
 local schema = {
   type = "object",
+  additionalProperties = false,
+  required = { "tool_calls" },
   properties = {
     tool_calls = {
       type = "array",
@@ -60,17 +62,20 @@ local schema = {
       required = true,
       alias = "tool_uses",
       items = {
-        description = "Tool invocation: {tool, parameters} or flat {tool, ...params}.",
+        type = "object",
+        additionalProperties = false,
+        required = { "tool", "parameters" },
+        properties = {
+          tool = { type = "string", required = true },
+          parameters = { type = "object", required = true, properties = {} },
+        },
       },
     },
   },
 }
 
 --- Input normalization (pure) ---------------------------------------------
-
--- Models send entries in two shapes, { tool, parameters } and flat
--- { tool, ...params }, so accept either, or even both merged, as long
--- as no key appears twice.
+--- Batch entries must be { tool = string, parameters = object }.
 local function normalize_entry(entry)
   if type(entry) ~= "table" then
     return nil, "batch entry must be an object"
@@ -79,35 +84,10 @@ local function normalize_entry(entry)
   if type(tool) ~= "string" then
     return nil, "batch entry missing 'tool'"
   end
-  local rest = {}
-  local has_rest = false
-  for k, v in pairs(entry) do
-    if k ~= "tool" and k ~= "parameters" then
-      rest[k] = v
-      has_rest = true
-    end
+  if type(entry.parameters) ~= "table" then
+    return nil, "batch entry missing 'parameters'"
   end
-  local nested = entry.parameters
-  local params
-  if nested == nil then
-    if not has_rest then
-      return nil, "batch entry missing 'parameters'"
-    end
-    params = rest
-  elseif not has_rest then
-    params = nested
-  elseif type(nested) ~= "table" then
-    return nil, "'parameters' must be an object when flat fields are also present"
-  else
-    params = rest
-    for k, v in pairs(nested) do
-      if params[k] ~= nil then
-        return nil, "duplicate parameter '" .. k .. "' in both 'parameters' and flat fields"
-      end
-      params[k] = v
-    end
-  end
-  return { tool = tool, params = params }
+  return { tool = tool, params = entry.parameters }
 end
 
 --- Child presentation ------------------------------------------------------

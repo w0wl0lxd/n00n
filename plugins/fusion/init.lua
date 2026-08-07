@@ -9,32 +9,21 @@ local description =
 
 local schema = {
   type = "object",
-  required = { "description", "goal", "definition_of_done" },
+  required = { "description", "goal", "constraints", "definition_of_done", "escalation_triggers", "subagent_type" },
   additionalProperties = false,
   properties = {
-    description = {
-      type = "string",
-      description = "Short label (3-5 words).",
-    },
-    goal = {
-      type = "string",
-      description = "What to accomplish.",
-    },
-    constraints = {
-      type = "string",
-      description = "Scope and patterns.",
-    },
-    definition_of_done = {
-      type = "string",
-      description = "Success checks (tests, artifacts).",
-    },
-    escalation_triggers = {
-      type = "string",
-      description = "When to escalate to the lead.",
-    },
+    description = { type = "string", required = true, description = "Short label (3-5 words)." },
+    goal = { type = "string", required = true, description = "What to accomplish." },
+    constraints = { type = { "string", "null" }, required = true, description = "Scope and patterns." },
+    definition_of_done = { type = "string", required = true, description = "Success checks (tests, artifacts)." },
+    escalation_triggers = { type = { "string", "null" }, required = true, description = "When to escalate to lead." },
     subagent_type = {
-      type = "string",
-      description = "research (read-only) or general (edit). Default: general.",
+      anyOf = {
+        { type = "string", enum = { "research", "general" } },
+        { type = "null" },
+      },
+      required = true,
+      description = "Sidekick type: research (read-only) or general.",
     },
   },
 }
@@ -153,6 +142,7 @@ n00n.api.register_tool({
   name = "fusion_delegate",
   description = description,
   schema = schema,
+  strict = true,
   handler = handler,
   header = header,
 })

@@ -9,6 +9,8 @@ group = "Reference"
 
 n00n ships with 34 built-in tools. This is the full reference.
 
+Required nullable parameters must still be included. Pass `null` to choose the listed default, such as for `bash.workdir` or `bash.timeout`.
+
 ## File Operations
 
 ### `bash` *(lua plugin)*
@@ -49,10 +51,10 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `replace_all` | boolean | no |  |
-| `path` | string | yes | File path. |
-| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
-| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
+| `replace_all` | boolean/null | yes |  |
+| `path` | string | yes |  |
+| `old_string` | string | yes |  |
+| `new_string` | string/null | yes |  |
 
 ### `multiedit` *(lua plugin)*
 
@@ -112,23 +114,23 @@ Unified codebase exploration router. Picks the best backend for the question:
 
 Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | yes |  |
-| `path` | string | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `pattern` | string | yes |  | Glob pattern (e.g. '*.rs', 'src/**/*.lua') |
+| `path` | string/null | yes | cwd | Directory to search |
 
 ### `grep` *(lua plugin)*
 
-Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
+Search file contents using ripgrep-compatible regex. This is not a shell. Use `pattern` and one `path`. For multiple paths, put separate calls in a `batch`. Pass the pattern without shell quotes. Escape regex characters once, such as `\[` rather than `\\[`. Searches respect `.gitignore`. Results are grouped by file and sorted by modification time. Multi-line matching turns on when the pattern contains `\n`, `(?s)`, or `(?m)`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no | Glob pattern (e.g. '*.rs'). |
-| `path` | string | no | Directory or file to search. |
+| `include` | string/null | yes | Glob pattern (e.g. '*.rs'). |
+| `path` | string/null | yes | Directory or file to search. |
 | `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
-| `context_after` | integer | no |  |
-| `limit` | integer | no |  |
-| `context_before` | integer | no |  |
+| `context_after` | integer/null | yes | Lines of context after matches. |
+| `limit` | integer/null | yes | Max match groups per search. |
+| `context_before` | integer/null | yes | Lines of context before matches. |
 
 ### `index` *(lua plugin)*
 
@@ -136,21 +138,21 @@ Return a compact overview of a source file: imports, types, function signatures,
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
+| `path` | string | yes | File path to index (absolute, relative, or ~/) |
 
 ### `view_image` *(lua plugin)*
 
 View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `crop` | array | no | [x,y,w,h]; <=8000 edge/4MP. |
-| `path` | string | yes |  |
-| `allow_gif_animation` | boolean | no | Raw GIF opt-in. |
-| `tile_width` | integer | no | Default 2000; max 4MP. |
-| `tile_index` | integer | no | One-based tile. |
-| `static_image` | boolean | no | First-frame PNG. |
-| `tile_height` | integer | no | Default 2000; max 4MP. |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `crop` | array/null | yes |  | Crop region as [x, y, width, height] |
+| `path` | string | yes |  | Image file path (absolute, relative, or ~/) |
+| `allow_gif_animation` | boolean/null | yes |  | Allow GIF animation (provider must support it) |
+| `tile_width` | integer/null | yes | 2000; max 8000 | Tile width in pixels |
+| `tile_index` | integer/null | yes |  | One-based tile index for tiling large images |
+| `static_image` | boolean/null | yes |  | Force static PNG (for animated GIF/webp) |
+| `tile_height` | integer/null | yes | 2000; max 8000 | Tile height in pixels |
 
 ### `codegraph` *(lua plugin)*
 
@@ -172,16 +174,16 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 
 Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repo` | string | no | Project root (defaults to cwd) |
-| `line` | integer | no |  |
-| `file_path` | string | no |  |
-| `query` | string | no |  |
-| `command` | string | yes |  |
-| `mode` | string | no |  |
-| `content` | string | no | Content filter for search (docs, config, code, or all) |
-| `top_k` | integer | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `repo` | string/null | yes |  | Project root (defaults to cwd) |
+| `line` | integer/null | yes |  | Line number (for find_related command) |
+| `file_path` | string/null | yes |  | File path (for find_related command) |
+| `query` | string/null | yes |  | Search query (for search command) |
+| `command` | string | yes |  | Semblem command: search, find_related, or savings |
+| `mode` | string/null | yes |  | Search mode: bm25 (default), hybrid, or semantic |
+| `content` | string/null | yes | code | Content filter: docs, config, code, or all |
+| `top_k` | integer/null | yes | 5 | Number of results to return |
 
 ### `arbor` *(lua plugin)*
 
@@ -216,7 +218,7 @@ Execute Python in sandboxed interpreter with tools as callable functions. Use fo
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `timeout` | integer | no | 30 | Script timeout seconds |
+| `timeout` | integer/null | yes | 30 | Script timeout seconds |
 | `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `question` *(lua plugin)*
@@ -421,11 +423,11 @@ Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done â€
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `description` | string | yes | Short label (3-5 words). |
-| `constraints` | string | no | Scope and patterns. |
+| `constraints` | string/null | yes | Scope and patterns. |
 | `definition_of_done` | string | yes | Success checks (tests, artifacts). |
 | `goal` | string | yes | What to accomplish. |
-| `escalation_triggers` | string | no | When to escalate to the lead. |
-| `subagent_type` | string | no | research (read-only) or general (edit). Default: general. |
+| `escalation_triggers` | string/null | yes | When to escalate to lead. |
+| `subagent_type` | string/null | yes | Sidekick type: research (read-only) or general. |
 
 ## Web
 
@@ -436,8 +438,8 @@ Fetch a URL and return its contents. Supports markdown (default), text, or html.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes |  | URL to fetch (http:// or https://) |
-| `timeout` | integer | no | 30, max 120 | Timeout in seconds |
-| `format` | string | no |  | Output format: markdown (default), text, or html |
+| `timeout` | integer/null | yes | 30, max 120 | Timeout in seconds |
+| `format` | string/null | yes |  | Output format: markdown (default), text, or html |
 
 ### `websearch` *(lua plugin)*
 
@@ -445,5 +447,5 @@ Search the web for real-time information using Exa AI.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `num_results` | integer | no | 8 | Number of results to return |
+| `num_results` | integer/null | yes | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |

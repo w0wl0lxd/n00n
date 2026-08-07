@@ -464,7 +464,7 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
                     "name": name,
                     "description": t.get("description")?,
                     "parameters": t.get("input_schema")?,
-                    "strict": false,
+                    "strict": t.get("strict").and_then(Value::as_bool) == Some(true),
                 }))
             })
             .collect(),

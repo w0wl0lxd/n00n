@@ -337,7 +337,12 @@ pub fn generate() -> String {
         "n00n ships with {total} built-in tools. This is the full reference."
     )
     .unwrap();
-
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "Required nullable parameters must still be included. Pass `null` to choose the listed default, such as for `bash.workdir` or `bash.timeout`."
+    )
+    .unwrap();
     let mut rendered: HashSet<&str> = HashSet::new();
 
     for (section_name, tool_names) in SECTIONS {
@@ -422,7 +427,7 @@ mod tests {
     }
 
     // Room for fusion_delegate + skill-system + memory-system + explore-stack tools; keep definitions lean.
-    const MAX_TOOL_DEFINITION_BYTES: usize = 50_000;
+    const MAX_TOOL_DEFINITION_BYTES: usize = 52_000;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {

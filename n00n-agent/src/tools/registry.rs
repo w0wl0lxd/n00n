@@ -251,6 +251,12 @@ pub trait Tool: Send + Sync + 'static {
     fn namespace(&self) -> Option<&str> {
         None
     }
+    /// Whether to ask the provider to enforce the tool schema at the token
+    /// level. Providers that support strict mode (`OpenAI`, `Anthropic`, etc.)
+    /// will then guarantee the JSON matches the schema.
+    fn strict(&self) -> bool {
+        false
+    }
     /// Parse tool input into an invocation.
     ///
     /// # Errors
@@ -604,6 +610,7 @@ impl ToolRegistry {
                 "name": entry.name(),
                 "description": description,
                 "input_schema": sanitized_schema,
+                "strict": entry.tool.strict(),
             });
             if let Some(examples) = entry.tool.examples() {
                 if supports_examples {
@@ -691,6 +698,7 @@ impl ToolRegistry {
                 "name": entry.name(),
                 "description": description,
                 "input_schema": sanitized_schema,
+                "strict": entry.tool.strict(),
             });
             if let Some(examples) = entry.tool.examples() {
                 if supports_examples {

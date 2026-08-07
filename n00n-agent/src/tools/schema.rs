@@ -25,6 +25,9 @@ const PREVIEW_SUFFIX: &str = "...";
 const JSON_ENCODED_ARRAY_HINT: &str = "Pass a JSON array, not a JSON-encoded string.";
 const JSON_ENCODED_OBJECT_HINT: &str = "Pass a JSON object, not a JSON-encoded string.";
 const TRUNCATION_SUFFIX: &str = "...";
+const MAX_UNEXPECTED_PROPERTY_NAME_CHARS: usize = 40;
+const MAX_UNEXPECTED_PROPERTY_NAMES: usize = 6;
+const MAX_UNEXPECTED_PROPERTIES_DISPLAY: usize = 384;
 
 /// Truncate a string to at most `max_len` characters on a word boundary.
 /// If truncated, appends an ellipsis indicator.
@@ -127,6 +130,7 @@ pub enum ParamSchema {
     },
     Object {
         properties: &'static [Property],
+        additional_properties: bool,
         description: &'static str,
     },
     Union {
@@ -170,6 +174,7 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
         }
         ParamSchema::Object {
             properties,
+            additional_properties,
             description,
         } => {
             let props: serde_json::Map<String, Value> = properties
@@ -184,6 +189,9 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
                 "type": "object",
                 "properties": props,
             });
+            if !*additional_properties {
+                v["additionalProperties"] = json!(false);
+            }
             if !required.is_empty() {
                 v["required"] = json!(required);
             }
@@ -196,9 +204,28 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
             variants,
             description,
         } => {
-            let mut value = json!({
-                "anyOf": variants.iter().map(|variant| to_json_schema(variant)).collect::<Vec<_>>(),
-            });
+            let kinds: Vec<ParamKind> = variants
+                .iter()
+                .filter_map(|variant| match variant {
+                    ParamSchema::Primitive { kind, .. } => Some(*kind),
+                    _ => None,
+                })
+                .collect();
+            let is_nullable_primitive = kinds.len() == variants.len()
+                && kinds.len() == 2
+                && kinds.contains(&ParamKind::Null);
+            let mut value = if is_nullable_primitive {
+                let non_null = kinds
+                    .iter()
+                    .copied()
+                    .find(|k| *k != ParamKind::Null)
+                    .map_or(ParamKind::Null, |k| k);
+                json!({ "type": [non_null.as_str(), "null"] })
+            } else {
+                json!({
+                    "anyOf": variants.iter().map(|variant| to_json_schema(variant)).collect::<Vec<_>>(),
+                })
+            };
             if !description.is_empty() {
                 value["description"] = json!(description);
             }
@@ -253,6 +280,21 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
             variants,
             description,
         }
+    } else if let Some(any_of) = v.get("anyOf").and_then(Value::as_array) {
+        if any_of.is_empty() {
+            return Err("anyOf variants must not be empty".to_string());
+        }
+        let variants = Box::leak(
+            any_of
+                .iter()
+                .map(try_from_json)
+                .collect::<Result<Vec<_>, String>>()?
+                .into_boxed_slice(),
+        );
+        ParamSchema::Union {
+            variants,
+            description,
+        }
     } else {
         match type_str {
             Some("string") if v.get("enum").is_some() => {
@@ -289,6 +331,10 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
                 kind: ParamKind::Bool,
                 description,
             },
+            Some("null") => ParamSchema::Primitive {
+                kind: ParamKind::Null,
+                description,
+            },
             Some("array") => {
                 let items_val = v.get("items").ok_or("array schema missing items")?;
                 let items: &'static ParamSchema = try_from_json(items_val)?;
@@ -305,6 +351,10 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
                     .map_or_else(Vec::new, |arr| {
                         arr.iter().filter_map(|x| x.as_str()).collect()
                     });
+                let additional_properties = v
+                    .get("additionalProperties")
+                    .and_then(Value::as_bool)
+                    .map_or(true, |v| v);
                 let properties: &'static [Property] = Box::leak(
                     props_map
                         .iter()
@@ -341,6 +391,7 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
                 );
                 ParamSchema::Object {
                     properties,
+                    additional_properties,
                     description,
                 }
             }
@@ -419,6 +470,9 @@ pub enum ToolInputErrorKind {
         expected: &'static [&'static str],
         got: String,
     },
+    UnexpectedProperties {
+        names: Vec<String>,
+    },
     InternalBug {
         detail: String,
     },
@@ -431,6 +485,44 @@ impl ToolInputError {
             kind,
         }
     }
+}
+
+fn sanitize_unexpected_property_name(name: &str) -> String {
+    let mut output = String::new();
+    for character in name.chars() {
+        let escaped = match character {
+            '\n' => "\\n".to_owned(),
+            '\r' => "\\r".to_owned(),
+            '\t' => "\\t".to_owned(),
+            '\\' => "\\\\".to_owned(),
+            '\'' => "\\'".to_owned(),
+            character if character.is_control() => {
+                format!("\\u{{{:04x}}}", u32::from(character))
+            }
+            character => character.to_string(),
+        };
+        if output.chars().count() + escaped.chars().count() > MAX_UNEXPECTED_PROPERTY_NAME_CHARS {
+            output.push_str(TRUNCATION_SUFFIX);
+            break;
+        }
+        output.push_str(&escaped);
+    }
+    output
+}
+
+fn truncate_display(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_owned();
+    }
+    let suffix_len = TRUNCATION_SUFFIX.len();
+    let mut end = max_bytes.saturating_sub(suffix_len);
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut output = String::with_capacity(end + suffix_len);
+    output.push_str(&s[..end]);
+    output.push_str(TRUNCATION_SUFFIX);
+    output
 }
 
 impl Display for ToolInputError {
@@ -472,6 +564,28 @@ impl Display for ToolInputError {
                     f.write_str(v)?;
                 }
                 write!(f, "], got \"{got}\"")
+            }
+            ToolInputErrorKind::UnexpectedProperties { names } => {
+                let mut message = format!(
+                    "unexpected parameter{}: ",
+                    if names.len() == 1 { "" } else { "s" }
+                );
+                for (i, name) in names.iter().take(MAX_UNEXPECTED_PROPERTY_NAMES).enumerate() {
+                    if i > 0 {
+                        message.push_str(", ");
+                    }
+                    message.push('\'');
+                    message.push_str(&sanitize_unexpected_property_name(name));
+                    message.push('\'');
+                }
+                if names.len() > MAX_UNEXPECTED_PROPERTY_NAMES {
+                    message.push_str(", ...");
+                }
+                message.push_str("; remove them or use the correct schema");
+                f.write_str(&truncate_display(
+                    &message,
+                    MAX_UNEXPECTED_PROPERTIES_DISPLAY,
+                ))
             }
             ToolInputErrorKind::InternalBug { detail } => {
                 write!(f, "internal validator bug: {detail}")
@@ -523,7 +637,11 @@ fn walk(schema: &ParamSchema, value: Value, path: &mut JsonPath) -> Result<Value
         ParamSchema::Primitive { kind, .. } => validate_primitive(*kind, value, path),
         ParamSchema::Enum { variants, .. } => validate_enum(variants, value, path),
         ParamSchema::Array { items, .. } => validate_array(items, value, path),
-        ParamSchema::Object { properties, .. } => validate_object(properties, value, path),
+        ParamSchema::Object {
+            properties,
+            additional_properties,
+            ..
+        } => validate_object(properties, *additional_properties, value, path),
         ParamSchema::Union { variants, .. } => {
             let kind = ParamKind::of(&value);
             if let Some(variant) = variants.iter().find(|variant| accepts_kind(variant, kind)) {
@@ -649,6 +767,7 @@ fn schema_type_name(schema: &ParamSchema) -> &'static str {
 
 fn validate_object(
     properties: &'static [Property],
+    additional_properties: bool,
     value: Value,
     path: &mut JsonPath,
 ) -> Result<Value, ToolInputError> {
@@ -689,8 +808,21 @@ fn validate_object(
             None => {}
         }
     }
-    for (extra_key, _) in map {
-        debug!(path = %path, key = %extra_key, "dropped unknown tool parameter");
+    if !additional_properties && !map.is_empty() {
+        let names: Vec<String> = map.keys().cloned().collect();
+        return Err(ToolInputError::at(
+            path,
+            ToolInputErrorKind::UnexpectedProperties { names },
+        ));
+    }
+    if additional_properties {
+        for (extra_key, extra_val) in map {
+            out.insert(extra_key, extra_val);
+        }
+    } else {
+        for (extra_key, _) in map {
+            debug!(path = %path, key = %extra_key, "dropped unknown tool parameter");
+        }
     }
     Ok(Value::Object(out))
 }
@@ -814,16 +946,24 @@ pub fn sanitize_tool_input_schema(mut schema: Value) -> Value {
     if let Value::Object(map) = &mut schema
         && is_object_schema(map)
     {
-        sanitize_object_schema(map);
+        sanitize_object_schema(map, true);
         return schema;
     }
     wrap_root_schema(schema)
 }
 
+fn type_includes(map: &serde_json::Map<String, Value>, expected: &str) -> bool {
+    match map.get("type") {
+        Some(Value::String(actual)) => actual == expected,
+        Some(Value::Array(types)) => types.iter().any(|value| value.as_str() == Some(expected)),
+        _ => false,
+    }
+}
+
 fn is_object_schema(map: &serde_json::Map<String, Value>) -> bool {
-    let type_str = map.get("type").and_then(|v| v.as_str());
-    type_str == Some("object")
-        || (type_str.is_none() && map.get("properties").and_then(|v| v.as_object()).is_some())
+    type_includes(map, "object")
+        || (map.get("type").is_none()
+            && map.get("properties").and_then(|v| v.as_object()).is_some())
         || map.is_empty()
 }
 
@@ -844,7 +984,14 @@ fn sanitize_metadata(map: &mut serde_json::Map<String, Value>) {
     map.remove("$schema");
     map.remove("title");
     map.remove("$comment");
-    map.remove("additionalProperties");
+    let is_object = is_object_schema(map);
+    if let Some(ap) = map.get("additionalProperties") {
+        // additionalProperties is only meaningful on object schemas.
+        // Keep `false` so the model sees strict object boundaries.
+        if !is_object || ap.as_bool() != Some(false) {
+            map.remove("additionalProperties");
+        }
+    }
     if let Some(desc) = map.get("description")
         && desc.as_str().map_or(false, str::is_empty)
     {
@@ -852,10 +999,10 @@ fn sanitize_metadata(map: &mut serde_json::Map<String, Value>) {
     }
 }
 
-fn sanitize_object_schema(map: &mut serde_json::Map<String, Value>) {
+fn sanitize_object_schema(map: &mut serde_json::Map<String, Value>, normalize_type: bool) {
     sanitize_metadata(map);
 
-    if map.get("type").and_then(|v| v.as_str()) != Some("object") {
+    if normalize_type || map.get("type").is_none() {
         map.insert("type".to_string(), json!("object"));
     }
     if !map.contains_key("properties") {
@@ -880,16 +1027,19 @@ fn sanitize_property_schema(schema: &mut Value) {
             sanitize_metadata(map);
 
             let type_str = map.get("type").and_then(|v| v.as_str());
+            let is_object = type_includes(map, "object");
 
-            if type_str == Some("object") || (type_str.is_none() && map.contains_key("properties"))
+            if is_object || (type_str.is_none() && map.contains_key("properties")) {
+                sanitize_object_schema(map, false);
+            } else if type_str == Some("array")
+                || type_includes(map, "array")
+                || map.contains_key("prefixItems")
             {
-                sanitize_object_schema(map);
-            } else if type_str == Some("array") || map.contains_key("prefixItems") {
-                if type_str != Some("array") {
+                if !type_includes(map, "array") {
                     map.insert("type".to_string(), json!("array"));
                 }
                 sanitize_array_schema(map);
-            } else if type_str.is_some() {
+            } else if type_str.is_some() || map.get("type").and_then(Value::as_array).is_some() {
             } else if map.contains_key("enum") {
                 map.insert("type".to_string(), json!("string"));
             } else if map.contains_key("anyOf")
@@ -913,7 +1063,7 @@ fn sanitize_property_schema(schema: &mut Value) {
                     }
                 }
             } else {
-                sanitize_object_schema(map);
+                sanitize_object_schema(map, false);
             }
         }
         Value::Array(arr) => {
@@ -1029,6 +1179,89 @@ mod schema_tests {
     }
 
     #[test]
+    fn sanitize_nullable_object_schema_keeps_strict_boundary() {
+        let schema = json!({
+            "type": ["object", "null"],
+            "properties": {"path": {"type": "string"}},
+            "additionalProperties": false,
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert_eq!(sanitized["additionalProperties"], false);
+    }
+
+    #[test]
+    fn sanitize_nullable_object_property_preserves_type_and_strictness() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": ["object", "null"],
+                    "properties": {"path": {"type": "string"}},
+                    "additionalProperties": false,
+                }
+            }
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(
+            sanitized["properties"]["config"]["type"],
+            json!(["object", "null"])
+        );
+        assert_eq!(
+            sanitized["properties"]["config"]["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn sanitize_nullable_array_property_preserves_type_and_nested_strictness() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": ["object", "null"],
+                        "properties": {"name": {"type": "string"}},
+                        "additionalProperties": false,
+                    }
+                }
+            }
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(
+            sanitized["properties"]["items"]["type"],
+            json!(["array", "null"])
+        );
+        assert_eq!(
+            sanitized["properties"]["items"]["items"]["type"],
+            json!(["object", "null"])
+        );
+        assert_eq!(
+            sanitized["properties"]["items"]["items"]["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn sanitize_untyped_object_schema_keeps_strictness() {
+        let schema = json!({
+            "properties": {"path": {"type": "string"}},
+            "additionalProperties": false,
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert_eq!(sanitized["additionalProperties"], false);
+    }
+
+    #[test]
+    fn sanitize_nullable_primitive_schema_preserves_types() {
+        let schema = json!({"type": ["integer", "null"]});
+        let sanitized = sanitize_tool_input_schema(schema.clone());
+        assert_eq!(sanitized["properties"]["value"], schema);
+    }
+
+    #[test]
     fn sanitize_tool_input_schema_missing_type() {
         let schema = json!({
             "properties": {
@@ -1140,6 +1373,7 @@ mod tests {
             ("new_string", &STR_PRIM, true, &[]),
             ("replace_all", &BOOL_PRIM, false, &[]),
         ],
+        additional_properties: true,
         description: "",
     };
 
@@ -1153,6 +1387,7 @@ mod tests {
             ("path", &STR_PRIM, true, &[]),
             ("edits", &EDITS_ARRAY, true, &[]),
         ],
+        additional_properties: true,
         description: "",
     };
 
@@ -1171,6 +1406,7 @@ mod tests {
     fn to_json_schema_omits_required_when_empty() {
         const ALL_OPTIONAL: ParamSchema = ParamSchema::Object {
             properties: &[("hint", &STR_PRIM, false, &[])],
+            additional_properties: true,
             description: "",
         };
         let v = to_json_schema(&ALL_OPTIONAL);
@@ -1307,6 +1543,7 @@ mod tests {
                 ("name", &STR_PRIM, true, &[]),
                 ("hint", &STR_PRIM, false, &[]),
             ],
+            additional_properties: true,
             description: "",
         };
         let out = validate(&SCHEMA, json!({"name": "x", "hint": null})).unwrap();
@@ -1325,13 +1562,63 @@ mod tests {
     }
 
     #[test]
-    fn extra_keys_dropped() {
+    fn extra_keys_rejected_when_additional_properties_false() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
             properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: false,
+            description: "",
+        };
+        let err = validate(&SCHEMA, json!({"name": "x", "extra": 42})).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            ToolInputErrorKind::UnexpectedProperties { .. }
+        ));
+    }
+
+    #[test]
+    fn unexpected_properties_error_uses_current_path() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: false,
+            description: "",
+        };
+        let rendered = validate(&SCHEMA, json!({"name": "x", "extra": 42}))
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.starts_with("invalid tool input: unexpected parameter: 'extra'"));
+        assert!(!rendered.contains("parameter ''"));
+    }
+
+    #[test]
+    fn unexpected_property_names_are_escaped_and_bounded() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: false,
+            description: "",
+        };
+        let mut input = serde_json::Map::new();
+        input.insert("name".to_owned(), json!("x"));
+        input.insert("bad\nname".to_owned(), json!(true));
+        for index in 0..20 {
+            input.insert(format!("unknown_{index}_{}", "x".repeat(80)), json!(index));
+        }
+        let rendered = validate(&SCHEMA, Value::Object(input))
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.contains("bad\\nname"), "rendered: {rendered}");
+        assert!(!rendered.contains('\n'), "rendered raw control: {rendered}");
+        assert!(rendered.len() < BOUNDED_ERR_MAX, "too long: {rendered}");
+    }
+
+    #[test]
+    fn extra_keys_preserved_when_additional_properties_true() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: true,
             description: "",
         };
         let out = validate(&SCHEMA, json!({"name": "x", "extra": 42})).unwrap();
-        assert!(out.get("extra").is_none());
+        assert_eq!(out["extra"], 42);
     }
 
     #[test_case(ParamKind::String,  json!("hello"), json!(42)    ; "string_accepts_string_rejects_int")]
@@ -1359,6 +1646,7 @@ mod tests {
                 ("name", &STR_PRIM, true, &[]),
                 ("count", &INT_PRIM, false, &[]),
             ],
+            additional_properties: true,
             description: "",
         };
         let json_schema = to_json_schema(&SCHEMA);
@@ -1379,7 +1667,24 @@ mod tests {
         assert_eq!(validate(schema, json!(4096)).unwrap(), json!(4096));
         assert!(validate(schema, json!(true)).is_err());
         assert_eq!(to_json_schema(schema)["anyOf"][0]["type"], "string");
-        assert_eq!(to_json_schema(schema)["anyOf"][1]["type"], "integer");
+    }
+
+    #[test]
+    fn any_of_schema_round_trips_and_validates_variants() {
+        let schema = try_from_json(&json!({
+            "anyOf": [
+                {"type": "string", "enum": ["research", "general"]},
+                {"type": "null"},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(
+            validate(schema, json!("research")).unwrap(),
+            json!("research")
+        );
+        assert_eq!(validate(schema, Value::Null).unwrap(), Value::Null);
+        assert!(validate(schema, json!("bogus")).is_err());
+        assert_eq!(to_json_schema(schema)["anyOf"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -1450,6 +1755,7 @@ mod tests {
             ("path", &STR_PRIM, true, &["file_path"]),
             ("content", &STR_PRIM, true, &[]),
         ],
+        additional_properties: true,
         description: "",
     };
 
@@ -1510,44 +1816,58 @@ mod tests {
     }
 
     #[test]
-    fn validate_drops_unknown_keys_top_level() {
+    fn validate_rejects_unknown_keys_top_level() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
             properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: false,
             description: "",
         };
-        let out = validate(&SCHEMA, json!({"name": "x", "unknown": 42})).unwrap();
-        assert!(out.get("unknown").is_none());
-        assert_eq!(out["name"], "x");
+        let err = validate(&SCHEMA, json!({"name": "x", "unknown": 42})).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            ToolInputErrorKind::UnexpectedProperties { .. }
+        ));
     }
 
     #[test]
-    fn validate_drops_unknown_keys_nested() {
+    fn validate_rejects_unknown_keys_nested() {
+        const INNER: ParamSchema = ParamSchema::Object {
+            properties: &[("path", &STR_PRIM, true, &[])],
+            additional_properties: false,
+            description: "",
+        };
         const NESTED_SCHEMA: ParamSchema = ParamSchema::Object {
-            properties: &[("config", &MULTIEDIT_LIKE, true, &[])],
+            properties: &[("config", &INNER, true, &[])],
+            additional_properties: false,
             description: "",
         };
         let input = json!({
             "config": {
                 "path": "/x",
-                "edits": [{"old_string": "a", "new_string": "b"}],
                 "unknown_field": "drop_me"
             }
         });
-        let out = validate(&NESTED_SCHEMA, input).unwrap();
-        assert!(out["config"].get("unknown_field").is_none());
-        assert_eq!(out["config"]["path"], "/x");
+        let err = validate(&NESTED_SCHEMA, input).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            ToolInputErrorKind::UnexpectedProperties { .. }
+        ));
     }
 
     #[test]
-    fn validate_drops_unknown_keys_after_roundtrip() {
+    fn validate_rejects_unknown_keys_after_roundtrip() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
             properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: false,
             description: "",
         };
         let json_schema = to_json_schema(&SCHEMA);
         let recovered = try_from_json(&json_schema).unwrap();
-        let out = validate(recovered, json!({"name": "x", "dropped": 99})).unwrap();
-        assert!(out.get("dropped").is_none());
+        let err = validate(recovered, json!({"name": "x", "dropped": 99})).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            ToolInputErrorKind::UnexpectedProperties { .. }
+        ));
     }
 
     #[test]
@@ -1557,6 +1877,7 @@ mod tests {
                 ("name", &STR_PRIM, true, &[]),
                 ("optional", &STR_PRIM, false, &[]),
             ],
+            additional_properties: true,
             description: "",
         };
         let out = validate(&SCHEMA, json!({"name": "x", "optional": "y"})).unwrap();
@@ -1568,6 +1889,7 @@ mod tests {
     fn validate_rejects_missing_required_with_correct_path() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
             properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: true,
             description: "",
         };
         let err = validate(&SCHEMA, json!({})).unwrap_err();
@@ -1582,6 +1904,7 @@ mod tests {
                 ("name", &STR_PRIM, true, &[]),
                 ("count", &BOOL_PRIM, false, &[]),
             ],
+            additional_properties: true,
             description: "",
         };
         let json_schema = to_json_schema(&SCHEMA);
@@ -1643,7 +1966,10 @@ mod tests {
         assert!(minified_mcp_schema.get("$schema").is_none());
         assert!(minified_mcp_schema.get("title").is_none());
         assert!(minified_mcp_schema.get("$comment").is_none());
-        assert!(minified_mcp_schema.get("additionalProperties").is_none());
+        assert_eq!(
+            minified_mcp_schema.get("additionalProperties"),
+            Some(&json!(false))
+        );
         assert!(
             minified_mcp_schema["properties"]["path"]
                 .get("description")
