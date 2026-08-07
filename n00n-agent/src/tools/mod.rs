@@ -366,6 +366,8 @@ pub struct ToolContext {
     pub tool_filter: ToolFilter,
     pub workflow: bool,
     pub audience: ToolAudience,
+    pub fusion_origin: crate::fusion::FusionInvocationOrigin,
+    pub fusion_guard: Option<Arc<crate::fusion::FusionDispatchGuard>>,
     pub local_tools: LocalTools,
     pub active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
     /// Streams a dispatched child's live bufs and annotations back to the
@@ -661,6 +663,8 @@ pub fn interpreter_ctx(
         tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,
+        fusion_origin: crate::fusion::FusionInvocationOrigin::Interpreter,
+        fusion_guard: None,
         local_tools: LocalTools::default(),
         active_skill_policy: None,
         live_sink: None,

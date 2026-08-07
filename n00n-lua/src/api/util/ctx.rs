@@ -82,6 +82,7 @@ impl AgentContext {
         let mut c = self.0.clone();
         c.tool_use_id = None;
         c.live_sink = None;
+        c.fusion_origin = n00n_agent::fusion::FusionInvocationOrigin::Interpreter;
         c
     }
 }
@@ -634,6 +635,10 @@ mod tests {
         let inner = agent.to_tool_context();
         assert_eq!(inner.tool_use_id, None);
         assert!(inner.live_sink.is_none(), "sink must not be inherited");
+        assert_eq!(
+            inner.fusion_origin,
+            n00n_agent::fusion::FusionInvocationOrigin::Interpreter
+        );
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
     }
 

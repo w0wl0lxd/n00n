@@ -161,4 +161,6 @@ n00n.api.register_tool({
   schema = schema,
   handler = handler,
   header = header,
+  audiences = { "main" },
+  kind = "execute",
 })

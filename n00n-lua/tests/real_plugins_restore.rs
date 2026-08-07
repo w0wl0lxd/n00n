@@ -776,6 +776,11 @@ fn fusion_and_blackboard_headers_render_prose() {
     host.load_source("blackboard", BLACKBOARD_SRC).unwrap();
 
     let fusion = reg.get("fusion_delegate").unwrap();
+    assert_eq!(
+        fusion.tool.audience(),
+        n00n_agent::tools::ToolAudience::MAIN
+    );
+    assert_eq!(fusion.tool.tool_kind(), Some("execute"));
     let inv = fusion
         .tool
         .parse(&json!({

@@ -4,6 +4,7 @@
 
 use n00n_providers::TokenUsage;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 use crate::tools::ToolAudience;
@@ -12,6 +13,22 @@ pub(crate) const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
 pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
+const ALREADY_DISPATCHED_MESSAGE: &str = "Fusion delegation has already been dispatched";
+
+/// Results produced by `FusionDispatchGuard::authorize` before any subagent
+/// launch. They must not count as delegations, sidekick failures, or tool errors.
+const FUSION_DENIAL_MESSAGES: &[&str] = &[
+    "Fusion delegation is disabled",
+    "prompt is not eligible for Fusion delegation",
+    "Fusion delegation requires the main-agent audience",
+    "indirect Fusion delegation is not allowed",
+    ALREADY_DISPATCHED_MESSAGE,
+];
+
+fn is_guard_denial(text: &str) -> bool {
+    FUSION_DENIAL_MESSAGES.contains(&text)
+}
+
 const MUTATION_SIGNALS: &[&str] = &[
     "implement",
     "write test",
@@ -103,12 +120,12 @@ pub enum FusionDispatchError {
     AlreadyDispatched,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct FusionDispatchGuard {
     enabled: bool,
     classification: DelegationKind,
     audience: ToolAudience,
-    dispatched: bool,
+    dispatched: AtomicBool,
 }
 
 impl FusionDispatchGuard {
@@ -122,7 +139,7 @@ impl FusionDispatchGuard {
             enabled,
             classification,
             audience,
-            dispatched: false,
+            dispatched: AtomicBool::new(false),
         }
     }
 
@@ -132,7 +149,7 @@ impl FusionDispatchGuard {
     ///
     /// Returns an error when Fusion is disabled, policy does not delegate, the
     /// caller is not the main agent, invocation is indirect, or the guard was consumed.
-    pub fn authorize(&mut self, origin: FusionInvocationOrigin) -> Result<(), FusionDispatchError> {
+    pub fn authorize(&self, origin: FusionInvocationOrigin) -> Result<(), FusionDispatchError> {
         if !self.enabled {
             return Err(FusionDispatchError::Disabled);
         }
@@ -145,11 +162,10 @@ impl FusionDispatchGuard {
         if origin != FusionInvocationOrigin::Direct {
             return Err(FusionDispatchError::IndirectInvocation);
         }
-        if self.dispatched {
-            return Err(FusionDispatchError::AlreadyDispatched);
-        }
-        self.dispatched = true;
-        Ok(())
+        self.dispatched
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| FusionDispatchError::AlreadyDispatched)
     }
 }
 
@@ -180,7 +196,7 @@ pub struct FusionUsageStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct FusionState {
-    lane: FusionLane,
+    pub lane: FusionLane,
     pub delegation_count: u32,
     pub sidekick_failures: u32,
     pub compact_count: u32,
@@ -215,24 +231,6 @@ impl FusionState {
         }
     }
 
-    pub fn set_lane(&mut self, lane: FusionLane) {
-        self.lane = lane;
-    }
-
-    #[must_use]
-    pub const fn lane(&self) -> FusionLane {
-        self.lane
-    }
-
-    pub fn set_request_kind(&mut self, kind: DelegationKind) {
-        self.request_kind = kind;
-    }
-
-    #[must_use]
-    pub const fn request_kind(&self) -> DelegationKind {
-        self.request_kind
-    }
-
     pub fn record_lane_usage(&mut self, lane: FusionLane, usage: TokenUsage, cost: f64) {
         match lane {
             FusionLane::Lead => {
@@ -259,14 +257,27 @@ impl FusionState {
         }
     }
 
+    pub fn set_request_kind(&mut self, kind: DelegationKind) {
+        self.request_kind = kind;
+    }
+
+    #[must_use]
+    pub const fn request_kind(&self) -> DelegationKind {
+        self.request_kind
+    }
+
     pub fn observe_tool_results(&mut self, results: &[crate::ToolDoneEvent]) {
         for done in results {
             if done.tool.as_ref() == FUSION_DELEGATE_TOOL {
                 // Dispatch denials never launched a sidekick; ignore them so
                 // blocked retries do not inflate failure/delegation counters.
+                if done.is_error && is_guard_denial(&done.output.as_text()) {
+                    continue;
+                }
                 if done.is_error && done.output.as_text() == FUSION_DELEGATE_BLOCKED {
                     continue;
                 }
+                self.record_delegation();
                 if let Some(telemetry) = done.output.telemetry() {
                     #[allow(clippy::manual_unwrap_or)]
                     let cost = match telemetry.cost {
@@ -282,8 +293,6 @@ impl FusionState {
                 if done.is_error {
                     self.recent_tool_errors = self.recent_tool_errors.saturating_add(1);
                     self.record_sidekick_failure();
-                } else {
-                    self.delegation_count = self.delegation_count.saturating_add(1);
                 }
                 continue;
             }
@@ -309,7 +318,7 @@ impl FusionState {
 
     pub fn record_delegation(&mut self) {
         self.delegation_count = self.delegation_count.saturating_add(1);
-        self.lane = FusionLane::Lead;
+        // fusion_delegate runs as an isolated subagent; main lane stays Lead.
     }
 
     pub fn record_sidekick_failure(&mut self) {
@@ -410,7 +419,10 @@ impl FusionState {
     }
 
     fn enter_terminal(&mut self, terminal: FusionPhase) -> Result<(), FusionTransitionError> {
-        if self.phase.is_terminal() {
+        if matches!(
+            self.phase,
+            FusionPhase::Complete | FusionPhase::Cancelled | FusionPhase::Failed
+        ) {
             return Err(FusionTransitionError {
                 from: self.phase,
                 to: terminal,
@@ -557,17 +569,12 @@ pub fn route_after_compact(
 
     let summary_kind = classify_delegation(compact_summary);
     let summary = compact_summary.to_ascii_lowercase();
-    let requests_mutation = MUTATION_SIGNALS
+    let _requests_mutation = MUTATION_SIGNALS
         .iter()
         .any(|signal| summary.contains(signal));
 
     match (state.lane, summary_kind) {
-        (FusionLane::Lead, DelegationKind::Delegate) if requests_mutation => {
-            FusionRoute::Stay(FusionLane::Lead)
-        }
-        (FusionLane::Sidekick, DelegationKind::LeadOnly | DelegationKind::Bypass) => {
-            FusionRoute::Switch(FusionLane::Lead)
-        }
+        (FusionLane::Sidekick, DelegationKind::LeadOnly) => FusionRoute::Switch(FusionLane::Lead),
         (lane, _) => FusionRoute::Stay(lane),
     }
 }
@@ -609,26 +616,26 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("hello", DelegationKind::Bypass ; "trivial greeting")]
-    #[test_case("what is the current status?", DelegationKind::Bypass ; "trivial status")]
-    #[test_case("", DelegationKind::LeadOnly ; "empty")]
-    #[test_case("please handle this", DelegationKind::LeadOnly ; "unknown")]
-    #[test_case("grep the repo for TODO and list matches", DelegationKind::Delegate ; "mechanical grep")]
-    #[test_case("add boilerplate getters", DelegationKind::Delegate ; "boilerplate")]
-    #[test_case("run cargo test", DelegationKind::Delegate ; "narrow tests")]
-    #[test_case("fix lint in this module", DelegationKind::Delegate ; "narrow lint")]
-    #[test_case("design the auth architecture and trade-offs", DelegationKind::LeadOnly ; "architecture")]
-    #[test_case("plan the implementation", DelegationKind::LeadOnly ; "planning")]
-    #[test_case("review the PR", DelegationKind::LeadOnly ; "review")]
-    #[test_case("commit and merge this change", DelegationKind::LeadOnly ; "commit merge")]
-    #[test_case("perform a security audit", DelegationKind::LeadOnly ; "security")]
-    #[test_case("rotate these credentials", DelegationKind::LeadOnly ; "credentials")]
-    #[test_case("change production permissions", DelegationKind::LeadOnly ; "permissions")]
-    #[test_case("delete the customer database", DelegationKind::LeadOnly ; "destructive")]
-    #[test_case("debug this serial failure chain", DelegationKind::LeadOnly ; "serial debug")]
-    #[test_case("grep for credentials and rotate them", DelegationKind::LeadOnly ; "mandatory lead signal wins")]
-    fn classify_delegation_contract(prompt: &str, expected: DelegationKind) {
-        assert_eq!(classify_delegation(prompt), expected);
+    #[test_case("hello", "Bypass" ; "trivial greeting")]
+    #[test_case("what is the current status?", "Bypass" ; "trivial status")]
+    #[test_case("", "LeadOnly" ; "empty")]
+    #[test_case("please handle this", "LeadOnly" ; "unknown")]
+    #[test_case("grep the repo for TODO and list matches", "Delegate" ; "mechanical grep")]
+    #[test_case("add boilerplate getters", "Delegate" ; "boilerplate")]
+    #[test_case("run cargo test", "Delegate" ; "narrow tests")]
+    #[test_case("fix lint in this module", "Delegate" ; "narrow lint")]
+    #[test_case("design the auth architecture and trade-offs", "LeadOnly" ; "architecture")]
+    #[test_case("plan the implementation", "LeadOnly" ; "planning")]
+    #[test_case("review the PR", "LeadOnly" ; "review")]
+    #[test_case("commit and merge this change", "LeadOnly" ; "commit merge")]
+    #[test_case("perform a security audit", "LeadOnly" ; "security")]
+    #[test_case("rotate these credentials", "LeadOnly" ; "credentials")]
+    #[test_case("change production permissions", "LeadOnly" ; "permissions")]
+    #[test_case("delete the customer database", "LeadOnly" ; "destructive")]
+    #[test_case("debug this serial failure chain", "LeadOnly" ; "serial debug")]
+    #[test_case("grep for credentials and rotate them", "LeadOnly" ; "mandatory lead signal wins")]
+    fn classify_delegation_contract(prompt: &str, expected: &str) {
+        assert_eq!(format!("{:?}", classify_delegation(prompt)), expected);
     }
 
     #[test]
@@ -660,22 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn observe_tool_results_ignores_dispatch_blocked_delegates() {
-        let mut state = FusionState::new_lead();
-        state.observe_tool_results(&[crate::ToolDoneEvent {
-            id: "blocked".into(),
-            tool: Arc::from(FUSION_DELEGATE_TOOL),
-            output: crate::ToolOutput::Plain(FUSION_DELEGATE_BLOCKED.into()),
-            is_error: true,
-            annotation: None,
-            written_path: None,
-        }]);
-        assert_eq!(state.recent_tool_errors(), 0);
-        assert_eq!(state.sidekick_failures, 0);
-        assert_eq!(state.delegation_count, 0);
-    }
-
-    #[test]
     fn observe_successful_fusion_delegate_updates_sidekick_stats() {
         let mut state = FusionState::new_lead();
         let telemetry = crate::ToolTelemetry::try_new(
@@ -699,6 +690,34 @@ mod tests {
         assert_eq!(state.sidekick_usage.output, 5);
         assert_eq!(state.sidekick_usage.cache_read, 2);
         assert_eq!(state.sidekick_usage.cache_creation, 1);
+    }
+
+    #[test]
+    fn guard_denials_do_not_count_as_delegations_or_failures() {
+        let mut state = FusionState::new_lead();
+        state.observe_tool_results(&[
+            crate::ToolDoneEvent {
+                id: "disabled".into(),
+                tool: Arc::from(FUSION_DELEGATE_TOOL),
+                output: crate::ToolOutput::Plain("Fusion delegation is disabled".into()),
+                is_error: true,
+                annotation: None,
+                written_path: None,
+            },
+            crate::ToolDoneEvent {
+                id: "ineligible".into(),
+                tool: Arc::from(FUSION_DELEGATE_TOOL),
+                output: crate::ToolOutput::Plain(
+                    "prompt is not eligible for Fusion delegation".into(),
+                ),
+                is_error: true,
+                annotation: None,
+                written_path: None,
+            },
+        ]);
+        assert_eq!(state.delegation_count, 0);
+        assert_eq!(state.sidekick_failures, 0);
+        assert_eq!(state.recent_tool_errors(), 0);
     }
 
     #[test]

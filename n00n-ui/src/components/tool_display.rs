@@ -445,15 +445,14 @@ impl ToolLineBuilder {
             let _ = write!(copy, " ({ann})");
         }
         if let Some(snapshot) = render_header {
-            let rest: Vec<String> = snapshot
+            let rendered: Vec<String> = snapshot
                 .lines
                 .iter()
-                .skip(1)
                 .map(|line| line.spans.iter().map(|span| span.text.as_str()).collect())
                 .collect();
-            if !rest.is_empty() {
+            if !rendered.is_empty() {
                 copy.push('\n');
-                copy.push_str(&rest.join("\n"));
+                copy.push_str(&rendered.join("\n"));
             }
         }
         self.search_text = copy;
@@ -1176,10 +1175,10 @@ mod tests {
 
     #[test]
     fn multi_line_header_renders_all_lines_indented() {
-        let mut msg = bash_msg("first line", ToolStatus::Success, None, None);
+        let mut msg = bash_msg("fallback summary", ToolStatus::Success, None, None);
         msg.render_header = Some(make_snapshot(vec![
             vec![SnapshotSpan {
-                text: "first line".into(),
+                text: "visible first line".into(),
                 style: SpanStyle::Default,
             }],
             vec![SnapshotSpan {
@@ -1194,14 +1193,15 @@ mod tests {
             SectionFlags::default(),
         );
         assert_eq!(tl.lines.len(), 2);
-        assert!(lines_text(&tl).contains("first line"));
+        assert!(lines_text(&tl).contains("visible first line"));
         let second: String = tl.lines[1]
             .spans
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(second, "    second line");
-        assert!(tl.search_text.contains("first line"));
+        assert!(tl.search_text.contains("fallback summary"));
+        assert!(tl.search_text.contains("visible first line"));
         assert!(tl.search_text.contains("second line"));
     }
 

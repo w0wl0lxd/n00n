@@ -28,7 +28,7 @@ use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
 use n00n_providers::provider;
 use n00n_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
-use n00n_storage::id::n00nId;
+use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::StoredThinking;
 use serde_json::Value as JsonValue;
 use tracing::info;
@@ -661,7 +661,7 @@ async fn session(
     opts: Table,
 ) -> LuaResult<Pair<mlua::AnyUserData>> {
     let agent_ctx = try_pair!(dispatch_ctx(&ctx, "session")).clone();
-    let Some(parent_identity) = agent_ctx.identity.clone() else {
+    let Some(_parent_identity) = agent_ctx.identity.clone() else {
         return Ok(err_pair("session identity is unavailable"));
     };
     let plugin_state_store = try_pair!(ctx.plugin_state_store());
@@ -775,10 +775,6 @@ async fn session(
     if explicit_tools {
         tool_filter = try_pair!(explicit_tool_filter(&tools_json));
     }
-    let allow_dynamic_mcp_tools = explicit_tools
-        && include_mcp
-        && tool_filter.matches(n00n_agent::mcp::TOOL_SEARCH_TOOL_NAME);
-
     let thinking = match thinking_val {
         Some(LuaValue::String(s)) => match StoredThinking::parse_setting(&s.to_str()?) {
             Ok(stored) => ThinkingConfig::from(stored),
@@ -803,6 +799,14 @@ async fn session(
     let session_id = n00nId::generate();
     let child_id = session_id.to_string();
     let parent_tool_use_id = child_id.clone();
+    let child_session_ref = SessionRef::from(session_id);
+    let child_identity = Some(SessionIdentity::child(
+        child_session_ref.clone(),
+        agent_ctx.identity.as_ref().map_or_else(
+            || child_session_ref.clone(),
+            |i| i.root_session_id().clone(),
+        ),
+    ));
     let start = Instant::now();
     let (sub_tx, sub_rx) = flume::bounded::<Envelope>(SUBAGENT_EVENT_QUEUE_CAPACITY);
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
@@ -860,10 +864,7 @@ async fn session(
             config: session_config(&agent_ctx.config, excluded_tools.clone()),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
-            identity: Some(SessionIdentity::child(
-                session_id.into(),
-                parent_identity.root_session_id().clone(),
-            )),
+            identity: child_identity,
             timeouts: agent_ctx.timeouts,
             openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
@@ -875,7 +876,6 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
-        allow_dynamic_mcp_tools,
         thinking,
         fast,
         mode,
@@ -1385,7 +1385,6 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
-    allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
     mode: AgentMode,
@@ -1565,7 +1564,6 @@ async fn prompt(
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
-        .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {
