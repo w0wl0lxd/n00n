@@ -227,9 +227,9 @@ All fields are optional. Typos in field names cause an error right away.
     out.push_str("|-------|------|---------|-------------|\n");
     out.push_str("| `enabled` | bool | `false` | Enable beta Fusion planning, sidekick execution, and lead review for this session |\n");
     out.push_str(
-        "| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |\n",
+        "| `lead_model` | string | `codex/gpt-5.6-sol` | Lead and supervisor model when Fusion is enabled without an explicit model override. |\n| `sidekick_model` | string | `codex/gpt-5.6-luna` | Exact routine-coding sidekick model. Tier routing cannot replace it. |\n| `sidekick_thinking` | string | `max` | Sidekick reasoning setting. |\n| `sidekick_tier` | string | `weak` | Legacy compatibility field; ignored when `sidekick_model` is set. |\n",
     );
-    out.push_str("\nFusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. `sidekick_tier` selects a conservative sidekick model. Optional `plugins.fusion.auto_tier` lets trusted configuration choose the tier from the brief.\n\n");
+    out.push_str("\nFusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. The exact sidekick model and thinking setting are used for every delegation, so tier routing cannot redirect routine coding. Explicit `--model` choices take precedence over the Fusion lead default.\n\n");
 
     write_section(&mut out, "[provider]", ProviderConfig::FIELDS);
     write_section(&mut out, "[storage]", StorageConfig::FIELDS);
