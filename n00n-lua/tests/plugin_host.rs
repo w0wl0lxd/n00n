@@ -26,7 +26,7 @@ use n00n_providers::{
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
-const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 46_000;
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())

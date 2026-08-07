@@ -52,6 +52,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
     },
     BundledPlugin {
+        name: "smell",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/smell"),
+    },
+    BundledPlugin {
         name: "index",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
     },
@@ -138,6 +142,14 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
     BundledPlugin {
         name: "codegraph",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
+    },
+    BundledPlugin {
+        name: "git",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/git"),
+    },
+    BundledPlugin {
+        name: "github",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/github"),
     },
     BundledPlugin {
         name: "view_image",

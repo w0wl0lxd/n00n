@@ -29,6 +29,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "view_image",
             "codegraph",
             "semblem",
+            "smell",
             "arbor",
         ],
     ),
@@ -55,6 +56,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Web", &["webfetch", "websearch"]),
+    ("Repository", &["git", "github"]),
 ];
 
 struct ToolInfo {

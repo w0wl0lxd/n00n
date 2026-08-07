@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 34 built-in tools. This is the full reference.
+n00n ships with 37 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -182,6 +182,15 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 | `mode` | string | no |  |
 | `content` | string | no | Content filter for search (docs, config, code, or all) |
 | `top_k` | integer | no |  |
+
+### `smell` *(lua plugin)*
+
+Code-smell index. index, search.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | string | yes |  |
+| `query` | string | no |  |
 
 ### `arbor` *(lua plugin)*
 
@@ -447,3 +456,44 @@ Search the web for real-time information using Exa AI.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |
+
+## Repository
+
+### `git` *(lua plugin)*
+
+Local git operations via n00n-git.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ref_b` | string | no |  |
+| `path` | string | no |  |
+| `include_untracked` | boolean | no |  |
+| `max_hunk_lines` | integer | no |  |
+| `output` | string | no |  |
+| `message` | string | no |  |
+| `kinds` | array | no |  |
+| `count` | integer | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `file` | string | no |  |
+| `files` | array | no |  |
+| `ref_a` | string | no |  |
+
+### `github` *(lua plugin)*
+
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `issue_number` | number | no |  |
+| `head` | string | no |  |
+| `owner` | string | no |  |
+| `body` | string | no |  |
+| `repo` | string | no |  |
+| `title` | string | no |  |
+| `command` | string | yes |  |
+| `token` | string | no |  |
+| `base` | string | no |  |
+| `pr_number` | number | no |  |

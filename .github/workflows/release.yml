@@ -2,29 +2,26 @@
 #   git tag vX.Y.Z
 #   git push origin vX.Y.Z
 name: Release
-
 on:
   push:
     tags:
       - "v*"
-
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   BINARY_NAME: n00n
-  GH_TOKEN: ${{ github.token }}
-  GH_REPO: ${{ github.repository }}
-
 permissions:
   contents: read
-
 jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Create draft release
@@ -33,13 +30,15 @@ jobs:
             "gh release view \"$GITHUB_REF_NAME\" >/dev/null 2>&1 || \
              gh release create \"$GITHUB_REF_NAME\" --draft \
                --title \"$GITHUB_REF_NAME\" --generate-notes"
-
     permissions:
       contents: write
   build-linux:
     name: Build (${{ matrix.target }})
     needs: create-release
     runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     strategy:
       fail-fast: false
       matrix:
@@ -48,9 +47,8 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
-
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Build in Alpine container
@@ -60,17 +58,24 @@ jobs:
             -w /workspace \
             -e CARGO_TERM_COLOR=always \
             -e CARGO_INCREMENTAL=0 \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/workspace \
+            -e GIT_SSH_COMMAND=ssh \
+            -e RUSTUP_TARGET='${{ matrix.target }}' \
             alpine:3.21 sh -c '
               apk add --no-cache gcc g++ musl-dev make perl linux-headers curl git ca-certificates pkgconf python3-dev
-              git config --global --add safe.directory /workspace
-              curl --proto "=https" --tlsv1.2 --retry 5 --retry-delay 2 \
-                --retry-all-errors -sSf https://sh.rustup.rs | \
-                sh -s -- -y --default-toolchain stable --target ${{ matrix.target }}
+              RUSTUP_HOST="$(uname -m)-unknown-linux-musl"
+              curl -fsSLO --compressed "https://static.rust-lang.org/rustup/dist/${RUSTUP_HOST}/rustup-init"
+              curl -fsSLO --compressed "https://static.rust-lang.org/rustup/dist/${RUSTUP_HOST}/rustup-init.sha256"
+              EXPECTED="$(cut -f1 -d" " rustup-init.sha256)"
+              echo "${EXPECTED}  rustup-init" | sha256sum -c -
+              chmod +x rustup-init
+              ./rustup-init -y --default-toolchain stable --target "${RUSTUP_TARGET}"
               source "$HOME/.cargo/env"
-              cargo build --release --target ${{ matrix.target }}
+              cargo build --release --target "${RUSTUP_TARGET}"
             '
           sudo chown -R "$(id -u):$(id -g)" target/
-
       - name: Package
         run: |
           tag="$GITHUB_REF_NAME"
@@ -78,16 +83,17 @@ jobs:
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
           tar czf "${archive}" "${BINARY_NAME}"
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
-
       - name: Upload artifact
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
-
     permissions:
       contents: write
   build-other:
     name: Build (${{ matrix.target }})
     needs: create-release
     runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     strategy:
       fail-fast: false
       matrix:
@@ -95,20 +101,17 @@ jobs:
           - target: x86_64-apple-darwin
             runner: macos-15-intel
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
-
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -117,7 +120,6 @@ jobs:
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
           tar czf "${archive}" "${BINARY_NAME}"
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
-
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -127,33 +129,31 @@ jobs:
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}.exe" "${BINARY_NAME}.exe"
           7z a "${archive}" "${BINARY_NAME}.exe"
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
-
       - name: Upload artifact
         shell: bash
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
-
     permissions:
       contents: write
   publish:
     name: Publish Release
     needs: [build-linux, build-other]
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Download artifacts
         run: .github/scripts/retry.sh gh release download "$GITHUB_REF_NAME" --dir artifacts
-
       - name: Generate checksums
         run: |
           cd artifacts
           sha256sum -- * > ../sha256sums.txt
           cat ../sha256sums.txt
-
       - name: Upload checksums
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" sha256sums.txt --clobber
-
       - name: Mark release as published
         run: .github/scripts/retry.sh gh release edit "$GITHUB_REF_NAME" --draft=false
     permissions:
