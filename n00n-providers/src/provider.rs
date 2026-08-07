@@ -483,6 +483,10 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
     has_host || has_api_key || has_provider_config
 }
 
+fn is_expected_provider_absence(error: &AgentError) -> bool {
+    matches!(error, AgentError::Config { .. })
+}
+
 /// Fetches all available models from all providers asynchronously.
 #[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
@@ -496,8 +500,8 @@ pub async fn fetch_all_models(
         let slug = manifest.slug;
         let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
             Ok(provider) => provider,
-            Err(crate::AgentError::Config { message }) => {
-                debug!(provider = slug, %message, "provider not configured, skipping");
+            Err(error) if is_expected_provider_absence(&error) => {
+                debug!(provider = slug, %error, "provider not configured, skipping");
                 continue;
             }
             Err(error) => {
@@ -620,7 +624,25 @@ pub async fn fetch_all_models(
 
 #[cfg(test)]
 mod tests {
-    use super::{llama_cpp_is_configured, ollama_is_configured};
+    use std::io;
+
+    use super::{is_expected_provider_absence, llama_cpp_is_configured, ollama_is_configured};
+    use crate::AgentError;
+
+    #[test]
+    fn only_configuration_errors_are_expected_provider_absence() {
+        let not_configured = AgentError::Config {
+            message: "API key not configured".into(),
+        };
+        let io_error = AgentError::Io(io::Error::other("credential store unavailable"));
+        let lock_error = AgentError::CredentialLockTimeout { millis: 100 };
+        let storage_error = AgentError::Storage;
+
+        assert!(is_expected_provider_absence(&not_configured));
+        assert!(!is_expected_provider_absence(&io_error));
+        assert!(!is_expected_provider_absence(&lock_error));
+        assert!(!is_expected_provider_absence(&storage_error));
+    }
 
     #[test_case::test_case(false, false, false => false; "unconfigured")]
     #[test_case::test_case(true, false, false => true; "host")]
