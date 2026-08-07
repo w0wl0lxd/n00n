@@ -13,15 +13,19 @@ pub enum Permission {
     Net,
     Run,
     Env,
+    GitHubRead,
+    GitHubWrite,
 }
 
 impl Permission {
-    const ALL: [Permission; 5] = [
+    const ALL: [Permission; 7] = [
         Permission::FsRead,
         Permission::FsWrite,
         Permission::Net,
         Permission::Run,
         Permission::Env,
+        Permission::GitHubRead,
+        Permission::GitHubWrite,
     ];
 
     fn manifest_key(self) -> &'static str {
@@ -31,6 +35,8 @@ impl Permission {
             Permission::Net => "net",
             Permission::Run => "run",
             Permission::Env => "env",
+            Permission::GitHubRead => "github.read",
+            Permission::GitHubWrite => "github.write",
         }
     }
 }
@@ -43,19 +49,19 @@ impl fmt::Display for Permission {
 
 #[derive(Debug, Clone)]
 pub struct PluginPermissions {
-    allowed: [bool; 5],
+    allowed: [bool; 7],
 }
 
 impl PluginPermissions {
     #[must_use]
     pub fn trusted() -> Self {
-        Self { allowed: [true; 5] }
+        Self { allowed: [true; 7] }
     }
 
     #[must_use]
     pub fn denied() -> Self {
         Self {
-            allowed: [false; 5],
+            allowed: [false; 7],
         }
     }
 
@@ -67,7 +73,7 @@ impl PluginPermissions {
     pub fn from_manifest(manifest: &toml::Value) -> Self {
         const DEFAULT_PERMISSION: bool = true;
         let perms = manifest.get("permissions");
-        let mut allowed = [true; 5];
+        let mut allowed = [true; 7];
         for perm in Permission::ALL {
             allowed[perm as usize] = perms
                 .and_then(|p| p.get(perm.manifest_key()))
@@ -193,6 +199,8 @@ mod tests {
         assert!(!p.is_allowed(Permission::Net));
         assert!(p.is_allowed(Permission::Run));
         assert!(p.is_allowed(Permission::Env));
+        assert!(p.is_allowed(Permission::GitHubRead));
+        assert!(p.is_allowed(Permission::GitHubWrite));
     }
 
     #[test]
@@ -214,6 +222,8 @@ mod tests {
         assert!(!p.is_allowed(Permission::Net));
         assert!(!p.is_allowed(Permission::Run));
         assert!(p.is_allowed(Permission::Env));
+        assert!(p.is_allowed(Permission::GitHubRead));
+        assert!(p.is_allowed(Permission::GitHubWrite));
     }
 
     #[test]
