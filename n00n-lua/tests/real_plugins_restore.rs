@@ -802,7 +802,6 @@ fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     host.load_source("fusion", FUSION_SRC).unwrap();
-
     let _fusion = reg.get("fusion_delegate").unwrap();
     assert!(!FUSION_SRC.contains("model_spec = input.model"));
     assert!(!FUSION_SRC.contains("model_tier = input.model_tier"));
