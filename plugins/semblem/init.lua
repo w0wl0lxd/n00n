@@ -27,29 +27,35 @@ Commands:
 - `savings`: show token savings from using semantic search (requires semble CLI; no native fallback)
 
 `mode` defaults to `bm25`. `hybrid` and `semantic` try the upstream semble CLI first and fall back to BM25 with an embedder nag if unavailable.]],
+  strict = true,
 
   schema = {
     type = "object",
-    required = { "command" },
+    additionalProperties = false,
+    required = { "command", "repo", "query", "file_path", "line", "mode", "top_k", "content" },
     properties = {
       command = {
         type = "string",
         enum = { "search", "find_related", "savings" },
+        required = true,
+        description = "Semblem command: search, find_related, or savings",
       },
-      repo = { type = "string", description = "Project root (defaults to cwd)" },
-      query = { type = "string" },
-      file_path = { type = "string" },
-      line = { type = "integer" },
+      repo = { type = { "string", "null" }, required = true, description = "Project root (defaults to cwd)" },
+      query = { type = { "string", "null" }, required = true, description = "Search query (for search command)" },
+      file_path = { type = { "string", "null" }, required = true, description = "File path (for find_related command)" },
+      line = { type = { "integer", "null" }, required = true, description = "Line number (for find_related command)" },
       mode = {
-        type = "string",
+        type = { "string", "null" },
         enum = { "bm25", "hybrid", "semantic" },
-        default = "bm25",
+        required = true,
+        description = "Search mode: bm25 (default), hybrid, or semantic",
       },
-      top_k = { type = "integer", default = 5 },
+      top_k = { type = { "integer", "null" }, required = true, description = "Number of results to return (default 5)" },
       content = {
-        type = "string",
+        type = { "string", "null" },
         enum = { "docs", "config", "code", "all" },
-        description = "Content filter for search (docs, config, code, or all)",
+        required = true,
+        description = "Content filter: docs, config, code, or all (default code)",
       },
     },
   },

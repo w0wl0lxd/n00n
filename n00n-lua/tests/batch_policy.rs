@@ -130,7 +130,7 @@ fn exec_tool(reg: &ToolRegistry, name: &str, input: Value) -> Result<String, Str
     let entry = reg
         .get(name)
         .unwrap_or_else(|| panic!("tool {name} not registered"));
-    let inv = entry.tool.parse(&input).expect("parse failed");
+    let inv = entry.tool.parse(&input).map_err(|e| e.to_string())?;
     let ctx = stub_ctx(&AgentMode::Build);
     smol::block_on(async { inv.execute(&ctx).await })
         .output
@@ -199,14 +199,14 @@ fn all_success_exact_llm_output() {
 }
 
 #[test]
-fn flat_nested_and_merged_params_normalize_identically() {
+fn nested_parameters_passed_to_child() {
     let (reg, _host) = load_batch_host();
     run_batch(
         &reg,
         json!([
-            { "tool": "ok", "tag": "flat", "n": 1 },
-            { "tool": "ok", "parameters": { "tag": "nested", "n": 1 } },
-            { "tool": "ok", "parameters": { "tag": "merged" }, "n": 1 },
+            { "tool": "ok", "parameters": { "tag": "a", "n": 1 } },
+            { "tool": "ok", "parameters": { "tag": "b", "n": 2 } },
+            { "tool": "ok", "parameters": { "tag": "c", "n": 3 } },
         ]),
     )
     .expect("batch failed");
@@ -214,13 +214,13 @@ fn flat_nested_and_merged_params_normalize_identically() {
     let mut calls = recorded_calls(&reg);
     assert_eq!(calls.len(), 3);
     calls.sort_by_key(|c| c["params"]["tag"].as_str().unwrap_or_else(|| "").to_owned());
-    assert_eq!(calls[0]["params"], json!({ "tag": "flat", "n": 1 }));
-    assert_eq!(calls[1]["params"], json!({ "tag": "merged", "n": 1 }));
-    assert_eq!(calls[2]["params"], json!({ "tag": "nested", "n": 1 }));
+    assert_eq!(calls[0]["params"], json!({ "tag": "a", "n": 1 }));
+    assert_eq!(calls[1]["params"], json!({ "tag": "b", "n": 2 }));
+    assert_eq!(calls[2]["params"], json!({ "tag": "c", "n": 3 }));
 }
 
 #[test_case::test_case(json!([]), EMPTY_ERROR ; "empty_list")]
-#[test_case::test_case(json!([{ "tool": "ok", "parameters": { "tag": "x" }, "tag": "y" }]), "duplicate parameter 'tag'" ; "duplicate_key")]
+#[test_case::test_case(json!([{ "tool": "ok", "parameters": { "tag": "x" }, "tag": "y" }]), "unexpected parameter" ; "flat_key_rejected")]
 fn invalid_input_errors_without_dispatch(tool_calls: Value, expected_err: &str) {
     let (reg, _host) = load_batch_host();
     let err = run_batch(&reg, tool_calls).unwrap_err();
@@ -782,6 +782,7 @@ fn edit_child_body_renders_diff_not_summary() {
             "path": "/nonexistent/f",
             "old_string": "let a = 1;",
             "new_string": "let a = 2;",
+            "replace_all": false,
         } }] }),
         "irrelevant",
         Some(json!({ "children": [

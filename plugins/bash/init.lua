@@ -616,7 +616,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
 - Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, cat, head, tail).
 - Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
-- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`; the tool fails without it.
+- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`.
 - Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
@@ -635,16 +635,24 @@ n00n.api.register_tool({
   name = "bash",
   kind = "execute",
   description = description,
+  strict = true,
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "command", "timeout", "workdir", "description", "justification" },
     properties = {
-      command = { type = "string", description = "Bash command to execute", required = true },
-      timeout = { type = "integer", description = "Timeout seconds (default 120)" },
-      workdir = { type = "string", description = "Working directory (default: cwd)" },
-      description = { type = "string", description = "Short description (3-5 words) of what the command does" },
+      command = { type = "string", required = true, description = "Bash command to execute" },
+      timeout = { type = { "integer", "null" }, required = true, description = "Timeout seconds (default 120)" },
+      workdir = { type = { "string", "null" }, required = true, description = "Working directory (default: cwd)" },
+      description = {
+        type = { "string", "null" },
+        required = true,
+        description = "Short description (3-5 words) of what the command does",
+      },
       justification = {
-        type = "string",
-        description = "Required for unbounded commands. Explain scope and bounds.",
+        type = { "string", "null" },
+        required = true,
+        description = "Required when command is broad/unbounded. Explain scope and bound assumptions.",
       },
     },
   },

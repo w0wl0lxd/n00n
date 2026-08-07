@@ -235,41 +235,29 @@ n00n.api.register_tool({
   mutable_path = "path",
   permission_scopes = "path",
   audiences = { "main", "general_sub", "interpreter" },
+  strict = true,
   description = EDIT_DESCRIPTION,
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "path", "old_string", "new_string", "replace_all" },
     properties = {
-      path = {
-        type = "string",
-        required = true,
-        alias = "file_path",
-        description = "File path.",
-      },
-      old_string = {
-        type = "string",
-        required = true,
-        description = "Exact text to replace. Must match uniquely unless replace_all.",
-      },
-      new_string = {
-        type = "string",
-        required = true,
-        description = "Replacement text. Empty string deletes old_string.",
-      },
-      replace_all = {
-        type = "boolean",
-      },
+      path = { type = "string", required = true },
+      old_string = { type = "string", required = true },
+      new_string = { type = { "string", "null" }, required = true },
+      replace_all = { type = { "boolean", "null" }, required = true },
     },
   },
 
   header = edit_header,
   restore = diff_restore(function(input)
-    return { { old = input.old_string, new = input.new_string } }
+    return { { old = input.old_string, new = input.new_string or "" } }
   end),
 
   handler = function(input, ctx)
     local result, err = apply_edit(input.path, ctx, function(content)
-      return fuzzy_replace.replace(content, input.old_string, input.new_string, input.replace_all or false)
+      return fuzzy_replace.replace(content, input.old_string, input.new_string or "", input.replace_all or false)
     end)
     if not result then
       return { llm_output = err, is_error = true }
@@ -286,35 +274,26 @@ register_tool_if(opts.multiedit, {
   permission_scopes = "path",
   start_annotation = "edits",
   audiences = { "main", "general_sub", "interpreter" },
+  strict = true,
   description = MULTIEDIT_DESCRIPTION,
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "path", "edits" },
     properties = {
-      path = {
-        type = "string",
-        required = true,
-        alias = "file_path",
-      },
+      path = { type = "string", required = true },
       edits = {
         type = "array",
         required = true,
         items = {
           type = "object",
+          additionalProperties = false,
+          required = { "old_string", "new_string", "replace_all" },
           properties = {
-            old_string = {
-              type = "string",
-              required = true,
-              description = "Exact text to replace. Must match uniquely unless replace_all.",
-            },
-            new_string = {
-              type = "string",
-              required = true,
-              description = "Replacement text. Empty string deletes old_string.",
-            },
-            replace_all = {
-              type = "boolean",
-            },
+            old_string = { type = "string", required = true },
+            new_string = { type = { "string", "null" }, required = true },
+            replace_all = { type = { "boolean", "null" }, required = true },
           },
         },
       },
@@ -325,7 +304,7 @@ register_tool_if(opts.multiedit, {
   restore = diff_restore(function(input)
     local blocks = {}
     for _, edit in ipairs(input.edits or {}) do
-      blocks[#blocks + 1] = { old = edit.old_string, new = edit.new_string }
+      blocks[#blocks + 1] = { old = edit.old_string, new = edit.new_string or "" }
     end
     return blocks
   end),
@@ -339,7 +318,7 @@ register_tool_if(opts.multiedit, {
     local result, err = apply_edit(input.path, ctx, function(content)
       for i, edit in ipairs(edits) do
         local replaced, replace_err =
-          fuzzy_replace.replace(content, edit.old_string, edit.new_string, edit.replace_all or false)
+          fuzzy_replace.replace(content, edit.old_string, edit.new_string or "", edit.replace_all or false)
         if replace_err then
           local snippet = edit.old_string:match("[^\n]*")
           local cut = utf8.offset(snippet, SNIPPET_MAX_CHARS + 1)
@@ -368,28 +347,18 @@ register_tool_if(opts.edit_lines, {
   mutable_path = "path",
   permission_scopes = "path",
   audiences = { "main", "general_sub", "interpreter" },
+  strict = true,
   description = EDIT_LINES_DESCRIPTION,
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "path", "start", "end", "new_string" },
     properties = {
-      path = {
-        type = "string",
-        required = true,
-        alias = "file_path",
-      },
-      start = {
-        type = "integer",
-        required = true,
-      },
-      ["end"] = {
-        type = "integer",
-        required = true,
-      },
-      new_string = {
-        type = "string",
-        required = true,
-      },
+      path = { type = "string", required = true },
+      start = { type = "integer", required = true },
+      ["end"] = { type = "integer", required = true },
+      new_string = { type = "string", required = true },
     },
   },
 
@@ -418,24 +387,17 @@ register_tool_if(opts.insert_lines, {
   mutable_path = "path",
   permission_scopes = "path",
   audiences = { "main", "general_sub", "interpreter" },
+  strict = true,
   description = INSERT_LINES_DESCRIPTION,
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "path", "line", "new_string" },
     properties = {
-      path = {
-        type = "string",
-        required = true,
-        alias = "file_path",
-      },
-      line = {
-        type = "integer",
-        required = true,
-      },
-      new_string = {
-        type = "string",
-        required = true,
-      },
+      path = { type = "string", required = true },
+      line = { type = "integer", required = true },
+      new_string = { type = "string", required = true },
     },
   },
 

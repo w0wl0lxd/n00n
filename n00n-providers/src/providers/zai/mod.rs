@@ -316,7 +316,7 @@ impl Provider for Zai {
                 );
             }
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
-            match self
+            let response = match self
                 .compat
                 .do_stream(model, &[], &body, event_tx, &auth)
                 .await
@@ -326,13 +326,19 @@ impl Provider for Zai {
                         && (message.contains("1113") || message.contains("nsufficien")) =>
                 {
                     warn!(status, "insufficient funds, bailing out");
-                    Err(AgentError::Api {
+                    return Err(AgentError::Api {
                         status: 402,
                         message,
-                    })
+                    });
                 }
-                result => result,
-            }
+                result => result?,
+            };
+
+            self.compat
+                .emit_cache_health(&response.usage, event_tx)
+                .await;
+
+            Ok(response)
         })
     }
 

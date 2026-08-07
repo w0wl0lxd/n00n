@@ -209,18 +209,29 @@ n00n.api.register_tool({
   workload = "cheap",
   modes = { "default", "research", "build", "compact" },
   description = DESCRIPTION,
+  strict = true,
 
   schema = {
     type = "object",
-    required = { "path" },
+    additionalProperties = false,
+    required = { "path", "offset", "limit" },
     properties = {
       path = {
         type = "string",
         required = true,
         alias = "file_path",
+        description = "File or directory path (absolute, relative, or ~/)",
       },
-      offset = { type = "integer" },
-      limit = { type = "integer" },
+      offset = {
+        type = { "integer", "null" },
+        required = true,
+        description = "Starting line number (1-indexed, default 1)",
+      },
+      limit = {
+        type = { "integer", "null" },
+        required = true,
+        description = "Maximum number of lines to read (default 500)",
+      },
     },
   },
 

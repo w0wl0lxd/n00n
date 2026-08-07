@@ -20,8 +20,8 @@ use crate::model::{Model, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
 use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::{
-    AgentError, CacheControl, Message, ProviderEvent, RequestOptions, StreamResponse, System,
-    dialect,
+    AgentError, CacheControl, CacheHealth, CacheKind, Message, ProviderEvent, RequestOptions,
+    StreamResponse, System, dialect,
 };
 
 use super::{ResolvedAuth, http_client};
@@ -515,9 +515,16 @@ impl Opencode {
             &super::reasoning_effort_fields(),
         );
         super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
-        self.chat_compat
+        let response = self
+            .chat_compat
             .do_stream(model, &[], &body, event_tx, auth)
-            .await
+            .await?;
+
+        self.chat_compat
+            .emit_cache_health(&response.usage, event_tx)
+            .await;
+
+        Ok(response)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -579,7 +586,24 @@ impl Opencode {
         let status = response.status().as_u16();
 
         if status == 200 {
-            crate::providers::anthropic::parse_sse(response, event_tx, self.stream_timeout).await
+            let result =
+                crate::providers::anthropic::parse_sse(response, event_tx, self.stream_timeout)
+                    .await?;
+
+            let health = CacheHealth {
+                kind: CacheKind::Prompt,
+                valid_until: 0,
+                ttl_seconds: 0,
+                hit: false,
+            };
+            if let Err(error) = event_tx
+                .send_async(ProviderEvent::CacheHealth { cache: health })
+                .await
+            {
+                warn!(error = %error, "failed to send catalog cache health event");
+            }
+
+            Ok(result)
         } else {
             Err(AgentError::from_response(response).await)
         }

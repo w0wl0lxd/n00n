@@ -90,17 +90,15 @@ local description =
 
 local schema = {
   type = "object",
-  required = { "code" },
+  required = { "code", "timeout" },
   additionalProperties = false,
   properties = {
     code = {
       type = "string",
+      required = true,
       description = "Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency.",
     },
-    timeout = {
-      type = "integer",
-      description = "Script timeout seconds (default 30)",
-    },
+    timeout = { type = { "integer", "null" }, required = true, description = "Script timeout seconds (default 30)" },
   },
 }
 
@@ -283,6 +281,7 @@ n00n.api.register_tool({
   description = description,
   describe = describe,
   schema = schema,
+  strict = true,
   kind = "execute",
   audiences = { "main", "research_sub", "general_sub" },
   start_annotation = { field = "timeout", kind = "timeout" },

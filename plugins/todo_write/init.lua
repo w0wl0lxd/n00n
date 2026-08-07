@@ -192,26 +192,33 @@ n00n.api.register_prompt_hint({
 n00n.api.register_tool({
   name = "todo_write",
   description = DESCRIPTION,
+  strict = true,
   schema = {
     type = "object",
+    additionalProperties = false,
     required = { "todos" },
     properties = {
       todos = {
         type = "array",
+        required = true,
         description = "The updated todo list",
         items = {
           type = "object",
-          required = { "content", "status" },
+          additionalProperties = false,
+          required = { "content", "status", "priority" },
           properties = {
-            content = { type = "string", description = "Task description" },
+            content = { type = "string", required = true, description = "Task description" },
             status = {
               type = "string",
               enum = { "pending", "in_progress", "completed", "cancelled" },
-              description = "One of: pending, in_progress, completed, cancelled.",
+              required = true,
+              description = "Task status: pending, in_progress, completed, or cancelled",
             },
             priority = {
-              type = "string",
+              type = { "string", "null" },
               enum = { "high", "medium", "low" },
+              required = true,
+              description = "Task priority: high, medium, or low",
             },
           },
         },

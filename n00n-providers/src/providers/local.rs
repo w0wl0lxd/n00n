@@ -12,7 +12,10 @@ use n00n_config::providers::Protocol;
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::types::{ThinkingFieldConfig, ToggleEntry};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System, dialect};
+use crate::{
+    AgentError, CacheHealth, CacheKind, Message, ProviderEvent, RequestOptions, StreamResponse,
+    System, dialect,
+};
 
 use super::openai::responses;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
@@ -195,7 +198,7 @@ impl Provider for LocalEndpoint {
                     self.compat.config().supports_parallel_tool_calls,
                 );
                 body["return_progress"] = serde_json::Value::Bool(true);
-                return responses::do_stream(
+                let response = responses::do_stream(
                     self.compat.client(),
                     model,
                     &body,
@@ -204,7 +207,22 @@ impl Provider for LocalEndpoint {
                     self.compat.stream_timeout(),
                 )
                 .await
-                .map(|(_, response)| response);
+                .map(|(_, response)| response)?;
+
+                let health = CacheHealth {
+                    kind: CacheKind::Prompt,
+                    valid_until: 0,
+                    ttl_seconds: 0,
+                    hit: false,
+                };
+                if let Err(error) = event_tx
+                    .send_async(ProviderEvent::CacheHealth { cache: health })
+                    .await
+                {
+                    warn!(error = %error, "failed to send local cache health event");
+                }
+
+                return Ok(response);
             }
 
             let mut body = self.compat.build_body_with_session(
@@ -224,9 +242,16 @@ impl Provider for LocalEndpoint {
             }
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
-            self.compat
+            let response = self
+                .compat
                 .do_stream(model, &[], &body, event_tx, &auth)
-                .await
+                .await?;
+
+            self.compat
+                .emit_cache_health(&response.usage, event_tx)
+                .await;
+
+            Ok(response)
         })
     }
 

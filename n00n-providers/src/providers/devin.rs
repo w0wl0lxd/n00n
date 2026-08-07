@@ -273,9 +273,18 @@ fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
 }
 
 fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentError> {
+    // Accept null or empty object as "no tools"
+    if tools.is_null()
+        || (tools.is_object() && tools.as_object().map_or(false, serde_json::Map::is_empty))
+    {
+        return Ok(Vec::new());
+    }
     let arr = tools.as_array().ok_or_else(|| AgentError::Config {
         message: "Devin tools must be an array".to_string(),
     })?;
+    if arr.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut encoded = Vec::with_capacity(arr.len());
     for tool in arr {
         let function = match tool.get("function") {
@@ -1213,6 +1222,24 @@ mod tests {
             encode_devin_tools(&serde_json::json!({"name": "read"})),
             Err(AgentError::Config { message }) if message == "Devin tools must be an array"
         ));
+    }
+
+    #[test]
+    fn encode_devin_tools_accepts_null_as_empty() {
+        let encoded = encode_devin_tools(&serde_json::json!(null)).expect("null tools");
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn encode_devin_tools_accepts_empty_object_as_empty() {
+        let encoded = encode_devin_tools(&serde_json::json!({})).expect("empty object tools");
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn encode_devin_tools_accepts_empty_array_as_empty() {
+        let encoded = encode_devin_tools(&serde_json::json!([])).expect("empty array tools");
+        assert!(encoded.is_empty());
     }
 
     #[test]

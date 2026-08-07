@@ -203,9 +203,16 @@ impl Provider for DeepSeek {
             }
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
-            self.compat
+            let response = self
+                .compat
                 .do_stream(model, &[], &body, event_tx, &auth)
-                .await
+                .await?;
+
+            self.compat
+                .emit_cache_health(&response.usage, event_tx)
+                .await;
+
+            Ok(response)
         })
     }
 

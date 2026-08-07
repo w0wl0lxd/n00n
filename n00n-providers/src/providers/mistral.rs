@@ -3,19 +3,13 @@ use std::sync::{Arc, Mutex};
 use flume::Sender;
 use n00n_storage::id::SessionRef;
 use serde_json::{Value, json};
-use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::{
-    AgentError, CacheHealth, CacheKind, Message, ProviderEvent, RequestOptions, StreamResponse,
-    System, dialect,
-};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System, dialect};
 
 use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
-
-const MISTRAL_CACHE_TTL_SECONDS: u64 = 300;
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/mistral.rs"));
 
@@ -234,26 +228,9 @@ impl Provider for Mistral {
                 .do_stream(model, &extra_headers, &body, event_tx, &auth)
                 .await?;
 
-            let hit = response.usage.cache_read > 0;
-            let cached = response.usage.cache_read > 0 || response.usage.cache_creation > 0;
-            let valid_until = if cached {
-                n00n_storage::now_epoch().saturating_add(MISTRAL_CACHE_TTL_SECONDS)
-            } else {
-                0
-            };
-            let ttl_seconds = if cached { MISTRAL_CACHE_TTL_SECONDS } else { 0 };
-            let health = CacheHealth {
-                kind: CacheKind::Prompt,
-                valid_until,
-                ttl_seconds,
-                hit,
-            };
-            if let Err(error) = event_tx
-                .send_async(ProviderEvent::CacheHealth { cache: health })
-                .await
-            {
-                warn!(error = %error, "failed to send Mistral cache health event");
-            }
+            self.compat
+                .emit_cache_health(&response.usage, event_tx)
+                .await;
 
             Ok(response)
         })
