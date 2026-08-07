@@ -20,12 +20,9 @@ use crate::convert::{json_to_monty, monty_to_json};
 use crate::error::InterpreterError;
 
 const DEFAULT_MAX_RECURSION: usize = 100;
-<<<<<<< HEAD
 const MAX_PENDING_ASYNC_CALLS: usize = 64;
-=======
 const MAX_STDOUT_BYTES: usize = 16 * 1024;
 const MAX_RESULT_BYTES: usize = 16 * 1024;
->>>>>>> origin/main
 const SCRIPT_NAME: &str = "agent.py";
 
 pub type ToolFn = Box<dyn Fn(&str, Vec<Value>, Vec<(String, Value)>) -> Result<Value, String>>;
@@ -464,7 +461,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn async_gather_rejects_oversized_tool_batch_before_resolver() {
         let calls = std::iter::repeat_n("tool()", MAX_PENDING_ASYNC_CALLS + 1)
             .collect::<Vec<_>>()
@@ -488,7 +484,9 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
-=======
+    }
+
+    #[test]
     fn stdout_is_bounded_and_marked() {
         let result = run("print('x' * 20000)", &empty_tools(), None, default_limits()).unwrap();
         assert!(result.stdout.len() <= MAX_STDOUT_BYTES);
@@ -499,7 +497,6 @@ mod tests {
     fn oversized_result_is_rejected() {
         let err = run("'x' * 20000", &empty_tools(), None, default_limits()).unwrap_err();
         assert!(err.to_string().contains("result exceeds"));
->>>>>>> origin/main
     }
 
     #[test]
