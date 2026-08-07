@@ -21,7 +21,7 @@ use n00n_lua::EventHandle;
 use n00n_providers::{AgentError, Message, Model, OpenAiOptions, System, TokenUsage};
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
@@ -529,11 +529,18 @@ impl AgentLoop {
         let event_tx = EventSender::new(self.agent_tx.clone(), run_id);
         match error {
             AgentError::Cancelled => {
+                warn!(run_id, "agent cancelled");
                 let _ = event_tx.send(AgentEvent::Done {
                     usage: TokenUsage::default(),
                     num_turns: 0,
                     stop_reason: None,
                     fusion: None,
+                });
+            }
+            e if e.is_history_replay_required() => {
+                info!(error = %e, "agent error: history replay required");
+                let _ = event_tx.send(AgentEvent::Error {
+                    message: e.user_message(),
                 });
             }
             e => {
