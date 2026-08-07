@@ -562,9 +562,6 @@ impl<'h> Agent<'h> {
         &self,
         metadata: Option<&RequestDeliveryMetadata>,
     ) -> Result<bool, AgentError> {
-        if self.permissions.is_yolo() {
-            return Ok(true);
-        }
         let Some(response_rx) = self.user_response_rx.as_deref() else {
             return Ok(false);
         };
@@ -1606,6 +1603,17 @@ mod tests {
                     .await
                     .unwrap()
             );
+        });
+    }
+
+    #[test]
+    fn yolo_mode_does_not_auto_approve_ambiguous_request_replay() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent.permissions.set_yolo(true);
+
+            assert!(!agent.approve_ambiguous_request_replay(None).await.unwrap());
         });
     }
 
