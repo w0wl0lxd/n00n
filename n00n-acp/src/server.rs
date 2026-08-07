@@ -93,8 +93,15 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 
     loop {
         line.clear();
-        if reader.read_line(&mut line).await.context("read stdin")? == 0 {
-            break;
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                warn!(error = %e, "invalid UTF-8 on stdin");
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
+            }
+            Err(e) => return Err(e).context("read stdin"),
         }
 
         let trimmed = line.trim();
@@ -111,7 +118,17 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             }
         };
 
-        let id = raw.get("id").map(request_id);
+        let id = match raw.get("id") {
+            Some(v) => {
+                if let Ok(id) = request_id(v) {
+                    Some(id)
+                } else {
+                    server.respond(RequestId::Null, Err(AcpError::invalid_request()));
+                    continue;
+                }
+            }
+            None => None,
+        };
 
         if raw.get("result").is_some() || raw.get("error").is_some() {
             handle_incoming_response(&server, &raw);
@@ -122,6 +139,8 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             }
         } else if let Some(id) = id {
             server.respond(id, Err(AcpError::invalid_request()));
+        } else {
+            server.respond(RequestId::Null, Err(AcpError::invalid_request()));
         }
     }
 
@@ -132,8 +151,8 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn request_id(v: &Value) -> RequestId {
-    serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
+fn request_id(v: &Value) -> Result<RequestId, ()> {
+    serde_json::from_value(v.clone()).map_err(|_| ())
 }
 
 async fn handle_request(
@@ -192,11 +211,11 @@ async fn handle_load_session(
     let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
         .map_err(|error| AcpError::internal_error().data(json_str(&error)))?;
     let history = stored.messages;
+    retire_session(srv).await;
     let sid = SessionId::from(session_ref.to_string());
     for update in translate::replay_history(&history) {
         session_update(&srv.out_tx, &sid, update);
     }
-    retire_session(srv).await;
     let handle = spawn_session(params, req.cwd, Some(session_ref), history);
     let spec = params.model.spec();
     let resp = methods::load_session_response()
@@ -222,7 +241,15 @@ async fn retire_session(srv: &mut Server) {
             Response::new(id, Ok(AgentResponse::PromptResponse(response))),
         );
     }
-    let _ = handle.cancel_tx.try_send(());
+    match handle.cancel_tx.try_send(()) {
+        Ok(()) => {}
+        Err(flume::TrySendError::Full(())) => {
+            debug!("cancellation already requested");
+        }
+        Err(flume::TrySendError::Disconnected(())) => {
+            warn!("cancellation channel disconnected, falling back to direct task cancellation");
+        }
+    }
     event_pump.cancel().await;
     handle.task.cancel().await;
 }
@@ -585,6 +612,7 @@ mod tests {
     use n00n_providers::{ContentBlock as MsgBlock, Role, TokenUsage};
     use n00n_storage::StateDir;
     use n00n_storage::sessions::Session;
+    use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
@@ -623,5 +651,48 @@ mod tests {
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         let err = load_history_from(&dir, n00nId::generate()).unwrap_err();
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
+    }
+
+    #[test]
+    fn request_id_parses_valid_ids() {
+        assert_eq!(request_id(&json!(5)), Ok(RequestId::Number(5)));
+        assert_eq!(request_id(&json!("abc")), Ok(RequestId::Str("abc".into())));
+        assert_eq!(request_id(&json!(null)), Ok(RequestId::Null));
+    }
+
+    #[test]
+    fn request_id_rejects_unparseable_ids() {
+        assert!(request_id(&json!({})).is_err());
+        assert!(request_id(&json!([])).is_err());
+        assert!(request_id(&json!(true)).is_err());
+        // Use a valid u64 value that serde_json will reject as a RequestId
+        assert!(request_id(&json!(18_446_744_073_709_551_615_u64)).is_err());
+    }
+
+    #[test]
+    fn parse_params_handles_null_params() {
+        let raw = json!({"id": 1, "method": "test", "params": null});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_params_handles_missing_params() {
+        let raw = json!({"id": 1, "method": "test"});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_params_handles_invalid_json_params() {
+        let raw = json!({"id": 1, "method": "test", "params": {"invalid": "type"}});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn request_id_rejects_empty_object_and_array() {
+        assert!(request_id(&json!({})).is_err());
+        assert!(request_id(&json!([])).is_err());
     }
 }

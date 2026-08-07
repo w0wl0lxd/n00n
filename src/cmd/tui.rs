@@ -324,6 +324,11 @@ fn run_ui_loop(
     storage: &StateDir,
     cwd: &std::path::Path,
 ) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        color_eyre::eyre::bail!(
+            "interactive UI requires a terminal; pipe a prompt or use `n00n --print` in non-interactive mode"
+        );
+    }
     let cwd_str = cwd.to_string_lossy().into_owned();
     let mut tabs = vec![resolve_session(
         cli.session_flags.continue_session,
