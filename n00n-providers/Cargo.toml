@@ -13,6 +13,7 @@ build = "build.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+toml = { workspace = true }
 n00n-storage = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -45,7 +46,6 @@ prost = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 async-process = { workspace = true }
 url = { workspace = true }
-toml = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
