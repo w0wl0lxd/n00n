@@ -2740,6 +2740,103 @@ n00n.api.register_tool({
     );
 }
 
+#[test_case::test_case(())]
+fn sessions_picker_groups_descendants_by_category_without_dropping_orphans(_: ()) {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let mut source = include_str!("../../plugins/sessions/init.lua").to_string();
+    source.push_str(
+        r#"
+n00n.api.register_tool({
+  name = "sessions_category_probe",
+  description = "test",
+  schema = { type = "object", properties = {} },
+  audiences = { "main" },
+  handler = function()
+    local sessions = {
+      { id = "root", kind = "main", updated_at = 100, children = {} },
+      { id = "research", kind = "task", title = "Research: storage", parent_id = "root", updated_at = 90, children = {} },
+      { id = "team", kind = "team", parent_id = "root", updated_at = 80, children = {} },
+      { id = "workflow", kind = "workflow", parent_id = "root", updated_at = 70, children = {} },
+      { id = "agent", kind = "task", title = "Implement fix", parent_id = "root", updated_at = 60, children = {} },
+      { id = "review", kind = "task", display_title = "Review patch", parent_id = "team", updated_at = 50, children = {} },
+      { id = "orphan", kind = "task", parent_id = "missing", group_id = "stale", updated_at = 40, children = {} },
+      { id = "other-root", kind = "main", updated_at = 30, children = {} },
+    }
+    for i = 1, 21 do
+      sessions[#sessions + 1] = {
+        id = "agent-" .. i,
+        kind = "task",
+        title = "Implement " .. i,
+        parent_id = "root",
+        updated_at = 30 - i,
+        children = {},
+      }
+    end
+    normalize_session(sessions[7], {})
+    local rank = {}
+    for i, session in ipairs(sessions) do
+      rank[session.id] = i
+    end
+    board = { rank = rank }
+    local roots, nodes = build_tree(sessions, {}, rank)
+    local root
+    local root_ids = {}
+    for _, candidate in ipairs(roots) do
+      root_ids[#root_ids + 1] = candidate.id
+      if candidate.id == "root" then
+        root = candidate
+      end
+    end
+    group_node(root, nodes, rank, {})
+    local category_ids = {}
+    local agent_group
+    for _, category in ipairs(root.children) do
+      category_ids[#category_ids + 1] = category.id
+      if category.id == "group:root:agents" then
+        agent_group = category
+      end
+    end
+    return n00n.json.encode({
+      roots = root_ids,
+      categories = category_ids,
+      node_count = #nodes,
+      agent_total = agent_group.total_tasks,
+      agent_buckets = #agent_group.children,
+      orphan_group_cleared = sessions[7].group_id == nil,
+      draft_category = descendant_category({ kind = "task", title = "Draft response" }),
+      ponder_category = descendant_category({ kind = "task", display_title = "Ponder options" }),
+    })
+  end,
+})
+"#,
+    );
+    host.load_source("sessions_category_test", &source).unwrap();
+
+    let output = exec_tool(&registry, "sessions_category_probe", serde_json::json!({})).unwrap();
+    let grouped: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(
+        grouped["roots"],
+        serde_json::json!(["root", "orphan", "other-root"])
+    );
+    assert_eq!(
+        grouped["categories"],
+        serde_json::json!([
+            "group:root:research",
+            "group:root:review",
+            "group:root:teams",
+            "group:root:workflows",
+            "group:root:agents"
+        ])
+    );
+    assert_eq!(grouped["node_count"], serde_json::json!(36));
+    assert_eq!(grouped["agent_total"], serde_json::json!(22));
+    assert_eq!(grouped["agent_buckets"], serde_json::json!(2));
+    assert_eq!(grouped["orphan_group_cleared"], serde_json::json!(true));
+    assert_eq!(grouped["draft_category"], serde_json::json!("draft"));
+    assert_eq!(grouped["ponder_category"], serde_json::json!("ponder"));
+}
+
 #[test]
 fn job_callback_finishes_after_handler_returns_nil() {
     let reg = fresh_registry();
