@@ -29,6 +29,8 @@ const BLACKBOARD_SRC: &str = include_str!("../../plugins/blackboard/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
 const FUSION_SRC: &str = include_str!("../../plugins/fusion/init.lua");
+const GIT_SRC: &str = include_str!("../../plugins/git/init.lua");
+const GITHUB_SRC: &str = include_str!("../../plugins/github/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
 const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
@@ -87,6 +89,8 @@ fn load_host() -> PluginHost {
     host.load_source("batch", BATCH_SRC).unwrap();
     host.load_source("codegraph", CODEGRAPH_SRC).unwrap();
     host.load_source("explore", EXPLORE_SRC).unwrap();
+    host.load_source("git", GIT_SRC).unwrap();
+    host.load_source("github", GITHUB_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
     host.load_source("semblem", SEMBLEM_SRC).unwrap();
     host.load_source("task", TASK_SRC).unwrap();
@@ -537,11 +541,25 @@ fn task_restore_rebuilds_old_plain_persisted_output() {
     "/tmp/project";
     "semblem"
 )]
+#[test_case::test_case(
+    "git",
+    json!({ "command": "status", "path": "/tmp/project" }),
+    "status",
+    "/tmp/project";
+    "git"
+)]
+#[test_case::test_case(
+    "github",
+    json!({ "command": "list_issues", "owner": "owner", "repo": "repo" }),
+    "list_issues",
+    "owner/repo";
+    "github"
+)]
 fn explore_restore_uses_shared_three_line_clickable_card(
     tool: &str,
     input: Value,
     header_text: &str,
-    project: &str,
+    header_extra: &str,
 ) {
     let host = load_host();
     let output = (1..=8)
@@ -556,7 +574,7 @@ fn explore_restore_uses_shared_three_line_clickable_card(
         collapsed.header
     );
     assert!(
-        collapsed.header.contains(project),
+        collapsed.header.contains(header_extra),
         "header: {}",
         collapsed.header
     );
