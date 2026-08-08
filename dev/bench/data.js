@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786088406715,
+  "lastUpdate": 1786161477176,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -15439,6 +15439,112 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 134518,
             "range": "± 14968",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "71f06c73888b74cdeb3b4b2575b3dcadbd4cc3d3",
+          "message": "Merge pull request #308 from w0wl0lxd/fix/review-correctness-dirty\n\nfix(cleanup): fix review-correctness dirty follow-up",
+          "timestamp": "2026-08-07T07:23:59Z",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/71f06c73888b74cdeb3b4b2575b3dcadbd4cc3d3"
+        },
+        "date": 1786161475920,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6660526,
+            "range": "± 195789",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2223308,
+            "range": "± 8217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2210495,
+            "range": "± 18566",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8364599,
+            "range": "± 38764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4304359,
+            "range": "± 60599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4287313,
+            "range": "± 27781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585989,
+            "range": "± 14259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192609,
+            "range": "± 502",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192406,
+            "range": "± 1411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1048394,
+            "range": "± 13780",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 584431,
+            "range": "± 1926",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584274,
+            "range": "± 14262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 50626,
+            "range": "± 8211",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 161519,
+            "range": "± 16990",
             "unit": "ns/iter"
           }
         ]
