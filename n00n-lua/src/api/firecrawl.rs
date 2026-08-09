@@ -679,11 +679,10 @@ fn decode_search(body: &[u8], limit: usize) -> Result<Vec<CompactSearchHit>, Str
     let web = data
         .web
         .ok_or_else(|| "Firecrawl search response omitted data.web".to_string())?;
-    Ok(web
-        .into_iter()
-        .filter_map(|hit| compact_search_hit(hit).ok())
+    web.into_iter()
         .take(limit.min(MAX_SEARCH_RESULTS))
-        .collect())
+        .map(compact_search_hit)
+        .collect()
 }
 
 fn compact_search_hit(hit: SearchHit) -> Result<CompactSearchHit, String> {
@@ -1018,18 +1017,15 @@ mod tests {
     }
 
     #[test]
-    fn search_skips_invalid_and_private_hits_but_keeps_valid_hits() {
-        let body = br#"{"success":true,"data":{"web":[{"url":"javascript:alert(1)"},{"url":"http://127.0.0.1/private"},{"url":"https://example.com/valid","title":"Valid","description":"Useful result"}]}}"#;
-        let results = decode_search(body, 5).unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].url, "https://example.com/valid");
-        assert_eq!(results[0].title, "Valid");
-        assert_eq!(results[0].description, "Useful result");
+    fn search_rejects_response_with_invalid_or_private_hit() {
+        let body = br#"{"success":true,"data":{"web":[{"url":"https://example.com/valid"},{"url":"http://127.0.0.1/private"}]}}"#;
+        let error = decode_search(body, 5).unwrap_err();
+        assert!(error.contains("must use a public address"));
     }
 
     #[test]
-    fn search_honors_requested_result_limit_after_skipping_invalid_hits() {
-        let body = br#"{"success":true,"data":{"web":[{"url":"http://10.0.0.1"},{"url":"https://example.com/one"},{"url":"https://example.com/two"}]}}"#;
+    fn search_honors_requested_result_limit_before_validating_extra_hits() {
+        let body = br#"{"success":true,"data":{"web":[{"url":"https://example.com/one"},{"url":"http://10.0.0.1"}]}}"#;
         let results = decode_search(body, 1).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].url, "https://example.com/one");
