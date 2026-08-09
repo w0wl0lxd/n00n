@@ -61,15 +61,21 @@ async fn run_btw(
     let _permit = n00n_providers::admission::ProviderAdmission::global()
         .acquire(model.provider.as_ref())
         .await;
-    let stream_fut = provider.stream_message(
-        &model,
-        &messages,
-        &system,
-        &tools,
-        &event_tx,
-        RequestOptions::default(),
-        None,
-    );
+    let stream_fut = async move {
+        let result = provider
+            .stream_message(
+                &model,
+                &messages,
+                &system,
+                &tools,
+                &event_tx,
+                RequestOptions::default(),
+                None,
+            )
+            .await;
+        drop(event_tx);
+        result
+    };
 
     let forward_fut = async {
         while let Ok(event) = event_rx.recv_async().await {
@@ -110,6 +116,87 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    struct ImmediateProvider;
+
+    impl Provider for ImmediateProvider {
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a System,
+            _: &'a Value,
+            event_tx: &'a flume::Sender<ProviderEvent>,
+            _: RequestOptions,
+            _: Option<&'a n00n_storage::id::SessionRef>,
+        ) -> n00n_providers::provider::BoxFuture<
+            'a,
+            Result<n00n_providers::StreamResponse, n00n_providers::AgentError>,
+        > {
+            Box::pin(async move {
+                event_tx
+                    .send_async(ProviderEvent::TextDelta {
+                        text: "first".into(),
+                    })
+                    .await?;
+                event_tx
+                    .send_async(ProviderEvent::ThinkingDelta {
+                        text: "second".into(),
+                    })
+                    .await?;
+                Ok(n00n_providers::StreamResponse {
+                    message: Message::assistant("done".into()),
+                    usage: n00n_providers::TokenUsage::default(),
+                    stop_reason: Some(n00n_providers::StopReason::EndTurn),
+                })
+            })
+        }
+
+        fn list_models(
+            &self,
+        ) -> n00n_providers::provider::BoxFuture<
+            '_,
+            Result<Vec<n00n_providers::ModelInfo>, n00n_providers::AgentError>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[test]
+    fn completed_provider_finishes_btw_stream() {
+        let (btw_tx, btw_rx) = flume::bounded(4);
+        let completed = smol::block_on(async {
+            future::race(
+                async {
+                    run_btw(
+                        Arc::new(ImmediateProvider),
+                        Model::from_spec("anthropic/test").unwrap(),
+                        System::from("system"),
+                        vec![Message::user("question".into())],
+                        btw_tx,
+                    )
+                    .await;
+                    true
+                },
+                async {
+                    smol::Timer::after(std::time::Duration::from_millis(100)).await;
+                    false
+                },
+            )
+            .await
+        });
+
+        assert!(completed, "completed provider left BTW task parked");
+        assert!(matches!(
+            btw_rx.try_recv(),
+            Ok(BtwEvent::TextDelta(text)) if text == "first"
+        ));
+        assert!(matches!(
+            btw_rx.try_recv(),
+            Ok(BtwEvent::TextDelta(text)) if text == "second"
+        ));
+        assert!(matches!(btw_rx.try_recv(), Ok(BtwEvent::Done)));
     }
 
     #[test]
