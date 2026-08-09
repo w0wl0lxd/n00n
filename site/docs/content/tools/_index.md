@@ -445,5 +445,5 @@ Search the web for real-time information using Firecrawl or Exa.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `num_results` | integer | no | 8 | Number of results to return |
+| `num_results` | integer | no | 8; Exa 1-100, Firecrawl 1-10 | Number of results |
 | `query` | string | yes |  | Search query |

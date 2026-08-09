@@ -1,11 +1,11 @@
 local EXA_MCP_ENDPOINT = "https://mcp.exa.ai/mcp"
 local REQUEST_TIMEOUT_SECS = 25
 local DEFAULT_NUM_RESULTS = 8
-local MAX_NUM_RESULTS = 10
+local MAX_EXA_RESULTS = 100
+local MAX_FIRECRAWL_RESULTS = 10
 
 local parse_sse_response = require("parse_sse")
 local web_backend = require("n00n.web_backend")
-local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
 
@@ -56,7 +56,10 @@ n00n.api.register_tool({
     type = "object",
     properties = {
       query = { type = "string", description = "Search query", required = true },
-      num_results = { type = "integer", description = "Number of results to return (default 8)" },
+      num_results = {
+        type = "integer",
+        description = "Number of results (default 8; Exa 1-100, Firecrawl 1-10)",
+      },
     },
   },
   permission_scopes = "query",
@@ -79,11 +82,8 @@ n00n.api.register_tool({
     end
 
     local num_results = input.num_results or DEFAULT_NUM_RESULTS
-    if num_results < 1 or num_results > MAX_NUM_RESULTS then
-      return {
-        llm_output = "error: num_results must be between 1 and " .. tostring(MAX_NUM_RESULTS),
-        is_error = true,
-      }
+    if num_results < 1 then
+      return { llm_output = "error: num_results must be at least 1", is_error = true }
     end
 
     local backend, backend_err = select_backend()
@@ -93,14 +93,27 @@ n00n.api.register_tool({
 
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
     if backend == "firecrawl" then
+      if num_results > MAX_FIRECRAWL_RESULTS then
+        return {
+          llm_output = "error: Firecrawl num_results must be between 1 and " .. tostring(MAX_FIRECRAWL_RESULTS),
+          is_error = true,
+        }
+      end
       local results, firecrawl_err = n00n.firecrawl.search(query, num_results, opts.max_response_bytes)
       if not results then
         return { llm_output = "error: " .. tostring(firecrawl_err), is_error = true }
       end
       local text = web_backend.firecrawl_search(results)
       return {
-        llm_output = truncate(text, max_lines, max_bytes),
+        llm_output = web_backend.bounded_firecrawl_search(results, max_lines, max_bytes),
         body = ToolView.restore(text, web_view_opts(ctx)),
+      }
+    end
+
+    if num_results > MAX_EXA_RESULTS then
+      return {
+        llm_output = "error: Exa num_results must be between 1 and " .. tostring(MAX_EXA_RESULTS),
+        is_error = true,
       }
     end
 
@@ -143,19 +156,18 @@ n00n.api.register_tool({
     end
 
     if resp.status < 200 or resp.status >= 300 then
-      local preview = resp.body:sub(1, 200)
-      return { llm_output = "error: HTTP " .. tostring(resp.status) .. ": " .. preview, is_error = true }
+      return { llm_output = "error: HTTP " .. tostring(resp.status), is_error = true }
     end
 
-    local text, parse_err = parse_sse_response(resp.body)
+    local text, parse_err = parse_sse_response(resp.body, resp.content_type)
     if not text then
       return { llm_output = "error: " .. tostring(parse_err), is_error = true }
     end
 
-    text = web_backend.wrap(text, "Exa search API")
+    local body = web_backend.wrap(text, "Exa search API")
     return {
-      llm_output = truncate(text, max_lines, max_bytes),
-      body = ToolView.restore(text, web_view_opts(ctx)),
+      llm_output = web_backend.bounded_wrap(text, "Exa search API", max_lines, max_bytes),
+      body = ToolView.restore(body, web_view_opts(ctx)),
     }
   end,
 })

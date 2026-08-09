@@ -27,127 +27,123 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 struct BundledPlugin {
     name: &'static str,
     dir: Dir<'static>,
+    capability: Option<BundledCapability>,
+}
+
+const fn bundled(name: &'static str, dir: Dir<'static>) -> BundledPlugin {
+    BundledPlugin {
+        name,
+        dir,
+        capability: None,
+    }
+}
+
+const fn privileged(
+    name: &'static str,
+    dir: Dir<'static>,
+    capability: BundledCapability,
+) -> BundledPlugin {
+    BundledPlugin {
+        name,
+        dir,
+        capability: Some(capability),
+    }
 }
 
 /// `lib` is not a default builtin; it exists so plugins can
 /// `require()` shared modules across boundaries.
 static BUNDLED_PLUGINS: &[BundledPlugin] = &[
-    BundledPlugin {
-        name: "agent_control",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
-    },
-    BundledPlugin {
-        name: "arbor",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
-    },
-    BundledPlugin {
-        name: "blackboard",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
-    },
-    BundledPlugin {
-        name: "sessions",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
-    },
-    BundledPlugin {
-        name: "semblem",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
-    },
-    BundledPlugin {
-        name: "index",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
-    },
-    BundledPlugin {
-        name: "webfetch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/webfetch"),
-    },
-    BundledPlugin {
-        name: "websearch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/websearch"),
-    },
-    BundledPlugin {
-        name: "bash",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/bash"),
-    },
-    BundledPlugin {
-        name: "batch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/batch"),
-    },
-    BundledPlugin {
-        name: "grep",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep"),
-    },
-    BundledPlugin {
-        name: "glob",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob"),
-    },
-    BundledPlugin {
-        name: "skill",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/skill"),
-    },
-    BundledPlugin {
-        name: "memory",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/memory"),
-    },
-    BundledPlugin {
-        name: "question",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/question"),
-    },
-    BundledPlugin {
-        name: "todo_write",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/todo_write"),
-    },
-    BundledPlugin {
-        name: "read",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/read"),
-    },
-    BundledPlugin {
-        name: "write",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/write"),
-    },
-    BundledPlugin {
-        name: "edit",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/edit"),
-    },
-    BundledPlugin {
-        name: "explore",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/explore"),
-    },
-    BundledPlugin {
-        name: "fusion",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/fusion"),
-    },
-    BundledPlugin {
-        name: "task",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/task"),
-    },
-    BundledPlugin {
-        name: "workflow",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
-    },
-    BundledPlugin {
-        name: "team",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/team"),
-    },
-    BundledPlugin {
-        name: "tmux",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux"),
-    },
-    BundledPlugin {
-        name: "code_execution",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
-    },
-    BundledPlugin {
-        name: "codegraph",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
-    },
-    BundledPlugin {
-        name: "view_image",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
-    },
-    BundledPlugin {
-        name: "lib",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/lib"),
-    },
+    bundled(
+        "agent_control",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
+    ),
+    bundled(
+        "arbor",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
+    ),
+    bundled(
+        "blackboard",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
+    ),
+    bundled(
+        "sessions",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
+    ),
+    bundled(
+        "semblem",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
+    ),
+    bundled(
+        "index",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
+    ),
+    privileged(
+        "webfetch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/webfetch"),
+        BundledCapability::WebFetch,
+    ),
+    privileged(
+        "websearch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/websearch"),
+        BundledCapability::WebSearch,
+    ),
+    bundled("bash", include_dir!("$CARGO_MANIFEST_DIR/../plugins/bash")),
+    bundled(
+        "batch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/batch"),
+    ),
+    bundled("grep", include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep")),
+    bundled("glob", include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob")),
+    bundled(
+        "skill",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/skill"),
+    ),
+    bundled(
+        "memory",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/memory"),
+    ),
+    bundled(
+        "question",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/question"),
+    ),
+    bundled(
+        "todo_write",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/todo_write"),
+    ),
+    bundled("read", include_dir!("$CARGO_MANIFEST_DIR/../plugins/read")),
+    bundled(
+        "write",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/write"),
+    ),
+    bundled("edit", include_dir!("$CARGO_MANIFEST_DIR/../plugins/edit")),
+    bundled(
+        "explore",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/explore"),
+    ),
+    bundled(
+        "fusion",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/fusion"),
+    ),
+    bundled("task", include_dir!("$CARGO_MANIFEST_DIR/../plugins/task")),
+    bundled(
+        "workflow",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
+    ),
+    bundled("team", include_dir!("$CARGO_MANIFEST_DIR/../plugins/team")),
+    bundled("tmux", include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux")),
+    bundled(
+        "code_execution",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
+    ),
+    bundled(
+        "codegraph",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
+    ),
+    bundled(
+        "view_image",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
+    ),
+    bundled("lib", include_dir!("$CARGO_MANIFEST_DIR/../plugins/lib")),
 ];
 
 pub(crate) fn lib_dir() -> &'static Dir<'static> {
@@ -352,7 +348,7 @@ impl PluginHost {
                 Arc::from(builtin.as_str()),
                 init.to_owned(),
                 opts,
-                BundledCapability::for_builtin(builtin),
+                bundled.capability,
             ));
         }
 
