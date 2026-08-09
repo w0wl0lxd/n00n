@@ -27,9 +27,20 @@ struct PendingSnapshot {
 type Pending = Arc<Mutex<HashMap<n00nId, PendingSnapshot>>>;
 type FailedRevisions = HashMap<n00nId, u64>;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum StorageWriterShutdownError {
+    #[error("storage writer stopped with {count} unpersisted snapshot(s)")]
+    UnpersistedSnapshots { count: usize },
+    #[error("storage writer did not drain within {timeout:?}")]
+    Timeout { timeout: Duration },
+    #[error("storage writer completion channel disconnected")]
+    Disconnected,
+}
+
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<(n00nId, u64), u32>,
+    exhausted: HashMap<n00nId, u64>,
 }
 
 type DeleteCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
@@ -53,7 +64,7 @@ enum Op {
 pub struct StorageWriter {
     pending: Pending,
     ops: flume::Sender<Op>,
-    done_rx: flume::Receiver<()>,
+    done_rx: flume::Receiver<Result<(), usize>>,
 }
 
 impl StorageWriter {
@@ -61,7 +72,7 @@ impl StorageWriter {
         let pending: Pending = Arc::default();
         let writer_pending = Arc::clone(&pending);
         let (ops, ops_rx) = flume::unbounded::<Op>();
-        let (done_tx, done_rx) = flume::bounded::<()>(1);
+        let (done_tx, done_rx) = flume::bounded::<Result<(), usize>>(1);
 
         std::thread::Builder::new()
             .name("storage-writer".into())
@@ -103,9 +114,15 @@ impl StorageWriter {
                         }
                     }
                 }
-                flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
+                let failed = flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
                 drop(logs);
-                let _ = done_tx.send(());
+                let unpersisted = retries.unpersisted_count(&failed, &durable_revisions);
+                let completion = if unpersisted == 0 {
+                    Ok(())
+                } else {
+                    Err(unpersisted)
+                };
+                let _ = done_tx.send(completion);
             })?;
 
         Ok(Self {
@@ -159,16 +176,26 @@ impl StorageWriter {
         }
     }
 
-    pub fn shutdown(self, timeout: Duration) {
-        if !self.wait_for_shutdown(timeout) {
-            warn!("storage writer did not drain within {timeout:?}");
-        }
+    pub(crate) fn shutdown(self, timeout: Duration) -> Result<(), StorageWriterShutdownError> {
+        self.wait_for_shutdown(timeout)
     }
 
-    pub(crate) fn wait_for_shutdown(self, timeout: Duration) -> bool {
+    pub(crate) fn wait_for_shutdown(
+        self,
+        timeout: Duration,
+    ) -> Result<(), StorageWriterShutdownError> {
         let Self { ops, done_rx, .. } = self;
         drop(ops);
-        done_rx.recv_timeout(timeout).is_ok()
+        match done_rx.recv_timeout(timeout) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(count)) => Err(StorageWriterShutdownError::UnpersistedSnapshots { count }),
+            Err(flume::RecvTimeoutError::Timeout) => {
+                Err(StorageWriterShutdownError::Timeout { timeout })
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                Err(StorageWriterShutdownError::Disconnected)
+            }
+        }
     }
 }
 
@@ -202,6 +229,10 @@ impl RetryState {
                 .is_some_and(|snapshot| snapshot.revision == revision)
             {
                 pending.remove(&id);
+                self.exhausted
+                    .entry(id)
+                    .and_modify(|current| *current = (*current).max(revision))
+                    .or_insert(revision);
             }
         }
         self.attempts.retain(|(id, revision), _| {
@@ -209,6 +240,24 @@ impl RetryState {
                 .get(id)
                 .is_some_and(|snapshot| snapshot.revision == *revision)
         });
+    }
+
+    fn unpersisted_count(
+        &self,
+        failed: &FailedRevisions,
+        durable_revisions: &HashMap<n00nId, u64>,
+    ) -> usize {
+        failed.len()
+            + self
+                .exhausted
+                .iter()
+                .filter(|(id, revision)| {
+                    !failed.contains_key(id)
+                        && durable_revisions
+                            .get(id)
+                            .is_none_or(|durable| durable < revision)
+                })
+                .count()
     }
 }
 
@@ -402,7 +451,7 @@ mod tests {
         writer.send(Box::new(b.clone()));
         b.title = "renamed".into();
         writer.send(Box::new(b));
-        writer.shutdown(DRAIN_TIMEOUT);
+        writer.shutdown(DRAIN_TIMEOUT).unwrap();
 
         assert!(AppSession::load(a_id, &dir).is_ok());
         assert_eq!(AppSession::load(b_id, &dir).unwrap().title, "renamed");
@@ -430,6 +479,21 @@ mod tests {
             HashMap::from([(id, 0)])
         );
         assert!(lock(&pending).contains_key(&id));
+    }
+
+    #[test]
+    fn shutdown_does_not_report_success_with_unpersisted_snapshot() {
+        let (tmp, dir) = state_dir();
+        let writer = StorageWriter::new(dir).unwrap();
+        let session = AppSession::new("test-model", "/tmp/shutdown-failure");
+        let id = session.id;
+        fs::create_dir_all(tmp.path().join(SESSIONS_DIR).join(format!("{id}.jsonl"))).unwrap();
+        writer.send(Box::new(session));
+
+        assert!(matches!(
+            writer.wait_for_shutdown(DRAIN_TIMEOUT),
+            Err(StorageWriterShutdownError::UnpersistedSnapshots { count: 1 })
+        ));
     }
 
     #[test]
@@ -490,6 +554,36 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_retry_remains_a_shutdown_failure_until_durable() {
+        let pending: Pending = Arc::default();
+        let mut retries = RetryState::default();
+        let mut session = AppSession::new("test-model", "/tmp/exhausted");
+        session.meta.revision = 4;
+        let id = session.id;
+        lock(&pending).insert(
+            id,
+            PendingSnapshot {
+                revision: 4,
+                session: Box::new(session),
+            },
+        );
+        let failures = HashMap::from([(id, 4)]);
+        for _ in 0..MAX_RETRY_ATTEMPTS {
+            retries.record_failures(&pending, failures.clone());
+        }
+
+        assert!(lock(&pending).is_empty());
+        assert_eq!(
+            retries.unpersisted_count(&FailedRevisions::new(), &HashMap::new()),
+            1
+        );
+        assert_eq!(
+            retries.unpersisted_count(&FailedRevisions::new(), &HashMap::from([(id, 4)]),),
+            0
+        );
+    }
+
+    #[test]
     fn exhausted_retry_for_one_session_does_not_block_explicit_persist() {
         let (tmp, dir) = state_dir();
         let pending: Pending = Arc::default();
@@ -545,7 +639,7 @@ mod tests {
 
         assert!(done_rx.recv_timeout(DRAIN_TIMEOUT).unwrap().is_ok());
         assert!(AppSession::load(id, &dir).is_ok());
-        writer.shutdown(DRAIN_TIMEOUT);
+        writer.shutdown(DRAIN_TIMEOUT).unwrap();
     }
 
     #[test]
@@ -563,7 +657,7 @@ mod tests {
         let mut second = AppSession::load(id, &dir).unwrap();
         second.title = "same revision, new snapshot".into();
         writer.send(Box::new(second));
-        writer.shutdown(DRAIN_TIMEOUT);
+        writer.shutdown(DRAIN_TIMEOUT).unwrap();
 
         assert_eq!(
             AppSession::load(id, &dir).unwrap().title,
@@ -591,7 +685,7 @@ mod tests {
 
         assert!(done_rx.recv_timeout(DRAIN_TIMEOUT).unwrap().is_ok());
         assert_eq!(AppSession::load(id, &dir).unwrap().title, "periodic save");
-        writer.shutdown(DRAIN_TIMEOUT);
+        writer.shutdown(DRAIN_TIMEOUT).unwrap();
     }
 
     #[test]
@@ -605,7 +699,7 @@ mod tests {
         writer.delete(id, move |res| {
             let _ = done_tx.send(res);
         });
-        writer.shutdown(DRAIN_TIMEOUT);
+        writer.shutdown(DRAIN_TIMEOUT).unwrap();
 
         assert!(done_rx.recv().unwrap().is_ok());
         assert!(AppSession::load(id, &dir).is_err());

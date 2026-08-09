@@ -218,7 +218,7 @@ impl Drop for TestStateDir {
             return;
         };
         let writer_stopped = match Arc::try_unwrap(writer) {
-            Ok(writer) => writer.wait_for_shutdown(TEST_WRITER_DRAIN_TIMEOUT),
+            Ok(writer) => writer.wait_for_shutdown(TEST_WRITER_DRAIN_TIMEOUT).is_ok(),
             Err(writer) => {
                 drop(writer);
                 false
