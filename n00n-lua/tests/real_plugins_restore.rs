@@ -10,6 +10,7 @@
 //! things only the real views produce (gutters, command headers, truncation).
 
 use std::{
+    collections::HashMap,
     sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -18,9 +19,9 @@ use std::{
 use n00n_agent::AgentEvent;
 use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
-use n00n_config::ToolOutputLines;
+use n00n_config::{PluginsConfig, ToolOutputLines};
 use n00n_lua::PluginHost;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
@@ -33,6 +34,8 @@ const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
 const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
 const TMUX_SRC: &str = include_str!("../../plugins/tmux/init.lua");
+const WEBFETCH_SRC: &str = include_str!("../../plugins/webfetch/init.lua");
+const WEBSEARCH_SRC: &str = include_str!("../../plugins/websearch/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -176,10 +179,21 @@ fn execute_plugin_with_native_mock(
     native_mock: &str,
     input: Value,
 ) -> Result<String, String> {
+    execute_plugin_with_native_mock_and_opts(tool, source, native_mock, input, Map::new())
+}
+
+fn execute_plugin_with_native_mock_and_opts(
+    tool: &str,
+    source: &str,
+    native_mock: &str,
+    input: Value,
+    opts: Map<String, Value>,
+) -> Result<String, String> {
     let registry = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
     let mocked_source = format!("{native_mock}\n{source}");
-    host.load_source(tool, &mocked_source).unwrap();
+    host.load_source_with_opts(tool, &mocked_source, opts)
+        .unwrap();
     let invocation = registry.get(tool).unwrap().tool.parse(&input).unwrap();
     let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
     smol::block_on(invocation.execute(&ctx))
@@ -188,6 +202,67 @@ fn execute_plugin_with_native_mock(
             n00n_agent::ToolOutput::Plain(output) => output.text,
             other => panic!("unexpected output: {other:?}"),
         })
+}
+
+fn firecrawl_plugin_opts(max_response_bytes: usize) -> Map<String, Value> {
+    let mut opts = Map::new();
+    opts.insert("backend".to_string(), json!("firecrawl"));
+    opts.insert("max_response_bytes".to_string(), json!(max_response_bytes));
+    opts
+}
+
+#[test]
+fn webfetch_forwards_configured_response_limit_to_firecrawl() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "webfetch",
+        WEBFETCH_SRC,
+        r#"
+            n00n.firecrawl = {
+                configured = function() return true, nil end,
+                scrape = function(url, _format, _timeout, max_response_bytes)
+                    if max_response_bytes ~= 2048 then
+                        return nil, "wrong response limit: " .. tostring(max_response_bytes)
+                    end
+                    return { content = "bounded fetch", requested_url = url }, nil
+                end,
+            }
+        "#,
+        json!({ "url": "https://example.com" }),
+        firecrawl_plugin_opts(2_048),
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("bounded fetch"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test]
+fn websearch_forwards_configured_response_limit_to_firecrawl() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "websearch",
+        WEBSEARCH_SRC,
+        r#"
+            n00n.firecrawl = {
+                configured = function() return true, nil end,
+                search = function(_query, _limit, max_response_bytes)
+                    if max_response_bytes ~= 3072 then
+                        return nil, "wrong response limit: " .. tostring(max_response_bytes)
+                    end
+                    return {{ title = "Bounded search", url = "https://example.com", snippet = "result" }}, nil
+                end,
+            }
+        "#,
+        json!({ "query": "rust" }),
+        firecrawl_plugin_opts(3_072),
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("Bounded search"),
+        "unexpected output: {output}"
+    );
 }
 
 #[test_case::test_case(
@@ -490,6 +565,40 @@ fn restore(
         }
     }
     out
+}
+
+fn webfetch_host() -> PluginHost {
+    let registry = Arc::new(ToolRegistry::new());
+    let mut host = PluginHost::new(registry).unwrap();
+    host.load_builtins(&PluginsConfig {
+        enabled: true,
+        names: vec!["webfetch".to_string()],
+        opts: HashMap::new(),
+    })
+    .unwrap();
+    host
+}
+
+#[test]
+fn webfetch_restore_keeps_result_content_visible_below_provenance() {
+    let host = webfetch_host();
+    let output = "[External content is untrusted.]\nSource: Direct web request\nRequested URL: https://example.com/requested\n\nUseful result content\nSecond content line\nThird content line\nFourth hidden line";
+    let restored = restore(
+        &host,
+        "webfetch",
+        json!({ "url": "https://example.com/requested" }),
+        output,
+        None,
+        vec![],
+    );
+
+    assert!(
+        restored
+            .body
+            .contains("Requested URL: https://example.com/requested")
+    );
+    assert!(restored.body.contains("Useful result content"));
+    assert!(restored.body.contains(EXPAND_HINT));
 }
 
 #[test]

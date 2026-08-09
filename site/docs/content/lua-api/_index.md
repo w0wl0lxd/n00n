@@ -64,6 +64,7 @@ a string belongs.
 | [`n00n.base64`](#n00n-base64) | Base64 encoding and decoding, modelled after `vim.base64`. |
 | [`n00n.env`](#n00n-env) | Paths to n00n's own directories (config, state, logs). |
 | [`n00n.fn`](#n00n-fn) | Process and environment helpers, modeled after Neovim's `vim.fn` job |
+| [`n00n.firecrawl`](#n00n-firecrawl) | Restricted Firecrawl API v2 client for the built-in web tools. |
 | [`n00n.fs`](#n00n-fs) | File-system utilities, modelled after `vim.fs` and `vim.uv`. |
 | [`n00n.image`](#n00n-image) | Small building blocks for working with images: probe metadata, decode |
 | [`n00n.image.Image`](#n00n-image-Image) | A decoded image you can inspect, resize, crop, and re-encode. |
@@ -1454,6 +1455,81 @@ to a file. Returns 1 when found, 0 otherwise (matches Neovim's
 if n00n.fn.executable("rg") == 1 then
   -- use ripgrep
 end
+```
+
+
+## n00n.firecrawl {#n00n-firecrawl}
+
+Restricted Firecrawl API v2 client for the built-in web tools.
+The base URL comes only from FIRECRAWL_API_URL and may be an origin root
+or end in /v2. Public services require HTTPS; plain HTTP is accepted only
+for a loopback self-hosted service. Target checks are defense in depth;
+deployment egress isolation is required to contain DNS rebinding.
+
+---
+
+### `n00n.firecrawl.configured()` {#n00n-firecrawl-configured}
+
+```lua
+n00n.firecrawl.configured()
+```
+
+Report whether a usable Firecrawl API URL is configured.
+Empty values count as unconfigured. A malformed non-empty value returns an
+error so automatic backend selection cannot silently fall back.
+
+**Returns:** (`boolean?`, `string?`) Whether Firecrawl is configured, or nil plus a configuration error.
+
+---
+
+### `n00n.firecrawl.search()` {#n00n-firecrawl-search}
+
+```lua
+n00n.firecrawl.search({query}, {limit}, {max_response_bytes})
+```
+
+Search the web through the configured Firecrawl API v2 endpoint.
+Only the built-in websearch plugin may call this method.
+
+**Parameters:**
+
+- `{query}` (`string`) Search query, at most 4096 characters.
+- `{limit}` (`integer`) Result count, from 1 to 10.
+- `{max_response_bytes}` (`integer`) Maximum response bytes to read, clamped to 5 MiB.
+
+**Returns:** (`table?`, `string?`) Compact web results, or nil plus an error string.
+
+**Example:**
+
+```lua
+local results, err = n00n.firecrawl.search("Rust releases", 5, 1048576)
+```
+
+---
+
+### `n00n.firecrawl.scrape()` {#n00n-firecrawl-scrape}
+
+```lua
+n00n.firecrawl.scrape({url}, {format}, {timeout}, {max_response_bytes})
+```
+
+Scrape one public URL through the configured Firecrawl API v2 endpoint.
+Only the built-in webfetch plugin may call this method.
+
+**Parameters:**
+
+- `{url}` (`string`) Public HTTP or HTTPS URL without credentials or a fragment.
+- `{format}` (`string`) One of markdown, text, or html.
+- `{timeout}` (`integer`) Timeout in seconds, from 1 to 120.
+- `{max_response_bytes}` (`integer`) Maximum response bytes to read, clamped to 5 MiB.
+
+**Returns:** (`table?`, `string?`) Content plus requested/source/final URL provenance, or nil plus an error string.
+
+**Example:**
+
+```lua
+local result, err = n00n.firecrawl.scrape("https://example.com", "markdown", 30, 1048576)
+if result then print(result.content, result.requested_url, result.final_url) end
 ```
 
 
@@ -6105,7 +6181,8 @@ function TextInput:render(prefix, prefix_width, width)
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
 -- max_line_bytes (optional) per-line byte cap applied at render time,
--- max_width (optional) display-width cap, hide_collapsed (default false).
+-- max_width (optional) display-width cap, hide_collapsed (default false),
+-- header_until_blank keeps a leading metadata block outside the content limit.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
@@ -6144,5 +6221,14 @@ function ToolView.restore(output, opts)
 function M.normalize(result)
 function M.add(total, value)
 function M.price(model_spec, result)
+```
+
+### `require("n00n.web_backend")`
+
+```lua
+function M.select(requested, firecrawl_configured, fallback, firecrawl_config_error)
+function M.wrap(content, source)
+function M.fetch(content, backend, requested_url, source_url, final_url)
+function M.firecrawl_search(results)
 ```
 

@@ -12,6 +12,7 @@ use n00n_config::{PluginsConfig, RawConfig};
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredSessionStateSnapshot;
 
+use crate::api::firecrawl::BundledCapability;
 use crate::api::keymap::KeymapReader;
 use crate::api::options::{PluginOptionSpecs, PluginOpts};
 use crate::api::util::command::{HintReader, LuaCommandReader, UiAction};
@@ -326,15 +327,16 @@ impl PluginHost {
 
         let mut prepared = Vec::with_capacity(config.names.len());
         for builtin in &config.names {
-            let dir = match BUNDLED_PLUGINS.iter().find(|p| p.name == builtin.as_str()) {
-                Some(p) => &p.dir,
-                None => {
-                    return Err(PluginError::UnknownPlugin {
-                        plugin: builtin.clone(),
-                    });
-                }
+            let Some(bundled) = BUNDLED_PLUGINS
+                .iter()
+                .find(|plugin| plugin.name == builtin.as_str())
+            else {
+                return Err(PluginError::UnknownPlugin {
+                    plugin: builtin.clone(),
+                });
             };
-            let init = dir
+            let init = bundled
+                .dir
                 .get_file("init.lua")
                 .and_then(|f| f.contents_utf8())
                 .ok_or_else(|| PluginError::Lua {
@@ -346,7 +348,12 @@ impl PluginHost {
                 .get(builtin.as_str())
                 .cloned()
                 .map_or_else(Arc::default, Arc::new);
-            prepared.push((Arc::from(builtin.as_str()), init.to_owned(), opts));
+            prepared.push((
+                Arc::from(builtin.as_str()),
+                init.to_owned(),
+                opts,
+                BundledCapability::for_builtin(builtin),
+            ));
         }
 
         // Pipeline: queue every LoadSource before collecting any reply. The
@@ -356,7 +363,7 @@ impl PluginHost {
         // rest from loading; the first error (in send order) is returned.
         let tx = self.tx()?;
         let mut replies = Vec::with_capacity(prepared.len());
-        for (name, source, opts) in prepared {
+        for (name, source, opts, bundled_capability) in prepared {
             let (reply_tx, reply_rx) = flume::bounded(1);
             tx.send(Request::LoadSource {
                 name,
@@ -364,6 +371,7 @@ impl PluginHost {
                 plugin_dir: None,
                 permissions: PluginPermissions::trusted(),
                 opts,
+                bundled_capability,
                 reply: reply_tx,
             })
             .map_err(|_| PluginError::HostDead)?;
@@ -406,6 +414,7 @@ impl PluginHost {
             plugin_dir,
             permissions,
             opts,
+            bundled_capability: None,
             reply: reply_tx,
         })
         .map_err(|_| PluginError::HostDead)?;

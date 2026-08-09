@@ -1,5 +1,7 @@
 local VALID_FORMATS = { markdown = true, text = true, html = true }
 local DEFAULT_FORMAT = "markdown"
+local DEFAULT_TIMEOUT_SECS = 30
+local MAX_TIMEOUT_SECS = 120
 local SKIP_TAGS = { script = true, style = true, noscript = true }
 local ACCEPT_HEADERS = {
   html = "text/html,*/*;q=0.5",
@@ -63,8 +65,13 @@ end
 local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
+local web_backend = require("n00n.web_backend")
 
 local opts = n00n.api.register_options(output_limits.extend({
+  backend = {
+    default = "auto",
+    desc = "Fetch backend: auto, firecrawl, or direct. Auto uses Firecrawl when FIRECRAWL_API_URL is a valid non-empty URL.",
+  },
   max_response_bytes = {
     default = 5 * 1024 * 1024,
     min = 1024,
@@ -72,16 +79,26 @@ local opts = n00n.api.register_options(output_limits.extend({
   },
 }))
 
+local function select_backend()
+  local firecrawl_configured, config_err = n00n.firecrawl.configured()
+  return web_backend.select(opts.backend, firecrawl_configured, "direct", config_err)
+end
+
+local _, backend_config_err = select_backend()
+if backend_config_err then
+  error("webfetch: " .. backend_config_err)
+end
+
 local function web_view_opts(ctx)
   local tol = ctx:tool_output_lines()
-  return { max_lines = (tol and tol.web) or 3, keep = "head" }
+  return { max_lines = (tol and tol.web) or 3, keep = "head", header_until_blank = true }
 end
 
 n00n.api.register_tool({
   name = "webfetch",
   kind = "fetch",
   modes = { "default", "research" },
-  description = [[Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.]],
+  description = [[Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside code_execution to avoid context bloat.]],
 
   schema = {
     type = "object",
@@ -116,10 +133,39 @@ n00n.api.register_tool({
       return { llm_output = "error: unknown format: " .. tostring(fmt), is_error = true }
     end
 
+    local timeout = input.timeout or DEFAULT_TIMEOUT_SECS
+    if timeout < 1 or timeout > MAX_TIMEOUT_SECS then
+      return {
+        llm_output = "error: timeout must be between 1 and " .. tostring(MAX_TIMEOUT_SECS) .. " seconds",
+        is_error = true,
+      }
+    end
+
+    local backend, backend_err = select_backend()
+    if not backend then
+      return { llm_output = "error: " .. backend_err, is_error = true }
+    end
+
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
+    if backend == "firecrawl" then
+      local result, firecrawl_err = n00n.firecrawl.scrape(url, fmt, timeout, opts.max_response_bytes)
+      if not result then
+        return { llm_output = "error: " .. tostring(firecrawl_err), is_error = true }
+      end
+      local content = result.content
+      if fmt == "text" then
+        content = strip_html(content)
+      end
+      local body =
+        web_backend.fetch(content, "Firecrawl scrape API", result.requested_url, result.source_url, result.final_url)
+      return {
+        llm_output = truncate(body, max_lines, max_bytes),
+        body = ToolView.restore(body, web_view_opts(ctx)),
+      }
+    end
 
     local resp, err = n00n.net.request(url, {
-      timeout = input.timeout or 30,
+      timeout = timeout,
       max_bytes = opts.max_response_bytes,
       headers = {
         ["Accept"] = ACCEPT_HEADERS[fmt],
@@ -148,10 +194,9 @@ n00n.api.register_tool({
       body = strip_html(body)
     end
 
-    local llm_output = truncate(body, max_lines, max_bytes)
-
+    body = web_backend.fetch(body, "Direct web request", url)
     return {
-      llm_output = llm_output,
+      llm_output = truncate(body, max_lines, max_bytes),
       body = ToolView.restore(body, web_view_opts(ctx)),
     }
   end,

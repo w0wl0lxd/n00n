@@ -61,6 +61,7 @@ pub fn api_docs() -> Vec<&'static ModuleDoc> {
         &api::base64::DOCS,
         &api::env::DOCS,
         &api::r#fn::DOCS,
+        &api::firecrawl::DOCS,
         &api::fs::DOCS,
         &api::image::DOCS,
         &api::image::IMAGE_DOCS,
@@ -132,6 +133,7 @@ mod tests {
             Some(ui_tx),
             &PluginPermissions::trusted(),
             Arc::default(),
+            Some(crate::api::firecrawl::BundledCapability::WebSearch),
         )
         .unwrap();
 

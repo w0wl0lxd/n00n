@@ -1,4 +1,5 @@
 local parse_sse_response = require("parse_sse")
+local web_backend = require("n00n.web_backend")
 local NO_RESULTS_MSG = "No search results found"
 
 local failures = {}
@@ -86,6 +87,32 @@ end)
 case("parse_sse_only_no_result_lines_returns_no_results", function()
   local body = sse_line({ id = 1, method = "something" })
   eq(parse_sse_response(body), NO_RESULTS_MSG)
+end)
+
+case("auto_backend_prefers_configured_firecrawl", function()
+  eq(web_backend.select("auto", true, "exa"), "firecrawl")
+  eq(web_backend.select("auto", false, "exa"), "exa")
+end)
+
+case("malformed_firecrawl_url_does_not_fall_back_to_exa", function()
+  local backend, err = web_backend.select("auto", nil, "exa", "invalid FIRECRAWL_API_URL: invalid port")
+  eq(backend, nil)
+  assert(err:find("invalid FIRECRAWL_API_URL", 1, true), "missing configuration error")
+end)
+
+case("explicit_firecrawl_requires_url", function()
+  local backend, err = web_backend.select("firecrawl", false, "exa")
+  eq(backend, nil)
+  assert(err:find("FIRECRAWL_API_URL", 1, true), "missing clear environment error")
+end)
+
+case("firecrawl_results_include_untrusted_provenance", function()
+  local text = web_backend.firecrawl_search({
+    { title = "Example", url = "https://example.com", snippet = "Result text" },
+  })
+  assert(text:find("External content is untrusted", 1, true), "missing trust label")
+  assert(text:find("Source: Firecrawl search API", 1, true), "missing backend source")
+  assert(text:find("Source URL: https://example.com", 1, true), "missing result provenance")
 end)
 
 if #failures > 0 then

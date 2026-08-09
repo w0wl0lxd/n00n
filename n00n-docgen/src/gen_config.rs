@@ -265,6 +265,39 @@ n00n.setup({{
 
     write_plugin_options(&mut out, &collect_plugin_options());
 
+    writeln!(
+        out,
+        "\
+## Firecrawl\n\n\
+Set `FIRECRAWL_API_URL` in your environment or a `.env` file to use a local or \
+self-hosted Firecrawl API v2 service. The value may be an origin root or end in \
+`/v2`; both forms resolve to the same endpoints. `FIRECRAWL_API_KEY` is optional. \
+Public services must use HTTPS. Plain HTTP is accepted only for loopback addresses.\n\n\
+```text\n\
+FIRECRAWL_API_URL=http://127.0.0.1:3002/v2\n\
+FIRECRAWL_API_KEY=fc-example\n\
+```\n\n\
+Both web plugins default to `backend = \"auto\"`. Auto uses Firecrawl only when \
+`FIRECRAWL_API_URL` is valid and non-empty. A missing or empty value selects Exa \
+for websearch and the direct client for webfetch. A malformed non-empty value is \
+reported as a configuration error instead of silently falling back. You can choose \
+a backend explicitly:\n\n\
+```lua
+n00n.setup({{
+    plugins = {{
+        websearch = {{ backend = \"firecrawl\" }},
+        webfetch = {{ backend = \"firecrawl\" }},
+    }},
+}})
+```\n\n\
+Explicit Firecrawl mode reports an error when `FIRECRAWL_API_URL` is missing.\n\n\
+Target URL and DNS checks are defense in depth. They cannot guarantee what a remote \
+Firecrawl service will reach after it resolves a hostname, including during DNS \
+rebinding. Deploy Firecrawl with egress isolation that blocks private, link-local, \
+metadata, and internal network destinations.\n"
+    )
+    .unwrap();
+
     writeln!(out, "## Validation\n").unwrap();
     writeln!(
         out,

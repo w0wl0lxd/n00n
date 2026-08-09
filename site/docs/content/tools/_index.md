@@ -431,7 +431,7 @@ Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done â€
 
 ### `webfetch` *(lua plugin)*
 
-Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.
+Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside code_execution to avoid context bloat.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -441,7 +441,7 @@ Fetch a URL and return its contents. Supports markdown (default), text, or html.
 
 ### `websearch` *(lua plugin)*
 
-Search the web for real-time information using Exa AI.
+Search the web for real-time information using Firecrawl or Exa.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
