@@ -9,7 +9,9 @@
 //! `n00n.async.gather`, with tool dispatch replaced by a scriptable Lua stub.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::ToolRegistry;
 use n00n_agent::tools::test_support::{stub_ctx, stub_ctx_with};
 use n00n_agent::{AgentEvent, AgentMode, BufferSnapshot, EventSender, SpanStyle, ToolOutput};
@@ -196,6 +198,52 @@ fn all_success_exact_llm_output() {
         summary_all_ok(2)
     );
     assert_eq!(out, expected);
+}
+
+#[test]
+fn cancellation_finishes_batch_cleanup_without_interrupt_error() {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let source = BATCH_PLUGIN_SRC.replace(
+        "  n00n.async.gather(funs)\n  for _, c in ipairs(self.children) do",
+        "  n00n.async.gather(funs)\n  local started = os.clock()\n  while os.clock() - started < 0.05 do end\n  for _, c in ipairs(self.children) do",
+    );
+    let prelude = STUB_PRELUDE.replace("@BOOM_ERR@", BOOM_ERR);
+    host.load_source("cancel_batch", &format!("{prelude}\n{source}"))
+        .unwrap();
+
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = EventSender::new(event_tx, 0);
+    let (trigger, cancel) = CancelToken::new();
+    let mut ctx = stub_ctx_with(&AgentMode::Build, Some(&event_tx), Some(BATCH_ID));
+    ctx.registry = Arc::clone(&reg);
+    ctx.cancel = cancel;
+    let entry = reg.get(BATCH_TOOL).unwrap();
+    let inv = entry
+        .tool
+        .parse(&json!({ "tool_calls": [{ "tool": "park", "parameters": {} }] }))
+        .unwrap();
+    let (done_tx, done_rx) = flume::bounded(1);
+    std::thread::spawn(move || {
+        let done = smol::block_on(async { inv.execute(&ctx).await });
+        drop(done_tx.send(done));
+    });
+
+    let live = event_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("batch did not publish its live buffer");
+    assert!(matches!(live.event, AgentEvent::LiveToolBuf { .. }));
+    trigger.cancel();
+    let done = done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancelled batch did not finish");
+    let output = done.output.expect("cancelled batch returned a tool error");
+    let text = match output {
+        ToolOutput::Plain(text) | ToolOutput::Markdown(text) => text.text,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    assert!(text.contains("cancelled"), "got: {text}");
+    assert!(!text.contains("plugin interrupted"), "got: {text}");
 }
 
 #[test]

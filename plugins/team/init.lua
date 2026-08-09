@@ -64,6 +64,7 @@ local MAX_SWARM_ROUNDS = 4
 local DEFAULT_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
+local TEAM_OUTER_TIMEOUT_SECS = 1830
 local MAX_RELAY_BYTES = 12000
 local DEFAULT_MAX_WAVE_RETRIES = 3
 local MAX_WAVE_RETRIES = 5
@@ -145,6 +146,7 @@ local schema = {
     timeout_secs = {
       type = "integer",
       minimum = 1,
+      maximum = TEAM_TIMEOUT_SECS,
       default = TEAM_TIMEOUT_SECS,
       description = "Wall-clock timeout before the team run is aborted (default 1800s).",
     },
@@ -796,6 +798,12 @@ end
 local finish_run
 
 local function run_team(input, ctx)
+  if input.timeout_secs and input.timeout_secs > TEAM_TIMEOUT_SECS then
+    return {
+      llm_output = "timeout_secs must be at most " .. TEAM_TIMEOUT_SECS,
+      is_error = true,
+    }
+  end
   if input.background then
     local forwarded = {}
     for key, value in pairs(input) do
@@ -822,9 +830,9 @@ local function run_team(input, ctx)
   if input.thinking == nil then
     input.thinking = "adaptive"
   end
+  input.timeout_secs = input.timeout_secs or TEAM_TIMEOUT_SECS
   input._agent_budget = new_agent_guard(input.max_agents, input.timeout_secs)
 
-  -- Enforce wall-clock timeout for in-flight subagent calls
   ctx:set_deadline(input.timeout_secs)
 
   local goal = input.goal
@@ -1094,7 +1102,7 @@ n00n.api.register_tool({
   workload = "orchestrator",
   audiences = { "main", "workflow" },
   schema = schema,
-  timeout = TEAM_TIMEOUT_SECS,
+  timeout = TEAM_OUTER_TIMEOUT_SECS,
   handler = handler,
   header = header,
 })

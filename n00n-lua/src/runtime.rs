@@ -93,6 +93,7 @@ const MAX_INFLIGHT_TOOLS: usize = 64;
 pub const WARM_TOOL_CAP: usize = 32;
 const GC_STEP_INTERVAL: usize = 4;
 const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CANCEL_INTERRUPT_GRACE: Duration = Duration::from_millis(100);
 const OPT_LEVEL_JIT: u8 = 2;
 const OPT_LEVEL_DEBUGGABLE: u8 = 1;
 const DEBUG_INFO_FULL: u8 = 2;
@@ -318,6 +319,8 @@ pub(crate) struct TaskCell {
     pub(crate) cancel: CancelToken,
     pub(crate) deadline: Cell<Option<Instant>>,
     pub(crate) deadline_secs: Cell<Option<u64>>,
+    deadline_interrupted: Cell<bool>,
+    interrupt_after: Cell<Option<Instant>>,
     pub(crate) jobs: JobStore,
     pub(crate) bufs: BufferStore,
     pub(crate) live: Option<LiveCtx>,
@@ -350,6 +353,8 @@ impl TaskCell {
             cancel,
             deadline: Cell::new(deadline),
             deadline_secs: Cell::new(None),
+            deadline_interrupted: Cell::new(false),
+            interrupt_after: Cell::new(None),
             jobs: JobStore::new(),
             bufs: BufferStore::new(),
             live,
@@ -476,8 +481,19 @@ fn interrupt_reason(lua: &Lua) -> Option<&'static str> {
     let handle = lua.app_data_ref::<TaskHandle>()?;
     let cell = lock_cell(&handle);
     if cell.cancel.is_cancelled() {
-        Some(INTERRUPT_CANCELLED_MSG)
+        let now = Instant::now();
+        match cell.interrupt_after.get() {
+            Some(interrupt_after) if now >= interrupt_after => Some(INTERRUPT_CANCELLED_MSG),
+            Some(_) => None,
+            None => {
+                cell.interrupt_after
+                    .set(now.checked_add(CANCEL_INTERRUPT_GRACE));
+                None
+            }
+        }
     } else if cell.deadline.get().is_some_and(|d| Instant::now() > d) {
+        cell.deadline.set(None);
+        cell.deadline_interrupted.set(true);
         Some(INTERRUPT_DEADLINE_MSG)
     } else {
         None
@@ -2281,7 +2297,11 @@ fn strip_traceback(err: &mlua::Error) -> String {
 /// The error message format is load-bearing: the bash plugin's `restore`
 /// parses it to re-render the timeout sentinel on session reload.
 fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply {
-    let secs = lock_cell(handle).deadline_secs.get().unwrap_or_else(|| 0);
+    let secs = {
+        let cell = lock_cell(handle);
+        cell.deadline.set(None);
+        cell.deadline_secs.get().unwrap_or_else(|| 0)
+    };
     let live_buf = resolve_root_buf(handle);
     let qualified = if plugin == tool || plugin.is_empty() {
         tool.to_owned()
@@ -2358,8 +2378,19 @@ async fn run_tool_start(
     }
 }
 
+async fn wait_for_task_deadline(handle: &TaskHandle) -> Result<LuaValue, mlua::Error> {
+    loop {
+        let deadline = { lock_cell(handle).deadline.get() };
+        if let Some(deadline) = deadline {
+            smol::Timer::at(deadline).await;
+            return Err(mlua::Error::runtime("timeout"));
+        }
+        smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+    }
+}
+
 /// Two layers of deadline enforcement: the watchdog interrupt catches
-/// tight CPU loops, the dispatch loop catches I/O waits.
+/// tight CPU loops, the dynamic deadline waiter catches parked handlers.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 async fn run_tool_call(
@@ -2431,19 +2462,22 @@ async fn run_tool_call(
 
     let call_future = scope.scope_future(async {
         let gate_guard = gate.acquire().await;
-        let handler_result = {
-            let deadline = lock_cell(&handle).deadline.get();
-            match deadline {
-                Some(dl) => {
-                    futures_lite::future::race(async_thread, async {
-                        smol::Timer::at(dl).await;
-                        Err(mlua::Error::runtime("timeout"))
-                    })
-                    .await
-                }
-                None => async_thread.await,
-            }
+        let handler_result =
+            futures_lite::future::race(async_thread, wait_for_task_deadline(&handle)).await;
+        let (cancelled, deadline_expired) = {
+            let cell = lock_cell(&handle);
+            (
+                cell.cancel.is_cancelled(),
+                cell.deadline_interrupted.get()
+                    || cell.deadline.get().is_some_and(|d| Instant::now() >= d),
+            )
         };
+        if cancelled && handler_result.is_err() {
+            return ToolCallReply::err(CANCELLED_MSG);
+        }
+        if !cancelled && deadline_expired {
+            return timeout_reply(&handle, &plugin, &tool);
+        }
         match handler_result {
             Ok(LuaValue::Nil) => {
                 drop(gate_guard);
@@ -2470,18 +2504,7 @@ async fn run_tool_call(
                 }
                 ToolCallReply::from_lua_value(&lua, &val)
             }
-            Err(e) => {
-                let deadline_expired = {
-                    let cell = lock_cell(&handle);
-                    !cell.cancel.is_cancelled()
-                        && cell.deadline.get().is_some_and(|d| Instant::now() >= d)
-                };
-                if deadline_expired {
-                    timeout_reply(&handle, &plugin, &tool)
-                } else {
-                    ToolCallReply::err(strip_traceback(&e))
-                }
-            }
+            Err(e) => ToolCallReply::err(strip_traceback(&e)),
         }
     });
 
@@ -3422,6 +3445,26 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_task_gets_cleanup_window_before_interrupt() {
+        let (lua, _watchdog) = watchdog_lua(false);
+        lua.set_app_data::<TaskHandle>(cancelled_handle());
+
+        assert_eq!(interrupt_reason(&lua), None);
+    }
+
+    #[test]
+    fn expired_cleanup_window_interrupts_cancelled_task() {
+        let (lua, _watchdog) = watchdog_lua(false);
+        let handle = cancelled_handle();
+        lock_cell(&handle)
+            .interrupt_after
+            .set(Instant::now().checked_sub(Duration::from_millis(1)));
+        lua.set_app_data::<TaskHandle>(handle);
+
+        assert_eq!(interrupt_reason(&lua), Some(INTERRUPT_CANCELLED_MSG));
+    }
+
+    #[test]
     fn stale_cancelled_handle_aborts_callback_without_fresh_scope() {
         let (lua, _watchdog) = watchdog_lua(false);
         lua.set_app_data::<TaskHandle>(cancelled_handle());
@@ -3463,6 +3506,23 @@ mod tests {
 
         let err = hot_loop_expecting_kill(&lua);
         assert!(err.to_string().contains(INTERRUPT_DEADLINE_MSG));
+    }
+
+    #[test]
+    fn timeout_reply_disarms_expired_deadline_before_rendering() {
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("one millisecond is representable");
+        let handle = Arc::new(Mutex::new(TaskCell::new(
+            CancelToken::none(),
+            Some(deadline),
+            None,
+        )));
+        lock_cell(&handle).deadline_secs.set(Some(1));
+
+        let _ = timeout_reply(&handle, "test", "tool");
+
+        assert_eq!(lock_cell(&handle).deadline.get(), None);
     }
 
     #[test]
