@@ -64,7 +64,8 @@ local MAX_SWARM_ROUNDS = 4
 local DEFAULT_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
-local TEAM_OUTER_TIMEOUT_SECS = 1830
+local TEAM_TIMEOUT_GRACE_SECS = 30
+local TEAM_OUTER_TIMEOUT_SECS = TEAM_TIMEOUT_SECS + TEAM_TIMEOUT_GRACE_SECS
 local MAX_RELAY_BYTES = 12000
 local DEFAULT_MAX_WAVE_RETRIES = 3
 local MAX_WAVE_RETRIES = 5
@@ -146,7 +147,6 @@ local schema = {
     timeout_secs = {
       type = "integer",
       minimum = 1,
-      maximum = TEAM_TIMEOUT_SECS,
       default = TEAM_TIMEOUT_SECS,
       description = "Wall-clock timeout before the team run is aborted (default 1800s).",
     },

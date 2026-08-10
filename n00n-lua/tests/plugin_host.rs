@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use n00n_agent::AgentEvent;
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
@@ -17,7 +18,7 @@ use n00n_agent::tools::{
     ToolSource, timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
-use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
+use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginError, PluginHost, WARM_TOOL_CAP};
 use n00n_providers::provider::{BoxFuture, Provider};
 use n00n_providers::{
     AgentError, ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
@@ -2986,7 +2987,7 @@ fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
 }
 
 #[test]
-fn team_timeout_schema_matches_outer_runtime_limit() {
+fn team_timeout_lua_guard_enforces_runtime_limit() {
     let (reg, _host) = builtins_host();
     let entry = reg.get("team").unwrap();
     let input = |timeout_secs| {
@@ -2997,6 +2998,7 @@ fn team_timeout_schema_matches_outer_runtime_limit() {
     };
 
     assert!(entry.tool.parse(&input(1_800)).is_ok());
+    assert!(entry.tool.parse(&input(1_801)).is_ok());
     let error = exec_tool(&reg, "team", input(1_801)).unwrap_err();
     assert!(
         error.contains(TEAM_TIMEOUT_LIMIT_ERR_SUBSTR),
@@ -3053,6 +3055,7 @@ fn ctx_set_deadline_normalizes_watchdog_error() {
 fn caught_deadline_interrupt_allows_cleanup_before_timeout_reply() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
     let src = format!(
         r#"local cleanup_finished = false
         n00n.api.register_tool({{
@@ -3064,7 +3067,7 @@ fn caught_deadline_interrupt_allows_cleanup_before_timeout_reply() {
                 ctx:set_deadline(1)
                 pcall(function() while true do end end)
                 local started = os.clock()
-                while os.clock() - started < 0.1 do end
+                while os.clock() - started < {cleanup_secs} do end
                 cleanup_finished = true
                 return "unexpected"
             end
@@ -3207,6 +3210,7 @@ fn async_finish_hot_loop_catching_interrupt_hits_absolute_cutoff() {
 fn cancellation_wins_after_caught_deadline_interrupt() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
     let src = format!(
         r#"n00n.api.register_tool({{
             name = "deadline_cancelled",
@@ -3220,7 +3224,7 @@ fn cancellation_wins_after_caught_deadline_interrupt() {
                 buf:line("cleanup")
                 ctx:live_buf(buf)
                 local started = os.clock()
-                while os.clock() - started < 0.2 do end
+                while os.clock() - started < {cleanup_secs} do end
                 return "unexpected"
             end
         }})"#,
@@ -3248,9 +3252,10 @@ fn cancellation_wins_after_caught_deadline_interrupt() {
         drop(done_tx.send(result));
     });
 
-    event_rx
+    let event = event_rx
         .recv_timeout(Duration::from_secs(3))
         .expect("deadline cleanup did not publish its live buffer");
+    assert!(matches!(event.event, AgentEvent::LiveToolBuf { .. }));
     trigger.cancel();
     let result = done_rx
         .recv_timeout(Duration::from_secs(3))

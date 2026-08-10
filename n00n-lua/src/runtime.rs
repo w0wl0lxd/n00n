@@ -82,6 +82,7 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
 const INTERRUPT_SHUTDOWN_MSG: &str = "plugin interrupted: host shutting down";
 const INTERRUPT_CANCELLED_MSG: &str = "plugin interrupted: task cancelled";
 const INTERRUPT_DEADLINE_MSG: &str = "plugin interrupted: deadline exceeded";
+const DEADLINE_WAITER_TIMEOUT_MSG: &str = "timeout";
 const DISPATCH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const NIL_WITHOUT_FINISH_MSG: &str =
     "handler returned nil without calling ctx:finish() or starting jobs";
@@ -94,7 +95,7 @@ const MAX_INFLIGHT_TOOLS: usize = 64;
 pub const WARM_TOOL_CAP: usize = 32;
 const GC_STEP_INTERVAL: usize = 4;
 const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const CANCEL_INTERRUPT_GRACE: Duration = Duration::from_millis(100);
+pub const CANCEL_INTERRUPT_GRACE: Duration = Duration::from_millis(100);
 const ASYNC_FINISH_GRACE: Duration = Duration::from_millis(250);
 const ASYNC_CLEANUP_TIMEOUT_MSG: &str = "async.run cleanup timed out";
 const OPT_LEVEL_JIT: u8 = 2;
@@ -2515,8 +2516,9 @@ fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply
     let secs = {
         let cell = lock_cell(handle);
         cell.deadline.set(None);
-        cell.deadline_secs.get().unwrap_or_else(|| 0)
+        cell.deadline_secs.get()
     };
+    let duration_suffix = secs.map_or_else(String::new, |secs| format!(" after {secs}s"));
     let live_buf = resolve_root_buf(handle);
     let qualified = if plugin == tool || plugin.is_empty() {
         tool.to_owned()
@@ -2527,13 +2529,13 @@ fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply
     if let Some(ref buf) = live_buf {
         buf.append(SnapshotLine {
             spans: vec![SnapshotSpan {
-                text: format!("Timed out after {secs}s"),
+                text: format!("Timed out{duration_suffix}"),
                 style: SpanStyle::Named("dim".into()),
             }],
         });
     }
 
-    let mut reply = ToolCallReply::err(format!("tool {qualified} timed out after {secs}s"));
+    let mut reply = ToolCallReply::err(format!("tool {qualified} timed out{duration_suffix}"));
     reply.live_buf = live_buf;
     reply
 }
@@ -2605,7 +2607,7 @@ async fn wait_for_task_cancellation(handle: &TaskHandle) -> Result<LuaValue, mlu
 async fn wait_for_task_deadline(handle: &TaskHandle) -> Result<LuaValue, mlua::Error> {
     loop {
         if lock_cell(handle).deadline_interrupted.get() {
-            return Err(mlua::Error::runtime("timeout"));
+            return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
         }
         let deadline = task_deadline(handle);
         let poll_cutoff = checked_deadline_after(Instant::now(), DISPATCH_POLL_INTERVAL);
@@ -2613,7 +2615,7 @@ async fn wait_for_task_deadline(handle: &TaskHandle) -> Result<LuaValue, mlua::E
         smol::Timer::at(wake_at).await;
         if task_deadline(handle).is_some_and(|deadline| Instant::now() >= deadline) {
             mark_deadline_interrupted(handle);
-            return Err(mlua::Error::runtime("timeout"));
+            return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
         }
     }
 }
@@ -3960,6 +3962,19 @@ mod tests {
         let _ = timeout_reply(&handle, "test", "tool");
 
         assert_eq!(lock_cell(&handle).deadline.get(), None);
+    }
+
+    #[test]
+    fn timeout_reply_omits_unknown_duration() {
+        let handle = Arc::new(Mutex::new(TaskCell::new(
+            CancelToken::none(),
+            Some(Instant::now()),
+            None,
+        )));
+
+        let reply = timeout_reply(&handle, "test", "tool");
+
+        assert_eq!(reply.result.unwrap_err(), "tool test.tool timed out");
     }
 
     #[test]

@@ -16,7 +16,7 @@ use n00n_agent::tools::ToolRegistry;
 use n00n_agent::tools::test_support::{stub_ctx, stub_ctx_with};
 use n00n_agent::{AgentEvent, AgentMode, BufferSnapshot, EventSender, SpanStyle, ToolOutput};
 use n00n_config::ToolOutputLines;
-use n00n_lua::PluginHost;
+use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginHost};
 use serde_json::{Value, json};
 
 const BATCH_PLUGIN_SRC: &str = include_str!("../../plugins/batch/init.lua");
@@ -203,7 +203,7 @@ fn all_success_exact_llm_output() {
 #[test_case::test_case(
     r"n00n.async.gather({ function()
     local started = os.clock()
-    while os.clock() - started < 0.05 do end
+    while os.clock() - started < @CANCEL_INTERRUPT_GRACE_SECS@ do end
   end })",
     true;
     "yielding_cleanup_reply_is_retained"
@@ -212,7 +212,7 @@ fn all_success_exact_llm_output() {
     r"while true do
     n00n.async.gather({ function()
       local started = os.clock()
-      while os.clock() - started < 0.05 do end
+      while os.clock() - started < @CANCEL_INTERRUPT_GRACE_SECS@ do end
     end })
   end",
     false;
@@ -221,9 +221,18 @@ fn all_success_exact_llm_output() {
 fn cancellation_bounds_yielding_batch_cleanup(cleanup: &str, expects_reply: bool) {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
+    let cleanup = cleanup.replace(
+        "@CANCEL_INTERRUPT_GRACE_SECS@",
+        &format!("{cleanup_secs:.3}"),
+    );
     let source = BATCH_PLUGIN_SRC.replace(
         "  n00n.async.gather(funs)\n  for _, c in ipairs(self.children) do",
         &format!("  n00n.async.gather(funs)\n  {cleanup}\n  for _, c in ipairs(self.children) do"),
+    );
+    assert_ne!(
+        source, BATCH_PLUGIN_SRC,
+        "batch cancellation fixture injection did not match plugin source"
     );
     let prelude = STUB_PRELUDE.replace("@BOOM_ERR@", BOOM_ERR);
     host.load_source("cancel_batch", &format!("{prelude}\n{source}"))
