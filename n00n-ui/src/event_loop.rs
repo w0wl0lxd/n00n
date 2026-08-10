@@ -7,6 +7,7 @@
 //! waits on every event source at once and wakes the moment a plugin action,
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -156,6 +157,12 @@ fn live_session(session: &AppSession) -> std::result::Result<LiveSession, Lineag
     })
 }
 
+fn has_restorable_work(session: &AppSession) -> bool {
+    !session.meta.queued_messages.is_empty()
+        || !session.meta.queued_submissions.is_empty()
+        || !session.meta.queued_direct_tools.is_empty()
+}
+
 fn resolved_root(
     start: n00nId,
     parents: &HashMap<n00nId, Option<n00nId>>,
@@ -259,6 +266,9 @@ struct SessionRuntime {
     shell_tx: flume::Sender<ShellEvent>,
     shell_rx: flume::Receiver<ShellEvent>,
     last_status: SessionStatus,
+    direct_bootstrap_active: bool,
+    direct_output: Option<String>,
+    direct_output_is_error: bool,
 }
 
 impl SessionRuntime {
@@ -289,17 +299,39 @@ struct SpawnCtx {
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
     picker: Arc<Picker>,
+    hydrated_roots: RefCell<HashSet<n00nId>>,
 }
 
 impl SpawnCtx {
     fn spawn_runtime(&self, session: AppSession) -> Result<SessionRuntime> {
         let resumed = crate::app::session_has_content(&session);
+        let direct_bootstrap_active = !session.meta.queued_direct_tools.is_empty();
         let identity = session_identity(&session)
             .map_err(|error| eyre!("invalid session identity: {error}"))?;
         if let Some(handle) = &self.lua_event_handle {
-            handle
-                .hydrate_state(&identity, session.meta.state_snapshot.clone())
-                .map_err(|error| eyre!("failed to hydrate plugin session state: {error}"))?;
+            let root_id = session.meta.root_session_id.map_or(session.id, |root| root);
+            if !self.hydrated_roots.borrow().contains(&root_id) {
+                let root_snapshot = if root_id == session.id {
+                    session.meta.state_snapshot.clone()
+                } else {
+                    AppSession::load(root_id, &self.storage)
+                        .map_err(|error| eyre!("failed to load root session state: {error}"))?
+                        .meta
+                        .state_snapshot
+                };
+                handle
+                    .hydrate_state(
+                        &SessionIdentity::root(SessionRef::from_id(root_id)),
+                        root_snapshot,
+                    )
+                    .map_err(|error| eyre!("failed to hydrate root plugin state: {error}"))?;
+                self.hydrated_roots.borrow_mut().insert(root_id);
+            }
+            if root_id != session.id {
+                handle
+                    .hydrate_state(&identity, session.meta.state_snapshot.clone())
+                    .map_err(|error| eyre!("failed to hydrate plugin session state: {error}"))?;
+            }
         }
         let permissions = Arc::new(self.permissions.fork());
         let initial_plan_path = session.meta.plan_path.as_ref().map(PathBuf::from);
@@ -341,13 +373,17 @@ impl SpawnCtx {
         if resumed {
             restore_session(&mut app, &handles);
         }
+        let last_status = SessionStatus::of(&app);
         let (shell_tx, shell_rx) = flume::unbounded::<ShellEvent>();
         Ok(SessionRuntime {
             app,
             handles,
             shell_tx,
             shell_rx,
-            last_status: SessionStatus::Idle,
+            last_status,
+            direct_bootstrap_active,
+            direct_output: None,
+            direct_output_is_error: false,
         })
     }
 }
@@ -612,8 +648,12 @@ impl<'t> EventLoop<'t> {
         }
         let mut live_sessions = sessions
             .iter()
-            .map(live_session)
-            .collect::<std::result::Result<Vec<_>, _>>()
+            .map(|session| {
+                let mut live = live_session(session)?;
+                live.execution_active = has_restorable_work(session);
+                Ok(live)
+            })
+            .collect::<std::result::Result<Vec<_>, LineageError>>()
             .map_err(|error| eyre!("invalid live session lineage: {error}"))?;
         for mut session in stored_sessions {
             let root = match resolved_root(session.id, &parents) {
@@ -666,6 +706,7 @@ impl<'t> EventLoop<'t> {
             available_models: bg.available,
             storage_writer,
             picker,
+            hydrated_roots: RefCell::new(HashSet::new()),
         };
 
         let mut runtimes: Vec<SessionRuntime> = sessions
@@ -895,6 +936,21 @@ impl<'t> EventLoop<'t> {
             self.dispatch(idx, actions);
             return;
         }
+        if self.sessions[idx].direct_bootstrap_active {
+            match &envelope.event {
+                n00n_agent::AgentEvent::ToolDone(done) => {
+                    self.sessions[idx].direct_output = Some(done.output.as_text());
+                    self.sessions[idx].direct_output_is_error = done.is_error;
+                }
+                n00n_agent::AgentEvent::Error { message }
+                    if self.sessions[idx].direct_output.is_none() =>
+                {
+                    self.sessions[idx].direct_output = Some(message.clone());
+                    self.sessions[idx].direct_output_is_error = true;
+                }
+                _ => {}
+            }
+        }
         let lifecycle = match &envelope.event {
             n00n_agent::AgentEvent::Done { .. } => Some(StoredSessionLifecycle::Succeeded),
             n00n_agent::AgentEvent::Error { .. } => Some(StoredSessionLifecycle::Failed),
@@ -925,6 +981,7 @@ impl<'t> EventLoop<'t> {
         if let Some(lifecycle) = lifecycle {
             self.sessions[idx].app.state.session.meta.lifecycle = lifecycle;
             if terminal {
+                self.sessions[idx].direct_bootstrap_active = false;
                 self.sessions[idx]
                     .app
                     .state
@@ -1178,11 +1235,16 @@ impl<'t> EventLoop<'t> {
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
                     let rt = &self.sessions[idx];
                     let history = rt.handles.history.load();
-                    let output = history.iter().rev().find_map(|message| {
+                    let assistant_output = history.iter().rev().find_map(|message| {
                         matches!(message.role, n00n_providers::Role::Assistant)
                             .then(|| message.first_text_content())
                             .flatten()
                     });
+                    let output = assistant_output.or(rt.direct_output.as_deref());
+                    let direct_error = assistant_output
+                        .is_none()
+                        .then_some(rt.direct_output_is_error)
+                        .filter(|_| rt.direct_output.is_some());
                     let paused_team = paused_team_run(&history);
                     Ok(json!({
                         "id": rt.id(),
@@ -1191,6 +1253,7 @@ impl<'t> EventLoop<'t> {
                         "updated_at": rt.app.state.session.updated_at,
                         "focused": idx == self.focused,
                         "output": output,
+                        "is_error": direct_error,
                         "paused_team": paused_team,
                         "cwd": rt.app.state.session.cwd,
                     }))
@@ -1257,16 +1320,18 @@ impl<'t> EventLoop<'t> {
                     let idx = self.push_runtime(runtime);
                     let start_result = if let Some(bootstrap) = bootstrap {
                         let run_id = {
-                            let app = &mut self.sessions[idx].app;
-                            app.run_id += 1;
-                            app.status = Status::Streaming;
-                            app.state.session.meta.lifecycle =
+                            let runtime = &mut self.sessions[idx];
+                            runtime.direct_bootstrap_active = true;
+                            runtime.app.run_id += 1;
+                            runtime.app.status = Status::Streaming;
+                            runtime.app.state.session.meta.lifecycle =
                                 StoredSessionLifecycle::Bootstrapping;
-                            app.state.session.meta.queued_direct_tools = vec![StoredDirectTool {
-                                tool: bootstrap.tool.clone(),
-                                input: bootstrap.input.clone(),
-                            }];
-                            app.run_id
+                            runtime.app.state.session.meta.queued_direct_tools =
+                                vec![StoredDirectTool {
+                                    tool: bootstrap.tool.clone(),
+                                    input: bootstrap.input.clone(),
+                                }];
+                            runtime.app.run_id
                         };
                         self.sessions[idx]
                             .handles
@@ -1517,10 +1582,20 @@ impl<'t> EventLoop<'t> {
         }
         let session = AppSession::load(id, &self.ctx.storage)
             .map_err(|e| format!("Failed to load session: {e}"))?;
-        let live = live_session(&session).map_err(|error| error.to_string())?;
+        let restore_execution = has_restorable_work(&session);
+        let mut live = live_session(&session).map_err(|error| error.to_string())?;
+        live.execution_active = false;
         self.lineage
             .activate_runtime(live)
             .map_err(|error| error.to_string())?;
+        if restore_execution && let Err(error) = self.lineage.begin_execution(id) {
+            warn_lineage_cleanup(
+                self.lineage.remove_runtime(id),
+                id,
+                "roll back restored execution activation",
+            );
+            return Err(error.to_string());
+        }
         let runtime = match self.ctx.spawn_runtime(session) {
             Ok(runtime) => runtime,
             Err(error) => {

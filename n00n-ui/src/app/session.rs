@@ -24,7 +24,7 @@ use crate::agent::{Delivery, QueuedMessage};
 
 const INITIAL_STATE_REVISION: u64 = 0;
 
-fn plugin_state_identity(session: &AppSession) -> SessionIdentity {
+pub(super) fn plugin_state_identity(session: &AppSession) -> SessionIdentity {
     let root_id = session.meta.root_session_id.map_or(session.id, |root| root);
     let session_id = SessionRef::from_id(session.id);
     if root_id == session.id {
