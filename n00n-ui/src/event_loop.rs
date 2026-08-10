@@ -76,6 +76,7 @@ const DIRECT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 const TEAM_TOOL_NAME: &str = "team";
+const PAUSED_TEAM_RUN_ID_MAX_BYTES: usize = 256;
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -177,6 +178,7 @@ fn cancel_stored_session(session: &mut AppSession) -> bool {
     session.meta.queued_messages.clear();
     session.meta.queued_submissions.clear();
     session.meta.queued_direct_tools.clear();
+    session.meta.direct_paused_team = None;
     session.updated_at = n00n_storage::now_epoch();
     true
 }
@@ -292,6 +294,50 @@ fn warn_lineage_cleanup<T>(
     }
 }
 
+fn validated_paused_team_payload(payload: &Value) -> Option<Value> {
+    if payload.get("paused").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let run_id = payload.get("run_id")?.as_str()?;
+    if run_id.is_empty() || run_id.len() > PAUSED_TEAM_RUN_ID_MAX_BYTES {
+        return None;
+    }
+    let mode = match payload.get("mode") {
+        Some(mode) => Some(mode.as_str()?),
+        None => None,
+    };
+    if mode.is_some_and(|mode| !matches!(mode, "supervised" | "autonomous" | "swarm")) {
+        return None;
+    }
+    let mut validated = json!({ "paused": true, "run_id": run_id });
+    if let Some(mode) = mode {
+        validated["mode"] = Value::String(mode.to_owned());
+    }
+    Some(validated)
+}
+
+fn paused_team_payload(content: &str) -> Option<Value> {
+    if !content.trim_start().starts_with('{') {
+        return None;
+    }
+    let payload: Value = match serde_json::from_str(content) {
+        Ok(payload) => payload,
+        Err(error) => {
+            warn!(%error, "invalid paused team result; ignoring");
+            return None;
+        }
+    };
+    validated_paused_team_payload(&payload)
+}
+
+fn direct_paused_team_payload(tool: &str, content: &str) -> Option<Value> {
+    if tool == TEAM_TOOL_NAME {
+        paused_team_payload(content)
+    } else {
+        None
+    }
+}
+
 fn paused_team_run(history: &[Message]) -> Option<Value> {
     let (user_index, last_user) = history
         .iter()
@@ -317,22 +363,7 @@ fn paused_team_run(history: &[Message]) -> Option<Value> {
             continue;
         }
 
-        if !content.trim_start().starts_with('{') {
-            continue;
-        }
-        let payload: Value = match serde_json::from_str(content) {
-            Ok(payload) => payload,
-            Err(error) => {
-                warn!(%tool_use_id, %error, "invalid paused team result; ignoring");
-                continue;
-            }
-        };
-        let paused = payload.get("paused").and_then(Value::as_bool) == Some(true);
-        let has_run_id = payload
-            .get("run_id")
-            .and_then(Value::as_str)
-            .is_some_and(|run_id| !run_id.is_empty());
-        if paused && has_run_id {
+        if let Some(payload) = paused_team_payload(content) {
             return Some(payload);
         }
     }
@@ -381,7 +412,12 @@ struct SpawnCtx {
 }
 
 impl SpawnCtx {
-    fn spawn_runtime(&self, session: AppSession) -> Result<SessionRuntime> {
+    fn spawn_runtime(&self, mut session: AppSession) -> Result<SessionRuntime> {
+        session.meta.direct_paused_team = session
+            .meta
+            .direct_paused_team
+            .as_ref()
+            .and_then(validated_paused_team_payload);
         let resumed = crate::app::session_has_content(&session);
         let direct_bootstrap_active = !session.meta.queued_direct_tools.is_empty();
         let identity = session_identity(&session)
@@ -1026,15 +1062,11 @@ impl<'t> EventLoop<'t> {
         if self.sessions[idx].direct_bootstrap_active {
             match &envelope.event {
                 n00n_agent::AgentEvent::ToolDone(done) => {
-                    self.sessions[idx].app.state.session.meta.direct_output = Some(
-                        bounded_direct_output(&done.output.as_text(), &self.ctx.config),
-                    );
-                    self.sessions[idx]
-                        .app
-                        .state
-                        .session
-                        .meta
-                        .direct_output_is_error = done.is_error;
+                    let output = done.output.as_text();
+                    let meta = &mut self.sessions[idx].app.state.session.meta;
+                    meta.direct_paused_team = direct_paused_team_payload(&done.tool, &output);
+                    meta.direct_output = Some(bounded_direct_output(&output, &self.ctx.config));
+                    meta.direct_output_is_error = done.is_error;
                 }
                 n00n_agent::AgentEvent::Error { message }
                     if self.sessions[idx]
@@ -1358,7 +1390,15 @@ impl<'t> EventLoop<'t> {
                         .is_none()
                         .then_some(rt.app.state.session.meta.direct_output_is_error)
                         .filter(|_| direct_output.is_some());
-                    let paused_team = paused_team_run(&history);
+                    let paused_team = paused_team_run(&history).or_else(|| {
+                        rt.app
+                            .state
+                            .session
+                            .meta
+                            .direct_paused_team
+                            .as_ref()
+                            .and_then(validated_paused_team_payload)
+                    });
                     Ok(json!({
                         "id": rt.id(),
                         "title": rt.app.state.session.title,
@@ -1517,8 +1557,9 @@ impl<'t> EventLoop<'t> {
                         .map_err(|error| error.to_string())?;
                     match self.submit_text(idx, text, steer, control) {
                         Ok(state) => {
-                            self.sessions[idx].app.state.session.meta.lifecycle =
-                                StoredSessionLifecycle::Running;
+                            let meta = &mut self.sessions[idx].app.state.session.meta;
+                            meta.lifecycle = StoredSessionLifecycle::Running;
+                            meta.direct_paused_team = None;
                             Ok(state)
                         }
                         Err(error) => {
@@ -1592,8 +1633,9 @@ impl<'t> EventLoop<'t> {
                         {
                             let actions = self.sessions[idx].app.cancel_current_run();
                             self.dispatch(idx, actions);
-                            self.sessions[idx].app.state.session.meta.lifecycle =
-                                StoredSessionLifecycle::Cancelled;
+                            let meta = &mut self.sessions[idx].app.state.session.meta;
+                            meta.lifecycle = StoredSessionLifecycle::Cancelled;
+                            meta.direct_paused_team = None;
                             self.sessions[idx].app.save_session();
                             cancelled = true;
                         }
@@ -1706,8 +1748,16 @@ impl<'t> EventLoop<'t> {
             self.set_focus(i);
             return Ok(());
         }
-        let session = AppSession::load(id, &self.ctx.storage)
-            .map_err(|e| format!("Failed to load session: {e}"))?;
+        let session = match self
+            .ctx
+            .storage_writer
+            .latest_snapshot(id)
+            .map_err(|error| format!("Failed to load pending session state: {error}"))?
+        {
+            Some(session) => Arc::unwrap_or_clone(session),
+            None => AppSession::load(id, &self.ctx.storage)
+                .map_err(|error| format!("Failed to load session: {error}"))?,
+        };
         let restore_execution = has_restorable_work(&session);
         let mut live = live_session(&session).map_err(|error| error.to_string())?;
         live.execution_active = false;
@@ -1898,6 +1948,7 @@ impl<'t> EventLoop<'t> {
             rt.app
                 .queue
                 .remove_submission(completion.dispatch.submission_id);
+            rt.app.save_session();
             if completion.execution_started && rt.app.queue.is_empty() {
                 warn_lineage_cleanup(
                     self.lineage
@@ -1909,12 +1960,15 @@ impl<'t> EventLoop<'t> {
             return;
         }
         let submission_id = completion.dispatch.submission_id;
-        if !rt
+        if rt
             .app
             .queue
             .mark_submission_ready(submission_id, completion.dispatch.input)
         {
+            rt.app.state.session.meta.direct_paused_team = None;
+        } else {
             rt.app.queue.remove_submission(submission_id);
+            rt.app.save_session();
             if completion.execution_started && rt.app.queue.is_empty() {
                 warn_lineage_cleanup(
                     self.lineage
@@ -1952,7 +2006,8 @@ impl<'t> EventLoop<'t> {
                     return;
                 }
                 let session_id = rt.app.state.session.id;
-                let snapshot = rt.app.session_snapshot();
+                let mut snapshot = rt.app.session_snapshot();
+                snapshot.meta.direct_paused_team = None;
                 let completion_tx = self.submission_persist_tx.clone();
                 self.ctx
                     .storage_writer
@@ -1983,6 +2038,7 @@ impl<'t> EventLoop<'t> {
                     .meta
                     .queued_direct_tools
                     .clear();
+                self.sessions[idx].app.state.session.meta.direct_paused_team = None;
                 warn_lineage_cleanup(
                     self.lineage.set_execution_active(id, false),
                     id,
@@ -2294,9 +2350,10 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME,
-        bounded_direct_output, cancel_stored_session, draw_then_post_terminal, paused_team_run,
-        should_save_periodically, take_painted_submissions,
+        DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler, PAUSED_TEAM_RUN_ID_MAX_BYTES,
+        TEAM_TOOL_NAME, bounded_direct_output, cancel_stored_session, direct_paused_team_payload,
+        draw_then_post_terminal, paused_team_payload, paused_team_run, should_save_periodically,
+        take_painted_submissions, validated_paused_team_payload,
     };
     use crate::{AppSession, components::Status};
     use n00n_agent::AgentConfig;
@@ -2364,6 +2421,43 @@ mod tests {
     }
 
     #[test]
+    fn paused_team_payload_keeps_only_valid_resume_fields() {
+        let paused = paused_team_payload(
+            r#"{"paused":true,"run_id":"run-1","mode":"swarm","output":"large"}"#,
+        )
+        .expect("paused team payload");
+        assert_eq!(
+            paused,
+            serde_json::json!({"paused": true, "run_id": "run-1", "mode": "swarm"})
+        );
+        assert!(paused_team_payload(r#"{"paused":false,"run_id":"run-1"}"#).is_none());
+        assert!(paused_team_payload(r#"{"paused":true,"run_id":""}"#).is_none());
+        assert!(
+            paused_team_payload(r#"{"paused":true,"run_id":"run-1","mode":"invalid"}"#).is_none()
+        );
+        let oversized = serde_json::json!({
+            "paused": true,
+            "run_id": "x".repeat(PAUSED_TEAM_RUN_ID_MAX_BYTES + 1),
+        });
+        assert!(validated_paused_team_payload(&oversized).is_none());
+        assert!(validated_paused_team_payload(&serde_json::json!({"run_id": "run-1"})).is_none());
+    }
+
+    #[test]
+    fn direct_paused_team_payload_requires_team_tool_event() {
+        let output = format!(
+            r#"{{"paused":true,"run_id":"run-1","output":"{}"}}"#,
+            "x".repeat(DIRECT_OUTPUT_MAX_BYTES)
+        );
+
+        assert_eq!(
+            direct_paused_team_payload(TEAM_TOOL_NAME, &output),
+            Some(serde_json::json!({"paused": true, "run_id": "run-1"}))
+        );
+        assert!(direct_paused_team_payload("task", &output).is_none());
+    }
+
+    #[test]
     fn bounded_direct_output_respects_session_record_limits() {
         let config = AgentConfig {
             max_output_lines: 2,
@@ -2409,12 +2503,17 @@ mod tests {
             tool: "task".into(),
             input: serde_json::json!({}),
         }];
+        session.meta.direct_paused_team = Some(serde_json::json!({
+            "paused": true,
+            "run_id": "run-1",
+        }));
 
         assert!(cancel_stored_session(&mut session));
         assert_eq!(session.meta.lifecycle, StoredSessionLifecycle::Cancelled);
         assert!(session.meta.queued_messages.is_empty());
         assert!(session.meta.queued_submissions.is_empty());
         assert!(session.meta.queued_direct_tools.is_empty());
+        assert!(session.meta.direct_paused_team.is_none());
 
         let mut inactive = AppSession::new("model", "/project");
         inactive.meta.lifecycle = StoredSessionLifecycle::Succeeded;
