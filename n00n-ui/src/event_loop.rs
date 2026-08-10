@@ -163,6 +163,19 @@ fn has_restorable_work(session: &AppSession) -> bool {
         || !session.meta.queued_direct_tools.is_empty()
 }
 
+fn cancel_stored_session(session: &mut AppSession) -> bool {
+    let had_work = session.meta.lifecycle.is_active()
+        || !session.meta.queued_messages.is_empty()
+        || !session.meta.queued_submissions.is_empty()
+        || !session.meta.queued_direct_tools.is_empty();
+    session.meta.lifecycle = StoredSessionLifecycle::Cancelled;
+    session.meta.queued_messages.clear();
+    session.meta.queued_submissions.clear();
+    session.meta.queued_direct_tools.clear();
+    session.updated_at = n00n_storage::now_epoch();
+    had_work
+}
+
 fn resolved_root(
     start: n00nId,
     parents: &HashMap<n00nId, Option<n00nId>>,
@@ -200,6 +213,40 @@ fn session_identity(session: &AppSession) -> std::result::Result<SessionIdentity
             SessionRef::from(live.root_session_id),
         ))
     }
+}
+
+fn state_revision_or_initial(
+    snapshot: Option<&n00n_storage::sessions::StoredSessionStateSnapshot>,
+) -> u64 {
+    let Some(snapshot) = snapshot else {
+        return 0;
+    };
+    let Some(revision) = snapshot.state_revision() else {
+        return 0;
+    };
+    revision
+}
+
+fn capture_session_plugin_state(
+    handle: &EventHandle,
+    session: &mut AppSession,
+) -> std::result::Result<(), String> {
+    let identity = session_identity(session).map_err(|error| error.to_string())?;
+    let persisted_revision = state_revision_or_initial(session.meta.state_snapshot.as_ref());
+    let revision = session.meta.revision.max(
+        persisted_revision
+            .checked_add(1)
+            .ok_or_else(|| "plugin state revision exhausted".to_owned())?,
+    );
+    let snapshot = handle
+        .capture_state(&identity, revision)
+        .map_err(|error| error.to_string())?;
+    let captured_revision = snapshot
+        .state_revision()
+        .ok_or_else(|| "captured plugin state has no revision".to_owned())?;
+    session.meta.revision = session.meta.revision.max(captured_revision);
+    session.meta.state_snapshot = Some(snapshot);
+    Ok(())
 }
 
 fn warn_lineage_cleanup<T>(
@@ -267,8 +314,6 @@ struct SessionRuntime {
     shell_rx: flume::Receiver<ShellEvent>,
     last_status: SessionStatus,
     direct_bootstrap_active: bool,
-    direct_output: Option<String>,
-    direct_output_is_error: bool,
 }
 
 impl SessionRuntime {
@@ -382,8 +427,6 @@ impl SpawnCtx {
             shell_rx,
             last_status,
             direct_bootstrap_active,
-            direct_output: None,
-            direct_output_is_error: false,
         })
     }
 }
@@ -414,6 +457,7 @@ pub(crate) struct EventLoop<'t> {
 struct SubmissionPersistence {
     session_id: n00nId,
     dispatch: SubmissionDispatch,
+    execution_started: bool,
     result: Result<(), SessionError>,
 }
 
@@ -931,6 +975,16 @@ impl<'t> EventLoop<'t> {
     }
 
     fn handle_agent(&mut self, idx: usize, envelope: Box<n00n_agent::Envelope>) {
+        if let n00n_agent::AgentEvent::QueueDrained { generation } = &envelope.event {
+            if self.sessions[idx].handles.queue.is_drained(*generation) {
+                let id = self.sessions[idx].id();
+                if let Err(error) = self.lineage.set_execution_active(id, false) {
+                    warn!(session_id = %id, error = %error, "failed to release drained session activity");
+                }
+                self.sessions[idx].app.save_session();
+            }
+            return;
+        }
         if envelope.run_id != self.sessions[idx].app.run_id {
             let actions = self.sessions[idx].app.update(Msg::Agent(envelope));
             self.dispatch(idx, actions);
@@ -939,14 +993,31 @@ impl<'t> EventLoop<'t> {
         if self.sessions[idx].direct_bootstrap_active {
             match &envelope.event {
                 n00n_agent::AgentEvent::ToolDone(done) => {
-                    self.sessions[idx].direct_output = Some(done.output.as_text());
-                    self.sessions[idx].direct_output_is_error = done.is_error;
+                    self.sessions[idx].app.state.session.meta.direct_output =
+                        Some(done.output.as_text());
+                    self.sessions[idx]
+                        .app
+                        .state
+                        .session
+                        .meta
+                        .direct_output_is_error = done.is_error;
                 }
                 n00n_agent::AgentEvent::Error { message }
-                    if self.sessions[idx].direct_output.is_none() =>
+                    if self.sessions[idx]
+                        .app
+                        .state
+                        .session
+                        .meta
+                        .direct_output
+                        .is_none() =>
                 {
-                    self.sessions[idx].direct_output = Some(message.clone());
-                    self.sessions[idx].direct_output_is_error = true;
+                    self.sessions[idx].app.state.session.meta.direct_output = Some(message.clone());
+                    self.sessions[idx]
+                        .app
+                        .state
+                        .session
+                        .meta
+                        .direct_output_is_error = true;
                 }
                 _ => {}
             }
@@ -961,7 +1032,10 @@ impl<'t> EventLoop<'t> {
             }
             n00n_agent::AgentEvent::ToolStart(_)
             | n00n_agent::AgentEvent::TextDelta { .. }
-            | n00n_agent::AgentEvent::ThinkingDelta { .. } => Some(StoredSessionLifecycle::Running),
+            | n00n_agent::AgentEvent::ThinkingDelta { .. }
+            | n00n_agent::AgentEvent::QueueItemConsumed { .. } => {
+                Some(StoredSessionLifecycle::Running)
+            }
             _ => None,
         };
         let capture = matches!(
@@ -989,10 +1063,6 @@ impl<'t> EventLoop<'t> {
                     .meta
                     .queued_direct_tools
                     .clear();
-                let id = self.sessions[idx].id();
-                if let Err(error) = self.lineage.set_execution_active(id, false) {
-                    warn!(session_id = %id, error = %error, "failed to release session lineage activity");
-                }
                 self.sessions[idx].app.save_session();
             }
         }
@@ -1000,26 +1070,52 @@ impl<'t> EventLoop<'t> {
     }
 
     fn capture_plugin_state(&mut self, idx: usize) -> std::result::Result<(), String> {
-        let Some(handle) = &self.ctx.lua_event_handle else {
+        let Some(handle) = self.ctx.lua_event_handle.clone() else {
             return Ok(());
         };
-        let session = &self.sessions[idx].app.state.session;
-        let identity = session_identity(session).map_err(|error| error.to_string())?;
-        let revision = match session
+        let root_id = self.sessions[idx]
+            .app
+            .state
+            .session
             .meta
-            .state_snapshot
-            .as_ref()
-            .and_then(n00n_storage::sessions::StoredSessionStateSnapshot::state_revision)
+            .root_session_id
+            .map_or(self.sessions[idx].id(), |root| root);
+        capture_session_plugin_state(&handle, &mut self.sessions[idx].app.state.session)?;
+        if root_id == self.sessions[idx].id() {
+            return Ok(());
+        }
+
+        let mut root = if let Some(root_idx) = self.position(root_id) {
+            self.sessions[root_idx].app.session_snapshot()
+        } else if let Some(root) = self
+            .ctx
+            .storage_writer
+            .latest_snapshot(root_id)
+            .map_err(|error| error.to_string())?
         {
-            Some(revision) => revision
-                .checked_add(1)
-                .ok_or_else(|| "plugin state revision exhausted".to_owned())?,
-            None => 1,
+            root
+        } else {
+            AppSession::load(root_id, &self.ctx.storage).map_err(|error| error.to_string())?
         };
-        let snapshot = handle
-            .capture_state(&identity, revision)
-            .map_err(|error| error.to_string())?;
-        self.sessions[idx].app.state.session.meta.state_snapshot = Some(snapshot);
+        root.meta.revision = root
+            .meta
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| "root session revision exhausted".to_owned())?;
+        root.updated_at = n00n_storage::now_epoch();
+        capture_session_plugin_state(&handle, &mut root)?;
+        if let Some(root_idx) = self.position(root_id) {
+            self.sessions[root_idx]
+                .app
+                .state
+                .session
+                .meta
+                .state_snapshot
+                .clone_from(&root.meta.state_snapshot);
+            self.sessions[root_idx].app.state.session.meta.revision = root.meta.revision;
+            self.sessions[root_idx].app.state.session.updated_at = root.updated_at;
+        }
+        self.ctx.storage_writer.send(Box::new(root));
         Ok(())
     }
 
@@ -1240,11 +1336,12 @@ impl<'t> EventLoop<'t> {
                             .then(|| message.first_text_content())
                             .flatten()
                     });
-                    let output = assistant_output.or(rt.direct_output.as_deref());
+                    let direct_output = rt.app.state.session.meta.direct_output.as_deref();
+                    let output = assistant_output.or(direct_output);
                     let direct_error = assistant_output
                         .is_none()
-                        .then_some(rt.direct_output_is_error)
-                        .filter(|_| rt.direct_output.is_some());
+                        .then_some(rt.app.state.session.meta.direct_output_is_error)
+                        .filter(|_| direct_output.is_some());
                     let paused_team = paused_team_run(&history);
                     Ok(json!({
                         "id": rt.id(),
@@ -1273,9 +1370,10 @@ impl<'t> EventLoop<'t> {
                 let reply = (|| {
                     let caller = caller_session_id(caller_id)?;
                     let explicit_parent = parent_id.as_deref().map(parse_session_id).transpose()?;
+                    let execution_active = prompt.is_some() || bootstrap.is_some();
                     let reservation = self
                         .lineage
-                        .reserve_new(caller, explicit_parent)
+                        .reserve_new(caller, explicit_parent, execution_active)
                         .map_err(|error| error.to_string())?;
                     let caller_lineage = match self.lineage.lineage(caller) {
                         Ok(lineage) => lineage,
@@ -1343,6 +1441,9 @@ impl<'t> EventLoop<'t> {
                             });
                         Ok(json!("started"))
                     } else if let Some(prompt) = prompt {
+                        self.lineage
+                            .set_execution_active(id, false)
+                            .map_err(|error| error.to_string())?;
                         self.submit_text(idx, prompt, false, false)
                     } else {
                         self.sessions[idx].app.state.session.meta.lifecycle =
@@ -1441,12 +1542,17 @@ impl<'t> EventLoop<'t> {
                     let mut cancelled = false;
                     for session_id in targets {
                         let Some(idx) = self.position(session_id) else {
-                            let mut session = AppSession::load(session_id, &self.ctx.storage)
-                                .map_err(|error| error.to_string())?;
-                            cancelled |= session.meta.lifecycle.is_active();
-                            session.meta.lifecycle = StoredSessionLifecycle::Cancelled;
-                            session.meta.queued_direct_tools.clear();
-                            session.updated_at = n00n_storage::now_epoch();
+                            let mut session = match self
+                                .ctx
+                                .storage_writer
+                                .latest_snapshot(session_id)
+                                .map_err(|error| error.to_string())?
+                            {
+                                Some(session) => session,
+                                None => AppSession::load(session_id, &self.ctx.storage)
+                                    .map_err(|error| error.to_string())?,
+                            };
+                            cancelled |= cancel_stored_session(&mut session);
                             self.ctx.storage_writer.send(Box::new(session));
                             warn_lineage_cleanup(
                                 self.lineage.set_execution_active(session_id, false),
@@ -1463,6 +1569,8 @@ impl<'t> EventLoop<'t> {
                                 .meta
                                 .lifecycle
                                 .is_active()
+                            || !self.sessions[idx].app.queue.is_empty()
+                            || has_restorable_work(&self.sessions[idx].app.state.session)
                         {
                             let actions = self.sessions[idx].app.cancel_current_run();
                             self.dispatch(idx, actions);
@@ -1758,12 +1866,28 @@ impl<'t> EventLoop<'t> {
         if completion.result.is_err() {
             rt.app
                 .handle_submission_persistence_failure(&completion.dispatch);
+            if completion.execution_started && rt.app.queue.is_empty() {
+                warn_lineage_cleanup(
+                    self.lineage
+                        .set_execution_active(completion.session_id, false),
+                    completion.session_id,
+                    "release failed submission activity",
+                );
+            }
             return;
         }
         if !rt.app.accepts_submission_persistence(&completion.dispatch) {
             rt.app
                 .queue
                 .remove_submission(completion.dispatch.submission_id);
+            if completion.execution_started && rt.app.queue.is_empty() {
+                warn_lineage_cleanup(
+                    self.lineage
+                        .set_execution_active(completion.session_id, false),
+                    completion.session_id,
+                    "release superseded submission activity",
+                );
+            }
             return;
         }
         let submission_id = completion.dispatch.submission_id;
@@ -1773,15 +1897,40 @@ impl<'t> EventLoop<'t> {
             .mark_submission_ready(submission_id, completion.dispatch.input)
         {
             rt.app.queue.remove_submission(submission_id);
+            if completion.execution_started && rt.app.queue.is_empty() {
+                warn_lineage_cleanup(
+                    self.lineage
+                        .set_execution_active(completion.session_id, false),
+                    completion.session_id,
+                    "release removed submission activity",
+                );
+            }
         }
     }
 
     fn handle_action(&mut self, idx: usize, action: Action) {
         match action {
             Action::SendMessage(mut dispatch) => {
+                let session_id = self.sessions[idx].id();
+                let execution_started = match self.lineage.begin_execution(session_id) {
+                    Ok(started) => started,
+                    Err(error) => {
+                        self.sessions[idx]
+                            .app
+                            .handle_submission_failure(&dispatch, &error.to_string());
+                        return;
+                    }
+                };
                 let rt = &mut self.sessions[idx];
                 if !rt.app.stage_submission_preamble(&mut dispatch) {
                     rt.app.queue.remove_submission(dispatch.submission_id);
+                    if execution_started {
+                        warn_lineage_cleanup(
+                            self.lineage.set_execution_active(session_id, false),
+                            session_id,
+                            "release rejected submission activity",
+                        );
+                    }
                     return;
                 }
                 let session_id = rt.app.state.session.id;
@@ -1793,38 +1942,35 @@ impl<'t> EventLoop<'t> {
                         let _ = completion_tx.send(SubmissionPersistence {
                             session_id,
                             dispatch: *dispatch,
+                            execution_started,
                             result,
                         });
                     });
             }
             Action::CancelAgent { run_id } => {
                 let id = self.sessions[idx].id();
-                match self.sessions[idx]
+                if let Err(error) = self.sessions[idx]
                     .handles
                     .cmd_tx
                     .try_send(AgentCommand::Cancel { run_id })
                 {
-                    Ok(()) => {
-                        self.sessions[idx].app.state.session.meta.lifecycle =
-                            StoredSessionLifecycle::Cancelled;
-                        self.sessions[idx]
-                            .app
-                            .state
-                            .session
-                            .meta
-                            .queued_direct_tools
-                            .clear();
-                        warn_lineage_cleanup(
-                            self.lineage.set_execution_active(id, false),
-                            id,
-                            "clear keyboard-cancelled activity",
-                        );
-                        self.sessions[idx].app.save_session();
-                    }
-                    Err(error) => {
-                        warn!(session_id = %id, %error, "failed to send agent cancellation");
-                    }
+                    warn!(session_id = %id, %error, "failed to send agent cancellation");
                 }
+                self.sessions[idx].app.state.session.meta.lifecycle =
+                    StoredSessionLifecycle::Cancelled;
+                self.sessions[idx]
+                    .app
+                    .state
+                    .session
+                    .meta
+                    .queued_direct_tools
+                    .clear();
+                warn_lineage_cleanup(
+                    self.lineage.set_execution_active(id, false),
+                    id,
+                    "clear keyboard-cancelled activity",
+                );
+                self.sessions[idx].app.save_session();
             }
             Action::CancelSubagent { tool_use_id } => {
                 let _ = self.sessions[idx]
@@ -2130,12 +2276,16 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
-        should_save_periodically, take_painted_submissions,
+        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, cancel_stored_session,
+        draw_then_post_terminal, paused_team_run, should_save_periodically,
+        take_painted_submissions,
     };
-    use crate::components::Status;
+    use crate::{AppSession, components::Status};
     use n00n_providers::{ContentBlock, Message, Role};
-    use n00n_storage::id::n00nId;
+    use n00n_storage::{
+        id::n00nId,
+        sessions::{StoredDelivery, StoredDirectTool, StoredQueuedMessage, StoredSessionLifecycle},
+    };
     use ratatui::{
         Terminal,
         backend::{Backend, ClearType, TestBackend, WindowSize},
@@ -2192,6 +2342,41 @@ mod tests {
             ..Default::default()
         };
         assert!(paused_team_run(&[tool_call, tool_result]).is_none());
+    }
+
+    #[test]
+    fn cancel_stored_session_clears_all_persisted_work() {
+        let mut session = AppSession::new("model", "/project");
+        session.meta.lifecycle = StoredSessionLifecycle::Running;
+        session.meta.queued_messages = vec!["legacy".into()];
+        session.meta.queued_submissions = vec![StoredQueuedMessage {
+            text: "queued".into(),
+            images: Vec::new(),
+            mode: None,
+            plan_path: None,
+            thinking: None,
+            fast: false,
+            workflow: false,
+            control: false,
+            delivery: StoredDelivery::TurnEnd,
+            prompt: None,
+        }];
+        session.meta.queued_direct_tools = vec![StoredDirectTool {
+            tool: "task".into(),
+            input: serde_json::json!({}),
+        }];
+
+        assert!(cancel_stored_session(&mut session));
+        assert_eq!(session.meta.lifecycle, StoredSessionLifecycle::Cancelled);
+        assert!(session.meta.queued_messages.is_empty());
+        assert!(session.meta.queued_submissions.is_empty());
+        assert!(session.meta.queued_direct_tools.is_empty());
+
+        let mut inactive = AppSession::new("model", "/project");
+        inactive.meta.lifecycle = StoredSessionLifecycle::Succeeded;
+        inactive.meta.queued_messages = vec!["pending".into()];
+        assert!(cancel_stored_session(&mut inactive));
+        assert!(inactive.meta.queued_messages.is_empty());
     }
 
     struct FailingBackend(TestBackend);

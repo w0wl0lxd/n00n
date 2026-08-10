@@ -934,6 +934,10 @@ pub struct SessionMeta {
     pub queued_submissions: Vec<StoredQueuedMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_direct_tools: Vec<StoredDirectTool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_output: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct_output_is_error: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<StoredSubagent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4181,6 +4185,8 @@ mod tests {
 
         session.meta.input_draft = Some("draft line".into());
         session.meta.queued_messages = vec!["queued".into()];
+        session.meta.direct_output = Some("bootstrap output".into());
+        session.meta.direct_output_is_error = true;
         session.title = "updated title".into();
         session.updated_at = now_epoch() + 1;
         log.append(&session).unwrap();
@@ -4188,6 +4194,11 @@ mod tests {
         let loaded = TestSession::load_from(session.id, dir).unwrap();
         assert_eq!(loaded.meta.input_draft.as_deref(), Some("draft line"));
         assert_eq!(loaded.meta.queued_messages, vec!["queued".to_string()]);
+        assert_eq!(
+            loaded.meta.direct_output.as_deref(),
+            Some("bootstrap output")
+        );
+        assert!(loaded.meta.direct_output_is_error);
         assert_eq!(loaded.title, "updated title");
     }
 

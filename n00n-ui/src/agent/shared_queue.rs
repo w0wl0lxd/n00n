@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, MutexGuard, PoisonError,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use n00n_agent::{
@@ -151,29 +151,40 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone)]
 pub(crate) struct QueueSender {
     items: Items,
+    generation: Arc<AtomicU64>,
     notify_tx: flume::Sender<()>,
 }
 
 pub(crate) struct QueueReceiver {
     items: Items,
+    generation: Arc<AtomicU64>,
     notify_rx: flume::Receiver<()>,
 }
 
 pub(crate) fn queue() -> (QueueSender, QueueReceiver) {
     let (notify_tx, notify_rx) = flume::bounded(1);
     let items: Items = Arc::new(Mutex::new(VecDeque::new()));
+    let generation = Arc::new(AtomicU64::new(0));
     (
         QueueSender {
             items: Arc::clone(&items),
+            generation: Arc::clone(&generation),
             notify_tx,
         },
-        QueueReceiver { items, notify_rx },
+        QueueReceiver {
+            items,
+            generation,
+            notify_rx,
+        },
     )
 }
 
 impl QueueSender {
     pub(crate) fn push(&self, entry: QueueItem) {
-        lock(&self.items).push_back(entry);
+        let mut items = lock(&self.items);
+        items.push_back(entry);
+        self.generation.fetch_add(1, Ordering::Release);
+        drop(items);
         let _ = self.notify_tx.try_send(());
     }
 
@@ -189,6 +200,7 @@ impl QueueSender {
             return;
         }
         items.push_front(entry);
+        self.generation.fetch_add(1, Ordering::Release);
         drop(items);
         let _ = self.notify_tx.try_send(());
     }
@@ -212,6 +224,7 @@ impl QueueSender {
         let mut items = lock(&self.items);
         let item_index = Self::panel_index(&items, index).unwrap_or_else(|| items.len());
         items.insert(item_index, entry);
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn promote_latest_steering(&self) -> bool {
@@ -228,12 +241,17 @@ impl QueueSender {
             return false;
         };
         *delivery = Delivery::Immediate;
+        self.generation.fetch_add(1, Ordering::Release);
         true
     }
 
-    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         lock(&self.items).is_empty()
+    }
+
+    pub(crate) fn is_drained(&self, generation: u64) -> bool {
+        let items = lock(&self.items);
+        items.is_empty() && self.generation.load(Ordering::Acquire) == generation
     }
 
     pub(crate) fn clear(&self) {
@@ -281,6 +299,7 @@ impl QueueSender {
         // Update input and ready flag atomically while holding the lock
         *queued_input = input;
         ready.store(true, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::Release);
         drop(items);
         let _ = self.notify_tx.try_send(());
         true
@@ -355,6 +374,13 @@ impl QueueReceiver {
             }
         })?;
         items.remove(index)
+    }
+
+    pub(crate) fn drain_generation(&self) -> Option<u64> {
+        let items = lock(&self.items);
+        items
+            .is_empty()
+            .then(|| self.generation.load(Ordering::Acquire))
     }
 
     pub(crate) async fn recv_notify(&self) -> Result<(), flume::RecvError> {
@@ -489,6 +515,21 @@ mod tests {
                 "normal".into(),
             )
         );
+    }
+
+    #[test]
+    fn stale_drain_generation_is_rejected_after_new_work() {
+        let (tx, rx) = queue();
+        tx.push(msg(false));
+        assert!(rx.pop().is_some());
+        let drained = rx.drain_generation().expect("drained generation");
+        assert!(tx.is_drained(drained));
+
+        tx.push(msg(false));
+        assert!(rx.pop().is_some());
+        assert!(!tx.is_drained(drained));
+        let latest = rx.drain_generation().expect("latest generation");
+        assert!(tx.is_drained(latest));
     }
 
     #[test]

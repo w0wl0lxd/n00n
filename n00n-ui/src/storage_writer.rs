@@ -114,6 +114,10 @@ enum Op {
         generation: u64,
         done: DeleteCallback,
     },
+    Latest {
+        id: n00nId,
+        done: flume::Sender<Option<AppSession>>,
+    },
     #[cfg(test)]
     Pause {
         entered: flume::Sender<()>,
@@ -197,6 +201,14 @@ impl StorageWriter {
                             state.collect_barriers(id, &writer_tracker);
                             done(result);
                         }
+                        Op::Latest { id, done } => {
+                            state.stage_snapshots(take_snapshots(&writer_inbox), &writer_tracker);
+                            let session = state
+                                .latest_snapshots
+                                .get(&id)
+                                .map(|snapshot| (*snapshot.session).clone());
+                            let _ = done.send(session);
+                        }
                         #[cfg(test)]
                         Op::Pause { entered, release } => {
                             let _ = entered.send(());
@@ -240,6 +252,14 @@ impl StorageWriter {
         let id = session.id;
         let generation = reserve_command(&self.tracker, id);
         self.enqueue_reserved_snapshot(generation, session);
+    }
+
+    pub(crate) fn latest_snapshot(&self, id: n00nId) -> Result<Option<AppSession>, SessionError> {
+        let (done_tx, done_rx) = flume::bounded(1);
+        self.ops
+            .send(Op::Latest { id, done: done_tx })
+            .map_err(|_| writer_gone())?;
+        done_rx.recv().map_err(|_| writer_gone())
     }
 
     /// Persists this snapshot before invoking `done` on the writer thread.
@@ -877,6 +897,31 @@ mod tests {
 
         assert!(AppSession::load(a_id, &dir).is_ok());
         assert_eq!(AppSession::load(b_id, &dir).unwrap().title, "renamed");
+    }
+
+    #[test]
+    fn latest_snapshot_includes_queued_writes() {
+        let (_tmp, dir) = state_dir();
+        let writer = StorageWriter::new(dir.clone()).unwrap();
+        let release = pause_writer(&writer);
+        let mut session = AppSession::new("test-model", "/tmp/latest");
+        let id = session.id;
+        session.title = "first".into();
+        writer.send(Box::new(session.clone()));
+        session.title = "latest".into();
+        writer.send(Box::new(session));
+
+        let latest = std::thread::scope(|scope| {
+            let query = scope.spawn(|| writer.latest_snapshot(id).unwrap());
+            release.send(()).unwrap();
+            query.join().unwrap()
+        });
+        let latest = match latest {
+            Some(session) => session,
+            None => AppSession::load(id, &dir).unwrap(),
+        };
+        assert_eq!(latest.title, "latest");
+        writer.shutdown(DRAIN_TIMEOUT).unwrap();
     }
 
     #[test]
