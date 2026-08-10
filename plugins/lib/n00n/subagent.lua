@@ -25,7 +25,7 @@ end
 local function excluded_tools(opts)
   local excluded = {}
   local seen = {}
-  if not opts.allow_orchestration then
+  if opts.allow_orchestration ~= true then
     for _, name in ipairs(ORCHESTRATION_TOOLS) do
       excluded[#excluded + 1] = name
       seen[name] = true

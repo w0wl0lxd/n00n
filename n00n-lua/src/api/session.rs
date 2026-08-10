@@ -118,8 +118,9 @@ async fn delete(
 ///
 /// @param opts table? Optional fields: prompt (string) first user message
 ///   to submit right away; focus (boolean) switch the UI to the new session;
-///   parent_id (string?) session that spawned this session; tool (string),
-///   input (table), and title (string?) for a direct host-executed bootstrap.
+///   parent_id (string?) session that spawned this session; tool (string) for a
+///   direct host-executed bootstrap. Tool cannot be combined with prompt. Input
+///   (table) and title (string?) require tool.
 /// @return (string|nil, string|nil) New session id, or nil and an error.
 /// @example
 /// local id, err = n00n.session.new({ prompt = "fix the tests", focus = true })
