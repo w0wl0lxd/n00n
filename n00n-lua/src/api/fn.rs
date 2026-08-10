@@ -91,6 +91,14 @@ impl JobStore {
             }
         }
 
+        // n00n is normally launched from fish/kitty with BASH_ENV set (via home.sessionVariables).
+        // Shell jobs (bash -c) need it so the cargo wrapper in BASH_ENV is sourced, which routes
+        // cargo builds into the memory-capped cargo-agent-builds.slice instead of n00n's cgroup.
+        let bash_env_from_env_map = env.as_ref().is_some_and(|m| m.contains_key("BASH_ENV"));
+        if !bash_env_from_env_map && let Some(bash_env) = env::var_os("BASH_ENV") {
+            command.env("BASH_ENV", bash_env);
+        }
+
         let mut child = command.spawn().map_err(|e| e.to_string())?;
         let pid = child.id();
         let id = self.next_id;
@@ -545,6 +553,40 @@ mod tests {
             store.take_receiver(id).is_none(),
             "second take should fail (receiver already moved)"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_job_terminates_long_running_child() {
+        let mut store = make_store();
+        let id = store
+            .start(
+                JobSpec::Shell("sleep 60".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        std::thread::sleep(Duration::from_millis(100));
+        store.kill(id);
+
+        let rx = store.take_receiver(id).unwrap();
+        let mut got_exit = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(JobEvent::Exit(_)) => {
+                    got_exit = true;
+                    break;
+                }
+                Ok(_) | Err(flume::RecvTimeoutError::Timeout) => {}
+                Err(flume::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        assert!(got_exit, "kill should force the child to exit");
     }
 
     #[test]

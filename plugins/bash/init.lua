@@ -17,6 +17,18 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
+local RTK_SKIP_TOOLS = {
+  -- Cargo and friends are deliberately not routed through rtk. rtk is a Rust
+  -- binary that invokes cargo directly, so it bypasses the BASH_ENV cargo
+  -- wrapper that confines builds to the memory-capped cargo-agent-builds.slice.
+  -- Running a large build in n00n's own cgroup/process group has led to n00n
+  -- itself being SIGKILLed when the build exhausts memory. The shell will
+  -- source BASH_ENV and the cargo wrapper will run the build under
+  -- systemd-run --slice=cargo-agent-builds.
+  cargo = true,
+  nextest = true,
+  rustc = true,
+}
 local SEPARATOR = "──────"
 local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
 
@@ -442,9 +454,8 @@ local function rtk_rewrite(command, ctx)
     return nil
   end
 
-  -- rtk rewrite does not know about `cargo nextest run`, but `rtk cargo nextest` exists.
-  if cmd:match("^cargo%s+nextest$") or cmd:match("^cargo%s+nextest%s+run") then
-    return "rtk " .. cmd
+  if RTK_SKIP_TOOLS[first_word] or RTK_SKIP_TOOLS[first_word:match("([^/]+)$")] then
+    return nil
   end
 
   local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(cmd))
