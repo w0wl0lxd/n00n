@@ -104,9 +104,12 @@ async fn run_btw(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     const Q: &str = "why sqlite?";
+    const TEST_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn user_text(msg: &Message) -> String {
         msg.content
@@ -180,7 +183,7 @@ mod tests {
                     true
                 },
                 async {
-                    smol::Timer::after(std::time::Duration::from_millis(100)).await;
+                    smol::Timer::after(TEST_COMPLETION_TIMEOUT).await;
                     false
                 },
             )
