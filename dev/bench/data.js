@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786329152855,
+  "lastUpdate": 1786329789316,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -15869,6 +15869,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 182811,
             "range": "± 14750",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a51f8262ef94c53b00cb725d8968c5f6345fa4fa",
+          "message": "fix(ui): report session persistence failures on shutdown (#338)\n\n* fix(ui): report session persistence failures on shutdown\n\n* fix(ui): preserve storage writer ordering\n\n* fix(ui): resolve shutdown review findings\n\n* fix(ui): preserve higher revision on delete",
+          "timestamp": "2026-08-10T02:36:48Z",
+          "tree_id": "4b1c4ff919043d3a265e9bff68bdd6d87d87b33c",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/a51f8262ef94c53b00cb725d8968c5f6345fa4fa"
+        },
+        "date": 1786329788410,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7713354,
+            "range": "± 170574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2223078,
+            "range": "± 8035",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2221121,
+            "range": "± 46889",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8175964,
+            "range": "± 33047",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4419275,
+            "range": "± 31737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4370967,
+            "range": "± 18642",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584893,
+            "range": "± 1990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191981,
+            "range": "± 699",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191617,
+            "range": "± 896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045341,
+            "range": "± 12561",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582478,
+            "range": "± 2081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584539,
+            "range": "± 2336",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79005,
+            "range": "± 2590",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 175426,
+            "range": "± 17621",
             "unit": "ns/iter"
           }
         ]
