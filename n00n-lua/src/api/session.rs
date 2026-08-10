@@ -5,8 +5,9 @@
 use mlua::{Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
 
-use crate::api::util::command::{SessionReply, SessionRequest, UiAction};
-use crate::api::util::convert::json_to_lua;
+use crate::api::util::command::{SessionBootstrap, SessionReply, SessionRequest, UiAction};
+use crate::api::util::convert::{json_to_lua, lua_to_json};
+use crate::runtime::active_session_identity;
 
 const NO_UI_ERR: &str = "no interactive UI attached";
 
@@ -117,7 +118,8 @@ async fn delete(
 ///
 /// @param opts table? Optional fields: prompt (string) first user message
 ///   to submit right away; focus (boolean) switch the UI to the new session;
-///   parent_id (string?) session that spawned this session.
+///   parent_id (string?) session that spawned this session; tool (string),
+///   input (table), and title (string?) for a direct host-executed bootstrap.
 /// @return (string|nil, string|nil) New session id, or nil and an error.
 /// @example
 /// local id, err = n00n.session.new({ prompt = "fix the tests", focus = true })
@@ -127,13 +129,37 @@ async fn new(
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
-    let (prompt, focus, parent_id) = match opts {
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
+    let (prompt, focus, parent_id, tool, input, title) = match opts {
         Some(opts) => (
             opts.get("prompt")?,
             opts.get("focus").unwrap_or_else(|_| false),
             opts.get("parent_id")?,
+            opts.get::<Option<String>>("tool")?,
+            opts.get::<Option<Value>>("input")?,
+            opts.get::<Option<String>>("title")?,
         ),
-        None => (None, false, None),
+        None => (None, false, None, None, None, None),
+    };
+    let bootstrap = match tool {
+        Some(tool) => {
+            if prompt.is_some() {
+                return Ok(err_pair("direct session bootstrap cannot include prompt"));
+            }
+            let input = match input {
+                Some(input) => input,
+                None => Value::Table(lua.create_table()?),
+            };
+            Some(SessionBootstrap {
+                tool,
+                input: lua_to_json(&lua, &input)?,
+                title,
+            })
+        }
+        None if input.is_some() || title.is_some() => {
+            return Ok(err_pair("session bootstrap input/title requires tool"));
+        }
+        None => None,
     };
     roundtrip(
         lua,
@@ -142,6 +168,8 @@ async fn new(
             prompt,
             focus,
             parent_id,
+            caller_id,
+            bootstrap,
         },
     )
     .await
@@ -167,6 +195,7 @@ async fn prompt(
     text: String,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
     let (id, steer, control) = match opts {
         Some(opts) => (
             opts.get("session")?,
@@ -183,6 +212,7 @@ async fn prompt(
             text,
             steer,
             control,
+            caller_id,
         },
     )
     .await
@@ -198,7 +228,8 @@ async fn cancel(
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     id: String,
 ) -> LuaResult<Pair> {
-    roundtrip(lua, tx, SessionRequest::Cancel { id }).await
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
+    roundtrip(lua, tx, SessionRequest::Cancel { id, caller_id }).await
 }
 
 /// Renames a session, live or stored.
@@ -234,14 +265,141 @@ lua_table! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use n00n_agent::{cancel::CancelToken, tools::SessionIdentity};
+    use n00n_storage::id::SessionRef;
     use serde_json::json;
     use test_case::test_case;
+
+    use crate::runtime::{TaskCell, TaskScope};
 
     fn lua_with_session(tx: Option<flume::Sender<UiAction>>) -> Lua {
         let lua = Lua::new();
         let t = create_session_table(&lua, tx).unwrap();
         lua.globals().set("session", t).unwrap();
         lua
+    }
+
+    #[test]
+    fn session_requests_attach_runtime_caller_id_not_lua_option() {
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let caller_id = SessionRef::generate();
+        let lua = lua_with_session(Some(tx));
+        let _scope = TaskScope::new(
+            &lua,
+            TaskCell::new(
+                CancelToken::none(),
+                None,
+                None,
+                Some(SessionIdentity::root(caller_id.clone())),
+            ),
+        );
+        let expected_caller_id = caller_id;
+        let checker = std::thread::spawn(move || {
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::New {
+                        caller_id: actual_caller_id,
+                        ..
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected new request");
+            };
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!("child"))).unwrap();
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::Prompt {
+                        caller_id: actual_caller_id,
+                        ..
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected prompt request");
+            };
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!("queued"))).unwrap();
+        });
+
+        let (child_id, prompt_status): (String, String) = smol::block_on(
+            lua.load(
+                r#"
+                local child, new_err = session.new({ caller_id = "spoof" })
+                if new_err then error(new_err) end
+                local status, prompt_err = session.prompt("hello", { caller_id = "spoof" })
+                if prompt_err then error(prompt_err) end
+                return child, status
+                "#,
+            )
+            .eval_async(),
+        )
+        .unwrap();
+        checker.join().unwrap();
+        assert_eq!(child_id, "child");
+        assert_eq!(prompt_status, "queued");
+    }
+
+    #[test]
+    fn direct_bootstrap_forwards_tool_input_title_and_runtime_identity() {
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let caller_id = SessionRef::generate();
+        let lua = lua_with_session(Some(tx));
+        let _scope = TaskScope::new(
+            &lua,
+            TaskCell::new(
+                CancelToken::none(),
+                None,
+                None,
+                Some(SessionIdentity::root(caller_id.clone())),
+            ),
+        );
+        let expected_caller_id = caller_id;
+        let checker = std::thread::spawn(move || {
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::New {
+                        prompt,
+                        focus,
+                        parent_id,
+                        caller_id,
+                        bootstrap: Some(bootstrap),
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected direct bootstrap request");
+            };
+            assert_eq!(prompt, None);
+            assert!(!focus);
+            assert_eq!(parent_id, None);
+            assert_eq!(caller_id.as_ref(), Some(&expected_caller_id));
+            assert_eq!(bootstrap.tool, "task");
+            assert_eq!(
+                bootstrap.input,
+                json!({ "prompt": "inspect", "background": false })
+            );
+            assert_eq!(bootstrap.title.as_deref(), Some("task: inspect"));
+            reply_tx.send(Ok(json!("child"))).unwrap();
+        });
+
+        let (child_id, error): (String, Option<String>) = smol::block_on(
+            lua.load(
+                r#"
+                return session.new({
+                    tool = "task",
+                    input = { prompt = "inspect", background = false },
+                    title = "task: inspect",
+                })
+                "#,
+            )
+            .eval_async(),
+        )
+        .unwrap();
+        checker.join().unwrap();
+        assert_eq!(child_id, "child");
+        assert_eq!(error, None);
     }
 
     #[test]
@@ -303,13 +461,14 @@ mod tests {
         let lua = lua_with_session(Some(tx));
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
-                req: SessionRequest::Cancel { id },
+                req: SessionRequest::Cancel { id, caller_id },
                 reply_tx,
             }) = rx.recv()
             else {
                 panic!("expected cancel request");
             };
             assert_eq!(id, "abc");
+            assert_eq!(caller_id, None);
             reply_tx.send(Ok(json!(true))).unwrap();
         });
         let (val, err): (bool, Option<String>) =
@@ -340,6 +499,7 @@ mod tests {
                         text,
                         steer,
                         control,
+                        caller_id,
                     },
                 reply_tx,
             }) = rx.recv()
@@ -350,6 +510,7 @@ mod tests {
             assert_eq!(text, "hi");
             assert_eq!(steer, expected_steer);
             assert_eq!(control, expected_control);
+            assert_eq!(caller_id, None);
             reply_tx.send(Ok(json!("queued"))).unwrap();
         });
         let (val, err): (String, Option<String>) =

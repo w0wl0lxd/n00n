@@ -155,6 +155,35 @@ pub enum StoredDelivery {
     Immediate,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredSessionLifecycle {
+    Queued,
+    Bootstrapping,
+    Running,
+    WaitingInput,
+    Paused,
+    Succeeded,
+    Failed,
+    Cancelled,
+    #[default]
+    Idle,
+}
+
+impl StoredSessionLifecycle {
+    #[must_use]
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Queued | Self::Bootstrapping | Self::Running | Self::WaitingInput
+        )
+    }
+
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredQueuedMessage {
     pub text: String,
@@ -876,6 +905,10 @@ where
 pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<n00nId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<n00nId>,
+    #[serde(default, skip_serializing_if = "StoredSessionLifecycle::is_idle")]
+    pub lifecycle: StoredSessionLifecycle,
     #[serde(default)]
     pub mode: Option<StoredMode>,
     #[serde(default)]

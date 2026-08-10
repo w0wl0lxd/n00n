@@ -10,7 +10,7 @@ use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue
 use n00n_agent::agent::LoadedInstructions;
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::{
-    Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolLive,
+    Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext, ToolLive,
 };
 use n00n_config::{AgentConfig, ToolOutputLines};
 
@@ -118,6 +118,7 @@ enum Caps {
         config: Arc<AgentConfig>,
         workflow: bool,
         audience: ToolAudience,
+        identity: Option<SessionIdentity>,
     },
     Restore {
         state: Option<serde_json::Value>,
@@ -153,6 +154,7 @@ impl LuaCtx {
                 config: Arc::clone(&ctx.config),
                 workflow: ctx.workflow,
                 audience: ctx.audience,
+                identity: ctx.identity.clone(),
             },
         )
     }
@@ -176,6 +178,14 @@ impl LuaCtx {
         match &self.caps {
             Caps::Handler { agent, .. } => Some(agent),
             _ => None,
+        }
+    }
+
+    pub(crate) fn session_identity(&self) -> Option<SessionIdentity> {
+        match &self.caps {
+            Caps::Handler { agent, .. } => agent.identity.clone(),
+            Caps::Start { identity, .. } => identity.clone(),
+            Caps::Restore { .. } => None,
         }
     }
 
@@ -610,9 +620,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_context_keeps_tool_use_id_and_resets_per_call_state() {
-        let agent = AgentContext::from(&populated_ctx());
+    fn agent_context_keeps_tool_use_id_and_identity_and_resets_per_call_state() {
+        let ctx = populated_ctx();
+        let expected_identity = ctx.identity.clone();
+        let agent = AgentContext::from(&ctx);
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
+        assert_eq!(agent.identity, expected_identity);
         assert!(matches!(agent.deadline, Deadline::None));
         assert_eq!(agent.tool_output_lines, ToolOutputLines::default());
         assert!(agent.local_tools.is_empty());
@@ -633,6 +646,7 @@ mod tests {
         );
         let inner = agent.to_tool_context();
         assert_eq!(inner.tool_use_id, None);
+        assert_eq!(inner.identity, agent.identity);
         assert!(inner.live_sink.is_none(), "sink must not be inherited");
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
     }
