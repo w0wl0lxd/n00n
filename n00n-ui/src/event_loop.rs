@@ -482,7 +482,6 @@ impl SpawnCtx {
             picker: Arc::clone(&self.picker),
         });
         app.lua_event_handle.clone_from(&self.lua_event_handle);
-        app.hydrate_plugin_state();
         handles.apply_to_app(&mut app);
         if resumed {
             restore_session(&mut app, &handles);
