@@ -269,6 +269,17 @@ fn dangerous_globals_blocked() {
     }
 }
 
+#[test_case::test_case("webfetch" ; "webfetch_display_name")]
+#[test_case::test_case("websearch" ; "websearch_display_name")]
+fn source_display_name_cannot_forge_firecrawl_capability(name: &str) {
+    let host = PluginHost::new(fresh_registry()).unwrap();
+    host.load_source(
+        name,
+        r#"if n00n.firecrawl ~= nil then error("forged Firecrawl capability") end"#,
+    )
+    .unwrap();
+}
+
 #[test]
 fn register_echo_tool() {
     let reg = fresh_registry();

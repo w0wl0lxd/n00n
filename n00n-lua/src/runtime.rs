@@ -25,6 +25,7 @@ use n00n_config::RawConfig;
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
+use crate::api::firecrawl::BundledCapability;
 use crate::api::r#fn::{JobStore, deliver_job_event};
 use crate::api::keymap::KeymapReader;
 use crate::api::keymap::{KeymapStore, KeymapWriter};
@@ -139,6 +140,7 @@ pub enum Request {
         plugin_dir: Option<PathBuf>,
         permissions: PluginPermissions,
         opts: PluginOpts,
+        bundled_capability: Option<BundledCapability>,
         reply: flume::Sender<LoadResult>,
     },
     CallTool {
@@ -1945,6 +1947,7 @@ impl LuaRuntime {
         plugin_dir: Option<PathBuf>,
         permissions: &PluginPermissions,
         opts: PluginOpts,
+        bundled_capability: Option<BundledCapability>,
         config_store: Option<&ConfigStore>,
     ) -> LoadResult {
         let map_err = |e: mlua::Error| PluginError::Lua {
@@ -1967,6 +1970,7 @@ impl LuaRuntime {
             self.ui_action_tx.clone(),
             permissions,
             Arc::clone(&opts),
+            bundled_capability,
         )
         .map_err(&map_err)?;
 
@@ -2150,6 +2154,7 @@ impl LuaRuntime {
             plugin_dir,
             &perms,
             PluginOpts::default(),
+            None,
             Some(&config_store),
         )
         .await?;
@@ -2905,6 +2910,7 @@ pub fn spawn(
                             plugin_dir,
                             permissions,
                             opts,
+                            bundled_capability,
                             reply,
                         } => {
                             if drain_runtime(
@@ -2921,7 +2927,17 @@ pub fn spawn(
                             {
                                 break;
                             }
-                            let res = rt.load_source(Arc::clone(&name), &source, plugin_dir, &permissions, opts, None).await;
+                            let res = rt
+                                .load_source(
+                                    Arc::clone(&name),
+                                    &source,
+                                    plugin_dir,
+                                    &permissions,
+                                    opts,
+                                    bundled_capability,
+                                    None,
+                                )
+                                .await;
                             let _ = reply.send(res);
                         }
                         request @ (Request::CallTool { .. } | Request::StartTool { .. }) => {

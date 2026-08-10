@@ -3020,6 +3020,23 @@ mod tests {
     }
 
     #[test]
+    fn firecrawl_backend_options_flow_into_config() {
+        let raw: RawConfig = toml::from_str(
+            "[plugins.websearch]\nbackend = \"firecrawl\"\n\
+             [plugins.webfetch]\nbackend = \"direct\"\n",
+        )
+        .unwrap();
+        let config = raw.into_config(false).unwrap();
+        assert_eq!(
+            config.plugins.opts["websearch"]["backend"],
+            serde_json::json!("firecrawl")
+        );
+        assert_eq!(
+            config.plugins.opts["webfetch"]["backend"],
+            serde_json::json!("direct")
+        );
+    }
+    #[test]
     fn into_config_wires_plugin_names_and_opts() {
         let raw: RawConfig = toml::from_str(
             "[plugins.bash]\ntimeout_secs = 180\n[plugins.websearch]\nenabled = false\n",
