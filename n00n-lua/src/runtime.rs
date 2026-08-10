@@ -3630,7 +3630,7 @@ mod tests {
         smol::block_on(async {
             let handle = Arc::new(Mutex::new(TaskCell::new(
                 CancelToken::none(),
-                Some(Instant::now() + Duration::from_millis(20)),
+                Some(Instant::now() + Duration::from_millis(500)),
                 None,
                 None,
             )));
@@ -3641,7 +3641,7 @@ mod tests {
 
             smol::Timer::after(Duration::from_millis(10)).await;
             lock_cell(&handle).deadline.set(None);
-            smol::Timer::after(Duration::from_millis(30)).await;
+            smol::Timer::after(Duration::from_millis(550)).await;
             assert!(!waiter.is_finished());
 
             lock_cell(&handle)
