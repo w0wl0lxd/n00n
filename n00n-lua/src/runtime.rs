@@ -3597,6 +3597,7 @@ mod tests {
                 CancelToken::none(),
                 Some(Instant::now() + Duration::from_millis(10)),
                 None,
+                None,
             ),
         );
 
@@ -3617,6 +3618,7 @@ mod tests {
             let handle = Arc::new(Mutex::new(TaskCell::new(
                 CancelToken::none(),
                 Some(Instant::now() + Duration::from_millis(20)),
+                None,
                 None,
             )));
             let waiter = smol::spawn({
@@ -3643,6 +3645,7 @@ mod tests {
                 CancelToken::none(),
                 Some(Instant::now() + Duration::from_secs(1)),
                 None,
+                None,
             )));
             let waiter = smol::spawn({
                 let handle = Arc::clone(&handle);
@@ -3668,7 +3671,7 @@ mod tests {
         let handle = cancelled_handle();
         let scope = TaskScope::new(
             &lua,
-            TaskCell::new(lock_cell(&handle).cancel.clone(), None, None),
+            TaskCell::new(lock_cell(&handle).cancel.clone(), None, None, None),
         );
         assert_eq!(interrupt_reason(&lua), None);
         let cleanup_deadline = lock_cell(scope.handle()).interrupt_after.get().unwrap();
@@ -3895,6 +3898,7 @@ mod tests {
                 cancel: token,
                 deadline: None,
                 live_ctx: None,
+                identity: None,
                 owner: None,
                 parent: None,
             };
@@ -4034,6 +4038,7 @@ mod tests {
             CancelToken::none(),
             Some(deadline),
             None,
+            None,
         )));
         lock_cell(&handle).deadline_secs.set(Some(1));
 
@@ -4047,6 +4052,7 @@ mod tests {
         let handle = Arc::new(Mutex::new(TaskCell::new(
             CancelToken::none(),
             Some(Instant::now()),
+            None,
             None,
         )));
 
