@@ -6005,7 +6005,7 @@ function M.make_local_tool(schema, on_submit)
 -- Subagent launch helper module.
 -- Provides a unified interface for launching subagents with model resolution,
 -- system prompts, tool setup, and optional structured output validation.
-M.ORCHESTRATION_TOOLS = { "task", "team", "workflow", "agent_control", "batch" }
+function M.orchestration_tools()
 
 -- Launch a subagent with the given options.
 -- Returns (result | nil, err, cost, usage, model_spec)

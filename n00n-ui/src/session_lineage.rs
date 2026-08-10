@@ -97,9 +97,17 @@ struct PendingReservation {
     depth: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CachedLineage {
+    root: n00nId,
+    depth: usize,
+}
+
 pub(crate) struct SessionLineageGuard {
     limits: LineageLimits,
     sessions: HashMap<n00nId, SessionNode>,
+    children: HashMap<n00nId, HashSet<n00nId>>,
+    lineage_cache: HashMap<n00nId, CachedLineage>,
     reservations: HashMap<u64, PendingReservation>,
     next_reservation_id: u64,
 }
@@ -112,6 +120,8 @@ impl SessionLineageGuard {
         let mut guard = Self {
             limits,
             sessions: HashMap::new(),
+            children: HashMap::new(),
+            lineage_cache: HashMap::new(),
             reservations: HashMap::new(),
             next_reservation_id: 1,
         };
@@ -133,7 +143,20 @@ impl SessionLineageGuard {
                 return Err(LineageError::DuplicateSession(session.id));
             }
         }
-        guard.validate_graph()?;
+        guard.rebuild_topology()?;
+        let roots = guard
+            .lineage_cache
+            .values()
+            .map(|lineage| lineage.root)
+            .collect::<HashSet<_>>();
+        for root in roots {
+            let counts = guard.descendant_counts(root)?;
+            if counts.active > guard.limits.max_active_descendants {
+                return Err(LineageError::ActiveDescendantsExceeded {
+                    limit: guard.limits.max_active_descendants,
+                });
+            }
+        }
         Ok(guard)
     }
 
@@ -158,13 +181,6 @@ impl SessionLineageGuard {
                 .get_mut(&session.id)
                 .ok_or(LineageError::UnknownSession(session.id))?
                 .execution_active = session.execution_active;
-            if let Err(error) = self.validate_graph() {
-                if let Some(node) = self.sessions.get_mut(&session.id) {
-                    node.runtime_present = false;
-                    node.execution_active = false;
-                }
-                return Err(error);
-            }
             return Ok(());
         }
 
@@ -178,8 +194,9 @@ impl SessionLineageGuard {
                 deleted: false,
             },
         );
-        if let Err(error) = self.validate_graph() {
+        if let Err(error) = self.rebuild_topology() {
             self.sessions.remove(&session.id);
+            self.rebuild_topology()?;
             return Err(error);
         }
         Ok(())
@@ -258,7 +275,6 @@ impl SessionLineageGuard {
         caller: n00nId,
         explicit_parent: Option<n00nId>,
     ) -> Result<NewReservation, LineageError> {
-        self.validate_graph()?;
         let caller_lineage = self.lineage(caller)?;
         let parent = match explicit_parent {
             Some(p) => p,
@@ -342,8 +358,9 @@ impl SessionLineageGuard {
                 deleted: false,
             },
         );
-        if let Err(error) = self.validate_graph() {
+        if let Err(error) = self.rebuild_topology() {
             self.sessions.remove(&child_id);
+            self.rebuild_topology()?;
             return Err(error);
         }
         Ok(())
@@ -367,18 +384,25 @@ impl SessionLineageGuard {
             return Err(LineageError::ParentChanged { id });
         }
         self.sessions.remove(&id);
+        self.rebuild_topology()?;
         Ok(())
     }
 
     pub(crate) fn descendants_of(&self, parent: n00nId) -> Result<Vec<n00nId>, LineageError> {
-        self.validate_graph()?;
         if !self.sessions.contains_key(&parent) {
             return Err(LineageError::UnknownSession(parent));
         }
+        let mut pending = self
+            .children
+            .get(&parent)
+            .into_iter()
+            .flat_map(|children| children.iter().copied())
+            .collect::<Vec<_>>();
         let mut descendants = Vec::new();
-        for &id in self.sessions.keys() {
-            if id != parent && self.path_from(id)?.contains(&parent) {
-                descendants.push(id);
+        while let Some(id) = pending.pop() {
+            descendants.push(id);
+            if let Some(children) = self.children.get(&id) {
+                pending.extend(children.iter().copied());
             }
         }
         Ok(descendants)
@@ -403,7 +427,6 @@ impl SessionLineageGuard {
         caller: n00nId,
         explicit_target: Option<n00nId>,
     ) -> Result<n00nId, LineageError> {
-        self.validate_graph()?;
         let caller_lineage = self.lineage(caller)?;
         let target = match explicit_target {
             Some(t) => t,
@@ -416,8 +439,11 @@ impl SessionLineageGuard {
         if !target_node.runtime_present || target_node.deleted {
             return Err(LineageError::TargetNotLive(target));
         }
-        let target_path = self.path_from(target)?;
-        if caller_lineage.caller == target || target_path.contains(&caller) {
+        let target_lineage = self.lineage_for(target)?;
+        if caller_lineage.caller == target
+            || (caller_lineage.root == target_lineage.root
+                && self.path_from(target)?.contains(&caller))
+        {
             return Ok(target);
         }
         Err(LineageError::UnauthorizedTarget)
@@ -426,12 +452,12 @@ impl SessionLineageGuard {
     pub(crate) fn descendant_counts(&self, root: n00nId) -> Result<DescendantCounts, LineageError> {
         let mut total = 0;
         let mut active = 0;
-        for (&id, node) in &self.sessions {
+        for id in self.descendants_of(root)? {
+            let node = self
+                .sessions
+                .get(&id)
+                .ok_or(LineageError::UnknownSession(id))?;
             if node.deleted {
-                continue;
-            }
-            let lineage = self.lineage_for(id)?;
-            if lineage.root != root || id == root {
                 continue;
             }
             total += 1;
@@ -451,35 +477,52 @@ impl SessionLineageGuard {
         })
     }
 
-    fn validate_graph(&self) -> Result<(), LineageError> {
-        for &id in self.sessions.keys() {
-            self.path_from(id)?;
+    fn rebuild_topology(&mut self) -> Result<(), LineageError> {
+        let mut children = HashMap::<n00nId, HashSet<n00nId>>::new();
+        for (&id, node) in &self.sessions {
+            if let Some(parent) = node.parent_id {
+                if !self.sessions.contains_key(&parent) {
+                    return Err(LineageError::MissingParent { id, parent });
+                }
+                children.entry(parent).or_default().insert(id);
+            }
         }
+
+        let mut lineage_cache = HashMap::new();
+        for &id in self.sessions.keys() {
+            resolve_cached_lineage(&self.sessions, &mut lineage_cache, id)?;
+        }
+        for (&id, node) in &self.sessions {
+            let lineage = lineage_cache
+                .get(&id)
+                .ok_or(LineageError::UnknownSession(id))?;
+            if node.root_session_id != lineage.root {
+                return Err(LineageError::RootMismatch {
+                    id,
+                    expected: lineage.root,
+                    found: node.root_session_id,
+                });
+            }
+        }
+        self.children = children;
+        self.lineage_cache = lineage_cache;
         Ok(())
     }
 
     fn lineage_for(&self, id: n00nId) -> Result<SessionLineage, LineageError> {
-        let path = self.path_from(id)?;
         let node = self
             .sessions
             .get(&id)
             .ok_or(LineageError::UnknownSession(id))?;
-        let root = path
-            .last()
-            .copied()
+        let cached = self
+            .lineage_cache
+            .get(&id)
             .ok_or(LineageError::UnknownSession(id))?;
-        if node.root_session_id != root {
-            return Err(LineageError::RootMismatch {
-                id,
-                expected: root,
-                found: node.root_session_id,
-            });
-        }
         Ok(SessionLineage {
             caller: id,
-            root,
+            root: cached.root,
             parent: node.parent_id,
-            depth: path.len() - 1,
+            depth: cached.depth,
         })
     }
 
@@ -488,12 +531,8 @@ impl SessionLineageGuard {
             return Err(LineageError::UnknownSession(start));
         }
         let mut path = Vec::new();
-        let mut seen = HashSet::new();
         let mut current = start;
         loop {
-            if !seen.insert(current) {
-                return Err(LineageError::Cycle(current));
-            }
             path.push(current);
             let parent = self
                 .sessions
@@ -503,14 +542,76 @@ impl SessionLineageGuard {
             let Some(parent) = parent else {
                 return Ok(path);
             };
-            if !self.sessions.contains_key(&parent) {
-                return Err(LineageError::MissingParent {
-                    id: current,
-                    parent,
-                });
-            }
             current = parent;
         }
+    }
+}
+
+fn resolve_cached_lineage(
+    sessions: &HashMap<n00nId, SessionNode>,
+    cache: &mut HashMap<n00nId, CachedLineage>,
+    start: n00nId,
+) -> Result<(), LineageError> {
+    if cache.contains_key(&start) {
+        return Ok(());
+    }
+    let mut trail = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = start;
+    loop {
+        if let Some(cached) = cache.get(&current).copied() {
+            let mut depth = cached.depth;
+            for id in trail.into_iter().rev() {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or(LineageError::DepthExceeded { limit: usize::MAX })?;
+                cache.insert(
+                    id,
+                    CachedLineage {
+                        root: cached.root,
+                        depth,
+                    },
+                );
+            }
+            return Ok(());
+        }
+        if !seen.insert(current) {
+            return Err(LineageError::Cycle(current));
+        }
+        let node = sessions
+            .get(&current)
+            .ok_or(LineageError::UnknownSession(current))?;
+        let Some(parent) = node.parent_id else {
+            cache.insert(
+                current,
+                CachedLineage {
+                    root: current,
+                    depth: 0,
+                },
+            );
+            let mut depth = 0usize;
+            for id in trail.into_iter().rev() {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or(LineageError::DepthExceeded { limit: usize::MAX })?;
+                cache.insert(
+                    id,
+                    CachedLineage {
+                        root: current,
+                        depth,
+                    },
+                );
+            }
+            return Ok(());
+        };
+        if !sessions.contains_key(&parent) {
+            return Err(LineageError::MissingParent {
+                id: current,
+                parent,
+            });
+        }
+        trail.push(current);
+        current = parent;
     }
 }
 
@@ -656,6 +757,25 @@ mod tests {
         .expect("valid graph");
         assert!(matches!(
             active_limited.reserve_new(root, None),
+            Err(LineageError::ActiveDescendantsExceeded { limit: 1 })
+        ));
+    }
+
+    #[test]
+    fn restored_active_descendants_must_fit_limit() {
+        let root = id(1);
+        let first = id(2);
+        let second = id(3);
+
+        assert!(matches!(
+            SessionLineageGuard::from_live(
+                [
+                    session(root, None),
+                    session(first, Some(root)),
+                    session(second, Some(root)),
+                ],
+                limits(4, 4, 1),
+            ),
             Err(LineageError::ActiveDescendantsExceeded { limit: 1 })
         ));
     }

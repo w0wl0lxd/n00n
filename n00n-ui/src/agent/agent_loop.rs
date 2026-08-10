@@ -238,6 +238,8 @@ impl AgentLoop {
         self.rebuild_tools(&slot.model, false);
         let (trigger, cancel) = CancelToken::new();
         self.set_cancel_trigger(run_id, trigger);
+        while self.answer_rx.lock().await.try_recv().is_ok() {}
+
         let agent = Agent::new(
             AgentParams {
                 provider: Arc::clone(&slot.provider),
@@ -263,6 +265,7 @@ impl AgentLoop {
             },
         )
         .with_cancel(cancel)
+        .with_user_response_rx(Arc::clone(&self.answer_rx))
         .with_mcp(self.mcp.clone());
         let result = agent
             .run_tool(format!("bootstrap-{run_id}"), tool, input)
@@ -597,9 +600,8 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use n00n_agent::AgentMode;
+    use std::path::Path;
 
     use super::build_plan_path;
 

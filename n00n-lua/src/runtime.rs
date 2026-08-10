@@ -183,6 +183,7 @@ pub enum Request {
         plugin: Arc<str>,
         command: Arc<str>,
         args: String,
+        identity: Option<SessionIdentity>,
     },
     CollectPromptSlots {
         reply: flume::Sender<ResolvedSlots>,
@@ -688,7 +689,18 @@ impl TaskScope {
 ///
 /// [detached]: TaskScope::detached
 pub(crate) async fn run_detached<F: std::future::Future>(lua: &Lua, fut: F) -> F::Output {
-    let scope = TaskScope::detached(lua);
+    run_callback(lua, None, fut).await
+}
+
+async fn run_callback<F: std::future::Future>(
+    lua: &Lua,
+    identity: Option<SessionIdentity>,
+    fut: F,
+) -> F::Output {
+    let scope = TaskScope::new(
+        lua,
+        TaskCell::new(CancelToken::none(), None, None, identity),
+    );
     let handle = Arc::clone(scope.handle());
     let pump = async {
         let mut event_buf = Vec::new();
@@ -3029,6 +3041,7 @@ pub fn spawn(
                             plugin,
                             command,
                             args,
+                            identity,
                         } => {
                             let handler_fn =
                                 rt.lua.app_data_ref::<CommandHandlerMap>().and_then(|m| {
@@ -3042,7 +3055,7 @@ pub fn spawn(
                                         let thread = lua.create_thread(func)?;
                                         thread.into_async::<()>(args)?.await
                                     };
-                                    if let Err(e) = run_detached(&lua, run).await {
+                                    if let Err(e) = run_callback(&lua, identity, run).await {
                                         tracing::warn!(plugin = %plugin, command = %command, error = %e, "command handler failed");
                                     }
                                 })
