@@ -2581,7 +2581,8 @@ fn drain_writer(app: App, writer: Arc<StorageWriter>) {
     Arc::try_unwrap(writer)
         .ok()
         .expect("app must hold the only other writer reference")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
@@ -2760,7 +2761,8 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
@@ -2799,7 +2801,8 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the restarted storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
@@ -2861,7 +2864,8 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
@@ -2895,7 +2899,8 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the restarted storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
