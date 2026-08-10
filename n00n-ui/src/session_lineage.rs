@@ -95,6 +95,7 @@ struct PendingReservation {
     parent: n00nId,
     root: n00nId,
     depth: usize,
+    execution_active: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -274,6 +275,7 @@ impl SessionLineageGuard {
         &mut self,
         caller: n00nId,
         explicit_parent: Option<n00nId>,
+        execution_active: bool,
     ) -> Result<NewReservation, LineageError> {
         let caller_lineage = self.lineage(caller)?;
         let parent = match explicit_parent {
@@ -305,11 +307,20 @@ impl SessionLineageGuard {
                 limit: self.limits.max_total_descendants,
             });
         }
-        if limit_reached(
-            counts.active,
-            counts.reserved,
-            self.limits.max_active_descendants,
-        ) {
+        let active_reservations = self
+            .reservations
+            .values()
+            .filter(|reservation| {
+                reservation.root == caller_lineage.root && reservation.execution_active
+            })
+            .count();
+        if execution_active
+            && limit_reached(
+                counts.active,
+                active_reservations,
+                self.limits.max_active_descendants,
+            )
+        {
             return Err(LineageError::ActiveDescendantsExceeded {
                 limit: self.limits.max_active_descendants,
             });
@@ -327,6 +338,7 @@ impl SessionLineageGuard {
                 parent,
                 root: caller_lineage.root,
                 depth,
+                execution_active,
             },
         );
         Ok(NewReservation { id })
@@ -354,7 +366,7 @@ impl SessionLineageGuard {
                 root_session_id: pending.root,
                 parent_id: Some(pending.parent),
                 runtime_present: true,
-                execution_active: true,
+                execution_active: pending.execution_active,
                 deleted: false,
             },
         );
@@ -400,7 +412,9 @@ impl SessionLineageGuard {
             .collect::<Vec<_>>();
         let mut descendants = Vec::new();
         while let Some(id) = pending.pop() {
-            descendants.push(id);
+            if self.sessions.get(&id).is_some_and(|node| !node.deleted) {
+                descendants.push(id);
+            }
             if let Some(children) = self.children.get(&id) {
                 pending.extend(children.iter().copied());
             }
@@ -666,14 +680,18 @@ mod tests {
         )
         .expect("valid roots");
 
-        let reservation = guard.reserve_new(root_a, None).expect("root A capacity");
+        let reservation = guard
+            .reserve_new(root_a, None, true)
+            .expect("root A capacity");
         guard.commit_new(reservation, child_a).expect("child A");
         assert!(matches!(
-            guard.reserve_new(root_a, None),
+            guard.reserve_new(root_a, None, true),
             Err(LineageError::TotalDescendantsExceeded { .. })
         ));
 
-        let reservation = guard.reserve_new(root_b, None).expect("root B capacity");
+        let reservation = guard
+            .reserve_new(root_b, None, true)
+            .expect("root B capacity");
         guard.commit_new(reservation, child_b).expect("child B");
         assert_eq!(guard.descendant_counts(root_a).expect("counts").total, 1);
         assert_eq!(guard.descendant_counts(root_b).expect("counts").total, 1);
@@ -695,11 +713,11 @@ mod tests {
         .expect("valid graph");
 
         assert!(matches!(
-            guard.reserve_new(root, Some(foreign)),
+            guard.reserve_new(root, Some(foreign), true),
             Err(LineageError::ParentMismatch)
         ));
         assert!(matches!(
-            guard.reserve_new(id(99), None),
+            guard.reserve_new(id(99), None, true),
             Err(LineageError::CallerNotLive(_))
         ));
         assert_eq!(
@@ -741,12 +759,12 @@ mod tests {
             limits(2, 2, 2),
         )
         .expect("valid graph");
-        let reservation = guard.reserve_new(child, None).expect("depth one");
+        let reservation = guard.reserve_new(child, None, true).expect("depth one");
         guard
             .commit_new(reservation, grandchild)
             .expect("grandchild");
         assert!(matches!(
-            guard.reserve_new(grandchild, None),
+            guard.reserve_new(grandchild, None, true),
             Err(LineageError::DepthExceeded { limit: 2 })
         ));
 
@@ -756,9 +774,46 @@ mod tests {
         )
         .expect("valid graph");
         assert!(matches!(
-            active_limited.reserve_new(root, None),
+            active_limited.reserve_new(root, None, true),
             Err(LineageError::ActiveDescendantsExceeded { limit: 1 })
         ));
+    }
+
+    #[test]
+    fn idle_reservation_does_not_consume_active_capacity() {
+        let root = id(1);
+        let active_child = id(2);
+        let idle_child = id(3);
+        let mut guard = SessionLineageGuard::from_live(
+            [session(root, None), session(active_child, Some(root))],
+            limits(4, 3, 1),
+        )
+        .expect("valid graph");
+
+        assert!(matches!(
+            guard.reserve_new(root, None, true),
+            Err(LineageError::ActiveDescendantsExceeded { limit: 1 })
+        ));
+        let reservation = guard.reserve_new(root, None, false).expect("idle capacity");
+        guard
+            .commit_new(reservation, idle_child)
+            .expect("idle child");
+        assert_eq!(
+            guard.descendant_counts(root).expect("counts"),
+            DescendantCounts {
+                total: 2,
+                active: 1,
+                reserved: 0,
+            }
+        );
+        assert!(matches!(
+            guard.begin_execution(idle_child),
+            Err(LineageError::ActiveDescendantsExceeded { limit: 1 })
+        ));
+        guard
+            .set_execution_active(active_child, false)
+            .expect("release active child");
+        assert!(guard.begin_execution(idle_child).expect("start idle child"));
     }
 
     #[test]
@@ -786,7 +841,7 @@ mod tests {
         let child = id(2);
         let mut guard = SessionLineageGuard::from_live([session(root, None)], limits(4, 1, 1))
             .expect("valid root");
-        let reservation = guard.reserve_new(root, None).expect("reserve");
+        let reservation = guard.reserve_new(root, None, true).expect("reserve");
         assert_eq!(
             guard.descendant_counts(root).expect("counts"),
             DescendantCounts {
@@ -805,7 +860,7 @@ mod tests {
             }
         );
 
-        let reservation = guard.reserve_new(root, None).expect("reserve again");
+        let reservation = guard.reserve_new(root, None, true).expect("reserve again");
         guard.commit_new(reservation, child).expect("commit");
         guard.remove_runtime(child).expect("remove");
         assert_eq!(
@@ -817,7 +872,7 @@ mod tests {
             }
         );
         assert!(matches!(
-            guard.reserve_new(root, None),
+            guard.reserve_new(root, None, true),
             Err(LineageError::TotalDescendantsExceeded { limit: 1 })
         ));
     }
@@ -827,11 +882,42 @@ mod tests {
         let root = id(1);
         let mut guard = SessionLineageGuard::from_live([session(root, None)], limits(4, 1, 1))
             .expect("valid root");
-        let reservation = guard.reserve_new(root, None).expect("reserve");
+        let reservation = guard.reserve_new(root, None, true).expect("reserve");
         assert!(matches!(
             guard.commit_new(reservation, root),
             Err(LineageError::DuplicateSession(_))
         ));
         assert_eq!(guard.descendant_counts(root).expect("counts").reserved, 0);
+    }
+
+    #[test]
+    fn descendants_of_omits_tombstoned_sessions() {
+        let root = id(1);
+        let child = id(2);
+        let grandchild = id(3);
+        let sibling = id(4);
+        let grandchild_session = LiveSession {
+            id: grandchild,
+            root_session_id: root,
+            parent_id: Some(child),
+            runtime_present: true,
+            execution_active: true,
+        };
+        let mut guard = SessionLineageGuard::from_live(
+            [
+                session(root, None),
+                session(child, Some(root)),
+                grandchild_session,
+                session(sibling, Some(root)),
+            ],
+            limits(4, 4, 4),
+        )
+        .expect("valid graph");
+
+        guard.remove_sessions(&[child, grandchild]);
+        assert_eq!(
+            guard.descendants_of(root).expect("descendants"),
+            vec![sibling]
+        );
     }
 }
