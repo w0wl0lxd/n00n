@@ -355,7 +355,16 @@ impl<'h> Agent<'h> {
         self.total_cost
     }
 
-    pub async fn run_tool(&self, id: String, name: &str, input: &Value) -> ToolDoneEvent {
+    /// Runs one tool and emits its completion event.
+    ///
+    /// # Errors
+    /// Returns an error when the completion event cannot be delivered.
+    pub async fn run_tool(
+        &self,
+        id: String,
+        name: &str,
+        input: &Value,
+    ) -> Result<ToolDoneEvent, AgentError> {
         let ctx = self.tool_context();
         let done = tool_dispatch::run(
             &self.registry,
@@ -368,8 +377,8 @@ impl<'h> Agent<'h> {
         )
         .await;
         self.event_tx
-            .try_send(AgentEvent::ToolDone(Box::new(done.clone())));
-        done
+            .send(AgentEvent::ToolDone(Box::new(done.clone())))?;
+        Ok(done)
     }
 
     /// Runs the agent loop with the given input.

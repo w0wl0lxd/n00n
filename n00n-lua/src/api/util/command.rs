@@ -432,10 +432,12 @@ pub enum SessionRequest {
         steer: bool,
         control: bool,
         caller_id: Option<SessionRef>,
+        host_control: bool,
     },
     Cancel {
         id: String,
         caller_id: Option<SessionRef>,
+        host_control: bool,
     },
     Focus {
         id: String,

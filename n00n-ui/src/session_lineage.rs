@@ -86,6 +86,7 @@ struct SessionNode {
     parent_id: Option<n00nId>,
     runtime_present: bool,
     execution_active: bool,
+    deleted: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -124,6 +125,7 @@ impl SessionLineageGuard {
                         parent_id: session.parent_id,
                         runtime_present: session.runtime_present,
                         execution_active: session.execution_active,
+                        deleted: false,
                     },
                 )
                 .is_some()
@@ -137,6 +139,9 @@ impl SessionLineageGuard {
 
     pub(crate) fn activate_runtime(&mut self, session: LiveSession) -> Result<(), LineageError> {
         if let Some(existing) = self.sessions.get(&session.id) {
+            if existing.deleted {
+                return Err(LineageError::UnknownSession(session.id));
+            }
             if existing.runtime_present {
                 return Err(LineageError::DuplicateSession(session.id));
             }
@@ -170,6 +175,7 @@ impl SessionLineageGuard {
                 parent_id: session.parent_id,
                 runtime_present: true,
                 execution_active: session.execution_active,
+                deleted: false,
             },
         );
         if let Err(error) = self.validate_graph() {
@@ -198,7 +204,7 @@ impl SessionLineageGuard {
             .sessions
             .get_mut(&id)
             .ok_or(LineageError::UnknownSession(id))?;
-        if active && !node.runtime_present {
+        if active && (!node.runtime_present || node.deleted) {
             return Err(LineageError::TargetNotLive(id));
         }
         let changed = node.execution_active != active;
@@ -238,7 +244,7 @@ impl SessionLineageGuard {
             .sessions
             .get(&caller)
             .ok_or(LineageError::CallerNotLive(caller))?;
-        if !node.runtime_present {
+        if !node.runtime_present || node.deleted {
             return Err(LineageError::CallerNotLive(caller));
         }
         self.lineage_for(caller).map_err(|error| match error {
@@ -333,6 +339,7 @@ impl SessionLineageGuard {
                 parent_id: Some(pending.parent),
                 runtime_present: true,
                 execution_active: true,
+                deleted: false,
             },
         );
         if let Err(error) = self.validate_graph() {
@@ -377,6 +384,20 @@ impl SessionLineageGuard {
         Ok(descendants)
     }
 
+    pub(crate) fn remove_sessions(&mut self, ids: &[n00nId]) {
+        let removed: HashSet<_> = ids.iter().copied().collect();
+        for id in &removed {
+            if let Some(node) = self.sessions.get_mut(id) {
+                node.runtime_present = false;
+                node.execution_active = false;
+                node.deleted = true;
+            }
+        }
+        self.reservations.retain(|_, reservation| {
+            !removed.contains(&reservation.caller) && !removed.contains(&reservation.parent)
+        });
+    }
+
     pub(crate) fn authorize_prompt(
         &self,
         caller: n00nId,
@@ -392,15 +413,11 @@ impl SessionLineageGuard {
             .sessions
             .get(&target)
             .ok_or(LineageError::UnknownSession(target))?;
-        if !target_node.runtime_present {
+        if !target_node.runtime_present || target_node.deleted {
             return Err(LineageError::TargetNotLive(target));
         }
-        let caller_path = self.path_from(caller)?;
         let target_path = self.path_from(target)?;
-        if caller_lineage.caller == target
-            || caller_path.contains(&target)
-            || target_path.contains(&caller)
-        {
+        if caller_lineage.caller == target || target_path.contains(&caller) {
             return Ok(target);
         }
         Err(LineageError::UnauthorizedTarget)
@@ -410,6 +427,9 @@ impl SessionLineageGuard {
         let mut total = 0;
         let mut active = 0;
         for (&id, node) in &self.sessions {
+            if node.deleted {
+                continue;
+            }
             let lineage = self.lineage_for(id)?;
             if lineage.root != root || id == root {
                 continue;
@@ -495,7 +515,7 @@ impl SessionLineageGuard {
 }
 
 fn limit_reached(committed: usize, reserved: usize, limit: usize) -> bool {
-    committed >= limit || reserved >= limit.saturating_sub(committed)
+    committed.saturating_add(reserved) >= limit
 }
 
 #[cfg(test)]
@@ -589,6 +609,10 @@ mod tests {
         );
         assert!(matches!(
             guard.authorize_prompt(sibling, Some(foreign)),
+            Err(LineageError::UnauthorizedTarget)
+        ));
+        assert!(matches!(
+            guard.authorize_prompt(sibling, Some(root)),
             Err(LineageError::UnauthorizedTarget)
         ));
     }

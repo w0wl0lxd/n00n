@@ -7,7 +7,7 @@
 //! waits on every event source at once and wakes the moment a plugin action,
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,7 +38,7 @@ use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{
-    SessionError, StoredSessionLifecycle, TranscriptEntry, normalize_title,
+    SessionError, StoredDirectTool, StoredSessionLifecycle, TranscriptEntry, normalize_title,
 };
 use serde_json::{Value, json};
 use tracing::warn;
@@ -154,6 +154,32 @@ fn live_session(session: &AppSession) -> std::result::Result<LiveSession, Lineag
     })
 }
 
+fn resolved_root(
+    start: n00nId,
+    parents: &HashMap<n00nId, Option<n00nId>>,
+) -> std::result::Result<n00nId, LineageError> {
+    let mut current = start;
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(current) {
+            return Err(LineageError::Cycle(current));
+        }
+        let parent = parents
+            .get(&current)
+            .ok_or(LineageError::UnknownSession(current))?;
+        let Some(parent) = parent else {
+            return Ok(current);
+        };
+        if !parents.contains_key(parent) {
+            return Err(LineageError::MissingParent {
+                id: current,
+                parent: *parent,
+            });
+        }
+        current = *parent;
+    }
+}
+
 fn session_identity(session: &AppSession) -> std::result::Result<SessionIdentity, LineageError> {
     let live = live_session(session)?;
     let session_id = SessionRef::from(live.id);
@@ -164,6 +190,16 @@ fn session_identity(session: &AppSession) -> std::result::Result<SessionIdentity
             session_id,
             SessionRef::from(live.root_session_id),
         ))
+    }
+}
+
+fn warn_lineage_cleanup<T>(
+    result: std::result::Result<T, LineageError>,
+    session_id: n00nId,
+    action: &'static str,
+) {
+    if let Err(error) = result {
+        warn!(%session_id, %error, action, "session lineage cleanup failed");
     }
 }
 
@@ -488,9 +524,9 @@ impl<'t> EventLoop<'t> {
             mut model,
             needs_login,
             commands,
-            sessions,
+            mut sessions,
             focused,
-            startup_warnings,
+            mut startup_warnings,
             storage,
             config,
             ui_config,
@@ -537,22 +573,66 @@ impl<'t> EventLoop<'t> {
         let picker = Arc::new(terminal_image::picker());
 
         let runtime_ids: HashSet<_> = sessions.iter().map(|session| session.id).collect();
+        let stored = AppSession::list(&cwd.to_string_lossy(), &storage)
+            .map_err(|error| eyre!("failed to list stored session lineage: {error}"))?;
+        let mut stored_sessions = Vec::new();
+        for summary in stored {
+            if runtime_ids.contains(&summary.id) {
+                continue;
+            }
+            match AppSession::load(summary.id, &storage) {
+                Ok(session) => stored_sessions.push(session),
+                Err(error) => startup_warnings.push(format!(
+                    "Skipped unreadable stored session {}: {error}",
+                    summary.id
+                )),
+            }
+        }
+        let parents: HashMap<_, _> = sessions
+            .iter()
+            .chain(&stored_sessions)
+            .map(|session| (session.id, session.meta.parent_id))
+            .collect();
+        for session in &mut sessions {
+            let root = resolved_root(session.id, &parents)
+                .map_err(|error| eyre!("invalid live session lineage: {error}"))?;
+            if session
+                .meta
+                .root_session_id
+                .is_some_and(|stored| stored != root)
+            {
+                return Err(eyre!(
+                    "invalid live session lineage root for {}",
+                    session.id
+                ));
+            }
+            session.meta.root_session_id = (session.meta.parent_id.is_some()).then_some(root);
+        }
         let mut live_sessions = sessions
             .iter()
             .map(live_session)
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| eyre!("invalid live session lineage: {error}"))?;
-        let stored = AppSession::list(&cwd.to_string_lossy(), &storage)
-            .map_err(|error| eyre!("failed to reconstruct stored session lineage: {error}"))?;
-        for summary in stored {
-            if runtime_ids.contains(&summary.id) {
-                continue;
+        for mut session in stored_sessions {
+            let root = match resolved_root(session.id, &parents) {
+                Ok(root) => root,
+                Err(error) => {
+                    startup_warnings.push(format!(
+                        "Skipped stored session {} with invalid lineage: {error}",
+                        session.id
+                    ));
+                    continue;
+                }
+            };
+            let migrated_root = session.meta.parent_id.map(|_| root);
+            if session.meta.root_session_id != migrated_root {
+                session.meta.root_session_id = migrated_root;
+                storage_writer.send(Box::new(session.clone()));
             }
-            let session = AppSession::load(summary.id, &storage)
-                .map_err(|error| eyre!("failed to load stored session lineage node: {error}"))?;
             let mut node = live_session(&session)
                 .map_err(|error| eyre!("invalid stored session lineage: {error}"))?;
             node.runtime_present = false;
+            node.execution_active = false;
             live_sessions.push(node);
         }
         let lineage = SessionLineageGuard::from_live(
@@ -800,6 +880,11 @@ impl<'t> EventLoop<'t> {
     }
 
     fn handle_agent(&mut self, idx: usize, envelope: Box<n00n_agent::Envelope>) {
+        if envelope.run_id != self.sessions[idx].app.run_id {
+            let actions = self.sessions[idx].app.update(Msg::Agent(envelope));
+            self.dispatch(idx, actions);
+            return;
+        }
         let lifecycle = match &envelope.event {
             n00n_agent::AgentEvent::Done { .. } => Some(StoredSessionLifecycle::Succeeded),
             n00n_agent::AgentEvent::Error { .. } => Some(StoredSessionLifecycle::Failed),
@@ -830,6 +915,13 @@ impl<'t> EventLoop<'t> {
         if let Some(lifecycle) = lifecycle {
             self.sessions[idx].app.state.session.meta.lifecycle = lifecycle;
             if terminal {
+                self.sessions[idx]
+                    .app
+                    .state
+                    .session
+                    .meta
+                    .queued_direct_tools
+                    .clear();
                 let id = self.sessions[idx].id();
                 if let Err(error) = self.lineage.set_execution_active(id, false) {
                     warn!(session_id = %id, error = %error, "failed to release session lineage activity");
@@ -973,6 +1065,7 @@ impl<'t> EventLoop<'t> {
     /// `List` replies from a background task (the scan can be slow); every
     /// other request is answered synchronously by the event loop, which owns
     /// the live runtimes.
+    #[allow(clippy::too_many_lines)]
     fn handle_session_request(
         &mut self,
         req: SessionRequest,
@@ -1002,24 +1095,53 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
-                if let Some(i) = self.position(id) {
-                    if i == self.focused {
-                        let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
+                let mut targets = match self.lineage.descendants_of(id) {
+                    Ok(targets) => targets,
+                    Err(LineageError::UnknownSession(_)) => Vec::new(),
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error.to_string()));
                         return;
                     }
-                    let rt = self.remove_runtime(i);
-                    rt.handles.cancel();
-                    rt.app.drop_plugin_state(id);
+                };
+                targets.push(id);
+                let focused_id = self.sessions[self.focused].id();
+                if targets.contains(&focused_id) {
+                    let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
+                    return;
                 }
-                self.ctx.storage_writer.delete(id, move |res| {
-                    let reply = match res {
-                        Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_))) => {
-                            Ok(json!(true))
+                let mut runtime_indices: Vec<_> = targets
+                    .iter()
+                    .filter_map(|target| self.position(*target))
+                    .collect();
+                runtime_indices.sort_unstable_by(|left, right| right.cmp(left));
+                for index in runtime_indices {
+                    let rt = self.remove_runtime(index);
+                    let runtime_id = rt.id();
+                    rt.app.drop_plugin_state(runtime_id);
+                    rt.handles.cancel();
+                }
+                self.lineage.remove_sessions(&targets);
+                let (done_tx, done_rx) = flume::unbounded();
+                let count = targets.len();
+                for target in targets {
+                    let done_tx = done_tx.clone();
+                    self.ctx.storage_writer.delete(target, move |result| {
+                        let _ = done_tx.send(result);
+                    });
+                }
+                smol::spawn(async move {
+                    let mut failure = None;
+                    for _ in 0..count {
+                        match done_rx.recv_async().await {
+                            Ok(Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_)))) => {}
+                            Ok(Err(error)) => failure = Some(error.to_string()),
+                            Err(error) => failure = Some(error.to_string()),
                         }
-                        Err(e) => Err(e.to_string()),
-                    };
+                    }
+                    let reply = failure.map_or_else(|| Ok(json!(true)), Err);
                     let _ = reply_tx.send(reply);
-                });
+                })
+                .detach();
             }
             SessionRequest::Live => {
                 let list: Vec<_> = self
@@ -1085,7 +1207,11 @@ impl<'t> EventLoop<'t> {
                     let caller_lineage = match self.lineage.lineage(caller) {
                         Ok(lineage) => lineage,
                         Err(error) => {
-                            let _ = self.lineage.release(reservation);
+                            warn_lineage_cleanup(
+                                self.lineage.release(reservation),
+                                caller,
+                                "release reservation",
+                            );
                             return Err(error.to_string());
                         }
                     };
@@ -1105,7 +1231,11 @@ impl<'t> EventLoop<'t> {
                     let runtime = match self.ctx.spawn_runtime(session) {
                         Ok(runtime) => runtime,
                         Err(error) => {
-                            let _ = self.lineage.release(reservation);
+                            warn_lineage_cleanup(
+                                self.lineage.release(reservation),
+                                caller,
+                                "release reservation",
+                            );
                             return Err(error.to_string());
                         }
                     };
@@ -1122,6 +1252,10 @@ impl<'t> EventLoop<'t> {
                             app.status = Status::Streaming;
                             app.state.session.meta.lifecycle =
                                 StoredSessionLifecycle::Bootstrapping;
+                            app.state.session.meta.queued_direct_tools = vec![StoredDirectTool {
+                                tool: bootstrap.tool.clone(),
+                                input: bootstrap.input.clone(),
+                            }];
                             app.run_id
                         };
                         self.sessions[idx]
@@ -1138,13 +1272,21 @@ impl<'t> EventLoop<'t> {
                     } else {
                         self.sessions[idx].app.state.session.meta.lifecycle =
                             StoredSessionLifecycle::Idle;
-                        let _ = self.lineage.set_execution_active(id, false);
+                        warn_lineage_cleanup(
+                            self.lineage.set_execution_active(id, false),
+                            id,
+                            "clear idle activity",
+                        );
                         Ok(json!("idle"))
                     };
                     if let Err(error) = start_result {
                         let runtime = self.remove_runtime(idx);
                         runtime.handles.cancel();
-                        let _ = self.lineage.rollback_new(id);
+                        warn_lineage_cleanup(
+                            self.lineage.rollback_new(id),
+                            id,
+                            "roll back new session",
+                        );
                         return Err(error);
                     }
                     self.sessions[idx].app.save_session();
@@ -1161,14 +1303,19 @@ impl<'t> EventLoop<'t> {
                 steer,
                 control,
                 caller_id,
+                host_control,
             } => {
                 let reply = (|| {
-                    let caller = caller_session_id(caller_id)?;
                     let explicit_target = id.as_deref().map(parse_session_id).transpose()?;
-                    let target = self
-                        .lineage
-                        .authorize_prompt(caller, explicit_target)
-                        .map_err(|error| error.to_string())?;
+                    let target = if host_control {
+                        explicit_target
+                            .ok_or_else(|| "host control requires a target session".to_owned())?
+                    } else {
+                        let caller = caller_session_id(caller_id)?;
+                        self.lineage
+                            .authorize_prompt(caller, explicit_target)
+                            .map_err(|error| error.to_string())?
+                    };
                     let idx = self
                         .position(target)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {target}"))?;
@@ -1184,7 +1331,11 @@ impl<'t> EventLoop<'t> {
                         }
                         Err(error) => {
                             if activated {
-                                let _ = self.lineage.set_execution_active(target, false);
+                                warn_lineage_cleanup(
+                                    self.lineage.set_execution_active(target, false),
+                                    target,
+                                    "roll back prompt activity",
+                                );
                             }
                             Err(error)
                         }
@@ -1192,14 +1343,21 @@ impl<'t> EventLoop<'t> {
                 })();
                 let _ = reply_tx.send(reply);
             }
-            SessionRequest::Cancel { id, caller_id } => {
+            SessionRequest::Cancel {
+                id,
+                caller_id,
+                host_control,
+            } => {
                 let reply = (|| {
-                    let caller = caller_session_id(caller_id)?;
                     let requested = parse_session_id(&id)?;
-                    let target = self
-                        .lineage
-                        .authorize_prompt(caller, Some(requested))
-                        .map_err(|error| error.to_string())?;
+                    let target = if host_control {
+                        requested
+                    } else {
+                        let caller = caller_session_id(caller_id)?;
+                        self.lineage
+                            .authorize_prompt(caller, Some(requested))
+                            .map_err(|error| error.to_string())?
+                    };
                     let mut targets = self
                         .lineage
                         .descendants_of(target)
@@ -1212,9 +1370,14 @@ impl<'t> EventLoop<'t> {
                                 .map_err(|error| error.to_string())?;
                             cancelled |= session.meta.lifecycle.is_active();
                             session.meta.lifecycle = StoredSessionLifecycle::Cancelled;
+                            session.meta.queued_direct_tools.clear();
                             session.updated_at = n00n_storage::now_epoch();
                             self.ctx.storage_writer.send(Box::new(session));
-                            let _ = self.lineage.set_execution_active(session_id, false);
+                            warn_lineage_cleanup(
+                                self.lineage.set_execution_active(session_id, false),
+                                session_id,
+                                "clear cancelled activity",
+                            );
                             continue;
                         };
                         if SessionStatus::of(&self.sessions[idx].app) != SessionStatus::Idle
@@ -1233,7 +1396,11 @@ impl<'t> EventLoop<'t> {
                         self.sessions[idx].app.state.session.meta.lifecycle =
                             StoredSessionLifecycle::Cancelled;
                         self.sessions[idx].app.save_session();
-                        let _ = self.lineage.set_execution_active(session_id, false);
+                        warn_lineage_cleanup(
+                            self.lineage.set_execution_active(session_id, false),
+                            session_id,
+                            "clear cancelled activity",
+                        );
                     }
                     if !cancelled {
                         return Err(format!("session is idle: {target}"));
@@ -1347,7 +1514,11 @@ impl<'t> EventLoop<'t> {
         let runtime = match self.ctx.spawn_runtime(session) {
             Ok(runtime) => runtime,
             Err(error) => {
-                let _ = self.lineage.remove_runtime(id);
+                warn_lineage_cleanup(
+                    self.lineage.remove_runtime(id),
+                    id,
+                    "roll back runtime activation",
+                );
                 return Err(error.to_string());
             }
         };
@@ -1542,10 +1713,33 @@ impl<'t> EventLoop<'t> {
                     });
             }
             Action::CancelAgent { run_id } => {
-                let _ = self.sessions[idx]
+                let id = self.sessions[idx].id();
+                match self.sessions[idx]
                     .handles
                     .cmd_tx
-                    .try_send(AgentCommand::Cancel { run_id });
+                    .try_send(AgentCommand::Cancel { run_id })
+                {
+                    Ok(()) => {
+                        self.sessions[idx].app.state.session.meta.lifecycle =
+                            StoredSessionLifecycle::Cancelled;
+                        self.sessions[idx]
+                            .app
+                            .state
+                            .session
+                            .meta
+                            .queued_direct_tools
+                            .clear();
+                        warn_lineage_cleanup(
+                            self.lineage.set_execution_active(id, false),
+                            id,
+                            "clear keyboard-cancelled activity",
+                        );
+                        self.sessions[idx].app.save_session();
+                    }
+                    Err(error) => {
+                        warn!(session_id = %id, %error, "failed to send agent cancellation");
+                    }
+                }
             }
             Action::CancelSubagent { tool_use_id } => {
                 let _ = self.sessions[idx]

@@ -15,7 +15,7 @@ local subagent = require("n00n.subagent")
 local DONE_NAME = "done"
 local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
 local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
-local ORCHESTRATION_TOOLS = { "task", "team", "workflow", "agent_control", "batch" }
+local ORCHESTRATION_TOOLS = subagent.orchestration_tools()
 local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
@@ -82,7 +82,7 @@ local function handler(input, ctx)
       forwarded[key] = value
     end
     forwarded.background = false
-    local title = "task: " .. (input.description or input.prompt or "background task"):sub(1, 60)
+    local title = "task: " .. n00n.ui.truncate_text(input.description or input.prompt or "background task", 60).head
     local id, err = n00n.session.new({
       tool = "task",
       input = forwarded,

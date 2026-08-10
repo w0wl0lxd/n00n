@@ -308,6 +308,15 @@ impl QueueSender {
             })
             .collect()
     }
+    pub(crate) fn direct_tools(&self) -> Vec<(String, serde_json::Value)> {
+        lock(&self.items)
+            .iter()
+            .filter_map(|item| match item {
+                QueueItem::DirectTool { tool, input, .. } => Some((tool.clone(), input.clone())),
+                QueueItem::Message { .. } | QueueItem::Compact { .. } => None,
+            })
+            .collect()
+    }
 
     pub(crate) fn panel_len(&self) -> usize {
         lock(&self.items)
@@ -480,6 +489,22 @@ mod tests {
                 "normal".into(),
             )
         );
+    }
+
+    #[test]
+    fn direct_tools_are_available_for_persistence() {
+        let (tx, _rx) = queue();
+        tx.push(QueueItem::DirectTool {
+            run_id: 7,
+            tool: "task".into(),
+            input: serde_json::json!({"prompt": "ship"}),
+        });
+
+        assert_eq!(
+            tx.direct_tools(),
+            vec![("task".into(), serde_json::json!({"prompt": "ship"}))]
+        );
+        assert!(tx.queued_inputs().is_empty());
     }
 
     #[test]

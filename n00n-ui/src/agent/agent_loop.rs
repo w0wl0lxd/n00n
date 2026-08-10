@@ -266,7 +266,7 @@ impl AgentLoop {
         .with_mcp(self.mcp.clone());
         let result = agent
             .run_tool(format!("bootstrap-{run_id}"), tool, input)
-            .await;
+            .await?;
         drop(agent);
         self.clear_cancel_trigger(run_id);
         if result.is_error {
