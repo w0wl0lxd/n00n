@@ -200,13 +200,30 @@ fn all_success_exact_llm_output() {
     assert_eq!(out, expected);
 }
 
-#[test]
-fn cancellation_finishes_batch_cleanup_without_interrupt_error() {
+#[test_case::test_case(
+    r"n00n.async.gather({ function()
+    local started = os.clock()
+    while os.clock() - started < 0.05 do end
+  end })",
+    true;
+    "yielding_cleanup_reply_is_retained"
+)]
+#[test_case::test_case(
+    r"while true do
+    n00n.async.gather({ function()
+      local started = os.clock()
+      while os.clock() - started < 0.05 do end
+    end })
+  end",
+    false;
+    "repeatedly_yielding_cleanup_is_bounded"
+)]
+fn cancellation_bounds_yielding_batch_cleanup(cleanup: &str, expects_reply: bool) {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let source = BATCH_PLUGIN_SRC.replace(
         "  n00n.async.gather(funs)\n  for _, c in ipairs(self.children) do",
-        "  n00n.async.gather(funs)\n  local started = os.clock()\n  while os.clock() - started < 0.05 do end\n  for _, c in ipairs(self.children) do",
+        &format!("  n00n.async.gather(funs)\n  {cleanup}\n  for _, c in ipairs(self.children) do"),
     );
     let prelude = STUB_PRELUDE.replace("@BOOM_ERR@", BOOM_ERR);
     host.load_source("cancel_batch", &format!("{prelude}\n{source}"))
@@ -237,10 +254,11 @@ fn cancellation_finishes_batch_cleanup_without_interrupt_error() {
     let done = done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("cancelled batch did not finish");
-    let output = done.output.expect("cancelled batch returned a tool error");
-    let text = match output {
-        ToolOutput::Plain(text) | ToolOutput::Markdown(text) => text.text,
-        other => panic!("unexpected output: {other:?}"),
+    assert_eq!(done.output.is_ok(), expects_reply);
+    let text = match done.output {
+        Ok(ToolOutput::Plain(text) | ToolOutput::Markdown(text)) => text.text,
+        Ok(other) => panic!("unexpected output: {other:?}"),
+        Err(error) => error,
     };
     assert!(text.contains("cancelled"), "got: {text}");
     assert!(!text.contains("plugin interrupted"), "got: {text}");
