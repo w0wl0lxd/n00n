@@ -1135,6 +1135,39 @@ mod tests {
     }
 
     #[test]
+    fn successful_delete_clears_exhausted_retry_state() {
+        let (_tmp, dir) = state_dir();
+        let mut state = WriterState::default();
+        let mut session = AppSession::new("test-model", "/tmp/delete-exhausted");
+        let id = session.id;
+        state.stage_snapshot(PendingSnapshot::new(1, Box::new(session.clone())));
+        assert!(state.flush(&dir).is_empty());
+
+        session.meta.revision += 1;
+        let failed_snapshot = PendingSnapshot::new(2, Box::new(session));
+        let failed_version = failed_snapshot.version.clone();
+        state.stage_snapshot(failed_snapshot);
+        let failed = FailedSnapshots::from([(
+            id,
+            FailedSnapshot {
+                version: failed_version.clone(),
+                error: None,
+            },
+        )]);
+        for _ in 0..MAX_RETRY_ATTEMPTS {
+            state.retries.record_failures(&mut state.pending, &failed);
+        }
+        assert_eq!(state.retries.exhausted.get(&id), Some(&failed_version));
+        assert_eq!(state.retries.unpersisted_count(&FailedSnapshots::new()), 1);
+
+        state.delete(id, 3, &dir).unwrap();
+
+        assert!(!state.retries.exhausted.contains_key(&id));
+        assert_eq!(state.retries.unpersisted_count(&FailedSnapshots::new()), 0);
+        assert!(AppSession::load(id, &dir).is_err());
+    }
+
+    #[test]
     fn public_operations_do_not_block_behind_writer_filesystem_io() {
         let (_tmp, dir) = state_dir();
         let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
