@@ -29,6 +29,7 @@ pub mod update;
 mod agent;
 mod event_loop;
 mod input;
+mod session_lineage;
 mod terminal;
 mod terminal_image;
 
