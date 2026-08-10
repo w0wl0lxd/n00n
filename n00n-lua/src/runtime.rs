@@ -96,7 +96,7 @@ pub const WARM_TOOL_CAP: usize = 32;
 const GC_STEP_INTERVAL: usize = 4;
 const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub const CANCEL_INTERRUPT_GRACE: Duration = Duration::from_millis(100);
-const ASYNC_FINISH_GRACE: Duration = Duration::from_millis(250);
+const DEADLINE_CLEANUP_GRACE: Duration = Duration::from_millis(250);
 const ASYNC_CLEANUP_TIMEOUT_MSG: &str = "async.run cleanup timed out";
 const OPT_LEVEL_JIT: u8 = 2;
 const OPT_LEVEL_DEBUGGABLE: u8 = 1;
@@ -462,7 +462,7 @@ fn async_cleanup_cutoff(handle: &TaskHandle) -> Option<Instant> {
         )
     };
     let parent_cutoff = awaited_parent_deadline(parent.as_ref())
-        .map(|deadline| checked_deadline_after(deadline, ASYNC_FINISH_GRACE));
+        .map(|deadline| checked_deadline_after(deadline, DEADLINE_CLEANUP_GRACE));
     earliest_deadline(earliest_deadline(cutoff, parent_cutoff), cancellation)
 }
 
@@ -475,6 +475,13 @@ fn mark_deadline_interrupted(handle: &TaskHandle) {
         cell.deadline.set(None);
     }
     cell.deadline_interrupted.set(true);
+}
+
+fn absolute_deadline_cutoff(handle: &TaskHandle) -> Option<Instant> {
+    lock_cell(handle)
+        .interrupted_deadline
+        .get()
+        .map(|deadline| checked_deadline_after(deadline, DEADLINE_CLEANUP_GRACE))
 }
 
 pub(crate) fn ensure_cancellation_cleanup(lua: &Lua) -> Result<(), mlua::Error> {
@@ -586,7 +593,9 @@ fn interrupt_decision(lua: &Lua) -> Option<InterruptDecision> {
         return Some(InterruptDecision::Raise(INTERRUPT_SHUTDOWN_MSG));
     }
     let handle = lua.app_data_ref::<TaskHandle>()?;
-    if async_cleanup_cutoff(&handle).is_some_and(|cutoff| Instant::now() >= cutoff) {
+    if absolute_deadline_cutoff(&handle).is_some_and(|cutoff| Instant::now() >= cutoff)
+        || async_cleanup_cutoff(&handle).is_some_and(|cutoff| Instant::now() >= cutoff)
+    {
         return Some(InterruptDecision::Yield);
     }
     let cancellation = { cancellation_cutoff(&lock_cell(&handle)) };
@@ -1158,7 +1167,7 @@ fn spawn_async_task(
         let mut cell = TaskCell::new(task.cancel.clone(), task.deadline, task.live_ctx.clone());
         cell.async_cleanup_cutoff.set(
             task.deadline
-                .map(|deadline| checked_deadline_after(deadline, ASYNC_FINISH_GRACE)),
+                .map(|deadline| checked_deadline_after(deadline, DEADLINE_CLEANUP_GRACE)),
         );
         cell.async_parent = parent;
         cell.is_async_run = true;

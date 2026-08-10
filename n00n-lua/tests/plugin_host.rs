@@ -230,6 +230,8 @@ const FINISH_CALLED_TWICE_ERR: &str = "ctx:finish() already called";
 const DEADLINE_ALREADY_SET_ERR: &str = "ctx:set_deadline() already called";
 const TIMED_OUT_SUBSTR: &str = "timed out";
 const DEADLINE_HOT_LOOP_TIMEOUT_ERR: &str = "tool deadline_hot_loop timed out after 1s";
+const CAUGHT_DEADLINE_HOT_LOOP_TIMEOUT_ERR: &str =
+    "tool deadline_caught_forever timed out after 1s";
 const WORKFLOW_TIMEOUT_SCHEMA_SUBSTR: &str = "minimum 60s";
 const WORKFLOW_TIMEOUT_REJECTED_SUBSTR: &str = "at least 60";
 const WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR: &str = "below minimum (60)";
@@ -3091,6 +3093,48 @@ fn caught_deadline_interrupt_allows_cleanup_before_timeout_reply() {
 }
 
 #[test]
+fn caught_deadline_interrupt_then_hot_loop_hits_absolute_cutoff() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_caught_forever",
+            description = "catches the deadline before looping forever",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            timeout = 3,
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                pcall(function() while true do end end)
+                while true do end
+            end
+        }})
+        n00n.api.register_tool({{
+            name = "deadline_caught_forever_probe",
+            description = "checks that the VM recovered",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            timeout = 2,
+            handler = function() return "ok" end
+        }})"#,
+    );
+    host.load_source("deadline_caught_forever", &src).unwrap();
+
+    let timeout = exec_tool(&reg, "deadline_caught_forever", serde_json::json!({}));
+    if !timeout
+        .as_ref()
+        .is_err_and(|error| error == CAUGHT_DEADLINE_HOT_LOOP_TIMEOUT_ERR)
+    {
+        std::mem::forget(host);
+        panic!("caught deadline hot loop escaped absolute cutoff: {timeout:?}");
+    }
+    assert_eq!(
+        exec_tool(&reg, "deadline_caught_forever_probe", serde_json::json!({})).unwrap(),
+        "ok"
+    );
+}
+
+#[test]
 fn dispatch_async_retains_finish_after_yielding_timeout_cleanup() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -3210,7 +3254,6 @@ fn async_finish_hot_loop_catching_interrupt_hits_absolute_cutoff() {
 fn cancellation_wins_after_caught_deadline_interrupt() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
     let src = format!(
         r#"n00n.api.register_tool({{
             name = "deadline_cancelled",
@@ -3223,9 +3266,8 @@ fn cancellation_wins_after_caught_deadline_interrupt() {
                 local buf = n00n.ui.buf()
                 buf:line("cleanup")
                 ctx:live_buf(buf)
-                local started = os.clock()
-                while os.clock() - started < {cleanup_secs} do end
-                return "unexpected"
+                while not ctx:cancelled() do end
+                while true do end
             end
         }})"#,
     );
