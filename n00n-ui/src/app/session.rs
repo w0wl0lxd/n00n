@@ -12,7 +12,8 @@ use n00n_providers::{Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
     StoredDelivery, StoredDirectTool, StoredImageMediaType, StoredImageSource, StoredMcpPrompt,
-    StoredMode, StoredQueuedMessage, StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
+    StoredMode, StoredQueuedMessage, StoredSessionLifecycle, StoredSessionStateSnapshot,
+    StoredSubagent, StoredThinking,
 };
 
 use crate::AppSession;
@@ -57,6 +58,7 @@ pub(crate) fn session_has_content(session: &AppSession) -> bool {
         || !session.meta.queued_submissions.is_empty()
         || !session.meta.queued_direct_tools.is_empty()
         || session.meta.direct_output.is_some()
+        || session.meta.lifecycle == StoredSessionLifecycle::Cancelled
         || session.meta.mode != Some(n00n_storage::sessions::StoredMode::Build)
         || session.meta.plan_path.is_some()
         || session.meta.plan_written
