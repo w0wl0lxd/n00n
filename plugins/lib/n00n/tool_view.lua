@@ -146,7 +146,8 @@ end
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
 -- max_line_bytes (optional) per-line byte cap applied at render time,
--- max_width (optional) display-width cap, hide_collapsed (default false).
+-- max_width (optional) display-width cap, hide_collapsed (default false),
+-- header_until_blank keeps a leading metadata block outside the content limit.
 function ToolView.new(buf, opts)
   local self = setmetatable({}, ToolView)
   self.buf = buf
@@ -370,8 +371,22 @@ end
 function ToolView.restore_lines(lines, opts)
   local buf = n00n.ui.buf()
   local view = ToolView.new(buf, opts)
-  for _, line in ipairs(lines) do
-    view:append(line)
+  local first_content_line = 1
+  if opts and opts.header_until_blank then
+    for index, line in ipairs(lines) do
+      if line == "" then
+        local header = {}
+        for header_index = 1, index - 1 do
+          header[#header + 1] = lines[header_index]
+        end
+        view:set_header(header)
+        first_content_line = index + 1
+        break
+      end
+    end
+  end
+  for index = first_content_line, #lines do
+    view:append(lines[index])
   end
   view:finish()
   buf:on("click", function()
