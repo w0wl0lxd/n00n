@@ -113,6 +113,8 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
 
+Keep `max_depth` and `max_active_descendants` at or below `max_total_descendants`. n00n reports a configuration error at startup if either value is higher.
+
 ### `agent.fusion`
 
 | Field | Type | Default | Description |

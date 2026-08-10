@@ -10,6 +10,14 @@ local structured_output = require("n00n.structured_output")
 
 local ORCHESTRATION_TOOLS = { "task", "team", "workflow", "agent_control", "batch" }
 
+function M.orchestration_tools()
+  local copy = {}
+  for index, name in ipairs(ORCHESTRATION_TOOLS) do
+    copy[index] = name
+  end
+  return copy
+end
+
 local function excluded_tools(opts)
   local excluded = {}
   local seen = {}

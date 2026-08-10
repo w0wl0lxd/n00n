@@ -133,7 +133,17 @@ async fn new(
     let (prompt, focus, parent_id, tool, input, title) = match opts {
         Some(opts) => (
             opts.get("prompt")?,
-            opts.get("focus").unwrap_or_else(|_| false),
+            match opts.get::<Value>("focus")? {
+                Value::Nil => false,
+                Value::Boolean(focus) => focus,
+                value => {
+                    return Err(mlua::Error::FromLuaConversionError {
+                        from: value.type_name(),
+                        to: "Boolean".to_owned(),
+                        message: Some("focus must be a boolean".to_owned()),
+                    });
+                }
+            },
             opts.get("parent_id")?,
             opts.get::<Option<String>>("tool")?,
             opts.get::<Option<Value>>("input")?,
@@ -213,6 +223,7 @@ async fn prompt(
             steer,
             control,
             caller_id,
+            host_control: false,
         },
     )
     .await
@@ -229,7 +240,16 @@ async fn cancel(
     id: String,
 ) -> LuaResult<Pair> {
     let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
-    roundtrip(lua, tx, SessionRequest::Cancel { id, caller_id }).await
+    roundtrip(
+        lua,
+        tx,
+        SessionRequest::Cancel {
+            id,
+            caller_id,
+            host_control: false,
+        },
+    )
+    .await
 }
 
 /// Renames a session, live or stored.
@@ -461,7 +481,12 @@ mod tests {
         let lua = lua_with_session(Some(tx));
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
-                req: SessionRequest::Cancel { id, caller_id },
+                req:
+                    SessionRequest::Cancel {
+                        id,
+                        caller_id,
+                        host_control,
+                    },
                 reply_tx,
             }) = rx.recv()
             else {
@@ -469,6 +494,7 @@ mod tests {
             };
             assert_eq!(id, "abc");
             assert_eq!(caller_id, None);
+            assert!(!host_control);
             reply_tx.send(Ok(json!(true))).unwrap();
         });
         let (val, err): (bool, Option<String>) =
@@ -500,6 +526,7 @@ mod tests {
                         steer,
                         control,
                         caller_id,
+                        host_control,
                     },
                 reply_tx,
             }) = rx.recv()
@@ -511,6 +538,7 @@ mod tests {
             assert_eq!(steer, expected_steer);
             assert_eq!(control, expected_control);
             assert_eq!(caller_id, None);
+            assert!(!host_control);
             reply_tx.send(Ok(json!("queued"))).unwrap();
         });
         let (val, err): (String, Option<String>) =
@@ -518,6 +546,16 @@ mod tests {
         checker.join().unwrap();
         assert_eq!(err, None);
         assert_eq!(val, "queued");
+    }
+
+    #[test]
+    fn new_focus_with_wrong_type_throws() {
+        let lua = lua_with_session(None);
+        let result: LuaResult<Value> = smol::block_on(
+            lua.load("return session.new({ focus = 'wrong' })")
+                .eval_async(),
+        );
+        assert!(result.unwrap_err().to_string().contains("boolean"));
     }
 
     #[test]

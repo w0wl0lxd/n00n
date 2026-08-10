@@ -207,6 +207,12 @@ pub struct StoredQueuedMessage {
     pub prompt: Option<StoredMcpPrompt>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredDirectTool {
+    pub tool: String,
+    pub input: Value,
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires fn(&T) -> bool
 fn is_default_delivery(delivery: &StoredDelivery) -> bool {
     *delivery == StoredDelivery::TurnEnd
@@ -926,6 +932,8 @@ pub struct SessionMeta {
     /// Full queued-message snapshots, including messages hidden by the paint gate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_submissions: Vec<StoredQueuedMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_direct_tools: Vec<StoredDirectTool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<StoredSubagent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

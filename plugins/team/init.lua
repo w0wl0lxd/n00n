@@ -802,7 +802,7 @@ local function run_team(input, ctx)
       forwarded[key] = value
     end
     forwarded.background = false
-    local title = "team: " .. (input.goal or ""):sub(1, 60)
+    local title = "team: " .. n00n.ui.truncate_text(input.goal or "", 60).head
     local id, err = n00n.session.new({
       tool = "team",
       input = forwarded,
@@ -813,7 +813,11 @@ local function run_team(input, ctx)
       return { llm_output = err, is_error = true }
     end
 
-    return n00n.json.encode({ agent_id = id, status = "started", title = title })
+    local output, output_err = n00n.json.encode({ agent_id = id, status = "started", title = title })
+    if output_err then
+      return { llm_output = "failed to encode team status: " .. tostring(output_err), is_error = true }
+    end
+    return output
   end
 
   local requested_mode = input.mode
