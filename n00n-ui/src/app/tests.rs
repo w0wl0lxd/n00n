@@ -1856,16 +1856,19 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     app.update(agent_msg(AgentEvent::TextDelta {
         text: "partial".into(),
     }));
-    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "t1".into(),
-        tool: "bash".into(),
-        summary: "running".into(),
-        annotation: None,
-        input: None,
-        raw_input: None,
-        output: None,
-        render_header: None,
-    }))));
+    for id in ["t1", "t2"] {
+        app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
+            id: id.into(),
+            tool: "bash".into(),
+            summary: "running".into(),
+            annotation: None,
+            input: None,
+            raw_input: None,
+            output: None,
+            render_header: None,
+        }))));
+    }
+    render_chat(&mut app, 0, Rect::new(0, 0, 80, 20));
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(actions.is_empty());
@@ -1875,6 +1878,33 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     assert!(matches!(&actions[0], Action::CancelAgent { .. }));
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.chats[0].in_progress_count(), 0);
+    assert_eq!(
+        app.chats[0].tool_status("t1"),
+        Some(crate::components::ToolStatus::Error)
+    );
+    assert_eq!(
+        app.chats[0].tool_status("t2"),
+        Some(crate::components::ToolStatus::Error)
+    );
+
+    app.update(agent_msg_with_run_id(
+        AgentEvent::ToolDone(Box::new(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash".into(),
+            output: ToolOutput::Plain("late".into()),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        })),
+        1,
+    ));
+    render_chat(&mut app, 0, Rect::new(0, 0, 80, 20));
+    assert_eq!(app.chats[0].in_progress_count(), 0);
+    assert_eq!(
+        app.chats[0].tool_status("t1"),
+        Some(crate::components::ToolStatus::Error),
+        "stale success replaced cancellation"
+    );
 }
 
 #[test]
