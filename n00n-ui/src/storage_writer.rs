@@ -453,6 +453,12 @@ impl WriterState {
 
         self.latest_generations.insert(id, generation);
         self.latest_snapshots.insert(id, snapshot.clone());
+        self.queue_pending_snapshot(snapshot);
+        self.pending.get(&id).map(|pending| pending.version.clone())
+    }
+
+    fn queue_pending_snapshot(&mut self, snapshot: PendingSnapshot) {
+        let id = snapshot.session.id;
         let replace = self.pending.get(&id).is_none_or(|current| {
             current.version.revision < snapshot.version.revision
                 || (current.version.revision == snapshot.version.revision
@@ -461,7 +467,6 @@ impl WriterState {
         if replace {
             self.pending.insert(id, snapshot);
         }
-        self.pending.get(&id).map(|pending| pending.version.clone())
     }
 
     fn flush(&mut self, dir: &StateDir) -> FailedSnapshots {
@@ -552,7 +557,7 @@ impl WriterState {
             .as_ref()
             .map(|snapshot| snapshot.version.clone());
         if let Some(snapshot) = crossing_snapshot {
-            self.pending.insert(id, snapshot);
+            self.queue_pending_snapshot(snapshot);
         }
 
         let primary_path = dir.path().join(SESSIONS_DIR).join(format!("{id}.jsonl"));
@@ -971,6 +976,27 @@ mod tests {
         let loaded = AppSession::load(id, &dir).unwrap();
         assert_eq!(loaded.meta.revision, 4);
         assert_eq!(loaded.title, "post-delete revision four");
+    }
+
+    #[test]
+    fn delayed_delete_preserves_highest_revision_post_delete_snapshot() {
+        let (_tmp, dir) = state_dir();
+        let mut state = WriterState::default();
+        let mut revision_nine = AppSession::new("test-model", "/tmp/delete-post-delete-order");
+        revision_nine.title = "generation five revision nine".into();
+        revision_nine.meta.revision = 9;
+        let id = revision_nine.id;
+        let mut revision_four = revision_nine.clone();
+        revision_four.title = "generation seven revision four".into();
+        revision_four.meta.revision = 4;
+
+        state.stage_snapshot(PendingSnapshot::new(5, Box::new(revision_nine)));
+        state.stage_snapshot(PendingSnapshot::new(7, Box::new(revision_four)));
+        state.delete(id, 3, &dir).unwrap();
+
+        let loaded = AppSession::load(id, &dir).unwrap();
+        assert_eq!(loaded.meta.revision, 9);
+        assert_eq!(loaded.title, "generation five revision nine");
     }
 
     #[test]
