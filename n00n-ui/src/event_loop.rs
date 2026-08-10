@@ -23,7 +23,8 @@ use crossterm::event::{
 use n00n_agent::command::CustomCommand;
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, mcp, tools::SessionIdentity,
+    AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, mcp,
+    tools::{SessionIdentity, truncate_output},
 };
 use n00n_config::UiConfig;
 use n00n_lua::{
@@ -71,6 +72,7 @@ const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const STORAGE_WRITER_REFS_ERR: &str =
     "storage writer has outstanding references, skipping graceful shutdown";
+const DIRECT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 const TEAM_TOOL_NAME: &str = "team";
@@ -168,12 +170,43 @@ fn cancel_stored_session(session: &mut AppSession) -> bool {
         || !session.meta.queued_messages.is_empty()
         || !session.meta.queued_submissions.is_empty()
         || !session.meta.queued_direct_tools.is_empty();
+    if !had_work {
+        return false;
+    }
     session.meta.lifecycle = StoredSessionLifecycle::Cancelled;
     session.meta.queued_messages.clear();
     session.meta.queued_submissions.clear();
     session.meta.queued_direct_tools.clear();
     session.updated_at = n00n_storage::now_epoch();
-    had_work
+    true
+}
+
+fn bounded_direct_output(text: &str, config: &AgentConfig) -> String {
+    truncate_output(
+        text,
+        config.max_output_lines,
+        config.max_output_bytes.min(DIRECT_OUTPUT_MAX_BYTES),
+    )
+}
+
+fn delete_sessions_sequentially(
+    writer: &Arc<StorageWriter>,
+    mut targets: Vec<n00nId>,
+    reply_tx: flume::Sender<SessionReply>,
+) {
+    let Some(target) = targets.pop() else {
+        let _ = reply_tx.send(Ok(json!(true)));
+        return;
+    };
+    let next_writer = Arc::clone(writer);
+    writer.delete(target, move |result| match result {
+        Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_))) => {
+            delete_sessions_sequentially(&next_writer, targets, reply_tx);
+        }
+        Err(error) => {
+            let _ = reply_tx.send(Err(error.to_string()));
+        }
+    });
 }
 
 fn resolved_root(
@@ -993,8 +1026,9 @@ impl<'t> EventLoop<'t> {
         if self.sessions[idx].direct_bootstrap_active {
             match &envelope.event {
                 n00n_agent::AgentEvent::ToolDone(done) => {
-                    self.sessions[idx].app.state.session.meta.direct_output =
-                        Some(done.output.as_text());
+                    self.sessions[idx].app.state.session.meta.direct_output = Some(
+                        bounded_direct_output(&done.output.as_text(), &self.ctx.config),
+                    );
                     self.sessions[idx]
                         .app
                         .state
@@ -1011,7 +1045,8 @@ impl<'t> EventLoop<'t> {
                         .direct_output
                         .is_none() =>
                 {
-                    self.sessions[idx].app.state.session.meta.direct_output = Some(message.clone());
+                    self.sessions[idx].app.state.session.meta.direct_output =
+                        Some(bounded_direct_output(message, &self.ctx.config));
                     self.sessions[idx]
                         .app
                         .state
@@ -1093,7 +1128,7 @@ impl<'t> EventLoop<'t> {
             .latest_snapshot(root_id)
             .map_err(|error| error.to_string())?
         {
-            root
+            Arc::unwrap_or_clone(root)
         } else {
             AppSession::load(root_id, &self.ctx.storage).map_err(|error| error.to_string())?
         };
@@ -1258,7 +1293,7 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
-                let mut targets = match self.lineage.descendants_of(id) {
+                let mut targets = match self.lineage.descendants_for_delete(id) {
                     Ok(targets) => targets,
                     Err(LineageError::UnknownSession(_)) => Vec::new(),
                     Err(error) => {
@@ -1284,27 +1319,8 @@ impl<'t> EventLoop<'t> {
                     rt.handles.cancel();
                 }
                 self.lineage.remove_sessions(&targets);
-                let (done_tx, done_rx) = flume::unbounded();
-                let count = targets.len();
-                for target in targets {
-                    let done_tx = done_tx.clone();
-                    self.ctx.storage_writer.delete(target, move |result| {
-                        let _ = done_tx.send(result);
-                    });
-                }
-                smol::spawn(async move {
-                    let mut failure = None;
-                    for _ in 0..count {
-                        match done_rx.recv_async().await {
-                            Ok(Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_)))) => {}
-                            Ok(Err(error)) => failure = Some(error.to_string()),
-                            Err(error) => failure = Some(error.to_string()),
-                        }
-                    }
-                    let reply = failure.map_or_else(|| Ok(json!(true)), Err);
-                    let _ = reply_tx.send(reply);
-                })
-                .detach();
+                targets.reverse();
+                delete_sessions_sequentially(&self.ctx.storage_writer, targets, reply_tx);
             }
             SessionRequest::Live => {
                 let list: Vec<_> = self
@@ -1443,8 +1459,8 @@ impl<'t> EventLoop<'t> {
                     } else if let Some(prompt) = prompt {
                         self.lineage
                             .set_execution_active(id, false)
-                            .map_err(|error| error.to_string())?;
-                        self.submit_text(idx, prompt, false, false)
+                            .map_err(|error| error.to_string())
+                            .and_then(|_| self.submit_text(idx, prompt, false, false))
                     } else {
                         self.sessions[idx].app.state.session.meta.lifecycle =
                             StoredSessionLifecycle::Idle;
@@ -1548,17 +1564,19 @@ impl<'t> EventLoop<'t> {
                                 .latest_snapshot(session_id)
                                 .map_err(|error| error.to_string())?
                             {
-                                Some(session) => session,
+                                Some(session) => Arc::unwrap_or_clone(session),
                                 None => AppSession::load(session_id, &self.ctx.storage)
                                     .map_err(|error| error.to_string())?,
                             };
-                            cancelled |= cancel_stored_session(&mut session);
-                            self.ctx.storage_writer.send(Box::new(session));
-                            warn_lineage_cleanup(
-                                self.lineage.set_execution_active(session_id, false),
-                                session_id,
-                                "clear cancelled activity",
-                            );
+                            if cancel_stored_session(&mut session) {
+                                cancelled = true;
+                                self.ctx.storage_writer.send(Box::new(session));
+                                warn_lineage_cleanup(
+                                    self.lineage.set_execution_active(session_id, false),
+                                    session_id,
+                                    "clear cancelled activity",
+                                );
+                            }
                             continue;
                         };
                         if SessionStatus::of(&self.sessions[idx].app) != SessionStatus::Idle
@@ -1574,11 +1592,11 @@ impl<'t> EventLoop<'t> {
                         {
                             let actions = self.sessions[idx].app.cancel_current_run();
                             self.dispatch(idx, actions);
+                            self.sessions[idx].app.state.session.meta.lifecycle =
+                                StoredSessionLifecycle::Cancelled;
+                            self.sessions[idx].app.save_session();
                             cancelled = true;
                         }
-                        self.sessions[idx].app.state.session.meta.lifecycle =
-                            StoredSessionLifecycle::Cancelled;
-                        self.sessions[idx].app.save_session();
                         warn_lineage_cleanup(
                             self.lineage.set_execution_active(session_id, false),
                             session_id,
@@ -2276,11 +2294,12 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, cancel_stored_session,
-        draw_then_post_terminal, paused_team_run, should_save_periodically,
-        take_painted_submissions,
+        DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME,
+        bounded_direct_output, cancel_stored_session, draw_then_post_terminal, paused_team_run,
+        should_save_periodically, take_painted_submissions,
     };
     use crate::{AppSession, components::Status};
+    use n00n_agent::AgentConfig;
     use n00n_providers::{ContentBlock, Message, Role};
     use n00n_storage::{
         id::n00nId,
@@ -2345,6 +2364,31 @@ mod tests {
     }
 
     #[test]
+    fn bounded_direct_output_respects_session_record_limits() {
+        let config = AgentConfig {
+            max_output_lines: 2,
+            max_output_bytes: 24,
+            ..AgentConfig::default()
+        };
+
+        let output = bounded_direct_output("αβγδεζηθ\nsecond\nthird", &config);
+
+        assert!(output.len() <= config.max_output_bytes);
+        assert!(output.lines().count() <= config.max_output_lines);
+        assert!(output.contains("[truncated]"));
+        assert!(std::str::from_utf8(output.as_bytes()).is_ok());
+
+        let unbounded_config = AgentConfig {
+            max_output_lines: usize::MAX,
+            max_output_bytes: usize::MAX,
+            ..AgentConfig::default()
+        };
+        let capped =
+            bounded_direct_output(&"x".repeat(DIRECT_OUTPUT_MAX_BYTES + 1), &unbounded_config);
+        assert!(capped.len() <= DIRECT_OUTPUT_MAX_BYTES);
+    }
+
+    #[test]
     fn cancel_stored_session_clears_all_persisted_work() {
         let mut session = AppSession::new("model", "/project");
         session.meta.lifecycle = StoredSessionLifecycle::Running;
@@ -2374,6 +2418,9 @@ mod tests {
 
         let mut inactive = AppSession::new("model", "/project");
         inactive.meta.lifecycle = StoredSessionLifecycle::Succeeded;
+        assert!(!cancel_stored_session(&mut inactive));
+        assert_eq!(inactive.meta.lifecycle, StoredSessionLifecycle::Succeeded);
+
         inactive.meta.queued_messages = vec!["pending".into()];
         assert!(cancel_stored_session(&mut inactive));
         assert!(inactive.meta.queued_messages.is_empty());

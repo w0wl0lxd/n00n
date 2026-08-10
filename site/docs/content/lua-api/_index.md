@@ -6005,6 +6005,11 @@ function M.make_local_tool(schema, on_submit)
 -- Subagent launch helper module.
 -- Provides a unified interface for launching subagents with model resolution,
 -- system prompts, tool setup, and optional structured output validation.
+
+-- Return a fresh table containing the orchestration tool names.
+-- Use it as a denylist when child agents must not launch more orchestration.
+-- Example: local excluded = subagent.orchestration_tools()
+-- @return string[]
 function M.orchestration_tools()
 
 -- Launch a subagent with the given options.

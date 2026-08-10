@@ -10,6 +10,10 @@ local structured_output = require("n00n.structured_output")
 
 local ORCHESTRATION_TOOLS = { "task", "team", "workflow", "agent_control", "batch" }
 
+-- Return a fresh table containing the orchestration tool names.
+-- Use it as a denylist when child agents must not launch more orchestration.
+-- Example: local excluded = subagent.orchestration_tools()
+-- @return string[]
 function M.orchestration_tools()
   local copy = {}
   for index, name in ipairs(ORCHESTRATION_TOOLS) do

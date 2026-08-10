@@ -19,7 +19,8 @@ use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{
-    StoredMode, StoredSessionStateSnapshot, StoredStateScope, StoredThinking, TranscriptEntry,
+    StoredMode, StoredSessionLifecycle, StoredSessionStateSnapshot, StoredStateScope,
+    StoredThinking, TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
@@ -2464,6 +2465,10 @@ fn session_has_content_covers_each_branch() {
     session.meta.queued_messages = vec!["queued".into()];
     assert!(session_has_content(&session));
     session.meta.queued_messages.clear();
+
+    session.meta.lifecycle = StoredSessionLifecycle::Cancelled;
+    assert!(session_has_content(&session));
+    session.meta.lifecycle = StoredSessionLifecycle::Idle;
 
     session.meta.mode = Some(StoredMode::Plan);
     assert!(session_has_content(&session));

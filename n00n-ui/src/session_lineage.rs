@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use n00n_storage::id::n00nId;
 use thiserror::Error;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_field_names)]
@@ -197,7 +198,13 @@ impl SessionLineageGuard {
         );
         if let Err(error) = self.rebuild_topology() {
             self.sessions.remove(&session.id);
-            self.rebuild_topology()?;
+            if let Err(rollback_error) = self.rebuild_topology() {
+                warn!(
+                    session_id = %session.id,
+                    error = %rollback_error,
+                    "failed to rebuild session lineage topology after activation rollback"
+                );
+            }
             return Err(error);
         }
         Ok(())
@@ -372,7 +379,13 @@ impl SessionLineageGuard {
         );
         if let Err(error) = self.rebuild_topology() {
             self.sessions.remove(&child_id);
-            self.rebuild_topology()?;
+            if let Err(rollback_error) = self.rebuild_topology() {
+                warn!(
+                    session_id = %child_id,
+                    error = %rollback_error,
+                    "failed to rebuild session lineage topology after reservation rollback"
+                );
+            }
             return Err(error);
         }
         Ok(())
@@ -401,6 +414,38 @@ impl SessionLineageGuard {
     }
 
     pub(crate) fn descendants_of(&self, parent: n00nId) -> Result<Vec<n00nId>, LineageError> {
+        self.descendants(parent)
+    }
+
+    pub(crate) fn descendants_for_delete(
+        &self,
+        parent: n00nId,
+    ) -> Result<Vec<n00nId>, LineageError> {
+        if !self.sessions.contains_key(&parent) {
+            return Err(LineageError::UnknownSession(parent));
+        }
+        let mut pending = self
+            .children
+            .get(&parent)
+            .into_iter()
+            .flat_map(|children| children.iter().copied())
+            .map(|id| (id, false))
+            .collect::<Vec<_>>();
+        let mut descendants = Vec::new();
+        while let Some((id, visited)) = pending.pop() {
+            if visited {
+                descendants.push(id);
+                continue;
+            }
+            pending.push((id, true));
+            if let Some(children) = self.children.get(&id) {
+                pending.extend(children.iter().copied().map(|child| (child, false)));
+            }
+        }
+        Ok(descendants)
+    }
+
+    fn descendants(&self, parent: n00nId) -> Result<Vec<n00nId>, LineageError> {
         if !self.sessions.contains_key(&parent) {
             return Err(LineageError::UnknownSession(parent));
         }
@@ -919,5 +964,21 @@ mod tests {
             guard.descendants_of(root).expect("descendants"),
             vec![sibling]
         );
+        let delete_descendants = guard
+            .descendants_for_delete(root)
+            .expect("delete descendants");
+        assert_eq!(
+            delete_descendants.iter().copied().collect::<HashSet<_>>(),
+            HashSet::from([child, grandchild, sibling])
+        );
+        let grandchild_index = delete_descendants
+            .iter()
+            .position(|id| *id == grandchild)
+            .expect("grandchild position");
+        let child_index = delete_descendants
+            .iter()
+            .position(|id| *id == child)
+            .expect("child position");
+        assert!(grandchild_index < child_index);
     }
 }

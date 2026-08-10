@@ -22,6 +22,7 @@ use tracing::warn;
 use crate::AppSession;
 
 const RETRY_DELAY: Duration = Duration::from_secs(1);
+const LATEST_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_RETRY_ATTEMPTS: u32 = 5;
 
 #[derive(Clone)]
@@ -116,7 +117,7 @@ enum Op {
     },
     Latest {
         id: n00nId,
-        done: flume::Sender<Option<AppSession>>,
+        done: flume::Sender<Option<Arc<AppSession>>>,
     },
     #[cfg(test)]
     Pause {
@@ -206,7 +207,7 @@ impl StorageWriter {
                             let session = state
                                 .latest_snapshots
                                 .get(&id)
-                                .map(|snapshot| (*snapshot.session).clone());
+                                .map(|snapshot| Arc::clone(&snapshot.session));
                             let _ = done.send(session);
                         }
                         #[cfg(test)]
@@ -254,12 +255,27 @@ impl StorageWriter {
         self.enqueue_reserved_snapshot(generation, session);
     }
 
-    pub(crate) fn latest_snapshot(&self, id: n00nId) -> Result<Option<AppSession>, SessionError> {
+    pub(crate) fn latest_snapshot(
+        &self,
+        id: n00nId,
+    ) -> Result<Option<Arc<AppSession>>, SessionError> {
+        self.latest_snapshot_with_timeout(id, LATEST_SNAPSHOT_TIMEOUT)
+    }
+
+    fn latest_snapshot_with_timeout(
+        &self,
+        id: n00nId,
+        timeout: Duration,
+    ) -> Result<Option<Arc<AppSession>>, SessionError> {
         let (done_tx, done_rx) = flume::bounded(1);
         self.ops
             .send(Op::Latest { id, done: done_tx })
             .map_err(|_| writer_gone())?;
-        done_rx.recv().map_err(|_| writer_gone())
+        match done_rx.recv_timeout(timeout) {
+            Ok(session) => Ok(session),
+            Err(flume::RecvTimeoutError::Timeout) => Err(latest_snapshot_timeout(timeout)),
+            Err(flume::RecvTimeoutError::Disconnected) => Err(writer_gone()),
+        }
     }
 
     /// Persists this snapshot before invoking `done` on the writer thread.
@@ -670,6 +686,14 @@ fn writer_gone() -> SessionError {
     StorageError::Io(io::Error::other("storage writer unavailable")).into()
 }
 
+fn latest_snapshot_timeout(timeout: Duration) -> SessionError {
+    StorageError::Io(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("storage writer did not return the latest snapshot within {timeout:?}"),
+    ))
+    .into()
+}
+
 fn unpersisted_snapshot() -> SessionError {
     StorageError::Io(io::Error::other(
         "newer session snapshot remains unpersisted",
@@ -917,10 +941,30 @@ mod tests {
             query.join().unwrap()
         });
         let latest = match latest {
-            Some(session) => session,
+            Some(session) => Arc::unwrap_or_clone(session),
             None => AppSession::load(id, &dir).unwrap(),
         };
         assert_eq!(latest.title, "latest");
+        writer.shutdown(DRAIN_TIMEOUT).unwrap();
+    }
+
+    #[test]
+    fn latest_snapshot_times_out_behind_blocked_writer() {
+        let (_tmp, dir) = state_dir();
+        let writer = StorageWriter::new(dir).unwrap();
+        let release = pause_writer(&writer);
+        let id = AppSession::new("test-model", "/tmp/latest-timeout").id;
+
+        let error = writer
+            .latest_snapshot_with_timeout(id, BLOCKED_TIMEOUT)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SessionError::Storage(StorageError::Io(ref io_error))
+                if io_error.kind() == io::ErrorKind::TimedOut
+        ));
+        release.send(()).unwrap();
         writer.shutdown(DRAIN_TIMEOUT).unwrap();
     }
 
