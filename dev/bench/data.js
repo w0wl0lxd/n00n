@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786325874135,
+  "lastUpdate": 1786329152855,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -15761,6 +15761,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 184924,
             "range": "± 3492",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "57c44635d661b3883763bc20b0591cb46cd204aa",
+          "message": "fix: preserve orchestration cleanup on cancellation (#336)\n\n* fix: preserve orchestration cleanup on cancellation\n\n* fix: harden orchestration cancellation cleanup\n\n* fix: address orchestration review findings\n\n* fix: enforce bounded deadline cleanup",
+          "timestamp": "2026-08-09T22:16:27-04:00",
+          "tree_id": "9a97561fce7ff205fb26902bde6bb6c9c35488e6",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/57c44635d661b3883763bc20b0591cb46cd204aa"
+        },
+        "date": 1786329151937,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6672963,
+            "range": "± 159793",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221202,
+            "range": "± 8586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2219207,
+            "range": "± 4711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8164008,
+            "range": "± 81980",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4310497,
+            "range": "± 37060",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4314620,
+            "range": "± 35486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585998,
+            "range": "± 1127",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192042,
+            "range": "± 420",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192017,
+            "range": "± 392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1055644,
+            "range": "± 7045",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582306,
+            "range": "± 5834",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582123,
+            "range": "± 1287",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 75420,
+            "range": "± 4409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 182811,
+            "range": "± 14750",
             "unit": "ns/iter"
           }
         ]
