@@ -938,6 +938,8 @@ pub struct SessionMeta {
     pub direct_output: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct_output_is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_paused_team: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<StoredSubagent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4187,6 +4189,11 @@ mod tests {
         session.meta.queued_messages = vec!["queued".into()];
         session.meta.direct_output = Some("bootstrap output".into());
         session.meta.direct_output_is_error = true;
+        session.meta.direct_paused_team = Some(serde_json::json!({
+            "paused": true,
+            "run_id": "run-1",
+            "mode": "swarm",
+        }));
         session.title = "updated title".into();
         session.updated_at = now_epoch() + 1;
         log.append(&session).unwrap();
@@ -4199,6 +4206,14 @@ mod tests {
             Some("bootstrap output")
         );
         assert!(loaded.meta.direct_output_is_error);
+        assert_eq!(
+            loaded.meta.direct_paused_team,
+            Some(serde_json::json!({
+                "paused": true,
+                "run_id": "run-1",
+                "mode": "swarm",
+            }))
+        );
         assert_eq!(loaded.title, "updated title");
     }
 
