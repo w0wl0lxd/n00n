@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use n00n_agent::AgentEvent;
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
@@ -17,7 +18,7 @@ use n00n_agent::tools::{
     ToolSource, timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
-use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
+use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginError, PluginHost, WARM_TOOL_CAP};
 use n00n_providers::provider::{BoxFuture, Provider};
 use n00n_providers::{
     AgentError, ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
@@ -229,15 +230,20 @@ const FINISH_CALLED_TWICE_ERR: &str = "ctx:finish() already called";
 const DEADLINE_ALREADY_SET_ERR: &str = "ctx:set_deadline() already called";
 const TIMED_OUT_SUBSTR: &str = "timed out";
 const DEADLINE_HOT_LOOP_TIMEOUT_ERR: &str = "tool deadline_hot_loop timed out after 1s";
+const CAUGHT_DEADLINE_HOT_LOOP_TIMEOUT_ERR: &str =
+    "tool deadline_caught_forever timed out after 1s";
 const WORKFLOW_TIMEOUT_SCHEMA_SUBSTR: &str = "minimum 60s";
 const WORKFLOW_TIMEOUT_REJECTED_SUBSTR: &str = "at least 60";
 const WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR: &str = "below minimum (60)";
+const TEAM_TIMEOUT_LIMIT_ERR_SUBSTR: &str = "at most 1800";
 const ALREADY_CALLED_ERR: &str = "already called";
 const UNKNOWN_FIELD_ERR: &str = "unknown field";
 const PERMISSION_DENIED_MSG: &str = "permission denied";
 const VALIDATION_PROMPT_NO_PROVIDER_ERR: &str =
     "validation prompt error: no provider configured — run /login or `n00n auth login`";
 const STALE_CTX_ERR: &str = "state context is no longer active";
+const PARKED_CHILD_CLEANUP: &str = "parked child cleanup finished";
+const CALLBACK_CLEANUP_STARTED: &str = "true";
 const TOOLS_MUST_BE_ARRAY_ERR: &str = "tools must be an array";
 
 #[test]
@@ -982,6 +988,63 @@ fn handler_nil_waits_for_owned_async_run() {
     assert_eq!(second.join().unwrap().unwrap(), "finished");
 }
 
+#[cfg(unix)]
+#[test]
+fn accepted_finish_does_not_wait_for_unrelated_async_run() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "finish_before_background",
+        description = "finishes before unrelated background work",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function(_, ctx)
+            n00n.async.run(function()
+                local id = n00n.fn.jobstart("sleep 2")
+                n00n.fn.jobwait(id)
+            end)
+            ctx:finish("accepted")
+            return nil
+        end
+    })"#;
+    host.load_source("finish_before_background", src).unwrap();
+
+    let started = std::time::Instant::now();
+    let output = exec_tool(&reg, "finish_before_background", serde_json::json!({})).unwrap();
+
+    assert_eq!(output, "accepted");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "accepted finish waited for unrelated async.run work"
+    );
+}
+
+#[test]
+fn async_run_on_finish_preserves_structured_lua_error() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "structured_async_error",
+        description = "passes a structured error to on_finish",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function(_, ctx)
+            n00n.async.run(function()
+                error({ kind = "structured", detail = { code = 42 } })
+            end, function(err)
+                ctx:finish(err.kind .. ":" .. tostring(err.detail.code))
+            end)
+            return nil
+        end
+    })"#;
+    host.load_source("structured_async_error", src).unwrap();
+
+    assert_eq!(
+        exec_tool(&reg, "structured_async_error", serde_json::json!({})).unwrap(),
+        "structured:42"
+    );
+}
+
 #[test]
 fn handler_lua_error_surfaces_as_tool_error() {
     let reg = fresh_registry();
@@ -1434,6 +1497,37 @@ fn async_job_callback_error_surfaces() {
     host.load_source("job_cb_err", &src).unwrap();
     let err = exec_tool(&reg, "job_cb_err", serde_json::json!({})).unwrap_err();
     assert!(err.contains("callback exploded"), "got: {err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn accepted_finish_precedes_later_drained_job_callback_error() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "finish_before_callback_error",
+        description = "finishes before a later callback fails",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function(_, ctx)
+            n00n.fn.jobstart("printf 'ready\\n'", {
+                on_stdout = function()
+                    ctx:finish("accepted")
+                end,
+                on_exit = function()
+                    error("late callback exploded")
+                end,
+            })
+            return nil
+        end
+    })"#;
+    host.load_source("finish_before_callback_error", src)
+        .unwrap();
+
+    assert_eq!(
+        exec_tool(&reg, "finish_before_callback_error", serde_json::json!({})).unwrap(),
+        "accepted"
+    );
 }
 
 /// Runs `tool`, whose handler parks on `jobstart("sleep 30")` until a
@@ -2801,6 +2895,73 @@ fn ctx_set_deadline_times_out() {
 }
 
 #[test]
+fn ctx_set_deadline_interrupts_parked_handler() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_parked",
+            description = "sets a deadline before parking",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            timeout = 3,
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                n00n.async.await(30, function() end)
+                return "unexpected"
+            end
+        }})"#,
+    );
+    host.load_source("deadline_parked", &src).unwrap();
+
+    let error = exec_tool(&reg, "deadline_parked", serde_json::json!({})).unwrap_err();
+    assert_eq!(error, "tool deadline_parked timed out after 1s");
+}
+
+#[test]
+fn timeout_rendering_runs_change_callback_outside_expired_deadline() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"local callback_count = 0
+        n00n.api.register_tool({{
+            name = "deadline_render",
+            description = "renders after deadline",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                local buf = n00n.ui.buf()
+                buf:line("waiting")
+                buf:on("change", function()
+                    local started = os.clock()
+                    while os.clock() - started < 0.05 do end
+                    callback_count = callback_count + 1
+                end)
+                ctx:live_buf(buf)
+                n00n.fn.jobstart("sleep 30")
+                return nil
+            end
+        }})
+        n00n.api.register_tool({{
+            name = "deadline_render_probe",
+            description = "reads callback count",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function() return tostring(callback_count) end
+        }})"#,
+    );
+    host.load_source("deadline_render", &src).unwrap();
+
+    let error = exec_tool(&reg, "deadline_render", serde_json::json!({})).unwrap_err();
+    assert!(error.contains(TIMED_OUT_SUBSTR), "got: {error}");
+    assert_eq!(
+        exec_tool(&reg, "deadline_render_probe", serde_json::json!({})).unwrap(),
+        "1"
+    );
+}
+
+#[test]
 fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
     let (reg, _host) = builtins_host();
     let entry = reg.get("workflow").unwrap();
@@ -2823,6 +2984,26 @@ fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
     let error = exec_tool(&reg, "workflow", input(59)).unwrap_err();
     assert!(
         error.contains(WORKFLOW_TIMEOUT_REJECTED_SUBSTR),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn team_timeout_lua_guard_enforces_runtime_limit() {
+    let (reg, _host) = builtins_host();
+    let entry = reg.get("team").unwrap();
+    let input = |timeout_secs| {
+        serde_json::json!({
+            "goal": "test timeout bounds",
+            "timeout_secs": timeout_secs,
+        })
+    };
+
+    assert!(entry.tool.parse(&input(1_800)).is_ok());
+    assert!(entry.tool.parse(&input(1_801)).is_ok());
+    let error = exec_tool(&reg, "team", input(1_801)).unwrap_err();
+    assert!(
+        error.contains(TEAM_TIMEOUT_LIMIT_ERR_SUBSTR),
         "unexpected error: {error}"
     );
 }
@@ -2870,6 +3051,283 @@ fn ctx_set_deadline_normalizes_watchdog_error() {
     host.load_source("deadline_hot_loop", &src).unwrap();
     let err = exec_tool(&reg, "deadline_hot_loop", serde_json::json!({})).unwrap_err();
     assert_eq!(err, DEADLINE_HOT_LOOP_TIMEOUT_ERR);
+}
+
+#[test]
+fn caught_deadline_interrupt_allows_cleanup_before_timeout_reply() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
+    let src = format!(
+        r#"local cleanup_finished = false
+        n00n.api.register_tool({{
+            name = "deadline_caught",
+            description = "catches the deadline interrupt",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                pcall(function() while true do end end)
+                local started = os.clock()
+                while os.clock() - started < {cleanup_secs} do end
+                cleanup_finished = true
+                return "unexpected"
+            end
+        }})
+        n00n.api.register_tool({{
+            name = "deadline_caught_probe",
+            description = "reads cleanup state",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function() return tostring(cleanup_finished) end
+        }})"#,
+    );
+    host.load_source("deadline_caught", &src).unwrap();
+
+    let error = exec_tool(&reg, "deadline_caught", serde_json::json!({})).unwrap_err();
+    assert!(error.contains(TIMED_OUT_SUBSTR), "got: {error}");
+    assert_eq!(
+        exec_tool(&reg, "deadline_caught_probe", serde_json::json!({})).unwrap(),
+        "true"
+    );
+}
+
+#[test]
+fn caught_deadline_interrupt_then_hot_loop_hits_absolute_cutoff() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_caught_forever",
+            description = "catches the deadline before looping forever",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            timeout = 3,
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                pcall(function() while true do end end)
+                while true do end
+            end
+        }})
+        n00n.api.register_tool({{
+            name = "deadline_caught_forever_probe",
+            description = "checks that the VM recovered",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            timeout = 2,
+            handler = function() return "ok" end
+        }})"#,
+    );
+    host.load_source("deadline_caught_forever", &src).unwrap();
+
+    let timeout = exec_tool(&reg, "deadline_caught_forever", serde_json::json!({}));
+    if !timeout
+        .as_ref()
+        .is_err_and(|error| error == CAUGHT_DEADLINE_HOT_LOOP_TIMEOUT_ERR)
+    {
+        std::mem::forget(host);
+        panic!("caught deadline hot loop escaped absolute cutoff: {timeout:?}");
+    }
+    assert_eq!(
+        exec_tool(&reg, "deadline_caught_forever_probe", serde_json::json!({})).unwrap(),
+        "ok"
+    );
+}
+
+#[test]
+fn dispatch_async_retains_finish_after_yielding_timeout_cleanup() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_async_finish",
+            description = "finishes after yielding timeout cleanup",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                n00n.async.run(function()
+                    local id = n00n.fn.jobstart("sleep 0.9")
+                    n00n.fn.jobwait(id)
+                    error("child timeout")
+                end, function(err)
+                    n00n.async.gather({{ function()
+                        local started = os.clock()
+                        while os.clock() - started < 0.2 do end
+                    end }})
+                    ctx:finish(err and "cleanup finished" or "unexpected")
+                end)
+                return nil
+            end
+        }})"#,
+    );
+    host.load_source("deadline_async_finish", &src).unwrap();
+
+    assert_eq!(
+        exec_tool(&reg, "deadline_async_finish", serde_json::json!({})).unwrap(),
+        "cleanup finished"
+    );
+}
+
+#[test]
+fn parked_async_child_finishes_cleanup_before_short_parent_deadline_returns() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "parked_child_deadline",
+            description = "parks a child past a short parent deadline",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            timeout = 3,
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                n00n.async.run(function()
+                    n00n.async.await(30, function() end)
+                end, function(err)
+                    local started = os.clock()
+                    while os.clock() - started < 0.05 do end
+                    local _, finish_err = ctx:finish(err and "{PARKED_CHILD_CLEANUP}" or "unexpected")
+                    if finish_err then error(finish_err) end
+                end)
+                return nil
+            end
+        }})"#,
+    );
+    host.load_source("parked_child_deadline", &src).unwrap();
+
+    let result = exec_tool(&reg, "parked_child_deadline", serde_json::json!({}));
+    if result.as_deref() != Ok(PARKED_CHILD_CLEANUP) {
+        std::mem::forget(host);
+        panic!("parked child did not finish before its parent: {result:?}");
+    }
+}
+
+#[test]
+fn async_finish_hot_loop_catching_interrupt_hits_absolute_cutoff() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"local cleanup_started = false
+        n00n.api.register_tool({{
+            name = "callback_cutoff_hot_loop",
+            description = "catches interrupts in async finish cleanup",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            timeout = 3,
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                n00n.async.run(function()
+                    n00n.async.await(30, function() end)
+                end, function()
+                    cleanup_started = true
+                    while true do
+                        pcall(function() while true do end end)
+                    end
+                end)
+                return nil
+            end
+        }})
+        n00n.api.register_tool({{
+            name = "callback_cutoff_probe",
+            description = "reports whether cleanup started",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function() return tostring(cleanup_started) end
+        }})"#,
+    );
+    host.load_source("callback_cutoff_hot_loop", &src).unwrap();
+
+    let timeout = exec_tool(&reg, "callback_cutoff_hot_loop", serde_json::json!({}));
+    let cleanup_started = exec_tool(&reg, "callback_cutoff_probe", serde_json::json!({}));
+    if !timeout
+        .as_ref()
+        .is_err_and(|error| error.contains(TIMED_OUT_SUBSTR))
+        || cleanup_started.as_deref() != Ok(CALLBACK_CLEANUP_STARTED)
+    {
+        std::mem::forget(host);
+        panic!("callback cutoff failed: timeout={timeout:?}, cleanup_started={cleanup_started:?}");
+    }
+}
+
+#[test]
+fn cancellation_wins_after_caught_deadline_interrupt() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_cancelled",
+            description = "is cancelled during deadline cleanup",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                pcall(function() while true do end end)
+                local buf = n00n.ui.buf()
+                buf:line("cleanup")
+                ctx:live_buf(buf)
+                while not ctx:cancelled() do end
+                while true do end
+            end
+        }})"#,
+    );
+    host.load_source("deadline_cancelled", &src).unwrap();
+
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let (trigger, cancel) = n00n_agent::CancelToken::new();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        Some("deadline-cancelled"),
+    );
+    ctx.cancel = cancel;
+    let invocation = reg
+        .get("deadline_cancelled")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({}))
+        .unwrap();
+    let (done_tx, done_rx) = flume::bounded(1);
+    std::thread::spawn(move || {
+        let result = smol::block_on(invocation.execute(&ctx));
+        drop(done_tx.send(result));
+    });
+
+    let event = event_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("deadline cleanup did not publish its live buffer");
+    assert!(matches!(event.event, AgentEvent::LiveToolBuf { .. }));
+    trigger.cancel();
+    let result = done_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("cancelled deadline cleanup did not finish");
+    let error = result.output.unwrap_err();
+    assert_eq!(error, "cancelled");
+}
+
+#[test]
+fn ctx_set_deadline_nil_is_noop() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_nil",
+            description = "allows an omitted deadline",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(nil)
+                return "ok"
+            end
+        }})"#,
+    );
+    host.load_source("deadline_nil", &src).unwrap();
+
+    assert_eq!(
+        exec_tool(&reg, "deadline_nil", serde_json::json!({})).unwrap(),
+        "ok"
+    );
 }
 
 #[test]
