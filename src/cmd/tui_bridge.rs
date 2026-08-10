@@ -368,6 +368,20 @@ mod tests {
     }
 
     #[test]
+    fn control_operations_reject_malformed_session_ids() {
+        let (tx, _rx) = flume::unbounded();
+        let invalid = "live-a";
+        let message_error = message_one(&tx, invalid, "hi", &MessageOpts::default())
+            .expect_err("message must reject malformed IDs");
+        let resume_error = resume_one(&tx, invalid).expect_err("resume must reject malformed IDs");
+        let stop_error = stop_one(&tx, invalid).expect_err("stop must reject malformed IDs");
+
+        assert!(matches!(message_error, ControlError::InvalidId(id) if id == invalid));
+        assert!(matches!(resume_error, ControlError::InvalidId(id) if id == invalid));
+        assert!(matches!(stop_error, ControlError::InvalidId(id) if id == invalid));
+    }
+
+    #[test]
     fn message_forwards_steer_and_control_opts() -> Result<(), String> {
         let (tx, rx) = flume::unbounded();
         thread::spawn(move || {
@@ -491,7 +505,7 @@ mod tests {
         respond_live(
             rx,
             json!([{
-                "id": "live-a",
+                "id": "00000000-0000-7000-8000-000000000001",
                 "title": "A",
                 "status": "idle",
                 "updated_at": 0,
@@ -531,10 +545,11 @@ mod tests {
                 ..
             } => {
                 assert!(
-                    agents
-                        .iter()
-                        .any(|a| a.id == "live-a" && a.backend == BackendKind::Tui),
-                    "missing live-a: {agents:?}"
+                    agents.iter().any(|a| {
+                        a.id == "00000000-0000-7000-8000-000000000001"
+                            && a.backend == BackendKind::Tui
+                    }),
+                    "missing live session: {agents:?}"
                 );
                 Ok(())
             }
