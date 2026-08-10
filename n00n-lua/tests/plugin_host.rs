@@ -3057,7 +3057,7 @@ fn ctx_set_deadline_normalizes_watchdog_error() {
 fn caught_deadline_interrupt_allows_cleanup_before_timeout_reply() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
+    let cleanup_secs = CANCEL_INTERRUPT_GRACE.as_secs_f64() / 4.0;
     let src = format!(
         r#"local cleanup_finished = false
         n00n.api.register_tool({{
