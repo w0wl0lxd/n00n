@@ -3283,15 +3283,18 @@ where
     }
 
     /// # Errors
-    /// Returns `SessionError` if the session file cannot be found or removed.
+    /// Returns `SessionError` if the session file cannot be found or cleanup fails.
     pub fn delete_from(id: n00nId, dir: &Path) -> Result<(), SessionError> {
         let _lock = lock_openai_response_chain_in(dir, id)?;
-        let Some(path) = locate_session_file(dir, id) else {
-            return Err(StorageError::NotFound(id.to_string()).into());
-        };
-        try_remove(&path)?;
+        let path = locate_session_file(dir, id);
+        if let Some(path) = &path {
+            try_remove(path)?;
+        }
         try_remove(&openai_response_chain_path(dir, id))?;
         remove_from_cwd_index(dir, id)?;
+        if path.is_none() {
+            return Err(StorageError::NotFound(id.to_string()).into());
+        }
         Ok(())
     }
 
@@ -4738,6 +4741,30 @@ mod tests {
             err,
             SessionError::Storage(StorageError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn delete_missing_primary_cleans_sidecar_and_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/orphaned");
+        session.save_to(dir).unwrap();
+        let sidecar = openai_response_chain_path(dir, session.id);
+        fs::write(&sidecar, b"orphaned").unwrap();
+        fs::remove_file(jsonl_path(dir, session.id)).unwrap();
+
+        let error = TestSession::delete_from(session.id, dir).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SessionError::Storage(StorageError::NotFound(_))
+        ));
+        assert!(!sidecar.exists());
+        assert!(
+            !load_cwd_index(dir)
+                .values()
+                .any(|value| *value == session.id.to_string())
+        );
     }
 
     #[test]

@@ -696,10 +696,21 @@ impl OpenAi {
         let storage = self.storage.as_ref().ok_or_else(|| AgentError::Config {
             message: "OpenAI credential storage is unavailable".into(),
         })?;
-        let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER) else {
+        let codex_path = self.codex.then(auth::codex_auth_path_from_env).flatten();
+        let codex_tokens = codex_path
+            .as_deref()
+            .map(auth::load_codex_tokens)
+            .transpose()?
+            .flatten();
+        let uses_codex_file = codex_tokens.is_some();
+        let Some(tokens) =
+            codex_tokens.or_else(|| n00n_storage::auth::load_tokens(storage, auth::PROVIDER))
+        else {
             if self.codex {
                 return Err(AgentError::Config {
-                    message: "OpenAI Codex authentication not available".into(),
+                    message:
+                        "OpenAI Codex authentication not available; run `n00n auth login codex`"
+                            .into(),
                 });
             }
             let mut resolved = auth::resolve_api_key(storage)?;
@@ -716,8 +727,23 @@ impl OpenAi {
                 Some(observed) => observed,
                 None => &tokens,
             };
-            self.synchronize_oauth_tokens(refresh_basis, force_refresh, attempt_nonce)
+            if let Some(codex_path) = codex_path.as_deref().filter(|_| uses_codex_file) {
+                let path = codex_path.to_path_buf();
+                let basis = copy_oauth_tokens(refresh_basis);
+                smol::unblock(move || {
+                    auth::synchronize_codex_tokens(
+                        &path,
+                        &basis,
+                        force_refresh,
+                        auth::refresh_tokens,
+                    )
+                })
                 .await?
+                .tokens
+            } else {
+                self.synchronize_oauth_tokens(refresh_basis, force_refresh, attempt_nonce)
+                    .await?
+            }
         } else {
             debug!(
                 process_instance_nonce = process_instance_nonce(),
@@ -1286,8 +1312,8 @@ impl OpenAi {
     ) -> CodexAttempt {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
-        // Codex keeps continuation state only while its WebSocket stays connected.
-        // Full-history replay is therefore required after a connection change.
+        // Without server-side response storage, a WebSocket reconnection must be able to replay
+        // full history instead of relying on a continuation chain.
         let mut opts = opts;
         opts.allow_history_replay = true;
         let admission = match self
