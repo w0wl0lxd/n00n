@@ -17,14 +17,8 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
+-- Preserve shell wrappers such as BASH_ENV hooks for build commands.
 local RTK_SKIP_TOOLS = {
-  -- Cargo and friends are deliberately not routed through rtk. rtk is a Rust
-  -- binary that invokes cargo directly, so it bypasses the BASH_ENV cargo
-  -- wrapper that confines builds to the memory-capped cargo-agent-builds.slice.
-  -- Running a large build in n00n's own cgroup/process group has led to n00n
-  -- itself being SIGKILLed when the build exhausts memory. The shell will
-  -- source BASH_ENV and the cargo wrapper will run the build under
-  -- systemd-run --slice=cargo-agent-builds.
   cargo = true,
   nextest = true,
   rustc = true,
