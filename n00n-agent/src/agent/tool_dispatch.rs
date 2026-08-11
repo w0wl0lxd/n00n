@@ -36,7 +36,12 @@ const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
 const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
-const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers", "model_tier"];
+const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &[
+    "constraints",
+    "escalation_triggers",
+    "model_tier",
+    "subagent_type",
+];
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
@@ -888,16 +893,10 @@ fn fusion_brief_is_authorized(input: &Value) -> bool {
     let Some(brief) = input.as_object() else {
         return false;
     };
-    // Reject unknown fields to prevent lead-only work from bypassing authorization
-    let allowed_fields: std::collections::HashSet<&str> = FUSION_REQUIRED_BRIEF_FIELDS
-        .iter()
-        .chain(FUSION_OPTIONAL_BRIEF_FIELDS)
-        .copied()
-        .collect();
-    if brief
-        .keys()
-        .any(|key| !allowed_fields.contains(key.as_str()))
-    {
+    if brief.keys().any(|key| {
+        !FUSION_REQUIRED_BRIEF_FIELDS.contains(&key.as_str())
+            && !FUSION_OPTIONAL_BRIEF_FIELDS.contains(&key.as_str())
+    }) {
         return false;
     }
     let required_allowed = FUSION_REQUIRED_BRIEF_FIELDS.iter().all(|field| {
@@ -977,7 +976,6 @@ pub(super) async fn process_tool_calls(
                 n00n_config::providers::Tier::Medium => "medium",
                 n00n_config::providers::Tier::Strong => "strong",
             };
-            // Always overwrite provider-supplied model_tier to enforce policy
             arguments.insert("model_tier".into(), Value::String(tier.into()));
         }
         let fusion_brief_authorized = is_fusion_delegate && fusion_brief_is_authorized(&input);
@@ -2481,6 +2479,13 @@ mod tests {
     }
 
     #[test]
+    fn fusion_brief_authorization_accepts_supported_optional_fields() {
+        let mut brief = fusion_brief();
+        brief["subagent_type"] = Value::String("research".into());
+        assert!(fusion_brief_is_authorized(&brief));
+    }
+
+    #[test]
     fn fusion_brief_authorization_rejects_unknown_fields() {
         let mut brief = fusion_brief();
         brief["instructions"] = Value::String("do something".into());
@@ -2656,12 +2661,10 @@ mod tests {
     fn fusion_delegate_overrides_provider_supplied_model_tier() {
         smol::block_on(async {
             let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |input| {
-                // Verify the tier was overridden to "weak" from config
-                let tier = input
-                    .get("model_tier")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("none");
-                assert_eq!(tier, "weak", "model_tier should be overridden to weak");
+                assert_eq!(
+                    input.get("model_tier").and_then(Value::as_str),
+                    Some("weak")
+                );
                 Ok("ran".into())
             });
             let mut config = (*ctx.config).clone();

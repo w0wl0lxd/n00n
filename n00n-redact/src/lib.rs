@@ -315,9 +315,9 @@ const AWS_ACCESS_KEY_ID_CHARS: usize = 20;
 const BEARER_VALUE_MIN_CHARS: usize = 40;
 
 /// Returns true when `value` is shaped like a secret that has no key to
-/// anchor on: a JWT, a provider-prefixed token, an AWS access key id, or a
-/// `Bearer` header. Conservative by design: short and low-entropy strings
-/// never match, so ordinary content stays visible.
+/// anchor on, including authentication credentials, private keys, JWTs,
+/// provider-prefixed tokens, and AWS access key ids. Conservative by design:
+/// short and low-entropy strings never match, so ordinary content stays visible.
 #[must_use]
 pub fn looks_like_secret_value(value: &str) -> bool {
     let trimmed = value.trim();
@@ -330,13 +330,27 @@ pub fn looks_like_secret_value(value: &str) -> bool {
         return credential.trim().len() >= BEARER_VALUE_MIN_CHARS;
     }
     is_private_key(trimmed)
+        || contains_url_userinfo_credentials(trimmed)
         || is_jwt_like(trimmed)
         || is_prefixed_token(trimmed)
         || is_aws_access_key_id(trimmed)
 }
 
 fn is_private_key(value: &str) -> bool {
-    value.starts_with("-----BEGIN ") && value.contains(" PRIVATE KEY-----")
+    value.contains("-----BEGIN ") && value.contains(" PRIVATE KEY-----")
+}
+
+fn contains_url_userinfo_credentials(value: &str) -> bool {
+    value.match_indices("://").any(|(scheme_end, _)| {
+        let authority = &value[scheme_end + 3..];
+        let authority_end = authority
+            .find(['/', '?', '#'])
+            .map_or(authority.len(), |end| end);
+        authority[..authority_end]
+            .rsplit_once('@')
+            .and_then(|(userinfo, _)| userinfo.split_once(':'))
+            .is_some_and(|(_, password)| !password.is_empty())
+    })
 }
 
 fn is_jwt_like(value: &str) -> bool {
@@ -518,6 +532,23 @@ mod tests {
             kind = "OPENSSH",
         );
         assert!(looks_like_secret_value(&private_key));
+        assert!(looks_like_secret_value(&format!(
+            "provider output: {private_key}"
+        )));
+    }
+
+    #[test_case("https://user:password@example.com/path"; "password")]
+    #[test_case("prefix https://user:password@example.com/path suffix"; "embedded")]
+    #[test_case("https://:password@example.com/path"; "empty username")]
+    fn url_userinfo_credentials_are_secret_shaped(value: &str) {
+        assert!(looks_like_secret_value(value));
+    }
+
+    #[test_case("https://example.com/path"; "no userinfo")]
+    #[test_case("https://user@example.com/path"; "username only")]
+    #[test_case("https://user:@example.com/path"; "empty password")]
+    fn urls_without_passwords_are_not_secret_shaped(value: &str) {
+        assert!(!looks_like_secret_value(value));
     }
 
     #[test]
