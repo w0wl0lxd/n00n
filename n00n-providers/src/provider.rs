@@ -6,7 +6,7 @@ use std::sync::Arc;
 use flume::Sender;
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use n00n_redact::demoted;
 use n00n_storage::id::SessionRef;
