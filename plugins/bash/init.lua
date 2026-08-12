@@ -2,7 +2,7 @@ local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
 
-local RTK_REWRITE_TIMEOUT_MS = 2000
+local RTK_REWRITE_TIMEOUT_MS = 10000
 local RTK_UNSUPPORTED_FLAGS = {
   " -o ",
   " -not ",
@@ -17,10 +17,61 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
+-- Preserve shell wrappers such as BASH_ENV hooks for build commands.
+local RTK_SKIP_TOOLS = {
+  cargo = true,
+  nextest = true,
+  rustc = true,
+}
 local SEPARATOR = "──────"
 local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
+local RTK_REWRITE_REQUIRED = "error: rtk is enabled, but this managed command could not be safely rewritten"
+local RTK_MANAGED_COMMANDS = {
+  cargo = true,
+  cat = true,
+  docker = true,
+  find = true,
+  gh = true,
+  git = true,
+  grep = true,
+  ls = true,
+  npm = true,
+  pip = true,
+  pip3 = true,
+  podman = true,
+  python = true,
+  python3 = true,
+  rg = true,
+}
+local RTK_STRING_COMMAND_WRAPPERS = {
+  bash = true,
+  eval = true,
+  sh = true,
+}
+local RTK_COMMAND_WRAPPERS = {
+  bash = true,
+  command = true,
+  env = true,
+  eval = true,
+  exec = true,
+  ionice = true,
+  nice = true,
+  nohup = true,
+  setsid = true,
+  sh = true,
+  stdbuf = true,
+  sudo = true,
+  timeout = true,
+  watch = true,
+  xargs = true,
+}
 
 local rtk_available
+local rtk_probe_error
+local rtk_enforcement_required
+local rtk_rewrite
+local rtk_rewrite_compound
+local rtk_single_command
 
 local function shell_quote(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -409,7 +460,7 @@ local function sanitize_git_command(command)
   return table.concat(words, " ")
 end
 
-local function rtk_rewrite(command, ctx)
+rtk_rewrite = function(command, ctx)
   local config = ctx:config()
   if config and config.no_rtk then
     return nil
@@ -418,15 +469,25 @@ local function rtk_rewrite(command, ctx)
   if rtk_available == nil then
     local id = n00n.fn.jobstart("rtk --version")
     local result = n00n.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
-    if result then
-      rtk_available = (result.exit_code == 0)
+    if result and result.exit_code == 0 then
+      rtk_available = true
+      rtk_probe_error = nil
+    elseif result and result.exit_code == 127 then
+      rtk_available = false
+    elseif result then
+      rtk_available = false
+      rtk_probe_error = "availability check failed with exit code " .. result.exit_code
     else
       n00n.fn.jobstop(id)
       rtk_available = false
+      rtk_probe_error = "availability check timed out"
     end
   end
 
   if not rtk_available then
+    if rtk_probe_error and rtk_enforcement_required(command) then
+      return nil, RTK_REWRITE_REQUIRED .. ": " .. rtk_probe_error
+    end
     return nil
   end
 
@@ -438,19 +499,25 @@ local function rtk_rewrite(command, ctx)
   if not first_word then
     return nil
   end
-  if first_word == "jq" or first_word == "yq" or first_word:match("/jq$") or first_word:match("/yq$") then
+  if
+    (first_word == "jq" or first_word == "yq" or first_word:match("/jq$") or first_word:match("/yq$"))
+    and not rtk_enforcement_required(command)
+  then
     return nil
   end
 
-  -- rtk rewrite does not know about `cargo nextest run`, but `rtk cargo nextest` exists.
-  if cmd:match("^cargo%s+nextest$") or cmd:match("^cargo%s+nextest%s+run") then
-    return "rtk " .. cmd
+  local executable = unquote(first_word):gsub("\\(.)", "%1"):gsub("['\"]", "")
+  if RTK_SKIP_TOOLS[executable] or RTK_SKIP_TOOLS[executable:match("([^/]+)$")] then
+    return nil
   end
 
   local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(cmd))
   local result = n00n.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
   if not result then
     n00n.fn.jobstop(id)
+    if rtk_enforcement_required(command) then
+      return nil, RTK_REWRITE_REQUIRED .. ": rewrite timed out"
+    end
     return nil
   end
 
@@ -462,15 +529,55 @@ local function rtk_rewrite(command, ctx)
     if git_sub and RTK_GIT_FALLBACK[git_sub] then
       return "rtk " .. cmd
     end
+    if not rtk_single_command(command) then
+      local compound, compound_error = rtk_rewrite_compound(command, ctx)
+      if compound or compound_error then
+        return compound, compound_error
+      end
+    end
+    if cmd == "ls" or cmd:match("^ls%s+") then
+      return "rtk " .. cmd
+    end
+    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported("rtk " .. cmd .. " ") then
+      return "rtk " .. cmd
+    end
+    if rtk_enforcement_required(command) then
+      return nil, RTK_REWRITE_REQUIRED .. ": rtk rewrite rejected it"
+    end
     return nil
   end
 
   local rewritten = (result.stdout or ""):match("^%s*(.-)%s*$")
   if rewritten == "" or rewritten == cmd then
+    if not rtk_single_command(command) then
+      local compound, compound_error = rtk_rewrite_compound(command, ctx)
+      if compound or compound_error then
+        return compound, compound_error
+      end
+    end
+    if cmd == "ls" or cmd:match("^ls%s+") then
+      return "rtk " .. cmd
+    end
+    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported("rtk " .. cmd .. " ") then
+      return "rtk " .. cmd
+    end
+    if rtk_enforcement_required(command) then
+      return nil, RTK_REWRITE_REQUIRED .. ": rtk returned no rewrite"
+    end
     return nil
   end
   if rtk_find_unsupported(rewritten) then
-    return nil
+    return nil, RTK_REWRITE_REQUIRED .. ": the command uses unsupported find flags"
+  end
+  rewritten = rewritten:gsub("%f[%w]rtk%s+jq%f[%W]", "jq"):gsub("%f[%w]rtk%s+yq%f[%W]", "yq")
+  if rtk_enforcement_required(rewritten) then
+    if not rtk_single_command(command) then
+      local compound, compound_error = rtk_rewrite_compound(command, ctx)
+      if compound or compound_error then
+        return compound, compound_error
+      end
+    end
+    return nil, RTK_REWRITE_REQUIRED .. ": rtk left a managed command unwrapped"
   end
   return rewritten
 end
@@ -526,20 +633,35 @@ local LEAF_COMMAND_TYPES = {
   negated_command = true,
 }
 
+local function command_segment(node, source)
+  local range = n00n.treesitter.get_range(node)
+  local raw = source:sub(range[3] + 1, range[6])
+  local text = raw:match("^%s*(.-)%s*$")
+  if text == "" then
+    return nil
+  end
+  local relative_start, relative_end = raw:find(text, 1, true)
+  return {
+    text = text,
+    start_byte = range[3] + relative_start - 1,
+    end_byte = range[3] + relative_end,
+  }
+end
+
 local function collect_commands(node, source)
   local out = {}
   local kind = node:type()
   if LEAF_COMMAND_TYPES[kind] then
-    local text = n00n.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
-    if text ~= "" then
-      out[#out + 1] = text
+    local segment = command_segment(node, source)
+    if segment then
+      out[#out + 1] = segment
     end
   elseif kind == "pipeline" then
     for child in node:iter_children() do
       if child:named() then
-        local text = n00n.treesitter.get_node_text(child, source):match("^%s*(.-)%s*$")
-        if text ~= "" then
-          out[#out + 1] = text
+        local segment = command_segment(child, source)
+        if segment then
+          out[#out + 1] = segment
         end
       end
     end
@@ -588,6 +710,118 @@ local function collect_guard_commands(node, source)
   return guarded
 end
 
+local function normalized_executable(word)
+  return unquote(word):gsub("\\(.)", "%1"):gsub("['\"]", ""):match("([^/]+)$")
+end
+
+local function rtk_manages_segment(segment, depth)
+  depth = depth or 0
+  if depth > 8 then
+    return true
+  end
+  local normalized = strip_leading_assignments(trim(segment))
+  local words = split_shell_words(normalized)
+  local executable = words[1] and normalized_executable(words[1])
+  if not executable or executable:find("$", 1, true) then
+    return executable ~= nil
+  end
+  if RTK_MANAGED_COMMANDS[executable] then
+    return true
+  end
+  if executable == "rtk" then
+    return normalized_executable(words[2] or "") == "proxy"
+      and rtk_manages_segment(table.concat(words, " ", 3), depth + 1)
+  end
+  if RTK_COMMAND_WRAPPERS[executable] then
+    for index = 2, #words do
+      local candidate = normalized_executable(words[index])
+      if candidate and RTK_MANAGED_COMMANDS[candidate] then
+        return true
+      end
+      if RTK_STRING_COMMAND_WRAPPERS[executable] then
+        local nested = unquote(words[index])
+        if nested ~= words[index] and rtk_manages_segment(nested, depth + 1) then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+local function tree_contains_rtk_command(node, source)
+  if LEAF_COMMAND_TYPES[node:type()] then
+    local segment = n00n.treesitter.get_node_text(node, source)
+    if rtk_manages_segment(segment) then
+      return true
+    end
+  end
+  for child in node:iter_children() do
+    if child:named() and tree_contains_rtk_command(child, source) then
+      return true
+    end
+  end
+  return false
+end
+
+rtk_single_command = function(command)
+  local parser = n00n.treesitter.get_parser(command, "bash")
+  if not parser then
+    return false
+  end
+  local root = parser:parse()[1]:root()
+  return not root:has_error() and not is_complex(root) and #collect_commands(root, command) == 1
+end
+
+rtk_enforcement_required = function(command)
+  local parser = n00n.treesitter.get_parser(command, "bash")
+  if not parser then
+    return rtk_manages_segment(command)
+  end
+
+  local root = parser:parse()[1]:root()
+  if root:has_error() then
+    return rtk_manages_segment(command)
+  end
+  return tree_contains_rtk_command(root, command)
+end
+
+rtk_rewrite_compound = function(command, ctx)
+  local parser = n00n.treesitter.get_parser(command, "bash")
+  if not parser then
+    return nil
+  end
+  local root = parser:parse()[1]:root()
+  if root:has_error() then
+    return nil
+  end
+
+  local output = {}
+  local cursor = 0
+  local changed = false
+  for _, segment in ipairs(collect_commands(root, command)) do
+    if segment.start_byte == 0 and segment.end_byte == #command then
+      return nil, RTK_REWRITE_REQUIRED .. ": complex command could not be safely segmented"
+    end
+    if segment.start_byte < cursor or command:sub(segment.start_byte + 1, segment.end_byte) ~= segment.text then
+      return nil, RTK_REWRITE_REQUIRED .. ": could not safely locate a compound command segment"
+    end
+    local rewritten, rewrite_error = rtk_rewrite(segment.text, ctx)
+    if rewrite_error then
+      return nil, rewrite_error
+    end
+    output[#output + 1] = command:sub(cursor + 1, segment.start_byte)
+    output[#output + 1] = rewritten or segment.text
+    changed = changed or rewritten ~= nil
+    cursor = segment.end_byte
+  end
+  output[#output + 1] = command:sub(cursor + 1)
+  if changed then
+    return table.concat(output)
+  end
+  return nil
+end
+
 local function broad_command_reason(command)
   local parser = n00n.treesitter.get_parser(command, "bash")
   if not parser then
@@ -614,13 +848,13 @@ local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
-- Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, cat, head, tail).
+- When rtk is installed, managed commands are rewritten through it or rejected; there is no per-call bypass.
 - Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
 - Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`; the tool fails without it.
 - Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `bash` for system CLI (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Use rtk-wrapped bash for verbose commands. Do NOT use `bash` for file modifications.",
+  content = "- Reserve `bash` for system CLI. When `rtk` is installed, managed commands are rewritten through it or rejected with no per-call bypass. Do NOT use `bash` for file modifications.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({
@@ -664,7 +898,11 @@ n00n.api.register_tool({
       return { scopes = { command }, force_prompt = true }
     end
 
-    local segments = collect_commands(root, command)
+    local collected = collect_commands(root, command)
+    local segments = {}
+    for _, segment in ipairs(collected) do
+      segments[#segments + 1] = segment.text
+    end
     if #segments == 0 then
       segments = { command }
     end
@@ -732,7 +970,10 @@ n00n.api.register_tool({
 
     command = sanitize_git_command(command)
 
-    local rewritten = rtk_rewrite(command, ctx)
+    local rewritten, rewrite_error = rtk_rewrite(command, ctx)
+    if rewrite_error then
+      return { llm_output = rewrite_error, is_error = true }
+    end
     if rewritten then
       command = rewritten
     end

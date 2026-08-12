@@ -227,9 +227,9 @@ All fields are optional. Typos in field names cause an error right away.
     out.push_str("|-------|------|---------|-------------|\n");
     out.push_str("| `enabled` | bool | `false` | Enable beta Fusion planning, sidekick execution, and lead review for this session |\n");
     out.push_str(
-        "| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |\n",
+        "| `lead_model` | string | `codex/gpt-5.6-sol` | Lead and supervisor model when Fusion is enabled without an explicit model override. |\n| `sidekick_model` | string | `codex/gpt-5.6-luna` | Exact routine-coding sidekick model. Tier routing cannot replace it. |\n| `sidekick_thinking` | string | `max` | Sidekick reasoning setting. |\n| `sidekick_tier` | string | `weak` | Legacy compatibility field; ignored when `sidekick_model` is set. |\n",
     );
-    out.push_str("\nFusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. `sidekick_tier` selects a conservative sidekick model. Optional `plugins.fusion.auto_tier` lets trusted configuration choose the tier from the brief.\n\n");
+    out.push_str("\nFusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. The exact sidekick model and thinking setting are used for every delegation, so tier routing cannot redirect routine coding. Explicit `--model` choices take precedence over the Fusion lead default.\n\n");
 
     write_section(&mut out, "[provider]", ProviderConfig::FIELDS);
     write_section(&mut out, "[storage]", StorageConfig::FIELDS);
@@ -264,6 +264,45 @@ n00n.setup({{
     .unwrap();
 
     write_plugin_options(&mut out, &collect_plugin_options());
+
+    writeln!(
+        out,
+        "\
+## Firecrawl\n\n\
+Set `FIRECRAWL_API_URL` in your environment or a `.env` file. A public \
+Firecrawl service must use HTTPS, and its hostname must resolve to at least one \
+validated public IPv4 address. Local Firecrawl means a same-host service reached \
+through an IPv4 loopback address. The value may be an origin root or end in `/v2`; \
+both forms resolve to the same endpoints. IPv6 literal API bases are not supported. \
+`FIRECRAWL_API_KEY` is optional.\n\n\
+```text\n\
+FIRECRAWL_API_URL=http://127.0.0.1:3002/v2\n\
+FIRECRAWL_API_KEY=fc-example\n\
+```\n\n\
+For Docker, publish the API port on `127.0.0.1` instead of `0.0.0.0`, then use \
+that IPv4 loopback port in `FIRECRAWL_API_URL`.\n\n\
+Both web plugins default to `backend = \"auto\"`. Auto uses Firecrawl only when \
+`FIRECRAWL_API_URL` is valid and non-empty. A missing or empty value selects Exa \
+for websearch and the direct client for webfetch. A malformed non-empty value is \
+reported as a configuration error instead of silently falling back. You can choose \
+a backend explicitly:\n\n\
+```lua
+n00n.setup({{
+    plugins = {{
+        websearch = {{ backend = \"firecrawl\" }},
+        webfetch = {{ backend = \"firecrawl\" }},
+    }},
+}})
+```\n\n\
+Explicit Firecrawl mode reports an error when `FIRECRAWL_API_URL` is missing.\n\n\
+Target URL and DNS checks are defense in depth, not an SSRF guarantee. A remote \
+Firecrawl service resolves scrape targets independently, including after DNS changes. \
+Run Firecrawl workers with egress isolation that blocks private, link-local, metadata, \
+and internal destinations. n00n performs hostname lookup on a blocking worker. A \
+request timeout stops waiting for that lookup, but the operating-system lookup may \
+finish in the background.\n"
+    )
+    .unwrap();
 
     writeln!(out, "## Validation\n").unwrap();
     writeln!(

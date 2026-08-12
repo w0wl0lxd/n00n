@@ -413,7 +413,13 @@ fn prepare_agent_env(
     };
 
     let providers_toml = ProvidersConfig::load();
-    let model = setup::resolve_model(model_arg, &config.provider, &providers_toml, &storage)?;
+    let model = setup::resolve_model_with_fusion(
+        model_arg,
+        &config.provider,
+        &providers_toml,
+        &storage,
+        Some(&config.agent.fusion),
+    )?;
     let model_spec = model.spec();
     setup::install_panic_log_hook();
 

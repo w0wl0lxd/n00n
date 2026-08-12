@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use color_eyre::Result;
@@ -25,90 +26,114 @@ pub fn resolve_model(
     providers_toml: &ProvidersConfig,
     storage: &StateDir,
 ) -> Result<Model> {
-    let configured_slugs: Option<Vec<&str>> = if providers_toml.providers.is_empty() {
-        None
-    } else {
-        Some(
-            providers_toml
-                .providers
-                .keys()
-                .map(String::as_str)
-                .collect(),
-        )
-    };
+    resolve_model_with_fusion(explicit, provider_config, providers_toml, storage, None)
+}
 
+pub fn resolve_model_with_fusion(
+    explicit: Option<&str>,
+    provider_config: &n00n_config::ProviderConfig,
+    providers_toml: &ProvidersConfig,
+    storage: &StateDir,
+    fusion: Option<&n00n_config::FusionConfig>,
+) -> Result<Model> {
+    resolve_model_with_availability(
+        explicit,
+        provider_config,
+        providers_toml,
+        storage,
+        fusion,
+        n00n_providers::provider::provider_available,
+    )
+}
+
+fn resolve_model_with_availability(
+    explicit: Option<&str>,
+    provider_config: &n00n_config::ProviderConfig,
+    providers_toml: &ProvidersConfig,
+    storage: &StateDir,
+    fusion: Option<&n00n_config::FusionConfig>,
+    provider_available: impl Fn(&str) -> bool,
+) -> Result<Model> {
     if let Some(spec) = explicit {
-        let model = Model::from_spec(spec).context("invalid --model spec")?;
-        return Ok(model);
+        return Model::from_spec(spec).context("invalid --model spec");
+    }
+    if let Some(fusion) = fusion.filter(|fusion| fusion.enabled) {
+        return Model::from_spec(&fusion.lead_model).context("invalid Fusion lead model");
     }
     if let Some(spec) = read_model(storage) {
-        if let Ok(m) = Model::from_spec(&spec) {
-            if provider_allowed(&m.provider, configured_slugs.as_deref())
-                && n00n_providers::provider::provider_available(&m.provider)
-            {
-                return Ok(m);
-            }
-            tracing::warn!(
+        match Model::from_spec(&spec) {
+            Ok(model) if provider_available(&model.provider) => return Ok(model),
+            Ok(model) => tracing::warn!(
                 spec,
-                provider = %m.provider,
-                "saved model provider is not available, falling back to default"
-            );
-        } else {
-            tracing::warn!(spec, "saved model no longer valid, falling back to default");
+                provider = %model.provider,
+                "saved model provider is not available, falling back to configured defaults"
+            ),
+            Err(_) => tracing::warn!(
+                spec,
+                "saved model no longer valid, falling back to configured defaults"
+            ),
         }
     }
     if let Some(spec) = provider_config.default_model.as_deref() {
-        let model = Model::from_spec(spec).context("invalid default_model in config")?;
-        if provider_allowed(&model.provider, configured_slugs.as_deref()) {
-            return Ok(model);
-        }
-        tracing::warn!(
-            spec,
-            provider = %model.provider,
-            "default_model provider is not in providers.toml, falling back to auto-detection"
-        );
+        return Model::from_spec(spec).context("invalid default_model in config");
     }
-    auto_detect_model(configured_slugs.as_deref()).ok_or_else(|| {
+    auto_detect_model(providers_toml, provider_available).ok_or_else(|| {
         color_eyre::eyre::eyre!(
             "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `n00n auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/n00n/docs/providers/ for setup instructions"
         )
     })
 }
 
-pub(crate) fn provider_allowed(provider: &str, configured_slugs: Option<&[&str]>) -> bool {
-    let Some(slugs) = configured_slugs else {
-        return true;
-    };
-    slugs.contains(&provider)
+pub(crate) fn available_model_from_spec(spec: &str) -> Option<Model> {
+    let model = Model::from_spec(spec).ok()?;
+    n00n_providers::provider::provider_available(&model.provider).then_some(model)
 }
 
-fn auto_detect_model(configured_slugs: Option<&[&str]>) -> Option<Model> {
-    let slugs: Vec<&str> = match configured_slugs {
-        Some(s) => {
-            let mut ordered: Vec<&str> = PROVIDER_PRIORITY
-                .iter()
-                .copied()
-                .filter(|p| s.contains(p))
-                .collect();
-            let builtins: std::collections::HashSet<&str> =
-                PROVIDER_PRIORITY.iter().copied().collect();
-            let mut extras: Vec<&str> = s
-                .iter()
-                .copied()
-                .filter(|p| !builtins.contains(p))
-                .collect();
-            extras.sort_unstable();
-            ordered.extend(extras);
-            ordered
+fn provider_candidates<'a>(
+    providers_toml: &'a ProvidersConfig,
+    dynamic_slugs: impl IntoIterator<Item = &'a str>,
+) -> Vec<&'a str> {
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+
+    for &slug in PROVIDER_PRIORITY {
+        if seen.insert(slug) {
+            candidates.push(slug);
         }
-        None => PROVIDER_PRIORITY.to_vec(),
-    };
+    }
+
+    let mut configured: Vec<&str> = providers_toml
+        .providers
+        .keys()
+        .map(String::as_str)
+        .collect();
+    configured.sort_unstable();
+    for slug in configured {
+        if seen.insert(slug) {
+            candidates.push(slug);
+        }
+    }
+
+    let mut dynamic: Vec<&str> = dynamic_slugs.into_iter().collect();
+    dynamic.sort_unstable();
+    for slug in dynamic {
+        if seen.insert(slug) {
+            candidates.push(slug);
+        }
+    }
+
+    candidates
+}
+
+fn auto_detect_model(
+    providers_toml: &ProvidersConfig,
+    provider_available: impl Fn(&str) -> bool,
+) -> Option<Model> {
+    let dynamic_slugs = n00n_providers::dynamic::discovered_slugs();
+    let candidates = provider_candidates(providers_toml, dynamic_slugs);
     for tier in [ModelTier::Strong, ModelTier::Medium] {
-        for &slug in &slugs {
-            if !provider_allowed(slug, configured_slugs) {
-                continue;
-            }
-            if n00n_providers::provider::provider_available(slug)
+        for &slug in &candidates {
+            if provider_available(slug)
                 && let Ok(model) = Model::from_tier_dynamic(slug, tier)
             {
                 return Some(model);
@@ -155,97 +180,183 @@ pub fn init_logging(storage_config: &n00n_config::StorageConfig) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use n00n_config::ProviderConfig;
     use n00n_config::providers::{ProviderDef, ProvidersConfig};
-    use n00n_storage::StateDir;
+    use n00n_config::{FusionConfig, ProviderConfig};
     use n00n_storage::model::persist_model;
     use tempfile::TempDir;
 
+    use super::*;
+
     fn temp_state() -> (TempDir, StateDir) {
-        let dir = TempDir::new().expect("temp dir");
-        let state = StateDir::from_path(dir.path().to_path_buf());
-        (dir, state)
+        let temp = TempDir::new().unwrap();
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        (temp, storage)
     }
 
     #[test]
-    fn provider_allowed_with_empty_config_allows_any() {
-        assert!(provider_allowed("openai", None));
-        assert!(!provider_allowed("anthropic", Some(&[])));
+    fn provider_candidates_add_configured_and_dynamic_without_filtering_builtins() {
+        let mut providers = ProvidersConfig::default();
+        providers.upsert("z-custom".into(), ProviderDef::default());
+        providers.upsert("a-custom".into(), ProviderDef::default());
+        providers.upsert("anthropic".into(), ProviderDef::default());
+
+        let candidates = provider_candidates(&providers, ["z-script", "a-script"]);
+
+        assert_eq!(
+            candidates,
+            [
+                "anthropic",
+                "openai",
+                "copilot",
+                "zai",
+                "synthetic",
+                "deepseek",
+                "a-custom",
+                "z-custom",
+                "a-script",
+                "z-script",
+            ]
+        );
     }
 
     #[test]
-    fn provider_allowed_with_config_allows_only_configured() {
-        let slugs = ["anthropic"];
-        assert!(provider_allowed("anthropic", Some(&slugs)));
-        assert!(!provider_allowed("openai", Some(&slugs)));
-    }
-
-    #[test]
-    fn resolve_explicit_ignores_providers_toml() {
-        let (_, state) = temp_state();
-        let provider_config = ProviderConfig::default();
-        let providers_toml = {
-            let mut c = ProvidersConfig::default();
-            c.upsert("anthropic".into(), ProviderDef::default());
-            c
+    fn explicit_model_overrides_fusion_and_saved_model() {
+        let (_temp, storage) = temp_state();
+        persist_model(&storage, "codex/gpt-5.5");
+        let fusion = FusionConfig {
+            enabled: true,
+            ..FusionConfig::default()
         };
-        let model = resolve_model(
-            Some("anthropic/claude-opus-4-6"),
-            &provider_config,
-            &providers_toml,
-            &state,
+
+        let model = resolve_model_with_availability(
+            Some("codex/gpt-5.6-terra"),
+            &ProviderConfig::default(),
+            &ProvidersConfig::default(),
+            &storage,
+            Some(&fusion),
+            |_| false,
         )
-        .expect("explicit model should resolve");
+        .unwrap();
+
+        assert_eq!(model.spec(), "codex/gpt-5.6-terra");
+    }
+
+    #[test]
+    fn fusion_lead_overrides_saved_and_provider_defaults() {
+        let (_temp, storage) = temp_state();
+        persist_model(&storage, "codex/gpt-5.5");
+        let provider = ProviderConfig {
+            default_model: Some("codex/gpt-5.4".to_owned()),
+            ..ProviderConfig::default()
+        };
+        let fusion = FusionConfig {
+            enabled: true,
+            ..FusionConfig::default()
+        };
+
+        let model = resolve_model_with_availability(
+            None,
+            &provider,
+            &ProvidersConfig::default(),
+            &storage,
+            Some(&fusion),
+            |_| false,
+        )
+        .unwrap();
+
+        assert_eq!(model.spec(), "codex/gpt-5.6-sol");
+    }
+
+    #[test]
+    fn available_saved_model_overrides_provider_default() {
+        let (_temp, storage) = temp_state();
+        persist_model(&storage, "codex/gpt-5.5");
+        let provider = ProviderConfig {
+            default_model: Some("anthropic/claude-opus-4-6".to_owned()),
+            ..ProviderConfig::default()
+        };
+
+        let model = resolve_model_with_availability(
+            None,
+            &provider,
+            &ProvidersConfig::default(),
+            &storage,
+            None,
+            |slug| slug == "codex",
+        )
+        .unwrap();
+
+        assert_eq!(model.spec(), "codex/gpt-5.5");
+    }
+
+    #[test]
+    fn unavailable_saved_model_falls_back_to_configured_default() {
+        let (_temp, storage) = temp_state();
+        persist_model(&storage, "openai/gpt-5.6-sol");
+        let mut providers = ProvidersConfig::default();
+        providers.upsert("my-custom".into(), ProviderDef::default());
+        let provider = ProviderConfig {
+            default_model: Some("anthropic/claude-opus-4-6".to_owned()),
+            ..ProviderConfig::default()
+        };
+
+        let model =
+            resolve_model_with_availability(None, &provider, &providers, &storage, None, |_| false)
+                .unwrap();
+
         assert_eq!(model.spec(), "anthropic/claude-opus-4-6");
     }
 
     #[test]
-    fn resolve_default_model_skips_provider_not_in_providers_toml() {
-        let (_, state) = temp_state();
-        let provider_config = ProviderConfig {
-            default_model: Some("openai/gpt-5.6-sol".into()),
+    fn provider_default_is_intentional_even_when_not_currently_available() {
+        let (_temp, storage) = temp_state();
+        let provider = ProviderConfig {
+            default_model: Some("openai/gpt-5.6-sol".to_owned()),
             ..ProviderConfig::default()
         };
-        let providers_toml = {
-            let mut c = ProvidersConfig::default();
-            c.upsert("anthropic".into(), ProviderDef::default());
-            c
-        };
-        let result = resolve_model(None, &provider_config, &providers_toml, &state);
-        assert!(
-            result.is_err(),
-            "default_model should be skipped when not in providers.toml"
-        );
+        let mut providers = ProvidersConfig::default();
+        providers.upsert("my-custom".into(), ProviderDef::default());
+
+        let model =
+            resolve_model_with_availability(None, &provider, &providers, &storage, None, |_| false)
+                .unwrap();
+
+        assert_eq!(model.spec(), "openai/gpt-5.6-sol");
     }
 
     #[test]
-    fn resolve_default_model_from_provider_config() {
-        let (_, state) = temp_state();
-        let provider_config = ProviderConfig {
-            default_model: Some("anthropic/claude-opus-4-6".into()),
-            ..ProviderConfig::default()
-        };
-        let model = resolve_model(None, &provider_config, &ProvidersConfig::default(), &state)
-            .expect("default_model should resolve");
-        assert_eq!(model.spec(), "anthropic/claude-opus-4-6");
+    fn disabled_fusion_preserves_available_saved_model() {
+        let (_temp, storage) = temp_state();
+        persist_model(&storage, "codex/gpt-5.5");
+
+        let model = resolve_model_with_availability(
+            None,
+            &ProviderConfig::default(),
+            &ProvidersConfig::default(),
+            &storage,
+            Some(&FusionConfig::default()),
+            |slug| slug == "codex",
+        )
+        .unwrap();
+
+        assert_eq!(model.spec(), "codex/gpt-5.5");
     }
 
     #[test]
-    fn resolve_saved_ignores_provider_not_in_providers_toml() {
-        let (dir, state) = temp_state();
-        persist_model(&state, "openai/gpt-5.6-sol");
-        let provider_config = ProviderConfig::default();
-        let providers_toml = {
-            let mut c = ProvidersConfig::default();
-            c.upsert("my-custom".into(), ProviderDef::default());
-            c
-        };
-        let result = resolve_model(None, &provider_config, &providers_toml, &state);
-        assert!(
-            result.is_err(),
-            "saved openai should be skipped when not in providers.toml"
-        );
-        drop(dir);
+    fn auto_detection_uses_first_available_provider_by_tier_and_priority() {
+        let (_temp, storage) = temp_state();
+
+        let model = resolve_model_with_availability(
+            None,
+            &ProviderConfig::default(),
+            &ProvidersConfig::default(),
+            &storage,
+            None,
+            |slug| slug == "zai",
+        )
+        .unwrap();
+
+        assert_eq!(model.provider.as_ref(), "zai");
+        assert_eq!(model.tier, ModelTier::Strong);
     }
 }

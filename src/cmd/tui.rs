@@ -173,11 +173,12 @@ fn build_stack(
     let commands = discover_commands(cli.plugin_flags.no_commands);
     let providers_toml = ProvidersConfig::load();
 
-    let model_result = setup::resolve_model(
+    let model_result = setup::resolve_model_with_fusion(
         cli.model.as_deref(),
         &config.provider,
         &providers_toml,
         storage,
+        Some(&config.agent.fusion),
     );
     let (model, needs_login) = match (model_result, fallback_model) {
         (Ok(m), _) => (m, false),
@@ -359,7 +360,8 @@ fn run_ui_loop(
         let model = if focused_tab.messages.is_empty() {
             stack.model.clone()
         } else {
-            Model::from_spec(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
+            setup::available_model_from_spec(&focused_tab.model)
+                .unwrap_or_else(|| stack.model.clone())
         };
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`
