@@ -1739,80 +1739,108 @@ impl SessionLog {
         }
 
         let path = jsonl_path(&self.dir, self.session_id);
-        let mut next_decoded_bytes = self.decoded_bytes;
-        let mut buf = Vec::new();
-        let mut new_tool_ids = Vec::new();
+        let prepared = (|| {
+            let mut next_decoded_bytes = self.decoded_bytes;
+            let mut buf = Vec::new();
+            let mut new_tool_ids = Vec::new();
 
-        for msg in &session.messages[self.saved_messages.len()..] {
-            append_record_with_limits(
+            for msg in &session.messages[self.saved_messages.len()..] {
+                append_record_with_limits(
+                    &mut buf,
+                    &LogRecord::<&M, &U, &T>::Msg { d: msg },
+                    &path,
+                    &limits,
+                    &mut next_decoded_bytes,
+                )?;
+            }
+
+            for (id, output) in &session.tool_outputs {
+                if !self.saved_tool_ids.contains(id) {
+                    append_record_with_limits(
+                        &mut buf,
+                        &LogRecord::<&M, &U, &T>::Out {
+                            id: id.clone(),
+                            d: output,
+                        },
+                        &path,
+                        &limits,
+                        &mut next_decoded_bytes,
+                    )?;
+                    new_tool_ids.push(id.clone());
+                }
+            }
+
+            let new_sub_counts = self.append_subagent_records::<M, U, T>(
                 &mut buf,
-                &LogRecord::<&M, &U, &T>::Msg { d: msg },
+                &session.subagent_messages,
                 &path,
                 &limits,
                 &mut next_decoded_bytes,
             )?;
-        }
 
-        for (id, output) in &session.tool_outputs {
-            if !self.saved_tool_ids.contains(id) {
+            for entry in &session.transcript[self.saved_transcript.len()..] {
                 append_record_with_limits(
                     &mut buf,
-                    &LogRecord::<&M, &U, &T>::Out {
-                        id: id.clone(),
-                        d: output,
+                    &TranscriptRecord {
+                        t: TRANSCRIPT_RECORD_TYPE,
+                        d: entry,
                     },
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
                 )?;
-                new_tool_ids.push(id.clone());
             }
-        }
 
-        let new_sub_counts = self.append_subagent_records::<M, U, T>(
-            &mut buf,
-            &session.subagent_messages,
-            &path,
-            &limits,
-            &mut next_decoded_bytes,
-        )?;
+            let current_meta = meta_record_bytes(session, self.appended_frames)?;
+            let meta_changed = current_meta != self.saved_meta;
+            if buf.is_empty() && !meta_changed {
+                return Ok(None);
+            }
 
-        for entry in &session.transcript[self.saved_transcript.len()..] {
+            let next_log_appends = self.appended_frames + 1;
+            let mut persisted_meta = Vec::new();
             append_record_with_limits(
-                &mut buf,
-                &TranscriptRecord {
-                    t: TRANSCRIPT_RECORD_TYPE,
-                    d: entry,
+                &mut persisted_meta,
+                &LogRecord::<M, &U, &T>::Meta {
+                    title: session.title.clone(),
+                    token_usage: &session.token_usage,
+                    updated_at: session.updated_at,
+                    log_appends: next_log_appends,
+                    transcript: None,
+                    meta: session.meta.clone(),
                 },
                 &path,
                 &limits,
                 &mut next_decoded_bytes,
             )?;
-        }
+            buf.extend_from_slice(&persisted_meta);
 
-        let current_meta = meta_record_bytes(session, self.appended_frames)?;
-        let meta_changed = current_meta != self.saved_meta;
-        if buf.is_empty() && !meta_changed {
+            Ok(Some((
+                buf,
+                new_tool_ids,
+                new_sub_counts,
+                persisted_meta,
+                next_log_appends,
+                next_decoded_bytes,
+            )))
+        })();
+        let Some((
+            buf,
+            new_tool_ids,
+            new_sub_counts,
+            persisted_meta,
+            next_log_appends,
+            next_decoded_bytes,
+        )) = (match prepared {
+            Err(SessionError::DecodedBudgetExceeded { .. }) => {
+                let dir = self.dir.clone();
+                return self.compact_with_limits(&dir, session, limits);
+            }
+            result => result?,
+        })
+        else {
             return Ok(());
-        }
-
-        let next_log_appends = self.appended_frames + 1;
-        let mut persisted_meta = Vec::new();
-        append_record_with_limits(
-            &mut persisted_meta,
-            &LogRecord::<M, &U, &T>::Meta {
-                title: session.title.clone(),
-                token_usage: &session.token_usage,
-                updated_at: session.updated_at,
-                log_appends: next_log_appends,
-                transcript: None,
-                meta: session.meta.clone(),
-            },
-            &path,
-            &limits,
-            &mut next_decoded_bytes,
-        )?;
-        buf.extend_from_slice(&persisted_meta);
+        };
 
         let start = self.file.metadata().map_err(StorageError::from)?.len();
         if let Err(e) = encode_frame(&mut self.file, &buf) {
@@ -2720,6 +2748,7 @@ fn visit_zstd_lines_with_decoded_bytes(
     Ok((recovered, reader.decoded_bytes))
 }
 
+#[cfg(test)]
 fn visit_zstd_lines_with_limits(
     path: &Path,
     limits: DecodeLimits,
@@ -3216,7 +3245,11 @@ where
     result
 }
 
-fn try_decode_first_message_at<M>(path: &Path, offset: u64) -> Option<String>
+fn try_decode_first_message_at<M>(
+    path: &Path,
+    offset: u64,
+    budget: &mut DecodedWorkBudget,
+) -> Option<String>
 where
     M: TitleSource + DeserializeOwned + Default,
 {
@@ -3225,12 +3258,14 @@ where
         MAX_FIRST_MESSAGE_BYTES,
         MAX_ZSTD_WINDOW_LOG,
     );
+    let (limits, allowance) = budget.limits(limits)?;
     let mut reader = BoundedZstdLines::open(path, offset, limits).ok()?;
-    loop {
+    let (result, exhausted) = loop {
         let line = match reader.next(true) {
             Ok(DecodedLine::Line(line)) => line,
             Ok(DecodedLine::Oversized) => continue,
-            Ok(DecodedLine::Eof) | Err(_) => return None,
+            Err(LineReadError::BudgetExceeded) => break (None, true),
+            Ok(DecodedLine::Eof) | Err(_) => break (None, false),
         };
         if line.is_empty() || !line.starts_with(MSG_RECORD_PREFIX) {
             continue;
@@ -3239,9 +3274,60 @@ where
             serde_json::from_str(&line)
             && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
         {
-            return Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+            break (Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES)), false);
         }
-    }
+    };
+    budget.finish_attempt(reader.decoded_bytes, allowance, exhausted);
+    result
+}
+
+fn scan_meta_from_start<M>(
+    path: &Path,
+    budget: &mut DecodedWorkBudget,
+) -> (String, u64, Option<String>)
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
+    let Some((limits, allowance)) = budget.limits(DecodeLimits::SCAN) else {
+        return (String::new(), 0, None);
+    };
+    let Ok(mut reader) = BoundedZstdLines::open(path, 0, limits) else {
+        return (String::new(), 0, None);
+    };
+    let mut title = String::new();
+    let mut updated_at = 0u64;
+    let mut first_message = None;
+    let exhausted = loop {
+        let line = match reader.next(true) {
+            Ok(DecodedLine::Line(line)) => line,
+            Ok(DecodedLine::Oversized) => continue,
+            Err(LineReadError::BudgetExceeded) => break true,
+            Ok(DecodedLine::Eof) | Err(_) => break false,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(META_RECORD_PREFIX)
+            && let Ok(MetaScan {
+                title: next_title,
+                updated_at: next_updated_at,
+            }) = serde_json::from_str(&line)
+        {
+            title = next_title;
+            updated_at = next_updated_at;
+        }
+        if first_message.is_none()
+            && line.starts_with(MSG_RECORD_PREFIX)
+            && line.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
+            && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
+                serde_json::from_str(&line)
+            && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
+        {
+            first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+        }
+    };
+    budget.finish_attempt(reader.decoded_bytes, allowance, exhausted);
+    (title, updated_at, first_message)
 }
 
 fn find_last_frame_meta<M>(
@@ -3328,38 +3414,10 @@ where
 
     let mut budget = DecodedWorkBudget::new(MAX_SCAN_DECODED_BYTES);
     let (meta_title, updated_at, first_message) = find_last_frame_meta::<M>(path, &mut budget)
-        .unwrap_or_else(|| {
-            let mut title = String::new();
-            let mut updated_at = 0u64;
-            let mut first_message = None;
-            let _ = visit_zstd_lines_with_limits(path, DecodeLimits::SCAN, |line| {
-                if !line.is_empty() {
-                    if line.starts_with(META_RECORD_PREFIX)
-                        && let Ok(MetaScan {
-                            title: t,
-                            updated_at: u,
-                        }) = serde_json::from_str(line)
-                    {
-                        title = t;
-                        updated_at = u;
-                    }
-                    if first_message.is_none()
-                        && line.starts_with(MSG_RECORD_PREFIX)
-                        && line.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
-                        && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
-                            serde_json::from_str(line)
-                        && let Some(text) =
-                            d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
-                    {
-                        first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
-                    }
-                }
-                Ok(())
-            });
-            (title, updated_at, first_message)
-        });
+        .unwrap_or_else(|| scan_meta_from_start::<M>(path, &mut budget));
 
-    let first_message = first_message.or_else(|| try_decode_first_message_at::<M>(path, 0));
+    let first_message =
+        first_message.or_else(|| try_decode_first_message_at::<M>(path, 0, &mut budget));
 
     Some(ScannedHeader {
         id: header.id,
@@ -4525,6 +4583,29 @@ mod tests {
     }
 
     #[test]
+    fn append_compacts_when_history_exhausts_decoded_budget() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let decoded_bytes = log.decoded_bytes;
+        let limits = super::DecodeLimits::new(2_048, decoded_bytes, 27);
+
+        session.meta.revision = 1;
+        log.append_with_limits(&session, limits).unwrap();
+
+        assert_eq!(log.appended_frames, 0);
+        assert!(log.decoded_bytes <= decoded_bytes);
+        let (loaded, _) = SessionLog::open_with_limits::<Value, Value, Value>(
+            dir,
+            session.id,
+            super::DecodeLimits::LOAD,
+        )
+        .unwrap();
+        assert_eq!(loaded.meta.revision, 1);
+    }
+
+    #[test]
     fn reopened_log_counts_existing_decoded_bytes_before_append() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -4788,6 +4869,21 @@ mod tests {
             .is_none()
         );
     }
+    #[test]
+    fn metadata_fallback_uses_remaining_decoded_work_budget() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("fallback-budget.jsonl");
+        let decoded = b"{\"t\":\"meta\",\"title\":\"bounded\",\"updated_at\":42}\n";
+        write_encoded(&path, decoded);
+        let mut budget = super::DecodedWorkBudget::new(decoded.len() - 1);
+
+        assert_eq!(
+            super::scan_meta_from_start::<Value>(&path, &mut budget),
+            (String::new(), 0, None)
+        );
+        assert_eq!(budget.remaining, 0);
+    }
+
     #[test]
     fn metadata_candidate_scan_shares_one_decoded_work_budget() {
         const CANDIDATE_COUNT: usize = 64;
