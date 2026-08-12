@@ -1319,6 +1319,14 @@ impl App {
     }
 
     pub(crate) fn handle_submission_persistence_failure(&mut self, dispatch: &SubmissionDispatch) {
+        self.handle_submission_failure(dispatch, PERSISTENCE_FAILURE_MSG);
+    }
+
+    pub(crate) fn handle_submission_failure(
+        &mut self,
+        dispatch: &SubmissionDispatch,
+        message: &str,
+    ) {
         self.queue.remove_submission(dispatch.submission_id);
         if dispatch.paint_required {
             let Some(pending) = self.pending_submission.as_ref() else {
@@ -1331,7 +1339,7 @@ impl App {
                 return;
             }
             if self.restore_pending_submission(dispatch.submission_id, dispatch.run_id) {
-                self.flash(PERSISTENCE_FAILURE_MSG.into());
+                self.flash(message.into());
             }
             return;
         }
@@ -1339,15 +1347,10 @@ impl App {
         let relevant_run = dispatch.run_id == self.run_id;
         let _ = dispatch.gate.try_cancel();
         if relevant_run && self.status == Status::Streaming {
-            self.status = Status::error(PERSISTENCE_FAILURE_MSG.into());
-            self.main_chat().push(DisplayMessage::new(
-                DisplayRole::Error,
-                PERSISTENCE_FAILURE_MSG.into(),
-            ));
-            self.fire_session_autocmd(
-                "TurnError",
-                serde_json::json!({ "message": PERSISTENCE_FAILURE_MSG }),
-            );
+            self.status = Status::error(message.into());
+            self.main_chat()
+                .push(DisplayMessage::new(DisplayRole::Error, message.into()));
+            self.fire_session_autocmd("TurnError", serde_json::json!({ "message": message }));
         }
     }
     pub(crate) fn preserve_submission_for_shutdown(&mut self, dispatch: SubmissionDispatch) {
@@ -1961,7 +1964,12 @@ impl App {
         let Some(handle) = &self.lua_event_handle else {
             return;
         };
-        handle.run_command(Arc::clone(&lua_cmd.plugin), Arc::clone(&lua_cmd.name), args);
+        handle.run_command(
+            Arc::clone(&lua_cmd.plugin),
+            Arc::clone(&lua_cmd.name),
+            args,
+            Some(session::plugin_state_identity(&self.state.session)),
+        );
     }
 
     fn execute_mcp_prompt(&mut self, name: &str, args: &str) -> Vec<Action> {

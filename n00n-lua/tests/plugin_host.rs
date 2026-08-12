@@ -3207,7 +3207,7 @@ fn ctx_set_deadline_normalizes_watchdog_error() {
 fn caught_deadline_interrupt_allows_cleanup_before_timeout_reply() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
+    let cleanup_secs = CANCEL_INTERRUPT_GRACE.as_secs_f64() / 4.0;
     let src = format!(
         r#"local cleanup_finished = false
         n00n.api.register_tool({{
@@ -6368,6 +6368,7 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
         Arc::from("team"),
         Arc::from("/team"),
         "fix the parser".into(),
+        None,
     );
 
     let action = rx
@@ -6452,7 +6453,7 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let (_reg, host) = builtins_host();
     let rx = host.ui_action_rx().unwrap();
     let handle = host.event_handle().unwrap();
-    handle.run_command(Arc::from("team"), Arc::from("/team"), String::new());
+    handle.run_command(Arc::from("team"), Arc::from("/team"), String::new(), None);
 
     let action = rx
         .recv_timeout(Duration::from_secs(5))
@@ -6581,7 +6582,7 @@ fn async_run_from_parked_command_handler_runs_promptly() {
     .unwrap();
     let rx = host.ui_action_rx().unwrap();
     let handle = host.event_handle().unwrap();
-    handle.run_command(Arc::from("p"), Arc::from("/park"), String::new());
+    handle.run_command(Arc::from("p"), Arc::from("/park"), String::new(), None);
 
     let action = rx
         .recv_timeout(Duration::from_secs(5))
@@ -6612,7 +6613,7 @@ fn job_callbacks_fire_while_command_handler_parked() {
     .unwrap();
     let rx = host.ui_action_rx().unwrap();
     let handle = host.event_handle().unwrap();
-    handle.run_command(Arc::from("p"), Arc::from("/stream"), String::new());
+    handle.run_command(Arc::from("p"), Arc::from("/stream"), String::new(), None);
 
     let action = rx
         .recv_timeout(Duration::from_secs(5))
