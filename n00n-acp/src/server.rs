@@ -144,7 +144,11 @@ where
             };
 
             if raw.get("result").is_some() || raw.get("error").is_some() {
-                handle_incoming_response(&server, &raw);
+                if id.is_some() {
+                    handle_incoming_response(&server, &raw);
+                } else {
+                    server.respond(RequestId::Null, Err(AcpError::invalid_request()));
+                }
             } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
                 match id {
                     Some(id) => handle_request(&mut server, method, id, &raw, params).await,
@@ -766,6 +770,20 @@ mod tests {
             assert_eq!(response["id"], Value::Null);
             assert_eq!(response["error"]["code"], -32_600);
         }
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn serve_loop_recovers_from_response_without_id() {
+        let input = br#"{"jsonrpc":"2.0","result":{}}
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
+"#;
+
+        let responses = run_serve_reader(input.to_vec());
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], Value::Null);
+        assert_eq!(responses[0]["error"]["code"], -32_600);
         assert_initialize_processed(&responses);
     }
     #[test]
