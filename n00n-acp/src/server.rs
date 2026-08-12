@@ -1,6 +1,9 @@
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicI64, Ordering},
+};
 
 use agent_client_protocol_schema::{
     AgentNotification, AgentRequest, AgentResponse, ContentBlock, CurrentModeUpdate,
@@ -17,6 +20,7 @@ use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
 use n00n_agent::{
     AgentInput, AgentMode, Envelope, ImageMediaType, ImageSource, mode_and_plan_from_stored,
+    permissions::PermissionAnswer,
 };
 use n00n_providers::Message;
 use n00n_providers::TokenUsage;
@@ -34,6 +38,8 @@ use crate::{AcpParams, methods, permissions, translate};
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
 
 type PendingPrompt = Arc<Mutex<PendingPromptState>>;
+type PendingPermission = Arc<Mutex<Option<RequestId>>>;
+type RequestIdCounter = Arc<AtomicI64>;
 
 #[derive(Default)]
 struct PendingPromptState {
@@ -47,6 +53,7 @@ struct SessionState {
     plan_path: Option<PathBuf>,
     current_model: String,
     pending_prompt: PendingPrompt,
+    pending_permission: PendingPermission,
     event_pump: smol::Task<()>,
     _daemon: Option<crate::SessionDaemonGuard>,
 }
@@ -55,6 +62,7 @@ struct Server {
     out_tx: Sender<Value>,
     model_specs: Vec<String>,
     session: Option<SessionState>,
+    next_outgoing_request_id: RequestIdCounter,
 }
 
 impl Server {
@@ -81,20 +89,41 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         }
     });
 
-    let mut server = Server {
+    let server = Server {
         out_tx,
         model_specs: available_model_specs(),
         session: None,
+        next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
     };
 
     let stdin = smol::Unblock::new(std::io::stdin());
-    let mut reader = smol::io::BufReader::new(stdin);
-    let mut line = String::new();
+    let reader = smol::io::BufReader::new(stdin);
+    serve_reader(&params, reader, server).await?;
+    writer_task.await;
 
+    Ok(())
+}
+
+async fn serve_reader<R>(
+    params: &AcpParams,
+    mut reader: R,
+    mut server: Server,
+) -> color_eyre::Result<()>
+where
+    R: smol::io::AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
     loop {
         line.clear();
-        if reader.read_line(&mut line).await.context("read stdin")? == 0 {
-            break;
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                warn!(error = %e, "invalid UTF-8 on stdin");
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
+            }
+            Err(e) => return Err(e).context("read stdin"),
         }
 
         let trimmed = line.trim();
@@ -112,25 +141,37 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
                 }
             };
 
-            let id = raw.get("id").map(request_id);
+            let id = match raw.get("id") {
+                Some(value) => {
+                    let Ok(id) = request_id(value) else {
+                        server.respond(RequestId::Null, Err(AcpError::invalid_request()));
+                        continue;
+                    };
+                    Some(id)
+                }
+                None => None,
+            };
 
             if raw.get("result").is_some() || raw.get("error").is_some() {
-                handle_incoming_response(&server, &raw);
+                if let Some(id) = id {
+                    handle_incoming_response(&server, &id, &raw);
+                } else {
+                    server.respond(RequestId::Null, Err(AcpError::invalid_request()));
+                }
             } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
                 match id {
-                    Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
+                    Some(id) => handle_request(&mut server, method, id, &raw, params).await,
                     None => handle_notification(&server, method),
                 }
             } else if let Some(id) = id {
                 server.respond(id, Err(AcpError::invalid_request()));
+            } else {
+                server.respond(RequestId::Null, Err(AcpError::invalid_request()));
             }
         }
     }
 
     retire_session(&mut server).await;
-    drop(server);
-    writer_task.await;
-
     Ok(())
 }
 
@@ -139,8 +180,8 @@ fn parse_stdin_line(line: &str) -> impl Iterator<Item = JsonResult<Value>> + '_ 
     Deserializer::from_str(line).into_iter::<Value>()
 }
 
-fn request_id(v: &Value) -> RequestId {
-    serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
+fn request_id(value: &Value) -> Result<RequestId, ()> {
+    serde_json::from_value(value.clone()).map_err(|_| ())
 }
 
 async fn handle_request(
@@ -199,11 +240,11 @@ async fn handle_load_session(
     let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
         .map_err(|error| AcpError::internal_error().data(json_str(&error)))?;
     let history = stored.messages;
+    retire_session(srv).await;
     let sid = SessionId::from(session_ref.to_string());
     for update in translate::replay_history(&history) {
         session_update(&srv.out_tx, &sid, update);
     }
-    retire_session(srv).await;
     let handle = spawn_session(params, req.cwd, Some(session_ref), history);
     let spec = params.model.spec();
     let resp = methods::load_session_response()
@@ -229,7 +270,15 @@ async fn retire_session(srv: &mut Server) {
             Response::new(id, Ok(AgentResponse::PromptResponse(response))),
         );
     }
-    let _ = handle.cancel_tx.try_send(());
+    match handle.cancel_tx.try_send(()) {
+        Ok(()) => {}
+        Err(flume::TrySendError::Full(())) => {
+            debug!("cancellation already requested");
+        }
+        Err(flume::TrySendError::Disconnected(())) => {
+            warn!("cancellation channel disconnected, falling back to direct task cancellation");
+        }
+    }
     event_pump.cancel().await;
     handle.task.cancel().await;
 }
@@ -270,11 +319,15 @@ fn install_session(
     params: &AcpParams,
 ) {
     let pending = Arc::new(Mutex::new(PendingPromptState::default()));
+    let pending_permission = Arc::new(Mutex::new(None));
     let event_pump = start_event_pump(
         handle.event_rx.clone(),
         handle.session_id.clone(),
         srv.out_tx.clone(),
         Arc::clone(&pending),
+        Arc::clone(&pending_permission),
+        Arc::clone(&srv.next_outgoing_request_id),
+        handle.answer_tx.clone(),
     );
     let daemon = params.session_daemon_register.and_then(|register| {
         n00n_storage::StateDir::resolve()
@@ -287,6 +340,7 @@ fn install_session(
         plan_path,
         current_model,
         pending_prompt: pending,
+        pending_permission,
         event_pump,
         _daemon: daemon,
     });
@@ -412,14 +466,57 @@ fn handle_notification(srv: &Server, method: &str) {
     }
 }
 
-fn handle_incoming_response(srv: &Server, raw: &Value) {
+fn handle_incoming_response(srv: &Server, id: &RequestId, raw: &Value) {
     let Some(session) = &srv.session else { return };
+    let Some(answer) = permission_response_answer(&session.pending_permission, id, raw) else {
+        return;
+    };
+    if session.handle.answer_tx.send(answer.encode()).is_err() {
+        debug!("permission response receiver disconnected");
+    }
+}
 
-    if let Some(result) = raw.get("result")
-        && let Ok(resp) = serde_json::from_value::<RequestPermissionResponse>(result.clone())
-    {
-        let answer = permissions::outcome_to_answer(&resp.outcome);
-        let _ = session.handle.answer_tx.send(answer.encode());
+fn permission_response_answer(
+    pending_permission: &PendingPermission,
+    id: &RequestId,
+    raw: &Value,
+) -> Option<PermissionAnswer> {
+    let mut pending = match pending_permission.lock() {
+        Ok(pending) => pending,
+        Err(poisoned) => {
+            warn!("pending ACP permission state poisoned; denying response");
+            let mut pending = poisoned.into_inner();
+            if pending.as_ref() != Some(id) {
+                return None;
+            }
+            pending.take();
+            return Some(PermissionAnswer::Deny);
+        }
+    };
+    if pending.as_ref() != Some(id) {
+        return None;
+    }
+    pending.take();
+
+    let answer = match (raw.get("result"), raw.get("error")) {
+        (Some(result), None) => {
+            match serde_json::from_value::<RequestPermissionResponse>(result.clone()) {
+                Ok(response) => permissions::outcome_to_answer(&response.outcome),
+                Err(_) => PermissionAnswer::Deny,
+            }
+        }
+        _ => PermissionAnswer::Deny,
+    };
+    Some(answer)
+}
+
+fn set_pending_permission(pending_permission: &PendingPermission, id: RequestId) -> bool {
+    if let Ok(mut pending) = pending_permission.lock() {
+        *pending = Some(id);
+        true
+    } else {
+        warn!("pending ACP permission state poisoned; denying request");
+        false
     }
 }
 
@@ -470,10 +567,12 @@ fn start_event_pump(
     session_id: SessionRef,
     out_tx: Sender<Value>,
     pending: PendingPrompt,
+    pending_permission: PendingPermission,
+    next_outgoing_request_id: RequestIdCounter,
+    answer_tx: Sender<String>,
 ) -> smol::Task<()> {
     smol::spawn(async move {
         let sid = SessionId::from(session_id.to_string());
-        let mut next_request_id = FIRST_OUTGOING_REQUEST_ID;
 
         while let Ok(Envelope {
             event, subagent, ..
@@ -499,11 +598,23 @@ fn start_event_pump(
                             ToolCallUpdate::new(ToolCallId::from(id), fields),
                             permissions::permission_options(),
                         ));
-                    next_request_id += 1;
+                    let Some(request_id) = next_request_id(&next_outgoing_request_id) else {
+                        warn!("ACP permission request ID space exhausted; denying request");
+                        if let Err(error) = answer_tx.send(PermissionAnswer::Deny.encode()) {
+                            debug!(%error, "permission response receiver disconnected");
+                        }
+                        continue;
+                    };
+                    if !set_pending_permission(&pending_permission, request_id.clone()) {
+                        if answer_tx.send(PermissionAnswer::Deny.encode()).is_err() {
+                            debug!("permission response receiver disconnected");
+                        }
+                        continue;
+                    }
                     send(
                         &out_tx,
                         Request {
-                            id: RequestId::Number(next_request_id),
+                            id: request_id,
                             method: Arc::from(request.method()),
                             params: Some(request),
                         },
@@ -540,6 +651,14 @@ fn start_event_pump(
             session_update(&out_tx, &sid, update);
         }
     })
+}
+
+fn next_request_id(counter: &AtomicI64) -> Option<RequestId> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .ok()
+        .and_then(|id| id.checked_add(1))
+        .map(RequestId::Number)
 }
 
 fn take_pending(pending: &PendingPrompt) -> Option<(RequestId, bool)> {
@@ -592,6 +711,7 @@ mod tests {
     use n00n_providers::{ContentBlock as MsgBlock, Role, TokenUsage};
     use n00n_storage::StateDir;
     use n00n_storage::sessions::Session;
+    use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
@@ -632,11 +752,235 @@ mod tests {
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
     }
 
+    #[test]
+    fn request_id_parses_valid_ids() {
+        assert_eq!(request_id(&json!(5)), Ok(RequestId::Number(5)));
+        assert_eq!(request_id(&json!("abc")), Ok(RequestId::Str("abc".into())));
+        assert_eq!(request_id(&json!(null)), Ok(RequestId::Null));
+    }
+
+    #[test]
+    fn request_id_rejects_unparseable_ids() {
+        assert!(request_id(&json!({})).is_err());
+        assert!(request_id(&json!([])).is_err());
+        assert!(request_id(&json!(true)).is_err());
+        assert!(request_id(&json!(18_446_744_073_709_551_615_u64)).is_err());
+    }
+
+    #[test]
+    fn parse_params_handles_null_params() {
+        let raw = json!({"id": 1, "method": "test", "params": null});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
+    fn test_params() -> AcpParams {
+        AcpParams {
+            model: Model::from_spec("anthropic/test-model").expect("test model"),
+            config: Arc::new(n00n_agent::AgentConfig::default()),
+            permissions_config: n00n_agent::PermissionsConfig::default(),
+            timeouts: n00n_providers::Timeouts::default(),
+            openai_options: n00n_providers::OpenAiOptions::default(),
+            initial_wd: PathBuf::from("/project"),
+            mcp_handle: None,
+            prompt_slots: Arc::new(n00n_agent::prompt::ResolvedSlots::default()),
+            state_persistence: None,
+            yolo: false,
+            session_daemon_register: None,
+        }
+    }
+
+    fn run_serve_reader(input: Vec<u8>) -> Vec<Value> {
+        let (out_tx, out_rx) = flume::unbounded();
+        let server = Server {
+            out_tx,
+            model_specs: Vec::new(),
+            session: None,
+            next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
+        };
+        let reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
+        smol::block_on(serve_reader(&test_params(), reader, server)).expect("serve reader");
+        out_rx.drain().collect()
+    }
+
+    fn assert_initialize_processed(responses: &[Value]) {
+        let response = responses.last().expect("initialize response");
+        assert_eq!(response["id"], 7);
+        assert!(response.get("result").is_some(), "{response}");
+    }
+
+    #[test]
+    fn serve_loop_recovers_from_invalid_utf8() {
+        let mut input = b"\xff\n".to_vec();
+        input.extend_from_slice(
+            b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\n",
+        );
+
+        let responses = run_serve_reader(input);
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["error"]["code"], -32_700);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn serve_loop_recovers_from_invalid_request_id() {
+        let input = br#"{"jsonrpc":"2.0","id":{},"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
+"#;
+
+        let responses = run_serve_reader(input.to_vec());
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["error"]["code"], -32_600);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn serve_loop_rejects_malformed_messages_without_ids() {
+        let input = br#"{}
+[]
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
+"#;
+
+        let responses = run_serve_reader(input.to_vec());
+
+        assert_eq!(responses.len(), 3);
+        for response in &responses[..2] {
+            assert_eq!(response["id"], Value::Null);
+            assert_eq!(response["error"]["code"], -32_600);
+        }
+        assert_initialize_processed(&responses);
+    }
+
+    #[test_case::test_case(())]
+    fn serve_loop_recovers_from_response_without_id(_case: ()) {
+        let input = br#"{"jsonrpc":"2.0","result":{}}
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
+"#;
+
+        let responses = run_serve_reader(input.to_vec());
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], Value::Null);
+        assert_eq!(responses[0]["error"]["code"], -32_600);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test_case::test_case(())]
+    fn permission_response_ignores_mismatched_id(_case: ()) {
+        let pending = Arc::new(Mutex::new(Some(RequestId::Number(1001))));
+        let raw = json!({
+            "id": 1002,
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+        });
+
+        assert_eq!(
+            permission_response_answer(&pending, &RequestId::Number(1002), &raw),
+            None
+        );
+        assert_eq!(*pending.lock().unwrap(), Some(RequestId::Number(1001)));
+    }
+
+    #[test_case::test_case(())]
+    fn session_replacement_ignores_delayed_old_permission_response(_case: ()) {
+        let counter = AtomicI64::new(FIRST_OUTGOING_REQUEST_ID);
+        let old_request_id = next_request_id(&counter).expect("old session request ID");
+        let new_request_id = next_request_id(&counter).expect("new session request ID");
+        let new_pending = Arc::new(Mutex::new(Some(new_request_id.clone())));
+        let delayed_old_response = json!({
+            "id": &old_request_id,
+            "error": {"code": -32603, "message": "old session failed"}
+        });
+
+        assert_ne!(old_request_id, new_request_id);
+        assert_eq!(
+            permission_response_answer(&new_pending, &old_request_id, &delayed_old_response),
+            None
+        );
+        assert_eq!(*new_pending.lock().unwrap(), Some(new_request_id.clone()));
+
+        let new_response = json!({
+            "id": &new_request_id,
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+        });
+        assert_eq!(
+            permission_response_answer(&new_pending, &new_request_id, &new_response),
+            Some(PermissionAnswer::AllowOnce)
+        );
+        assert_eq!(*new_pending.lock().unwrap(), None);
+    }
+
+    #[test_case::test_case(r#"{"id":1001,"error":{"code":-32603,"message":"failed"}}"# ; "error response")]
+    #[test_case::test_case(r#"{"id":1001,"result":{}}"# ; "malformed result")]
+    #[test_case::test_case(r#"{"id":1001,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}},"error":{"code":-32603,"message":"failed"}}"# ; "result and error")]
+    fn permission_response_fails_closed_and_clears_pending(raw: &str) {
+        let pending = Arc::new(Mutex::new(Some(RequestId::Number(1001))));
+        let raw: Value = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(
+            permission_response_answer(&pending, &RequestId::Number(1001), &raw),
+            Some(PermissionAnswer::Deny)
+        );
+        assert_eq!(*pending.lock().unwrap(), None);
+    }
+
+    fn poison_pending_permission(pending: &PendingPermission) {
+        let pending = Arc::clone(pending);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = pending.lock().unwrap();
+                panic!("poison pending permission for test");
+            })
+            .join()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn poisoned_pending_permission_denies_matching_response() {
+        let pending = Arc::new(Mutex::new(Some(RequestId::Number(1001))));
+        poison_pending_permission(&pending);
+        let raw = json!({
+            "id": 1001,
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+        });
+
+        assert_eq!(
+            permission_response_answer(&pending, &RequestId::Number(1001), &raw),
+            Some(PermissionAnswer::Deny)
+        );
+        assert_eq!(*pending.lock().unwrap_err().into_inner(), None);
+    }
+
+    #[test]
+    fn poisoned_pending_permission_rejects_new_request() {
+        let pending = Arc::new(Mutex::new(None));
+        poison_pending_permission(&pending);
+
+        assert!(!set_pending_permission(&pending, RequestId::Number(1001)));
+        assert_eq!(*pending.lock().unwrap_err().into_inner(), None);
+    }
+
+    #[test]
+    fn parse_params_handles_missing_params() {
+        let raw = json!({"id": 1, "method": "test"});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_params_handles_invalid_json_params() {
+        let raw = json!({"id": 1, "method": "test", "params": {"invalid": "type"}});
+        let result: Result<String, _> = parse_params(&raw);
+        assert!(result.is_err());
+    }
+
     #[test_case::test_case(())]
     fn parse_stdin_line_splits_multiple_json_rpc_messages_on_one_line(_case: ()) {
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}{"jsonrpc":"2.0","id":2,"method":"b"}"#;
         let values: Vec<Value> = parse_stdin_line(line)
-            .map(|r| r.expect("each message is valid JSON"))
+            .map(|result| result.expect("each message is valid JSON"))
             .collect();
         assert_eq!(values.len(), 2);
         assert_eq!(values[0]["id"], 1);
@@ -647,7 +991,7 @@ mod tests {
     fn parse_stdin_line_parses_single_message(_case: ()) {
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}"#;
         let values: Vec<Value> = parse_stdin_line(line)
-            .map(|r| r.expect("message is valid JSON"))
+            .map(|result| result.expect("message is valid JSON"))
             .collect();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0]["id"], 1);
