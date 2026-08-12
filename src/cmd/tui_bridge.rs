@@ -12,6 +12,7 @@ use n00n_daemon::protocol::{AgentRecord, BackendKind, MessageOpts};
 use n00n_daemon::registry::{ControlPlane, TuiCallbackBackend};
 use n00n_daemon::server;
 use n00n_lua::{SessionRequest, UiAction};
+use n00n_storage::id::SessionRef;
 use serde_json::Value;
 
 const SESSION_ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -123,6 +124,8 @@ fn message_one(
     text: &str,
     opts: &MessageOpts,
 ) -> ControlResult<Value> {
+    id.parse::<SessionRef>()
+        .map_err(|_| ControlError::InvalidId(id.to_owned()))?;
     session_call(
         tx,
         SessionRequest::Prompt {
@@ -130,6 +133,8 @@ fn message_one(
             text: text.to_owned(),
             steer: opts.steer,
             control: opts.control,
+            caller_id: None,
+            host_control: true,
         },
     )
     .map_err(|e| map_not_found(id, e))?;
@@ -137,6 +142,8 @@ fn message_one(
 }
 
 fn resume_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
+    id.parse::<SessionRef>()
+        .map_err(|_| ControlError::InvalidId(id.to_owned()))?;
     let value = session_call(tx, SessionRequest::Status { id: id.to_owned() })
         .map_err(|e| map_not_found(id, e))?;
     let run_info = value.get("paused_team").ok_or_else(|| {
@@ -150,6 +157,8 @@ fn resume_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
             text: prompt,
             steer: true,
             control: true,
+            caller_id: None,
+            host_control: true,
         },
     )
     .map_err(|e| map_not_found(id, e))?;
@@ -179,8 +188,17 @@ fn build_team_resume_prompt(run_info: &Value) -> ControlResult<String> {
 }
 
 fn stop_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
-    session_call(tx, SessionRequest::Cancel { id: id.to_owned() })
-        .map_err(|e| map_not_found(id, e))?;
+    id.parse::<SessionRef>()
+        .map_err(|_| ControlError::InvalidId(id.to_owned()))?;
+    session_call(
+        tx,
+        SessionRequest::Cancel {
+            id: id.to_owned(),
+            caller_id: None,
+            host_control: true,
+        },
+    )
+    .map_err(|e| map_not_found(id, e))?;
     Ok(())
 }
 
@@ -333,7 +351,7 @@ mod tests {
         respond_live(
             rx,
             json!([{
-                "id": "sess-1",
+                "id": "00000000-0000-7000-8000-000000000001",
                 "title": "t",
                 "status": "working",
                 "updated_at": 0,
@@ -343,10 +361,24 @@ mod tests {
         let backend = tui_backend(tx);
         let agents = backend.list().map_err(|e| e.to_string())?;
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].id, "sess-1");
+        assert_eq!(agents[0].id, "00000000-0000-7000-8000-000000000001");
         assert_eq!(agents[0].backend, BackendKind::Tui);
         assert_eq!(agents[0].status, "working");
         Ok(())
+    }
+
+    #[test]
+    fn control_operations_reject_malformed_session_ids() {
+        let (tx, _rx) = flume::unbounded();
+        let invalid = "live-a";
+        let message_error = message_one(&tx, invalid, "hi", &MessageOpts::default())
+            .expect_err("message must reject malformed IDs");
+        let resume_error = resume_one(&tx, invalid).expect_err("resume must reject malformed IDs");
+        let stop_error = stop_one(&tx, invalid).expect_err("stop must reject malformed IDs");
+
+        assert!(matches!(message_error, ControlError::InvalidId(id) if id == invalid));
+        assert!(matches!(resume_error, ControlError::InvalidId(id) if id == invalid));
+        assert!(matches!(stop_error, ControlError::InvalidId(id) if id == invalid));
     }
 
     #[test]
@@ -361,10 +393,18 @@ mod tests {
                         text,
                         steer,
                         control,
+                        caller_id,
+                        host_control,
                     } => {
-                        if id.as_deref() != Some("sess-1") || text != "hi" || !steer || !control {
+                        if id.as_deref() != Some("00000000-0000-7000-8000-000000000001")
+                            || text != "hi"
+                            || !steer
+                            || !control
+                            || caller_id.is_some()
+                            || !host_control
+                        {
                             let _ = reply_tx.send(Err(format!(
-                                "unexpected prompt id={id:?} text={text:?} steer={steer} control={control}"
+                                "unexpected prompt id={id:?} text={text:?} steer={steer} control={control} caller_id={caller_id:?}"
                             )));
                             return;
                         }
@@ -379,7 +419,7 @@ mod tests {
         let backend = tui_backend(tx);
         backend
             .message(
-                "sess-1",
+                "00000000-0000-7000-8000-000000000001",
                 "hi",
                 &MessageOpts {
                     steer: true,
@@ -399,10 +439,12 @@ mod tests {
                 rx.recv_timeout(Duration::from_secs(2))
             {
                 match req {
-                    SessionRequest::Status { id } if id == "sess-1" => {
+                    SessionRequest::Status { id }
+                        if id == "00000000-0000-7000-8000-000000000001" =>
+                    {
                         saw_status = true;
                         let _ = reply_tx.send(Ok(json!({
-                            "id": "sess-1",
+                            "id": "00000000-0000-7000-8000-000000000001",
                             "status": "paused",
                             "paused_team": { "run_id": "run-abc", "mode": "swarm" },
                         })) as SessionReply);
@@ -412,10 +454,17 @@ mod tests {
                         text,
                         steer,
                         control,
+                        caller_id,
+                        host_control,
                     } => {
-                        if id.as_deref() != Some("sess-1") || !steer || !control {
+                        if id.as_deref() != Some("00000000-0000-7000-8000-000000000001")
+                            || !steer
+                            || !control
+                            || caller_id.is_some()
+                            || !host_control
+                        {
                             let _ = reply_tx.send(Err(format!(
-                                "unexpected prompt id={id:?} steer={steer} control={control}"
+                                "unexpected prompt id={id:?} steer={steer} control={control} caller_id={caller_id:?}"
                             )));
                             return;
                         }
@@ -437,7 +486,9 @@ mod tests {
             assert!(saw_status, "never received status request");
         });
         let backend = tui_backend(tx);
-        backend.resume("sess-1").map_err(|e| e.to_string())?;
+        backend
+            .resume("00000000-0000-7000-8000-000000000001")
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -454,7 +505,7 @@ mod tests {
         respond_live(
             rx,
             json!([{
-                "id": "live-a",
+                "id": "00000000-0000-7000-8000-000000000001",
                 "title": "A",
                 "status": "idle",
                 "updated_at": 0,
@@ -494,10 +545,11 @@ mod tests {
                 ..
             } => {
                 assert!(
-                    agents
-                        .iter()
-                        .any(|a| a.id == "live-a" && a.backend == BackendKind::Tui),
-                    "missing live-a: {agents:?}"
+                    agents.iter().any(|a| {
+                        a.id == "00000000-0000-7000-8000-000000000001"
+                            && a.backend == BackendKind::Tui
+                    }),
+                    "missing live session: {agents:?}"
                 );
                 Ok(())
             }

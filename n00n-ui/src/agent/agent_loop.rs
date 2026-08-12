@@ -19,7 +19,6 @@ use n00n_agent::{
 };
 use n00n_lua::EventHandle;
 use n00n_providers::{AgentError, Message, Model, OpenAiOptions, System, TokenUsage};
-use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
 use tracing::{error, info, warn};
@@ -92,7 +91,7 @@ pub(super) struct AgentLoopInit {
     pub(super) queue: Arc<QueueReceiver>,
     pub(super) cancel_map: Arc<RunCancelMap>,
     pub(super) init_cancel: CancelToken,
-    pub(super) session_id: Option<SessionRef>,
+    pub(super) identity: Option<SessionIdentity>,
     pub(super) timeouts: n00n_providers::Timeouts,
     pub(super) openai_options: OpenAiOptions,
     pub(super) lua_handle: Option<EventHandle>,
@@ -118,7 +117,7 @@ impl AgentLoop {
             queue,
             cancel_map,
             init_cancel,
-            session_id,
+            identity,
             timeouts,
             openai_options,
             lua_handle,
@@ -145,7 +144,7 @@ impl AgentLoop {
             agent_tx,
             answer_rx: Arc::new(async_lock::Mutex::new(answer_rx)),
             queue,
-            identity: session_id.map(SessionIdentity::root),
+            identity,
             timeouts,
             openai_options,
             lua_handle,
@@ -161,11 +160,19 @@ impl AgentLoop {
         }
 
         while let Ok(()) = self.queue.recv_notify().await {
+            let mut last_run_id = None;
             while let Some(entry) = self.queue.pop() {
                 if entry.run_id() < self.min_run_id {
                     continue;
                 }
+                last_run_id = Some(entry.run_id());
                 self.process_entry(entry).await;
+            }
+            if let Some(run_id) = last_run_id
+                && let Some(generation) = self.queue.drain_generation()
+            {
+                let event_tx = EventSender::new(self.agent_tx.clone(), run_id);
+                let _ = event_tx.send(AgentEvent::QueueDrained { generation });
             }
         }
     }
@@ -195,6 +202,10 @@ impl AgentLoop {
                     .await
             }
             QueueItem::Compact { .. } => self.do_compact(&event_tx).await,
+            QueueItem::DirectTool { tool, input, .. } => {
+                self.do_direct_tool_run(&event_tx, run_id, &tool, &input)
+                    .await
+            }
         };
 
         if let Err(e) = result {
@@ -222,6 +233,66 @@ impl AgentLoop {
             spawn_oauth_for_needs_auth(mcp);
         }
         !self.init_cancel.is_cancelled()
+    }
+
+    async fn do_direct_tool_run(
+        &mut self,
+        event_tx: &EventSender,
+        run_id: u64,
+        tool: &str,
+        input: &serde_json::Value,
+    ) -> Result<(), AgentError> {
+        let slot = self.model_slot.load();
+        self.rebuild_tools(&slot.model, false);
+        let (trigger, cancel) = CancelToken::new();
+        self.set_cancel_trigger(run_id, trigger);
+        while self.answer_rx.lock().await.try_recv().is_ok() {}
+
+        let agent = Agent::new(
+            AgentParams {
+                provider: Arc::clone(&slot.provider),
+                model: slot.model.clone(),
+                config: Arc::new(self.config.clone()),
+                tool_output_lines: self.tool_output_lines,
+                permissions: Arc::clone(&self.permissions),
+                identity: self.identity.clone(),
+                timeouts: self.timeouts,
+                openai_options: self.openai_options,
+                file_tracker: Arc::clone(&self.file_tracker),
+                prompt_slots: Arc::new(n00n_agent::prompt::ResolvedSlots::default()),
+                subagent_cancels: Arc::clone(&self.subagent_cancels),
+                registry: Arc::clone(ToolRegistry::global_arc()),
+                audience: ToolAudience::MAIN,
+            },
+            AgentRunParams {
+                history: &mut self.history,
+                system: System::default(),
+                event_tx: event_tx.clone(),
+                tools: self.tools.clone(),
+                tool_filter: self.tool_filter.clone(),
+            },
+        )
+        .with_cancel(cancel)
+        .with_user_response_rx(Arc::clone(&self.answer_rx))
+        .with_mcp(self.mcp.clone());
+        let result = agent
+            .run_tool(format!("bootstrap-{run_id}"), tool, input)
+            .await?;
+        drop(agent);
+        self.clear_cancel_trigger(run_id);
+        if result.is_error {
+            return Err(AgentError::Tool {
+                tool: tool.to_owned(),
+                message: result.output.as_text(),
+            });
+        }
+        event_tx.send(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+            fusion: None,
+        })?;
+        Ok(())
     }
 
     async fn do_compact(&mut self, event_tx: &EventSender) -> Result<(), AgentError> {
@@ -537,9 +608,8 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use n00n_agent::AgentMode;
+    use std::path::Path;
 
     use super::build_plan_path;
 

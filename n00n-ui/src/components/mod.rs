@@ -36,7 +36,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use n00n_agent::{AgentInput, PreDispatchGate};
 use n00n_agent::{BufferSnapshot, ImageSource, ToolInput, ToolOutput};
 use n00n_providers::{Message, ModelTier};
-use n00n_storage::sessions::TranscriptEntry;
+use n00n_storage::{id::n00nId, sessions::TranscriptEntry};
 use ratatui::text::{Line, Span};
 
 pub(crate) const CHEVRON: &str = "❯ ";
@@ -205,7 +205,9 @@ pub enum Action {
     CancelSubagent {
         tool_use_id: String,
     },
-    NewSession,
+    NewSession {
+        previous_id: n00nId,
+    },
     LoadSession(Box<LoadedSession>),
     ChangeModel(String),
     RefreshProvider {
