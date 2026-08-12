@@ -1,6 +1,9 @@
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicI64, Ordering},
+};
 
 use agent_client_protocol_schema::{
     AgentNotification, AgentRequest, AgentResponse, ContentBlock, CurrentModeUpdate,
@@ -36,6 +39,7 @@ const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
 
 type PendingPrompt = Arc<Mutex<PendingPromptState>>;
 type PendingPermission = Arc<Mutex<Option<RequestId>>>;
+type RequestIdCounter = Arc<AtomicI64>;
 
 #[derive(Default)]
 struct PendingPromptState {
@@ -58,6 +62,7 @@ struct Server {
     out_tx: Sender<Value>,
     model_specs: Vec<String>,
     session: Option<SessionState>,
+    next_outgoing_request_id: RequestIdCounter,
 }
 
 impl Server {
@@ -88,6 +93,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         out_tx,
         model_specs: available_model_specs(),
         session: None,
+        next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
     };
 
     let stdin = smol::Unblock::new(std::io::stdin());
@@ -320,6 +326,8 @@ fn install_session(
         srv.out_tx.clone(),
         Arc::clone(&pending),
         Arc::clone(&pending_permission),
+        Arc::clone(&srv.next_outgoing_request_id),
+        handle.answer_tx.clone(),
     );
     let daemon = params.session_daemon_register.and_then(|register| {
         n00n_storage::StateDir::resolve()
@@ -539,10 +547,11 @@ fn start_event_pump(
     out_tx: Sender<Value>,
     pending: PendingPrompt,
     pending_permission: PendingPermission,
+    next_outgoing_request_id: RequestIdCounter,
+    answer_tx: Sender<String>,
 ) -> smol::Task<()> {
     smol::spawn(async move {
         let sid = SessionId::from(session_id.to_string());
-        let mut next_request_id = FIRST_OUTGOING_REQUEST_ID;
 
         while let Ok(Envelope {
             event, subagent, ..
@@ -568,8 +577,13 @@ fn start_event_pump(
                             ToolCallUpdate::new(ToolCallId::from(id), fields),
                             permissions::permission_options(),
                         ));
-                    next_request_id += 1;
-                    let request_id = RequestId::Number(next_request_id);
+                    let Some(request_id) = next_request_id(&next_outgoing_request_id) else {
+                        warn!("ACP permission request ID space exhausted; denying request");
+                        if let Err(error) = answer_tx.send(PermissionAnswer::Deny.encode()) {
+                            debug!(%error, "permission response receiver disconnected");
+                        }
+                        continue;
+                    };
                     *pending_permission
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -614,6 +628,14 @@ fn start_event_pump(
             session_update(&out_tx, &sid, update);
         }
     })
+}
+
+fn next_request_id(counter: &AtomicI64) -> Option<RequestId> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .ok()
+        .and_then(|id| id.checked_add(1))
+        .map(RequestId::Number)
 }
 
 fn take_pending(pending: &PendingPrompt) -> Option<(RequestId, bool)> {
@@ -751,6 +773,7 @@ mod tests {
             out_tx,
             model_specs: Vec::new(),
             session: None,
+            next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
         };
         let reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
         smol::block_on(serve_reader(&test_params(), reader, server)).expect("serve reader");
@@ -834,6 +857,35 @@ mod tests {
             None
         );
         assert_eq!(*pending.lock().unwrap(), Some(RequestId::Number(1001)));
+    }
+
+    #[test_case::test_case(())]
+    fn session_replacement_ignores_delayed_old_permission_response(_case: ()) {
+        let counter = AtomicI64::new(FIRST_OUTGOING_REQUEST_ID);
+        let old_request_id = next_request_id(&counter).expect("old session request ID");
+        let new_request_id = next_request_id(&counter).expect("new session request ID");
+        let new_pending = Arc::new(Mutex::new(Some(new_request_id.clone())));
+        let delayed_old_response = json!({
+            "id": &old_request_id,
+            "error": {"code": -32603, "message": "old session failed"}
+        });
+
+        assert_ne!(old_request_id, new_request_id);
+        assert_eq!(
+            permission_response_answer(&new_pending, &old_request_id, &delayed_old_response),
+            None
+        );
+        assert_eq!(*new_pending.lock().unwrap(), Some(new_request_id.clone()));
+
+        let new_response = json!({
+            "id": &new_request_id,
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+        });
+        assert_eq!(
+            permission_response_answer(&new_pending, &new_request_id, &new_response),
+            Some(PermissionAnswer::AllowOnce)
+        );
+        assert_eq!(*new_pending.lock().unwrap(), None);
     }
 
     #[test_case::test_case(r#"{"id":1001,"error":{"code":-32603,"message":"failed"}}"# ; "error response")]
