@@ -3,7 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tracing::{debug, error, warn};
@@ -24,8 +24,6 @@ const CANCELLED_SUBAGENT_OUTPUTS: &[&str] = &[
     "task failed: cancelled",
     "task failed: plugin interrupted: task cancelled",
 ];
-const TOOL_ERROR_LOG_MAX_CHARS: usize = 1024;
-
 #[derive(Clone, Copy)]
 pub enum Emit {
     Notify,
@@ -52,12 +50,11 @@ pub(super) struct FusionDispatchAuth {
     pub classification: crate::fusion::DelegationKind,
 }
 
-/// Truncates `text` to `TOOL_ERROR_LOG_MAX_CHARS` on a character boundary,
-/// preserving the total byte count as a trailing hint.
-fn truncate_for_log(text: &str) -> String {
-    match text.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
-        Some((idx, _)) => format!("{}... ({} bytes)", &text[..idx], text.len()),
-        None => text.to_string(),
+#[allow(clippy::manual_unwrap_or)]
+fn elapsed_millis(elapsed: Duration) -> u64 {
+    match u64::try_from(elapsed.as_millis()) {
+        Ok(millis) => millis,
+        Err(_) => u64::MAX,
     }
 }
 
@@ -528,7 +525,7 @@ async fn run_authorized(
                 debug!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
+                    elapsed_ms = elapsed_millis(elapsed),
                     "tool ok"
                 );
                 let output = match result.telemetry {
@@ -546,12 +543,10 @@ async fn run_authorized(
                 }
             }
             Err(message) => {
-                let error_preview = truncate_for_log(&message);
                 warn!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
-                    error = %error_preview,
+                    elapsed_ms = elapsed_millis(elapsed),
                     error_bytes = message.len(),
                     "tool failed"
                 );
@@ -693,7 +688,7 @@ fn run_local_tool(
             false,
         ),
         Err(e) => {
-            warn!(tool = %name, error = %e, "local tool failed");
+            warn!(tool = %name, error_bytes = e.len(), "local tool failed");
             (
                 crate::tools::truncate_output(
                     &e,
@@ -2402,23 +2397,6 @@ mod tests {
             assert!(results[0].is_error);
             assert_eq!(results[0].output.as_text(), ERROR_MSG);
         });
-    }
-
-    #[test]
-    fn truncate_for_log_truncates_on_char_boundary() {
-        let short = "short";
-        assert_eq!(truncate_for_log(short), short);
-
-        let long = "x".repeat(TOOL_ERROR_LOG_MAX_CHARS + 100);
-        let preview = truncate_for_log(&long);
-        assert!(preview.starts_with(&long[..TOOL_ERROR_LOG_MAX_CHARS]));
-        assert!(preview.ends_with(&format!("... ({} bytes)", long.len())));
-
-        // Multi-byte characters must not be sliced mid-char.
-        let emoji = "😀".repeat(TOOL_ERROR_LOG_MAX_CHARS + 2);
-        let preview = truncate_for_log(&emoji);
-        assert!(preview.starts_with(&"😀".repeat(TOOL_ERROR_LOG_MAX_CHARS)));
-        assert!(preview.ends_with(&format!("... ({} bytes)", emoji.len())));
     }
 
     fn fusion_brief() -> Value {

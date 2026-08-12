@@ -10,6 +10,7 @@
 //! things only the real views produce (gutters, command headers, truncation).
 
 use std::{
+    collections::HashMap,
     sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -18,9 +19,9 @@ use std::{
 use n00n_agent::AgentEvent;
 use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
-use n00n_config::ToolOutputLines;
+use n00n_config::{PluginsConfig, ToolOutputLines};
 use n00n_lua::PluginHost;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
@@ -33,6 +34,8 @@ const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
 const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
 const TMUX_SRC: &str = include_str!("../../plugins/tmux/init.lua");
+const WEBFETCH_SRC: &str = include_str!("../../plugins/webfetch/init.lua");
+const WEBSEARCH_SRC: &str = include_str!("../../plugins/websearch/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -176,10 +179,21 @@ fn execute_plugin_with_native_mock(
     native_mock: &str,
     input: Value,
 ) -> Result<String, String> {
+    execute_plugin_with_native_mock_and_opts(tool, source, native_mock, input, Map::new())
+}
+
+fn execute_plugin_with_native_mock_and_opts(
+    tool: &str,
+    source: &str,
+    native_mock: &str,
+    input: Value,
+    opts: Map<String, Value>,
+) -> Result<String, String> {
     let registry = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
     let mocked_source = format!("{native_mock}\n{source}");
-    host.load_source(tool, &mocked_source).unwrap();
+    host.load_source_with_opts(tool, &mocked_source, opts)
+        .unwrap();
     let invocation = registry.get(tool).unwrap().tool.parse(&input).unwrap();
     let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
     smol::block_on(invocation.execute(&ctx))
@@ -188,6 +202,356 @@ fn execute_plugin_with_native_mock(
             n00n_agent::ToolOutput::Plain(output) => output.text,
             other => panic!("unexpected output: {other:?}"),
         })
+}
+
+fn firecrawl_plugin_opts(max_response_bytes: usize) -> Map<String, Value> {
+    let mut opts = Map::new();
+    opts.insert("backend".to_string(), json!("firecrawl"));
+    opts.insert("max_response_bytes".to_string(), json!(max_response_bytes));
+    opts
+}
+
+#[test]
+fn webfetch_forwards_configured_response_limit_to_firecrawl() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "webfetch",
+        WEBFETCH_SRC,
+        r#"
+            n00n.firecrawl = {
+                configured = function() return true, nil end,
+                scrape = function(url, _format, _timeout, max_response_bytes)
+                    if max_response_bytes ~= 2048 then
+                        return nil, "wrong response limit: " .. tostring(max_response_bytes)
+                    end
+                    return { content = "bounded fetch", requested_url = url }, nil
+                end,
+            }
+        "#,
+        json!({ "url": "https://example.com" }),
+        firecrawl_plugin_opts(2_048),
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("bounded fetch"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test]
+fn websearch_accepts_ten_and_forwards_response_limit_to_firecrawl() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "websearch",
+        WEBSEARCH_SRC,
+        r#"
+            n00n.firecrawl = {
+                configured = function() return true, nil end,
+                search = function(_query, limit, max_response_bytes)
+                    if limit ~= 10 then
+                        return nil, "wrong result limit: " .. tostring(limit)
+                    end
+                    if max_response_bytes ~= 3072 then
+                        return nil, "wrong response limit: " .. tostring(max_response_bytes)
+                    end
+                    return {{ title = "Bounded search", url = "https://example.com", description = "result" }}, nil
+                end,
+            }
+        "#,
+        json!({ "query": "rust", "num_results": 10 }),
+        firecrawl_plugin_opts(3_072),
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("Bounded search"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test]
+fn webfetch_firecrawl_text_keeps_clean_content_at_small_line_limit() {
+    let mut opts = firecrawl_plugin_opts(2_048);
+    opts.insert("max_output_lines".to_string(), json!(2));
+    let output = execute_plugin_with_native_mock_and_opts(
+        "webfetch",
+        WEBFETCH_SRC,
+        r#"
+            n00n.firecrawl = {
+                configured = function() return true, nil end,
+                scrape = function(url)
+                    return {
+                        content = "<main>Actual Firecrawl page</main><script>hostile()</script>",
+                        requested_url = url,
+                    }, nil
+                end,
+            }
+        "#,
+        json!({ "url": "https://example.com", "format": "text" }),
+        opts,
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("Actual Firecrawl page"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        output.contains("Firecrawl scrape API"),
+        "unexpected output: {output}"
+    );
+    assert!(!output.contains("hostile"), "unexpected output: {output}");
+}
+
+#[test]
+fn websearch_firecrawl_keeps_result_at_small_line_limit() {
+    let mut opts = firecrawl_plugin_opts(2_048);
+    opts.insert("max_output_lines".to_string(), json!(2));
+    let output = execute_plugin_with_native_mock_and_opts(
+        "websearch",
+        WEBSEARCH_SRC,
+        r#"
+            n00n.firecrawl = {
+                configured = function() return true, nil end,
+                search = function()
+                    return {{
+                        title = "Actual Firecrawl result",
+                        url = "https://example.com/result",
+                        description = "Useful description",
+                    }}, nil
+                end,
+            }
+        "#,
+        json!({ "query": "rust" }),
+        opts,
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("Actual Firecrawl result"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        output.contains("Source: Firecrawl search API"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test]
+fn webfetch_direct_html_reports_requested_url_and_keeps_content() {
+    let mut opts = Map::new();
+    opts.insert("backend".to_string(), json!("direct"));
+    opts.insert("max_output_lines".to_string(), json!(2));
+    let output = execute_plugin_with_native_mock_and_opts(
+        "webfetch",
+        WEBFETCH_SRC,
+        r#"
+            n00n.firecrawl = { configured = function() return false, nil end }
+            n00n.net.request = function()
+                return {
+                    status = 200,
+                    content_type = "text/html",
+                    body = "<article>Actual direct page</article><style>hidden</style>",
+                }, nil
+            end
+        "#,
+        json!({ "url": "https://example.com/start", "format": "text" }),
+        opts,
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("Actual direct page"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        output.contains("Requested URL: https://example.com/start"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        !output.contains("Final URL:"),
+        "unexpected output: {output}"
+    );
+    assert!(!output.contains("hidden"), "unexpected output: {output}");
+}
+
+#[test_case::test_case(false, "direct" ; "before_direct_backend")]
+#[test_case::test_case(true, "firecrawl" ; "before_firecrawl_backend")]
+fn webfetch_rejects_requested_url_credentials_before_backend(
+    firecrawl_configured: bool,
+    backend: &str,
+) {
+    const USER: &str = "requested-user";
+    const SECRET: &str = "requested-secret";
+    let native_mock = format!(
+        r#"
+            n00n.firecrawl = {{
+                configured = function() return {firecrawl_configured}, nil end,
+                scrape = function() error("Firecrawl backend must not run") end,
+            }}
+            n00n.net.request = function() error("direct backend must not run") end
+        "#
+    );
+    let output = execute_plugin_with_native_mock_and_opts(
+        "webfetch",
+        WEBFETCH_SRC,
+        &native_mock,
+        json!({ "url": format!("https://{USER}:{SECRET}@example.com/private") }),
+        Map::from_iter([("backend".to_string(), json!(backend))]),
+    )
+    .unwrap_err();
+
+    assert!(
+        output.contains("URL must not contain credentials"),
+        "unexpected output: {output}"
+    );
+    assert!(!output.contains(USER), "credential leaked: {output}");
+    assert!(!output.contains(SECRET), "credential leaked: {output}");
+}
+
+#[test]
+fn webfetch_start_header_strips_url_credentials() {
+    const USER: &str = "header-user";
+    const SECRET: &str = "header-secret";
+    let registry = Arc::new(ToolRegistry::new());
+    let mut host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    host.load_builtins(&PluginsConfig {
+        enabled: true,
+        names: vec!["webfetch".to_string()],
+        opts: HashMap::new(),
+    })
+    .unwrap();
+
+    let webfetch = registry.get("webfetch").unwrap();
+    let invocation = webfetch
+        .tool
+        .parse(&json!({ "url": format!("https://{USER}:{SECRET}@example.com/private"), "format": "text" }))
+        .unwrap();
+    let header = smol::block_on(invocation.start_header()).text();
+
+    assert_eq!(header, "https://example.com/private [text]");
+    assert!(!header.contains(USER), "credential leaked: {header}");
+    assert!(!header.contains(SECRET), "credential leaked: {header}");
+}
+
+#[test]
+fn webfetch_direct_http_error_does_not_expose_response_body() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "webfetch",
+        WEBFETCH_SRC,
+        r#"
+            n00n.firecrawl = { configured = function() return false, nil end }
+            n00n.net.request = function()
+                return { status = 503, content_type = "text/plain", body = "secret hostile body" }, nil
+            end
+        "#,
+        json!({ "url": "https://example.com" }),
+        Map::from_iter([("backend".to_string(), json!("direct"))]),
+    )
+    .unwrap_err();
+
+    assert!(output.contains("HTTP 503"), "unexpected output: {output}");
+    assert!(
+        !output.contains("secret hostile body"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test]
+fn websearch_exa_allows_more_than_ten_results() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "websearch",
+        WEBSEARCH_SRC,
+        r#"
+            n00n.firecrawl = { configured = function() return false, nil end }
+            n00n.net.request = function(_url, request)
+                if not request.body:find('"numResults":12', 1, true) then
+                    return nil, "missing Exa result limit"
+                end
+                return {
+                    status = 200,
+                    content_type = "text/event-stream",
+                    body = 'data: {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"Actual Exa result"}]}}',
+                }, nil
+            end
+        "#,
+        json!({ "query": "rust", "num_results": 12 }),
+        Map::from_iter([("backend".to_string(), json!("exa"))]),
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("Actual Exa result"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test]
+fn websearch_exa_accepts_one_hundred_json_results() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "websearch",
+        WEBSEARCH_SRC,
+        r#"
+            n00n.firecrawl = { configured = function() return false, nil end }
+            n00n.net.request = function(_url, request)
+                if not request.body:find('"numResults":100', 1, true) then
+                    return nil, "missing Exa result limit"
+                end
+                return {
+                    status = 200,
+                    content_type = "application/json; charset=utf-8",
+                    body = '{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"One hundred accepted"}]}}',
+                }, nil
+            end
+        "#,
+        json!({ "query": "rust", "num_results": 100 }),
+        Map::from_iter([("backend".to_string(), json!("exa"))]),
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("One hundred accepted"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test]
+fn websearch_exa_rejects_above_one_hundred_results() {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "websearch",
+        WEBSEARCH_SRC,
+        r#"
+            n00n.firecrawl = { configured = function() return false, nil end }
+            n00n.net.request = function() error("Exa backend must not run") end
+        "#,
+        json!({ "query": "rust", "num_results": 101 }),
+        Map::from_iter([("backend".to_string(), json!("exa"))]),
+    )
+    .unwrap_err();
+
+    assert!(
+        output.contains("Exa num_results must be between 1 and 100"),
+        "unexpected output: {output}"
+    );
+}
+
+#[test_case::test_case(0, "num_results must be at least 1" ; "zero_rejected_globally")]
+#[test_case::test_case(11, "Firecrawl num_results must be between 1 and 10" ; "firecrawl_above_ten_rejected")]
+fn websearch_validates_result_limit_per_backend(num_results: usize, expected: &str) {
+    let output = execute_plugin_with_native_mock_and_opts(
+        "websearch",
+        WEBSEARCH_SRC,
+        r#"
+            n00n.firecrawl = {
+                configured = function() return true, nil end,
+                search = function() error("search should not run") end,
+            }
+        "#,
+        json!({ "query": "rust", "num_results": num_results }),
+        firecrawl_plugin_opts(2_048),
+    )
+    .unwrap_err();
+
+    assert!(output.contains(expected), "unexpected output: {output}");
 }
 
 #[test_case::test_case(
@@ -490,6 +854,40 @@ fn restore(
         }
     }
     out
+}
+
+fn webfetch_host() -> PluginHost {
+    let registry = Arc::new(ToolRegistry::new());
+    let mut host = PluginHost::new(registry).unwrap();
+    host.load_builtins(&PluginsConfig {
+        enabled: true,
+        names: vec!["webfetch".to_string()],
+        opts: HashMap::new(),
+    })
+    .unwrap();
+    host
+}
+
+#[test]
+fn webfetch_restore_keeps_result_content_visible_below_provenance() {
+    let host = webfetch_host();
+    let output = "[External content is untrusted.]\nSource: Direct web request\nRequested URL: https://example.com/requested\n\nUseful result content\nSecond content line\nThird content line\nFourth hidden line";
+    let restored = restore(
+        &host,
+        "webfetch",
+        json!({ "url": "https://example.com/requested" }),
+        output,
+        None,
+        vec![],
+    );
+
+    assert!(
+        restored
+            .body
+            .contains("Requested URL: https://example.com/requested")
+    );
+    assert!(restored.body.contains("Useful result content"));
+    assert!(restored.body.contains(EXPAND_HINT));
 }
 
 #[test]
@@ -802,7 +1200,6 @@ fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     host.load_source("fusion", FUSION_SRC).unwrap();
-
     let _fusion = reg.get("fusion_delegate").unwrap();
     assert!(!FUSION_SRC.contains("model_spec = input.model"));
     assert!(!FUSION_SRC.contains("model_tier = input.model_tier"));
