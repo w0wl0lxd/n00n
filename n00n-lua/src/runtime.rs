@@ -3627,10 +3627,13 @@ mod tests {
 
     #[test]
     fn deadline_waiter_rechecks_cleared_deadline_after_waking() {
+        const ORIGINAL_DEADLINE: Duration = Duration::from_millis(500);
+        const DEADLINE_OBSERVATION_DELAY: Duration = Duration::from_millis(100);
+
         smol::block_on(async {
             let handle = Arc::new(Mutex::new(TaskCell::new(
                 CancelToken::none(),
-                Some(Instant::now() + Duration::from_millis(500)),
+                Some(Instant::now() + ORIGINAL_DEADLINE),
                 None,
                 None,
             )));
@@ -3639,14 +3642,14 @@ mod tests {
                 async move { wait_for_task_deadline(&handle).await }
             });
 
-            smol::Timer::after(Duration::from_millis(10)).await;
+            smol::future::yield_now().await;
             lock_cell(&handle).deadline.set(None);
-            smol::Timer::after(Duration::from_millis(550)).await;
+            smol::Timer::after(ORIGINAL_DEADLINE + DEADLINE_OBSERVATION_DELAY).await;
             assert!(!waiter.is_finished());
 
             lock_cell(&handle)
                 .deadline
-                .set(Some(Instant::now() + Duration::from_millis(20)));
+                .set(Some(Instant::now() + DEADLINE_OBSERVATION_DELAY));
             assert!(waiter.await.is_err());
         });
     }
