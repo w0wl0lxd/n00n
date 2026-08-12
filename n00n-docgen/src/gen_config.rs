@@ -221,6 +221,7 @@ All fields are optional. Typos in field names cause an error right away.
     write_theme_section(&mut out);
     write_tool_output_section(&mut out);
     write_section(&mut out, "[agent]", AgentConfig::FIELDS);
+    out.push_str("Keep `max_depth` and `max_active_descendants` at or below `max_total_descendants`. n00n reports a configuration error at startup if either value is higher.\n\n");
 
     out.push_str("### `agent.fusion`\n\n");
     out.push_str("| Field | Type | Default | Description |\n");

@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, MutexGuard, PoisonError,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use n00n_agent::{
@@ -73,12 +73,19 @@ pub(crate) enum QueueItem {
     Compact {
         run_id: u64,
     },
+    DirectTool {
+        run_id: u64,
+        tool: String,
+        input: serde_json::Value,
+    },
 }
 
 impl QueueItem {
     pub(crate) fn run_id(&self) -> u64 {
         match self {
-            Self::Message { run_id, .. } | Self::Compact { run_id } => *run_id,
+            Self::Message { run_id, .. }
+            | Self::Compact { run_id }
+            | Self::DirectTool { run_id, .. } => *run_id,
         }
     }
 
@@ -99,13 +106,18 @@ impl QueueItem {
                     .fg
                     .unwrap_or_else(|| theme::current().foreground),
             },
+            Self::DirectTool { tool, .. } => QueueEntry {
+                text: Cow::Owned(tool.clone()),
+                color: theme::current().foreground,
+            },
         }
     }
 
-    fn into_extracted_command(self) -> ExtractedCommand {
+    fn into_extracted_command(self) -> Option<ExtractedCommand> {
         match self {
-            Self::Message { input, run_id, .. } => ExtractedCommand::Interrupt(input, run_id),
-            Self::Compact { run_id } => ExtractedCommand::Compact(run_id),
+            Self::Message { input, run_id, .. } => Some(ExtractedCommand::Interrupt(input, run_id)),
+            Self::Compact { run_id } => Some(ExtractedCommand::Compact(run_id)),
+            Self::DirectTool { .. } => None,
         }
     }
 
@@ -116,13 +128,14 @@ impl QueueItem {
         match self {
             Self::Message { displayed, .. } => !displayed,
             Self::Compact { .. } => true,
+            Self::DirectTool { .. } => false,
         }
     }
 
     fn is_ready(&self) -> bool {
         match self {
             Self::Message { ready, .. } => ready.load(Ordering::Acquire),
-            Self::Compact { .. } => true,
+            Self::Compact { .. } | Self::DirectTool { .. } => true,
         }
     }
 
@@ -138,29 +151,40 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone)]
 pub(crate) struct QueueSender {
     items: Items,
+    generation: Arc<AtomicU64>,
     notify_tx: flume::Sender<()>,
 }
 
 pub(crate) struct QueueReceiver {
     items: Items,
+    generation: Arc<AtomicU64>,
     notify_rx: flume::Receiver<()>,
 }
 
 pub(crate) fn queue() -> (QueueSender, QueueReceiver) {
     let (notify_tx, notify_rx) = flume::bounded(1);
     let items: Items = Arc::new(Mutex::new(VecDeque::new()));
+    let generation = Arc::new(AtomicU64::new(0));
     (
         QueueSender {
             items: Arc::clone(&items),
+            generation: Arc::clone(&generation),
             notify_tx,
         },
-        QueueReceiver { items, notify_rx },
+        QueueReceiver {
+            items,
+            generation,
+            notify_rx,
+        },
     )
 }
 
 impl QueueSender {
     pub(crate) fn push(&self, entry: QueueItem) {
-        lock(&self.items).push_back(entry);
+        let mut items = lock(&self.items);
+        items.push_back(entry);
+        self.generation.fetch_add(1, Ordering::Release);
+        drop(items);
         let _ = self.notify_tx.try_send(());
     }
 
@@ -168,7 +192,7 @@ impl QueueSender {
         let mut items = lock(&self.items);
         let submission_id = match &entry {
             QueueItem::Message { submission_id, .. } => *submission_id,
-            QueueItem::Compact { .. } => return,
+            QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => return,
         };
         if items.iter().any(|item| {
             matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
@@ -176,6 +200,7 @@ impl QueueSender {
             return;
         }
         items.push_front(entry);
+        self.generation.fetch_add(1, Ordering::Release);
         drop(items);
         let _ = self.notify_tx.try_send(());
     }
@@ -199,6 +224,7 @@ impl QueueSender {
         let mut items = lock(&self.items);
         let item_index = Self::panel_index(&items, index).unwrap_or_else(|| items.len());
         items.insert(item_index, entry);
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn promote_latest_steering(&self) -> bool {
@@ -215,12 +241,17 @@ impl QueueSender {
             return false;
         };
         *delivery = Delivery::Immediate;
+        self.generation.fetch_add(1, Ordering::Release);
         true
     }
 
-    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         lock(&self.items).is_empty()
+    }
+
+    pub(crate) fn is_drained(&self, generation: u64) -> bool {
+        let items = lock(&self.items);
+        items.is_empty() && self.generation.load(Ordering::Acquire) == generation
     }
 
     pub(crate) fn clear(&self) {
@@ -268,6 +299,7 @@ impl QueueSender {
         // Update input and ready flag atomically while holding the lock
         *queued_input = input;
         ready.store(true, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::Release);
         drop(items);
         let _ = self.notify_tx.try_send(());
         true
@@ -279,7 +311,7 @@ impl QueueSender {
             .filter(|item| item.visible_in_panel())
             .filter_map(|item| match item {
                 QueueItem::Message { text, .. } => Some(text.clone()),
-                QueueItem::Compact { .. } => None,
+                QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => None,
             })
             .collect()
     }
@@ -291,7 +323,16 @@ impl QueueSender {
                 QueueItem::Message {
                     input, delivery, ..
                 } => Some((input.clone(), *delivery)),
-                QueueItem::Compact { .. } => None,
+                QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => None,
+            })
+            .collect()
+    }
+    pub(crate) fn direct_tools(&self) -> Vec<(String, serde_json::Value)> {
+        lock(&self.items)
+            .iter()
+            .filter_map(|item| match item {
+                QueueItem::DirectTool { tool, input, .. } => Some((tool.clone(), input.clone())),
+                QueueItem::Message { .. } | QueueItem::Compact { .. } => None,
             })
             .collect()
     }
@@ -324,6 +365,7 @@ impl QueueReceiver {
                         delivery: Delivery::TurnEnd,
                         ..
                     } | QueueItem::Compact { .. }
+                        | QueueItem::DirectTool { .. }
                 )
             {
                 None
@@ -332,6 +374,13 @@ impl QueueReceiver {
             }
         })?;
         items.remove(index)
+    }
+
+    pub(crate) fn drain_generation(&self) -> Option<u64> {
+        let items = lock(&self.items);
+        items
+            .is_empty()
+            .then(|| self.generation.load(Ordering::Acquire))
     }
 
     pub(crate) async fn recv_notify(&self) -> Result<(), flume::RecvError> {
@@ -356,9 +405,12 @@ impl InterruptSource for QueueReceiver {
                     Delivery::Immediate => Some(index),
                 },
                 QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
+                QueueItem::DirectTool { .. } => None,
             }
         })?;
-        items.remove(index).map(QueueItem::into_extracted_command)
+        items
+            .remove(index)
+            .and_then(QueueItem::into_extracted_command)
     }
 }
 
@@ -463,6 +515,37 @@ mod tests {
                 "normal".into(),
             )
         );
+    }
+
+    #[test]
+    fn stale_drain_generation_is_rejected_after_new_work() {
+        let (tx, rx) = queue();
+        tx.push(msg(false));
+        assert!(rx.pop().is_some());
+        let drained = rx.drain_generation().expect("drained generation");
+        assert!(tx.is_drained(drained));
+
+        tx.push(msg(false));
+        assert!(rx.pop().is_some());
+        assert!(!tx.is_drained(drained));
+        let latest = rx.drain_generation().expect("latest generation");
+        assert!(tx.is_drained(latest));
+    }
+
+    #[test]
+    fn direct_tools_are_available_for_persistence() {
+        let (tx, _rx) = queue();
+        tx.push(QueueItem::DirectTool {
+            run_id: 7,
+            tool: "task".into(),
+            input: serde_json::json!({"prompt": "ship"}),
+        });
+
+        assert_eq!(
+            tx.direct_tools(),
+            vec![("task".into(), serde_json::json!({"prompt": "ship"}))]
+        );
+        assert!(tx.queued_inputs().is_empty());
     }
 
     #[test]

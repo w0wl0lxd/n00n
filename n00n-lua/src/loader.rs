@@ -660,11 +660,18 @@ impl EventHandle {
         }
     }
 
-    pub fn run_command(&self, plugin: Arc<str>, command: Arc<str>, args: String) {
+    pub fn run_command(
+        &self,
+        plugin: Arc<str>,
+        command: Arc<str>,
+        args: String,
+        identity: Option<SessionIdentity>,
+    ) {
         let _ = self.prio_tx.try_send(Request::RunCommand {
             plugin,
             command,
             args,
+            identity,
         });
     }
 
@@ -976,17 +983,25 @@ mod tests {
             prio_tx,
             state_leases: Arc::new(StateLeases::default()),
         };
-        handle.run_command(Arc::from("myplugin"), Arc::from("/greet"), "world".into());
+        let identity = SessionIdentity::root(n00n_storage::id::SessionRef::generate());
+        handle.run_command(
+            Arc::from("myplugin"),
+            Arc::from("/greet"),
+            "world".into(),
+            Some(identity.clone()),
+        );
         let req = prio_rx.try_recv().unwrap();
         match req {
             Request::RunCommand {
                 plugin,
                 command,
                 args,
+                identity: request_identity,
             } => {
                 assert_eq!(plugin.as_ref(), "myplugin");
                 assert_eq!(command.as_ref(), "/greet");
                 assert_eq!(args, "world");
+                assert_eq!(request_identity, Some(identity));
             }
             _ => panic!("expected RunCommand"),
         }

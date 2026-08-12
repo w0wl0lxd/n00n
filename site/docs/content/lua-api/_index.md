@@ -2806,7 +2806,13 @@ Starts a new session in the current project.
 
   to submit right away; focus (boolean) switch the UI to the new session;
 
-  - `parent_id` (`string?`) session that spawned this session.
+  - `parent_id` (`string?`) session that spawned this session; tool (string) for a
+
+  direct host-executed bootstrap. Tool cannot be combined with prompt. Input
+
+
+  (table) and title (string?) require tool.
+
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 
@@ -6003,6 +6009,12 @@ function M.make_local_tool(schema, on_submit)
 -- Provides a unified interface for launching subagents with model resolution,
 -- system prompts, tool setup, and optional structured output validation.
 
+-- Return a fresh table containing the orchestration tool names.
+-- Use it as a denylist when child agents must not launch more orchestration.
+-- Example: local excluded = subagent.orchestration_tools()
+-- @return string[]
+function M.orchestration_tools()
+
 -- Launch a subagent with the given options.
 -- Returns (result | nil, err, cost, usage, model_spec)
 --
@@ -6020,6 +6032,7 @@ function M.make_local_tool(schema, on_submit)
 --   include_mcp: Include MCP tools (default: true)
 --   only_tools: Optional allowlist of tool names
 --   except_tools: Optional denylist of tool names
+--   allow_orchestration: Expose recursive orchestration tools (default: false)
 --   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
