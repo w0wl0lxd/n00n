@@ -1006,7 +1006,12 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Valu
             let arr = lua.create_table()?;
             for (i, entry) in entries.iter().enumerate() {
                 let etbl = lua.create_table()?;
-                etbl.set("path", base.join(&entry.path).to_string_lossy().as_ref())?;
+                let path = base.join(&entry.path);
+                etbl.set("path", path.to_string_lossy().as_ref())?;
+                let modified = n00n_agent::tools::mtime(&path)
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .map_or(0, |duration| duration.as_secs());
+                etbl.set("mtime", modified)?;
                 let groups_tbl = lua.create_table()?;
                 for (gi, group) in entry.groups.iter().enumerate() {
                     let gtbl = lua.create_table()?;

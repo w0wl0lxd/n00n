@@ -227,10 +227,9 @@ n00n.api.register_tool({
     properties = {
       pattern = { type = "string", required = true, description = "Regex pattern. Do not wrap in quotes." },
       path = {
-        oneOf = {
-          { type = "string", description = "Directory or file to search." },
-          { type = "array", items = { type = "string" }, description = "Multiple directories or files to search." },
-        },
+        type = { "string", "array" },
+        items = { type = "string" },
+        description = "Directory or file to search, or an array of directories and files.",
       },
       include = { type = "string", alias = "glob", description = "Glob pattern (e.g. '*.rs')." },
       context_before = { type = "integer" },
@@ -282,6 +281,8 @@ n00n.api.register_tool({
     local all_errors = {}
     local success_count = 0
 
+    local seen_paths = {}
+
     local function search_single_path(p)
       local entries, err = n00n.fs.grep(pattern, {
         path = p,
@@ -294,10 +295,16 @@ n00n.api.register_tool({
       if entries then
         success_count = success_count + 1
         for _, entry in ipairs(entries) do
-          table.insert(all_entries, entry)
+          local normalized_path = n00n.fs.normalize(entry.path)
+          if not seen_paths[normalized_path] then
+            seen_paths[normalized_path] = true
+            entry.path = normalized_path
+            table.insert(all_entries, entry)
+          end
         end
       else
-        table.insert(all_errors, tostring(err))
+        local label = p == nil and "." or tostring(p)
+        table.insert(all_errors, label .. ": " .. tostring(err))
       end
     end
 
@@ -322,18 +329,44 @@ n00n.api.register_tool({
       return { llm_output = NO_MATCHES }
     end
 
-    -- Sort by modification time across all paths
+    -- Merge before enforcing the call-wide limit so overlapping roots cannot
+    -- consume the budget more than once.
     table.sort(all_entries, function(a, b)
       local mtime_a = a.mtime or 0
       local mtime_b = b.mtime or 0
+      if mtime_a == mtime_b then
+        return a.path < b.path
+      end
       return mtime_a > mtime_b
     end)
+
+    local remaining = limit
+    for _, entry in ipairs(all_entries) do
+      if #entry.groups > remaining then
+        for i = #entry.groups, remaining + 1, -1 do
+          entry.groups[i] = nil
+        end
+      end
+      remaining = remaining - #entry.groups
+    end
+    for i = #all_entries, 1, -1 do
+      if #all_entries[i].groups == 0 then
+        table.remove(all_entries, i)
+      end
+    end
+
+    if #all_entries == 0 then
+      return { llm_output = NO_MATCHES }
+    end
 
     for _, entry in ipairs(all_entries) do
       ctx:record_read(entry.path)
     end
 
     local llm_output = format_llm_output(all_entries)
+    if #all_errors > 0 then
+      llm_output = llm_output .. "\n\nWarning: some paths could not be searched: " .. table.concat(all_errors, "; ")
+    end
     llm_output = truncate(llm_output, max_lines, max_bytes)
 
     return {

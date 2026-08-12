@@ -19,7 +19,7 @@ use std::{
 use n00n_agent::AgentEvent;
 use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
-use n00n_config::{PluginsConfig, ToolOutputLines, providers::Tier};
+use n00n_config::{PluginsConfig, ToolOutputLines};
 use n00n_lua::PluginHost;
 use serde_json::{Map, Value, json};
 
@@ -171,58 +171,6 @@ fn batch_state() -> Value {
         { "tool": "grep", "status": "success", "output": GREP_OUT },
         { "tool": "bash", "status": "success", "output": "hello-from-bash" },
     ]})
-}
-
-const FUSION_MODEL_MOCK: &str = r#"
-    n00n.agent.resolve_model = function(ctx, opts)
-        return { spec = "resolved/" .. tostring(opts.spec or opts.tier) }
-    end
-    n00n.agent.system_prompt = function() return "system" end
-    n00n.agent.tools = function() return {} end
-    n00n.agent.usage_cost = function() return 0, nil end
-    n00n.agent.session = function(ctx, opts)
-        local sess = {}
-        function sess:prompt() return { text = opts.model_spec } end
-        function sess:close() end
-        return sess
-    end
-"#;
-
-fn execute_fusion_result(
-    input: Value,
-    tier: Tier,
-    enabled: bool,
-    native_mock: &str,
-) -> n00n_agent::tools::registry::ToolExecResult {
-    let registry = Arc::new(ToolRegistry::new());
-    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
-    host.load_source("fusion", &format!("{native_mock}\n{FUSION_SRC}"))
-        .unwrap();
-    let invocation = registry
-        .get("fusion_delegate")
-        .unwrap()
-        .tool
-        .parse(&input)
-        .unwrap();
-    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
-    let fusion = &mut Arc::make_mut(&mut ctx.config).fusion;
-    fusion.enabled = enabled;
-    fusion.sidekick_tier = tier;
-    smol::block_on(invocation.execute(&ctx))
-}
-
-fn execute_fusion(
-    input: Value,
-    tier: Tier,
-    enabled: bool,
-    native_mock: &str,
-) -> Result<String, String> {
-    execute_fusion_result(input, tier, enabled, native_mock)
-        .output
-        .map(|output| match output {
-            n00n_agent::ToolOutput::Plain(output) => output.text,
-            other => panic!("unexpected output: {other:?}"),
-        })
 }
 
 fn execute_plugin_with_native_mock(
@@ -1263,15 +1211,93 @@ fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
 }
 
 #[test]
-fn fusion_is_rejected_when_disabled() {
-    let error = execute_fusion(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
-        Tier::Weak,
-        false,
-        FUSION_MODEL_MOCK,
+fn grep_applies_one_limit_and_deduplicates_overlapping_roots() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                local shared = {
+                    path = "project/shared.rs",
+                    mtime = 10,
+                    groups = {
+                        { lines = {{ line_nr = 1, text = "shared-one", is_match = true }} },
+                        { lines = {{ line_nr = 2, text = "shared-two", is_match = true }} },
+                    },
+                }
+                if opts.path == "project" then
+                    return { shared }, nil
+                end
+                return {
+                    shared,
+                    {
+                        path = "project/new.rs",
+                        mtime = 20,
+                        groups = {{ lines = {{ line_nr = 3, text = "unique", is_match = true }} }},
+                    },
+                }, nil
+            end
+        "#,
+        json!({ "pattern": "hit", "path": ["project", "project/nested"], "limit": 2 }),
     )
-    .unwrap_err();
-    assert_eq!(error, "Fusion sidekick error: Fusion is disabled");
+    .unwrap();
+
+    assert_eq!(output.matches("project/shared.rs:").count(), 1, "{output}");
+    assert!(output.contains("unique"), "{output}");
+    assert!(output.contains("shared-one"), "{output}");
+    assert!(!output.contains("shared-two"), "{output}");
+}
+
+#[test]
+fn grep_reports_partial_path_failures() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                if opts.path == "missing" then
+                    return nil, "path not found"
+                end
+                return {{
+                    path = "valid.rs",
+                    mtime = 1,
+                    groups = {{ lines = {{ line_nr = 1, text = "found", is_match = true }} }},
+                }}, nil
+            end
+        "#,
+        json!({ "pattern": "found", "path": ["valid", "missing"] }),
+    )
+    .unwrap();
+
+    assert!(output.contains("found"), "{output}");
+    assert!(
+        output.contains("Warning: some paths could not be searched: missing: path not found"),
+        "{output}"
+    );
+}
+
+#[test]
+fn grep_searches_default_root_when_path_is_omitted() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                if opts.path ~= nil then
+                    return nil, "expected nil path"
+                end
+                return {{
+                    path = "default.rs",
+                    mtime = 1,
+                    groups = {{ lines = {{ line_nr = 1, text = "default-hit", is_match = true }} }},
+                }}, nil
+            end
+        "#,
+        json!({ "pattern": "default" }),
+    )
+    .unwrap();
+
+    assert!(output.contains("default-hit"), "{output}");
 }
 
 #[test]
@@ -1296,28 +1322,4 @@ fn grep_header_accepts_multiple_paths() {
         "header: {}",
         restored.header
     );
-}
-
-#[test]
-fn fusion_rejects_compaction_sidekick_tier() {
-    let error = execute_fusion(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
-        Tier::Compaction,
-        true,
-        FUSION_MODEL_MOCK,
-    )
-    .unwrap_err();
-    assert_eq!(error, "Fusion sidekick error: invalid sidekick tier");
-}
-
-#[test]
-fn fusion_model_resolution_failure_is_sanitized() {
-    let error = execute_fusion(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
-        Tier::Weak,
-        true,
-        r#"n00n.agent.resolve_model = function() return nil, "model unavailable" end"#,
-    )
-    .unwrap_err();
-    assert_eq!(error, "Fusion sidekick error: model resolution failed");
 }
