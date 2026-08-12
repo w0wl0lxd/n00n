@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786546970583,
+  "lastUpdate": 1786549016459,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -16841,6 +16841,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 127335,
             "range": "± 24297",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4416c7b9a98cf02c511aee1e0ee5fba271aca4c4",
+          "message": "fix(cleanup): fix ui-cursor-provider-fallback dirty follow-up (#314)\n\n* fix(cleanup): fix ui-cursor-provider-fallback dirty follow-up\n\n* fix(ui): preserve unconfigured provider during model fetch when login required\n\n* fix(n00n-ui): add missing test imports for spawn_model_fetch\n\n* fix(ui): prevent stale provider discovery writes\n\n* test(setup): include codex provider candidate\n\n* fix: align codex auth availability checks",
+          "timestamp": "2026-08-12T15:20:57Z",
+          "tree_id": "3790f429af015de8ee13e049f5dc7322a1393aa4",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/4416c7b9a98cf02c511aee1e0ee5fba271aca4c4"
+        },
+        "date": 1786549014755,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6606586,
+            "range": "± 346043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2475729,
+            "range": "± 42461",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2469806,
+            "range": "± 61687",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7998577,
+            "range": "± 165861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3865826,
+            "range": "± 32246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3751872,
+            "range": "± 68104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 564783,
+            "range": "± 9734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168065,
+            "range": "± 4049",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167992,
+            "range": "± 1332",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1110018,
+            "range": "± 11704",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 655420,
+            "range": "± 6550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 655785,
+            "range": "± 4913",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 61601,
+            "range": "± 7686",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 131089,
+            "range": "± 25095",
             "unit": "ns/iter"
           }
         ]
