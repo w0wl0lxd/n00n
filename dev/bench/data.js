@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786329789316,
+  "lastUpdate": 1786518955015,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -15977,6 +15977,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 175426,
             "range": "± 17621",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2e7a65504696f0d86c0326f95cf938c426011eb8",
+          "message": "fix(lua): enforce RTK rewriting for managed commands (#344)\n\n* fix(lua): enforce RTK rewriting for managed commands\n\n* fix(lua): address RTK enforcement review",
+          "timestamp": "2026-08-12T02:59:45-04:00",
+          "tree_id": "16a61cd5874a146bceae486bce67dc2566bbefea",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/2e7a65504696f0d86c0326f95cf938c426011eb8"
+        },
+        "date": 1786518953614,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 9181729,
+            "range": "± 212429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1788068,
+            "range": "± 25971",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1785355,
+            "range": "± 9202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9752313,
+            "range": "± 11132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3470063,
+            "range": "± 10834",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3465926,
+            "range": "± 10628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 884082,
+            "range": "± 1078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 107123,
+            "range": "± 9137",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 107549,
+            "range": "± 739",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1307116,
+            "range": "± 5760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 549996,
+            "range": "± 1668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 549536,
+            "range": "± 1716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 65943,
+            "range": "± 3353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 130875,
+            "range": "± 17165",
             "unit": "ns/iter"
           }
         ]
