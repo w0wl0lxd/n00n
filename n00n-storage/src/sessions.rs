@@ -2351,50 +2351,52 @@ where
     };
     let mut got_header = false;
 
-    let recovered_tail = visit_zstd_lines_with_limits(path, limits, |line| {
-        line_count += 1;
-        if line.is_empty() {
-            return Ok(());
-        }
-        let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
-            Ok(record) => record,
-            Err(error) => {
-                if !got_header
-                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(line)
-                    && let Err(source) = raw_id.parse::<n00nId>()
-                {
-                    return Err(SessionError::CorruptHeaderId {
-                        path: path.display().to_string(),
-                        raw_id,
-                        source,
-                    });
-                }
-                let tag = match serde_json::from_str::<serde_json::Value>(line) {
-                    Ok(v) => v.get("t").and_then(|t| t.as_str()).map(String::from),
-                    Err(tag_error) => {
-                        warn!(
-                            path = %path.display(),
-                            tag_error = %tag_error,
-                            line = line_count,
-                            "failed to extract record tag from malformed JSONL line"
-                        );
-                        None
-                    }
-                };
-                let record_tag = tag.as_deref().map_or("?", |t| t);
-                warn!(
-                    path = %path.display(),
-                    error = %error,
-                    line = line_count,
-                    record_tag = %record_tag,
-                    record_len = line.len(),
-                    "skipping unrecognized JSONL record",
-                );
+    let (recovered_tail, decoded_bytes) =
+        visit_zstd_lines_with_decoded_bytes(path, limits, |line| {
+            line_count += 1;
+            if line.is_empty() {
                 return Ok(());
             }
-        };
-        apply_record(&mut builder, record, &mut got_header)
-    })?;
+            let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
+                Ok(record) => record,
+                Err(error) => {
+                    if !got_header
+                        && let Ok(RawTag::Header { id: raw_id }) =
+                            serde_json::from_str::<RawTag>(line)
+                        && let Err(source) = raw_id.parse::<n00nId>()
+                    {
+                        return Err(SessionError::CorruptHeaderId {
+                            path: path.display().to_string(),
+                            raw_id,
+                            source,
+                        });
+                    }
+                    let tag = match serde_json::from_str::<serde_json::Value>(line) {
+                        Ok(v) => v.get("t").and_then(|t| t.as_str()).map(String::from),
+                        Err(tag_error) => {
+                            warn!(
+                                path = %path.display(),
+                                tag_error = %tag_error,
+                                line = line_count,
+                                "failed to extract record tag from malformed JSONL line"
+                            );
+                            None
+                        }
+                    };
+                    let record_tag = tag.as_deref().map_or("?", |t| t);
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        line = line_count,
+                        record_tag = %record_tag,
+                        record_len = line.len(),
+                        "skipping unrecognized JSONL record",
+                    );
+                    return Ok(());
+                }
+            };
+            apply_record(&mut builder, record, &mut got_header)
+        })?;
 
     let id = builder
         .id
@@ -2442,7 +2444,7 @@ where
         saw_legacy_transcript || hydrated_messages,
         recovered_tail,
         log_appends,
-        line_count,
+        decoded_bytes,
     ))
 }
 
@@ -4523,6 +4525,38 @@ mod tests {
     }
 
     #[test]
+    fn reopened_log_counts_existing_decoded_bytes_before_append() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(Value::String("x".repeat(512)));
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+        let path = jsonl_path(dir, session.id);
+        let (_, decoded_bytes) = super::visit_zstd_lines_with_decoded_bytes(
+            &path,
+            super::DecodeLimits::LOAD,
+            |_| Ok(()),
+        )
+        .unwrap();
+        let limits = super::DecodeLimits::new(2_048, decoded_bytes, 27);
+        let (mut session, mut log) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        assert_eq!(log.decoded_bytes, decoded_bytes);
+        session.messages.push(Value::String("new record".into()));
+        let result = log.append_with_limits(&session, limits);
+
+        assert!(matches!(
+            result,
+            Err(SessionError::DecodedBudgetExceeded { limit, .. }) if limit == decoded_bytes
+        ));
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+
     fn later_concatenated_frame_is_checked_only_when_reached() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("window-frames.jsonl");
