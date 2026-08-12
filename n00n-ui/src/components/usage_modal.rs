@@ -576,9 +576,9 @@ mod tests {
         }
     }
 
-    #[test_case::test_case(TokenUsage { input: 70, cache_read: 30, ..TokenUsage::default() }, "30.0%" ; "cache_read_share")]
-    #[test_case::test_case(TokenUsage { input: 70, cache_creation: 20, cache_read: 30, ..TokenUsage::default() }, "25.0%" ; "cache_write_in_denominator")]
-    #[test_case::test_case(TokenUsage::default(), "—" ; "no_prompt_tokens")]
+    #[test_case(TokenUsage { input: 70, cache_read: 30, ..TokenUsage::default() }, "30.0%" ; "cache_read_share")]
+    #[test_case(TokenUsage { input: 70, cache_creation: 20, cache_read: 30, ..TokenUsage::default() }, "25.0%" ; "cache_write_in_denominator")]
+    #[test_case(TokenUsage::default(), "—" ; "no_prompt_tokens")]
     fn cache_hit_percentage_uses_all_prompt_tokens(usage: TokenUsage, expected: &str) {
         assert_eq!(format_cache_hit(&usage), expected);
     }
