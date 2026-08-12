@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786530589088,
+  "lastUpdate": 1786532897374,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -16301,6 +16301,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 165069,
             "range": "± 12280",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d4aa62d72ea365c781b4b96c7ea2a45e961ba1ab",
+          "message": "Merge pull request #227 from w0wl0lxd/fix/codex-fallback\n\nfix(ui): fall back to user-available models and recognize Codex OAuth",
+          "timestamp": "2026-08-12T06:54:35-04:00",
+          "tree_id": "a3b1920a74ef3ec793817686963eaf651dc066f7",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/d4aa62d72ea365c781b4b96c7ea2a45e961ba1ab"
+        },
+        "date": 1786532895275,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5200508,
+            "range": "± 134174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1893840,
+            "range": "± 15674",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1898454,
+            "range": "± 15979",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5958861,
+            "range": "± 35213",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2991790,
+            "range": "± 63779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2909064,
+            "range": "± 8038",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 431415,
+            "range": "± 3093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130366,
+            "range": "± 800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130285,
+            "range": "± 476",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 815214,
+            "range": "± 14486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 486231,
+            "range": "± 3200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 484431,
+            "range": "± 3111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 50403,
+            "range": "± 4688",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 89670,
+            "range": "± 16933",
             "unit": "ns/iter"
           }
         ]
