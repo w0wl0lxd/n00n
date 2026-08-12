@@ -5843,6 +5843,13 @@ function M.replace(content, old_string, new_string, replace_all)
 function M.new(opts)
 ```
 
+### `require("n00n.html")`
+
+```lua
+--- Convert HTML to compact text while omitting script, style, and noscript content.
+function M.strip(html)
+```
+
 ### `require("n00n.list_picker")`
 
 ```lua
@@ -6105,7 +6112,8 @@ function TextInput:render(prefix, prefix_width, width)
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
 -- max_line_bytes (optional) per-line byte cap applied at render time,
--- max_width (optional) display-width cap, hide_collapsed (default false).
+-- max_width (optional) display-width cap, hide_collapsed (default false),
+-- header_until_blank keeps a leading metadata block outside the content limit.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
@@ -6144,5 +6152,36 @@ function ToolView.restore(output, opts)
 function M.normalize(result)
 function M.add(total, value)
 function M.price(model_spec, result)
+```
+
+### `require("n00n.web_backend")`
+
+```lua
+--- Select the configured web backend or return a configuration error.
+function M.select(requested, firecrawl_configured, fallback, firecrawl_config_error)
+
+--- Remove credentials and control characters before displaying a URL.
+function M.sanitize_url(value)
+
+--- Combine provenance and content within strict line and byte limits.
+function M.bounded(content, provenance, max_lines, max_bytes)
+
+--- Mark external content as untrusted and identify its backend source.
+function M.wrap(content, source)
+
+--- Add fetch provenance while stripping URL credentials from every displayed URL.
+function M.fetch(content, backend, requested_url, source_url, final_url)
+
+--- Format credential-safe fetch provenance and content within output limits.
+function M.bounded_fetch(content, backend, requested_url, source_url, final_url, max_lines, max_bytes)
+
+--- Mark external content as untrusted while enforcing output limits.
+function M.bounded_wrap(content, source, max_lines, max_bytes)
+
+--- Format compact Firecrawl results with untrusted-content provenance.
+function M.firecrawl_search(results)
+
+--- Format Firecrawl results within strict line and byte limits.
+function M.bounded_firecrawl_search(results, max_lines, max_bytes)
 ```
 
