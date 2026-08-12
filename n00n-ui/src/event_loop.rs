@@ -69,10 +69,12 @@ const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(5);
 const STORAGE_WRITER_REFS_ERR: &str =
     "storage writer has outstanding references, skipping graceful shutdown";
 const DIRECT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
+const DELETE_UI_ONLY_ERR: &str = "session deletion is available only from trusted UI controls";
 const NOT_LIVE_ERR: &str = "session not live";
 const TEAM_TOOL_NAME: &str = "team";
 const PAUSED_TEAM_RUN_ID_MAX_BYTES: usize = 256;
@@ -141,7 +143,17 @@ fn parse_session_id(id: &str) -> Result<n00nId, String> {
 fn caller_session_id(caller: Option<SessionRef>) -> Result<n00nId, String> {
     caller
         .map(|session| session.id())
-        .ok_or_else(|| "authoritative caller session identity is unavailable".to_owned())
+        .ok_or_else(|| "session caller identity is required".to_owned())
+}
+
+fn authorize_ui_delete(
+    caller: Option<&SessionRef>,
+    trusted_ui_control: bool,
+) -> Result<(), String> {
+    if caller.is_some() || !trusted_ui_control {
+        return Err(DELETE_UI_ONLY_ERR.to_owned());
+    }
+    Ok(())
 }
 
 fn live_session(session: &AppSession) -> std::result::Result<LiveSession, LineageError> {
@@ -1173,7 +1185,12 @@ impl<'t> EventLoop<'t> {
                     .meta
                     .queued_direct_tools
                     .clear();
-                self.sessions[idx].app.save_session();
+                if let Err(error) = self.sessions[idx]
+                    .app
+                    .checkpoint_session(TERMINAL_CHECKPOINT_TIMEOUT)
+                {
+                    warn!(session_id = %self.sessions[idx].id(), %error, "failed to persist terminal session checkpoint");
+                }
             }
         }
         self.dispatch(idx, actions);
@@ -1360,7 +1377,15 @@ impl<'t> EventLoop<'t> {
             // Deletes run on the storage writer thread after any queued
             // flushes, so the loop never blocks on disk and a queued save
             // cannot resurrect the files.
-            SessionRequest::Delete { id } => {
+            SessionRequest::Delete {
+                id,
+                caller_id,
+                trusted_ui_control,
+            } => {
+                if let Err(error) = authorize_ui_delete(caller_id.as_ref(), trusted_ui_control) {
+                    let _ = reply_tx.send(Err(error));
+                    return;
+                }
                 let id = match parse_session_id(&id) {
                     Ok(id) => id,
                     Err(e) => {
@@ -2102,6 +2127,7 @@ impl<'t> EventLoop<'t> {
                     Ok(replacement) => replacement,
                     Err(error) => {
                         warn!(session_id = %self.sessions[idx].id(), %error, "invalid reset session lineage");
+                        self.sessions[idx].app.status = Status::error(error.to_string());
                         return;
                     }
                 };
@@ -2109,6 +2135,7 @@ impl<'t> EventLoop<'t> {
                     Ok(identity) => identity,
                     Err(error) => {
                         warn!(session_id = %replacement.id, %error, "invalid reset session identity");
+                        self.sessions[idx].app.status = Status::error(error.to_string());
                         return;
                     }
                 };
@@ -2119,6 +2146,7 @@ impl<'t> EventLoop<'t> {
                         %error,
                         "failed to replace reset session lineage"
                     );
+                    self.sessions[idx].app.status = Status::error(error.to_string());
                     return;
                 }
                 self.respawn_agent(idx, Vec::new(), Vec::new(), identity);
@@ -2442,11 +2470,12 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler, PAUSED_TEAM_RUN_ID_MAX_BYTES,
-        TEAM_TOOL_NAME, bounded_direct_output, cancel_stored_session, complete_model_fetch_with,
-        direct_paused_team_payload, draw_then_post_terminal, paused_team_payload, paused_team_run,
-        should_save_periodically, startup_login_completed, startup_provider_with,
-        take_painted_submissions, validated_paused_team_payload,
+        DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
+        PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, authorize_ui_delete, bounded_direct_output,
+        cancel_stored_session, complete_model_fetch_with, direct_paused_team_payload,
+        draw_then_post_terminal, paused_team_payload, paused_team_run, should_save_periodically,
+        startup_login_completed, startup_provider_with, take_painted_submissions,
+        validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::ArcSwap;
@@ -2455,7 +2484,7 @@ mod tests {
         AgentError, ContentBlock, Message, Model, Role, provider::unconfigured_provider,
     };
     use n00n_storage::{
-        id::n00nId,
+        id::{SessionRef, n00nId},
         sessions::{StoredDelivery, StoredDirectTool, StoredQueuedMessage, StoredSessionLifecycle},
     };
     use ratatui::{
@@ -2558,6 +2587,24 @@ mod tests {
         });
 
         assert!(Arc::ptr_eq(&model_slot.load_full(), &replacement));
+    }
+
+    #[test]
+    fn delete_allows_only_ui_callbacks_without_agent_identity() {
+        assert!(authorize_ui_delete(None, true).is_ok());
+        assert_eq!(
+            authorize_ui_delete(None, false)
+                .as_ref()
+                .map_err(String::as_str),
+            Err(DELETE_UI_ONLY_ERR)
+        );
+        let caller = SessionRef::generate();
+        assert_eq!(
+            authorize_ui_delete(Some(&caller), true)
+                .as_ref()
+                .map_err(String::as_str),
+            Err(DELETE_UI_ONLY_ERR)
+        );
     }
 
     #[test]

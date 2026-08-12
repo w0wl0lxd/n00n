@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, transcript_to_display};
 use crate::components::DisplayRole;
@@ -11,9 +12,9 @@ use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
-    StoredDelivery, StoredDirectTool, StoredImageMediaType, StoredImageSource, StoredMcpPrompt,
-    StoredMode, StoredQueuedMessage, StoredSessionLifecycle, StoredSessionStateSnapshot,
-    StoredSubagent, StoredThinking,
+    SessionError, StoredDelivery, StoredDirectTool, StoredImageMediaType, StoredImageSource,
+    StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
+    StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
 };
 
 use crate::AppSession;
@@ -184,6 +185,15 @@ impl App {
             return;
         }
         self.storage_writer.send(Box::new(snapshot));
+    }
+
+    pub(crate) fn checkpoint_session(&mut self, timeout: Duration) -> Result<(), SessionError> {
+        let snapshot = self.session_snapshot_with_plugin_state();
+        if !session_has_content(&snapshot) {
+            return Ok(());
+        }
+        self.storage_writer
+            .persist_and_wait(Box::new(snapshot), timeout)
     }
 
     pub(crate) fn session_snapshot(&mut self) -> AppSession {

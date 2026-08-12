@@ -298,6 +298,27 @@ impl StorageWriter {
     }
 
     /// Deletes a session on the writer thread after superseded commands have
+    pub(crate) fn persist_and_wait(
+        &self,
+        session: Box<AppSession>,
+        timeout: Duration,
+    ) -> Result<(), SessionError> {
+        let (done_tx, done_rx) = flume::bounded(1);
+        self.persist(session, move |result| {
+            let _ = done_tx.send(result);
+        });
+        match done_rx.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(flume::RecvTimeoutError::Timeout) => {
+                Err(SessionError::Storage(StorageError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("session checkpoint did not complete within {timeout:?}"),
+                ))))
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => Err(writer_gone()),
+        }
+    }
+
     /// been rejected by generation. The caller never waits for filesystem I/O.
     pub fn delete(&self, id: n00nId, done: impl FnOnce(Result<(), SessionError>) + Send + 'static) {
         let generation = reserve_command(&self.tracker, id);

@@ -2596,6 +2596,25 @@ fn drain_writer(app: App, writer: Arc<StorageWriter>) {
 }
 
 #[test]
+fn checkpoint_session_is_durable_before_returning() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let session_id = app.state.session.id;
+    app.state
+        .session
+        .messages
+        .push(Message::user("checkpoint".into()));
+
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+
+    let loaded = AppSession::load(session_id, &dir).unwrap();
+    assert_eq!(
+        serde_json::to_value(&loaded.messages).unwrap(),
+        serde_json::to_value(&app.state.session.messages).unwrap()
+    );
+    drain_writer(app, writer);
+}
+
+#[test]
 fn save_session_captures_plugin_state_snapshot() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();

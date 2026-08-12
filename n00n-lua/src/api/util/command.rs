@@ -444,6 +444,8 @@ pub enum SessionRequest {
     },
     Delete {
         id: String,
+        caller_id: Option<SessionRef>,
+        trusted_ui_control: bool,
     },
     SetTitle {
         id: String,
