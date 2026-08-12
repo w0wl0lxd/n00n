@@ -861,7 +861,7 @@ fn enter_executes_new_command() {
     type_slash(&mut app);
     app.update(Msg::Key(key(KeyCode::Char('n'))));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(matches!(&actions[0], Action::NewSession));
+    assert!(matches!(&actions[0], Action::NewSession { .. }));
     assert!(!app.command_palette.is_active());
 }
 
@@ -887,8 +887,13 @@ fn reset_session_clears_plan() {
     app.help_modal.toggle();
     let (_tx, rx) = flume::bounded::<crate::components::btw_modal::BtwEvent>(1);
     app.btw_modal.open("q", rx);
+    let previous_id = app.state.session.id;
     let actions = app.reset_session();
-    assert!(matches!(&actions[0], Action::NewSession));
+    assert!(matches!(
+        &actions[0],
+        Action::NewSession { previous_id: id } if *id == previous_id
+    ));
+    assert_ne!(app.state.session.id, previous_id);
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.state.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
@@ -3846,7 +3851,9 @@ fn plan_form_menu_options(
         assert!(matches!(app.state.plan, PlanState::Ready(_)));
     }
     assert_eq!(
-        actions.iter().any(|a| matches!(a, Action::NewSession)),
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::NewSession { .. })),
         has_new_session
     );
     let expected_msg = implement_msg(PlanForm::new().parallel());
@@ -3873,7 +3880,7 @@ fn clear_and_implement_defers_submission_until_new_session() {
 
     let actions = app.implement_plan(true);
 
-    assert!(matches!(&actions[..], [Action::NewSession]));
+    assert!(matches!(&actions[..], [Action::NewSession { .. }]));
     assert_ne!(app.state.session.id, old_session_id);
     let pending = app
         .pending_plan_submit

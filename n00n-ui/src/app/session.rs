@@ -454,7 +454,8 @@ impl App {
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
         self.save_session();
-        self.drop_plugin_state(self.state.session.id);
+        let previous_id = self.state.session.id;
+        self.drop_plugin_state(previous_id);
         self.reset_ui_chrome();
         self.state.token_usage = TokenUsage::default();
         self.state.context_size = 0;
@@ -466,7 +467,7 @@ impl App {
         self.hydrate_plugin_state();
         self.fire_session_autocmd("SessionReset", serde_json::json!({}));
         self.fire_session_focus_autocmd();
-        vec![Action::NewSession]
+        vec![Action::NewSession { previous_id }]
     }
 
     pub(super) fn open_rewind_picker(&mut self) -> Vec<Action> {

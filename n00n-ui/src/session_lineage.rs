@@ -220,6 +220,56 @@ impl SessionLineageGuard {
         Ok(())
     }
 
+    pub(crate) fn replace_runtime(
+        &mut self,
+        previous_id: n00nId,
+        replacement: LiveSession,
+    ) -> Result<(), LineageError> {
+        if self.sessions.contains_key(&replacement.id) {
+            return Err(LineageError::DuplicateSession(replacement.id));
+        }
+        let previous = *self
+            .sessions
+            .get(&previous_id)
+            .ok_or(LineageError::UnknownSession(previous_id))?;
+        if !previous.runtime_present || previous.deleted {
+            return Err(LineageError::TargetNotLive(previous_id));
+        }
+
+        self.sessions
+            .get_mut(&previous_id)
+            .ok_or(LineageError::UnknownSession(previous_id))?
+            .runtime_present = false;
+        self.sessions
+            .get_mut(&previous_id)
+            .ok_or(LineageError::UnknownSession(previous_id))?
+            .execution_active = false;
+        self.sessions.insert(
+            replacement.id,
+            SessionNode {
+                root_session_id: replacement.root_session_id,
+                parent_id: replacement.parent_id,
+                runtime_present: replacement.runtime_present,
+                execution_active: replacement.execution_active,
+                deleted: false,
+            },
+        );
+        if let Err(error) = self.rebuild_topology() {
+            self.sessions.remove(&replacement.id);
+            self.sessions.insert(previous_id, previous);
+            if let Err(rollback_error) = self.rebuild_topology() {
+                warn!(
+                    previous_session_id = %previous_id,
+                    replacement_session_id = %replacement.id,
+                    error = %rollback_error,
+                    "failed to rebuild session lineage topology after runtime replacement rollback"
+                );
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_execution_active(
         &mut self,
         id: n00nId,
@@ -877,6 +927,72 @@ mod tests {
                 limits(4, 4, 1),
             ),
             Err(LineageError::ActiveDescendantsExceeded { limit: 1 })
+        ));
+    }
+
+    #[test]
+    fn runtime_replacement_atomically_moves_liveness_to_new_root() {
+        let previous = id(1);
+        let child = id(2);
+        let replacement = id(3);
+        let mut guard = SessionLineageGuard::from_live(
+            [session(previous, None), session(child, Some(previous))],
+            limits(4, 4, 4),
+        )
+        .expect("valid graph");
+
+        guard
+            .replace_runtime(previous, session(replacement, None))
+            .expect("replace root runtime");
+
+        assert!(matches!(
+            guard.reserve_new(previous, None, false),
+            Err(LineageError::CallerNotLive(id)) if id == previous
+        ));
+        assert_eq!(
+            guard.lineage(replacement).expect("replacement lineage"),
+            SessionLineage {
+                caller: replacement,
+                root: replacement,
+                parent: None,
+                depth: 0,
+            }
+        );
+        assert_eq!(
+            guard.descendants_of(previous).expect("old descendants"),
+            vec![child]
+        );
+    }
+
+    #[test]
+    fn failed_runtime_replacement_leaves_previous_runtime_live() {
+        let previous = id(1);
+        let replacement = id(2);
+        let missing_parent = id(3);
+        let mut guard = SessionLineageGuard::from_live([session(previous, None)], limits(4, 4, 4))
+            .expect("valid root");
+        let invalid_replacement = LiveSession {
+            id: replacement,
+            root_session_id: missing_parent,
+            parent_id: Some(missing_parent),
+            runtime_present: true,
+            execution_active: false,
+        };
+
+        assert!(matches!(
+            guard.replace_runtime(previous, invalid_replacement),
+            Err(LineageError::MissingParent { .. })
+        ));
+        assert_eq!(
+            guard.lineage(previous).expect("previous lineage").root,
+            previous
+        );
+        guard
+            .reserve_new(previous, None, false)
+            .expect("previous remains live");
+        assert!(matches!(
+            guard.lineage(replacement),
+            Err(LineageError::CallerNotLive(id)) if id == replacement
         ));
     }
 

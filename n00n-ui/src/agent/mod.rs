@@ -135,8 +135,10 @@ impl AgentHandles {
         tool_output_lines: ToolOutputLines,
         permissions: &Arc<PermissionManager>,
         app: &mut App,
+        identity: Option<SessionIdentity>,
         lua_handle: Option<EventHandle>,
     ) {
+        self.identity = identity;
         let slot = model_slot.load();
         if let Err(e) = smol::block_on(slot.provider.reload_auth()) {
             warn!(error = %e, "failed to reload auth, continuing with existing credentials");
