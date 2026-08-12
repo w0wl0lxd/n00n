@@ -596,6 +596,7 @@ async fn call_tool(
         on_buf,
         on_ann,
     };
+    let _nested_dispatch = crate::api::tool::enter_nested_dispatch();
     let done = dispatch_racing_live(&tctx, &name, &input_json, rx, &cbs).await;
     // Same fallback the UI applies on tool completion, so a batch child's
     // header carries the annotation its standalone run would get.
@@ -661,11 +662,6 @@ async fn session(
     opts: Table,
 ) -> LuaResult<Pair<mlua::AnyUserData>> {
     let agent_ctx = try_pair!(dispatch_ctx(&ctx, "session")).clone();
-    let Some(parent_identity) = agent_ctx.identity.clone() else {
-        return Ok(err_pair("session identity is unavailable"));
-    };
-    let plugin_state_store = try_pair!(ctx.plugin_state_store());
-    drop(ctx);
     let model_spec: Option<String> = opts.get("model_spec")?;
     let system: Option<String> = opts.get("system")?;
     let tools_val: Option<LuaValue> = opts.get("tools")?;
@@ -799,6 +795,12 @@ async fn session(
         Some(_) => return Err(mlua::Error::runtime("thinking must be string or number")),
         None => agent_ctx.opts.thinking,
     };
+
+    let Some(parent_identity) = agent_ctx.identity.clone() else {
+        return Ok(err_pair("session identity is unavailable"));
+    };
+    let plugin_state_store = try_pair!(ctx.plugin_state_store());
+    drop(ctx);
 
     let session_id = n00nId::generate();
     let child_id = session_id.to_string();

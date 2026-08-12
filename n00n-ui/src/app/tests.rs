@@ -19,7 +19,8 @@ use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{
-    StoredMode, StoredSessionStateSnapshot, StoredStateScope, StoredThinking, TranscriptEntry,
+    StoredMode, StoredSessionLifecycle, StoredSessionStateSnapshot, StoredStateScope,
+    StoredThinking, TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
@@ -860,7 +861,7 @@ fn enter_executes_new_command() {
     type_slash(&mut app);
     app.update(Msg::Key(key(KeyCode::Char('n'))));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(matches!(&actions[0], Action::NewSession));
+    assert!(matches!(&actions[0], Action::NewSession { .. }));
     assert!(!app.command_palette.is_active());
 }
 
@@ -886,8 +887,13 @@ fn reset_session_clears_plan() {
     app.help_modal.toggle();
     let (_tx, rx) = flume::bounded::<crate::components::btw_modal::BtwEvent>(1);
     app.btw_modal.open("q", rx);
+    let previous_id = app.state.session.id;
     let actions = app.reset_session();
-    assert!(matches!(&actions[0], Action::NewSession));
+    assert!(matches!(
+        &actions[0],
+        Action::NewSession { previous_id: id } if *id == previous_id
+    ));
+    assert_ne!(app.state.session.id, previous_id);
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.state.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
@@ -2465,6 +2471,10 @@ fn session_has_content_covers_each_branch() {
     assert!(session_has_content(&session));
     session.meta.queued_messages.clear();
 
+    session.meta.lifecycle = StoredSessionLifecycle::Cancelled;
+    assert!(session_has_content(&session));
+    session.meta.lifecycle = StoredSessionLifecycle::Idle;
+
     session.meta.mode = Some(StoredMode::Plan);
     assert!(session_has_content(&session));
     session.meta.mode = Some(StoredMode::Build);
@@ -2583,6 +2593,25 @@ fn drain_writer(app: App, writer: Arc<StorageWriter>) {
         .expect("app must hold the only other writer reference")
         .shutdown(WRITER_DRAIN_TIMEOUT)
         .unwrap();
+}
+
+#[test]
+fn checkpoint_session_is_durable_before_returning() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let session_id = app.state.session.id;
+    app.state
+        .session
+        .messages
+        .push(Message::user("checkpoint".into()));
+
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+
+    let loaded = AppSession::load(session_id, &dir).unwrap();
+    assert_eq!(
+        serde_json::to_value(&loaded.messages).unwrap(),
+        serde_json::to_value(&app.state.session.messages).unwrap()
+    );
+    drain_writer(app, writer);
 }
 
 #[test]
@@ -3841,7 +3870,9 @@ fn plan_form_menu_options(
         assert!(matches!(app.state.plan, PlanState::Ready(_)));
     }
     assert_eq!(
-        actions.iter().any(|a| matches!(a, Action::NewSession)),
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::NewSession { .. })),
         has_new_session
     );
     let expected_msg = implement_msg(PlanForm::new().parallel());
@@ -3868,7 +3899,7 @@ fn clear_and_implement_defers_submission_until_new_session() {
 
     let actions = app.implement_plan(true);
 
-    assert!(matches!(&actions[..], [Action::NewSession]));
+    assert!(matches!(&actions[..], [Action::NewSession { .. }]));
     assert_ne!(app.state.session.id, old_session_id);
     let pending = app
         .pending_plan_submit

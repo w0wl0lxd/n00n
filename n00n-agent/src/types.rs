@@ -1039,6 +1039,9 @@ pub enum AgentEvent {
         images: Vec<ImageSource>,
         control: bool,
     },
+    QueueDrained {
+        generation: u64,
+    },
     Done {
         usage: TokenUsage,
         num_turns: u32,

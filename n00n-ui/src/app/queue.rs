@@ -30,7 +30,6 @@ impl MessageQueue {
         self.shared = Some(shared);
     }
 
-    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.shared
             .as_ref()
@@ -197,6 +196,20 @@ impl MessageQueue {
             vec![],
             super::super::agent::shared_queue::QueueSender::queued_inputs,
         )
+    }
+
+    pub(crate) fn direct_tools(&self) -> Vec<(String, serde_json::Value)> {
+        self.shared
+            .as_ref()
+            .map_or_else(Vec::new, QueueSender::direct_tools)
+    }
+
+    pub(crate) fn push_direct_tool(&self, entry: QueueItem) -> bool {
+        let Some(shared) = &self.shared else {
+            return false;
+        };
+        shared.push(entry);
+        true
     }
 
     fn clamp_focus(&mut self) {

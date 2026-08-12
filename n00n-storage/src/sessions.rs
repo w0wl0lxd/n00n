@@ -155,6 +155,35 @@ pub enum StoredDelivery {
     Immediate,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredSessionLifecycle {
+    Queued,
+    Bootstrapping,
+    Running,
+    WaitingInput,
+    Paused,
+    Succeeded,
+    Failed,
+    Cancelled,
+    #[default]
+    Idle,
+}
+
+impl StoredSessionLifecycle {
+    #[must_use]
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Queued | Self::Bootstrapping | Self::Running | Self::WaitingInput
+        )
+    }
+
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredQueuedMessage {
     pub text: String,
@@ -176,6 +205,12 @@ pub struct StoredQueuedMessage {
     pub delivery: StoredDelivery,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<StoredMcpPrompt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredDirectTool {
+    pub tool: String,
+    pub input: Value,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires fn(&T) -> bool
@@ -876,6 +911,10 @@ where
 pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<n00nId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<n00nId>,
+    #[serde(default, skip_serializing_if = "StoredSessionLifecycle::is_idle")]
+    pub lifecycle: StoredSessionLifecycle,
     #[serde(default)]
     pub mode: Option<StoredMode>,
     #[serde(default)]
@@ -893,6 +932,14 @@ pub struct SessionMeta {
     /// Full queued-message snapshots, including messages hidden by the paint gate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_submissions: Vec<StoredQueuedMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_direct_tools: Vec<StoredDirectTool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_output: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct_output_is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_paused_team: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<StoredSubagent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5096,6 +5143,13 @@ mod tests {
 
         session.meta.input_draft = Some("draft line".into());
         session.meta.queued_messages = vec!["queued".into()];
+        session.meta.direct_output = Some("bootstrap output".into());
+        session.meta.direct_output_is_error = true;
+        session.meta.direct_paused_team = Some(serde_json::json!({
+            "paused": true,
+            "run_id": "run-1",
+            "mode": "swarm",
+        }));
         session.title = "updated title".into();
         session.updated_at = now_epoch() + 1;
         log.append(&session).unwrap();
@@ -5103,6 +5157,19 @@ mod tests {
         let loaded = TestSession::load_from(session.id, dir).unwrap();
         assert_eq!(loaded.meta.input_draft.as_deref(), Some("draft line"));
         assert_eq!(loaded.meta.queued_messages, vec!["queued".to_string()]);
+        assert_eq!(
+            loaded.meta.direct_output.as_deref(),
+            Some("bootstrap output")
+        );
+        assert!(loaded.meta.direct_output_is_error);
+        assert_eq!(
+            loaded.meta.direct_paused_team,
+            Some(serde_json::json!({
+                "paused": true,
+                "run_id": "run-1",
+                "mode": "swarm",
+            }))
+        );
         assert_eq!(loaded.title, "updated title");
     }
 
