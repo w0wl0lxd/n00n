@@ -6,6 +6,7 @@ use color_eyre::eyre::Context;
 
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::tools::ToolRegistry;
+use n00n_config::providers::ProvidersConfig;
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_storage::StateDir;
@@ -49,7 +50,8 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
         stream: config.provider.stream_timeout,
     };
 
-    let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
+    let providers_toml = ProvidersConfig::load();
+    let model = setup::resolve_model(model_arg, &config.provider, &providers_toml, &storage)?;
     setup::install_panic_log_hook();
 
     let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
