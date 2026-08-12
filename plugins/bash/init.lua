@@ -475,9 +475,11 @@ rtk_rewrite = function(command, ctx)
     elseif result and result.exit_code == 127 then
       rtk_available = false
     elseif result then
+      rtk_available = false
       rtk_probe_error = "availability check failed with exit code " .. result.exit_code
     else
       n00n.fn.jobstop(id)
+      rtk_available = false
       rtk_probe_error = "availability check timed out"
     end
   end
@@ -536,7 +538,7 @@ rtk_rewrite = function(command, ctx)
     if cmd == "ls" or cmd:match("^ls%s+") then
       return "rtk " .. cmd
     end
-    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported(" " .. cmd .. " ") then
+    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported("rtk " .. cmd .. " ") then
       return "rtk " .. cmd
     end
     if rtk_enforcement_required(command) then
@@ -556,7 +558,7 @@ rtk_rewrite = function(command, ctx)
     if cmd == "ls" or cmd:match("^ls%s+") then
       return "rtk " .. cmd
     end
-    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported(" " .. cmd .. " ") then
+    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported("rtk " .. cmd .. " ") then
       return "rtk " .. cmd
     end
     if rtk_enforcement_required(command) then
@@ -631,20 +633,35 @@ local LEAF_COMMAND_TYPES = {
   negated_command = true,
 }
 
+local function command_segment(node, source)
+  local range = n00n.treesitter.get_range(node)
+  local raw = source:sub(range[3] + 1, range[6])
+  local text = raw:match("^%s*(.-)%s*$")
+  if text == "" then
+    return nil
+  end
+  local relative_start, relative_end = raw:find(text, 1, true)
+  return {
+    text = text,
+    start_byte = range[3] + relative_start - 1,
+    end_byte = range[3] + relative_end,
+  }
+end
+
 local function collect_commands(node, source)
   local out = {}
   local kind = node:type()
   if LEAF_COMMAND_TYPES[kind] then
-    local text = n00n.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
-    if text ~= "" then
-      out[#out + 1] = text
+    local segment = command_segment(node, source)
+    if segment then
+      out[#out + 1] = segment
     end
   elseif kind == "pipeline" then
     for child in node:iter_children() do
       if child:named() then
-        local text = n00n.treesitter.get_node_text(child, source):match("^%s*(.-)%s*$")
-        if text ~= "" then
-          out[#out + 1] = text
+        local segment = command_segment(child, source)
+        if segment then
+          out[#out + 1] = segment
         end
       end
     end
@@ -712,7 +729,8 @@ local function rtk_manages_segment(segment, depth)
     return true
   end
   if executable == "rtk" then
-    return normalized_executable(words[2] or "") == "proxy" and rtk_manages_segment(table.concat(words, " ", 3))
+    return normalized_executable(words[2] or "") == "proxy"
+      and rtk_manages_segment(table.concat(words, " ", 3), depth + 1)
   end
   if RTK_COMMAND_WRAPPERS[executable] then
     for index = 2, #words do
@@ -779,26 +797,25 @@ rtk_rewrite_compound = function(command, ctx)
   end
 
   local output = {}
-  local cursor = 1
+  local cursor = 0
   local changed = false
   for _, segment in ipairs(collect_commands(root, command)) do
-    if segment == command then
+    if segment.start_byte == 0 and segment.end_byte == #command then
       return nil, RTK_REWRITE_REQUIRED .. ": complex command could not be safely segmented"
     end
-    local start_index, end_index = command:find(segment, cursor, true)
-    if not start_index then
+    if segment.start_byte < cursor or command:sub(segment.start_byte + 1, segment.end_byte) ~= segment.text then
       return nil, RTK_REWRITE_REQUIRED .. ": could not safely locate a compound command segment"
     end
-    local rewritten, rewrite_error = rtk_rewrite(segment, ctx)
+    local rewritten, rewrite_error = rtk_rewrite(segment.text, ctx)
     if rewrite_error then
       return nil, rewrite_error
     end
-    output[#output + 1] = command:sub(cursor, start_index - 1)
-    output[#output + 1] = rewritten or segment
+    output[#output + 1] = command:sub(cursor + 1, segment.start_byte)
+    output[#output + 1] = rewritten or segment.text
     changed = changed or rewritten ~= nil
-    cursor = end_index + 1
+    cursor = segment.end_byte
   end
-  output[#output + 1] = command:sub(cursor)
+  output[#output + 1] = command:sub(cursor + 1)
   if changed then
     return table.concat(output)
   end
@@ -881,7 +898,11 @@ n00n.api.register_tool({
       return { scopes = { command }, force_prompt = true }
     end
 
-    local segments = collect_commands(root, command)
+    local collected = collect_commands(root, command)
+    local segments = {}
+    for _, segment in ipairs(collected) do
+      segments[#segments + 1] = segment.text
+    end
     if #segments == 0 then
       segments = { command }
     end
