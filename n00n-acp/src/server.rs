@@ -481,22 +481,43 @@ fn permission_response_answer(
     id: &RequestId,
     raw: &Value,
 ) -> Option<PermissionAnswer> {
-    let mut pending = pending_permission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut pending = match pending_permission.lock() {
+        Ok(pending) => pending,
+        Err(poisoned) => {
+            warn!("pending ACP permission state poisoned; denying response");
+            let mut pending = poisoned.into_inner();
+            if pending.as_ref() != Some(id) {
+                return None;
+            }
+            pending.take();
+            return Some(PermissionAnswer::Deny);
+        }
+    };
     if pending.as_ref() != Some(id) {
         return None;
     }
     pending.take();
 
-    let answer = match raw.get("result") {
-        Some(result) => match serde_json::from_value::<RequestPermissionResponse>(result.clone()) {
-            Ok(response) => permissions::outcome_to_answer(&response.outcome),
-            Err(_) => PermissionAnswer::Deny,
-        },
-        None => PermissionAnswer::Deny,
+    let answer = match (raw.get("result"), raw.get("error")) {
+        (Some(result), None) => {
+            match serde_json::from_value::<RequestPermissionResponse>(result.clone()) {
+                Ok(response) => permissions::outcome_to_answer(&response.outcome),
+                Err(_) => PermissionAnswer::Deny,
+            }
+        }
+        _ => PermissionAnswer::Deny,
     };
     Some(answer)
+}
+
+fn set_pending_permission(pending_permission: &PendingPermission, id: RequestId) -> bool {
+    if let Ok(mut pending) = pending_permission.lock() {
+        *pending = Some(id);
+        true
+    } else {
+        warn!("pending ACP permission state poisoned; denying request");
+        false
+    }
 }
 
 fn extract_prompt_content(blocks: &[ContentBlock]) -> (String, Vec<ImageSource>) {
@@ -584,10 +605,12 @@ fn start_event_pump(
                         }
                         continue;
                     };
-                    *pending_permission
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(request_id.clone());
+                    if !set_pending_permission(&pending_permission, request_id.clone()) {
+                        if answer_tx.send(PermissionAnswer::Deny.encode()).is_err() {
+                            debug!("permission response receiver disconnected");
+                        }
+                        continue;
+                    }
                     send(
                         &out_tx,
                         Request {
@@ -890,6 +913,7 @@ mod tests {
 
     #[test_case::test_case(r#"{"id":1001,"error":{"code":-32603,"message":"failed"}}"# ; "error response")]
     #[test_case::test_case(r#"{"id":1001,"result":{}}"# ; "malformed result")]
+    #[test_case::test_case(r#"{"id":1001,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}},"error":{"code":-32603,"message":"failed"}}"# ; "result and error")]
     fn permission_response_fails_closed_and_clears_pending(raw: &str) {
         let pending = Arc::new(Mutex::new(Some(RequestId::Number(1001))));
         let raw: Value = serde_json::from_str(raw).unwrap();
@@ -899,6 +923,43 @@ mod tests {
             Some(PermissionAnswer::Deny)
         );
         assert_eq!(*pending.lock().unwrap(), None);
+    }
+
+    fn poison_pending_permission(pending: &PendingPermission) {
+        let pending = Arc::clone(pending);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = pending.lock().unwrap();
+                panic!("poison pending permission for test");
+            })
+            .join()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn poisoned_pending_permission_denies_matching_response() {
+        let pending = Arc::new(Mutex::new(Some(RequestId::Number(1001))));
+        poison_pending_permission(&pending);
+        let raw = json!({
+            "id": 1001,
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+        });
+
+        assert_eq!(
+            permission_response_answer(&pending, &RequestId::Number(1001), &raw),
+            Some(PermissionAnswer::Deny)
+        );
+        assert_eq!(*pending.lock().unwrap_err().into_inner(), None);
+    }
+
+    #[test]
+    fn poisoned_pending_permission_rejects_new_request() {
+        let pending = Arc::new(Mutex::new(None));
+        poison_pending_permission(&pending);
+
+        assert!(!set_pending_permission(&pending, RequestId::Number(1001)));
+        assert_eq!(*pending.lock().unwrap_err().into_inner(), None);
     }
 
     #[test]
