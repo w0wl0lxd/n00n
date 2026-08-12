@@ -10,6 +10,7 @@ use n00n_storage::log::RotatingFileWriter;
 use n00n_storage::model::{read_model, read_recents};
 use tracing_subscriber::EnvFilter;
 
+const PLACEHOLDER_PROVIDER_PRIORITY: &[&str] = &["codex", "anthropic", "openai"];
 const PROVIDER_PRIORITY: &[&str] = &[
     "anthropic",
     "openai",
@@ -25,9 +26,20 @@ pub fn resolve_model(
     provider_config: &n00n_config::ProviderConfig,
     storage: &StateDir,
 ) -> Result<Model> {
+    resolve_model_with_fusion(explicit, provider_config, storage, None)
+}
+
+pub fn resolve_model_with_fusion(
+    explicit: Option<&str>,
+    provider_config: &n00n_config::ProviderConfig,
+    storage: &StateDir,
+    fusion: Option<&n00n_config::FusionConfig>,
+) -> Result<Model> {
     if let Some(spec) = explicit {
-        let model = Model::from_spec(spec).context("invalid --model spec")?;
-        return Ok(model);
+        return Model::from_spec(spec).context("invalid --model spec");
+    }
+    if let Some(fusion) = fusion.filter(|fusion| fusion.enabled) {
+        return Model::from_spec(&fusion.lead_model).context("invalid Fusion lead model");
     }
     if let Some(spec) = read_model(storage) {
         if let Ok(m) = Model::from_spec(&spec) {
@@ -47,6 +59,13 @@ pub fn resolve_model(
 
 pub fn auto_detect_model() -> Option<Model> {
     auto_detect_model_preferred(None)
+}
+
+pub fn placeholder_model() -> Result<Model> {
+    PLACEHOLDER_PROVIDER_PRIORITY
+        .iter()
+        .find_map(|slug| Model::from_tier(slug, ModelTier::Strong).ok())
+        .ok_or_else(|| color_eyre::eyre::eyre!("no built-in placeholder model available"))
 }
 
 pub fn auto_detect_model_preferred(preferred: Option<&[&str]>) -> Option<Model> {
@@ -108,4 +127,81 @@ pub fn init_logging(storage_config: &n00n_config::StorageConfig) {
         .with_env_filter(filter)
         .with_writer(writer)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use n00n_config::{FusionConfig, ProviderConfig};
+    use n00n_storage::model::persist_model;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn fusion_lead_overrides_saved_and_provider_defaults() {
+        let temp = TempDir::new().unwrap();
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        persist_model(&storage, "codex/gpt-5.5");
+        let provider = ProviderConfig {
+            default_model: Some("codex/gpt-5.4".to_owned()),
+            ..ProviderConfig::default()
+        };
+        let fusion = FusionConfig {
+            enabled: true,
+            ..FusionConfig::default()
+        };
+
+        let model = resolve_model_with_fusion(None, &provider, &storage, Some(&fusion)).unwrap();
+
+        assert_eq!(model.spec(), "codex/gpt-5.6-sol");
+    }
+
+    #[test]
+    fn explicit_model_overrides_fusion_lead() {
+        let temp = TempDir::new().unwrap();
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let fusion = FusionConfig {
+            enabled: true,
+            ..FusionConfig::default()
+        };
+
+        let model = resolve_model_with_fusion(
+            Some("codex/gpt-5.6-terra"),
+            &ProviderConfig::default(),
+            &storage,
+            Some(&fusion),
+        )
+        .unwrap();
+
+        assert_eq!(model.spec(), "codex/gpt-5.6-terra");
+    }
+
+    #[test]
+    fn disabled_fusion_preserves_saved_model() {
+        let temp = TempDir::new().unwrap();
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        persist_model(&storage, "codex/gpt-5.5");
+
+        let model = resolve_model_with_fusion(
+            None,
+            &ProviderConfig::default(),
+            &storage,
+            Some(&FusionConfig::default()),
+        )
+        .unwrap();
+
+        assert_eq!(model.spec(), "codex/gpt-5.5");
+    }
+
+    #[test]
+    fn placeholder_model_is_a_builtin_strong_model() {
+        let model = placeholder_model().unwrap();
+
+        assert_eq!(model.tier, ModelTier::Strong);
+        assert!(
+            PLACEHOLDER_PROVIDER_PRIORITY
+                .iter()
+                .any(|provider| *provider == &*model.provider)
+        );
+    }
 }

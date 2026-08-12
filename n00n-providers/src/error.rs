@@ -162,20 +162,19 @@ impl AgentError {
     }
 
     /// Converts failures that may have occurred after the provider accepted the
-    /// request or emitted output into [`AgentError::RequestSent`], which is not
-    /// retryable. Transport-level failures are treated as request-sent once the
-    /// request has left the client. API/server errors are only suppressed when
-    /// output has already been emitted or the request was accepted, preserving
-    /// retryability when no output has been accepted.
+    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
+    /// failures are treated as request-sent once the request has left the client.
+    /// API/server errors are only suppressed when output has already been emitted
+    /// or the request was accepted, preserving retryability when no output has been
+    /// accepted.
     ///
-    /// `server_is_overloaded` is never suppressed: it is a transient capacity
-    /// signal and must be retried by the agent loop even if the request left the
-    /// client, because the provider explicitly asks us to try again later.
+    /// `server_is_overloaded` is preserved on requests that were not sent. Once a
+    /// request may have been accepted, `RequestSent` is normally non-retryable to
+    /// prevent an automatic duplicate request, but a `server_is_overloaded` message
+    /// inside `RequestSent` is still retryable so capacity errors can back off and
+    /// resubmit.
     #[must_use]
     pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
-        if self.is_server_overloaded() {
-            return self;
-        }
         let emitted_or_accepted = metadata
             .as_ref()
             .is_some_and(RequestDeliveryMetadata::emitted_or_accepted);
@@ -254,6 +253,11 @@ impl AgentError {
     #[must_use]
     pub fn is_auth_error(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. })
+    }
+
+    #[must_use]
+    pub fn is_history_replay_required(&self) -> bool {
+        matches!(self, Self::HistoryReplayRequired { .. })
     }
 
     #[must_use]
@@ -404,6 +408,14 @@ mod tests {
         assert_eq!(api(status).is_auth_error(), expected);
     }
 
+    #[test]
+    fn history_replay_required_is_detected() {
+        let err = AgentError::HistoryReplayRequired {
+            reason: HistoryReplayReason::ContinuationNotFound,
+        };
+        assert!(err.is_history_replay_required());
+    }
+
     #[test_case(429, "Rate limited"        ; "rate_limited")]
     #[test_case(529, "Provider is overloaded" ; "overloaded")]
     #[test_case(500, "Server error (500)"  ; "server_error")]
@@ -508,18 +520,29 @@ mod tests {
     }
 
     #[test]
-    fn server_overloaded_is_not_suppressed_to_request_sent() {
+    fn accepted_server_overload_is_suppressed_to_request_sent_but_still_retryable() {
         let err = api_msg(
             400,
             "server_is_overloaded: Our servers are currently overloaded. Please try again later.",
         );
-        let metadata = Some(RequestDeliveryMetadata::new(
-            RequestDeliveryPhase::SentAwaitingAcceptance,
-        ));
-        assert!(matches!(
-            err.suppress_retry_after_send(metadata),
-            AgentError::Api { status: 400, .. }
-        ));
+        let metadata = Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::Accepted));
+        let err = err.suppress_retry_after_send(metadata);
+
+        assert!(matches!(err, AgentError::RequestSent { .. }));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn unsent_server_overload_remains_retryable() {
+        let err = api_msg(
+            400,
+            "server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        );
+        let metadata = Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent));
+        let err = err.suppress_retry_after_send(metadata);
+
+        assert!(matches!(err, AgentError::Api { status: 400, .. }));
+        assert!(err.is_retryable());
     }
 
     #[test]

@@ -1856,16 +1856,19 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     app.update(agent_msg(AgentEvent::TextDelta {
         text: "partial".into(),
     }));
-    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "t1".into(),
-        tool: "bash".into(),
-        summary: "running".into(),
-        annotation: None,
-        input: None,
-        raw_input: None,
-        output: None,
-        render_header: None,
-    }))));
+    for id in ["t1", "t2"] {
+        app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
+            id: id.into(),
+            tool: "bash".into(),
+            summary: "running".into(),
+            annotation: None,
+            input: None,
+            raw_input: None,
+            output: None,
+            render_header: None,
+        }))));
+    }
+    render_chat(&mut app, 0, Rect::new(0, 0, 80, 20));
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(actions.is_empty());
@@ -1875,6 +1878,33 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     assert!(matches!(&actions[0], Action::CancelAgent { .. }));
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.chats[0].in_progress_count(), 0);
+    assert_eq!(
+        app.chats[0].tool_status("t1"),
+        Some(crate::components::ToolStatus::Error)
+    );
+    assert_eq!(
+        app.chats[0].tool_status("t2"),
+        Some(crate::components::ToolStatus::Error)
+    );
+
+    app.update(agent_msg_with_run_id(
+        AgentEvent::ToolDone(Box::new(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash".into(),
+            output: ToolOutput::Plain("late".into()),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        })),
+        1,
+    ));
+    render_chat(&mut app, 0, Rect::new(0, 0, 80, 20));
+    assert_eq!(app.chats[0].in_progress_count(), 0);
+    assert_eq!(
+        app.chats[0].tool_status("t1"),
+        Some(crate::components::ToolStatus::Error),
+        "stale success replaced cancellation"
+    );
 }
 
 #[test]
@@ -2551,7 +2581,8 @@ fn drain_writer(app: App, writer: Arc<StorageWriter>) {
     Arc::try_unwrap(writer)
         .ok()
         .expect("app must hold the only other writer reference")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
@@ -2730,7 +2761,8 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
@@ -2769,7 +2801,8 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the restarted storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
@@ -2831,7 +2864,8 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
@@ -2865,7 +2899,8 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the restarted storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
