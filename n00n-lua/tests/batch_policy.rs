@@ -9,12 +9,14 @@
 //! `n00n.async.gather`, with tool dispatch replaced by a scriptable Lua stub.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::ToolRegistry;
 use n00n_agent::tools::test_support::{stub_ctx, stub_ctx_with};
 use n00n_agent::{AgentEvent, AgentMode, BufferSnapshot, EventSender, SpanStyle, ToolOutput};
 use n00n_config::ToolOutputLines;
-use n00n_lua::PluginHost;
+use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginHost};
 use serde_json::{Value, json};
 
 const BATCH_PLUGIN_SRC: &str = include_str!("../../plugins/batch/init.lua");
@@ -196,6 +198,79 @@ fn all_success_exact_llm_output() {
         summary_all_ok(2)
     );
     assert_eq!(out, expected);
+}
+
+#[test_case::test_case(
+    r"n00n.async.gather({ function()
+    local started = os.clock()
+    while os.clock() - started < @CANCEL_INTERRUPT_GRACE_SECS@ do end
+  end })",
+    true;
+    "yielding_cleanup_reply_is_retained"
+)]
+#[test_case::test_case(
+    r"while true do
+    n00n.async.gather({ function()
+      local started = os.clock()
+      while os.clock() - started < @CANCEL_INTERRUPT_GRACE_SECS@ do end
+    end })
+  end",
+    false;
+    "repeatedly_yielding_cleanup_is_bounded"
+)]
+fn cancellation_bounds_yielding_batch_cleanup(cleanup: &str, expects_reply: bool) {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let cleanup_secs = CANCEL_INTERRUPT_GRACE.saturating_mul(2).as_secs_f64();
+    let cleanup = cleanup.replace(
+        "@CANCEL_INTERRUPT_GRACE_SECS@",
+        &format!("{cleanup_secs:.3}"),
+    );
+    let source = BATCH_PLUGIN_SRC.replace(
+        "  n00n.async.gather(funs)\n  for _, c in ipairs(self.children) do",
+        &format!("  n00n.async.gather(funs)\n  {cleanup}\n  for _, c in ipairs(self.children) do"),
+    );
+    assert_ne!(
+        source, BATCH_PLUGIN_SRC,
+        "batch cancellation fixture injection did not match plugin source"
+    );
+    let prelude = STUB_PRELUDE.replace("@BOOM_ERR@", BOOM_ERR);
+    host.load_source("cancel_batch", &format!("{prelude}\n{source}"))
+        .unwrap();
+
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = EventSender::new(event_tx, 0);
+    let (trigger, cancel) = CancelToken::new();
+    let mut ctx = stub_ctx_with(&AgentMode::Build, Some(&event_tx), Some(BATCH_ID));
+    ctx.registry = Arc::clone(&reg);
+    ctx.cancel = cancel;
+    let entry = reg.get(BATCH_TOOL).unwrap();
+    let inv = entry
+        .tool
+        .parse(&json!({ "tool_calls": [{ "tool": "park", "parameters": {} }] }))
+        .unwrap();
+    let (done_tx, done_rx) = flume::bounded(1);
+    std::thread::spawn(move || {
+        let done = smol::block_on(async { inv.execute(&ctx).await });
+        drop(done_tx.send(done));
+    });
+
+    let live = event_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("batch did not publish its live buffer");
+    assert!(matches!(live.event, AgentEvent::LiveToolBuf { .. }));
+    trigger.cancel();
+    let done = done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancelled batch did not finish");
+    assert_eq!(done.output.is_ok(), expects_reply);
+    let text = match done.output {
+        Ok(ToolOutput::Plain(text) | ToolOutput::Markdown(text)) => text.text,
+        Ok(other) => panic!("unexpected output: {other:?}"),
+        Err(error) => error,
+    };
+    assert!(text.contains("cancelled"), "got: {text}");
+    assert!(!text.contains("plugin interrupted"), "got: {text}");
 }
 
 #[test]

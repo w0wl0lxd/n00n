@@ -1,1 +1,1 @@
-n00n no longer auto-selects or restores a saved model from a provider that is not listed in `providers.toml` when a `providers.toml` exists. This prevents the agent from trying to use OpenAI (e.g. `openai/gpt-5.6-*`) when the user has not configured that provider.
+n00n now restores saved models only when their provider is available and auto-detects from available built-in, custom, and script providers without treating `providers.toml` as a global provider allowlist.

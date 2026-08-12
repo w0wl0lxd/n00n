@@ -547,6 +547,17 @@ impl Chat {
 
     #[cfg(test)]
     #[must_use]
+    pub fn tool_status(&self, tool_id: &str) -> Option<ToolStatus> {
+        self.messages_panel.messages.iter().find_map(|message| {
+            let DisplayRole::Tool(tool) = &message.role else {
+                return None;
+            };
+            (tool.id == tool_id).then_some(tool.status)
+        })
+    }
+
+    #[cfg(test)]
+    #[must_use]
     pub fn last_message_text(&self) -> &str {
         self.messages_panel.last_message_text()
     }
