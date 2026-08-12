@@ -17,6 +17,12 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
+-- Preserve shell wrappers such as BASH_ENV hooks for build commands.
+local RTK_SKIP_TOOLS = {
+  cargo = true,
+  nextest = true,
+  rustc = true,
+}
 local SEPARATOR = "──────"
 local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
 
@@ -442,9 +448,8 @@ local function rtk_rewrite(command, ctx)
     return nil
   end
 
-  -- rtk rewrite does not know about `cargo nextest run`, but `rtk cargo nextest` exists.
-  if cmd:match("^cargo%s+nextest$") or cmd:match("^cargo%s+nextest%s+run") then
-    return "rtk " .. cmd
+  if RTK_SKIP_TOOLS[first_word] or RTK_SKIP_TOOLS[first_word:match("([^/]+)$")] then
+    return nil
   end
 
   local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(cmd))
