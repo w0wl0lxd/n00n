@@ -3392,6 +3392,7 @@ dependencies = [
  "tree-sitter-yaml",
  "tree-sitter-zig",
  "unicode-width",
+ "url",
 ]
 
 [[package]]

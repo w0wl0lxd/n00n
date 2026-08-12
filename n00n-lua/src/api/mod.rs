@@ -11,6 +11,7 @@ pub(crate) mod autocmd;
 pub(crate) mod base64;
 pub(crate) mod codegraph;
 pub(crate) mod env;
+pub(crate) mod firecrawl;
 pub(crate) mod r#fn;
 pub(crate) mod fs;
 pub(crate) mod image;
@@ -37,6 +38,7 @@ use std::sync::Arc;
 
 use mlua::{Lua, Result as LuaResult, Table};
 
+use crate::api::firecrawl::BundledCapability;
 use crate::api::options::PluginOpts;
 use crate::api::tool::PendingTools;
 use crate::api::util::command::UiAction;
@@ -49,6 +51,7 @@ pub(crate) fn create_n00n_global(
     ui_action_tx: Option<flume::Sender<UiAction>>,
     permissions: &PluginPermissions,
     opts: PluginOpts,
+    bundled_capability: Option<BundledCapability>,
 ) -> LuaResult<Table> {
     let n00n = lua.create_table()?;
 
@@ -57,6 +60,12 @@ pub(crate) fn create_n00n_global(
     slot::add_slot_methods(&api, lua, Arc::clone(&plugin))?;
     n00n.set("api", api)?;
     n00n.set("env", env::create_env_table(lua, permissions)?)?;
+    if let Some(capability) = bundled_capability {
+        n00n.set(
+            "firecrawl",
+            firecrawl::create_firecrawl_table(lua, Arc::new(capability))?,
+        )?;
+    }
     n00n.set("fs", fs::create_fs_table(lua, permissions)?)?;
     n00n.set("log", log::create_log_table(lua, Arc::clone(&plugin))?)?;
     n00n.set("treesitter", treesitter::create_treesitter_table(lua)?)?;
