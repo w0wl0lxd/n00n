@@ -340,10 +340,13 @@ fn run_sdk_mode(
 ) -> Result<()> {
     let fast = stack.config.always_fast && stack.model.supports_fast();
     let event_handle = stack.plugin_host.event_handle();
-    let prompt_slots = event_handle.as_ref().map_or_else(
-        Default::default,
-        n00n_lua::EventHandle::collect_prompt_slots,
-    );
+    let prompt_slots = event_handle
+        .as_ref()
+        .map_or_else(
+            || Ok(n00n_agent::prompt::ResolvedSlots::default()),
+            n00n_lua::EventHandle::try_collect_prompt_slots,
+        )
+        .context("collect plugin prompt slots")?;
     let state_persistence = event_handle
         .map(|handle| Arc::new(handle) as Arc<dyn n00n_agent::headless::SessionStatePersistence>);
     let timeouts = stack.timeouts();
@@ -395,6 +398,11 @@ fn run_ui_loop(
     storage: &StateDir,
     cwd: &std::path::Path,
 ) -> Result<()> {
+    if !io::stdout().is_terminal() {
+        color_eyre::eyre::bail!(
+            "interactive UI requires terminal output; use `n00n --print` in non-interactive mode"
+        );
+    }
     let cwd_str = cwd.to_string_lossy().into_owned();
     let mut tabs = vec![resolve_session(
         cli.session_flags.continue_session,
