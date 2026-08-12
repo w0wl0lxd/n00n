@@ -9,6 +9,7 @@ use color_eyre::eyre::Context;
 
 use n00n_agent::command::{self, CustomCommand};
 use n00n_agent::tools::ToolRegistry;
+use n00n_config::providers::ProvidersConfig;
 use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::model::Model;
@@ -228,10 +229,12 @@ fn build_stack(
     }
 
     let commands = discover_commands(cli.plugin_flags.no_commands);
+    let providers_toml = ProvidersConfig::load();
 
     let model_result = setup::resolve_model_with_fusion(
         cli.model.as_deref(),
         &config.provider,
+        &providers_toml,
         storage,
         Some(&config.agent.fusion),
     );
@@ -240,7 +243,7 @@ fn build_stack(
     let (recent_model, detected_model) = if interactive_fallback {
         (
             setup::fallback_to_recent_model(storage),
-            setup::auto_detect_model(),
+            setup::auto_detect_model(&providers_toml),
         )
     } else {
         (None, None)
@@ -419,7 +422,8 @@ fn run_ui_loop(
         let model = if focused_tab.messages.is_empty() {
             stack.model.clone()
         } else {
-            Model::from_spec(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
+            setup::available_model_from_spec(&focused_tab.model)
+                .unwrap_or_else(|| stack.model.clone())
         };
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`
