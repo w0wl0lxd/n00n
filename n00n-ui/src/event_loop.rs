@@ -1909,6 +1909,7 @@ impl<'t> EventLoop<'t> {
         idx: usize,
         history: Vec<Message>,
         transcript: Vec<TranscriptEntry<Message>>,
+        identity: SessionIdentity,
     ) {
         let rt = &mut self.sessions[idx];
         let lua_handle = rt.app.lua_event_handle.clone();
@@ -1921,6 +1922,7 @@ impl<'t> EventLoop<'t> {
             self.ctx.ui_config.tool_output_lines,
             &permissions,
             &mut rt.app,
+            Some(identity),
             lua_handle,
         );
     }
@@ -2051,8 +2053,31 @@ impl<'t> EventLoop<'t> {
                     .cmd_tx
                     .try_send(AgentCommand::CancelSubagent { tool_use_id });
             }
-            Action::NewSession => {
-                self.respawn_agent(idx, Vec::new(), Vec::new());
+            Action::NewSession { previous_id } => {
+                let replacement = match live_session(&self.sessions[idx].app.state.session) {
+                    Ok(replacement) => replacement,
+                    Err(error) => {
+                        warn!(session_id = %self.sessions[idx].id(), %error, "invalid reset session lineage");
+                        return;
+                    }
+                };
+                let identity = match session_identity(&self.sessions[idx].app.state.session) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        warn!(session_id = %replacement.id, %error, "invalid reset session identity");
+                        return;
+                    }
+                };
+                if let Err(error) = self.lineage.replace_runtime(previous_id, replacement) {
+                    warn!(
+                        previous_session_id = %previous_id,
+                        replacement_session_id = %replacement.id,
+                        %error,
+                        "failed to replace reset session lineage"
+                    );
+                    return;
+                }
+                self.respawn_agent(idx, Vec::new(), Vec::new(), identity);
                 if let Some(pending) = self.sessions[idx].app.pending_plan_submit.take() {
                     let actions = {
                         let app = &mut self.sessions[idx].app;
@@ -2084,7 +2109,14 @@ impl<'t> EventLoop<'t> {
                         provider: Arc::from(new_provider),
                     }));
                 }
-                self.respawn_agent(idx, loaded.messages, loaded.transcript);
+                let identity = match session_identity(&self.sessions[idx].app.state.session) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        warn!(session_id = %self.sessions[idx].id(), %error, "invalid loaded session identity");
+                        return;
+                    }
+                };
+                self.respawn_agent(idx, loaded.messages, loaded.transcript, identity);
                 *self.sessions[idx]
                     .handles
                     .tool_outputs
