@@ -17,6 +17,7 @@ use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
 use n00n_agent::{
     AgentInput, AgentMode, Envelope, ImageMediaType, ImageSource, mode_and_plan_from_stored,
+    permissions::PermissionAnswer,
 };
 use n00n_providers::Message;
 use n00n_providers::TokenUsage;
@@ -34,6 +35,7 @@ use crate::{AcpParams, methods, permissions, translate};
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
 
 type PendingPrompt = Arc<Mutex<PendingPromptState>>;
+type PendingPermission = Arc<Mutex<Option<RequestId>>>;
 
 #[derive(Default)]
 struct PendingPromptState {
@@ -47,6 +49,7 @@ struct SessionState {
     plan_path: Option<PathBuf>,
     current_model: String,
     pending_prompt: PendingPrompt,
+    pending_permission: PendingPermission,
     event_pump: smol::Task<()>,
     _daemon: Option<crate::SessionDaemonGuard>,
 }
@@ -144,8 +147,8 @@ where
             };
 
             if raw.get("result").is_some() || raw.get("error").is_some() {
-                if id.is_some() {
-                    handle_incoming_response(&server, &raw);
+                if let Some(id) = id {
+                    handle_incoming_response(&server, &id, &raw);
                 } else {
                     server.respond(RequestId::Null, Err(AcpError::invalid_request()));
                 }
@@ -310,11 +313,13 @@ fn install_session(
     params: &AcpParams,
 ) {
     let pending = Arc::new(Mutex::new(PendingPromptState::default()));
+    let pending_permission = Arc::new(Mutex::new(None));
     let event_pump = start_event_pump(
         handle.event_rx.clone(),
         handle.session_id.clone(),
         srv.out_tx.clone(),
         Arc::clone(&pending),
+        Arc::clone(&pending_permission),
     );
     let daemon = params.session_daemon_register.and_then(|register| {
         n00n_storage::StateDir::resolve()
@@ -327,6 +332,7 @@ fn install_session(
         plan_path,
         current_model,
         pending_prompt: pending,
+        pending_permission,
         event_pump,
         _daemon: daemon,
     });
@@ -452,15 +458,37 @@ fn handle_notification(srv: &Server, method: &str) {
     }
 }
 
-fn handle_incoming_response(srv: &Server, raw: &Value) {
+fn handle_incoming_response(srv: &Server, id: &RequestId, raw: &Value) {
     let Some(session) = &srv.session else { return };
-
-    if let Some(result) = raw.get("result")
-        && let Ok(resp) = serde_json::from_value::<RequestPermissionResponse>(result.clone())
-    {
-        let answer = permissions::outcome_to_answer(&resp.outcome);
-        let _ = session.handle.answer_tx.send(answer.encode());
+    let Some(answer) = permission_response_answer(&session.pending_permission, id, raw) else {
+        return;
+    };
+    if session.handle.answer_tx.send(answer.encode()).is_err() {
+        debug!("permission response receiver disconnected");
     }
+}
+
+fn permission_response_answer(
+    pending_permission: &PendingPermission,
+    id: &RequestId,
+    raw: &Value,
+) -> Option<PermissionAnswer> {
+    let mut pending = pending_permission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pending.as_ref() != Some(id) {
+        return None;
+    }
+    pending.take();
+
+    let answer = match raw.get("result") {
+        Some(result) => match serde_json::from_value::<RequestPermissionResponse>(result.clone()) {
+            Ok(response) => permissions::outcome_to_answer(&response.outcome),
+            Err(_) => PermissionAnswer::Deny,
+        },
+        None => PermissionAnswer::Deny,
+    };
+    Some(answer)
 }
 
 fn extract_prompt_content(blocks: &[ContentBlock]) -> (String, Vec<ImageSource>) {
@@ -510,6 +538,7 @@ fn start_event_pump(
     session_id: SessionRef,
     out_tx: Sender<Value>,
     pending: PendingPrompt,
+    pending_permission: PendingPermission,
 ) -> smol::Task<()> {
     smol::spawn(async move {
         let sid = SessionId::from(session_id.to_string());
@@ -540,10 +569,15 @@ fn start_event_pump(
                             permissions::permission_options(),
                         ));
                     next_request_id += 1;
+                    let request_id = RequestId::Number(next_request_id);
+                    *pending_permission
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(request_id.clone());
                     send(
                         &out_tx,
                         Request {
-                            id: RequestId::Number(next_request_id),
+                            id: request_id,
                             method: Arc::from(request.method()),
                             params: Some(request),
                         },
@@ -773,8 +807,8 @@ mod tests {
         assert_initialize_processed(&responses);
     }
 
-    #[test]
-    fn serve_loop_recovers_from_response_without_id() {
+    #[test_case::test_case(())]
+    fn serve_loop_recovers_from_response_without_id(_case: ()) {
         let input = br#"{"jsonrpc":"2.0","result":{}}
 {"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
 "#;
@@ -786,6 +820,35 @@ mod tests {
         assert_eq!(responses[0]["error"]["code"], -32_600);
         assert_initialize_processed(&responses);
     }
+
+    #[test_case::test_case(())]
+    fn permission_response_ignores_mismatched_id(_case: ()) {
+        let pending = Arc::new(Mutex::new(Some(RequestId::Number(1001))));
+        let raw = json!({
+            "id": 1002,
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+        });
+
+        assert_eq!(
+            permission_response_answer(&pending, &RequestId::Number(1002), &raw),
+            None
+        );
+        assert_eq!(*pending.lock().unwrap(), Some(RequestId::Number(1001)));
+    }
+
+    #[test_case::test_case(r#"{"id":1001,"error":{"code":-32603,"message":"failed"}}"# ; "error response")]
+    #[test_case::test_case(r#"{"id":1001,"result":{}}"# ; "malformed result")]
+    fn permission_response_fails_closed_and_clears_pending(raw: &str) {
+        let pending = Arc::new(Mutex::new(Some(RequestId::Number(1001))));
+        let raw: Value = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(
+            permission_response_answer(&pending, &RequestId::Number(1001), &raw),
+            Some(PermissionAnswer::Deny)
+        );
+        assert_eq!(*pending.lock().unwrap(), None);
+    }
+
     #[test]
     fn parse_params_handles_missing_params() {
         let raw = json!({"id": 1, "method": "test"});
