@@ -1008,9 +1008,18 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Valu
                 let etbl = lua.create_table()?;
                 let path = base.join(&entry.path);
                 etbl.set("path", path.to_string_lossy().as_ref())?;
-                let modified = n00n_agent::tools::mtime(&path)
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .map_or(0, |duration| duration.as_secs());
+                let modified = match n00n_agent::tools::mtime(&path).duration_since(UNIX_EPOCH) {
+                    Ok(duration) => duration.as_secs(),
+                    Err(error) => {
+                        return err_pair(
+                            &lua,
+                            format!(
+                                "grep: invalid modification time for {}: {error}",
+                                path.display()
+                            ),
+                        );
+                    }
+                };
                 etbl.set("mtime", modified)?;
                 let groups_tbl = lua.create_table()?;
                 for (gi, group) in entry.groups.iter().enumerate() {

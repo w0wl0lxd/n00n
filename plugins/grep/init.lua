@@ -83,6 +83,13 @@ local function count_matches(entries)
   return string.format("%d matches in %d %s", matches, #entries, f)
 end
 
+local function append_search_warnings(output, errors)
+  if #errors == 0 then
+    return output
+  end
+  return output .. "\n\nWarning: some paths could not be searched: " .. table.concat(errors, "; ")
+end
+
 local function grep_view_opts(ctx)
   local tol = ctx:tool_output_lines()
   return { max_lines = (tol and tol.other) or 10, keep = "head" }
@@ -229,7 +236,7 @@ n00n.api.register_tool({
       path = {
         type = { "string", "array" },
         items = { type = "string" },
-        description = "Directory or file to search, or an array of directories and files.",
+        description = 'Directory or file to search, or an array of paths, such as ["src", "tests"].',
       },
       include = { type = "string", alias = "glob", description = "Glob pattern (e.g. '*.rs')." },
       context_before = { type = "integer" },
@@ -326,7 +333,7 @@ n00n.api.register_tool({
     end
 
     if #all_entries == 0 then
-      return { llm_output = NO_MATCHES }
+      return { llm_output = append_search_warnings(NO_MATCHES, all_errors) }
     end
 
     -- Merge before enforcing the call-wide limit so overlapping roots cannot
@@ -356,17 +363,14 @@ n00n.api.register_tool({
     end
 
     if #all_entries == 0 then
-      return { llm_output = NO_MATCHES }
+      return { llm_output = append_search_warnings(NO_MATCHES, all_errors) }
     end
 
     for _, entry in ipairs(all_entries) do
       ctx:record_read(entry.path)
     end
 
-    local llm_output = format_llm_output(all_entries)
-    if #all_errors > 0 then
-      llm_output = llm_output .. "\n\nWarning: some paths could not be searched: " .. table.concat(all_errors, "; ")
-    end
+    local llm_output = append_search_warnings(format_llm_output(all_entries), all_errors)
     llm_output = truncate(llm_output, max_lines, max_bytes)
 
     return {

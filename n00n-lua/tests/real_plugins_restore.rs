@@ -1242,10 +1242,14 @@ fn grep_applies_one_limit_and_deduplicates_overlapping_roots() {
     )
     .unwrap();
 
+    let output = output.replace('\\', "/");
     assert_eq!(output.matches("project/shared.rs:").count(), 1, "{output}");
     assert!(output.contains("unique"), "{output}");
     assert!(output.contains("shared-one"), "{output}");
     assert!(!output.contains("shared-two"), "{output}");
+    let new_position = output.find("project/new.rs:").unwrap();
+    let shared_position = output.find("project/shared.rs:").unwrap();
+    assert!(new_position < shared_position, "{output}");
 }
 
 #[test]
@@ -1270,6 +1274,30 @@ fn grep_reports_partial_path_failures() {
     .unwrap();
 
     assert!(output.contains("found"), "{output}");
+    assert!(
+        output.contains("Warning: some paths could not be searched: missing: path not found"),
+        "{output}"
+    );
+}
+
+#[test]
+fn grep_reports_partial_path_failures_when_successful_path_is_empty() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                if opts.path == "missing" then
+                    return nil, "path not found"
+                end
+                return {}, nil
+            end
+        "#,
+        json!({ "pattern": "found", "path": ["empty", "missing"] }),
+    )
+    .unwrap();
+
+    assert!(output.contains("No files found"), "{output}");
     assert!(
         output.contains("Warning: some paths could not be searched: missing: path not found"),
         "{output}"
