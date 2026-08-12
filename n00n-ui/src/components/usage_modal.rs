@@ -23,6 +23,7 @@ const TITLE: &str = " Token usage ";
 const PREFIX: &str = "  ";
 const MODEL_COL_MIN: usize = 16;
 const NUM_COL: usize = 7;
+const HIT_COL: usize = 6;
 const COL_GAP: usize = 2;
 const NO_USAGE_ENDPOINT: &str = "no usage endpoint for this provider";
 const HOUR: i64 = 3600;
@@ -233,6 +234,15 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     lines
 }
 
+fn cache_hit_rate(usage: &TokenUsage) -> Option<f64> {
+    let prompt_tokens = usage.total_input();
+    (prompt_tokens > 0).then(|| f64::from(usage.cache_read) * 100.0 / f64::from(prompt_tokens))
+}
+
+fn format_cache_hit(usage: &TokenUsage) -> String {
+    cache_hit_rate(usage).map_or_else(|| "—".into(), |rate| format!("{rate:.1}%"))
+}
+
 fn totals_row(
     total: &TokenUsage,
     cost: Option<f64>,
@@ -242,11 +252,12 @@ fn totals_row(
         Span::raw(PREFIX),
         Span::styled(
             format!(
-                "in {:<7} out {:<7} read {:<7} write {:<7} total {:<7}",
+                "in {:<7} out {:<7} read {:<7} write {:<7} hit {:<6} total {:<7}",
                 format_tokens(total.input),
                 format_tokens(total.output),
                 format_tokens(total.cache_read),
                 format_tokens(total.cache_creation),
+                format_cache_hit(total),
                 format_tokens(total.context_tokens()),
             ),
             Style::new().fg(theme.foreground),
@@ -276,6 +287,8 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
         gap(),
         h("write"),
         gap(),
+        Span::styled(format!("{:>HIT_COL$}", "hit"), theme.status_dim),
+        gap(),
         h("total"),
         gap(),
         h("saved $"),
@@ -294,6 +307,7 @@ fn model_row(
     dim: Style,
 ) -> Vec<Span<'static>> {
     let num = |v: u32| Span::styled(format!("{:>NUM_COL$}", format_tokens(v)), fg);
+    let token_usage = TokenUsage::from(*usage);
     let gap = || Span::raw(" ".repeat(COL_GAP));
     let money = |v: Option<f64>| match v {
         Some(v) if v > 0.0 => {
@@ -313,6 +327,8 @@ fn model_row(
         num(usage.cache_read),
         gap(),
         num(usage.cache_creation),
+        gap(),
+        Span::styled(format!("{:>HIT_COL$}", format_cache_hit(&token_usage)), fg),
         gap(),
         num(usage.total()),
         gap(),
@@ -534,6 +550,7 @@ mod tests {
         assert!(header.contains("fresh"));
         assert!(header.contains("read"));
         assert!(header.contains("write"));
+        assert!(header.contains("hit"));
         assert!(header.contains("saved $"));
 
         let usage = StoredTokenUsage {
@@ -554,9 +571,16 @@ mod tests {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>();
-        for value in ["10", "20", "30", "40", "$0.123"] {
+        for value in ["10", "20", "30", "40", "37.5%", "$0.123"] {
             assert!(row.contains(value));
         }
+    }
+
+    #[test_case::test_case(TokenUsage { input: 70, cache_read: 30, ..TokenUsage::default() }, "30.0%" ; "cache_read_share")]
+    #[test_case::test_case(TokenUsage { input: 70, cache_creation: 20, cache_read: 30, ..TokenUsage::default() }, "25.0%" ; "cache_write_in_denominator")]
+    #[test_case::test_case(TokenUsage::default(), "—" ; "no_prompt_tokens")]
+    fn cache_hit_percentage_uses_all_prompt_tokens(usage: TokenUsage, expected: &str) {
+        assert_eq!(format_cache_hit(&usage), expected);
     }
 
     #[test]
