@@ -6,14 +6,17 @@ use color_eyre::eyre::Context;
 
 use n00n_config::providers::ProvidersConfig;
 use n00n_providers::model::{Model, ModelTier};
+use n00n_providers::provider;
 use n00n_storage::StateDir;
 use n00n_storage::log::RotatingFileWriter;
-use n00n_storage::model::read_model;
+use n00n_storage::model::{read_model, read_recents};
 use tracing_subscriber::EnvFilter;
 
+const PLACEHOLDER_PROVIDER_PRIORITY: &[&str] = &["codex", "anthropic", "openai"];
 const PROVIDER_PRIORITY: &[&str] = &[
     "anthropic",
     "openai",
+    "codex",
     "copilot",
     "zai",
     "synthetic",
@@ -77,11 +80,25 @@ fn resolve_model_with_availability(
     if let Some(spec) = provider_config.default_model.as_deref() {
         return Model::from_spec(spec).context("invalid default_model in config");
     }
-    auto_detect_model(providers_toml, provider_available).ok_or_else(|| {
+    auto_detect_model_with_availability(providers_toml, provider_available).ok_or_else(|| {
         color_eyre::eyre::eyre!(
             "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `n00n auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/n00n/docs/providers/ for setup instructions"
         )
     })
+}
+
+pub fn auto_detect_model(providers_toml: &ProvidersConfig) -> Option<Model> {
+    auto_detect_model_with_availability(
+        providers_toml,
+        n00n_providers::provider::provider_available,
+    )
+}
+
+pub fn placeholder_model() -> Result<Model> {
+    PLACEHOLDER_PROVIDER_PRIORITY
+        .iter()
+        .find_map(|slug| Model::from_tier(slug, ModelTier::Strong).ok())
+        .ok_or_else(|| color_eyre::eyre::eyre!("no built-in placeholder model available"))
 }
 
 pub(crate) fn available_model_from_spec(spec: &str) -> Option<Model> {
@@ -125,7 +142,7 @@ fn provider_candidates<'a>(
     candidates
 }
 
-fn auto_detect_model(
+fn auto_detect_model_with_availability(
     providers_toml: &ProvidersConfig,
     provider_available: impl Fn(&str) -> bool,
 ) -> Option<Model> {
@@ -138,6 +155,18 @@ fn auto_detect_model(
             {
                 return Some(model);
             }
+        }
+    }
+    None
+}
+
+pub fn fallback_to_recent_model(storage: &StateDir) -> Option<Model> {
+    let recents = read_recents(storage);
+    for spec in recents {
+        if let Ok(model) = Model::from_spec(&spec)
+            && provider::provider_available(&model.provider)
+        {
+            return Some(model);
         }
     }
     None
@@ -207,6 +236,7 @@ mod tests {
             [
                 "anthropic",
                 "openai",
+                "codex",
                 "copilot",
                 "zai",
                 "synthetic",
@@ -287,6 +317,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(model.spec(), "codex/gpt-5.5");
+    }
+
+    #[test]
+    fn placeholder_model_is_a_builtin_strong_model() {
+        let model = placeholder_model().unwrap();
+
+        assert_eq!(model.tier, ModelTier::Strong);
+        assert!(
+            PLACEHOLDER_PROVIDER_PRIORITY
+                .iter()
+                .any(|provider| *provider == &*model.provider)
+        );
     }
 
     #[test]
