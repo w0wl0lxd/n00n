@@ -2614,11 +2614,22 @@ async fn wait_for_task_cancellation(handle: &TaskHandle) -> Result<LuaValue, mlu
 }
 
 async fn wait_for_task_deadline(handle: &TaskHandle) -> Result<LuaValue, mlua::Error> {
+    wait_for_task_deadline_after_initial_read(handle, || {}).await
+}
+
+async fn wait_for_task_deadline_after_initial_read(
+    handle: &TaskHandle,
+    after_initial_read: impl FnOnce(),
+) -> Result<LuaValue, mlua::Error> {
+    let mut after_initial_read = Some(after_initial_read);
     loop {
         if lock_cell(handle).deadline_interrupted.get() {
             return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
         }
         let deadline = task_deadline(handle);
+        if let Some(after_initial_read) = after_initial_read.take() {
+            after_initial_read();
+        }
         let poll_cutoff = checked_deadline_after(Instant::now(), DISPATCH_POLL_INTERVAL);
         let wake_at = deadline.map_or(poll_cutoff, |deadline| deadline.min(poll_cutoff));
         smol::Timer::at(wake_at).await;
@@ -3560,29 +3571,45 @@ mod tests {
 
     #[test]
     fn deadline_waiter_rechecks_cleared_deadline_after_waking() {
-        const ORIGINAL_DEADLINE: Duration = Duration::from_millis(500);
-        const DEADLINE_OBSERVATION_DELAY: Duration = Duration::from_millis(100);
-
         smol::block_on(async {
             let handle = Arc::new(Mutex::new(TaskCell::new(
                 CancelToken::none(),
-                Some(Instant::now() + ORIGINAL_DEADLINE),
+                Some(Instant::now() + DISPATCH_POLL_INTERVAL.saturating_mul(100)),
                 None,
             )));
+            let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
             let waiter = smol::spawn({
                 let handle = Arc::clone(&handle);
-                async move { wait_for_task_deadline(&handle).await }
+                async move {
+                    wait_for_task_deadline_after_initial_read(&handle, || {
+                        ready_tx.send(()).unwrap();
+                    })
+                    .await
+                }
             });
 
-            smol::future::yield_now().await;
+            ready_rx
+                .recv_timeout(Duration::from_millis(250))
+                .expect("deadline waiter did not read the initial deadline");
             lock_cell(&handle).deadline.set(None);
-            smol::Timer::after(ORIGINAL_DEADLINE + DEADLINE_OBSERVATION_DELAY).await;
+            smol::Timer::after(DISPATCH_POLL_INTERVAL.saturating_mul(2)).await;
             assert!(!waiter.is_finished());
 
             lock_cell(&handle)
                 .deadline
-                .set(Some(Instant::now() + DEADLINE_OBSERVATION_DELAY));
-            assert!(waiter.await.is_err());
+                .set(Some(Instant::now() + DISPATCH_POLL_INTERVAL));
+            let result = futures_lite::future::race(async { Some(waiter.await) }, async {
+                smol::Timer::after(Duration::from_millis(250)).await;
+                None
+            })
+            .await
+            .expect("replacement deadline was not observed promptly");
+            match result {
+                Err(mlua::Error::RuntimeError(message)) => {
+                    assert_eq!(message, DEADLINE_WAITER_TIMEOUT_MSG);
+                }
+                other => panic!("unexpected deadline waiter result: {other:?}"),
+            }
         });
     }
 
