@@ -81,16 +81,29 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         }
     });
 
-    let mut server = Server {
+    let server = Server {
         out_tx,
         model_specs: available_model_specs(),
         session: None,
     };
 
     let stdin = smol::Unblock::new(std::io::stdin());
-    let mut reader = smol::io::BufReader::new(stdin);
-    let mut line = String::new();
+    let reader = smol::io::BufReader::new(stdin);
+    serve_reader(&params, reader, server).await?;
+    writer_task.await;
 
+    Ok(())
+}
+
+async fn serve_reader<R>(
+    params: &AcpParams,
+    mut reader: R,
+    mut server: Server,
+) -> color_eyre::Result<()>
+where
+    R: smol::io::AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
     loop {
         line.clear();
         match reader.read_line(&mut line).await {
@@ -120,13 +133,13 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             };
 
             let id = match raw.get("id") {
-                Some(value) => match request_id(value) {
-                    Ok(id) => Some(id),
-                    Err(()) => {
+                Some(value) => {
+                    let Ok(id) = request_id(value) else {
                         server.respond(RequestId::Null, Err(AcpError::invalid_request()));
                         continue;
-                    }
-                },
+                    };
+                    Some(id)
+                }
                 None => None,
             };
 
@@ -134,7 +147,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
                 handle_incoming_response(&server, &raw);
             } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
                 match id {
-                    Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
+                    Some(id) => handle_request(&mut server, method, id, &raw, params).await,
                     None => handle_notification(&server, method),
                 }
             } else if let Some(id) = id {
@@ -146,9 +159,6 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     }
 
     retire_session(&mut server).await;
-    drop(server);
-    writer_task.await;
-
     Ok(())
 }
 
@@ -681,6 +691,83 @@ mod tests {
         assert!(result.is_err());
     }
 
+    fn test_params() -> AcpParams {
+        AcpParams {
+            model: Model::from_spec("anthropic/test-model").expect("test model"),
+            config: Arc::new(n00n_agent::AgentConfig::default()),
+            permissions_config: n00n_agent::PermissionsConfig::default(),
+            timeouts: n00n_providers::Timeouts::default(),
+            openai_options: n00n_providers::OpenAiOptions::default(),
+            initial_wd: PathBuf::from("/project"),
+            mcp_handle: None,
+            prompt_slots: Arc::new(n00n_agent::prompt::ResolvedSlots::default()),
+            state_persistence: None,
+            yolo: false,
+            session_daemon_register: None,
+        }
+    }
+
+    fn run_serve_reader(input: Vec<u8>) -> Vec<Value> {
+        let (out_tx, out_rx) = flume::unbounded();
+        let server = Server {
+            out_tx,
+            model_specs: Vec::new(),
+            session: None,
+        };
+        let reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
+        smol::block_on(serve_reader(&test_params(), reader, server)).expect("serve reader");
+        out_rx.drain().collect()
+    }
+
+    fn assert_initialize_processed(responses: &[Value]) {
+        let response = responses.last().expect("initialize response");
+        assert_eq!(response["id"], 7);
+        assert!(response.get("result").is_some(), "{response}");
+    }
+
+    #[test]
+    fn serve_loop_recovers_from_invalid_utf8() {
+        let mut input = b"\xff\n".to_vec();
+        input.extend_from_slice(
+            b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\n",
+        );
+
+        let responses = run_serve_reader(input);
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["error"]["code"], -32_700);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn serve_loop_recovers_from_invalid_request_id() {
+        let input = br#"{"jsonrpc":"2.0","id":{},"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
+"#;
+
+        let responses = run_serve_reader(input.to_vec());
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["error"]["code"], -32_600);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn serve_loop_rejects_malformed_messages_without_ids() {
+        let input = br#"{}
+[]
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
+"#;
+
+        let responses = run_serve_reader(input.to_vec());
+
+        assert_eq!(responses.len(), 3);
+        for response in &responses[..2] {
+            assert_eq!(response["id"], Value::Null);
+            assert_eq!(response["error"]["code"], -32_600);
+        }
+        assert_initialize_processed(&responses);
+    }
     #[test]
     fn parse_params_handles_missing_params() {
         let raw = json!({"id": 1, "method": "test"});

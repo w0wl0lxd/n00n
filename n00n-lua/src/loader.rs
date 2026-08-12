@@ -668,11 +668,24 @@ impl EventHandle {
         });
     }
 
+    /// Collects prompt slots from the plugin host.
+    ///
+    /// # Errors
+    /// Returns [`PluginError::HostDead`] if the plugin host is unavailable.
+    pub fn try_collect_prompt_slots(&self) -> Result<ResolvedSlots, PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::CollectPromptSlots { reply })
+            .map_err(|_| PluginError::HostDead)?;
+        recv.recv().map_err(|_| PluginError::HostDead)
+    }
+
     #[must_use]
     pub fn collect_prompt_slots(&self) -> ResolvedSlots {
-        let (tx, rx) = flume::bounded(1);
-        let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
-        rx.recv().unwrap_or_else(|_| ResolvedSlots::default())
+        self.try_collect_prompt_slots().unwrap_or_else(|error| {
+            tracing::warn!(%error, "plugin prompt slots unavailable; using empty slots");
+            ResolvedSlots::default()
+        })
     }
 
     pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
@@ -894,6 +907,15 @@ mod tests {
         drop(host);
         let slots = handle.collect_prompt_slots();
         assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+    }
+
+    #[test]
+    fn try_collect_prompt_slots_reports_disconnected_host() {
+        let handle = EventHandle::disconnected_for_test();
+        assert!(matches!(
+            handle.try_collect_prompt_slots(),
+            Err(PluginError::HostDead)
+        ));
     }
 
     #[test]
