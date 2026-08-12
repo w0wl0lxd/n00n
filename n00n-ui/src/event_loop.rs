@@ -577,7 +577,12 @@ impl<'t> EventLoop<'t> {
         &mut self.sessions[self.focused].app
     }
 
-    fn dispatch_initial_prompt(&mut self, initial_prompt: &mut Option<String>) {
+    fn dispatch_initial_prompt(&mut self, session_id: n00nId, initial_prompt: &mut Option<String>) {
+        let Some(index) = self.position(session_id) else {
+            warn!(%session_id, "startup session disappeared before initial prompt dispatch");
+            initial_prompt.take();
+            return;
+        };
         let Some(prompt) = initial_prompt.take() else {
             return;
         };
@@ -586,13 +591,14 @@ impl<'t> EventLoop<'t> {
             images: Vec::new(),
             control: false,
         };
-        let actions = self.focused_app().handle_submit(submission);
-        self.dispatch(self.focused, actions);
+        let actions = self.sessions[index].app.handle_submit(submission);
+        self.dispatch(index, actions);
     }
 
     pub(crate) fn run(mut self, mut initial_prompt: Option<String>) -> Result<ShutdownReport> {
+        let initial_prompt_session_id = self.sessions[self.focused].id();
         if self.startup_login_slot.is_none() {
-            self.dispatch_initial_prompt(&mut initial_prompt);
+            self.dispatch_initial_prompt(initial_prompt_session_id, &mut initial_prompt);
         }
         let result = loop {
             self.tick();
@@ -607,7 +613,7 @@ impl<'t> EventLoop<'t> {
                 })
             {
                 self.startup_login_slot = None;
-                self.dispatch_initial_prompt(&mut initial_prompt);
+                self.dispatch_initial_prompt(initial_prompt_session_id, &mut initial_prompt);
             }
             let should_draw = self.dirty
                 || self.sessions[self.focused].app.is_animating()
