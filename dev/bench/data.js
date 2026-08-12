@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786527107219,
+  "lastUpdate": 1786530589088,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -16193,6 +16193,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 143828,
             "range": "± 23524",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4d0c41466f7413c533e9042631f1fc26c30b1525",
+          "message": "Merge pull request #310 from w0wl0lxd/fix/session-task-cursor-crashes-dirty\n\nfix(cleanup): fix session-task-cursor-crashes dirty follow-up",
+          "timestamp": "2026-08-12T06:13:35-04:00",
+          "tree_id": "0cdfb57a0dff0efc49b77dba0f461ea9413135c6",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/4d0c41466f7413c533e9042631f1fc26c30b1525"
+        },
+        "date": 1786530587216,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6630229,
+            "range": "± 122485",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220934,
+            "range": "± 4439",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2212129,
+            "range": "± 13049",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8371566,
+            "range": "± 157054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4269101,
+            "range": "± 30919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4284385,
+            "range": "± 9261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584131,
+            "range": "± 883",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191746,
+            "range": "± 1754",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191671,
+            "range": "± 762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045153,
+            "range": "± 17896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582426,
+            "range": "± 1468",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582322,
+            "range": "± 1498",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 68497,
+            "range": "± 7231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 165069,
+            "range": "± 12280",
             "unit": "ns/iter"
           }
         ]
