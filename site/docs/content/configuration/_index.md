@@ -258,6 +258,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
+| `backend` | string | `"auto"` | - | Fetch backend: auto, firecrawl, or direct. Auto uses Firecrawl when FIRECRAWL_API_URL is a valid non-empty URL. |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `max_response_bytes` | integer | `5242880` | 1024 | Stop reading a response after this many bytes. |
@@ -266,6 +267,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
+| `backend` | string | `"auto"` | - | Search backend: auto, firecrawl, or exa. Auto uses Firecrawl when FIRECRAWL_API_URL is a valid non-empty URL. |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `max_response_bytes` | integer | `5242880` | 1024 | Stop reading a response after this many bytes. |
@@ -278,6 +280,32 @@ n00n.setup({
 | `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (default 4, hard max 8). |
 | `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (default 2, hard max 4). |
 | `timeout_secs` | integer | `600` | 60 | Maximum deadline for one workflow run; per-run timeout_secs may only shorten it. |
+
+## Firecrawl
+
+Set `FIRECRAWL_API_URL` in your environment or a `.env` file. A public Firecrawl service must use HTTPS, and its hostname must resolve to at least one validated public IPv4 address. Local Firecrawl means a same-host service reached through an IPv4 loopback address. The value may be an origin root or end in `/v2`; both forms resolve to the same endpoints. IPv6 literal API bases are not supported. `FIRECRAWL_API_KEY` is optional.
+
+```text
+FIRECRAWL_API_URL=http://127.0.0.1:3002/v2
+FIRECRAWL_API_KEY=fc-example
+```
+
+For Docker, publish the API port on `127.0.0.1` instead of `0.0.0.0`, then use that IPv4 loopback port in `FIRECRAWL_API_URL`.
+
+Both web plugins default to `backend = "auto"`. Auto uses Firecrawl only when `FIRECRAWL_API_URL` is valid and non-empty. A missing or empty value selects Exa for websearch and the direct client for webfetch. A malformed non-empty value is reported as a configuration error instead of silently falling back. You can choose a backend explicitly:
+
+```lua
+n00n.setup({
+    plugins = {
+        websearch = { backend = "firecrawl" },
+        webfetch = { backend = "firecrawl" },
+    },
+})
+```
+
+Explicit Firecrawl mode reports an error when `FIRECRAWL_API_URL` is missing.
+
+Target URL and DNS checks are defense in depth, not an SSRF guarantee. A remote Firecrawl service resolves scrape targets independently, including after DNS changes. Run Firecrawl workers with egress isolation that blocks private, link-local, metadata, and internal destinations. n00n performs hostname lookup on a blocking worker. A request timeout stops waiting for that lookup, but the operating-system lookup may finish in the background.
 
 ## Validation
 
