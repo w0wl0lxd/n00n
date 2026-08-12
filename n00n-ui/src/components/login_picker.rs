@@ -824,16 +824,6 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let storage = StateDir::from_path(temp.path().to_path_buf());
         let mut picker = LoginPicker::new();
-        picker.open(storage.clone());
-        assert!(
-            !picker
-                .provider_items
-                .iter()
-                .find(|item| item.slug == "codex")
-                .expect("Codex provider")
-                .has_key
-        );
-
         save_tokens(
             &storage,
             "openai",

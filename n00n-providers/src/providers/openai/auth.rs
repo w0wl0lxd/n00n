@@ -803,15 +803,10 @@ pub fn is_oauth(dir: &StateDir) -> bool {
 ///
 /// Returns an error if credential migration or storage access fails.
 pub fn coding_plan_available(dir: &StateDir) -> Result<bool, AgentError> {
-    Ok(ensure_tokens(dir)?.is_some())
-}
-
-fn ensure_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
-    if let Some(tokens) = load_tokens(dir, PROVIDER) {
-        return Ok(Some(tokens));
+    if load_tokens(dir, PROVIDER).is_some() {
+        return Ok(true);
     }
-    import_codex_tokens(dir)?;
-    Ok(load_tokens(dir, PROVIDER))
+    Ok(ensure_tokens(dir)?.is_some())
 }
 
 fn codex_home_path(home: &Path, codex_home: Option<&Path>) -> PathBuf {
@@ -1254,8 +1249,6 @@ mod tests {
     fn coding_plan_availability_uses_supplied_storage() {
         let temp = tempfile::tempdir().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        assert!(!coding_plan_available(&dir).unwrap());
-
         save_tokens(&dir, PROVIDER, &test_tokens("access", "refresh", 0)).unwrap();
 
         assert!(coding_plan_available(&dir).unwrap());

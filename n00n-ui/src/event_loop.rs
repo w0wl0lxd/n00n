@@ -367,6 +367,42 @@ fn merge_batch(
     available.store(Some(Arc::new(merged)));
 }
 
+fn complete_model_fetch_with(
+    model_slot: &Arc<ArcSwap<ModelSlot>>,
+    initial_slot: &Arc<ModelSlot>,
+    needs_login: bool,
+    create: impl FnOnce(
+        &mut Model,
+    ) -> std::result::Result<Box<dyn Provider>, n00n_providers::AgentError>,
+) {
+    if needs_login || !Arc::ptr_eq(&model_slot.load_full(), initial_slot) {
+        return;
+    }
+
+    let spec = initial_slot.model.spec();
+    let mut resolved = match Model::from_spec(&spec) {
+        Ok(model) => model,
+        Err(error) => {
+            warn!(spec = %spec, %error, "failed to resolve model after discovery");
+            return;
+        }
+    };
+    let provider = match create(&mut resolved) {
+        Ok(provider) => provider,
+        Err(error) => {
+            warn!(spec = %spec, %error, "failed to create provider after discovery");
+            return;
+        }
+    };
+    drop(model_slot.compare_and_swap(
+        initial_slot,
+        Arc::new(ModelSlot {
+            model: resolved,
+            provider: Arc::from(provider),
+        }),
+    ));
+}
+
 fn spawn_model_fetch(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     timeouts: Timeouts,
@@ -378,39 +414,13 @@ fn spawn_model_fetch(
     let (warn_tx, warn_rx) = flume::unbounded::<String>();
     let warn_tx_bg = warn_tx.clone();
     let model_slot = Arc::clone(model_slot);
+    let initial_slot = model_slot.load_full();
     let task = smol::spawn(async move {
         let warn_tx = warn_tx_bg;
         let done = Box::new(move || {
-            let spec = model_slot.load().model.spec();
-            let mut resolved = match Model::from_spec(&spec) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(spec = %spec, error = %e, "failed to resolve model after discovery");
-                    return;
-                }
-            };
-            if needs_login {
-                model_slot.store(Arc::new(ModelSlot {
-                    model: resolved,
-                    provider: Arc::clone(&model_slot.load().provider),
-                }));
-                return;
-            }
-            let provider = match from_model_with_openai_options(
-                &mut resolved,
-                timeouts,
-                openai_options,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!(spec = %spec, error = %e, "failed to create provider after discovery");
-                    return;
-                }
-            };
-            model_slot.store(Arc::new(ModelSlot {
-                model: resolved,
-                provider: Arc::from(provider),
-            }));
+            complete_model_fetch_with(&model_slot, &initial_slot, needs_login, |model| {
+                from_model_with_openai_options(model, timeouts, openai_options)
+            });
         });
         fetch_all_models(|batch| merge_batch(&bg, batch, &warn_tx), Some(done)).await;
     });
@@ -1608,13 +1618,15 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
-        should_save_periodically, spawn_model_fetch, startup_provider_with,
+        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, complete_model_fetch_with,
+        draw_then_post_terminal, paused_team_run, should_save_periodically, startup_provider_with,
         take_painted_submissions,
     };
-    use crate::components::Status;
+    use crate::{agent::ModelSlot, components::Status};
     use arc_swap::ArcSwap;
-    use n00n_providers::{AgentError, ContentBlock, Message, Model, OpenAiOptions, Role, Timeouts};
+    use n00n_providers::{
+        AgentError, ContentBlock, Message, Model, Role, provider::unconfigured_provider,
+    };
     use n00n_storage::id::n00nId;
     use ratatui::{
         Terminal,
@@ -1623,8 +1635,8 @@ mod tests {
         layout::{Position, Size},
         widgets::Paragraph,
     };
-    use std::cell::Cell as Counter;
-    use std::io;
+    use std::{cell::Cell as Counter, io, sync::Arc};
+    use test_case::test_case;
 
     #[test]
     fn startup_provider_failure_preserves_model_and_requests_login_once() {
@@ -1663,29 +1675,44 @@ mod tests {
         assert!(warning.is_none());
     }
 
+    #[test_case(true; "login required")]
+    fn model_fetch_completion_preserves_unconfigured_provider(needs_login: bool) {
+        let calls = Counter::new(0);
+        let initial = Arc::new(ModelSlot {
+            model: Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
+            provider: Arc::from(unconfigured_provider()),
+        });
+        let model_slot = Arc::new(ArcSwap::from(Arc::clone(&initial)));
+
+        complete_model_fetch_with(&model_slot, &initial, needs_login, |_| {
+            calls.set(calls.get() + 1);
+            Ok(unconfigured_provider())
+        });
+
+        assert_eq!(calls.get(), 0);
+        assert!(Arc::ptr_eq(&model_slot.load_full(), &initial));
+    }
+
     #[test]
-    fn spawn_model_fetch_preserves_unconfigured_provider_while_login_is_required() {
-        use crate::agent::ModelSlot;
-        use n00n_providers::provider::unconfigured_provider;
-        use std::sync::Arc;
+    fn model_fetch_completion_does_not_overwrite_concurrent_model_change() {
+        let initial = Arc::new(ModelSlot {
+            model: Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
+            provider: Arc::from(unconfigured_provider()),
+        });
+        let replacement = Arc::new(ModelSlot {
+            model: Model::from_spec("openai/gpt-4o").unwrap(),
+            provider: Arc::from(unconfigured_provider()),
+        });
+        let model_slot = Arc::new(ArcSwap::from(Arc::clone(&initial)));
+        let slot_during_create = Arc::clone(&model_slot);
+        let replacement_during_create = Arc::clone(&replacement);
 
-        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
-        let provider = Arc::from(unconfigured_provider());
-        let model_slot = Arc::new(ArcSwap::from_pointee(ModelSlot {
-            model: model.clone(),
-            provider: Arc::clone(&provider),
-        }));
+        complete_model_fetch_with(&model_slot, &initial, false, move |_| {
+            slot_during_create.store(replacement_during_create);
+            Ok(unconfigured_provider())
+        });
 
-        let _bg = spawn_model_fetch(
-            &model_slot,
-            Timeouts::default(),
-            OpenAiOptions::default(),
-            true,
-        );
-
-        let stored = model_slot.load();
-        assert_eq!(stored.model.spec(), model.spec());
-        assert!(Arc::ptr_eq(&stored.provider, &provider));
+        assert!(Arc::ptr_eq(&model_slot.load_full(), &replacement));
     }
 
     #[test]
