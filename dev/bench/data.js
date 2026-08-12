@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786534886325,
+  "lastUpdate": 1786542347512,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -16517,6 +16517,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 149308,
             "range": "± 28066",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "81d7242c4daa99ebc12796d733b2ac769b9f0fea",
+          "message": "Merge pull request #249 from w0wl0lxd/fix/session-category-groups\n\nfeat(ui): group child sessions by role",
+          "timestamp": "2026-08-12T09:32:27-04:00",
+          "tree_id": "a50ae46ef4a1e091bf79684bea72129f5880fa1a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/81d7242c4daa99ebc12796d733b2ac769b9f0fea"
+        },
+        "date": 1786542345144,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5084619,
+            "range": "± 199773",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1910152,
+            "range": "± 12268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1911264,
+            "range": "± 3260",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5967157,
+            "range": "± 161985",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2909023,
+            "range": "± 34869",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2905779,
+            "range": "± 337167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 431028,
+            "range": "± 3298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130486,
+            "range": "± 155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130460,
+            "range": "± 136",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 820255,
+            "range": "± 3264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 498677,
+            "range": "± 5031",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 495925,
+            "range": "± 9397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 59994,
+            "range": "± 1317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 93241,
+            "range": "± 8147",
             "unit": "ns/iter"
           }
         ]
