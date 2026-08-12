@@ -1,0 +1,1 @@
+n00n now restores saved models only when their provider is available and auto-detects from available built-in, custom, and script providers without treating `providers.toml` as a global provider allowlist.
