@@ -281,6 +281,7 @@ pub(crate) struct EventLoop<'t> {
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
     post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
+    startup_login_slot: Option<Arc<ModelSlot>>,
     _model_fetch_task: smol::Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
     /// gated on this (or active animation) so we don't re-diff the whole
@@ -365,6 +366,10 @@ fn merge_batch(
         }
     }
     available.store(Some(Arc::new(merged)));
+}
+
+fn startup_login_completed(initial_slot: &Arc<ModelSlot>, current_slot: &Arc<ModelSlot>) -> bool {
+    !Arc::ptr_eq(initial_slot, current_slot)
 }
 
 fn complete_model_fetch_with(
@@ -501,6 +506,7 @@ impl<'t> EventLoop<'t> {
             provider,
         }));
         let bg = spawn_model_fetch(&model_slot, timeouts, openai_options, needs_login);
+        let startup_login_slot = needs_login.then(|| model_slot.load_full());
 
         let picker = Arc::new(terminal_image::picker());
 
@@ -561,6 +567,7 @@ impl<'t> EventLoop<'t> {
             submission_persist_rx,
             post_draw_submissions: Vec::new(),
             last_save: Instant::now(),
+            startup_login_slot,
             _model_fetch_task: bg.task,
             dirty: true,
         })
@@ -570,20 +577,37 @@ impl<'t> EventLoop<'t> {
         &mut self.sessions[self.focused].app
     }
 
-    pub(crate) fn run(mut self, initial_prompt: Option<String>) -> Result<ShutdownReport> {
-        if let Some(prompt) = initial_prompt {
-            let sub = Submission {
-                text: prompt,
-                images: Vec::new(),
-                control: false,
-            };
-            let actions = self.focused_app().handle_submit(sub);
-            self.dispatch(self.focused, actions);
+    fn dispatch_initial_prompt(&mut self, initial_prompt: &mut Option<String>) {
+        let Some(prompt) = initial_prompt.take() else {
+            return;
+        };
+        let submission = Submission {
+            text: prompt,
+            images: Vec::new(),
+            control: false,
+        };
+        let actions = self.focused_app().handle_submit(submission);
+        self.dispatch(self.focused, actions);
+    }
+
+    pub(crate) fn run(mut self, mut initial_prompt: Option<String>) -> Result<ShutdownReport> {
+        if self.startup_login_slot.is_none() {
+            self.dispatch_initial_prompt(&mut initial_prompt);
         }
         let result = loop {
             self.tick();
             if let Err(e) = self.drain_channels() {
                 break Err(e);
+            }
+            if self
+                .startup_login_slot
+                .as_ref()
+                .is_some_and(|initial_slot| {
+                    startup_login_completed(initial_slot, &self.ctx.model_slot.load_full())
+                })
+            {
+                self.startup_login_slot = None;
+                self.dispatch_initial_prompt(&mut initial_prompt);
             }
             let should_draw = self.dirty
                 || self.sessions[self.focused].app.is_animating()
@@ -1619,8 +1643,8 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 mod tests {
     use super::{
         DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, complete_model_fetch_with,
-        draw_then_post_terminal, paused_team_run, should_save_periodically, startup_provider_with,
-        take_painted_submissions,
+        draw_then_post_terminal, paused_team_run, should_save_periodically,
+        startup_login_completed, startup_provider_with, take_painted_submissions,
     };
     use crate::{agent::ModelSlot, components::Status};
     use arc_swap::ArcSwap;
@@ -1691,6 +1715,21 @@ mod tests {
 
         assert_eq!(calls.get(), 0);
         assert!(Arc::ptr_eq(&model_slot.load_full(), &initial));
+    }
+
+    #[test]
+    fn startup_login_completes_only_after_provider_slot_replacement() {
+        let initial = Arc::new(ModelSlot {
+            model: Model::from_spec("codex/gpt-5.6-sol").unwrap(),
+            provider: Arc::from(unconfigured_provider()),
+        });
+        let replacement = Arc::new(ModelSlot {
+            model: initial.model.clone(),
+            provider: Arc::from(unconfigured_provider()),
+        });
+
+        assert!(!startup_login_completed(&initial, &initial));
+        assert!(startup_login_completed(&initial, &replacement));
     }
 
     #[test]

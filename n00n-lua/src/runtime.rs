@@ -3563,7 +3563,7 @@ mod tests {
         smol::block_on(async {
             let handle = Arc::new(Mutex::new(TaskCell::new(
                 CancelToken::none(),
-                Some(Instant::now() + Duration::from_millis(20)),
+                Some(Instant::now() + DISPATCH_POLL_INTERVAL.saturating_mul(100)),
                 None,
             )));
             let waiter = smol::spawn({
@@ -3571,14 +3571,14 @@ mod tests {
                 async move { wait_for_task_deadline(&handle).await }
             });
 
-            smol::Timer::after(Duration::from_millis(10)).await;
+            smol::future::yield_now().await;
             lock_cell(&handle).deadline.set(None);
-            smol::Timer::after(Duration::from_millis(30)).await;
+            smol::Timer::after(DISPATCH_POLL_INTERVAL.saturating_mul(2)).await;
             assert!(!waiter.is_finished());
 
             lock_cell(&handle)
                 .deadline
-                .set(Some(Instant::now() + Duration::from_millis(20)));
+                .set(Some(Instant::now() + DISPATCH_POLL_INTERVAL));
             assert!(waiter.await.is_err());
         });
     }
