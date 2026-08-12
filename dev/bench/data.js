@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786549016459,
+  "lastUpdate": 1786552530916,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -16949,6 +16949,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 131089,
             "range": "± 25095",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9800982789b5109e209fd0c217031e8719a4451f",
+          "message": "Merge pull request #327 from w0wl0lxd/fix/agent-spawn-recursion\n\nfix(agent,lua,storage,ui): harden agent spawn and session recursion",
+          "timestamp": "2026-08-12T12:19:28-04:00",
+          "tree_id": "e3e784fbaa74a9dc375031ac257cfb7b7fb1a056",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/9800982789b5109e209fd0c217031e8719a4451f"
+        },
+        "date": 1786552530137,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6666983,
+            "range": "± 22693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2289435,
+            "range": "± 7325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2361347,
+            "range": "± 32357",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8146555,
+            "range": "± 16677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4262675,
+            "range": "± 84155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4271493,
+            "range": "± 76595",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585329,
+            "range": "± 1693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191660,
+            "range": "± 362",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191623,
+            "range": "± 851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1042227,
+            "range": "± 21209",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582371,
+            "range": "± 1803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582665,
+            "range": "± 5974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 47474,
+            "range": "± 4149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 130129,
+            "range": "± 9611",
             "unit": "ns/iter"
           }
         ]
