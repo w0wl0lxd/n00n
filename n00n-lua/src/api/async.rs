@@ -7,7 +7,7 @@ use n00n_agent::cancel::CancelToken;
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 
 use crate::docs::{FnDoc, ParamDoc};
-use crate::runtime::{TaskHandle, enqueue_async_task, lock_cell};
+use crate::runtime::{TaskHandle, enqueue_async_task, ensure_cancellation_cleanup, lock_cell};
 
 const AWAIT_MIN_ARGS: usize = 2;
 const PERMIT_RELEASED_ERR: &str = "permit already released";
@@ -32,6 +32,7 @@ struct LuaPermit {
 /// permit:release()
 #[lua_fn]
 async fn acquire(lua: Lua, this: mlua::UserDataRef<LuaSemaphore>) -> LuaResult<LuaPermit> {
+    ensure_cancellation_cleanup(&lua)?;
     let sem = Arc::clone(&this.sem);
     drop(this);
     let cancel = lua
@@ -92,27 +93,12 @@ lua_class! {
 /// end)
 #[lua_fn]
 fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> {
-    let actual_work = if let Some(cb) = on_finish {
-        lua.load(
-            r"
-                local work, finish = ...
-                return function()
-                    local ok, result = pcall(work)
-                    if ok then
-                        finish(nil, result)
-                    else
-                        finish(result)
-                    end
-                end
-            ",
-        )
-        .call::<Function>((r#fn, cb))?
-    } else {
-        r#fn
-    };
-    let work_key = lua.create_registry_value(actual_work)?;
-    enqueue_async_task(lua, work_key)?;
-    Ok(())
+    ensure_cancellation_cleanup(lua)?;
+    let work_key = lua.create_registry_value(r#fn)?;
+    let on_finish_key = on_finish
+        .map(|callback| lua.create_registry_value(callback))
+        .transpose()?;
+    enqueue_async_task(lua, work_key, on_finish_key)
 }
 
 /// Run all functions in {fns} at the same time and collect their results.
@@ -134,6 +120,7 @@ fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> 
 /// end
 #[lua_fn]
 async fn gather(lua: Lua, fns: Table) -> LuaResult<Table> {
+    ensure_cancellation_cleanup(&lua)?;
     let count = fns.raw_len();
     let mut children = Vec::with_capacity(count);
     for i in 1..=count {
@@ -282,6 +269,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
     tbl.set(
         "await",
         lua.create_async_function(|lua, args: MultiValue| async move {
+            ensure_cancellation_cleanup(&lua)?;
             let mut args_vec: Vec<Value> = args.into_vec();
             if args_vec.len() < AWAIT_MIN_ARGS {
                 return Err(mlua::Error::runtime(
