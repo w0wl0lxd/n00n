@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786543681802,
+  "lastUpdate": 1786546970583,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -16733,6 +16733,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 156712,
             "range": "± 24975",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "94731248a672f938d1973ec9e7cfa5a3faff9db4",
+          "message": "Merge pull request #330 from w0wl0lxd/sigkill-crash-hardening-rebuild\n\nfix(runtime): harden session reads and process shutdown",
+          "timestamp": "2026-08-12T10:46:43-04:00",
+          "tree_id": "37c91b0794d3544ee345d904e8e948098d72abd7",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/94731248a672f938d1973ec9e7cfa5a3faff9db4"
+        },
+        "date": 1786546969248,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6674212,
+            "range": "± 121098",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221828,
+            "range": "± 6341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218661,
+            "range": "± 53240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7961574,
+            "range": "± 106874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4245835,
+            "range": "± 26778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4268024,
+            "range": "± 14973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584893,
+            "range": "± 829",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191922,
+            "range": "± 203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191889,
+            "range": "± 254",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044165,
+            "range": "± 12206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582172,
+            "range": "± 2533",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582051,
+            "range": "± 1393",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79559,
+            "range": "± 4722",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 127335,
+            "range": "± 24297",
             "unit": "ns/iter"
           }
         ]
