@@ -803,9 +803,6 @@ pub fn is_oauth(dir: &StateDir) -> bool {
 ///
 /// Returns an error if credential migration or storage access fails.
 pub fn coding_plan_available(dir: &StateDir) -> Result<bool, AgentError> {
-    if load_tokens(dir, PROVIDER).is_some() {
-        return Ok(true);
-    }
     Ok(ensure_tokens(dir)?.is_some())
 }
 
@@ -989,13 +986,21 @@ where
 }
 
 fn ensure_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
-    let Some(codex_home) = codex_home_from_env() else {
+    let codex_home = codex_home_from_env();
+    ensure_tokens_from_codex_home(dir, codex_home.as_deref())
+}
+
+fn ensure_tokens_from_codex_home(
+    dir: &StateDir,
+    codex_home: Option<&Path>,
+) -> Result<Option<OAuthTokens>, AgentError> {
+    let Some(codex_home) = codex_home else {
         return Ok(load_tokens(dir, PROVIDER));
     };
-    match load_codex_tokens(&codex_auth_path(&codex_home))? {
+    match load_codex_tokens(&codex_auth_path(codex_home))? {
         Some(tokens) => Ok(Some(tokens)),
-        None if codex_keyring_only(&codex_home) => Err(codex_storage_error(
-            &codex_home,
+        None if codex_keyring_only(codex_home) => Err(codex_storage_error(
+            codex_home,
             "uses keyring-only storage; n00n cannot reuse it yet, run `n00n auth login codex`",
         )),
         None => Ok(load_tokens(dir, PROVIDER)),
@@ -1252,6 +1257,25 @@ mod tests {
         save_tokens(&dir, PROVIDER, &test_tokens("access", "refresh", 0)).unwrap();
 
         assert!(coding_plan_available(&dir).unwrap());
+    }
+
+    #[test]
+    fn ensure_tokens_prefers_invalid_codex_auth_over_stored_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = StateDir::from_path(temp.path().join("state"));
+        let codex_home = temp.path().join("codex");
+        fs::create_dir_all(&codex_home).unwrap();
+        save_tokens(&dir, PROVIDER, &test_tokens("access", "refresh", 0)).unwrap();
+
+        let auth_path = codex_auth_path(&codex_home);
+        fs::write(&auth_path, "{").unwrap();
+        let error = ensure_tokens_from_codex_home(&dir, Some(&codex_home)).unwrap_err();
+        assert!(error.to_string().contains("malformed JSON"));
+
+        fs::remove_file(&auth_path).unwrap();
+        fs::create_dir(&auth_path).unwrap();
+        let error = ensure_tokens_from_codex_home(&dir, Some(&codex_home)).unwrap_err();
+        assert!(error.to_string().contains("cannot read file"));
     }
 
     #[test]
