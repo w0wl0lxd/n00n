@@ -7,7 +7,7 @@ use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::command::{SessionBootstrap, SessionReply, SessionRequest, UiAction};
 use crate::api::util::convert::{json_to_lua, lua_to_json};
-use crate::runtime::active_session_identity;
+use crate::runtime::{active_session_identity, active_trusted_ui_control};
 
 const NO_UI_ERR: &str = "no interactive UI attached";
 
@@ -111,7 +111,18 @@ async fn delete(
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     id: String,
 ) -> LuaResult<Pair> {
-    roundtrip(lua, tx, SessionRequest::Delete { id }).await
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
+    let trusted_ui_control = active_trusted_ui_control(&lua);
+    roundtrip(
+        lua,
+        tx,
+        SessionRequest::Delete {
+            id,
+            caller_id,
+            trusted_ui_control,
+        },
+    )
+    .await
 }
 
 /// Starts a new session in the current project.
@@ -342,16 +353,34 @@ mod tests {
             };
             assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
             reply_tx.send(Ok(json!("queued"))).unwrap();
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::Delete {
+                        id,
+                        caller_id: actual_caller_id,
+                        trusted_ui_control,
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected delete request");
+            };
+            assert_eq!(id, "target");
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            assert!(!trusted_ui_control);
+            reply_tx.send(Ok(json!(true))).unwrap();
         });
 
-        let (child_id, prompt_status): (String, String) = smol::block_on(
+        let (child_id, prompt_status, deleted): (String, String, bool) = smol::block_on(
             lua.load(
                 r#"
                 local child, new_err = session.new({ caller_id = "spoof" })
                 if new_err then error(new_err) end
                 local status, prompt_err = session.prompt("hello", { caller_id = "spoof" })
                 if prompt_err then error(prompt_err) end
-                return child, status
+                local deleted, delete_err = session.delete("target")
+                if delete_err then error(delete_err) end
+                return child, status, deleted
                 "#,
             )
             .eval_async(),
@@ -360,6 +389,7 @@ mod tests {
         checker.join().unwrap();
         assert_eq!(child_id, "child");
         assert_eq!(prompt_status, "queued");
+        assert!(deleted);
     }
 
     #[test]

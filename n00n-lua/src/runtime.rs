@@ -348,6 +348,7 @@ pub(crate) struct TaskCell {
     /// `n00n.agent.call_tool(on_live_buf/on_annotation)`.
     pub(crate) live_sink: Option<flume::Sender<ToolLive>>,
     pub(crate) identity: Option<SessionIdentity>,
+    pub(crate) trusted_ui_control: bool,
     /// When `Some`, `n00n.async.run` tasks queue here instead of the global
     /// `SpawnQueue` so restore can run them inline before snapshotting.
     pub(crate) inline_spawn: Option<Vec<PendingAsyncTask>>,
@@ -384,6 +385,7 @@ impl TaskCell {
             root_buf: None,
             live_sink: None,
             identity,
+            trusted_ui_control: false,
             inline_spawn: None,
             bufs_claim: Weak::new(),
             async_tasks: Cell::new(0),
@@ -663,6 +665,12 @@ impl TaskScope {
         Self::new(lua, TaskCell::new(CancelToken::none(), None, None, None))
     }
 
+    pub(crate) fn trusted_ui(lua: &Lua) -> Self {
+        let scope = Self::detached(lua);
+        lock_cell(&scope.handle).trusted_ui_control = true;
+        scope
+    }
+
     pub(crate) fn handle(&self) -> &TaskHandle {
         &self.handle
     }
@@ -689,12 +697,17 @@ impl TaskScope {
 ///
 /// [detached]: TaskScope::detached
 pub(crate) async fn run_detached<F: std::future::Future>(lua: &Lua, fut: F) -> F::Output {
-    run_callback(lua, None, fut).await
+    run_callback(lua, None, false, fut).await
+}
+
+pub(crate) async fn run_trusted_ui<F: std::future::Future>(lua: &Lua, fut: F) -> F::Output {
+    run_callback(lua, None, true, fut).await
 }
 
 async fn run_callback<F: std::future::Future>(
     lua: &Lua,
     identity: Option<SessionIdentity>,
+    trusted_ui_control: bool,
     fut: F,
 ) -> F::Output {
     let scope = TaskScope::new(
@@ -702,6 +715,7 @@ async fn run_callback<F: std::future::Future>(
         TaskCell::new(CancelToken::none(), None, None, identity),
     );
     let handle = Arc::clone(scope.handle());
+    lock_cell(&handle).trusted_ui_control = trusted_ui_control;
     let pump = async {
         let mut event_buf = Vec::new();
         loop {
@@ -784,6 +798,13 @@ pub(crate) fn active_task(lua: &Lua) -> TaskHandle {
 pub(crate) fn active_session_identity(lua: &Lua) -> Option<SessionIdentity> {
     let handle = lua.app_data_ref::<TaskHandle>()?;
     lock_cell(&handle).identity.clone()
+}
+
+pub(crate) fn active_trusted_ui_control(lua: &Lua) -> bool {
+    let Some(handle) = lua.app_data_ref::<TaskHandle>() else {
+        return false;
+    };
+    lock_cell(&handle).trusted_ui_control
 }
 
 pub(crate) fn with_task_jobs<R>(lua: &Lua, f: impl FnOnce(&mut JobStore) -> R) -> R {
@@ -3066,7 +3087,7 @@ pub fn spawn(
                                         let thread = lua.create_thread(func)?;
                                         thread.into_async::<()>(args)?.await
                                     };
-                                    if let Err(e) = run_callback(&lua, identity, run).await {
+                                    if let Err(e) = run_callback(&lua, identity, false, run).await {
                                         tracing::warn!(plugin = %plugin, command = %command, error = %e, "command handler failed");
                                     }
                                 })
@@ -3296,7 +3317,7 @@ pub fn spawn(
                                 }
                                 Err(_) => LuaValue::Nil,
                             };
-                            let scope = TaskScope::detached(&rt.lua);
+                            let scope = TaskScope::trusted_ui(&rt.lua);
                             if let Err(e) = scope.scope_future(func.call_async::<()>(arg)).await {
                                 tracing::warn!(error = %e, "window buffer click failed");
                             }
@@ -3325,7 +3346,7 @@ pub fn spawn(
                             if let Some(func) = func {
                                 let lua = rt.lua.clone();
                                 ex.spawn(async move {
-                                    if let Err(e) = run_detached(&lua, func.call_async::<()>(())).await {
+                                    if let Err(e) = run_trusted_ui(&lua, func.call_async::<()>(())).await {
                                         tracing::warn!(keybind_id = id, error = %e, "keybind callback failed");
                                     }
                                 }).detach();
@@ -4014,6 +4035,18 @@ mod tests {
         lua.set_app_data::<TaskHandle>(cancelled_handle());
 
         assert_eq!(interrupt_reason(&lua), None);
+    }
+
+    #[test]
+    fn trusted_ui_scope_marks_only_its_callback() {
+        let (lua, _watchdog) = watchdog_lua(false);
+        assert!(!active_trusted_ui_control(&lua));
+
+        let scope = TaskScope::trusted_ui(&lua);
+        assert!(active_trusted_ui_control(&lua));
+        drop(scope);
+
+        assert!(!active_trusted_ui_control(&lua));
     }
 
     #[test]
