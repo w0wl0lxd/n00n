@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -80,6 +81,22 @@ fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
         .unwrap();
     (reg, host)
+}
+
+fn skip_without_rtk(test_name: &str) -> bool {
+    let available = Command::new("rtk")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if available {
+        return false;
+    }
+    assert!(
+        std::env::var_os("N00N_REQUIRE_RTK").is_none(),
+        "{test_name}: rtk is required but unavailable"
+    );
+    eprintln!("skipping {test_name}: rtk unavailable");
+    true
 }
 
 #[test]
@@ -3520,6 +3537,42 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
         scopes.scopes
     );
 }
+
+#[test]
+fn bash_schema_exposes_no_agent_controlled_rtk_override() {
+    let (reg, _host) = builtins_host();
+    let entry = reg.get("bash").expect("bash registered");
+    let properties = &entry.tool.schema()["properties"];
+
+    assert!(
+        properties.is_object(),
+        "bash schema has no properties object"
+    );
+    assert!(properties.get("no_rtk").is_none());
+    assert!(properties.get("rtk").is_none());
+}
+
+#[test_case::test_case("python -c 'print(123)'" ; "managed_command")]
+#[test_case::test_case("bash -c 'git status'" ; "nested_managed_command")]
+#[test_case::test_case("g''it status" ; "concatenated_quote_command")]
+#[test_case::test_case("exec git status" ; "exec_wrapper")]
+#[test_case::test_case("echo $(git status)" ; "command_substitution")]
+#[test_case::test_case("rtk proxy git status" ; "rtk_proxy")]
+#[test_case::test_case(r"find . -maxdepth 0 -exec printf should-not-run \;" ; "unsupported_find_fallback")]
+fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
+    if skip_without_rtk("bash_handler_rejects_managed_commands_rtk_cannot_rewrite") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let error = exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+        .expect_err("managed command ran without an RTK rewrite");
+
+    assert!(
+        error.contains("rtk is enabled"),
+        "unexpected error: {error}"
+    );
+}
 #[test]
 fn bash_permission_scopes_marks_broad_commands_for_prompt() {
     let (reg, _host) = builtins_host();
@@ -3732,6 +3785,85 @@ fn bash_handler_allows_head_capped_search_without_justification() {
         "expected capped search output to run without justification: {out}"
     );
 }
+
+#[test]
+fn bash_handler_rewrites_each_managed_compound_segment() {
+    if skip_without_rtk("bash_handler_rewrites_each_managed_compound_segment") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "git status && ls" }),
+    )
+    .expect("managed compound command was not safely rewritten");
+
+    assert!(
+        !output.contains("rtk is enabled"),
+        "compound command was rejected instead of rewritten: {output}"
+    );
+}
+
+#[test]
+fn bash_handler_rewrites_segment_after_matching_comment() {
+    if skip_without_rtk("bash_handler_rewrites_segment_after_matching_comment") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "echo marker # ls Cargo.toml\nls Cargo.toml" }),
+    )
+    .expect("managed command after matching comment was not safely rewritten");
+
+    assert!(
+        output.contains("Cargo.toml  "),
+        "comment text was rewritten instead of the command segment: {output}"
+    );
+}
+
+#[test]
+fn bash_handler_preserves_supported_find_fallback() {
+    if skip_without_rtk("bash_handler_preserves_supported_find_fallback") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "find changelog.d -maxdepth 1 -name 340.fixed.md" }),
+    )
+    .expect("supported find command was not rewritten");
+
+    assert!(
+        !output.contains("rtk is enabled"),
+        "supported find fallback was rejected: {output}"
+    );
+}
+
+#[test]
+fn bash_handler_preserves_cargo_build_wrapper_command() {
+    let (reg, _host) = builtins_host();
+
+    let output = match exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "cargo --version" }),
+    ) {
+        Ok(output) | Err(output) => output,
+    };
+
+    assert!(
+        !output.contains("rtk is enabled"),
+        "cargo command was sent through RTK instead of preserving shell wrappers: {output}"
+    );
+}
+
 fn exec_tool_with_perms(
     perms: n00n_lua::PluginPermissions,
     src: &str,
