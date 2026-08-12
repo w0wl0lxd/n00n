@@ -61,6 +61,8 @@ const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const STORAGE_WRITER_REFS_ERR: &str =
+    "storage writer has outstanding references, skipping graceful shutdown";
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 const TEAM_TOOL_NAME: &str = "team";
@@ -610,8 +612,16 @@ impl<'t> EventLoop<'t> {
         // Fatal errors still save every session, shut down MCP transports
         // (terminating and reaping their child processes), and drain the
         // storage writer before the process exits.
-        let report = self.shutdown();
-        result.map(|()| report)
+        let shutdown = self.shutdown();
+        match result {
+            Ok(()) => shutdown,
+            Err(error) => {
+                if let Err(shutdown_error) = shutdown {
+                    warn!(error = %shutdown_error, "shutdown after fatal error was incomplete");
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Wait for the next event from any source, or time out so animations
@@ -1494,7 +1504,7 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn shutdown(mut self) -> ShutdownReport {
+    fn shutdown(mut self) -> Result<ShutdownReport> {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
         for rt in &self.sessions {
@@ -1516,17 +1526,19 @@ impl<'t> EventLoop<'t> {
             smol::block_on(h.shutdown());
         }
         crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
-        match Arc::try_unwrap(self.ctx.storage_writer) {
-            Ok(writer) => writer.shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT),
-            Err(_) => {
-                warn!("storage writer has outstanding references, skipping graceful shutdown");
-            }
-        }
-        ShutdownReport {
+        let storage_result = match Arc::try_unwrap(self.ctx.storage_writer) {
+            Ok(writer) => writer
+                .shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT)
+                .map_err(Into::into),
+            Err(_) => Err(eyre!(STORAGE_WRITER_REFS_ERR)),
+        };
+        let report = ShutdownReport {
             exit,
             tabs,
             focused: self.focused,
-        }
+        };
+        storage_result?;
+        Ok(report)
     }
 }
 
