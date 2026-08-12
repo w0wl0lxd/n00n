@@ -208,6 +208,7 @@ mod tests {
             [
                 "anthropic",
                 "openai",
+                "codex",
                 "copilot",
                 "zai",
                 "synthetic",
