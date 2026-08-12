@@ -1209,3 +1209,145 @@ fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
     assert!(FUSION_SRC.contains("include_mcp = false"));
     assert!(FUSION_SRC.contains("except_tools"));
 }
+
+#[test]
+fn grep_applies_one_limit_and_deduplicates_overlapping_roots() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                local shared = {
+                    path = "project/shared.rs",
+                    mtime = 10,
+                    groups = {
+                        { lines = {{ line_nr = 1, text = "shared-one", is_match = true }} },
+                        { lines = {{ line_nr = 2, text = "shared-two", is_match = true }} },
+                    },
+                }
+                if opts.path == "project" then
+                    return { shared }, nil
+                end
+                return {
+                    shared,
+                    {
+                        path = "project/new.rs",
+                        mtime = 20,
+                        groups = {{ lines = {{ line_nr = 3, text = "unique", is_match = true }} }},
+                    },
+                }, nil
+            end
+        "#,
+        json!({ "pattern": "hit", "path": ["project", "project/nested"], "limit": 2 }),
+    )
+    .unwrap();
+
+    let output = output.replace('\\', "/");
+    assert_eq!(output.matches("project/shared.rs:").count(), 1, "{output}");
+    assert!(output.contains("unique"), "{output}");
+    assert!(output.contains("shared-one"), "{output}");
+    assert!(!output.contains("shared-two"), "{output}");
+    let new_position = output.find("project/new.rs:").unwrap();
+    let shared_position = output.find("project/shared.rs:").unwrap();
+    assert!(new_position < shared_position, "{output}");
+}
+
+#[test]
+fn grep_reports_partial_path_failures() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                if opts.path == "missing" then
+                    return nil, "path not found"
+                end
+                return {{
+                    path = "valid.rs",
+                    mtime = 1,
+                    groups = {{ lines = {{ line_nr = 1, text = "found", is_match = true }} }},
+                }}, nil
+            end
+        "#,
+        json!({ "pattern": "found", "path": ["valid", "missing"] }),
+    )
+    .unwrap();
+
+    assert!(output.contains("found"), "{output}");
+    assert!(
+        output.contains("Warning: some paths could not be searched: missing: path not found"),
+        "{output}"
+    );
+}
+
+#[test]
+fn grep_reports_partial_path_failures_when_successful_path_is_empty() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                if opts.path == "missing" then
+                    return nil, "path not found"
+                end
+                return {}, nil
+            end
+        "#,
+        json!({ "pattern": "found", "path": ["empty", "missing"] }),
+    )
+    .unwrap();
+
+    assert!(output.contains("No files found"), "{output}");
+    assert!(
+        output.contains("Warning: some paths could not be searched: missing: path not found"),
+        "{output}"
+    );
+}
+
+#[test]
+fn grep_searches_default_root_when_path_is_omitted() {
+    let output = execute_plugin_with_native_mock(
+        "grep",
+        GREP_SRC,
+        r#"
+            n00n.fs.grep = function(_, opts)
+                if opts.path ~= nil then
+                    return nil, "expected nil path"
+                end
+                return {{
+                    path = "default.rs",
+                    mtime = 1,
+                    groups = {{ lines = {{ line_nr = 1, text = "default-hit", is_match = true }} }},
+                }}, nil
+            end
+        "#,
+        json!({ "pattern": "default" }),
+    )
+    .unwrap();
+
+    assert!(output.contains("default-hit"), "{output}");
+}
+
+#[test]
+fn grep_header_accepts_multiple_paths() {
+    let host = load_host();
+    let restored = restore(
+        &host,
+        "grep",
+        json!({ "pattern": "fn", "path": ["src", "tests"] }),
+        "src/main.rs:\n  1: fn main",
+        None,
+        vec![],
+    );
+
+    assert!(
+        restored.header.contains("src"),
+        "header: {}",
+        restored.header
+    );
+    assert!(
+        restored.header.contains("tests"),
+        "header: {}",
+        restored.header
+    );
+}
