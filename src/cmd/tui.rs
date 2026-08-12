@@ -171,7 +171,12 @@ fn build_stack(
 
     let commands = discover_commands(cli.plugin_flags.no_commands);
 
-    let model_result = setup::resolve_model(cli.model.as_deref(), &config.provider, storage);
+    let model_result = setup::resolve_model_with_fusion(
+        cli.model.as_deref(),
+        &config.provider,
+        storage,
+        Some(&config.agent.fusion),
+    );
     let (model, needs_login) = match (model_result, fallback_model) {
         (Ok(m), _) => (m, false),
         (Err(e), Some(last_model)) => {

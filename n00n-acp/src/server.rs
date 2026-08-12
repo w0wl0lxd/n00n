@@ -25,7 +25,7 @@ use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::Session;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Deserializer, Result as JsonResult, Value};
 use smol::io::AsyncBufReadExt;
 use tracing::{debug, warn};
 
@@ -109,38 +109,39 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             continue;
         }
 
-        let raw: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, "invalid JSON on stdin");
-                server.respond(RequestId::Null, Err(AcpError::parse_error()));
-                continue;
-            }
-        };
-
-        let id = match raw.get("id") {
-            Some(v) => {
-                if let Ok(id) = request_id(v) {
-                    Some(id)
-                } else {
-                    server.respond(RequestId::Null, Err(AcpError::invalid_request()));
-                    continue;
+        for result in parse_stdin_line(trimmed) {
+            let raw = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "invalid JSON on stdin");
+                    server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                    break;
                 }
-            }
-            None => None,
-        };
+            };
 
-        if raw.get("result").is_some() || raw.get("error").is_some() {
-            handle_incoming_response(&server, &raw);
-        } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
-            match id {
-                Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
-                None => handle_notification(&server, method),
+            let id = match raw.get("id") {
+                Some(value) => match request_id(value) {
+                    Ok(id) => Some(id),
+                    Err(()) => {
+                        server.respond(RequestId::Null, Err(AcpError::invalid_request()));
+                        continue;
+                    }
+                },
+                None => None,
+            };
+
+            if raw.get("result").is_some() || raw.get("error").is_some() {
+                handle_incoming_response(&server, &raw);
+            } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
+                match id {
+                    Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
+                    None => handle_notification(&server, method),
+                }
+            } else if let Some(id) = id {
+                server.respond(id, Err(AcpError::invalid_request()));
+            } else {
+                server.respond(RequestId::Null, Err(AcpError::invalid_request()));
             }
-        } else if let Some(id) = id {
-            server.respond(id, Err(AcpError::invalid_request()));
-        } else {
-            server.respond(RequestId::Null, Err(AcpError::invalid_request()));
         }
     }
 
@@ -151,8 +152,13 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn request_id(v: &Value) -> Result<RequestId, ()> {
-    serde_json::from_value(v.clone()).map_err(|_| ())
+/// Parses one or more JSON-RPC messages concatenated on a single stdin line.
+fn parse_stdin_line(line: &str) -> impl Iterator<Item = JsonResult<Value>> + '_ {
+    Deserializer::from_str(line).into_iter::<Value>()
+}
+
+fn request_id(value: &Value) -> Result<RequestId, ()> {
+    serde_json::from_value(value.clone()).map_err(|_| ())
 }
 
 async fn handle_request(
@@ -665,7 +671,6 @@ mod tests {
         assert!(request_id(&json!({})).is_err());
         assert!(request_id(&json!([])).is_err());
         assert!(request_id(&json!(true)).is_err());
-        // Use a valid u64 value that serde_json will reject as a RequestId
         assert!(request_id(&json!(18_446_744_073_709_551_615_u64)).is_err());
     }
 
@@ -690,9 +695,30 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn request_id_rejects_empty_object_and_array() {
-        assert!(request_id(&json!({})).is_err());
-        assert!(request_id(&json!([])).is_err());
+    #[test_case::test_case(())]
+    fn parse_stdin_line_splits_multiple_json_rpc_messages_on_one_line(_case: ()) {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}{"jsonrpc":"2.0","id":2,"method":"b"}"#;
+        let values: Vec<Value> = parse_stdin_line(line)
+            .map(|result| result.expect("each message is valid JSON"))
+            .collect();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["id"], 1);
+        assert_eq!(values[1]["id"], 2);
+    }
+
+    #[test_case::test_case(())]
+    fn parse_stdin_line_parses_single_message(_case: ()) {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}"#;
+        let values: Vec<Value> = parse_stdin_line(line)
+            .map(|result| result.expect("message is valid JSON"))
+            .collect();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["id"], 1);
+    }
+
+    #[test_case::test_case(())]
+    fn parse_stdin_line_reports_error_for_invalid_json(_case: ()) {
+        let mut values = parse_stdin_line("not json");
+        assert!(values.next().expect("one item").is_err());
     }
 }
