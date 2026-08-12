@@ -168,7 +168,6 @@ end
 local function has_word(text, word)
   text = string.lower(text or "")
   word = string.lower(word)
-  -- Escape word for safe pattern matching
   local escaped = word:gsub("([^%w])", "%%%1")
   local boundary = "[^%a%d]"
   return text == word
@@ -210,6 +209,10 @@ local function main_ancestor(session, by_id)
   return nil
 end
 
+local function rank_before(rank, child_id, offset)
+  return (rank[child_id] or 0) - offset
+end
+
 local function synthetic_group(root, category, children, expanded_state, rank)
   local id = GROUP_PREFIX .. root.id .. ":" .. category.key
   local group = {
@@ -228,7 +231,7 @@ local function synthetic_group(root, category, children, expanded_state, rank)
     expanded = expanded_state[id] or false,
     depth = 0,
   }
-  rank[id] = (rank[children[1].id] or 0) - 0.5
+  rank[id] = rank_before(rank, children[1].id, 0.5)
   for _, child in ipairs(children) do
     child.group_id = id
   end
@@ -252,11 +255,23 @@ local function build_tree(sessions, expanded_state, rank)
     end
   end
 
+  local orphans = {}
   for _, session in ipairs(sessions) do
     if not root_mains[session.id] then
       local root = main_ancestor(session, by_id)
       if root then
         descendants[root.id][#descendants[root.id] + 1] = session
+      else
+        orphans[session.id] = true
+      end
+    end
+  end
+
+  for _, session in ipairs(sessions) do
+    if orphans[session.id] then
+      local parent = session.parent_id and by_id[session.parent_id] or nil
+      if parent and orphans[parent.id] and parent ~= session then
+        parent.children[#parent.children + 1] = session
       else
         roots[#roots + 1] = session
       end
@@ -333,7 +348,7 @@ local function make_bucket(parent, children, start_idx, finish, all_nodes, rank,
     expanded = expanded_state[bucket_id] or false,
     depth = 0,
   }
-  rank[bucket.id] = rank[children[start_idx].id] - 0.25
+  rank[bucket.id] = rank_before(rank, children[start_idx].id, 0.25)
   for i = start_idx, finish do
     local child = children[i]
     child.group_id = bucket.id

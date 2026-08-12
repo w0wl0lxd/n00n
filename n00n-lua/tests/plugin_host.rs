@@ -2894,23 +2894,35 @@ n00n.api.register_tool({
         updated_at = 30 - i,
         children = {},
       }
+      sessions[#sessions + 1] = {
+        id = "orphan-child-" .. i,
+        kind = "task",
+        parent_id = "orphan",
+        updated_at = 0 - i,
+        children = {},
+      }
     end
     normalize_session(sessions[7], {})
     local rank = {}
     for i, session in ipairs(sessions) do
-      rank[session.id] = i
+      if session.id ~= "agent" then
+        rank[session.id] = i
+      end
     end
     board = { rank = rank }
     local roots, nodes = build_tree(sessions, {}, rank)
     local root
+    local orphan
     local root_ids = {}
     for _, candidate in ipairs(roots) do
       root_ids[#root_ids + 1] = candidate.id
       if candidate.id == "root" then
         root = candidate
+      elseif candidate.id == "orphan" then
+        orphan = candidate
       end
+      group_node(candidate, nodes, rank, {})
     end
-    group_node(root, nodes, rank, {})
     local category_ids = {}
     local agent_group
     for _, category in ipairs(root.children) do
@@ -2925,9 +2937,22 @@ n00n.api.register_tool({
       node_count = #nodes,
       agent_total = agent_group.total_tasks,
       agent_buckets = #agent_group.children,
+      category_precedes_bucket = rank[agent_group.id] < rank[agent_group.children[1].id],
+      missing_rank_bucket = (function()
+        local missing_rank = {}
+        local child = { id = "unranked", updated_at = 0, children = {} }
+        make_bucket(root, { child }, 1, 1, {}, missing_rank, {})
+        return missing_rank["group:root:1"]
+      end)(),
       orphan_group_cleared = sessions[7].group_id == nil,
+      orphan_total = #orphan.children[1].children + #orphan.children[2].children,
+      orphan_buckets = #orphan.children,
+      orphan_child_parent = orphan.children[1].children[1].parent_id,
       draft_category = descendant_category({ kind = "task", title = "Draft response" }),
       ponder_category = descendant_category({ kind = "task", display_title = "Ponder options" }),
+      punctuation_category = descendant_category({ kind = "task", title = "Review(PR 42)?" }),
+      escaped_word_matches = not not has_word("phase+one?", "phase+one"),
+      escaped_word_rejects_pattern = not has_word("phasexone?", "phase+one"),
     })
   end,
 })
@@ -2951,12 +2976,23 @@ n00n.api.register_tool({
             "group:root:agents"
         ])
     );
-    assert_eq!(grouped["node_count"], serde_json::json!(36));
+    assert_eq!(grouped["node_count"], serde_json::json!(59));
     assert_eq!(grouped["agent_total"], serde_json::json!(22));
     assert_eq!(grouped["agent_buckets"], serde_json::json!(2));
+    assert_eq!(grouped["category_precedes_bucket"], serde_json::json!(true));
+    assert_eq!(grouped["missing_rank_bucket"], serde_json::json!(-0.25));
     assert_eq!(grouped["orphan_group_cleared"], serde_json::json!(true));
+    assert_eq!(grouped["orphan_total"], serde_json::json!(21));
+    assert_eq!(grouped["orphan_buckets"], serde_json::json!(2));
+    assert_eq!(grouped["orphan_child_parent"], serde_json::json!("orphan"));
     assert_eq!(grouped["draft_category"], serde_json::json!("draft"));
     assert_eq!(grouped["ponder_category"], serde_json::json!("ponder"));
+    assert_eq!(grouped["punctuation_category"], serde_json::json!("review"));
+    assert_eq!(grouped["escaped_word_matches"], serde_json::json!(true));
+    assert_eq!(
+        grouped["escaped_word_rejects_pattern"],
+        serde_json::json!(true)
+    );
 }
 
 #[test]
