@@ -100,6 +100,7 @@ enum Step {
     PickPlan {
         picker: ListPicker<PlanItem>,
         slug: String,
+        api_key_optional: bool,
     },
     CustomName {
         input: TextBuffer,
@@ -144,6 +145,7 @@ enum StepAction {
     },
     GoPickPlan {
         slug: String,
+        api_key_optional: bool,
     },
     GoCustomName,
     GoCustomProtocol {
@@ -164,6 +166,17 @@ enum StepAction {
     },
     Back,
     Close,
+}
+fn plan_key_action(slug: &str, item: PlanItem, api_key_optional: bool) -> StepAction {
+    let config = providers::ProvidersConfig::load();
+    StepAction::GoEnterKey {
+        slug: slug.to_owned(),
+        plan: Some(item.key),
+        display_name: providers::resolve_display_name(slug, config.get(slug)),
+        custom: None,
+        builtin_url: None,
+        api_key_optional,
+    }
 }
 
 pub struct LoginPicker {
@@ -293,7 +306,10 @@ impl LoginPicker {
                             .and_then(|b| b.plans)
                             .is_some_and(|p| p.len() > 1);
                         if has_plans {
-                            StepAction::GoPickPlan { slug }
+                            StepAction::GoPickPlan {
+                                slug,
+                                api_key_optional: item.has_key || item.has_env,
+                            }
                         } else {
                             let display_name =
                                 if providers::builtin_provider(&slug).is_some() || def.is_some() {
@@ -323,18 +339,12 @@ impl LoginPicker {
                     return LoginPickerAction::Consumed;
                 }
             },
-            Step::PickPlan { picker, slug } => match picker.handle_key(key) {
-                PickerAction::Select(_, item) => {
-                    let config = providers::ProvidersConfig::load();
-                    StepAction::GoEnterKey {
-                        slug: slug.clone(),
-                        plan: Some(item.key),
-                        display_name: providers::resolve_display_name(slug, config.get(slug)),
-                        custom: None,
-                        builtin_url: None,
-                        api_key_optional: false,
-                    }
-                }
+            Step::PickPlan {
+                picker,
+                slug,
+                api_key_optional,
+            } => match picker.handle_key(key) {
+                PickerAction::Select(_, item) => plan_key_action(slug, item, *api_key_optional),
                 PickerAction::Close => StepAction::Back,
                 PickerAction::Consumed | PickerAction::Toggle(..) => {
                     return LoginPickerAction::Consumed;
@@ -593,7 +603,10 @@ impl LoginPicker {
                 };
                 LoginPickerAction::Consumed
             }
-            StepAction::GoPickPlan { slug } => {
+            StepAction::GoPickPlan {
+                slug,
+                api_key_optional,
+            } => {
                 let builtin = providers::builtin_provider(&slug);
                 let plans = builtin.and_then(|b| b.plans).unwrap_or_else(|| &[]);
                 let plan_items: Vec<PlanItem> = plans
@@ -610,6 +623,7 @@ impl LoginPicker {
                 self.step = Step::PickPlan {
                     picker: plan_picker,
                     slug,
+                    api_key_optional,
                 };
                 LoginPickerAction::Consumed
             }
@@ -802,4 +816,30 @@ pub enum LoginPickerAction {
     Close,
     Authenticated { model_spec: String },
     Configured { slug: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_selection_preserves_optional_existing_auth() {
+        let action = plan_key_action(
+            "mistral",
+            PlanItem {
+                key: "codestral".to_owned(),
+                display_name: "Codestral".to_owned(),
+                base_url: "https://example.invalid".to_owned(),
+            },
+            true,
+        );
+
+        assert!(matches!(
+            action,
+            StepAction::GoEnterKey {
+                api_key_optional: true,
+                ..
+            }
+        ));
+    }
 }
