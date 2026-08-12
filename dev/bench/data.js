@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786518955015,
+  "lastUpdate": 1786527107219,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -16085,6 +16085,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 130875,
             "range": "± 17165",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f7be58e69343192e95de73095e8af340a0ae060a",
+          "message": "Merge pull request #259 from w0wl0lxd/fix/no-openai-unconfigured\n\nfix(setup): respect providers.toml when resolving models",
+          "timestamp": "2026-08-12T05:15:37-04:00",
+          "tree_id": "c466f0cf6405fbb1bb684009d6a559ee1f87b688",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f7be58e69343192e95de73095e8af340a0ae060a"
+        },
+        "date": 1786527105584,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6454899,
+            "range": "± 38351",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2439913,
+            "range": "± 25178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2445792,
+            "range": "± 71418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7618751,
+            "range": "± 68223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3870347,
+            "range": "± 29008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3750416,
+            "range": "± 10555",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 552544,
+            "range": "± 1578",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168156,
+            "range": "± 720",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 168084,
+            "range": "± 467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1055228,
+            "range": "± 7659",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 642817,
+            "range": "± 5040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 638481,
+            "range": "± 4989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 64783,
+            "range": "± 4568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 143828,
+            "range": "± 23524",
             "unit": "ns/iter"
           }
         ]
