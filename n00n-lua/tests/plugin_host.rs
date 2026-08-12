@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -3520,6 +3521,40 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
         scopes.scopes
     );
 }
+
+#[test]
+fn bash_schema_exposes_no_agent_controlled_rtk_override() {
+    let (reg, _host) = builtins_host();
+    let entry = reg.get("bash").expect("bash registered");
+    let properties = &entry.tool.schema()["properties"];
+
+    assert!(properties.get("no_rtk").is_none());
+    assert!(properties.get("rtk").is_none());
+}
+
+#[test_case::test_case("python -c 'print(123)'" ; "managed_command")]
+#[test_case::test_case("bash -c 'git status'" ; "nested_managed_command")]
+#[test_case::test_case("g''it status" ; "concatenated_quote_command")]
+#[test_case::test_case("exec git status" ; "exec_wrapper")]
+#[test_case::test_case("echo $(git status)" ; "command_substitution")]
+#[test_case::test_case("rtk proxy git status" ; "rtk_proxy")]
+fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
+    let Ok(rtk_status) = Command::new("rtk").arg("--version").status() else {
+        return;
+    };
+    if !rtk_status.success() {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let error = exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+        .expect_err("managed command ran without an RTK rewrite");
+
+    assert!(
+        error.contains("rtk is enabled"),
+        "unexpected error: {error}"
+    );
+}
 #[test]
 fn bash_permission_scopes_marks_broad_commands_for_prompt() {
     let (reg, _host) = builtins_host();
@@ -3732,6 +3767,27 @@ fn bash_handler_allows_head_capped_search_without_justification() {
         "expected capped search output to run without justification: {out}"
     );
 }
+
+#[test]
+fn bash_handler_rewrites_each_managed_compound_segment() {
+    let Ok(rtk_status) = Command::new("rtk").arg("--version").status() else {
+        return;
+    };
+    if !rtk_status.success() {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "git status && ls" }),
+    )
+    .expect("managed compound command was not safely rewritten");
+
+    assert!(!output.contains("rtk is enabled"));
+}
+
 fn exec_tool_with_perms(
     perms: n00n_lua::PluginPermissions,
     src: &str,
