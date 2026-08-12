@@ -124,7 +124,7 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `include` | string | no | Glob pattern (e.g. '*.rs'). |
-| `path` | object | no |  |
+| `path` | string/array | no | Directory or file to search, or an array of directories and files. |
 | `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
