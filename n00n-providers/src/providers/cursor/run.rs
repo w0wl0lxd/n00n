@@ -679,6 +679,7 @@ async fn run_text_turn_mode_tokio(
     })
 }
 
+#[derive(Debug)]
 struct FrameHandleOutcome {
     exec_skipped: bool,
     text_deltas: u32,
@@ -696,16 +697,28 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    let server_msg = AgentServerMessage::decode(&*payload).map_err(|message| AgentError::Api {
-        status: 502,
-        message: message.to_string(),
-    })?;
-    if let Some(op) =
-        parse_kv_server_message(&server_msg.kv_server_message).map_err(|e| AgentError::Api {
-            status: 502,
-            message: e,
-        })?
-    {
+    let parsed = AgentServerMessage::decode(&*payload)
+        .map_err(|message| message.to_string())
+        .and_then(|server_msg| {
+            parse_kv_server_message(&server_msg.kv_server_message).map(|kv_op| (server_msg, kv_op))
+        });
+    let (server_msg, kv_op) = match parsed {
+        Ok(parsed) => parsed,
+        Err(_) if frame.end_stream => {
+            return Ok(FrameHandleOutcome {
+                exec_skipped: false,
+                text_deltas: 0,
+                kv_op: false,
+            });
+        }
+        Err(message) => {
+            return Err(AgentError::Api {
+                status: 502,
+                message,
+            });
+        }
+    };
+    if let Some(op) = kv_op {
         queue_checkpoint_reply(op, checkpoints, outbound)?;
         return Ok(FrameHandleOutcome {
             exec_skipped: false,
@@ -867,37 +880,77 @@ mod tests {
         assert!(outcome.exec_skipped);
     }
 
-    #[test]
-    fn handle_data_frame_rejects_truncated_tail() {
-        let msg = AgentServerMessage {
-            interaction_update: Some(InteractionUpdate {
-                text_delta: Some(TextDelta {
-                    text: "pong".to_string(),
-                }),
-                thinking_delta: None,
-            }),
-            exec_server_message: Vec::new(),
-            field_3: Vec::new(),
-            kv_server_message: Vec::new(),
+    const MALFORMED_EXEC_PAYLOAD: &[u8] = &[0x12, 0x02, 0x0a];
+    const MALFORMED_TEXT_PAYLOAD: &[u8] = &[0x0a, 0x03, 0x0a, 0x02, 0x0a];
+    const MALFORMED_THINKING_PAYLOAD: &[u8] = &[0x0a, 0x03, 0x22, 0x02, 0x0a];
+
+    fn assert_malformed_frame(end_stream: bool, payload: &[u8]) {
+        let frame = ConnectFrame {
+            end_stream,
+            compressed: false,
+            payload: payload.to_vec(),
         };
-        let mut payload = msg.encode_to_vec();
-        payload.push(0x80);
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = "existing text".to_string();
+        let mut thinking = "existing thinking".to_string();
+        let result = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound);
+
+        if end_stream {
+            let outcome = result.expect("end-stream parser errors must be ignored");
+            assert!(!outcome.exec_skipped);
+            assert_eq!(outcome.text_deltas, 0);
+            assert!(!outcome.kv_op);
+        } else {
+            let error = result.expect_err("non-end-stream parser errors must fail");
+            assert!(matches!(error, AgentError::Api { status: 502, .. }));
+        }
+        assert_eq!(text, "existing text");
+        assert_eq!(thinking, "existing thinking");
+        assert!(outbound.lock().expect("lock").queue.is_empty());
+    }
+
+    #[test]
+    fn handle_data_frame_rejects_malformed_non_end_stream_payloads_transactionally() {
+        for payload in [
+            MALFORMED_EXEC_PAYLOAD,
+            MALFORMED_TEXT_PAYLOAD,
+            MALFORMED_THINKING_PAYLOAD,
+        ] {
+            assert_malformed_frame(false, payload);
+        }
+    }
+
+    #[test]
+    fn handle_data_frame_ignores_malformed_end_stream_payloads_transactionally() {
+        for payload in [
+            MALFORMED_EXEC_PAYLOAD,
+            MALFORMED_TEXT_PAYLOAD,
+            MALFORMED_THINKING_PAYLOAD,
+        ] {
+            assert_malformed_frame(true, payload);
+        }
+    }
+
+    #[test]
+    fn handle_data_frame_rejects_unknown_wire_type_three_payload() {
         let frame = ConnectFrame {
             end_stream: false,
             compressed: false,
-            payload,
+            payload: vec![0x0b, 0x0c],
         };
         let store = shared_store();
         let (outbound, _notify) = new_outbound_queue();
         let mut text = String::new();
         let mut thinking = String::new();
+        let error = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
+            .expect_err("unknown protobuf wire types must fail the frame");
 
-        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
-        else {
-            panic!("truncated protobuf must fail");
-        };
-
-        assert!(error.to_string().contains("Protobuf"));
+        assert!(matches!(error, AgentError::Api { status: 502, .. }));
+        assert!(
+            error.to_string().contains("StartGroup"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -938,26 +991,6 @@ mod tests {
     }
 
     #[test]
-    fn handle_data_frame_rejects_non_protobuf_payload() {
-        let frame = ConnectFrame {
-            end_stream: true,
-            compressed: false,
-            payload: b"{}".to_vec(),
-        };
-        let store = shared_store();
-        let (outbound, _notify) = new_outbound_queue();
-        let mut text = String::new();
-        let mut thinking = String::new();
-
-        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
-        else {
-            panic!("non-protobuf payload must fail");
-        };
-
-        assert!(error.to_string().contains("Protobuf"));
-    }
-
-    #[test]
     fn handle_data_frame_rejects_corrupt_compression() {
         let frame = ConnectFrame {
             end_stream: false,
@@ -975,6 +1008,7 @@ mod tests {
         };
 
         assert!(matches!(error, AgentError::Api { status: 502, .. }));
+        assert!(error.to_string().contains("gzip"));
     }
 
     #[test]
