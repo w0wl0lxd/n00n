@@ -20,6 +20,7 @@ use flate2::write::GzEncoder;
 use flume::Sender;
 use isahc::{AsyncReadResponseExt, HttpClient};
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
 use crate::model::ModelEntry;
@@ -253,7 +254,7 @@ fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
         status: 0,
         message: "invalid Devin end-stream trailer encoding".to_string(),
     })?;
-    let value: serde_json::Value = serde_json::from_str(trailer).map_err(|_| AgentError::Api {
+    let value: Value = serde_json::from_str(trailer).map_err(|_| AgentError::Api {
         status: 0,
         message: "invalid Devin end-stream trailer JSON".to_string(),
     })?;
@@ -261,7 +262,7 @@ fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
         .get("error")
         .and_then(|error| error.get("code"))
         .or_else(|| value.get("code"))
-        .and_then(serde_json::Value::as_str)
+        .and_then(Value::as_str)
         .map(sanitize_trailer_code);
     match code {
         Some("ok") | None => Ok(code.map(str::to_string)),
@@ -272,7 +273,7 @@ fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
     }
 }
 
-fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentError> {
+fn encode_devin_tools(tools: &Value) -> Result<Vec<Vec<u8>>, AgentError> {
     let arr = tools.as_array().ok_or_else(|| AgentError::Config {
         message: "Devin tools must be an array".to_string(),
     })?;
@@ -284,13 +285,11 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
         };
         let name = function
             .get("name")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .ok_or_else(|| AgentError::Config {
                 message: "tool missing name".to_string(),
             })?;
-        let description = function
-            .get("description")
-            .and_then(serde_json::Value::as_str);
+        let description = function.get("description").and_then(Value::as_str);
         let schema_string = match function.get("input_schema") {
             Some(v) => serde_json::to_string(v).map_err(|e| AgentError::Config {
                 message: format!("failed to serialize tool schema: {e}"),
@@ -300,7 +299,7 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
         let strict = tool
             .get("strict")
             .or_else(|| function.get("strict"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(Value::as_bool)
             .map_or(false, std::convert::identity);
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
             name: name.to_string(),
@@ -339,7 +338,7 @@ fn ordered_tool_call_blocks(
             message: "Devin tool-call ordering state is inconsistent".to_string(),
         })?;
         let input = if arguments_json.is_empty() {
-            serde_json::Value::Object(serde_json::Map::new())
+            Value::Object(Map::new())
         } else {
             serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
                 status: 0,
@@ -687,7 +686,7 @@ impl Devin {
         model: &'a crate::model::Model,
         messages: &'a [Message],
         system: &'a System,
-        tools: &'a serde_json::Value,
+        tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
@@ -974,7 +973,7 @@ impl Provider for Devin {
         model: &'a crate::model::Model,
         messages: &'a [Message],
         system: &'a System,
-        tools: &'a serde_json::Value,
+        tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
         _session_id: Option<&'a n00n_storage::id::SessionRef>,
@@ -1116,7 +1115,7 @@ mod tests {
 
     #[test]
     fn merge_tool_call_appends_argument_deltas() {
-        let mut tool_calls = std::collections::HashMap::new();
+        let mut tool_calls = HashMap::new();
         assert!(merge_tool_call(
             &mut tool_calls,
             ChatToolCall {
@@ -1354,7 +1353,7 @@ mod tests {
 
     #[test]
     fn ordered_tool_call_blocks_treats_empty_args_as_empty_object() {
-        let mut tool_calls = std::collections::HashMap::new();
+        let mut tool_calls = HashMap::new();
         tool_calls.insert("call-1".to_string(), ("bash".to_string(), String::new()));
         let blocks = ordered_tool_call_blocks(tool_calls, vec!["call-1".to_string()])
             .expect("empty args parse");
@@ -1365,7 +1364,7 @@ mod tests {
             ContentBlock::ToolUse {
                 id,
                 name,
-                input: serde_json::Value::Object(map),
+                input: Value::Object(map),
             } if id == "call-1" && name == "bash" && map.is_empty()
         ));
     }
