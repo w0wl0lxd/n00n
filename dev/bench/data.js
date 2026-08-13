@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786559638986,
+  "lastUpdate": 1786595200721,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -17165,6 +17165,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 113487,
             "range": "± 13009",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "35a646c80de1e0f1733f1f6d80518ce84fba572f",
+          "message": "fix(providers): restore Codex prompt-cache and Devin empty-tool-args handling (#346)",
+          "timestamp": "2026-08-13T04:10:39Z",
+          "tree_id": "2d417c4224450b09508d62a97e71671dc6d02a8e",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/35a646c80de1e0f1733f1f6d80518ce84fba572f"
+        },
+        "date": 1786595199032,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6451350,
+            "range": "± 274617",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2455862,
+            "range": "± 6788",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2455890,
+            "range": "± 25468",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7652039,
+            "range": "± 50620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3843144,
+            "range": "± 21970",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3747376,
+            "range": "± 12301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554190,
+            "range": "± 960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167966,
+            "range": "± 1558",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167932,
+            "range": "± 317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1062107,
+            "range": "± 5282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 643067,
+            "range": "± 5806",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 644304,
+            "range": "± 7323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 46662,
+            "range": "± 1995",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 136273,
+            "range": "± 11949",
             "unit": "ns/iter"
           }
         ]
