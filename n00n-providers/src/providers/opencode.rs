@@ -125,22 +125,35 @@ impl ProviderData {
         }
     }
 
-    /// Load API key from storage
+    /// Load API key from storage.
+    ///
+    /// A stored key that is empty or whitespace is not a key. Returning it as
+    /// `Some` makes every `is_some()` caller treat the provider as configured
+    /// and send an unauthenticated request, which comes back as a misleading
+    /// "token expired" 401.
     #[must_use]
     pub fn load_key_from_storage(&self, state_dir: &StateDir) -> Option<String> {
         let creds = load_provider_credentials(state_dir, &self.slug)?;
+        if creds.api_key.trim().is_empty() {
+            return None;
+        }
         Some(creds.api_key)
     }
 
     /// Resolve API key from environment or storage
     pub fn resolve_api_key(&self, state_dir: &StateDir) -> Option<String> {
         for var in &self.env_keys {
-            if let Ok(val) = std::env::var(var) {
+            if let Ok(val) = std::env::var(var)
+                && !val.trim().is_empty()
+            {
                 debug!(provider = %self.display_name, var = %var, "api key resolved from env");
                 return Some(val);
             }
         }
-        if let Some(key) = self.load_key_from_storage(state_dir) {
+        if let Some(key) = self
+            .load_key_from_storage(state_dir)
+            .filter(|k| !k.trim().is_empty())
+        {
             debug!(provider = %self.display_name, "api key resolved from storage");
             return Some(key);
         }
@@ -152,7 +165,7 @@ impl ProviderData {
     pub fn env_key_set(&self) -> Option<&str> {
         self.env_keys
             .iter()
-            .find(|e| std::env::var(e).is_ok())
+            .find(|e| std::env::var(e).is_ok_and(|v| !v.trim().is_empty()))
             .map(std::string::String::as_str)
     }
 
@@ -1103,6 +1116,73 @@ mod tests {
             _ => panic!("expected KeyBased"),
         }
         remove_env("N00N_TEST_AUTH_KEY");
+    }
+
+    #[test]
+    fn catalog_provider_resolve_api_key_skips_empty_env() {
+        let (_tmp, state_dir) = temp_state_dir();
+        set_env("N00N_TEST_EMPTY_KEY", "");
+        let provider = CatalogProvider {
+            name: "Test".into(),
+            env: vec!["N00N_TEST_EMPTY_KEY".into()],
+            npm: "@ai-sdk/openai-compatible".into(),
+            api: None,
+            models: HashMap::new(),
+        };
+        let provider_data = ProviderData::new(
+            "test".into(),
+            &provider,
+            EndpointType::ChatCompletions,
+            HashMap::new(),
+        );
+        assert!(provider_data.resolve_api_key(&state_dir).is_none());
+        assert!(matches!(
+            provider_data.build_auth(&state_dir),
+            Authentication::NoAuth
+        ));
+        remove_env("N00N_TEST_EMPTY_KEY");
+    }
+
+    /// A blank persisted key made `load_key_from_storage` return `Some("")`, so
+    /// every `is_some()` caller treated the provider as configured and the
+    /// request came back as a misleading "token expired" 401.
+    #[test]
+    fn catalog_provider_rejects_blank_stored_key() {
+        const BLANK_KEYS: [&str; 3] = ["", "   ", "\n\t "];
+        let provider = CatalogProvider {
+            name: "Test".into(),
+            env: Vec::new(),
+            npm: "@ai-sdk/openai-compatible".into(),
+            api: None,
+            models: HashMap::new(),
+        };
+        for blank in BLANK_KEYS {
+            let (_tmp, state_dir) = temp_state_dir();
+            let provider_data = ProviderData::new(
+                "test".into(),
+                &provider,
+                EndpointType::ChatCompletions,
+                HashMap::new(),
+            );
+            n00n_storage::auth::save_provider_credentials(
+                &state_dir,
+                "test",
+                &n00n_storage::auth::ProviderCredentials {
+                    api_key: blank.into(),
+                    host: None,
+                },
+            )
+            .expect("save credentials");
+            assert!(
+                provider_data.load_key_from_storage(&state_dir).is_none(),
+                "blank stored key {blank:?} must not resolve"
+            );
+            assert!(provider_data.resolve_api_key(&state_dir).is_none());
+            assert!(matches!(
+                provider_data.build_auth(&state_dir),
+                Authentication::NoAuth
+            ));
+        }
     }
 
     #[test]

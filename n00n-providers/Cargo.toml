@@ -36,6 +36,7 @@ httpdate = { workspace = true }
 wait-timeout = { workspace = true }
 fastrand = { workspace = true }
 n00n-config = { workspace = true }
+n00n-redact = { workspace = true }
 inventory = { workspace = true }
 jiff = { workspace = true }
 libc = { workspace = true }
