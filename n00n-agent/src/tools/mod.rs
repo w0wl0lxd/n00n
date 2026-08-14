@@ -506,7 +506,11 @@ pub fn is_expected_walk_error(err: &ignore::Error) -> bool {
         | ignore::Error::WithPath { err, .. }
         | ignore::Error::WithDepth { err, .. } => is_expected_walk_error(err),
         // An aggregate is only expected when every part of it is: one unexpected
-        // member downgraded to `debug!` would hide a genuine I/O failure.
+        // member downgraded to `debug!` would hide a genuine I/O failure. This
+        // also widens classification for a `Partial` of two-or-more expected
+        // kinds together (e.g. `[PermissionDenied, NotFound]`) to `debug!`,
+        // where `err.io_error()` previously returned `None` for len() != 1 and
+        // left the whole aggregate at `warn!`.
         ignore::Error::Partial(errs) => !errs.is_empty() && errs.iter().all(is_expected_walk_error),
         _ => false,
     }
