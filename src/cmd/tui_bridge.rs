@@ -498,8 +498,15 @@ mod tests {
         use n00n_daemon::client;
         use n00n_daemon::paths::daemon_socket_in;
         use n00n_daemon::protocol::{ControlRequest, ControlResponse, PROTOCOL_VERSION};
+        use std::time::Instant;
         use tempfile::TempDir;
 
+        // A loaded CI runner needs far longer than an idle developer machine to
+        // bind the socket and answer, so budget seconds rather than a fixed 1s.
+        const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
+        const CONNECT_POLL: Duration = Duration::from_millis(20);
+
+        let started = Instant::now();
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
         let (tx, rx) = flume::unbounded();
         respond_live(
@@ -516,8 +523,8 @@ mod tests {
         let sock = daemon_socket_in(tmp.path());
 
         let mut connected = false;
-        for _ in 0..50 {
-            thread::sleep(Duration::from_millis(20));
+        while started.elapsed() < CONNECT_DEADLINE {
+            thread::sleep(CONNECT_POLL);
             if !sock.exists() {
                 continue;
             }
@@ -533,7 +540,10 @@ mod tests {
         }
         if !connected {
             handle.shutdown();
-            return Err("failed to connect to tui daemon".into());
+            return Err(format!(
+                "failed to connect to tui daemon within {CONNECT_DEADLINE:?} (socket {}exists)",
+                if sock.exists() { "" } else { "does not " }
+            ));
         }
 
         let list =

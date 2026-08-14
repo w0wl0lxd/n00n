@@ -29,6 +29,15 @@ pub(crate) const LONG_CONTEXT_SUFFIX: &str = "-1m";
 pub(crate) const LONG_CONTEXT_BETA: &str = "context-1m-2025-08-07";
 pub(crate) const LONG_CONTEXT_WINDOW: u32 = 1_000_000;
 
+/// Retryable error for a provider stream whose body ended before its
+/// terminator (`message_stop`, `[DONE]`, or a Gemini `finishReason`).
+pub(crate) fn stream_truncated_error() -> AgentError {
+    AgentError::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "provider stream ended before its terminator",
+    ))
+}
+
 pub(crate) fn strip_long_context(model_id: &str) -> &str {
     model_id
         .strip_suffix(LONG_CONTEXT_SUFFIX)
@@ -268,6 +277,8 @@ pub(super) struct EventParser {
     current_block_idx: usize,
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
+    /// Set once `message_stop` is observed.
+    terminated: bool,
 }
 
 impl EventParser {
@@ -278,6 +289,7 @@ impl EventParser {
             current_block_idx: 0,
             usage: TokenUsage::default(),
             stop_reason: None,
+            terminated: false,
         }
     }
 
@@ -441,15 +453,22 @@ impl EventParser {
                     message: data.to_string(),
                 });
             }
-            "message_stop" => return Ok(ControlFlow::Break(())),
+            "message_stop" => {
+                self.terminated = true;
+                return Ok(ControlFlow::Break(()));
+            }
             _ => {}
         }
 
         Ok(ControlFlow::Continue(()))
     }
 
-    pub fn finish(self) -> StreamResponse {
-        StreamResponse {
+    /// Errors if the stream ended before `message_stop` arrived.
+    pub fn finish(self) -> Result<StreamResponse, AgentError> {
+        if !self.terminated {
+            return Err(stream_truncated_error());
+        }
+        Ok(StreamResponse {
             message: Message {
                 role: Role::Assistant,
                 content: self.content_blocks,
@@ -457,7 +476,7 @@ impl EventParser {
             },
             usage: self.usage,
             stop_reason: self.stop_reason,
-        }
+        })
     }
 }
 
