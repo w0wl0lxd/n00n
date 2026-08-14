@@ -354,7 +354,7 @@ register_tool_if(opts.multiedit, {
       local secret_reason = secret_check.reason(edit.new_string)
       if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
         return {
-          llm_output = "error: edits[" .. i - 1 .. "] " .. secret_reason .. "; provide justification to multiedit",
+          llm_output = "error: edits[" .. i .. "] " .. secret_reason .. "; provide justification to multiedit",
           is_error = true,
         }
       end
