@@ -279,8 +279,8 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
 }
 
 fn is_skill_tool_call(name: &str) -> bool {
-    name.strip_prefix("functions.").map_or(name, |value| value)
-        == crate::skill_policy::SKILL_TOOL_NAME
+    let stripped = name.strip_prefix("functions.").map_or(name, |value| value);
+    crate::skill_policy::normalize_tool_name(stripped) == crate::skill_policy::SKILL_TOOL_NAME
 }
 
 fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {

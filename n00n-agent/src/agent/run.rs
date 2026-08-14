@@ -73,9 +73,11 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
     if let Some(definitions) = tools.as_array_mut() {
         let registry = ToolRegistry::global();
         definitions.retain(|definition| {
-            let Some(name) = definition.get("name").and_then(Value::as_str) else {
+            let Some(raw_name) = definition.get("name").and_then(Value::as_str) else {
                 return true;
             };
+            // Canonicalize legacy aliases (e.g. "code_execution") before comparing.
+            let name = n00n_config::canonical_tool_name(raw_name);
             // Bash is the only execute-kind tool allowed in plan mode, and only
             // for commands that pass the read-only classifier.
             if name == crate::tools::BASH_TOOL_NAME {
