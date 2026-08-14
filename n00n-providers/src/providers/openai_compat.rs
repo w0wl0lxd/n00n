@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use super::ResolvedAuth;
+use super::anthropic::shared::stream_truncated_error;
 use crate::types::{ImageDetail, TOOL_RESULT_ERROR_PREFIX};
 use crate::{
     AgentError, CacheControl, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
@@ -783,6 +784,7 @@ pub async fn parse_sse(
     let mut stop_reason: Option<StopReason> = None;
     let mut is_first_content = true;
     let mut emitted_event = false;
+    let mut terminated = false;
     let mut deadline = Instant::now() + stream_timeout;
 
     let idempotency_key = opts.idempotency_key.clone();
@@ -809,6 +811,7 @@ pub async fn parse_sse(
         };
 
         if data == STREAM_DONE {
+            terminated = true;
             break;
         }
 
@@ -1042,6 +1045,13 @@ pub async fn parse_sse(
             acc.name
         };
         content_blocks.push(ContentBlock::ToolUse { id, name, input });
+    }
+
+    // Not every OpenAI-compatible server emits `[DONE]`, so a terminal
+    // `finish_reason` counts as a clean end too. A stream cut mid-flight has
+    // neither.
+    if !terminated && stop_reason.is_none() {
+        return Err(stream_truncated_error());
     }
 
     Ok(StreamResponse {
@@ -1317,6 +1327,35 @@ data: [DONE]\n";
                 starts,
                 vec![("c1".into(), "bash".into()), ("c2".into(), "read".into()),]
             );
+        });
+    }
+
+    #[test]
+    fn parse_sse_stream_ended_by_finish_reason_alone_is_accepted() {
+        smol::block_on(async {
+            let sse = "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{\"content\":\"whole\"}}]}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap();
+
+            assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
+        });
+    }
+
+    #[test]
+    fn parse_sse_stream_without_done_marker_is_retryable() {
+        smol::block_on(async {
+            let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let err = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap_err();
+
+            assert!(err.is_retryable());
+            assert!(matches!(err, AgentError::Io(_)));
         });
     }
 

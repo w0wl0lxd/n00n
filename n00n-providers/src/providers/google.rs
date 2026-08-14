@@ -21,6 +21,7 @@ use crate::{
     StopReason, StreamResponse, System, ThinkingConfig, TokenUsage, dialect,
 };
 
+use super::anthropic::shared::stream_truncated_error;
 use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -1069,6 +1070,10 @@ async fn parse_sse(
         }
     }
 
+    if stop_reason.is_none() {
+        return Err(stream_truncated_error());
+    }
+
     Ok(StreamResponse {
         message: Message {
             role: Role::Assistant,
@@ -1374,6 +1379,16 @@ mod tests {
             &result.message.content[0],
             ContentBlock::Text { text } if text == "hello"
         ));
+    }
+
+    #[test]
+    fn parse_sse_stream_without_finish_reason_is_retryable() {
+        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"par\"}]}}]}\n\n";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let err = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
+        assert!(err.is_retryable());
+        assert!(matches!(err, AgentError::Io(_)));
     }
 
     #[test]
