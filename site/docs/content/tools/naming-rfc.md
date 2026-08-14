@@ -60,7 +60,6 @@ and Lua registrations under `plugins/*/init.lua`.
 | `inspect_file` | `index`, `Index` | `plugins/index/init.lua:149` |
 | `view_image` | — | `plugins/view_image/init.lua:298`; already canonical |
 | `explore_code` | `explore` | `plugins/explore/init.lua:51` |
-| `query_graph` | `arbor` | `plugins/arbor/init.lua:174` |
 | `query_codegraph` | `codegraph` | `plugins/codegraph/init.lua:17` |
 | `search_index` | `semblem` | `plugins/semblem/init.lua:20` |
 | `run_batch` | `batch` | `plugins/batch/init.lua:499` |
@@ -276,7 +275,6 @@ allowlist or auth-selection/discovery behavior.
 | `grep`, `Grep` | `search_content` | same |
 | `index`, `Index` | `inspect_file` | same |
 | `explore` | `explore_code` | same |
-| `arbor` | `query_graph` | same |
 | `codegraph` | `query_codegraph` | same |
 | `semblem` | `search_index` | same |
 | `batch` | `run_batch` | same |

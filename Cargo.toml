@@ -61,7 +61,6 @@ workspace = true
 members = [
   "n00n-acp",
   "n00n-agent",
-  "n00n-arbor",
   "n00n-codegraph",
   "n00n-config",
   "n00n-daemon",
@@ -71,6 +70,7 @@ members = [
   "n00n-lua",
   "n00n-markdown",
   "n00n-providers",
+  "n00n-redact",
   "n00n-search",
   "n00n-semble",
   "n00n-smell",
@@ -83,7 +83,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 license = "AGPL-3.0-only"
@@ -96,13 +96,13 @@ n00n-acp = { path = "n00n-acp" }
 n00n-config = { path = "n00n-config" }
 n00n-interpreter = { path = "n00n-interpreter" }
 n00n-providers = { path = "n00n-providers" }
+n00n-redact = { path = "n00n-redact" }
 n00n-storage = { path = "n00n-storage" }
 n00n-ui = { path = "n00n-ui" }
 n00n-lua = { path = "n00n-lua" }
 n00n-config-macro = { path = "n00n-config-macro" }
 n00n-lua-macro = { path = "n00n-lua-macro" }
 n00n-highlight = { path = "n00n-highlight" }
-n00n-arbor = { path = "n00n-arbor" }
 n00n-codegraph = { path = "n00n-codegraph" }
 n00n-search = { path = "n00n-search" }
 n00n-semble = { path = "n00n-semble" }

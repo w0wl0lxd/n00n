@@ -1,6 +1,14 @@
-local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
+local command_guard = require("command_guard")
+local output_collector = require("output_collector")
+
+local split_shell_words = command_guard.split_shell_words
+local git_subcommand_index = command_guard.git_subcommand_index
+local git_subcommand = command_guard.git_subcommand
+local git_uses_machine_format = command_guard.git_uses_machine_format
+local strip_leading_assignments = command_guard.strip_leading_assignments
+local broad_bash_command_reason = command_guard.broad_bash_command_reason
 
 local RTK_REWRITE_TIMEOUT_MS = 10000
 local RTK_UNSUPPORTED_FLAGS = {
@@ -26,6 +34,10 @@ local RTK_SKIP_TOOLS = {
 local SEPARATOR = "──────"
 local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
 local RTK_REWRITE_REQUIRED = "error: rtk is enabled, but this managed command could not be safely rewritten"
+-- rtk_rewrite error reason: rtk has no rewrite for this exact command, as
+-- opposed to a policy rejection. Only this reason is safe to swallow when a
+-- compound segment falls back to running unchanged.
+local RTK_REWRITE_REASON_UNAVAILABLE = "unavailable"
 local RTK_MANAGED_COMMANDS = {
   cargo = true,
   cat = true,
@@ -101,161 +113,6 @@ end
 
 local function trim(s)
   return s:match("^%s*(.-)%s*$")
-end
-
-local function has_option(command, option)
-  if command == option then
-    return true
-  end
-
-  if command:sub(1, #option + 1) == option .. " " then
-    return true
-  end
-
-  if command:sub(1, #option + 1) == option .. "=" then
-    return true
-  end
-
-  local padded = " " .. command .. " "
-  if padded:find(" " .. option .. " ", 1, true) then
-    return true
-  end
-
-  if padded:find(" " .. option .. "=", 1, true) then
-    return true
-  end
-
-  return false
-end
-
-local function has_output_cap(command)
-  local normalized = trim(command):lower()
-  if normalized == "" then
-    return false
-  end
-
-  for _, executable in ipairs({ "head", "tail" }) do
-    if normalized:find("|%s*" .. executable .. "%s") or normalized:find("|%s*" .. executable .. "$") then
-      return true
-    end
-  end
-  return false
-end
-
-local function shell_word_end(command)
-  local quote
-  local index = 1
-  while index <= #command do
-    local char = command:sub(index, index)
-    if quote then
-      if char == quote then
-        quote = nil
-      elseif char == "\\" and quote == '"' then
-        index = index + 1
-      end
-    elseif char == "'" or char == '"' then
-      quote = char
-    elseif char == "\\" then
-      index = index + 1
-    elseif char:match("%s") then
-      return index - 1
-    end
-    index = index + 1
-  end
-  return #command
-end
-
-local function strip_leading_assignments(command)
-  local remaining = trim(command)
-  while remaining ~= "" do
-    local word_end = shell_word_end(remaining)
-    local word = remaining:sub(1, word_end)
-    if not word:match("^[_%a][_%w]*=") then
-      return remaining
-    end
-    remaining = trim(remaining:sub(word_end + 1))
-  end
-  return remaining
-end
-
-local function broad_bash_command_reason(command)
-  local executable_command = strip_leading_assignments(command)
-  local normalized = executable_command:lower()
-  if normalized == "" then
-    return nil
-  end
-
-  local context = normalized
-
-  local cmd = normalized:match("^(%S+)")
-  if not cmd then
-    return nil
-  end
-
-  if cmd == "find" and not has_option(normalized, "-maxdepth") and not has_option(normalized, "--maxdepth") then
-    return "find without a max depth bound"
-  end
-
-  if cmd == "locate" and not has_output_cap(context) then
-    if has_option(normalized, "-l") or has_option(normalized, "--limit") then
-      return nil
-    end
-    return "locate without output limit"
-  end
-
-  if cmd == "journalctl" and not has_output_cap(context) then
-    if has_option(normalized, "-n") or has_option(normalized, "--lines") then
-      return nil
-    end
-    return "journalctl without tail line bound"
-  end
-
-  if (cmd == "rg" or cmd == "grep") and not has_output_cap(context) then
-    return "search with unbounded result size"
-  end
-
-  if
-    cmd == "ls"
-    and (has_option(normalized, "--recursive") or has_option(executable_command, "-R"))
-    and not has_output_cap(context)
-  then
-    return "recursive ls without output cap"
-  end
-
-  if cmd == "du" and not has_output_cap(context) then
-    if
-      not has_option(normalized, "-d")
-      and not has_option(normalized, "--max-depth")
-      and not has_option(normalized, "-s")
-      and not has_option(normalized, "--summarize")
-    then
-      return "du without depth/summarize bound"
-    end
-  end
-
-  if cmd == "tree" and not has_output_cap(context) then
-    if not has_option(executable_command, "-L") and not has_option(normalized, "--max-depth") then
-      return "tree without depth bound"
-    end
-  end
-
-  if cmd == "git" then
-    local subcommand = normalized:match("^git%s+(%S+)")
-    if subcommand and not has_output_cap(context) then
-      if subcommand == "log" or subcommand == "reflog" or subcommand == "rev-list" then
-        if has_option(normalized, "-n") or has_option(normalized, "--max-count") then
-          return nil
-        end
-        return subcommand .. " history without a max count"
-      end
-
-      if subcommand == "grep" then
-        return "git grep without result limit"
-      end
-    end
-  end
-
-  return nil
 end
 
 local function normalize_sep(s)
@@ -342,38 +199,6 @@ local GIT_SANITIZE_SUBCOMMANDS = {
   log = true,
 }
 
--- Global git options that consume the following word as their value.
--- Long options can also use `=value`, which is handled inline.
-local GIT_ARG_OPTIONS = {
-  ["-C"] = true,
-  ["-c"] = true,
-  ["--work-tree"] = true,
-  ["--git-dir"] = true,
-  ["--namespace"] = true,
-  ["--super-prefix"] = true,
-  ["--exec-path"] = true,
-  ["--config-env"] = true,
-  ["--blob"] = true,
-}
-
-local function split_shell_words(command)
-  local words = {}
-  local index = 1
-  while index <= #command do
-    while index <= #command and command:sub(index, index):match("%s") do
-      index = index + 1
-    end
-    if index > #command then
-      break
-    end
-    local tail = command:sub(index)
-    local word_end = shell_word_end(tail)
-    words[#words + 1] = tail:sub(1, word_end)
-    index = index + word_end
-  end
-  return words
-end
-
 -- Harden git commands against repo-config injection of external diff/pagers.
 -- Inserts `--no-optional-locks` (prevents write locks) and `--no-ext-diff`
 -- for subcommands that may invoke an external diff driver.
@@ -408,21 +233,12 @@ local function sanitize_git_command(command)
   table.insert(words, 2, "-c")
   table.insert(words, 3, "core.fsmonitor=false")
 
+  local subcommand_index = git_subcommand_index(words, 2)
+  local option_end = subcommand_index and subcommand_index - 1 or #words
   local has_optional_locks = false
-  local subcommand_index = nil
-  local skip_next = false
-  for i = 2, #words do
-    if skip_next then
-      skip_next = false
-    elseif words[i] == "--no-optional-locks" and not subcommand_index then
+  for i = 2, option_end do
+    if words[i] == "--no-optional-locks" then
       has_optional_locks = true
-    elseif words[i]:sub(1, 1) == "-" and not subcommand_index then
-      -- If this option takes a separate argument, the next word is its value.
-      if not words[i]:find("=", 1, true) and GIT_ARG_OPTIONS[words[i]] then
-        skip_next = true
-      end
-    elseif not subcommand_index then
-      subcommand_index = i
       break
     end
   end
@@ -511,6 +327,10 @@ rtk_rewrite = function(command, ctx)
     return nil
   end
 
+  if git_subcommand(cmd) and git_uses_machine_format(cmd) then
+    return nil
+  end
+
   local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(cmd))
   local result = n00n.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
   if not result then
@@ -525,7 +345,7 @@ rtk_rewrite = function(command, ctx)
     -- rtk's rewrite has no equivalent for this command. For a small set of
     -- read-only `git` subcommands we can still route through `rtk git`, which
     -- falls back to generic git filtering for unsupported subcommands.
-    local git_sub = cmd:match("^git%s+(%S+)")
+    local git_sub = git_subcommand(cmd)
     if git_sub and RTK_GIT_FALLBACK[git_sub] then
       return "rtk " .. cmd
     end
@@ -538,11 +358,14 @@ rtk_rewrite = function(command, ctx)
     if cmd == "ls" or cmd:match("^ls%s+") then
       return "rtk " .. cmd
     end
-    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported("rtk " .. cmd .. " ") then
+    if cmd == "find" or cmd:match("^find%s+") then
+      if rtk_find_unsupported("rtk " .. cmd .. " ") then
+        return nil, RTK_REWRITE_REQUIRED .. ": the command uses unsupported find flags"
+      end
       return "rtk " .. cmd
     end
     if rtk_enforcement_required(command) then
-      return nil, RTK_REWRITE_REQUIRED .. ": rtk rewrite rejected it"
+      return nil, RTK_REWRITE_REQUIRED .. ": rtk rewrite rejected it", RTK_REWRITE_REASON_UNAVAILABLE
     end
     return nil
   end
@@ -558,11 +381,14 @@ rtk_rewrite = function(command, ctx)
     if cmd == "ls" or cmd:match("^ls%s+") then
       return "rtk " .. cmd
     end
-    if (cmd == "find" or cmd:match("^find%s+")) and not rtk_find_unsupported("rtk " .. cmd .. " ") then
+    if cmd == "find" or cmd:match("^find%s+") then
+      if rtk_find_unsupported("rtk " .. cmd .. " ") then
+        return nil, RTK_REWRITE_REQUIRED .. ": the command uses unsupported find flags"
+      end
       return "rtk " .. cmd
     end
     if rtk_enforcement_required(command) then
-      return nil, RTK_REWRITE_REQUIRED .. ": rtk returned no rewrite"
+      return nil, RTK_REWRITE_REQUIRED .. ": rtk returned no rewrite", RTK_REWRITE_REASON_UNAVAILABLE
     end
     return nil
   end
@@ -580,13 +406,6 @@ rtk_rewrite = function(command, ctx)
     return nil, RTK_REWRITE_REQUIRED .. ": rtk left a managed command unwrapped"
   end
   return rewritten
-end
-
-local function append_line(output, line)
-  if #output > 0 then
-    output[#output + 1] = "\n"
-  end
-  output[#output + 1] = line
 end
 
 local DEFAULT_MAX_LINE_BYTES = 400
@@ -806,9 +625,14 @@ rtk_rewrite_compound = function(command, ctx)
     if segment.start_byte < cursor or command:sub(segment.start_byte + 1, segment.end_byte) ~= segment.text then
       return nil, RTK_REWRITE_REQUIRED .. ": could not safely locate a compound command segment"
     end
-    local rewritten, rewrite_error = rtk_rewrite(segment.text, ctx)
+    local rewritten, rewrite_error, reason = rtk_rewrite(segment.text, ctx)
     if rewrite_error then
-      return nil, rewrite_error
+      if reason ~= RTK_REWRITE_REASON_UNAVAILABLE then
+        return nil, rewrite_error
+      end
+      -- rtk has no rewrite for this segment; run it exactly as written
+      -- rather than failing the whole compound command.
+      rewritten = nil
     end
     output[#output + 1] = command:sub(cursor + 1, segment.start_byte)
     output[#output + 1] = rewritten or segment.text
@@ -981,12 +805,11 @@ n00n.api.register_tool({
     local buf, view = create_bash_view(command, ctx)
     ctx:live_buf(buf)
 
-    local output_parts = {}
+    local collector = output_collector.new()
     local has_output = false
 
     local function finish(exit_code)
-      local output = table.concat(output_parts)
-      output = truncate(output, max_lines, max_bytes)
+      local output = output_collector.collected_output(collector, max_lines, max_bytes)
 
       local is_error = exit_code ~= 0
       local llm_output
@@ -1027,7 +850,7 @@ n00n.api.register_tool({
           has_output = true
           view:clear()
         end
-        append_line(output_parts, line)
+        output_collector.append_line(collector, line, max_lines, max_bytes)
         view:append(line)
       end,
       on_stderr = function(_, line)
@@ -1035,7 +858,7 @@ n00n.api.register_tool({
           has_output = true
           view:clear()
         end
-        append_line(output_parts, line)
+        output_collector.append_line(collector, line, max_lines, max_bytes)
         view:append(line)
       end,
       on_exit = function(_, code)

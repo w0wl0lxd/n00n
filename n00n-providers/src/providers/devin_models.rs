@@ -8,6 +8,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -24,6 +25,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -40,6 +42,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -56,6 +59,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -72,6 +76,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -88,6 +93,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -104,6 +110,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -120,6 +127,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -136,6 +144,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -152,6 +161,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -168,6 +178,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -184,6 +195,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -200,6 +212,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -216,6 +229,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -232,6 +246,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -248,6 +263,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -264,6 +280,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -280,6 +297,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -296,6 +314,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -312,6 +331,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -328,6 +348,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -344,6 +365,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -360,6 +382,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -376,6 +399,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -392,6 +416,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -408,6 +433,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -424,6 +450,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -440,6 +467,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -456,6 +484,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -472,6 +501,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -488,6 +518,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -504,6 +535,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -520,6 +552,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -536,6 +569,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -552,6 +586,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -568,6 +603,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -584,6 +620,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -600,6 +637,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -616,6 +654,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -632,6 +671,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -648,6 +688,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -664,6 +705,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -680,6 +722,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.00,
@@ -696,6 +739,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.70,
@@ -712,6 +756,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.70,
@@ -728,6 +773,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.70,
@@ -744,6 +790,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.70,
@@ -760,6 +807,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.70,
@@ -776,6 +824,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -792,6 +841,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -808,6 +858,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -824,6 +875,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.00,
@@ -840,6 +892,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.00,
@@ -856,6 +909,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -872,6 +926,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.50,
@@ -888,6 +943,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -904,6 +960,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -920,6 +977,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -936,6 +994,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -952,6 +1011,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -968,6 +1028,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -984,6 +1045,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1000,6 +1062,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1016,6 +1079,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1032,6 +1096,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1048,6 +1113,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -1064,6 +1130,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -1080,6 +1147,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -1096,6 +1164,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -1112,6 +1181,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 10.00,
@@ -1128,6 +1198,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1144,6 +1215,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1160,6 +1232,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1176,6 +1249,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1192,6 +1266,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1208,6 +1283,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1224,6 +1300,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1240,6 +1317,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.50,
@@ -1256,6 +1334,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1272,6 +1351,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1288,6 +1368,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1304,6 +1385,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1320,6 +1402,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1336,6 +1419,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1352,6 +1436,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1368,6 +1453,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1384,6 +1470,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1400,6 +1487,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1416,6 +1504,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1432,6 +1521,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -1448,6 +1538,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -1464,6 +1555,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -1480,6 +1572,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.40,
@@ -1496,6 +1589,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.40,
@@ -1512,6 +1606,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.40,
@@ -1528,6 +1623,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.40,
@@ -1544,6 +1640,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.40,
@@ -1560,6 +1657,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.40,
@@ -1576,6 +1674,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1592,6 +1691,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1608,6 +1708,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1624,6 +1725,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1640,6 +1742,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1656,6 +1759,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1672,6 +1776,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1688,6 +1793,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1704,6 +1810,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.50,
@@ -1720,6 +1827,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1736,6 +1844,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1752,6 +1861,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1768,6 +1878,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1784,6 +1895,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1800,6 +1912,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1816,6 +1929,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1832,6 +1946,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1848,6 +1963,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1864,6 +1980,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -1880,6 +1997,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 12.50,
@@ -1896,6 +2014,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 12.50,
@@ -1912,6 +2031,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 12.50,
@@ -1928,6 +2048,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 12.50,
@@ -1944,6 +2065,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 12.50,
@@ -1960,6 +2082,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.75,
@@ -1976,6 +2099,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.75,
@@ -1992,6 +2116,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.75,
@@ -2008,6 +2133,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.75,
@@ -2024,6 +2150,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -2040,6 +2167,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -2056,6 +2184,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -2072,6 +2201,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -2088,6 +2218,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2104,6 +2235,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2120,6 +2252,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2136,6 +2269,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2152,6 +2286,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2168,6 +2303,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -2184,6 +2320,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 5.00,
@@ -2200,6 +2337,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -2216,6 +2354,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -2232,6 +2371,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Claude,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.00,
@@ -2248,6 +2388,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -2264,6 +2405,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.25,
@@ -2280,6 +2422,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.25,
@@ -2296,6 +2439,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.25,
@@ -2312,6 +2456,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.25,
@@ -2328,6 +2473,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2344,6 +2490,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2360,6 +2507,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2376,6 +2524,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.75,
@@ -2392,6 +2541,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.50,
@@ -2408,6 +2558,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.50,
@@ -2424,6 +2575,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.50,
@@ -2440,6 +2592,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gpt,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 3.50,
@@ -2456,6 +2609,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.95,
@@ -2472,6 +2626,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.95,
@@ -2488,6 +2643,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.60,
@@ -2504,6 +2660,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.00,
@@ -2520,6 +2677,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.30,
@@ -2536,6 +2694,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -2552,6 +2711,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 2.00,
@@ -2568,6 +2728,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.50,
@@ -2584,6 +2745,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.50,
@@ -2600,6 +2762,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.50,
@@ -2616,6 +2779,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.50,
@@ -2632,6 +2796,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.74,

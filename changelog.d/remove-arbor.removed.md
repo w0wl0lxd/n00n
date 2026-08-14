@@ -1,0 +1,1 @@
+Removed the Arbor backend (the `arbor` tool, its Lua bindings, and the `n00n-arbor` crate). `explore` now routes caller/callee lookups and free-text graph queries to `codegraph` instead; project-map, blast-radius diff, and index-status commands had no `codegraph` equivalent and are gone.

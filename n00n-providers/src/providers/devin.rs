@@ -22,6 +22,7 @@ use isahc::{AsyncReadResponseExt, HttpClient};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
+use url::Url;
 
 use crate::model::ModelEntry;
 use crate::provider::{BoxFuture, Provider};
@@ -50,6 +51,8 @@ const DEVIN_AUTH_PATH: &str = "/exa.auth_pb.AuthService/GetUserJwt";
 const DEVIN_CHAT_PATH: &str = "/exa.api_server_pb.ApiServerService/GetChatMessage";
 const DEVIN_CLI_MODEL_CONFIGS_PATH: &str = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
 const DEVIN_SESSION_TOKEN_PREFIX: &str = "devin-session-token$";
+const HTTP_SCHEME: &str = "http";
+const HTTPS_SCHEME: &str = "https";
 const DEFAULT_TEMPERATURE: f64 = 0.4;
 const DEFAULT_TOP_P: f64 = 1.0;
 const DEFAULT_MAX_TOKENS: u32 = 64_000;
@@ -138,10 +141,10 @@ impl DevinCredentials {
         }
         Ok(Some(Self {
             session_token: normalize_session_token(&session_token),
-            api_server_url: match creds.api_server_url {
-                Some(url) => url,
-                None => DEVIN_API_URL.to_string(),
-            },
+            api_server_url: resolve_api_server_url(
+                DEVIN_API_URL.to_string(),
+                creds.api_server_url.as_deref(),
+            ),
         }))
     }
 }
@@ -156,8 +159,29 @@ fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
     }
 }
 
+/// API paths are appended to this value by string concatenation, so a query or
+/// fragment would swallow the path. `Url` also normalizes the scheme, which a
+/// prefix match does not: schemes are case-insensitive.
+fn is_valid_api_server_url(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url.trim()) else {
+        return false;
+    };
+    matches!(parsed.scheme(), HTTP_SCHEME | HTTPS_SCHEME)
+        && parsed.host_str().is_some_and(|host| !host.is_empty())
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+}
+
 fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
-    explicit.map_or(configured, str::to_string)
+    let chosen = explicit
+        .filter(|u| is_valid_api_server_url(u))
+        .map_or(configured, |u| u.trim().to_string());
+    let chosen = chosen.trim().trim_end_matches('/').to_string();
+    if is_valid_api_server_url(&chosen) {
+        chosen
+    } else {
+        DEVIN_API_URL.to_string()
+    }
 }
 
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
@@ -244,6 +268,14 @@ fn sanitize_trailer_code(code: &str) -> &str {
     } else {
         "invalid"
     }
+}
+
+/// Maps a Devin stream read failure to a retryable `AgentError::Io`.
+async fn read_stream_chunk(
+    reader: &mut (impl futures_lite::io::AsyncRead + Unpin),
+    buffer: &mut [u8],
+) -> Result<usize, AgentError> {
+    reader.read(buffer).await.map_err(AgentError::Io)
 }
 
 fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
@@ -604,14 +636,10 @@ impl Devin {
             });
         }
 
-        let base_url = if auth_response.custom_api_server_url.is_empty() {
-            creds.api_server_url.clone()
-        } else {
-            auth_response
-                .custom_api_server_url
-                .trim_end_matches('/')
-                .to_string()
-        };
+        let base_url = resolve_api_server_url(
+            creds.api_server_url.clone(),
+            Some(&auth_response.custom_api_server_url),
+        );
 
         Ok((auth_response.user_jwt, base_url))
     }
@@ -809,21 +837,12 @@ impl Devin {
         let mut buffer = vec![0u8; 8192];
 
         'stream: loop {
-            let n = futures_lite::future::or(
-                async {
-                    reader.read(&mut buffer).await.map_err(|e| AgentError::Api {
-                        status: 0,
-                        message: format!("failed to read response: {e}"),
-                    })
-                },
-                async {
-                    smol::Timer::after(stream_deadline.saturating_duration_since(Instant::now()))
-                        .await;
-                    Err(AgentError::Timeout {
-                        secs: self.timeouts.stream.as_secs(),
-                    })
-                },
-            )
+            let n = futures_lite::future::or(read_stream_chunk(&mut reader, &mut buffer), async {
+                smol::Timer::after(stream_deadline.saturating_duration_since(Instant::now())).await;
+                Err(AgentError::Timeout {
+                    secs: self.timeouts.stream.as_secs(),
+                })
+            })
             .await?;
 
             if n == 0 {
@@ -996,6 +1015,7 @@ impl Provider for Devin {
                     pricing: Some(e.pricing),
                     supports_thinking: None,
                     supports_vision: Some(e.vision),
+                    supports_files: None,
                     tier: Some(e.tier),
                     is_free: None,
                     is_promo: None,
@@ -1015,6 +1035,34 @@ impl Provider for Devin {
 mod tests {
     use super::*;
     use prost::Message as ProstMessage;
+
+    struct FailingReader;
+
+    impl futures_lite::io::AsyncRead for FailingReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(
+                ErrorKind::ConnectionReset,
+                "connection reset",
+            )))
+        }
+    }
+
+    #[test]
+    fn read_stream_chunk_maps_io_error_to_retryable_agent_error() {
+        smol::block_on(async {
+            let mut reader = FailingReader;
+            let mut buffer = [0u8; 8];
+            let err = read_stream_chunk(&mut reader, &mut buffer)
+                .await
+                .unwrap_err();
+            assert!(err.is_retryable());
+            assert!(matches!(err, AgentError::Io(_)));
+        });
+    }
 
     #[test]
     fn normalize_session_token_adds_prefix() {
@@ -1195,6 +1243,68 @@ mod tests {
         assert_eq!(
             resolve_api_server_url("https://configured.example".to_string(), None),
             "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_url_falls_back_to_configured() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url")),
+            "https://configured.example"
+        );
+    }
+
+    /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
+    /// request and session token to the default service instead of the
+    /// configured endpoint.
+    /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
+    /// request and session token to the default service instead of the
+    /// configured endpoint.
+    #[test]
+    fn url_scheme_comparison_is_case_insensitive() {
+        for url in ["HTTPS://devin.example", "Http://devin.example"] {
+            assert_eq!(
+                resolve_api_server_url("https://configured.example".to_string(), Some(url)),
+                url
+            );
+        }
+        assert!(!is_valid_api_server_url("https://"));
+        assert!(!is_valid_api_server_url("ftp://devin.example"));
+    }
+
+    /// API paths are appended by concatenation, so a query or fragment would
+    /// place the path after `?` or `#` and the request would never reach it.
+    #[test]
+    fn urls_carrying_a_query_or_fragment_are_rejected() {
+        for url in [
+            "https://devin.example?token=abc",
+            "https://devin.example#frag",
+            "https://devin.example/path?x=1",
+            "not-a-url",
+            "",
+        ] {
+            assert!(!is_valid_api_server_url(url), "should reject: {url}");
+        }
+        assert!(is_valid_api_server_url("https://devin.example"));
+        assert!(is_valid_api_server_url("https://devin.example/base"));
+        // The WHATWG parser skips the surplus slash, so this is `https://nohost/`
+        // with a real host rather than a host-less URL.
+        assert!(is_valid_api_server_url("https:///nohost"));
+    }
+
+    #[test]
+    fn whitespace_padded_configured_url_is_trimmed_not_discarded() {
+        assert_eq!(
+            resolve_api_server_url("  https://configured.example/  ".to_string(), None),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn invalid_configured_and_explicit_urls_fall_back_to_default() {
+        assert_eq!(
+            resolve_api_server_url("not-a-url".to_string(), Some("also-not-a-url")),
+            DEVIN_API_URL
         );
     }
 

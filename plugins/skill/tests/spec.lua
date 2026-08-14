@@ -366,8 +366,8 @@ case("build_plan_prefers_structured_steps", function()
 end)
 
 case("graph_rank_bonus_only_for_path_scoped_skills", function()
-  local signals = { arbor_indexed = true, codegraph_indexed = true }
-  eq(helpers.graph_rank_bonus({ paths = { "src/**" } }, signals), 8)
+  local signals = { codegraph_indexed = true }
+  eq(helpers.graph_rank_bonus({ paths = { "src/**" } }, signals), 3)
   eq(helpers.graph_rank_bonus({ name = "generic" }, signals), 0)
 end)
 
@@ -382,7 +382,7 @@ case("score_skill_adds_graph_bonus_when_enabled", function()
     "src/api/agent.rs",
     {
       graph_rank = true,
-      signals = { arbor_indexed = true, codegraph_indexed = false },
+      signals = { codegraph_indexed = true },
     }
   )
   local baseline = helpers.score_skill({
