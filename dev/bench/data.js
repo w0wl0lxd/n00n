@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786701189641,
+  "lastUpdate": 1786710371661,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -18245,6 +18245,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 140811,
             "range": "± 23013",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b48819b50cb8463857f9a821ba0d7e79a4049ce6",
+          "message": "fix(lua): update JobStore kill test to the plugin-owned jobs API (#369)",
+          "timestamp": "2026-08-14T08:10:08-04:00",
+          "tree_id": "35e72cad57953d1f4d10fae5928b51c3a817ddba",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b48819b50cb8463857f9a821ba0d7e79a4049ce6"
+        },
+        "date": 1786710369206,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6495602,
+            "range": "± 112485",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2455540,
+            "range": "± 37642",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2464736,
+            "range": "± 53338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7580341,
+            "range": "± 36948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3758214,
+            "range": "± 109204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3787143,
+            "range": "± 37155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 553870,
+            "range": "± 1386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167837,
+            "range": "± 272",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167801,
+            "range": "± 2114",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1058486,
+            "range": "± 5728",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 622589,
+            "range": "± 2871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 621736,
+            "range": "± 3508",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 71490,
+            "range": "± 5515",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 177647,
+            "range": "± 12419",
             "unit": "ns/iter"
           }
         ]
