@@ -516,7 +516,7 @@ impl Opencode {
         );
         super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
         self.chat_compat
-            .do_stream(model, &[], &body, event_tx, auth)
+            .do_stream(model, &[], &body, event_tx, auth, opts)
             .await
     }
 

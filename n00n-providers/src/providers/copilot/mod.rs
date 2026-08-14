@@ -237,6 +237,7 @@ impl Copilot {
         system: &str,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
+        opts: &crate::RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
         let system_text = system.to_string();
@@ -265,6 +266,7 @@ impl Copilot {
                 BufReader::new(response.into_body()),
                 event_tx,
                 self.stream_timeout,
+                opts,
             )
             .await
         } else {
@@ -322,6 +324,7 @@ impl Copilot {
             event_tx,
             &resolved,
             self.stream_timeout,
+            &opts,
         )
         .await
         .map(|(_, response)| response)
