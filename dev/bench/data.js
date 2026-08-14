@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786712509959,
+  "lastUpdate": 1786713843610,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -18569,6 +18569,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 158534,
             "range": "± 2388",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e909af62647af343c6bdd133bfdd7a30ee0ddb0",
+          "message": "ci(perf): group rust-cache entries by shared-key and gate writes to main (#367)\n\n* ci(perf): group rust-cache entries by shared-key and gate writes to main\n\nRepository cache usage was 21.38 GB against GitHub's 10 GB per-repository\nlimit (45 active caches), evicting entries continuously and forcing every\nRust CI job to rebuild cold. Each of the 12 Swatinem/rust-cache steps in\nrust.yml, plus the ones in docs.yml and benchmarks.yml, kept its own\nper-job cache with no shared-key, multiplied further by GitHub's per-branch\ncache scoping across 17 open PR branches.\n\nGroup caches by (platform, compile profile) instead: linux-stable covers\nlint/test/docs/build/rustdoc plus docs.yml's site build, since they all\ncompile the workspace at the default dev profile; windows-stable and\nmacos-stable mirror that grouping per platform; coverage and MSRV get their\nown keys because llvm-cov instrumentation and the pinned 1.97 toolchain\nproduce incompatible artifacts; benchmarks.yml gets its own linux-bench key\nsince bench builds use a different profile entirely. save-if is restricted\nto pushes on main, so PR branches only read from main's cache instead of\neach writing (and evicting) their own.\n\n* ci(perf): install the toolchain before rust-cache computes its key",
+          "timestamp": "2026-08-14T09:07:43-04:00",
+          "tree_id": "a681bc176471bf747ed21dd899eb48343d8cc8ad",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/6e909af62647af343c6bdd133bfdd7a30ee0ddb0"
+        },
+        "date": 1786713842442,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6497561,
+            "range": "± 58710",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2442720,
+            "range": "± 6875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2445911,
+            "range": "± 22937",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7682275,
+            "range": "± 62747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3872687,
+            "range": "± 181282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3864853,
+            "range": "± 8138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554042,
+            "range": "± 4464",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167935,
+            "range": "± 227",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167865,
+            "range": "± 921",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1034314,
+            "range": "± 17139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 627443,
+            "range": "± 4283",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 627957,
+            "range": "± 4770",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 70019,
+            "range": "± 6374",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 171489,
+            "range": "± 11801",
             "unit": "ns/iter"
           }
         ]
