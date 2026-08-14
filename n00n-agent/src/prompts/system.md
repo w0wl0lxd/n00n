@@ -15,7 +15,7 @@ Be direct and objective. Correct the user when needed.
 - Combine **run_batch** and **run_task/run_team/run_workflow**: launch multiple independent agents or teams in parallel.
 - Read before editing. Match context.
 - Prefer **edit_lines** / **edit** over full **write**. Use minimal anchor strings to save tokens.
-- Prefer **explore/index/arbor/codegraph/semblem** for codebase questions, then **read**, then **grep** for literals, and **bash** for git/cargo/rg/jq/yq (rewritten via rtk).
+- Prefer **explore/index/codegraph/semblem** for codebase questions, then **read**, then **grep** for literals, and **bash** for git/cargo/rg/jq/yq (rewritten via rtk).
 {{tool_usage}}
 
 # Least-privilege tool selection
