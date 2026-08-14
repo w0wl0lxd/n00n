@@ -247,7 +247,7 @@ impl Chat {
                     "Model stalled after tool calls, nudging...".into(),
                 ));
             }
-            AgentEvent::SubagentHistory { .. } => {}
+            AgentEvent::QueueDrained { .. } | AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
             }
@@ -543,6 +543,17 @@ impl Chat {
     #[must_use]
     pub fn in_progress_count(&self) -> usize {
         self.messages_panel.in_progress_count()
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn tool_status(&self, tool_id: &str) -> Option<ToolStatus> {
+        self.messages_panel.messages.iter().find_map(|message| {
+            let DisplayRole::Tool(tool) = &message.role else {
+                return None;
+            };
+            (tool.id == tool_id).then_some(tool.status)
+        })
     }
 
     #[cfg(test)]

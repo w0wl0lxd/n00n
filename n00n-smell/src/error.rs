@@ -2,8 +2,11 @@
 
 #[derive(Debug, thiserror::Error)]
 pub enum SmellError {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("I/O error: {path}: {source}")]
+    Io {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
 
     #[error("tantivy error: {0}")]
     Tantivy(#[from] tantivy::TantivyError),
@@ -14,8 +17,8 @@ pub enum SmellError {
     #[error("config error: {message}")]
     Config { message: String },
 
-    #[error("git scan error: {0}")]
-    Git(#[from] n00n_git::GitError),
+    #[error("regex error: {0}")]
+    Regex(#[from] regex::Error),
 
     #[error("index is locked by another process")]
     Locked,

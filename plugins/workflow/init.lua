@@ -402,14 +402,26 @@ local function new_run_id(script)
   return n00n.workflow.hash(script .. "\0" .. tostring(os.time()) .. "\0" .. tostring(run_seq))
 end
 
+local function utf8_prefix(text, limit)
+  local cut = math.min(#text, math.max(limit, 0))
+  while cut > 0 do
+    local next_byte = text:byte(cut + 1)
+    if not next_byte or next_byte < 0x80 or next_byte >= 0xC0 then
+      break
+    end
+    cut = cut - 1
+  end
+  return text:sub(1, cut)
+end
+
 local function bounded_text(text, limit)
   if #text <= limit then
     return text
   end
   if limit <= #RESULT_TRUNCATED_MARKER then
-    return RESULT_TRUNCATED_MARKER:sub(1, limit)
+    return utf8_prefix(RESULT_TRUNCATED_MARKER, limit)
   end
-  return text:sub(1, limit - #RESULT_TRUNCATED_MARKER) .. RESULT_TRUNCATED_MARKER
+  return utf8_prefix(text, limit - #RESULT_TRUNCATED_MARKER) .. RESULT_TRUNCATED_MARKER
 end
 
 local function parallel(fns, popts)

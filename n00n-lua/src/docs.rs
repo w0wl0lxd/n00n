@@ -134,6 +134,7 @@ mod tests {
             Some(ui_tx),
             &PluginPermissions::trusted(),
             Arc::default(),
+            None,
         )
         .unwrap();
 
@@ -172,5 +173,47 @@ mod tests {
                 "documented functions for `{name}` do not match registered keys"
             );
         }
+    }
+
+    #[test]
+    fn privileged_firecrawl_api_is_internal_and_capability_scoped() {
+        let lua = Lua::new();
+        let ordinary = create_n00n_global(
+            &lua,
+            Arc::default(),
+            Arc::from("ordinary"),
+            None,
+            &PluginPermissions::trusted(),
+            Arc::default(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            ordinary.get::<Value>("firecrawl").unwrap(),
+            Value::Nil
+        ));
+
+        let privileged = create_n00n_global(
+            &lua,
+            Arc::default(),
+            Arc::from("websearch"),
+            None,
+            &PluginPermissions::trusted(),
+            Arc::default(),
+            Some(crate::api::firecrawl::BundledCapability::WebSearch),
+        )
+        .unwrap();
+        let firecrawl: Table = privileged.get("firecrawl").unwrap();
+        let expected: BTreeSet<String> = crate::api::firecrawl::DOCS
+            .fns
+            .iter()
+            .map(|function| function.name.to_string())
+            .collect();
+        assert_eq!(table_keys(&firecrawl), expected);
+        assert!(
+            !api_docs()
+                .iter()
+                .any(|module| module.name == "n00n.firecrawl")
+        );
     }
 }

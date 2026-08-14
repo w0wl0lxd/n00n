@@ -226,6 +226,12 @@ impl StatusBar {
                 format_tokens(ctx.stats.context_window),
                 pct,
             ));
+            let prompt_tokens = ctx.stats.usage.total_input();
+            if prompt_tokens > 0 {
+                let cache_hit =
+                    f64::from(ctx.stats.usage.cache_read) * 100.0 / f64::from(prompt_tokens);
+                usage_parts.push(format!("cache {cache_hit:.1}%"));
+            }
             if !ctx.stats.pricing.is_zero() {
                 let cost = ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast);
                 let savings = ctx.stats.usage.savings_cost(ctx.stats.pricing, ctx.fast);
@@ -511,6 +517,62 @@ mod tests {
                 .any(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch)),
             "status bar: {text:?}"
         );
+    }
+
+    #[test]
+    fn status_bar_renders_cache_hit_rate() {
+        use n00n_providers::{ModelPricing, TokenUsage};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let backend = TestBackend::new(140, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut bar = StatusBar::new(Duration::from_secs(1));
+        bar.set_cwd_branch_for_test("repo");
+        let usage = TokenUsage {
+            input: 70,
+            cache_read: 30,
+            ..TokenUsage::default()
+        };
+        terminal
+            .draw(|frame| {
+                bar.view(
+                    frame,
+                    frame.area(),
+                    &StatusBarContext {
+                        status: &Status::Idle,
+                        mode_label: Cow::Borrowed("NORMAL"),
+                        mode_style: Style::default(),
+                        model_id: "openai/gpt-5.6",
+                        stats: UsageStats {
+                            usage: &usage,
+                            context_size: 100,
+                            pricing: &ModelPricing::default(),
+                            context_window: 1_000,
+                            global_costs: None,
+                        },
+                        auto_scroll: true,
+                        chat_name: None,
+                        retry_info: None,
+                        thinking_label: None,
+                        fusion_phase: None,
+                        fast: false,
+                        workflow: false,
+                        restoring: false,
+                        cache_health: None,
+                        cache_valid_until: None,
+                    },
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(text.contains("cache 30.0%"), "status bar: {text:?}");
     }
 
     #[test]

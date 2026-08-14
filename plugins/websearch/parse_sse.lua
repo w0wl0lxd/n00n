@@ -1,23 +1,41 @@
 local NO_RESULTS_MSG = "No search results found"
+local BACKEND_ERROR_MSG = "Exa backend returned an error"
 
 local function extract_text(parsed)
   local content = parsed.result and parsed.result.content
-  local text = type(content) == "table" and content[1] and content[1].text
-  if type(text) == "string" and #text > 0 then
-    return text
+  if type(content) ~= "table" then
+    return nil
+  end
+  for _, item in ipairs(content) do
+    if type(item) == "table" and type(item.text) == "string" and #item.text > 0 then
+      return item.text
+    end
   end
 end
 
-local function parse_sse_response(body)
-  for line in body:gmatch("[^\n]+") do
-    local data = line:match("^data: (.+)")
+local function decode_json(data, label)
+  local parsed, parse_err = n00n.json.decode(data)
+  if not parsed then
+    return nil, label .. " parse error: " .. tostring(parse_err)
+  end
+  if type(parsed) ~= "table" then
+    return nil, label .. " response must be a JSON object"
+  end
+  if parsed.error ~= nil or (type(parsed.result) == "table" and parsed.result.isError == true) then
+    return nil, BACKEND_ERROR_MSG
+  end
+  return extract_text(parsed) or NO_RESULTS_MSG
+end
+
+local function parse_sse(body)
+  for line in body:gmatch("[^\r\n]+") do
+    local data = line:match("^data:%s*(.+)")
     if data then
-      local parsed, parse_err = n00n.json.decode(data)
-      if not parsed then
-        return nil, "SSE JSON parse error: " .. parse_err
+      local text, parse_err = decode_json(data, "SSE JSON")
+      if not text then
+        return nil, parse_err
       end
-      local text = extract_text(parsed)
-      if text then
+      if text ~= NO_RESULTS_MSG then
         return text
       end
     end
@@ -25,4 +43,19 @@ local function parse_sse_response(body)
   return NO_RESULTS_MSG
 end
 
-return parse_sse_response
+local function parse_response(body, content_type)
+  local media_type = tostring(content_type or ""):lower()
+  local trimmed = body:match("^%s*(.-)%s*$")
+  if trimmed == "" then
+    return NO_RESULTS_MSG
+  end
+  if media_type:find("application/json", 1, true) or trimmed:match("^[%{%[]") then
+    return decode_json(trimmed, "JSON-RPC")
+  end
+  if media_type:find("text/event-stream", 1, true) or body:match("^%s*data:") or body:find("\ndata:", 1, true) then
+    return parse_sse(body)
+  end
+  return nil, "unsupported Exa response"
+end
+
+return parse_response

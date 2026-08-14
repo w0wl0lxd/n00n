@@ -12,6 +12,7 @@ use n00n_config::{PluginsConfig, RawConfig};
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredSessionStateSnapshot;
 
+use crate::api::firecrawl::BundledCapability;
 use crate::api::keymap::KeymapReader;
 use crate::api::options::{PluginOptionSpecs, PluginOpts};
 use crate::api::util::command::{HintReader, LuaCommandReader, UiAction};
@@ -26,139 +27,127 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 struct BundledPlugin {
     name: &'static str,
     dir: Dir<'static>,
+    capability: Option<BundledCapability>,
+}
+
+const fn bundled(name: &'static str, dir: Dir<'static>) -> BundledPlugin {
+    BundledPlugin {
+        name,
+        dir,
+        capability: None,
+    }
+}
+
+const fn privileged(
+    name: &'static str,
+    dir: Dir<'static>,
+    capability: BundledCapability,
+) -> BundledPlugin {
+    BundledPlugin {
+        name,
+        dir,
+        capability: Some(capability),
+    }
 }
 
 /// `lib` is not a default builtin; it exists so plugins can
 /// `require()` shared modules across boundaries.
 static BUNDLED_PLUGINS: &[BundledPlugin] = &[
-    BundledPlugin {
-        name: "agent_control",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
-    },
-    BundledPlugin {
-        name: "arbor",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
-    },
-    BundledPlugin {
-        name: "blackboard",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
-    },
-    BundledPlugin {
-        name: "sessions",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
-    },
-    BundledPlugin {
-        name: "semblem",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
-    },
-    BundledPlugin {
-        name: "smell",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/smell"),
-    },
-    BundledPlugin {
-        name: "index",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
-    },
-    BundledPlugin {
-        name: "webfetch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/webfetch"),
-    },
-    BundledPlugin {
-        name: "websearch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/websearch"),
-    },
-    BundledPlugin {
-        name: "bash",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/bash"),
-    },
-    BundledPlugin {
-        name: "batch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/batch"),
-    },
-    BundledPlugin {
-        name: "grep",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep"),
-    },
-    BundledPlugin {
-        name: "glob",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob"),
-    },
-    BundledPlugin {
-        name: "skill",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/skill"),
-    },
-    BundledPlugin {
-        name: "memory",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/memory"),
-    },
-    BundledPlugin {
-        name: "question",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/question"),
-    },
-    BundledPlugin {
-        name: "todo_write",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/todo_write"),
-    },
-    BundledPlugin {
-        name: "read",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/read"),
-    },
-    BundledPlugin {
-        name: "write",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/write"),
-    },
-    BundledPlugin {
-        name: "edit",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/edit"),
-    },
-    BundledPlugin {
-        name: "explore",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/explore"),
-    },
-    BundledPlugin {
-        name: "fusion",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/fusion"),
-    },
-    BundledPlugin {
-        name: "task",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/task"),
-    },
-    BundledPlugin {
-        name: "workflow",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
-    },
-    BundledPlugin {
-        name: "team",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/team"),
-    },
-    BundledPlugin {
-        name: "tmux",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux"),
-    },
-    BundledPlugin {
-        name: "code_execution",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
-    },
-    BundledPlugin {
-        name: "codegraph",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
-    },
-    BundledPlugin {
-        name: "git",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/git"),
-    },
-    BundledPlugin {
-        name: "github",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/github"),
-    },
-    BundledPlugin {
-        name: "view_image",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
-    },
-    BundledPlugin {
-        name: "lib",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/lib"),
-    },
+    bundled(
+        "agent_control",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
+    ),
+    bundled(
+        "arbor",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
+    ),
+    bundled(
+        "blackboard",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
+    ),
+    bundled(
+        "sessions",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
+    ),
+    bundled(
+        "semblem",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
+    ),
+    bundled(
+        "smell",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/smell"),
+    ),
+    bundled(
+        "index",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
+    ),
+    privileged(
+        "webfetch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/webfetch"),
+        BundledCapability::WebFetch,
+    ),
+    privileged(
+        "websearch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/websearch"),
+        BundledCapability::WebSearch,
+    ),
+    bundled("bash", include_dir!("$CARGO_MANIFEST_DIR/../plugins/bash")),
+    bundled(
+        "batch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/batch"),
+    ),
+    bundled("grep", include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep")),
+    bundled("glob", include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob")),
+    bundled(
+        "skill",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/skill"),
+    ),
+    bundled(
+        "memory",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/memory"),
+    ),
+    bundled(
+        "question",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/question"),
+    ),
+    bundled(
+        "todo_write",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/todo_write"),
+    ),
+    bundled("read", include_dir!("$CARGO_MANIFEST_DIR/../plugins/read")),
+    bundled(
+        "write",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/write"),
+    ),
+    bundled("edit", include_dir!("$CARGO_MANIFEST_DIR/../plugins/edit")),
+    bundled(
+        "explore",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/explore"),
+    ),
+    bundled(
+        "fusion",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/fusion"),
+    ),
+    bundled("task", include_dir!("$CARGO_MANIFEST_DIR/../plugins/task")),
+    bundled(
+        "workflow",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
+    ),
+    bundled("team", include_dir!("$CARGO_MANIFEST_DIR/../plugins/team")),
+    bundled("tmux", include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux")),
+    bundled(
+        "code_execution",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
+    ),
+    bundled(
+        "codegraph",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
+    ),
+    bundled(
+        "view_image",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
+    ),
+    bundled("lib", include_dir!("$CARGO_MANIFEST_DIR/../plugins/lib")),
 ];
 
 pub(crate) fn lib_dir() -> &'static Dir<'static> {
@@ -338,15 +327,16 @@ impl PluginHost {
 
         let mut prepared = Vec::with_capacity(config.names.len());
         for builtin in &config.names {
-            let dir = match BUNDLED_PLUGINS.iter().find(|p| p.name == builtin.as_str()) {
-                Some(p) => &p.dir,
-                None => {
-                    return Err(PluginError::UnknownPlugin {
-                        plugin: builtin.clone(),
-                    });
-                }
+            let Some(bundled) = BUNDLED_PLUGINS
+                .iter()
+                .find(|plugin| plugin.name == builtin.as_str())
+            else {
+                return Err(PluginError::UnknownPlugin {
+                    plugin: builtin.clone(),
+                });
             };
-            let init = dir
+            let init = bundled
+                .dir
                 .get_file("init.lua")
                 .and_then(|f| f.contents_utf8())
                 .ok_or_else(|| PluginError::Lua {
@@ -358,7 +348,12 @@ impl PluginHost {
                 .get(builtin.as_str())
                 .cloned()
                 .map_or_else(Arc::default, Arc::new);
-            prepared.push((Arc::from(builtin.as_str()), init.to_owned(), opts));
+            prepared.push((
+                Arc::from(builtin.as_str()),
+                init.to_owned(),
+                opts,
+                bundled.capability,
+            ));
         }
 
         // Pipeline: queue every LoadSource before collecting any reply. The
@@ -368,7 +363,7 @@ impl PluginHost {
         // rest from loading; the first error (in send order) is returned.
         let tx = self.tx()?;
         let mut replies = Vec::with_capacity(prepared.len());
-        for (name, source, opts) in prepared {
+        for (name, source, opts, bundled_capability) in prepared {
             let (reply_tx, reply_rx) = flume::bounded(1);
             tx.send(Request::LoadSource {
                 name,
@@ -376,6 +371,7 @@ impl PluginHost {
                 plugin_dir: None,
                 permissions: PluginPermissions::trusted(),
                 opts,
+                bundled_capability,
                 reply: reply_tx,
             })
             .map_err(|_| PluginError::HostDead)?;
@@ -418,6 +414,7 @@ impl PluginHost {
             plugin_dir,
             permissions,
             opts,
+            bundled_capability: None,
             reply: reply_tx,
         })
         .map_err(|_| PluginError::HostDead)?;
@@ -667,19 +664,39 @@ impl EventHandle {
         }
     }
 
-    pub fn run_command(&self, plugin: Arc<str>, command: Arc<str>, args: String) {
+    pub fn run_command(
+        &self,
+        plugin: Arc<str>,
+        command: Arc<str>,
+        args: String,
+        identity: Option<SessionIdentity>,
+    ) {
         let _ = self.prio_tx.try_send(Request::RunCommand {
             plugin,
             command,
             args,
+            identity,
         });
+    }
+
+    /// Collects prompt slots from the plugin host.
+    ///
+    /// # Errors
+    /// Returns [`PluginError::HostDead`] if the plugin host is unavailable.
+    pub fn try_collect_prompt_slots(&self) -> Result<ResolvedSlots, PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::CollectPromptSlots { reply })
+            .map_err(|_| PluginError::HostDead)?;
+        recv.recv().map_err(|_| PluginError::HostDead)
     }
 
     #[must_use]
     pub fn collect_prompt_slots(&self) -> ResolvedSlots {
-        let (tx, rx) = flume::bounded(1);
-        let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
-        rx.recv().unwrap_or_else(|_| ResolvedSlots::default())
+        self.try_collect_prompt_slots().unwrap_or_else(|error| {
+            tracing::warn!(%error, "plugin prompt slots unavailable; using empty slots");
+            ResolvedSlots::default()
+        })
     }
 
     pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
@@ -904,6 +921,15 @@ mod tests {
     }
 
     #[test]
+    fn try_collect_prompt_slots_reports_disconnected_host() {
+        let handle = EventHandle::disconnected_for_test();
+        assert!(matches!(
+            handle.try_collect_prompt_slots(),
+            Err(PluginError::HostDead)
+        ));
+    }
+
+    #[test]
     fn task_and_team_builtins_coexist() {
         let reg = Arc::new(ToolRegistry::new());
         let _host = PluginHost::with_all_builtins(Arc::clone(&reg)).unwrap();
@@ -983,17 +1009,25 @@ mod tests {
             prio_tx,
             state_leases: Arc::new(StateLeases::default()),
         };
-        handle.run_command(Arc::from("myplugin"), Arc::from("/greet"), "world".into());
+        let identity = SessionIdentity::root(n00n_storage::id::SessionRef::generate());
+        handle.run_command(
+            Arc::from("myplugin"),
+            Arc::from("/greet"),
+            "world".into(),
+            Some(identity.clone()),
+        );
         let req = prio_rx.try_recv().unwrap();
         match req {
             Request::RunCommand {
                 plugin,
                 command,
                 args,
+                identity: request_identity,
             } => {
                 assert_eq!(plugin.as_ref(), "myplugin");
                 assert_eq!(command.as_ref(), "/greet");
                 assert_eq!(args, "world");
+                assert_eq!(request_identity, Some(identity));
             }
             _ => panic!("expected RunCommand"),
         }
