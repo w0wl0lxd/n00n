@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786699597157,
+  "lastUpdate": 1786699668673,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -17921,6 +17921,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 171373,
             "range": "± 16444",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "723d8d890edf2f6d053b1f08e07d4edc18583d31",
+          "message": "Merge pull request #360 from w0wl0lxd/fix/bounded-bash-rtk\n\nfix(bash): resolve real git subcommand and accept natively bounded commands",
+          "timestamp": "2026-08-14T05:21:05-04:00",
+          "tree_id": "4d4ec00a1158edee9399cbf939afd5c496fad4ed",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/723d8d890edf2f6d053b1f08e07d4edc18583d31"
+        },
+        "date": 1786699666375,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6712869,
+            "range": "± 10254",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2244883,
+            "range": "± 22005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2225737,
+            "range": "± 45871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8121644,
+            "range": "± 28050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4324683,
+            "range": "± 9527",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4313121,
+            "range": "± 15951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585060,
+            "range": "± 1346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191659,
+            "range": "± 288",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191672,
+            "range": "± 331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045937,
+            "range": "± 12884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582543,
+            "range": "± 1074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581434,
+            "range": "± 4435",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79669,
+            "range": "± 2886",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 114719,
+            "range": "± 20556",
             "unit": "ns/iter"
           }
         ]
