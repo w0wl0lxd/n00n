@@ -97,6 +97,7 @@ mod tests {
     use std::sync::Arc;
 
     use mlua::{Lua, Table, Value};
+    use n00n_config::SearchConfig;
 
     use super::{DocKind, api_docs};
     use crate::api::create_n00n_global;
@@ -133,6 +134,7 @@ mod tests {
             &PluginPermissions::trusted(),
             Arc::default(),
             None,
+            Arc::new(SearchConfig::default()),
         )
         .unwrap();
 
@@ -184,6 +186,7 @@ mod tests {
             &PluginPermissions::trusted(),
             Arc::default(),
             None,
+            Arc::new(SearchConfig::default()),
         )
         .unwrap();
         assert!(matches!(
@@ -199,6 +202,7 @@ mod tests {
             &PluginPermissions::trusted(),
             Arc::default(),
             Some(crate::api::firecrawl::BundledCapability::WebSearch),
+            Arc::new(SearchConfig::default()),
         )
         .unwrap();
         let firecrawl: Table = privileged.get("firecrawl").unwrap();

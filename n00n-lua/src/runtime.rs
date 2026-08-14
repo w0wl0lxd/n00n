@@ -22,7 +22,7 @@ use n00n_agent::tools::{
 use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
 use serde_json::Value;
 
-use n00n_config::RawConfig;
+use n00n_config::{RawConfig, SearchConfig};
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
@@ -1612,6 +1612,7 @@ struct LuaRuntime {
     shutdown: Arc<AtomicBool>,
     bundled_dirs: &'static [&'static Dir<'static>],
     ui_action_tx: Option<flume::Sender<UiAction>>,
+    search_config: Arc<SearchConfig>,
 }
 
 impl LuaRuntime {
@@ -1707,6 +1708,7 @@ impl LuaRuntime {
             shutdown,
             bundled_dirs,
             ui_action_tx,
+            search_config,
         })
     }
 
@@ -2083,6 +2085,7 @@ impl LuaRuntime {
             permissions,
             Arc::clone(&opts),
             bundled_capability,
+            Arc::clone(&self.search_config),
         )
         .map_err(&map_err)?;
 

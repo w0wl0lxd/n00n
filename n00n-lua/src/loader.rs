@@ -8,7 +8,7 @@ use std::time::Duration;
 use include_dir::{Dir, include_dir};
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
-use n00n_config::{PluginsConfig, RawConfig};
+use n00n_config::{PluginsConfig, RawConfig, SearchConfig};
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredSessionStateSnapshot;
 
