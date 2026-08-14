@@ -236,12 +236,9 @@ impl<T: Transport> Fetcher<T> {
                     header(&response.headers, "location").ok_or_else(|| Error::Parse {
                         message: "redirect response is missing Location".into(),
                     })?;
-                let next = url
-                    .as_url()
-                    .join(location)
-                    .map_err(|error| Error::Parse {
-                        message: error.to_string(),
-                    })?;
+                let next = url.as_url().join(location).map_err(|error| Error::Parse {
+                    message: error.to_string(),
+                })?;
                 url = self.policy.validate(next.as_str())?;
                 continue;
             }
@@ -251,11 +248,9 @@ impl<T: Transport> Fetcher<T> {
                 });
             }
             if let Some(length) = header(&response.headers, "content-length") {
-                let length = length
-                    .parse::<usize>()
-                    .map_err(|error| Error::Parse {
-                        message: format!("invalid Content-Length: {error}"),
-                    })?;
+                let length = length.parse::<usize>().map_err(|error| Error::Parse {
+                    message: format!("invalid Content-Length: {error}"),
+                })?;
                 if length > max_response_bytes {
                     return Err(Error::ResponseTooLarge {
                         limit: max_response_bytes,

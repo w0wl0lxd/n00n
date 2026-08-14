@@ -72,10 +72,7 @@ impl SearchRequest {
             ));
         }
         if !(1..=MAX_SEARCH_RESULTS).contains(&self.limit) {
-            return Err(Error::validation(
-                "limit",
-                "is outside the allowed range",
-            ));
+            return Err(Error::validation("limit", "is outside the allowed range"));
         }
         if self.content_budget_bytes > MAX_SOURCE_BYTES {
             return Err(Error::validation(

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum Error {
     #[error("invalid {field}: {message}")]
     Validation {
