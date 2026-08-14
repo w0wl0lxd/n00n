@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn aliases_reject_invalid_or_uncatalogued_specs() {
+    fn aliases_reject_invalid_or_uncataloged_specs() {
         let catalog = ModelCatalog::from_specs(["test/canonical".to_string()]);
         assert!(matches!(
             catalog.clone().with_alias("malformed", "not-a-model-spec"),

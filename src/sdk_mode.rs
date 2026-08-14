@@ -26,9 +26,7 @@ use n00n_agent::{
     AgentConfig, AgentEvent, AgentInput, AgentMode, Envelope, PermissionsConfig, ToolOutput,
 };
 use n00n_providers::model::Model;
-use n00n_providers::{
-    ImageSource, Message, ModelResolver, OpenAiOptions, StopReason, Timeouts, TokenUsage,
-};
+use n00n_providers::{ImageSource, Message, OpenAiOptions, StopReason, Timeouts, TokenUsage};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::Session;
@@ -56,22 +54,6 @@ const TOOL_NAME_MAP: &[(&str, &str)] = &[
     ("memory", "Memory"),
     ("question", "Question"),
     ("skill", "Skill"),
-    ("run_shell", "Bash"),
-    ("read_file", "Read"),
-    ("edit_file", "Edit"),
-    ("write_file", "Write"),
-    ("search_code", "Grep"),
-    ("search_files", "Glob"),
-    ("update_todo", "TodoWrite"),
-    ("fetch_url", "WebFetch"),
-    ("search_web", "WebSearch"),
-    ("run_task", "Task"),
-    ("edit_file_bulk", "MultiEdit"),
-    ("run_python", "CodeExecution"),
-    ("index_file", "Index"),
-    ("use_memory", "Memory"),
-    ("ask_user", "Question"),
-    ("load_skill", "Skill"),
 ];
 
 /// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
@@ -939,28 +921,29 @@ fn handle_control_request(
 }
 
 fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Option<Model> {
-    let resolver = ModelResolver::current();
     match model_val? {
-        Value::Null => match resolver.resolve(&startup_model.spec()) {
-            Ok(model) => Some(model),
-            Err(_) => {
+        Value::Null => Some(startup_model.clone()),
+        Value::String(model_str) => match Model::from_spec(&resolve_model_spec(model_str)) {
+            Ok(m) => Some(m),
+            Err(e) => {
                 eprintln!(
-                    "warning: startup model is no longer configured or available; keeping current model"
-                );
-                None
-            }
-        },
-        Value::String(model_str) => match resolver.resolve(model_str) {
-            Ok(model) => Some(model),
-            Err(_) => {
-                eprintln!(
-                    "warning: requested model is not configured or available; keeping current model"
+                    "warning: failed to resolve model '{model_str}': {e}, keeping current model"
                 );
                 None
             }
         },
         _ => None,
     }
+}
+
+fn resolve_model_spec(model_id: &str) -> String {
+    if model_id.contains('/') {
+        return model_id.to_string();
+    }
+    if model_id.starts_with("claude-") {
+        return format!("anthropic/{model_id}");
+    }
+    model_id.to_string()
 }
 
 fn decode_permission_response(data: &Value) -> PermissionAnswer {
@@ -1312,14 +1295,6 @@ mod tests {
         assert_eq!(claude_to_n00n_tool_name(claude), n00n);
     }
 
-    #[test_case("run_shell", "Bash")]
-    #[test_case("read_file", "Read")]
-    #[test_case("load_skill", "Skill")]
-    #[test_case("use_memory", "Memory")]
-    fn canonical_tool_names_use_claude_wire_names(n00n: &str, claude: &str) {
-        assert_eq!(n00n_to_claude_tool_name(n00n), claude);
-    }
-
     #[test]
     fn unknown_tool_name_passthrough() {
         assert_eq!(n00n_to_claude_tool_name("unknown_tool"), "unknown_tool");
@@ -1595,6 +1570,13 @@ mod tests {
         assert_eq!(json["type"], "control_request");
         assert_eq!(json["request"]["subtype"], "can_use_tool");
         assert_eq!(json["request"]["tool_name"], "Read");
+    }
+
+    #[test_case("claude-opus-4-6", "anthropic/claude-opus-4-6"; "claude_prefix")]
+    #[test_case("openai/gpt-4", "openai/gpt-4"; "explicit_provider")]
+    #[test_case("gpt-4o", "gpt-4o"; "unknown_passthrough")]
+    fn resolve_model_spec_cases(input: &str, expected: &str) {
+        assert_eq!(resolve_model_spec(input), expected);
     }
 
     #[test]

@@ -9,9 +9,10 @@ use color_eyre::eyre::Context;
 
 use n00n_agent::command::{self, CustomCommand};
 use n00n_agent::tools::ToolRegistry;
+use n00n_config::providers::ProvidersConfig;
 use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
-use n00n_providers::{ModelResolver, model::Model};
+use n00n_providers::model::Model;
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
 use n00n_ui::{AppSession, RunOutcome};
@@ -19,7 +20,6 @@ use n00n_ui::{AppSession, RunOutcome};
 use crate::cli::{Cli, normalize_tool_name};
 use crate::setup;
 
-const FALLBACK_MODEL_SPEC: &str = "anthropic/claude-sonnet-4-20250514";
 const CONFIG_FALLBACK_WARNING: &str = "config reload failed, using previous config";
 const MODEL_FALLBACK_WARNING: &str = "model resolution failed, keeping previous model";
 
@@ -132,6 +132,65 @@ fn config_or_fallback(
     }
 }
 
+fn select_startup_model(
+    resolved: Result<Model>,
+    reload_fallback: Option<Model>,
+    interactive_fallback: bool,
+    recent_model: Option<Model>,
+    detected_model: Option<Model>,
+    warnings: &mut Vec<String>,
+) -> Result<(Model, bool)> {
+    match (resolved, reload_fallback) {
+        (Ok(model), _)
+            if interactive_fallback
+                && !n00n_providers::provider::provider_available(&model.provider) =>
+        {
+            if let Some(fallback) = recent_model {
+                warnings.push(format!(
+                    "provider '{}' is unavailable; using recent model '{}'",
+                    model.provider,
+                    fallback.spec()
+                ));
+                Ok((fallback, false))
+            } else if let Some(detected) = detected_model {
+                warnings.push(format!(
+                    "provider '{}' is unavailable; using auto-detected model '{}'",
+                    model.provider,
+                    detected.spec()
+                ));
+                Ok((detected, false))
+            } else {
+                Ok((model, true))
+            }
+        }
+        (Ok(model), _) => Ok((model, false)),
+        (Err(error), Some(last_model)) => {
+            warnings.push(format!("{MODEL_FALLBACK_WARNING}: {error:#}"));
+            Ok((last_model, false))
+        }
+        (Err(error), None) if interactive_fallback => {
+            if let Some(fallback) = recent_model {
+                warnings.push(format!(
+                    "model resolution failed; using recent model '{}': {error:#}",
+                    fallback.spec()
+                ));
+                Ok((fallback, false))
+            } else if let Some(detected) = detected_model {
+                warnings.push(format!(
+                    "model resolution failed; using auto-detected model '{}': {error:#}",
+                    detected.spec()
+                ));
+                Ok((detected, false))
+            } else {
+                setup::placeholder_model()
+                    .map(|placeholder| (placeholder, true))
+                    .map_err(|_| error)
+            }
+        }
+        (Err(error), None) => Err(error),
+    }
+}
+
 /// The one construction path for a generation: first startup passes
 /// `fallback: None` (fail-fast); `/reload` passes the last-good config and
 /// model so a broken config reopens the UI with a warning instead of exiting.
@@ -170,30 +229,33 @@ fn build_stack(
     }
 
     let commands = discover_commands(cli.plugin_flags.no_commands);
+    let providers_toml = ProvidersConfig::load();
 
-    let model_result = setup::resolve_model(cli.model.as_deref(), &config.provider, storage);
-    let (model, needs_login) = match (model_result, fallback_model) {
-        (Ok(m), _) => (m, false),
-        (Err(e), Some(last_model)) => {
-            let resolver = ModelResolver::current();
-            match resolver.resolve(&last_model.spec()) {
-                Ok(model) => {
-                    warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
-                    (model, false)
-                }
-                Err(_) => return Err(e),
-            }
-        }
-        (Err(e), None) if !cli.run_flags.print => {
-            let resolver = ModelResolver::current();
-            let placeholder = resolver
-                .resolve(FALLBACK_MODEL_SPEC)
-                .or_else(|_| resolver.resolve("anthropic/claude-sonnet-4-20250514"))
-                .map_err(|_| e)?;
-            (placeholder, true)
-        }
-        (Err(e), None) => return Err(e),
+    let model_result = setup::resolve_model_with_fusion(
+        cli.model.as_deref(),
+        &config.provider,
+        &providers_toml,
+        storage,
+        Some(&config.agent.fusion),
+    );
+    let explicit = cli.model.is_some();
+    let interactive_fallback = !cli.run_flags.print && !explicit;
+    let (recent_model, detected_model) = if interactive_fallback {
+        (
+            setup::fallback_to_recent_model(storage),
+            setup::auto_detect_model(&providers_toml),
+        )
+    } else {
+        (None, None)
     };
+    let (model, needs_login) = select_startup_model(
+        model_result,
+        fallback_model,
+        interactive_fallback,
+        recent_model,
+        detected_model,
+        &mut warnings,
+    )?;
 
     Ok((
         Stack {
@@ -255,7 +317,7 @@ pub fn run(cli: Cli) -> Result<()> {
     load_env_files(&cwd);
     warn_stale_config_toml(&cwd);
 
-    let (stack, _) = build_stack(&cli, &cwd, &storage, None)?;
+    let (stack, startup_warnings) = build_stack(&cli, &cwd, &storage, None)?;
     let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
 
     setup::init_logging(&stack.config.storage);
@@ -268,7 +330,7 @@ pub fn run(cli: Cli) -> Result<()> {
         return run_print_mode(cli, stack, openai_options);
     }
 
-    run_ui_loop(&cli, stack, &storage, &cwd)
+    run_ui_loop(&cli, stack, startup_warnings, &storage, &cwd)
 }
 
 fn run_sdk_mode(
@@ -277,10 +339,16 @@ fn run_sdk_mode(
     openai_options: n00n_providers::OpenAiOptions,
 ) -> Result<()> {
     let fast = stack.config.always_fast && stack.model.supports_fast();
-    let prompt_slots = stack
-        .plugin_host
-        .event_handle()
-        .map_or_else(Default::default, |h| h.collect_prompt_slots());
+    let event_handle = stack.plugin_host.event_handle();
+    let prompt_slots = event_handle
+        .as_ref()
+        .map_or_else(
+            || Ok(n00n_agent::prompt::ResolvedSlots::default()),
+            n00n_lua::EventHandle::try_collect_prompt_slots,
+        )
+        .context("collect plugin prompt slots")?;
+    let state_persistence = event_handle
+        .map(|handle| Arc::new(handle) as Arc<dyn n00n_agent::headless::SessionStatePersistence>);
     let timeouts = stack.timeouts();
     crate::sdk_mode::run(crate::sdk_mode::SdkParams {
         cli,
@@ -290,6 +358,7 @@ fn run_sdk_mode(
         timeouts,
         openai_options,
         prompt_slots,
+        state_persistence,
         fast,
         workflow: stack.config.always_workflow,
     })
@@ -325,9 +394,15 @@ fn run_print_mode(
 fn run_ui_loop(
     cli: &Cli,
     mut stack: Stack,
+    mut warnings: Vec<String>,
     storage: &StateDir,
     cwd: &std::path::Path,
 ) -> Result<()> {
+    if !io::stdout().is_terminal() {
+        color_eyre::eyre::bail!(
+            "interactive UI requires terminal output; use `n00n --print` in non-interactive mode"
+        );
+    }
     let cwd_str = cwd.to_string_lossy().into_owned();
     let mut tabs = vec![resolve_session(
         cli.session_flags.continue_session,
@@ -337,7 +412,6 @@ fn run_ui_loop(
         storage,
     )?];
     let mut focused = 0;
-    let mut warnings: Vec<String> = Vec::new();
     let mut initial_prompt = read_initial_prompt(cli.initial_prompt.clone())?;
     let mut teardown = Teardown::default();
 
@@ -356,9 +430,8 @@ fn run_ui_loop(
         let model = if focused_tab.messages.is_empty() {
             stack.model.clone()
         } else {
-            ModelResolver::current()
-                .resolve(&focused_tab.model)
-                .unwrap_or_else(|_| stack.model.clone())
+            setup::available_model_from_spec(&focused_tab.model)
+                .unwrap_or_else(|| stack.model.clone())
         };
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`
@@ -562,6 +635,64 @@ mod tests {
             panic!("expected error without fallback");
         };
         assert!(err.to_string().contains("boom"));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn resolution_failure_uses_recent_model_and_warns() {
+        let recent = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let mut warnings = Vec::new();
+
+        let (model, needs_login) = select_startup_model(
+            Err(eyre!("no provider")),
+            None,
+            true,
+            Some(recent.clone()),
+            None,
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert_eq!(model.spec(), recent.spec());
+        assert!(!needs_login);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains(&recent.spec()));
+    }
+
+    #[test]
+    fn fresh_install_uses_placeholder_and_opens_login() {
+        let mut warnings = Vec::new();
+
+        let (model, needs_login) = select_startup_model(
+            Err(eyre!("no provider")),
+            None,
+            true,
+            None,
+            None,
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert!(needs_login);
+        assert!(warnings.is_empty());
+        assert_eq!(model.tier, n00n_providers::model::ModelTier::Strong);
+    }
+
+    #[test]
+    fn noninteractive_resolution_failure_remains_fatal() {
+        let mut warnings = Vec::new();
+
+        let error = select_startup_model(
+            Err(eyre!("explicit provider unavailable")),
+            None,
+            false,
+            None,
+            None,
+            &mut warnings,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("explicit provider unavailable"));
         assert!(warnings.is_empty());
     }
 }
