@@ -662,6 +662,13 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    /// `discovered_supports_files_flows_into_unknown_model` and
+    /// `discovered_context_window_flows_into_from_base_for_unknown_model` both
+    /// overwrite the global `ollama` entry in `model_registry()`. Cargo runs
+    /// tests in parallel, so without this lock one test's `set_known_models`
+    /// call can wipe the other's fixture before it reads it back.
+    static OLLAMA_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     const TIERS: [ModelTier; 4] = [
         ModelTier::Weak,
         ModelTier::Medium,
@@ -1219,18 +1226,31 @@ mod tests {
 
     #[test]
     fn supports_files_reads_static_entry_flag() {
-        // gpt-5.6 entries are flagged as file-capable; gpt-5.5 is not.
-        assert!(
-            Model::from_spec("openai/gpt-5.6-sol")
-                .unwrap()
-                .supports_files()
-        );
-        assert!(!Model::from_spec("openai/gpt-5.5").unwrap().supports_files());
+        // gpt-5.6 entries are flagged as file-capable; gpt-5.5 is not. Assert
+        // the catalog flags directly so this proves `ModelEntry.files` is
+        // read, not just that the fallback happens to agree.
+        let manifest = ManifestRegistry::get("openai").unwrap();
+        assert!(lookup_entry(manifest.models, "gpt-5.6-sol").unwrap().files);
+        assert!(!lookup_entry(manifest.models, "gpt-5.5").unwrap().files);
+
+        // Coding-plan/Codex entries stay file-disabled regardless of the
+        // gpt-5.6 catch-all.
+        for entry in crate::providers::openai::codex_models() {
+            assert!(
+                !entry.files,
+                "codex entry {:?} must keep files: false",
+                entry.prefixes
+            );
+        }
     }
 
     #[test]
     fn discovered_supports_files_flows_into_unknown_model() {
         use crate::model::ModelInfo;
+
+        let _guard = OLLAMA_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-files-model";
@@ -1261,6 +1281,10 @@ mod tests {
     #[test]
     fn discovered_context_window_flows_into_from_base_for_unknown_model() {
         use crate::model::ModelInfo;
+
+        let _guard = OLLAMA_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-context-window-model";
