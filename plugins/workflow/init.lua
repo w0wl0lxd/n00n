@@ -22,6 +22,7 @@ local telemetry = require("n00n.telemetry")
 local structured_output = require("n00n.structured_output")
 local guard = require("n00n.guard")
 local subagent = require("n00n.subagent")
+local pipeline_args = require("pipeline_args")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
@@ -482,23 +483,11 @@ local function pipeline(items, stages, ...)
   if type(items) ~= "table" then
     error("pipeline: items must be an array", 0)
   end
-  local popts
-  if type(stages) == "function" then
-    local collected = { stages }
-    for i = 1, select("#", ...) do
-      local extra = select(i, ...)
-      if type(extra) == "function" then
-        collected[#collected + 1] = extra
-      elseif type(extra) == "table" and i == select("#", ...) then
-        popts = extra
-      elseif extra ~= nil then
-        error("pipeline: stages must be functions, got " .. type(extra), 0)
-      end
-    end
-    stages = collected
-  else
-    popts = select(1, ...)
+  local normalized, popts, arg_err = pipeline_args.normalize(stages, ...)
+  if arg_err then
+    error(arg_err, 0)
   end
+  stages = normalized
   if type(stages) ~= "table" then
     error("pipeline: stages must be an array of functions", 0)
   end
