@@ -14,8 +14,27 @@ n00n.api.register_prompt_hint({
   content = "- Use **explore** first for codebase questions; it routes to index (single-file skeleton), arbor (callers/callees/blast radius), or codegraph (cross-file structure).",
 })
 
+local FALLBACK_BACKEND = "semblem"
+
 local function route_label(backend, intent)
   return string.format("%s via %s", intent, backend)
+end
+
+-- A backend that is missing its index, or whose CLI is absent, must not fail the
+-- whole call: semblem needs no prebuilt graph, so it is the degraded route.
+local function fallback_dispatch(input, ctx, failed_backend)
+  if failed_backend == FALLBACK_BACKEND then
+    return nil, nil, "no further fallback"
+  end
+  local backend_input = router.search_backend_input(input)
+  if not backend_input.query then
+    return nil, nil, "no query, symbol, or path to search for"
+  end
+  local output, err = n00n.agent.call_tool(ctx, FALLBACK_BACKEND, backend_input)
+  if err then
+    return nil, nil, err
+  end
+  return { llm_output = output or "" }, FALLBACK_BACKEND, nil
 end
 
 local function dispatch(input, ctx, use_cache)
@@ -33,8 +52,20 @@ local function dispatch(input, ctx, use_cache)
 
   local output, err = n00n.agent.call_tool(ctx, backend, backend_input)
   if err then
+    local degraded, degraded_backend, degraded_err = fallback_dispatch(input, ctx, backend)
+    if degraded then
+      return degraded,
+        route_label(degraded_backend, intent) .. string.format(" (degraded from %s: %s)", backend, tostring(err)),
+        false
+    end
     return {
-      llm_output = "error: explore dispatch to " .. backend .. " failed: " .. tostring(err),
+      llm_output = string.format(
+        "error: explore dispatch to %s failed: %s; fallback to %s also failed: %s",
+        backend,
+        tostring(err),
+        FALLBACK_BACKEND,
+        tostring(degraded_err)
+      ),
       is_error = true,
     },
       route_label(backend, intent),
