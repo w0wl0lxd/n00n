@@ -470,7 +470,7 @@ Local git operations via n00n-git.
 
 ### `github` *(lua plugin)*
 
-GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN or gh CLI.
 
 
 | Parameter | Type | Required | Description |
@@ -482,6 +482,5 @@ GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh 
 | `repo` | string | no |  |
 | `title` | string | no |  |
 | `command` | string | yes |  |
-| `token` | string | no |  |
 | `base` | string | no |  |
 | `pr_number` | number | no |  |
