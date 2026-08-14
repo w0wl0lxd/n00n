@@ -845,21 +845,14 @@ mod tests {
     #[test]
     fn kill_job_terminates_long_running_child() {
         let mut store = make_store();
-        let id = store
-            .start(
-                JobSpec::Shell("sleep 60".to_string()),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+        let id = start_shell(&mut store, task_owner(OWNER_TASK_ID), SLEEP_CMD);
 
         std::thread::sleep(Duration::from_millis(100));
-        store.kill(id);
+        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
 
-        let rx = store.take_receiver(id).unwrap();
+        let rx = store
+            .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+            .unwrap();
         let mut got_exit = false;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
