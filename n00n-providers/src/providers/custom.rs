@@ -234,7 +234,7 @@ fn declared_specs_from(config: &ProvidersConfig) -> Vec<String> {
 
 /// Outcome of resolving a tier against `providers.toml` in a single read.
 pub enum TierLookup {
-    Model(Model),
+    Model(Box<Model>),
     /// Provider exists but declares no model at this tier; carries the base kind
     /// so the caller can inherit the base protocol's default.
     NoModelForTier(ProviderKind),
@@ -256,7 +256,9 @@ pub fn resolve_tier(slug: &str, tier: ModelTier) -> TierLookup {
     };
     let kind = protocol_kind(protocol);
     match def.models.iter().find(|m| ModelTier::from(m.tier) == tier) {
-        Some(declared) => TierLookup::Model(model_from_def(def, kind, slug, &declared.id)),
+        Some(declared) => {
+            TierLookup::Model(Box::new(model_from_def(def, kind, slug, &declared.id)))
+        }
         None => TierLookup::NoModelForTier(kind),
     }
 }

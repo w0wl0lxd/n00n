@@ -468,7 +468,7 @@ impl Model {
         // protocol default under the custom slug, keeping its tier and pricing),
         // or no such provider.
         match custom::resolve_tier(slug, tier) {
-            custom::TierLookup::Model(model) => return Ok(model),
+            custom::TierLookup::Model(model) => return Ok(*model),
             custom::TierLookup::NoModelForTier(base) => {
                 let manifest = ManifestRegistry::get(&base.to_string())
                     .ok_or_else(|| ModelError::NoDefault(slug.to_string(), tier))?;
