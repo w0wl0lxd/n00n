@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
@@ -270,8 +270,20 @@ fn scan_file(
     }
 
     loop {
+        // Bound each read so an unterminated line cannot outgrow max_file_bytes.
+        let remaining = options.max_file_bytes.saturating_sub(bytes_read);
+        if remaining == 0 {
+            let has_more = reader
+                .fill_buf()
+                .map_err(|e| GitError::GitOperation(format!("failed to read file: {e}")))?;
+            truncated = !has_more.is_empty();
+            break;
+        }
+
         let mut buf = Vec::new();
         let n = reader
+            .by_ref()
+            .take(remaining as u64)
             .read_until(b'\n', &mut buf)
             .map_err(|e| GitError::GitOperation(format!("failed to read file: {e}")))?;
         if n == 0 {
@@ -279,13 +291,13 @@ fn scan_file(
         }
 
         bytes_read = bytes_read.saturating_add(n);
-        line_no = line_no.saturating_add(1);
 
-        if bytes_read > options.max_file_bytes {
+        if !buf.ends_with(b"\n") && bytes_read >= options.max_file_bytes {
             truncated = true;
             break;
         }
 
+        line_no = line_no.saturating_add(1);
         let line = trim_newline(&buf);
 
         if is_binary(line) {
@@ -776,5 +788,33 @@ mod tests {
             .find(|f| f.path == "file.txt")
             .expect("file.txt in conflicts");
         assert!(file.findings.iter().any(|f| f.kind == "conflict"));
+    }
+
+    #[test]
+    fn scan_file_exact_budget_is_not_truncated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file.txt");
+        std::fs::write(&path, b"aaaa\nbbbb\n").unwrap();
+
+        let options = ConflictsOptions {
+            max_file_bytes: 10,
+            ..ConflictsOptions::default()
+        };
+        let result = scan_file(&path, &options, false).unwrap();
+        assert_eq!(result.truncated, None);
+    }
+
+    #[test]
+    fn scan_file_over_budget_is_truncated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file.txt");
+        std::fs::write(&path, b"aaaaaaaaaa").unwrap();
+
+        let options = ConflictsOptions {
+            max_file_bytes: 4,
+            ..ConflictsOptions::default()
+        };
+        let result = scan_file(&path, &options, false).unwrap();
+        assert_eq!(result.truncated, Some(true));
     }
 }
