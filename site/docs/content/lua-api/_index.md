@@ -5634,7 +5634,7 @@ Estimate token savings from using a hybrid/semantic embedder. Requires the sembl
 
 ## n00n.smell {#n00n-smell}
 
-Persistent code-smell and comment index. Stores conflict markers, TODO/FIXME/HACK comments, and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.
+Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.
 
 ---
 
@@ -5666,7 +5666,7 @@ Build or rebuild the smell index for a repository by invoking n00n-smell.
 
 - `{project}` (`string`) Path to the project root.
 
-**Returns:** (`nil`) or raises an error.
+**Returns:** (`boolean`, `string|nil`) true on success, or false and the error message.
 
 ---
 
@@ -5682,10 +5682,10 @@ Search the smell index by keyword and optional kind.
 
 - `{project}` (`string`) Path to the project root.
 - `{query}` (`string`) Keyword or phrase.
-- `{kind}` (`string`) Optional kind filter: conflict, todo, fixme, hack, placeholder.
+- `{kind}` (`string`) Optional kind filter: todo, fixme, hack, placeholder.
 - `{top_k}` (`integer`) Maximum number of results (default 5).
 
-**Returns:** (`string`) Ranked smell output.
+**Returns:** (`string|nil`, `string|nil`) Ranked smell output, or nil and the error message.
 
 
 ## n00n.workflow {#n00n-workflow}

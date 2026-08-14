@@ -456,10 +456,7 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
     let walker = WalkBuilder::new(repo).build();
 
     for entry in walker {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
+        let Ok(entry) = entry else { continue };
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
@@ -477,23 +474,25 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
             let mut kind = None;
             let mut message = String::new();
 
-            if todo_regex.is_match(&line) {
+            if todo_regex.is_match(line) {
                 kind = Some("todo".to_string());
                 message = "TODO comment found".to_string();
-            } else if fixme_regex.is_match(&line) {
+            } else if fixme_regex.is_match(line) {
                 kind = Some("fixme".to_string());
                 message = "FIXME comment found".to_string();
-            } else if hack_regex.is_match(&line) {
+            } else if hack_regex.is_match(line) {
                 kind = Some("hack".to_string());
                 message = "HACK comment found".to_string();
-            } else if placeholder_regex.is_match(&line) {
+            } else if placeholder_regex.is_match(line) {
                 kind = Some("placeholder".to_string());
                 message = "Placeholder phrase found".to_string();
             }
 
             if let Some(k) = kind {
                 smells.push(SmellFinding {
-                    path: relative_path.to_string_lossy().to_string(),
+                    // Stored paths use `/` on every platform so index entries
+                    // and search results stay stable across Windows and Unix.
+                    path: relative_path.to_string_lossy().replace('\\', "/"),
                     start_line: line_num + 1,
                     end_line: line_num + 1,
                     kind: k,

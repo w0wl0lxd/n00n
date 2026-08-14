@@ -187,10 +187,13 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 
 Code-smell index. index, search.
 
-|| Parameter | Type | Required | Description |
+| Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-|| `command` | string | yes |  |
-|| `query` | string | no |  |
+| `command` | string | yes |  |
+| `query` | string | no |  |
+| `repo` | string | no |  |
+| `kind` | string | no |  |
+| `top_k` | integer | no |  |
 
 ### `arbor` *(lua plugin)*
 
