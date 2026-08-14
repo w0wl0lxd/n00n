@@ -121,8 +121,12 @@ impl AgentHandles {
     }
 
     pub(crate) fn send_mcp(&self, cmd: McpCommand) {
-        if let Some(ref h) = self.mcp_handle {
-            let _ = h.send(cmd);
+        let Some(ref h) = self.mcp_handle else {
+            warn!("MCP command dropped: no MCP command loop is running");
+            return;
+        };
+        if let Err(e) = h.send(cmd) {
+            warn!(error = %e, "MCP command loop is gone, server state unchanged");
         }
     }
 

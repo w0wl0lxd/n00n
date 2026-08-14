@@ -81,11 +81,12 @@ enum Token<'a> {
 fn tokenize_with_line_breaks(text: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let mut word_start = None;
-    let mut i = 0;
-    let bytes = text.as_bytes();
+    // Iterate by character, not by byte. This text is untrusted provider and tool
+    // output, and a continuation byte such as the `A0` of U+00A0 passes
+    // `is_whitespace` on its own, so a byte loop slices mid-code-point and panics.
+    let mut chars = text.char_indices().peekable();
 
-    while i < bytes.len() {
-        let c = bytes[i] as char;
+    while let Some((i, c)) = chars.next() {
         if c == '\r' {
             // Flush any pending word
             if let Some(start) = word_start {
@@ -93,12 +94,11 @@ fn tokenize_with_line_breaks(text: &str) -> Vec<Token<'_>> {
                 word_start = None;
             }
             // Check for \r\n
-            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            if chars.peek().is_some_and(|&(_, next)| next == '\n') {
+                chars.next();
                 tokens.push(Token::LineBreak("\r\n"));
-                i += 2;
             } else {
                 tokens.push(Token::LineBreak("\r"));
-                i += 1;
             }
         } else if c == '\n' {
             // Flush any pending word
@@ -107,20 +107,15 @@ fn tokenize_with_line_breaks(text: &str) -> Vec<Token<'_>> {
                 word_start = None;
             }
             tokens.push(Token::LineBreak("\n"));
-            i += 1;
         } else if c.is_whitespace() {
             // Flush any pending word on whitespace
             if let Some(start) = word_start {
                 tokens.push(Token::Word(&text[start..i]));
                 word_start = None;
             }
-            i += 1;
-        } else {
+        } else if word_start.is_none() {
             // Non-whitespace character
-            if word_start.is_none() {
-                word_start = Some(i);
-            }
-            i += 1;
+            word_start = Some(i);
         }
     }
 
@@ -662,5 +657,23 @@ mod tests {
         assert!(sanitized.contains("password=[redacted]"));
         assert!(!sanitized.contains("secret"));
         assert!(sanitized.contains("\nline2\r\nline3\rline4"));
+    }
+
+    #[test]
+    fn tokenizes_multibyte_whitespace_without_slicing_a_code_point() {
+        let input = "password=secret\u{a0}tail\u{2028}more\u{3000}end";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert!(sanitized.contains("password=[redacted]"));
+        assert!(!sanitized.contains("secret"));
+        assert!(sanitized.contains("tail"));
+        assert!(sanitized.contains("more"));
+        assert!(sanitized.contains("end"));
+    }
+
+    #[test]
+    fn tokenizes_a_multibyte_word_that_is_not_whitespace() {
+        let input = "café\nnaïve résumé";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "café\nnaïve résumé");
     }
 }
