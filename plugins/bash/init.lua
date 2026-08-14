@@ -133,6 +133,12 @@ local function strip_leading_assignments(command)
   return remaining
 end
 
+local function is_rtk_skip_tool(first_word)
+  local executable = unquote(first_word)
+  local basename = executable:match("([^/\\]+)$")
+  return RTK_SKIP_TOOLS[executable] or RTK_SKIP_TOOLS[basename] or false
+end
+
 local function broad_bash_command_reason(command)
   local executable_command = strip_leading_assignments(command)
   local normalized = executable_command:lower()
@@ -440,15 +446,16 @@ local function rtk_rewrite(command, ctx)
 
   -- jq and yq must pass through unchanged (FR-018)
   local normalized = strip_leading_assignments(cmd)
-  local first_word = normalized:match("^(%S+)")
-  if not first_word then
+  local word_end = shell_word_end(normalized)
+  local first_word = normalized:sub(1, word_end)
+  if first_word == "" then
     return nil
   end
   if first_word == "jq" or first_word == "yq" or first_word:match("/jq$") or first_word:match("/yq$") then
     return nil
   end
 
-  if RTK_SKIP_TOOLS[first_word] or RTK_SKIP_TOOLS[first_word:match("([^/]+)$")] then
+  if is_rtk_skip_tool(first_word) then
     return nil
   end
 
