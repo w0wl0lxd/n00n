@@ -1284,7 +1284,7 @@ impl OpenAi {
     ) -> CodexAttempt {
         if attempt.previous_response_id.is_some()
             && (is_missing_previous_response(&attempt)
-                || should_clear_response_chain(&attempt.result, response_chain_lock.is_some()))
+                || should_clear_response_chain(&attempt.result))
         {
             self.clear_response_chain(session_id, response_chain_lock)
                 .await;
@@ -1362,10 +1362,15 @@ impl OpenAi {
                 attempt_nonce,
             )
             .await;
-        if !connection_reusable && !persist_response_chain {
+        // A `store: false` response is held only in the connection-local cache of
+        // the socket that produced it, so a durable chain id cannot outlive that
+        // socket. Reset the chain whenever the socket is gone, or the next turn
+        // replays a dead id and the endpoint answers `previous_response_not_found`.
+        if !connection_reusable {
             debug!(
                 chain_reset = true,
                 chain_reset_reason = "socket_not_reusable",
+                durable_chain = persist_response_chain,
                 "resetting connection-local OpenAI response chain"
             );
             self.clear_response_chain(session_id, response_chain_lock.as_ref())
@@ -2337,8 +2342,12 @@ fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
         && normalized == format!("not found: {}", previous_response_id.to_ascii_lowercase())
 }
 
-fn should_clear_response_chain<T>(result: &Result<T, AgentError>, durable_chain: bool) -> bool {
-    result.is_err() && !durable_chain
+/// A failed turn evicts the referenced `previous_response_id` from the service's
+/// connection-local cache, and a `store: false` response has no persisted copy to
+/// fall back on. The chain is therefore dead after any error, whether or not it
+/// was written to disk.
+fn should_clear_response_chain<T>(result: &Result<T, AgentError>) -> bool {
+    result.is_err()
 }
 
 fn is_definitive_responses_rejection(error: &AgentError) -> bool {
@@ -4559,22 +4568,24 @@ mod tests {
         );
     }
 
+    /// A durable chain used to survive a failed turn. With `store: false` the
+    /// service evicts the cached `previous_response_id` on any 4xx/5xx and keeps
+    /// no persisted copy, so holding the id only guarantees a
+    /// `previous_response_not_found` on the next turn.
     #[test]
-    fn successful_socket_local_continuation_keeps_response_chain() {
+    fn failed_continuation_clears_the_response_chain_even_when_durable() {
         let success: Result<(), AgentError> = Ok(());
-        assert!(!should_clear_response_chain(&success, false));
+        assert!(!should_clear_response_chain(&success));
 
         let transport_error: Result<(), AgentError> =
             Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into());
-        assert!(should_clear_response_chain(&transport_error, false));
-        assert!(!should_clear_response_chain(&transport_error, true));
+        assert!(should_clear_response_chain(&transport_error));
 
         let api_error: Result<(), AgentError> = Err(AgentError::Api {
             status: 500,
             message: "temporary".into(),
         });
-        assert!(should_clear_response_chain(&api_error, false));
-        assert!(!should_clear_response_chain(&api_error, true));
+        assert!(should_clear_response_chain(&api_error));
     }
 
     #[test]

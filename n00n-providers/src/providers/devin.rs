@@ -50,6 +50,9 @@ const DEVIN_AUTH_PATH: &str = "/exa.auth_pb.AuthService/GetUserJwt";
 const DEVIN_CHAT_PATH: &str = "/exa.api_server_pb.ApiServerService/GetChatMessage";
 const DEVIN_CLI_MODEL_CONFIGS_PATH: &str = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
 const DEVIN_SESSION_TOKEN_PREFIX: &str = "devin-session-token$";
+const URL_SCHEME_SEPARATOR: &str = "://";
+const HTTP_SCHEME: &str = "http";
+const HTTPS_SCHEME: &str = "https";
 const DEFAULT_TEMPERATURE: f64 = 0.4;
 const DEFAULT_TOP_P: f64 = 1.0;
 const DEFAULT_MAX_TOKENS: u32 = 64_000;
@@ -157,10 +160,11 @@ fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
 }
 
 fn is_valid_api_server_url(url: &str) -> bool {
-    let trimmed = url.trim();
-    !trimmed.is_empty()
-        && (trimmed.starts_with("https://") && trimmed.len() > "https://".len()
-            || trimmed.starts_with("http://") && trimmed.len() > "http://".len())
+    let Some((scheme, authority)) = url.trim().split_once(URL_SCHEME_SEPARATOR) else {
+        return false;
+    };
+    !authority.is_empty()
+        && (scheme.eq_ignore_ascii_case(HTTP_SCHEME) || scheme.eq_ignore_ascii_case(HTTPS_SCHEME))
 }
 
 fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
@@ -1215,6 +1219,21 @@ mod tests {
             resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url")),
             "https://configured.example"
         );
+    }
+
+    /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
+    /// request and session token to the default service instead of the
+    /// configured endpoint.
+    #[test]
+    fn url_scheme_comparison_is_case_insensitive() {
+        for url in ["HTTPS://devin.example", "Http://devin.example"] {
+            assert_eq!(
+                resolve_api_server_url("https://configured.example".to_string(), Some(url)),
+                url
+            );
+        }
+        assert!(!is_valid_api_server_url("https://"));
+        assert!(!is_valid_api_server_url("ftp://devin.example"));
     }
 
     #[test]
