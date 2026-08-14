@@ -25,6 +25,7 @@ extend-ignore-re = [
   'TruLayer',
   'cli-2026\.07\.26-[a-f0-9]{7}',
   '2026\.07\.26-[a-f0-9]{7}',
+  'rela_path',
 ]
 
 [default.extend-identifiers]
