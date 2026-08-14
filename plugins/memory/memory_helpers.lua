@@ -1,7 +1,8 @@
 local M = {}
 
 M.MAX_LINES_PER_FILE = 200
-M.MAX_DIR_BYTES = 50 * 1024
+M.MAX_DIR_BYTES = 1024 * 1024
+M.LARGEST_ENTRIES_HINT = 3
 M.DEFAULT_SEARCH_LIMIT = 10
 M.MAX_SEARCH_LIMIT = 50
 M.LITE_HINT_LIMIT = 5
@@ -145,6 +146,30 @@ function M.dir_total_bytes(dir)
     total = total + f[2]
   end
   return total
+end
+
+function M.largest_entries(dir, top_n)
+  local files = M.collect_file_entries(dir)
+  table.sort(files, function(a, b)
+    return a[2] > b[2]
+  end)
+  local largest = {}
+  for i = 1, math.min(top_n, #files) do
+    largest[#largest + 1] = files[i]
+  end
+  return largest
+end
+
+function M.format_largest_entries(dir, top_n)
+  local largest = M.largest_entries(dir, top_n)
+  if #largest == 0 then
+    return ""
+  end
+  local parts = {}
+  for _, f in ipairs(largest) do
+    parts[#parts + 1] = f[1] .. " (" .. f[2] .. " bytes)"
+  end
+  return " largest entries: " .. table.concat(parts, ", ") .. ";"
 end
 
 function M.parse_frontmatter(content)

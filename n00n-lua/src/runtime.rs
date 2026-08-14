@@ -451,7 +451,7 @@ fn awaited_parent_deadline(parent: Option<&TaskHandle>) -> Option<Instant> {
     cell.deadline.get().or(cell.interrupted_deadline.get())
 }
 
-fn task_deadline(handle: &TaskHandle) -> Option<Instant> {
+pub(crate) fn task_deadline(handle: &TaskHandle) -> Option<Instant> {
     let (deadline, parent) = {
         let cell = lock_cell(handle);
         (cell.deadline.get(), cell.async_parent.clone())

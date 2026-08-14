@@ -2,6 +2,8 @@ use std::path::Path;
 
 use n00n_arbor::Client;
 
+const UNKNOWN_RELATION_KIND: &str = "unknown";
+
 fn main() -> Result<(), n00n_arbor::ArborError> {
     Client::check_binary()?;
 
@@ -14,7 +16,10 @@ fn main() -> Result<(), n00n_arbor::ArborError> {
     let relations = Client::callers(&symbol, project)?;
 
     for relation in relations {
-        let kind = relation.kind.as_deref().unwrap_or("unknown");
+        let kind = relation
+            .kind
+            .as_deref()
+            .unwrap_or_else(|| UNKNOWN_RELATION_KIND);
         let line = match relation.line {
             Some(line) => format!(":{line}"),
             None => String::new(),

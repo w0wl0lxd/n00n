@@ -252,6 +252,23 @@ impl MessagesPanel {
         true
     }
 
+    pub fn fail_pending_compaction(&mut self, reason: &str) -> bool {
+        let Some(message_index) = self.messages.iter().rposition(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        }) else {
+            return false;
+        };
+        self.messages[message_index] = DisplayMessage::new(
+            DisplayRole::Assistant,
+            format!("Auto-compaction failed: {reason}. Continuing without compacting."),
+        );
+        self.cache.invalidate_from_msg_count();
+        true
+    }
+
     pub fn load_messages(&mut self, mut msgs: Vec<DisplayMessage>) {
         if !self.show_thinking {
             for msg in &mut msgs {

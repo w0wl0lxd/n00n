@@ -49,10 +49,6 @@ fn path_to_string(p: &Path) -> LuaResult<String> {
         .ok_or_else(|| mlua::Error::runtime("non-utf8 path"))
 }
 
-fn is_permission_denied_walk_error(kind: Option<ErrorKind>) -> bool {
-    kind == Some(ErrorKind::PermissionDenied)
-}
-
 fn filetype_str(ft: FileType) -> &'static str {
     if ft.is_file() {
         "file"
@@ -873,6 +869,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
         let pattern_refs: Vec<&str> = patterns.iter().map(std::string::String::as_str).collect();
 
         let walker = n00n_agent::tools::walk_builder_opts(&root, &pattern_refs, gitignore)?.build();
+        let mut walk_skipped = 0usize;
 
         let paths: Vec<String> = if sort_mtime {
             let mut entries: Vec<(u128, String)> = Vec::new();
@@ -880,8 +877,9 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(error) => {
-                        if is_permission_denied_walk_error(error.io_error().map(Error::kind)) {
-                            tracing::debug!(error = %error, "glob: permission denied while walking");
+                        if n00n_agent::tools::is_expected_walk_error(&error) {
+                            walk_skipped += 1;
+                            tracing::debug!(error = %error, "glob: walk entry error");
                         } else {
                             tracing::warn!(error = %error, "glob: unexpected walk error");
                         }
@@ -914,8 +912,9 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(error) => {
-                        if is_permission_denied_walk_error(error.io_error().map(Error::kind)) {
-                            tracing::debug!(error = %error, "glob: permission denied while walking");
+                        if n00n_agent::tools::is_expected_walk_error(&error) {
+                            walk_skipped += 1;
+                            tracing::debug!(error = %error, "glob: walk entry error");
                         } else {
                             tracing::warn!(error = %error, "glob: unexpected walk error");
                         }
@@ -939,6 +938,10 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             }
             result
         };
+
+        if walk_skipped > 0 {
+            tracing::debug!(walk_skipped, "glob: skipped unreadable or vanished entries");
+        }
 
         Ok(paths)
     })
@@ -1068,14 +1071,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn glob_walk_error_classification_distinguishes_permission_denied() {
-        assert!(is_permission_denied_walk_error(Some(
-            ErrorKind::PermissionDenied
-        )));
-        assert!(!is_permission_denied_walk_error(Some(ErrorKind::Other)));
-        assert!(!is_permission_denied_walk_error(None));
-    }
     use crate::plugin_permissions::PluginPermissions;
     use mlua::Lua;
     use tempfile::TempDir;
@@ -1636,6 +1631,40 @@ mod tests {
             smol::block_on(glob.call_async::<(Table, mlua::Value)>(("*.nope", opts2))).unwrap();
         assert!(matches!(err2, mlua::Value::Nil));
         assert_eq!(empty.len().unwrap(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn glob_skips_unreadable_directory_without_erroring() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("visible.rs"), "").unwrap();
+        let blocked = tmp.path().join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("hidden.rs"), "").unwrap();
+        std::fs::set_permissions(&blocked, Permissions::from_mode(0o000)).unwrap();
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let glob: mlua::Function = tbl.get("glob").unwrap();
+
+        let opts = lua.create_table().unwrap();
+        opts.set("path", tmp.path().to_str().unwrap()).unwrap();
+
+        let (result, err): (Table, mlua::Value) =
+            smol::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
+        assert!(
+            matches!(err, mlua::Value::Nil),
+            "an unreadable subdirectory must not fail the whole glob"
+        );
+
+        let mut paths: Vec<String> = Vec::new();
+        for i in 1..=result.len().unwrap() {
+            paths.push(result.get::<String>(i).unwrap());
+        }
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("visible.rs"));
+
+        std::fs::set_permissions(&blocked, Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]

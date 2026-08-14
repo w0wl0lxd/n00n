@@ -25,6 +25,14 @@ const LINE_DELIMITER: u8 = b'\n';
 
 use crate::ChildGuard;
 
+fn log_stderr_line(server: &str, line: &str) {
+    if looks_like_warning_or_error(line) {
+        warn!(server, "{line}");
+    } else {
+        debug!(server, "{line}");
+    }
+}
+
 fn looks_like_warning_or_error(line: &str) -> bool {
     line.split_whitespace().take(3).any(|token| {
         matches!(
@@ -32,6 +40,66 @@ fn looks_like_warning_or_error(line: &str) -> bool {
             "ERROR" | "WARN" | "FATAL" | "CRITICAL"
         )
     })
+}
+
+/// What to do with an incoming stderr line: log it, or (if it repeats the
+/// previous line verbatim) fold it into a trailing repeat count instead of
+/// re-logging a busy child's retry loop one line at a time.
+enum StderrDedupAction {
+    Log(String),
+    Suppress,
+    FlushThenLog {
+        previous: String,
+        repeats: usize,
+        current: String,
+    },
+}
+
+/// Collapses consecutive identical stderr lines from one MCP child into a
+/// single log line plus a repeat count, so a child stuck retrying (e.g. a
+/// connection refused every poll) does not flood the log one line per retry.
+struct StderrDedup {
+    last: Option<String>,
+    repeats: usize,
+}
+
+impl StderrDedup {
+    fn new() -> Self {
+        Self {
+            last: None,
+            repeats: 0,
+        }
+    }
+
+    fn observe(&mut self, line: &str) -> StderrDedupAction {
+        if self.last.as_deref() == Some(line) {
+            self.repeats += 1;
+            return StderrDedupAction::Suppress;
+        }
+        let action = if self.repeats > 0 {
+            StderrDedupAction::FlushThenLog {
+                previous: self.last.clone().unwrap_or_default(),
+                repeats: self.repeats,
+                current: line.to_owned(),
+            }
+        } else {
+            StderrDedupAction::Log(line.to_owned())
+        };
+        self.last = Some(line.to_owned());
+        self.repeats = 0;
+        action
+    }
+
+    /// Call once the stream ends, to report a trailing run of repeats that
+    /// never got interrupted by a different line.
+    fn flush(&mut self) -> Option<(String, usize)> {
+        if self.repeats == 0 {
+            return None;
+        }
+        let repeats = self.repeats;
+        self.repeats = 0;
+        self.last.clone().map(|line| (line, repeats))
+    }
 }
 
 pub struct StdioTransport {
@@ -122,19 +190,38 @@ impl StdioTransport {
             smol::spawn(async move {
                 let mut reader = BufReader::new(stderr);
                 let mut line = String::new();
+                let mut dedup = StderrDedup::new();
                 loop {
                     line.clear();
                     match reader.read_line(&mut line).await {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) | Err(_) => {
+                            if let Some((previous, repeats)) = dedup.flush() {
+                                log_stderr_line(
+                                    &name,
+                                    &format!("{previous} (repeated {repeats} more times)"),
+                                );
+                            }
+                            break;
+                        }
                         Ok(_) => {
                             let trimmed = line.trim();
                             if trimmed.is_empty() {
                                 continue;
                             }
-                            if looks_like_warning_or_error(trimmed) {
-                                warn!(server = &*name, "{trimmed}");
-                            } else {
-                                debug!(server = &*name, "{trimmed}");
+                            match dedup.observe(trimmed) {
+                                StderrDedupAction::Suppress => {}
+                                StderrDedupAction::Log(l) => log_stderr_line(&name, &l),
+                                StderrDedupAction::FlushThenLog {
+                                    previous,
+                                    repeats,
+                                    current,
+                                } => {
+                                    log_stderr_line(
+                                        &name,
+                                        &format!("{previous} (repeated {repeats} more times)"),
+                                    );
+                                    log_stderr_line(&name, &current);
+                                }
                             }
                         }
                     }
@@ -411,5 +498,60 @@ mod tests {
             // SAFETY: pid was captured before reaping; kill(pid, 0) only checks process liveness without sending a signal.
             assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
         });
+    }
+
+    #[test]
+    fn stderr_dedup_logs_distinct_lines_individually() {
+        let mut dedup = StderrDedup::new();
+        assert!(matches!(dedup.observe("a"), StderrDedupAction::Log(l) if l == "a"));
+        assert!(matches!(dedup.observe("b"), StderrDedupAction::Log(l) if l == "b"));
+        assert!(dedup.flush().is_none());
+    }
+
+    #[test]
+    fn stderr_dedup_suppresses_consecutive_repeats() {
+        let mut dedup = StderrDedup::new();
+        assert!(matches!(dedup.observe("boom"), StderrDedupAction::Log(l) if l == "boom"));
+        assert!(matches!(dedup.observe("boom"), StderrDedupAction::Suppress));
+        assert!(matches!(dedup.observe("boom"), StderrDedupAction::Suppress));
+    }
+
+    #[test]
+    fn stderr_dedup_flushes_repeat_count_when_line_changes() {
+        let mut dedup = StderrDedup::new();
+        dedup.observe("boom");
+        dedup.observe("boom");
+        dedup.observe("boom");
+        match dedup.observe("different") {
+            StderrDedupAction::FlushThenLog {
+                previous,
+                repeats,
+                current,
+            } => {
+                assert_eq!(previous, "boom");
+                assert_eq!(repeats, 2, "two suppressed repeats after the first log");
+                assert_eq!(current, "different");
+            }
+            other => panic!("expected FlushThenLog, got a different action"),
+        }
+    }
+
+    #[test]
+    fn stderr_dedup_flush_reports_trailing_repeats_on_stream_end() {
+        let mut dedup = StderrDedup::new();
+        dedup.observe("boom");
+        dedup.observe("boom");
+        dedup.observe("boom");
+        let (line, repeats) = dedup.flush().expect("trailing repeats to flush");
+        assert_eq!(line, "boom");
+        assert_eq!(repeats, 2);
+        assert!(dedup.flush().is_none(), "flush must not double-report");
+    }
+
+    #[test]
+    fn stderr_dedup_flush_is_none_without_repeats() {
+        let mut dedup = StderrDedup::new();
+        dedup.observe("only-once");
+        assert!(dedup.flush().is_none());
     }
 }

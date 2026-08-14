@@ -27,10 +27,10 @@ cursor-fuzz-frames:
     cargo test -p n00n-providers --lib connect::tests::fuzz_ -- --nocapture
 
 lint:
-    cargo clippy --all --tests -- -D warnings
+    cargo clippy --all --all-targets -- -D warnings
 
 lint-fix:
-    cargo clippy --all --tests --fix
+    cargo clippy --all --all-targets --fix
 
 fmt-check:
     cargo fmt --all -- --check

@@ -30,9 +30,6 @@ pub enum McpError {
     #[error("config error: {0}")]
     Config(String),
 
-    #[error("server '{server}' conflicts with built-in tool")]
-    BuiltInConflict { server: String },
-
     #[error("write to server {server} failed: {reason}")]
     WriteFailed { server: String, reason: String },
 
