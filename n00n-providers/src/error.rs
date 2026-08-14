@@ -1,6 +1,7 @@
 //! Provider error types with retry semantics.
-//! Retryable: 429, 5xx, IO, HTTP transport. Non-retryable: other 4xx, JSON parse, config,
-//! channel closed, user cancel. `user_message()` returns human-readable text for each variant.
+//! Retryable: 429, 5xx, IO, HTTP transport, local Coding Plan admission-slot timeout.
+//! Non-retryable: other 4xx, JSON parse, config, channel closed, user cancel.
+//! `user_message()` returns human-readable text for each variant.
 
 use isahc::AsyncReadResponseExt;
 
@@ -104,7 +105,13 @@ pub enum AgentError {
         retry_after: Option<std::time::Duration>,
     },
     #[error("full-history replay requires explicit approval because {reason}")]
-    HistoryReplayRequired { reason: HistoryReplayReason },
+    HistoryReplayRequired {
+        reason: HistoryReplayReason,
+        /// Whether this turn already streamed output before the failure that
+        /// triggered the replay, so the approval prompt can warn that a
+        /// full-history retry may duplicate what the user already saw.
+        output_emitted: bool,
+    },
     #[error("request may have been accepted before the connection failed: {message}")]
     RequestSent {
         message: String,
@@ -142,7 +149,12 @@ impl AgentError {
         }
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
-            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
+            // The local admission-slot wait never sends a request, so retrying is safe;
+            // it just gives another local process's slot a chance to free up.
+            Self::Io(_)
+            | Self::Http(_)
+            | Self::Timeout { .. }
+            | Self::CodingPlanAdmissionTimeout { .. } => true,
             Self::Config { .. }
             | Self::SetupRequired { .. }
             | Self::Tool { .. }
@@ -152,7 +164,6 @@ impl AgentError {
             | Self::Cancelled
             | Self::HttpRequest(_)
             | Self::CredentialLockTimeout { .. }
-            | Self::CodingPlanAdmissionTimeout { .. }
             | Self::ResponseChainBusy { .. }
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
@@ -312,7 +323,7 @@ impl AgentError {
                 ),
                 None => "OpenAI Coding Plan rejected the connection before the request was sent; the account may be at its concurrent request limit".into(),
             },
-            Self::HistoryReplayRequired { reason } => {
+            Self::HistoryReplayRequired { reason, .. } => {
                 format!("full-history replay requires explicit approval because {reason}")
             }
             Self::HttpRequest(e) => format!("request error: {e}"),
@@ -412,6 +423,7 @@ mod tests {
     fn history_replay_required_is_detected() {
         let err = AgentError::HistoryReplayRequired {
             reason: HistoryReplayReason::ContinuationNotFound,
+            output_emitted: false,
         };
         assert!(err.is_history_replay_required());
     }

@@ -525,12 +525,17 @@ impl<'h> Agent<'h> {
         .await
     }
 
-    async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
+    async fn approve_history_replay(
+        &self,
+        reason: HistoryReplayReason,
+        output_emitted: bool,
+    ) -> Result<(), AgentError> {
         if self.permissions.is_yolo() {
             return Ok(());
         }
         let scope = history_replay_scope(
             reason,
+            output_emitted,
             self.history.as_slice(),
             &self.system,
             &self.tools,
@@ -601,8 +606,11 @@ impl<'h> Agent<'h> {
         let mut approved_ambiguous_replay = false;
         let response = loop {
             match self.stream_response(opts.clone()).await {
-                Err(AgentError::HistoryReplayRequired { reason }) if !approved_history_replay => {
-                    self.approve_history_replay(reason).await?;
+                Err(AgentError::HistoryReplayRequired {
+                    reason,
+                    output_emitted,
+                }) if !approved_history_replay => {
+                    self.approve_history_replay(reason, output_emitted).await?;
                     approved_history_replay = true;
                     opts.allow_history_replay = true;
                 }
@@ -1277,6 +1285,7 @@ fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) ->
 
 fn history_replay_scope(
     reason: HistoryReplayReason,
+    output_emitted: bool,
     messages: &[Message],
     system: &System,
     tools: &Value,
@@ -1299,8 +1308,13 @@ fn history_replay_scope(
     } else {
         format!("up to ${estimated_cost:.4} before cache discounts")
     };
+    let duplicate_output_warning = if output_emitted {
+        " This turn already streamed output to you; replaying may duplicate it."
+    } else {
+        ""
+    };
     format!(
-        "{reason}; resend approximately {estimated_tokens} input tokens ({cost}). Allow this replay?"
+        "{reason}; resend approximately {estimated_tokens} input tokens ({cost}).{duplicate_output_warning} Allow this replay?"
     )
 }
 
@@ -1502,6 +1516,7 @@ mod tests {
     fn history_replay_scope_reports_reason_tokens_and_cost() {
         let scope = history_replay_scope(
             HistoryReplayReason::ContinuationNotFound,
+            false,
             &[Message::user("restored context".into())],
             &System::from("system"),
             &json!([{"name": "read"}]),
@@ -1512,6 +1527,22 @@ mod tests {
         assert!(scope.contains("saved continuation was not found"));
         assert!(scope.contains("input tokens"));
         assert!(scope.contains("before cache discounts"));
+        assert!(!scope.contains("already streamed output"));
+    }
+
+    #[test]
+    fn history_replay_scope_warns_when_output_already_emitted() {
+        let scope = history_replay_scope(
+            HistoryReplayReason::ContinuationNotFound,
+            true,
+            &[Message::user("restored context".into())],
+            &System::from("system"),
+            &json!([{"name": "read"}]),
+            &default_model(),
+            false,
+        );
+
+        assert!(scope.contains("already streamed output to you"));
     }
 
     #[test]
@@ -1521,7 +1552,7 @@ mod tests {
             let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
 
             let error = agent
-                .approve_history_replay(HistoryReplayReason::ContinuationUnavailable)
+                .approve_history_replay(HistoryReplayReason::ContinuationUnavailable, false)
                 .await
                 .unwrap_err();
 
@@ -1556,7 +1587,7 @@ mod tests {
                 .unwrap();
 
             agent
-                .approve_history_replay(HistoryReplayReason::ContinuationNotFound)
+                .approve_history_replay(HistoryReplayReason::ContinuationNotFound, false)
                 .await
                 .unwrap();
 
@@ -1580,7 +1611,7 @@ mod tests {
             let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
 
             let error = agent
-                .approve_history_replay(HistoryReplayReason::ContinuationNotFound)
+                .approve_history_replay(HistoryReplayReason::ContinuationNotFound, false)
                 .await
                 .unwrap_err();
 

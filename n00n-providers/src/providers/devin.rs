@@ -337,7 +337,7 @@ fn ordered_tool_call_blocks(
             status: 0,
             message: "Devin tool-call ordering state is inconsistent".to_string(),
         })?;
-        let input = if arguments_json.is_empty() {
+        let input = if arguments_json.trim().is_empty() {
             Value::Object(Map::new())
         } else {
             serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
@@ -1366,6 +1366,27 @@ mod tests {
                 name,
                 input: Value::Object(map),
             } if id == "call-1" && name == "bash" && map.is_empty()
+        ));
+    }
+
+    #[test]
+    fn ordered_tool_call_blocks_treats_whitespace_only_args_as_empty_object() {
+        let mut tool_calls = HashMap::new();
+        tool_calls.insert(
+            "call-1".to_string(),
+            ("batch".to_string(), "\n".to_string()),
+        );
+        let blocks = ordered_tool_call_blocks(tool_calls, vec!["call-1".to_string()])
+            .expect("whitespace-only args parse");
+
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::ToolUse {
+                id,
+                name,
+                input: Value::Object(map),
+            } if id == "call-1" && name == "batch" && map.is_empty()
         ));
     }
 }

@@ -17,7 +17,7 @@ use n00n_storage::sessions::{
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
@@ -267,6 +267,10 @@ fn should_fallback_to_http(error: &super::websocket::WebSocketAttemptError) -> b
         && !error.error.is_auth_error()
         && !matches!(&error.error, AgentError::CodingPlanAdmission { .. })
         && error.delivery.phase == RequestDeliveryPhase::NotSent
+}
+
+fn targets_coding_plan_endpoint(auth: &ResolvedAuth) -> bool {
+    auth.base_url.as_deref() == Some(auth::CODING_PLAN_BASE_URL)
 }
 
 fn full_history_replay_required(
@@ -1403,6 +1407,7 @@ impl OpenAi {
                 delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
                 result: Err(AgentError::HistoryReplayRequired {
                     reason: HistoryReplayReason::ContinuationUnavailable,
+                    output_emitted: false,
                 }),
             };
         }
@@ -1482,6 +1487,7 @@ impl OpenAi {
                                     delivery: Some(error.delivery),
                                     result: Err(AgentError::HistoryReplayRequired {
                                         reason: HistoryReplayReason::ContinuationUnavailable,
+                                        output_emitted: false,
                                     }),
                                 },
                                 session_id,
@@ -1748,6 +1754,12 @@ impl OpenAi {
         // API-key Responses requests are intentionally stateless. This HTTP path cannot
         // reuse a store=false response ID safely, so every turn sends full history.
         let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
+        // A custom provider profile can point this HTTP path at the Coding Plan
+        // endpoint too, which rejects `prompt_cache_options` like run_codex_attempt.
+        let mut opts = opts;
+        if targets_coding_plan_endpoint(&self.current_auth()) {
+            opts.message_cache_breakpoints = 0;
+        }
         let body = super::responses::build_body(
             model,
             messages,
@@ -2088,11 +2100,13 @@ impl Provider for OpenAi {
                 if opts.protect_history_replay && !opts.allow_history_replay {
                     return Err(AgentError::HistoryReplayRequired {
                         reason: HistoryReplayReason::ContinuationNotFound,
+                        output_emitted: attempt.emitted_event,
                     });
                 }
-                info!(
+                warn!(
                     chain_reset = true,
                     full_history_fallback = true,
+                    output_already_emitted = attempt.emitted_event,
                     "OpenAI Responses chain was not found; replaying approved full history"
                 );
                 return self
@@ -2304,13 +2318,20 @@ fn coding_plan_admission_retry_delay(attempt: &CodexAttempt, retry_count: u8) ->
     }
 }
 
+/// Classifies a definitive rejection as a stale/expired `previous_response_id`
+/// that a full-history retry can recover from. This intentionally does not
+/// exclude attempts that already emitted output this turn: `OpenAI` validates
+/// `previous_response_id` after the request is in flight, so the rejection can
+/// legitimately arrive once acceptance is pending, or after partial output. The
+/// caller still gates the actual retry behind `finish_codex_attempt` clearing
+/// the stale chain and, when history replay is protected, behind explicit user
+/// approval that discloses whether output may be duplicated.
 fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
-    if attempt.emitted_event
-        || !attempt.definitive_rejection
+    if !attempt.definitive_rejection
         || !matches!(
             &attempt.delivery,
             Some(RequestDeliveryMetadata {
-                phase: RequestDeliveryPhase::NotSent,
+                phase: RequestDeliveryPhase::NotSent | RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
                 ..
             })
@@ -3403,6 +3424,26 @@ mod tests {
     }
 
     #[test]
+    fn targets_coding_plan_endpoint_matches_only_that_base_url() {
+        let coding_plan = ResolvedAuth {
+            base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
+            headers: vec![("authorization".into(), "Bearer token".into())],
+        };
+        let api_key = ResolvedAuth {
+            base_url: Some(super::super::OPENAI_API_BASE_URL.into()),
+            headers: vec![("authorization".into(), "Bearer token".into())],
+        };
+        let no_base_url = ResolvedAuth {
+            base_url: None,
+            headers: vec![],
+        };
+
+        assert!(targets_coding_plan_endpoint(&coding_plan));
+        assert!(!targets_coding_plan_endpoint(&api_key));
+        assert!(!targets_coding_plan_endpoint(&no_base_url));
+    }
+
+    #[test]
     fn response_chain_resets_when_auth_scope_changes() {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("hello".into())];
@@ -4396,62 +4437,40 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn only_not_sent_missing_previous_rejections_allow_full_history_retry() {
-        let attempt =
-            |phase, status, message: &str, emitted_event, definitive_rejection| CodexAttempt {
-                previous_response_id: Some("resp_1".into()),
-                emitted_event,
-                definitive_rejection,
-                delivery: Some(RequestDeliveryMetadata::new(phase)),
-                result: Err(AgentError::Api {
-                    status,
-                    message: message.into(),
-                }),
-            };
+    #[test_case(RequestDeliveryPhase::NotSent, 400, "previous_response_not_found: Previous response not found", false, true; "not_sent_400_prefix")]
+    #[test_case(RequestDeliveryPhase::SentAwaitingAcceptance, 400, "previous_response_not_found: Previous response not found", false, true; "sent_awaiting_acceptance_400_prefix")]
+    #[test_case(RequestDeliveryPhase::NotSent, 400, "previous_response_not_found: Previous response not found", true, true; "not_sent_400_prefix_with_output_already_emitted")]
+    #[test_case(RequestDeliveryPhase::SentAwaitingAcceptance, 400, "previous_response_not_found: Previous response not found", true, true; "sent_awaiting_acceptance_with_output_already_emitted")]
+    #[test_case(RequestDeliveryPhase::NotSent, 0, "not found: resp_1", false, true; "not_sent_status_zero_not_found_by_id")]
+    #[test_case(RequestDeliveryPhase::NotSent, 404, "not found: resp_1", false, true; "not_sent_404_not_found_by_id")]
+    #[test_case(RequestDeliveryPhase::Accepted, 400, "previous_response_not_found: Previous response not found", false, true; "accepted_phase_stays_fatal")]
+    #[test_case(RequestDeliveryPhase::NotSent, 404, "not found: resp_other", false, true; "id_mismatch_stays_fatal")]
+    #[test_case(RequestDeliveryPhase::NotSent, 400, "previous_response_not_found: Previous response not found", false, false; "non_definitive_rejection_stays_fatal")]
+    fn missing_previous_response_classification(
+        phase: RequestDeliveryPhase,
+        status: u16,
+        message: &str,
+        emitted_event: bool,
+        definitive_rejection: bool,
+    ) {
+        let expected = matches!(
+            phase,
+            RequestDeliveryPhase::NotSent | RequestDeliveryPhase::SentAwaitingAcceptance
+        ) && definitive_rejection
+            && (status == 400 && message.starts_with("previous_response_not_found:")
+                || (status == 0 || status == 404) && message == "not found: resp_1");
+        let attempt = CodexAttempt {
+            previous_response_id: Some("resp_1".into()),
+            emitted_event,
+            definitive_rejection,
+            delivery: Some(RequestDeliveryMetadata::new(phase)),
+            result: Err(AgentError::Api {
+                status,
+                message: message.into(),
+            }),
+        };
 
-        for status in [0, 400, 404] {
-            let message = if status == 400 {
-                "previous_response_not_found: Previous response not found"
-            } else {
-                "not found: resp_1"
-            };
-            assert!(is_missing_previous_response(&attempt(
-                RequestDeliveryPhase::NotSent,
-                status,
-                message,
-                false,
-                true,
-            )));
-            assert!(!is_missing_previous_response(&attempt(
-                RequestDeliveryPhase::SentAwaitingAcceptance,
-                status,
-                message,
-                false,
-                true,
-            )));
-        }
-        assert!(!is_missing_previous_response(&attempt(
-            RequestDeliveryPhase::NotSent,
-            404,
-            "not found: resp_other",
-            false,
-            true,
-        )));
-        assert!(!is_missing_previous_response(&attempt(
-            RequestDeliveryPhase::NotSent,
-            404,
-            "not found: resp_1",
-            true,
-            true,
-        )));
-        assert!(!is_missing_previous_response(&attempt(
-            RequestDeliveryPhase::NotSent,
-            404,
-            "not found: resp_1",
-            false,
-            false,
-        )));
+        assert_eq!(is_missing_previous_response(&attempt), expected);
     }
 
     #[test]
