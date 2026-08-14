@@ -228,6 +228,12 @@ impl FusionState {
         self.request_kind = kind;
     }
 
+    /// Resets the fusion state to Planning, allowing a new delegation cycle.
+    /// Call this when a queued delegable input arrives after a previous turn completed.
+    pub fn reset_to_idle(&mut self) {
+        self.phase = FusionPhase::Planning;
+    }
+
     #[must_use]
     pub const fn request_kind(&self) -> DelegationKind {
         self.request_kind
@@ -352,6 +358,7 @@ impl FusionState {
                     FusionPhase::Reviewing | FusionPhase::LeadFallback,
                     FusionPhase::Complete
                 )
+                | (FusionPhase::Idle, FusionPhase::Planning)
         );
         if !allowed || (next == FusionPhase::Executing && self.lane != FusionLane::Lead) {
             return Err(FusionTransitionError {
@@ -597,7 +604,7 @@ pub fn fusion_lead_system_append() -> &'static str {
 /// System prompt appendix for sidekick lane.
 #[must_use]
 pub fn fusion_sidekick_system_append() -> &'static str {
-    "Fusion sidekick lane: execute the delegated brief efficiently. Prefer index/codegraph/arbor \
+    "Fusion sidekick lane: execute the delegated brief efficiently. Prefer index/codegraph \
      before broad reads. Return concise file:line evidence, test results, and a short summary — \
      not full file dumps."
 }
@@ -873,5 +880,19 @@ mod tests {
         }]);
         assert!(state.sidekick_cost.abs() < f64::EPSILON);
         assert_eq!(state.sidekick_usage, TokenUsage::default());
+    }
+
+    #[test]
+    fn reset_to_idle_enables_new_delegation_cycle() {
+        let mut state = FusionState::new_lead();
+        assert_transition(&mut state, FusionPhase::Executing);
+        assert_transition(&mut state, FusionPhase::Reviewing);
+        assert_transition(&mut state, FusionPhase::Complete);
+        assert_eq!(state.phase(), FusionPhase::Complete);
+
+        state.reset_to_idle();
+        assert_eq!(state.phase(), FusionPhase::Planning);
+        assert_transition(&mut state, FusionPhase::Executing);
+        assert_eq!(state.phase(), FusionPhase::Executing);
     }
 }

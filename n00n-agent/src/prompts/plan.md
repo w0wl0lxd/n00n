@@ -3,7 +3,7 @@
 
 Research and plan only. Do not modify files or system state except the authorized plan file below.
 
-Allowed: read-only built-ins, web/search, CodeGraph, Arbor, and MCP tools explicitly marked read-only. Missing or stale project indexes refresh automatically. Bash accepts only read-only inspection commands. `code_execution` is unavailable. Use write/edit/multiedit only for `{plan_path}`.
+Allowed: read-only built-ins, web/search, CodeGraph, and MCP tools explicitly marked read-only. Missing or stale project indexes refresh automatically. Bash accepts only read-only inspection commands. `code_execution` is unavailable. Use write/edit/multiedit only for `{plan_path}`.
 
 ## Responsibility
 
