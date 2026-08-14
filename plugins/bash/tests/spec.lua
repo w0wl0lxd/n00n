@@ -1,5 +1,5 @@
--- Test RTK functionality for bash plugin
--- Tests T086, T087, T091 from Phase 6
+local command_guard = require("command_guard")
+local output_collector = require("output_collector")
 
 local failures = {}
 
@@ -10,63 +10,125 @@ local function case(name, fn)
   end
 end
 
--- T086: Test RTK availability caching (simulated via module inspection)
-case("rtk_availability_cache_exists", function()
-  -- The bash plugin should have a module-level rtk_available variable
-  -- This test verifies the structure exists (actual caching is tested via integration)
-  local bash_init = loadfile("plugins/bash/init.lua")
-  assert(bash_init, "bash init.lua should be loadable")
-end)
-
--- T087/T090: Test broader rtk rewrite coverage
-case("rtk_command_table_includes_new_commands", function()
-  -- Verify the description mentions the new commands from FR-017
-  local f = io.open("plugins/bash/init.lua", "r")
-  if not f then
-    error("could not open plugins/bash/init.lua")
+local function eq(actual, expected, msg)
+  if actual ~= expected then
+    error((msg or "") .. "\nexpected: " .. tostring(expected) .. "\n  actual: " .. tostring(actual))
   end
-  local content = f:read("*a")
-  f:close()
+end
 
-  -- Check that the description includes the new commands
-  assert(content:find("podman"), "description should mention podman")
-  assert(content:find("docker"), "description should mention docker")
-  assert(content:find("npm"), "description should mention npm")
-  assert(content:find("pip"), "description should mention pip")
-  assert(content:find("python"), "description should mention python")
-  assert(content:find("gh"), "description should mention gh")
-end)
-
--- T091: Test jq and yq passthrough
-case("jq_yq_passthrough_in_code", function()
-  local bash_init = loadfile("plugins/bash/init.lua")
-  assert(bash_init, "bash init.lua should be loadable")
-
-  -- Verify the strip_leading_assignments function exists and handles nil
-  local env = {}
-  bash_init(env)
-  assert(env.strip_leading_assignments, "strip_leading_assignments function should exist")
-
-  -- Test that strip_leading_assignments returns empty string for empty input
-  local result = env.strip_leading_assignments("")
-  assert(result == "", "strip_leading_assignments should handle empty input")
-
-  -- Test that strip_leading_assignments handles assignments
-  result = env.strip_leading_assignments("FOO=bar jq .")
-  assert(result == "jq .", "strip_leading_assignments should strip leading assignments")
-end)
-
--- T092: Test prompt hints mention rtk-wrapped bash
-case("prompt_hint_mentions_rtk_wrapped", function()
-  local f = io.open("plugins/bash/init.lua", "r")
-  if not f then
-    error("could not open plugins/bash/init.lua")
+local function has(s, substr, msg)
+  if not s:find(substr, 1, true) then
+    error((msg or "") .. "\nexpected to contain: " .. tostring(substr) .. "\n  actual: " .. tostring(s))
   end
-  local content = f:read("*a")
-  f:close()
+end
 
-  -- Check that prompt hints explicitly recommend rtk-wrapped bash
-  assert(content:find("rtk%-wrapped") or content:find("rtk wrapped"), "prompt hint should mention rtk-wrapped bash")
+-- broad_bash_command_reason: git log/reflog/rev-list count bounds (defect: the
+-- `-<N>` shorthand was not recognized as a bound).
+
+case("git_log_dash_n_shorthand_is_bounded", function()
+  eq(command_guard.broad_bash_command_reason("git log --oneline -20"), nil)
+end)
+
+case("git_log_attached_dash_n_is_bounded", function()
+  eq(command_guard.broad_bash_command_reason("git log -n5 --oneline"), nil)
+end)
+
+case("git_log_without_a_bound_is_rejected", function()
+  local reason = command_guard.broad_bash_command_reason("git log --oneline")
+  has(reason, "history without a max count")
+end)
+
+case("git_reflog_and_rev_list_share_the_bound_check", function()
+  eq(command_guard.broad_bash_command_reason("git reflog -10"), nil)
+  eq(command_guard.broad_bash_command_reason("git rev-list --max-count=5 HEAD"), nil)
+end)
+
+-- broad_bash_command_reason: rg output caps (defect: only `| head`/`| tail`
+-- were recognized; `rg --max-depth` was rejected despite being self-bounded).
+
+case("rg_max_depth_is_bounded", function()
+  eq(command_guard.broad_bash_command_reason("rg --max-depth 1 needle ."), nil)
+end)
+
+case("rg_piped_through_head_is_bounded", function()
+  eq(command_guard.broad_bash_command_reason("rg needle . | head -n 20"), nil)
+end)
+
+case("rg_without_a_bound_is_rejected", function()
+  local reason = command_guard.broad_bash_command_reason("rg needle .")
+  has(reason, "unbounded result size")
+  has(reason, "--max-depth")
+end)
+
+-- `-m`/`--max-count` cap matches per file, not the overall result size, so
+-- they must not satisfy the guardrail on their own.
+case("rg_max_count_alone_is_still_rejected", function()
+  local reason = command_guard.broad_bash_command_reason("rg --max-count=5 needle .")
+  has(reason, "unbounded result size")
+end)
+
+case("git_grep_is_always_rejected_without_a_pipe", function()
+  local reason = command_guard.broad_bash_command_reason("git grep needle")
+  has(reason, "git grep without result limit")
+end)
+
+-- git_subcommand: must resolve past global options injected ahead of the
+-- subcommand (defect: the old `cmd:match("^git%s+(%S+)")` captured the first
+-- global flag instead of the real subcommand).
+
+case("git_subcommand_skips_injected_global_options", function()
+  eq(command_guard.git_subcommand("git --no-optional-locks -c core.fsmonitor=false log --oneline -5"), "log")
+end)
+
+case("git_subcommand_skips_arg_taking_global_options", function()
+  eq(command_guard.git_subcommand("git -C /tmp log"), "log")
+end)
+
+case("git_subcommand_plain", function()
+  eq(command_guard.git_subcommand("git config --get remote.origin.url"), "config")
+end)
+
+case("git_subcommand_nil_for_non_git", function()
+  eq(command_guard.git_subcommand("gh pr list"), nil)
+end)
+
+case("git_uses_machine_format_detects_porcelain", function()
+  eq(command_guard.git_uses_machine_format("git worktree list --porcelain"), true)
+  eq(command_guard.git_uses_machine_format("git status"), false)
+end)
+
+-- output_collector: the LLM-facing accumulator must stay bounded while
+-- streaming, not just at the final truncate() call.
+
+case("output_collector_caps_stored_bytes_while_streaming", function()
+  local collector = output_collector.new()
+  for _ = 1, 100 do
+    output_collector.append_line(collector, string.rep("x", 200), 500, 1024)
+  end
+  local stored = 0
+  for _, part in ipairs(collector.parts) do
+    stored = stored + #part
+  end
+  if stored > 1024 + 4096 then
+    error("collector stored " .. stored .. " bytes, expected it capped near the max_bytes budget")
+  end
+end)
+
+case("output_collector_reports_full_truncated_byte_count", function()
+  local collector = output_collector.new()
+  for _ = 1, 50 do
+    output_collector.append_line(collector, string.rep("y", 100), 500, 256)
+  end
+  local output = output_collector.collected_output(collector, 500, 256)
+  has(output, "[truncated ")
+end)
+
+case("output_collector_returns_full_text_under_the_cap", function()
+  local collector = output_collector.new()
+  output_collector.append_line(collector, "line one", 500, 1024)
+  output_collector.append_line(collector, "line two", 500, 1024)
+  local output = output_collector.collected_output(collector, 500, 1024)
+  eq(output, "line one\nline two")
 end)
 
 if #failures > 0 then

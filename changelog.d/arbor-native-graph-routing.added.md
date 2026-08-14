@@ -1,1 +1,0 @@
-Route Arbor callers/callees/trace_path through the in-memory graph.json index when available, falling back to Arbor CLI subprocess calls for map/diff/query/status.

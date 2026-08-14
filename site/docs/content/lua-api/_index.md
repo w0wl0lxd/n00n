@@ -1330,6 +1330,10 @@ whether programs are installed.
 Job functions need the `run` permission. `executable` needs the `env`
 permission.
 
+A job belongs to the call that started it unless you pass
+`owner = "plugin"`, which keeps it running until the plugin unloads
+or reloads. Only the owning task or plugin can stop or wait on a job.
+
 ```lua
 local id = n00n.fn.jobstart("git status", {
   on_exit = function(code) print("done: " .. code) end,
@@ -1361,6 +1365,9 @@ pass an array to run the program directly with preserved argument quoting:
   - `on_stdout` (`function?`) called with `(job_id, line)` for each stdout line.
   - `on_stderr` (`function?`) called with `(job_id, line)` for each stderr line.
   - `on_exit` (`function?`) called with `(job_id, code)` when the process finishes.
+  - `owner` (`string?`) job lifetime. `"task"` (default) ends the job with
+    the current call. `"plugin"` keeps it alive until the plugin unloads
+    or reloads.
 
 **Returns:** (`integer`) Job id.
 
@@ -1375,6 +1382,8 @@ local id = n00n.fn.jobstart("ls -la", {
 })
 -- List mode (preserves argument quoting)
 local id = n00n.fn.jobstart({ "git", "commit", "-m", "feat: preserve spaces" }, opts)
+-- Plugin-owned watcher that outlives the call that started it
+local watcher = n00n.fn.jobstart("tail -F app.log", { owner = "plugin" })
 ```
 
 ---
