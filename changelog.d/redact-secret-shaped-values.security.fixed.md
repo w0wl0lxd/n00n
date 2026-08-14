@@ -1,0 +1,1 @@
+Redacted secret-shaped values (JWTs, provider tokens, AWS access key ids, Bearer headers) in log output even when the key name is not a known secret key, and demoted routine warning/error log noise to info level so real warnings stay visible.
