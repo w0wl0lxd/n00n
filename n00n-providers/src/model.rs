@@ -1219,19 +1219,32 @@ mod tests {
 
     #[test]
     fn supports_files_reads_static_entry_flag() {
-        // gpt-5.6 entries are flagged as file-capable; gpt-5.5 is not.
-        assert!(
-            Model::from_spec("openai/gpt-5.6-sol")
-                .unwrap()
-                .supports_files()
-        );
-        assert!(!Model::from_spec("openai/gpt-5.5").unwrap().supports_files());
+        // Asserted on the catalog directly: `supports_files()` cannot tell a
+        // static-table read from the gpt-5.6 prefix fallback.
+        let manifest = ManifestRegistry::get("openai").unwrap();
+        assert!(lookup_entry(manifest.models, "gpt-5.6-sol").unwrap().files);
+        assert!(!lookup_entry(manifest.models, "gpt-5.5").unwrap().files);
+
+        for entry in crate::providers::openai::codex_models() {
+            assert!(
+                !entry.files,
+                "codex model {:?} must not advertise file support",
+                entry.prefixes
+            );
+        }
     }
+
+    // Both tests below replace the same global `ollama` registry entry, and
+    // `set_known_models` overwrites rather than merges.
+    static OLLAMA_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn discovered_supports_files_flows_into_unknown_model() {
         use crate::model::ModelInfo;
 
+        let _guard = OLLAMA_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-files-model";
         {
@@ -1262,6 +1275,9 @@ mod tests {
     fn discovered_context_window_flows_into_from_base_for_unknown_model() {
         use crate::model::ModelInfo;
 
+        let _guard = OLLAMA_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-context-window-model";
         let expected_window: u32 = 131_072;
