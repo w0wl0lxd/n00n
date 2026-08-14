@@ -812,8 +812,9 @@ async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
     }
     if let Err(e) = refresh_server(inner, server_name).await {
         warn!(server = %server_name, error = %e, "reconnect failed");
+    } else {
+        info!(server = server_name, "MCP reconnect complete");
     }
-    info!(server = server_name, "MCP reconnect complete");
 }
 
 async fn shutdown_all(inner: &mut McpManagerInner) {

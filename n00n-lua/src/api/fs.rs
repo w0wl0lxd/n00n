@@ -1636,6 +1636,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn glob_skips_unreadable_directory_without_erroring() {
+        // mode 0o000 does not prevent root from reading, so this test is
+        // only valid when running as an unprivileged user.
+        if std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            == Some(0)
+        {
+            return;
+        }
+
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("visible.rs"), "").unwrap();
         let blocked = tmp.path().join("blocked");
