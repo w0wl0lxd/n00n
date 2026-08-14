@@ -261,6 +261,7 @@ impl Provider for TensorX {
                                     pricing,
                                     supports_thinking,
                                     supports_vision: Some(supports_vision),
+                                    supports_files: None,
                                     tier: None,
                                     is_free: None,
                                     is_promo: None,

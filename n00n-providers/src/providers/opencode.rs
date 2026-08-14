@@ -248,6 +248,7 @@ impl ProviderData {
                     }),
                     supports_thinking: None,
                     supports_vision: None,
+                    supports_files: None,
                     tier: None,
                     is_free: None,
                     is_promo: None,
