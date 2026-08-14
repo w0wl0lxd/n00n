@@ -1015,6 +1015,7 @@ impl Provider for Devin {
                     pricing: Some(e.pricing),
                     supports_thinking: None,
                     supports_vision: Some(e.vision),
+                    supports_files: None,
                     tier: Some(e.tier),
                     is_free: None,
                     is_promo: None,
