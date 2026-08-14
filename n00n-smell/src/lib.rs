@@ -1,10 +1,10 @@
 #![allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
 
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
+use ignore::WalkBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tantivy::collector::TopDocs;
@@ -451,33 +451,29 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
     let hack_regex = Regex::new(r"(?i)\bHACK\b")?;
     let placeholder_regex = Regex::new(r"(?i)\b(placeholder|tbd|xxx)\b")?;
 
-    for entry in walkdir::WalkDir::new(repo)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-    {
+    // A default WalkBuilder skips hidden entries (`.git`, the `.n00n/smells`
+    // index itself) and honors .gitignore/.git/info/exclude/global excludes.
+    let walker = WalkBuilder::new(repo).build();
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
         let path = entry.path();
         let relative_path = path.strip_prefix(repo).map_err(|_| SmellError::Config {
             message: format!("Failed to get relative path for {}", path.display()),
         })?;
 
-        // Skip hidden directories and common ignore patterns
-        if relative_path
-            .components()
-            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-        {
+        // Non-UTF-8 files are treated as binary and skipped.
+        let Ok(content) = fs::read_to_string(path) else {
             continue;
-        }
+        };
 
-        let Ok(file) = File::open(path) else { continue };
-        let reader = BufReader::new(file);
-
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line.map_err(|source| SmellError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-
+        for (line_num, line) in content.lines().enumerate() {
             let mut kind = None;
             let mut message = String::new();
 

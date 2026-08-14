@@ -7,7 +7,7 @@ local cwd = n00n.uv.cwd() or "."
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **smell** to search a persistent index of conflict markers, TODO/FIXME/HACK comments, and placeholder phrases. Run `index` before searching on a new repo.",
+  content = "- Use **smell** to search a persistent index of TODO/FIXME/HACK comments and placeholder phrases. Run `index` before searching on a new repo.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))
@@ -25,8 +25,28 @@ n00n.api.register_tool({
     type = "object",
     required = { "command" },
     properties = {
-      command = { type = "string" },
-      query = { type = "string" },
+      command = {
+        type = "string",
+        enum = { "index", "search" },
+        description = "Smell command to run.",
+      },
+      query = {
+        type = "string",
+        description = "Keyword or phrase to search for (required for search).",
+      },
+      repo = {
+        type = "string",
+        description = "Path to the project root. Defaults to the current working directory.",
+      },
+      kind = {
+        type = "string",
+        enum = { "todo", "fixme", "hack", "placeholder" },
+        description = "Optional smell kind filter (for search).",
+      },
+      top_k = {
+        type = "integer",
+        description = "Maximum number of search results (default 5).",
+      },
     },
   },
 
@@ -55,23 +75,22 @@ n00n.api.register_tool({
       return { llm_output = "error: failed to publish smell results: " .. tostring(live_err), is_error = true }
     end
 
-    local ok, output
+    local ok, output, err
     if command == "index" then
-      ok = pcall(smell.index, repo)
-      if ok then
-        output = "smell index rebuilt for " .. repo
-      end
+      ok, err = smell.index(repo)
+      output = ok and ("smell index rebuilt for " .. repo) or err
     elseif command == "search" then
       if not input.query or input.query:match("^%s*$") then
         return { llm_output = "error: query is required for search", is_error = true }
       end
-      ok, output = pcall(smell.search, repo, input.query, input.kind, input.top_k or 5)
+      output, err = smell.search(repo, input.query, input.kind, input.top_k or 5)
+      ok = output ~= nil
     else
       return { llm_output = "error: unsupported command: " .. tostring(command), is_error = true }
     end
 
     if not ok then
-      return { llm_output = "error: smell failed: " .. tostring(output), is_error = true }
+      return { llm_output = "error: smell failed: " .. tostring(err), is_error = true }
     end
 
     output = (output or ""):gsub("\n+$", "")
