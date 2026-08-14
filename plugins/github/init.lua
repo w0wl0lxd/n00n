@@ -1,5 +1,6 @@
 local n00n_github = n00n.github
 local ToolView = require("n00n.tool_view")
+local web_backend = require("n00n.web_backend")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
@@ -19,9 +20,12 @@ local function dispatch(input)
   end
 
   if command == "list_issues" then
-    local ok, result = pcall(n00n_github.list_issues, owner, repo)
+    local ok, result, err = pcall(n00n_github.list_issues, owner, repo)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     if #result == 0 then
       return { llm_output = "No issues found" }
@@ -37,17 +41,23 @@ local function dispatch(input)
     if not input.title then
       return { llm_output = "error: title required for create_issue", is_error = true }
     end
-    local ok, result = pcall(n00n_github.create_issue, owner, repo, input.title, input.body)
+    local ok, result, err = pcall(n00n_github.create_issue, owner, repo, input.title, input.body)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     return { llm_output = string.format("Created issue #%d: %s\n%s", result.number, result.title, result.html_url) }
   end
 
   if command == "list_prs" then
-    local ok, result = pcall(n00n_github.list_prs, owner, repo)
+    local ok, result, err = pcall(n00n_github.list_prs, owner, repo)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     if #result == 0 then
       return { llm_output = "No pull requests found" }
@@ -60,9 +70,12 @@ local function dispatch(input)
   end
 
   if command == "get_repo" then
-    local ok, result = pcall(n00n_github.get_repo, owner, repo)
+    local ok, result, err = pcall(n00n_github.get_repo, owner, repo)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     local lines = {
       result.full_name,
@@ -79,9 +92,12 @@ local function dispatch(input)
     if not input.issue_number or type(input.issue_number) ~= "number" then
       return { llm_output = "error: issue_number is required and must be a number", is_error = true }
     end
-    local ok, result = pcall(n00n_github.get_issue, owner, repo, input.issue_number)
+    local ok, result, err = pcall(n00n_github.get_issue, owner, repo, input.issue_number)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     local lines = {
       string.format("#%d %s (%s)", result.number, result.title, result.state),
@@ -91,16 +107,21 @@ local function dispatch(input)
     if result.body then
       table.insert(lines, "  Body: " .. result.body)
     end
-    return { llm_output = table.concat(lines, "\n") }
+    return {
+      llm_output = web_backend.wrap(table.concat(lines, "\n"), "GitHub issue " .. owner .. "/" .. repo),
+    }
   end
 
   if command == "get_pr" then
     if not input.pr_number or type(input.pr_number) ~= "number" then
       return { llm_output = "error: pr_number is required and must be a number", is_error = true }
     end
-    local ok, result = pcall(n00n_github.get_pr, owner, repo, input.pr_number)
+    local ok, result, err = pcall(n00n_github.get_pr, owner, repo, input.pr_number)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     local lines = {
       string.format("#%d %s (%s)", result.number, result.title, result.state),
@@ -112,16 +133,21 @@ local function dispatch(input)
     if result.body then
       table.insert(lines, "  Body: " .. result.body)
     end
-    return { llm_output = table.concat(lines, "\n") }
+    return {
+      llm_output = web_backend.wrap(table.concat(lines, "\n"), "GitHub PR " .. owner .. "/" .. repo),
+    }
   end
 
   if command == "create_pr" then
     if not input.head or not input.base or not input.title then
       return { llm_output = "error: head, base, and title required for create_pr", is_error = true }
     end
-    local ok, result = pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body)
+    local ok, result, err = pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     return { llm_output = string.format("Created PR #%d: %s\n%s", result.number, result.title, result.html_url) }
   end
@@ -130,9 +156,12 @@ local function dispatch(input)
     if not input.issue_number or type(input.issue_number) ~= "number" or not input.body then
       return { llm_output = "error: issue_number and body required for add_comment", is_error = true }
     end
-    local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body)
+    local ok, result, err = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
     return { llm_output = string.format("Added comment\n%s", result.html_url) }
   end
