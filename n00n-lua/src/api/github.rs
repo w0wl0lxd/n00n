@@ -2,8 +2,7 @@ use mlua::{Lua, Result as LuaResult, Table};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::api::util::convert::json_to_lua;
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
@@ -64,9 +63,14 @@ enum GitHubError {
     RateLimited { retry_after: Option<u64> },
 }
 
+/// Caches the outcome of the `gh auth token` fallback so it runs at most once
+/// per session while still letting every call reuse a token it found, not
+/// just remember that it looked.
+type GhTokenCache = Arc<Mutex<Option<Option<String>>>>;
+
 fn resolve_token(
     provided_token: Option<String>,
-    gh_tried: Arc<AtomicBool>,
+    gh_cache: &GhTokenCache,
     env_token: Option<String>,
 ) -> Option<String> {
     if let Some(t) = env_token {
@@ -75,23 +79,24 @@ fn resolve_token(
     if let Some(t) = provided_token {
         return Some(t);
     }
-    if !gh_tried.swap(true, Ordering::SeqCst)
-        && let Ok(output) = std::process::Command::new("gh")
-            .args(["auth", "token"])
-            .output()
-        && output.status.success()
-        && let Ok(token) = String::from_utf8(output.stdout)
-    {
-        let token = token.trim().to_string();
-        if !token.is_empty() {
-            return Some(token);
-        }
+    let mut cached = gh_cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(token) = cached.as_ref() {
+        return token.clone();
     }
-    None
+    let token = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty());
+    *cached = Some(token.clone());
+    token
 }
 
-fn get_token(provided_token: Option<String>, gh_tried: Arc<AtomicBool>) -> Option<String> {
-    resolve_token(provided_token, gh_tried, env::var("GITHUB_TOKEN").ok())
+fn get_token(provided_token: Option<String>, gh_cache: &GhTokenCache) -> Option<String> {
+    resolve_token(provided_token, gh_cache, env::var("GITHUB_TOKEN").ok())
 }
 
 fn check_rate_limit(response: &reqwest::blocking::Response) -> Result<(), GitHubError> {
@@ -149,43 +154,73 @@ fn value_or_err<T: serde::Serialize>(
     json_to_lua(lua, &json)
 }
 
+/// Converts a fallible call into the `(value, err)` pair the Lua API
+/// convention requires instead of throwing (see `n00n-lua/src/api/AGENTS.md`).
+fn as_pair(lua: &Lua, result: LuaResult<mlua::Value>) -> LuaResult<(mlua::Value, mlua::Value)> {
+    match result {
+        Ok(value) => Ok((value, mlua::Value::Nil)),
+        Err(error) => Ok((
+            mlua::Value::Nil,
+            mlua::Value::String(lua.create_string(error.to_string())?),
+        )),
+    }
+}
+
+/// Detects the `pull_request` field GitHub adds only to PR entries in
+/// `/issues` responses, without exposing that field on `GitHubIssue` itself.
+#[derive(Debug, Deserialize)]
+struct RawIssue {
+    #[serde(flatten)]
+    issue: GitHubIssue,
+    #[serde(default)]
+    pull_request: Option<serde_json::Value>,
+}
+
 pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     let t = lua.create_table()?;
-    let gh_tried = Arc::new(AtomicBool::new(false));
+    let gh_cache: GhTokenCache = Arc::new(Mutex::new(None));
 
     let list_issues_fn = lua.create_function({
-        let gh_tried = Arc::clone(&gh_tried);
+        let gh_cache = Arc::clone(&gh_cache);
         move |lua, (owner, repo, token): (String, String, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache);
 
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
-            let mut request = client.get(&url);
+                let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
+                let mut request = client.get(&url);
 
-            if let Some(t) = token {
-                request = request.header("Authorization", format!("Bearer {t}"));
-            }
+                if let Some(t) = token {
+                    request = request.header("Authorization", format!("Bearer {t}"));
+                }
 
-            let response = request.send().map_err(map_err)?;
-            check_rate_limit(&response).map_err(map_github_err)?;
+                let response = request.send().map_err(map_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let issues: Vec<GitHubIssue> = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(issues))
+                let raw: Vec<RawIssue> = response.json().map_err(map_err)?;
+                let issues: Vec<GitHubIssue> = raw
+                    .into_iter()
+                    .filter(|entry| entry.pull_request.is_none())
+                    .map(|entry| entry.issue)
+                    .collect();
+                value_or_err(lua, Ok(issues))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("list_issues", list_issues_fn)?;
 
     let create_issue_fn = lua.create_function(
         {
-            let gh_tried = Arc::clone(&gh_tried);
+            let gh_cache = Arc::clone(&gh_cache);
             move |lua,
          (owner, repo, title, body, token): (
             String,
@@ -194,166 +229,182 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             Option<String>,
             Option<String>,
         )| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
-                mlua::Error::external(
-                    "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
-                )
-            })?;
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache).ok_or_else(|| {
+                    mlua::Error::external(
+                        "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                    )
+                })?;
 
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
-            let mut payload = serde_json::Map::new();
-            payload.insert("title".to_string(), title.into());
-            if let Some(body) = body {
-                payload.insert("body".to_string(), body.into());
-            }
-            let payload = serde_json::Value::Object(payload);
+                let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
+                let mut payload = serde_json::Map::new();
+                payload.insert("title".to_string(), title.into());
+                if let Some(body) = body {
+                    payload.insert("body".to_string(), body.into());
+                }
+                let payload = serde_json::Value::Object(payload);
 
-            let response = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .json(&payload)
-                .send()
-                .map_err(map_err)?;
+                let response = client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .json(&payload)
+                    .send()
+                    .map_err(map_err)?;
 
-            check_rate_limit(&response).map_err(map_github_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let issue: GitHubIssue = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(issue))
+                let issue: GitHubIssue = response.json().map_err(map_err)?;
+                value_or_err(lua, Ok(issue))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("create_issue", create_issue_fn)?;
 
     let list_prs_fn = lua.create_function({
-        let gh_tried = Arc::clone(&gh_tried);
+        let gh_cache = Arc::clone(&gh_cache);
         move |lua, (owner, repo, token): (String, String, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache);
 
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
-            let mut request = client.get(&url);
+                let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
+                let mut request = client.get(&url);
 
-            if let Some(t) = token {
-                request = request.header("Authorization", format!("Bearer {t}"));
-            }
+                if let Some(t) = token {
+                    request = request.header("Authorization", format!("Bearer {t}"));
+                }
 
-            let response = request.send().map_err(map_err)?;
-            check_rate_limit(&response).map_err(map_github_err)?;
+                let response = request.send().map_err(map_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let prs: Vec<GitHubPullRequest> = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(prs))
+                let prs: Vec<GitHubPullRequest> = response.json().map_err(map_err)?;
+                value_or_err(lua, Ok(prs))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("list_prs", list_prs_fn)?;
 
     let get_repo_fn = lua.create_function({
-        let gh_tried = Arc::clone(&gh_tried);
+        let gh_cache = Arc::clone(&gh_cache);
         move |lua, (owner, repo, token): (String, String, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache);
 
-            let url = format!("https://api.github.com/repos/{owner}/{repo}");
-            let mut request = client.get(&url);
+                let url = format!("https://api.github.com/repos/{owner}/{repo}");
+                let mut request = client.get(&url);
 
-            if let Some(t) = token {
-                request = request.header("Authorization", format!("Bearer {t}"));
-            }
+                if let Some(t) = token {
+                    request = request.header("Authorization", format!("Bearer {t}"));
+                }
 
-            let response = request.send().map_err(map_err)?;
-            check_rate_limit(&response).map_err(map_github_err)?;
+                let response = request.send().map_err(map_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let repo_info: GitHubRepository = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(repo_info))
+                let repo_info: GitHubRepository = response.json().map_err(map_err)?;
+                value_or_err(lua, Ok(repo_info))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("get_repo", get_repo_fn)?;
 
     let get_issue_fn = lua.create_function({
-        let gh_tried = Arc::clone(&gh_tried);
+        let gh_cache = Arc::clone(&gh_cache);
         move |lua, (owner, repo, issue_number, token): (String, String, u64, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache);
 
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}");
-            let mut request = client.get(&url);
+                let url =
+                    format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}");
+                let mut request = client.get(&url);
 
-            if let Some(t) = token {
-                request = request.header("Authorization", format!("Bearer {t}"));
-            }
+                if let Some(t) = token {
+                    request = request.header("Authorization", format!("Bearer {t}"));
+                }
 
-            let response = request.send().map_err(map_err)?;
-            check_rate_limit(&response).map_err(map_github_err)?;
+                let response = request.send().map_err(map_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let issue: GitHubIssue = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(issue))
+                let issue: GitHubIssue = response.json().map_err(map_err)?;
+                value_or_err(lua, Ok(issue))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("get_issue", get_issue_fn)?;
 
     let get_pr_fn = lua.create_function({
-        let gh_tried = Arc::clone(&gh_tried);
+        let gh_cache = Arc::clone(&gh_cache);
         move |lua, (owner, repo, pr_number, token): (String, String, u64, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache);
 
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}");
-            let mut request = client.get(&url);
+                let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}");
+                let mut request = client.get(&url);
 
-            if let Some(t) = token {
-                request = request.header("Authorization", format!("Bearer {t}"));
-            }
+                if let Some(t) = token {
+                    request = request.header("Authorization", format!("Bearer {t}"));
+                }
 
-            let response = request.send().map_err(map_err)?;
-            check_rate_limit(&response).map_err(map_github_err)?;
+                let response = request.send().map_err(map_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let pr: GitHubPullRequest = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(pr))
+                let pr: GitHubPullRequest = response.json().map_err(map_err)?;
+                value_or_err(lua, Ok(pr))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("get_pr", get_pr_fn)?;
 
     let create_pr_fn = lua.create_function({
-        let gh_tried = Arc::clone(&gh_tried);
+        let gh_cache = Arc::clone(&gh_cache);
         move |lua,
               (owner, repo, head, base, title, body, token): (
                   String,
@@ -364,48 +415,51 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                   Option<String>,
                   Option<String>,
               )| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
-                mlua::Error::external(
-                    "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
-                )
-            })?;
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache).ok_or_else(|| {
+                    mlua::Error::external(
+                        "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                    )
+                })?;
 
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
-            let mut payload = serde_json::Map::new();
-            payload.insert("title".to_string(), title.into());
-            payload.insert("head".to_string(), head.into());
-            payload.insert("base".to_string(), base.into());
-            if let Some(body) = body {
-                payload.insert("body".to_string(), body.into());
-            }
-            let payload = serde_json::Value::Object(payload);
+                let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
+                let mut payload = serde_json::Map::new();
+                payload.insert("title".to_string(), title.into());
+                payload.insert("head".to_string(), head.into());
+                payload.insert("base".to_string(), base.into());
+                if let Some(body) = body {
+                    payload.insert("body".to_string(), body.into());
+                }
+                let payload = serde_json::Value::Object(payload);
 
-            let response = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .json(&payload)
-                .send()
-                .map_err(map_err)?;
+                let response = client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .json(&payload)
+                    .send()
+                    .map_err(map_err)?;
 
-            check_rate_limit(&response).map_err(map_github_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let pr: GitHubPullRequest = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(pr))
+                let pr: GitHubPullRequest = response.json().map_err(map_err)?;
+                value_or_err(lua, Ok(pr))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("create_pr", create_pr_fn)?;
 
     let add_comment_fn = lua.create_function({
-        let gh_tried = Arc::clone(&gh_tried);
+        let gh_cache = Arc::clone(&gh_cache);
         move |lua,
               (owner, repo, issue_number, body, token): (
                   String,
@@ -414,39 +468,42 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                   String,
                   Option<String>,
               )| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
-                mlua::Error::external(
-                    "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
-                )
-            })?;
+            let result = (|| -> LuaResult<mlua::Value> {
+                let client = create_client()?;
+                let token = get_token(token, &gh_cache).ok_or_else(|| {
+                    mlua::Error::external(
+                        "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                    )
+                })?;
 
-            let url = format!(
-                "https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
-            );
-            let payload = serde_json::json!({
-                "body": body,
-            });
+                let url = format!(
+                    "https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
+                );
+                let payload = serde_json::json!({
+                    "body": body,
+                });
 
-            let response = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .json(&payload)
-                .send()
-                .map_err(map_err)?;
+                let response = client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .json(&payload)
+                    .send()
+                    .map_err(map_err)?;
 
-            check_rate_limit(&response).map_err(map_github_err)?;
+                check_rate_limit(&response).map_err(map_github_err)?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_else(|_| "no body".to_string());
-                return Err(mlua::Error::external(format!(
-                    "GitHub API error {status}: {body}"
-                )));
-            }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                    return Err(mlua::Error::external(format!(
+                        "GitHub API error {status}: {body}"
+                    )));
+                }
 
-            let comment: GitHubComment = response.json().map_err(map_err)?;
-            value_or_err(lua, Ok(comment))
+                let comment: GitHubComment = response.json().map_err(map_err)?;
+                value_or_err(lua, Ok(comment))
+            })();
+            as_pair(lua, result)
         }
     })?;
     t.set("add_comment", add_comment_fn)?;
@@ -708,7 +765,6 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicBool;
 
     fn parse_rate_limit_headers(headers: &HashMap<String, String>) -> Result<(), GitHubError> {
         if let Some(remaining) = headers.get("X-RateLimit-Remaining")
@@ -783,39 +839,71 @@ mod tests {
 
     #[test]
     fn resolve_token_prefers_env_over_provided() {
-        let gh_tried = Arc::new(AtomicBool::new(false));
+        let gh_cache: GhTokenCache = Arc::new(Mutex::new(None));
         let token = resolve_token(
             Some("provided_token".to_string()),
-            Arc::clone(&gh_tried),
+            &gh_cache,
             Some("env_token".to_string()),
         );
         assert_eq!(token, Some("env_token".to_string()));
-        assert!(!gh_tried.load(Ordering::SeqCst));
+        assert!(gh_cache.lock().unwrap().is_none(), "gh fallback not needed");
     }
 
     #[test]
     fn resolve_token_falls_back_to_provided() {
-        let gh_tried = Arc::new(AtomicBool::new(false));
-        let token = resolve_token(
-            Some("provided_token".to_string()),
-            Arc::clone(&gh_tried),
-            None,
-        );
+        let gh_cache: GhTokenCache = Arc::new(Mutex::new(None));
+        let token = resolve_token(Some("provided_token".to_string()), &gh_cache, None);
         assert_eq!(token, Some("provided_token".to_string()));
-        assert!(!gh_tried.load(Ordering::SeqCst));
+        assert!(gh_cache.lock().unwrap().is_none(), "gh fallback not needed");
     }
 
     #[test]
-    fn resolve_token_tries_gh_only_once() {
-        let gh_tried = Arc::new(AtomicBool::new(false));
-        // gh may or may not be installed, so we only assert the state change
-        // and that the second call does not retry the gh fallback.
-        let _first = resolve_token(None, Arc::clone(&gh_tried), None);
-        assert!(gh_tried.load(Ordering::SeqCst));
+    fn resolve_token_caches_the_gh_fallback_result_for_reuse() {
+        let gh_cache: GhTokenCache = Arc::new(Mutex::new(None));
+        // gh may or may not be installed, so we only assert that the cache is
+        // populated after the first call and the second call reuses it
+        // instead of returning None because it skipped retrying gh.
+        let first = resolve_token(None, &gh_cache, None);
+        assert!(gh_cache.lock().unwrap().is_some());
 
-        let second = resolve_token(None, Arc::clone(&gh_tried), None);
-        assert_eq!(second, None);
-        assert!(gh_tried.load(Ordering::SeqCst));
+        let second = resolve_token(None, &gh_cache, None);
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn raw_issue_flags_entries_carrying_a_pull_request_field() {
+        let issue: RawIssue = serde_json::from_value(serde_json::json!({
+            "number": 1, "title": "bug", "state": "open",
+            "user": {"login": "octocat"}, "body": null, "html_url": "https://example.com/1",
+        }))
+        .unwrap();
+        let pr: RawIssue = serde_json::from_value(serde_json::json!({
+            "number": 2, "title": "add feature", "state": "open",
+            "user": {"login": "octocat"}, "body": null, "html_url": "https://example.com/2",
+            "pull_request": {"url": "https://example.com/pulls/2"},
+        }))
+        .unwrap();
+        assert!(issue.pull_request.is_none());
+        assert!(pr.pull_request.is_some());
+    }
+
+    #[test]
+    fn as_pair_returns_the_value_with_a_nil_error_on_success() {
+        let lua = Lua::new();
+        let (value, error) = as_pair(&lua, Ok(mlua::Value::Integer(7))).unwrap();
+        assert_eq!(value, mlua::Value::Integer(7));
+        assert!(matches!(error, mlua::Value::Nil));
+    }
+
+    #[test]
+    fn as_pair_returns_a_nil_value_with_the_error_string_on_failure() {
+        let lua = Lua::new();
+        let (value, error) = as_pair(&lua, Err(mlua::Error::external("boom"))).unwrap();
+        assert!(matches!(value, mlua::Value::Nil));
+        let mlua::Value::String(message) = error else {
+            panic!("expected a string error");
+        };
+        assert!(message.to_str().unwrap().contains("boom"));
     }
 
     #[test]

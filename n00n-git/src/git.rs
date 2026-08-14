@@ -99,8 +99,12 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
         .status(gix::progress::Discard)
         .map_err(|e| GitError::GitOperation(format!("failed to create status platform: {e}")))?;
 
+    // `into_iter` (unlike `into_index_worktree_iter`) also yields the tree-to-index
+    // side of status, so staged changes (`TreeIndex`) are reported alongside
+    // unstaged worktree changes (`IndexWorktree`) instead of both being folded
+    // into a single "staged: true" bucket.
     let iter = platform
-        .into_index_worktree_iter(Vec::new())
+        .into_iter(Vec::new())
         .map_err(|e| GitError::GitOperation(format!("failed to create status iterator: {e}")))?;
 
     for item_result in iter {
@@ -108,28 +112,47 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
             .map_err(|e| GitError::GitOperation(format!("failed to read status item: {e}")))?;
 
         let (entry_path, status, staged) = match item {
-            gix::status::index_worktree::Item::Modification {
-                rela_path, status, ..
-            } => {
+            gix::status::Item::TreeIndex(change) => {
+                let status_str = match &change {
+                    gix::diff::index::ChangeRef::Addition { .. } => "added",
+                    gix::diff::index::ChangeRef::Deletion { .. } => "deleted",
+                    gix::diff::index::ChangeRef::Modification { .. } => "modified",
+                    gix::diff::index::ChangeRef::Rewrite { copy, .. } => {
+                        if *copy {
+                            "added"
+                        } else {
+                            "renamed"
+                        }
+                    }
+                };
+                (change.location().to_string(), status_str, true)
+            }
+            gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::Modification {
+                rela_path,
+                status,
+                ..
+            }) => {
                 let path = rela_path.to_string();
                 let (status_str, is_staged) = match status {
                     gix_status::index_as_worktree::EntryStatus::Conflict { .. } => {
                         ("conflict", true)
                     }
                     gix_status::index_as_worktree::EntryStatus::Change(change) => match change {
-                        gix_status::index_as_worktree::Change::Removed => ("deleted", true),
+                        gix_status::index_as_worktree::Change::Removed => ("deleted", false),
                         gix_status::index_as_worktree::Change::Type { .. }
                         | gix_status::index_as_worktree::Change::Modification { .. }
                         | gix_status::index_as_worktree::Change::SubmoduleModification(_) => {
-                            ("modified", true)
+                            ("modified", false)
                         }
                     },
                     gix_status::index_as_worktree::EntryStatus::NeedsUpdate(_) => continue,
-                    gix_status::index_as_worktree::EntryStatus::IntentToAdd => ("added", true),
+                    gix_status::index_as_worktree::EntryStatus::IntentToAdd => ("added", false),
                 };
                 (path, status_str, is_staged)
             }
-            gix::status::index_worktree::Item::DirectoryContents { entry, .. } => {
+            gix::status::Item::IndexWorktree(
+                gix::status::index_worktree::Item::DirectoryContents { entry, .. },
+            ) => {
                 let path = entry.rela_path.to_string();
                 let (status_str, is_staged) = match entry.status {
                     gix_dir::entry::Status::Untracked => ("untracked", false),
@@ -138,14 +161,14 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
                 };
                 (path, status_str, is_staged)
             }
-            gix::status::index_worktree::Item::Rewrite {
+            gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::Rewrite {
                 dirwalk_entry,
                 copy,
                 ..
-            } => {
+            }) => {
                 let path = dirwalk_entry.rela_path.to_string();
                 let status_str = if copy { "added" } else { "renamed" };
-                (path, status_str, true)
+                (path, status_str, false)
             }
         };
 
@@ -670,7 +693,92 @@ pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
 /// Returns `GitError` if the repository cannot be opened or git checkout fails.
 #[instrument(skip(path, target))]
 pub fn checkout(path: &Path, target: &str) -> Result<(), GitError> {
+    if target.starts_with('-') {
+        return Err(GitError::InvalidReference(format!(
+            "refusing to treat '{target}' as a git option"
+        )));
+    }
     let root = worktree_root(path)?;
     run_git(&root, &["checkout", target])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn init_repo(root: &Path) {
+        std::fs::write(
+            root.join(".gitconfig"),
+            "[user]\nname = Test\nemail = test@example.com\n",
+        )
+        .unwrap();
+        run(root, &["init"]);
+    }
+
+    fn run(root: &Path, args: &[&str]) -> std::process::Output {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    #[test]
+    fn checkout_rejects_a_target_that_looks_like_an_option() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "content\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "base"]);
+        run(root, &["commit", "--allow-empty", "-m", "second"]);
+
+        let err = checkout(root, "-f").unwrap_err();
+        assert!(matches!(err, GitError::InvalidReference(_)));
+        // The worktree must be untouched: git never ran with `-f` as an option.
+        let head = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout).unwrap();
+        assert!(!head.trim().is_empty());
+    }
+
+    #[test]
+    fn status_distinguishes_staged_from_unstaged_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("tracked.txt"), "one\n").unwrap();
+        std::fs::write(root.join("staged.txt"), "one\n").unwrap();
+        run(root, &["add", "tracked.txt", "staged.txt"]);
+        run(root, &["commit", "-m", "base"]);
+
+        // `tracked.txt` gets an unstaged worktree edit; `staged.txt` gets an
+        // edit that is added to the index (staged) but not committed.
+        std::fs::write(root.join("tracked.txt"), "two\n").unwrap();
+        std::fs::write(root.join("staged.txt"), "two\n").unwrap();
+        run(root, &["add", "staged.txt"]);
+
+        let result = status(root).unwrap();
+        let tracked = result
+            .files
+            .iter()
+            .find(|f| f.path == "tracked.txt")
+            .unwrap();
+        let staged = result
+            .files
+            .iter()
+            .find(|f| f.path == "staged.txt")
+            .unwrap();
+        assert!(!tracked.staged, "worktree-only edit reported as staged");
+        assert!(staged.staged, "index edit not reported as staged");
+    }
 }
