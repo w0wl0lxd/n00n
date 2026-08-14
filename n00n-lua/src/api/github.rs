@@ -218,11 +218,10 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("list_issues", list_issues_fn)?;
 
-    let create_issue_fn = lua.create_function(
-        {
-            let gh_cache = Arc::clone(&gh_cache);
-            move |lua,
-         (owner, repo, title, body, token): (
+    let create_issue_fn = lua.create_function({
+        let gh_cache = Arc::clone(&gh_cache);
+        move |lua,
+              (owner, repo, title, body, token): (
             String,
             String,
             String,
@@ -233,7 +232,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                 let client = create_client()?;
                 let token = get_token(token, &gh_cache).ok_or_else(|| {
                     mlua::Error::external(
-                        "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                        "GitHub token not found. Set GITHUB_TOKEN or install gh CLI.",
                     )
                 })?;
 
@@ -407,19 +406,19 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let gh_cache = Arc::clone(&gh_cache);
         move |lua,
               (owner, repo, head, base, title, body, token): (
-                  String,
-                  String,
-                  String,
-                  String,
-                  String,
-                  Option<String>,
-                  Option<String>,
-              )| {
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )| {
             let result = (|| -> LuaResult<mlua::Value> {
                 let client = create_client()?;
                 let token = get_token(token, &gh_cache).ok_or_else(|| {
                     mlua::Error::external(
-                        "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                        "GitHub token not found. Set GITHUB_TOKEN or install gh CLI.",
                     )
                 })?;
 
@@ -462,17 +461,17 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let gh_cache = Arc::clone(&gh_cache);
         move |lua,
               (owner, repo, issue_number, body, token): (
-                  String,
-                  String,
-                  u64,
-                  String,
-                  Option<String>,
-              )| {
+            String,
+            String,
+            u64,
+            String,
+            Option<String>,
+        )| {
             let result = (|| -> LuaResult<mlua::Value> {
                 let client = create_client()?;
                 let token = get_token(token, &gh_cache).ok_or_else(|| {
                     mlua::Error::external(
-                        "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                        "GitHub token not found. Set GITHUB_TOKEN or install gh CLI.",
                     )
                 })?;
 

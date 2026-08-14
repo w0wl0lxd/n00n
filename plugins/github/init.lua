@@ -19,7 +19,7 @@ local function dispatch(input)
   end
 
   if command == "list_issues" then
-    local ok, result = pcall(n00n_github.list_issues, owner, repo, input.token)
+    local ok, result = pcall(n00n_github.list_issues, owner, repo)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -37,7 +37,7 @@ local function dispatch(input)
     if not input.title then
       return { llm_output = "error: title required for create_issue", is_error = true }
     end
-    local ok, result = pcall(n00n_github.create_issue, owner, repo, input.title, input.body, input.token)
+    local ok, result = pcall(n00n_github.create_issue, owner, repo, input.title, input.body)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -45,7 +45,7 @@ local function dispatch(input)
   end
 
   if command == "list_prs" then
-    local ok, result = pcall(n00n_github.list_prs, owner, repo, input.token)
+    local ok, result = pcall(n00n_github.list_prs, owner, repo)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -60,7 +60,7 @@ local function dispatch(input)
   end
 
   if command == "get_repo" then
-    local ok, result = pcall(n00n_github.get_repo, owner, repo, input.token)
+    local ok, result = pcall(n00n_github.get_repo, owner, repo)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -79,7 +79,7 @@ local function dispatch(input)
     if not input.issue_number or type(input.issue_number) ~= "number" then
       return { llm_output = "error: issue_number is required and must be a number", is_error = true }
     end
-    local ok, result = pcall(n00n_github.get_issue, owner, repo, input.issue_number, input.token)
+    local ok, result = pcall(n00n_github.get_issue, owner, repo, input.issue_number)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -98,7 +98,7 @@ local function dispatch(input)
     if not input.pr_number or type(input.pr_number) ~= "number" then
       return { llm_output = "error: pr_number is required and must be a number", is_error = true }
     end
-    local ok, result = pcall(n00n_github.get_pr, owner, repo, input.pr_number, input.token)
+    local ok, result = pcall(n00n_github.get_pr, owner, repo, input.pr_number)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -119,8 +119,7 @@ local function dispatch(input)
     if not input.head or not input.base or not input.title then
       return { llm_output = "error: head, base, and title required for create_pr", is_error = true }
     end
-    local ok, result =
-      pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body, input.token)
+    local ok, result = pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -131,7 +130,7 @@ local function dispatch(input)
     if not input.issue_number or type(input.issue_number) ~= "number" or not input.body then
       return { llm_output = "error: issue_number and body required for add_comment", is_error = true }
     end
-    local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body, input.token)
+    local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -145,7 +144,7 @@ n00n.api.register_tool({
   name = "github",
   kind = "edit",
   description = [[
-GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN or gh CLI.
 ]],
   schema = {
     type = "object",
@@ -172,7 +171,6 @@ GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh 
       pr_number = { type = "number" },
       head = { type = "string" },
       base = { type = "string" },
-      token = { type = "string" },
     },
   },
   header = function(input)
