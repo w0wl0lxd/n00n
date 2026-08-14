@@ -64,6 +64,7 @@ pub struct ModelInfo {
     pub pricing: Option<ModelPricing>,
     pub supports_thinking: Option<bool>,
     pub supports_vision: Option<bool>,
+    pub supports_files: Option<bool>,
     pub tier: Option<ModelTier>,
     pub is_free: Option<bool>,
     pub is_promo: Option<bool>,
@@ -82,6 +83,7 @@ impl ModelInfo {
             pricing: None,
             supports_thinking: None,
             supports_vision: None,
+            supports_files: None,
             tier: None,
             is_free: None,
             is_promo: None,
@@ -181,6 +183,8 @@ pub struct ModelEntry {
     pub family: ModelFamily,
     /// Gates vision-only tools (`view_image`) and image blocks at request time.
     pub vision: bool,
+    /// Gates file input at request time; per-model truth when known.
+    pub files: bool,
     pub default: bool,
     pub pricing: ModelPricing,
     pub max_output_tokens: u32,
@@ -342,12 +346,39 @@ impl Model {
         if let Some(files) = self.supports_files_override {
             return files;
         }
-        // For now, only OpenAI Responses API supports file input
-        // TODO: Add per-model file support flags as they become available
-        self.provider.as_ref() == "openai"
-            && self
-                .normalized_openai_model_id()
-                .is_some_and(|model_id| model_id.starts_with("gpt-5.6"))
+        let manifest = ManifestRegistry::for_slug(&self.provider);
+        manifest
+            .and_then(|m| {
+                model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .discovered(m.slug, &self.id)
+                    .and_then(|d| d.supports_files)
+            })
+            .or_else(|| {
+                // Excludes codex ids from the "gpt-5.6" catch-all prefix on gpt-5.6-sol.
+                if self.provider.as_ref() == "openai" && self.id.contains(GPT_CODEX_MARKER) {
+                    return Some(false);
+                }
+                manifest.and_then(|m| {
+                    let lookup_id = match self.id.strip_prefix(&format!("{}/", self.provider)) {
+                        Some(stripped) => stripped,
+                        None => self.id.as_str(),
+                    };
+                    match lookup_entry(m.models, lookup_id) {
+                        Ok(entry) => Some(entry.files),
+                        Err(_) => None,
+                    }
+                })
+            })
+            .unwrap_or_else(|| {
+                // Fallback for models missing from the static tables: only the
+                // OpenAI Responses API supports file input today.
+                self.provider.as_ref() == "openai"
+                    && self
+                        .normalized_openai_model_id()
+                        .is_some_and(|model_id| model_id.starts_with("gpt-5.6"))
+            })
     }
 
     #[must_use]
@@ -630,6 +661,8 @@ impl AddAssign for TokenUsage {
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const TIERS: [ModelTier; 4] = [
         ModelTier::Weak,
@@ -1187,9 +1220,49 @@ mod tests {
     }
 
     #[test]
+    fn supports_files_reads_static_entry_flag() {
+        // gpt-5.6 entries are flagged as file-capable; gpt-5.5 is not.
+        let manifest = ManifestRegistry::get("openai").expect("openai manifest");
+        assert!(lookup_entry(manifest.models, "gpt-5.6-sol").unwrap().files);
+        assert!(!lookup_entry(manifest.models, "gpt-5.5").unwrap().files);
+    }
+
+    #[test]
+    fn discovered_supports_files_flows_into_unknown_model() {
+        use crate::model::ModelInfo;
+
+        let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
+        let slug: Arc<str> = Arc::from("ollama");
+        let model_id = "test-discovered-files-model";
+        {
+            let mut reg = model_registry().write().unwrap();
+            reg.set_known_models(
+                &slug,
+                vec![ModelInfo {
+                    id: model_id.to_string(),
+                    name: None,
+                    context_window: None,
+                    max_output_tokens: None,
+                    pricing: None,
+                    supports_thinking: None,
+                    supports_vision: None,
+                    supports_files: Some(true),
+                    tier: None,
+                    is_free: None,
+                    is_promo: None,
+                    provider_info: None,
+                }],
+            );
+        }
+        let model = Model::from_base(ManifestRegistry::get("ollama").unwrap(), "ollama", model_id);
+        assert!(model.supports_files());
+    }
+
+    #[test]
     fn discovered_context_window_flows_into_from_base_for_unknown_model() {
         use crate::model::ModelInfo;
 
+        let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-context-window-model";
         let expected_window: u32 = 131_072;
@@ -1207,6 +1280,7 @@ mod tests {
                     pricing: None,
                     supports_thinking: None,
                     supports_vision: None,
+                    supports_files: None,
                     tier: None,
                     is_free: None,
                     is_promo: None,
@@ -1230,5 +1304,16 @@ mod tests {
         );
         assert_eq!(wrapped.spec(), format!("my-ollama-wrap/{model_id}"));
         assert_eq!(wrapped.context_window, expected_window);
+    }
+
+    #[test]
+    fn coding_plan_models_disable_file_support() {
+        for entry in crate::providers::openai::codex_models() {
+            assert!(
+                !entry.files,
+                "coding-plan model {prefix:?} should not support files",
+                prefix = entry.prefixes
+            );
+        }
     }
 }
