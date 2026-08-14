@@ -94,14 +94,25 @@ fn first_paragraph(desc: &str) -> &str {
     desc.split("\n\n").next().unwrap_or(desc)
 }
 
+fn format_schema_type(schema: &Value, ty: &str) -> String {
+    if ty != "array" {
+        return ty.to_string();
+    }
+    let item_type = schema
+        .get("items")
+        .map_or_else(|| "value".to_string(), schema_type);
+    format!("array of {item_type}s")
+}
+
 fn schema_type(schema: &Value) -> String {
     match schema.get("type") {
-        Some(Value::String(ty)) => ty.clone(),
+        Some(Value::String(ty)) => format_schema_type(schema, ty),
         Some(Value::Array(types)) => types
             .iter()
             .filter_map(Value::as_str)
+            .map(|ty| format_schema_type(schema, ty))
             .collect::<Vec<_>>()
-            .join("/"),
+            .join(" or "),
         _ => schema
             .get("anyOf")
             .and_then(Value::as_array)
@@ -110,7 +121,7 @@ fn schema_type(schema: &Value) -> String {
                     .iter()
                     .map(schema_type)
                     .collect::<Vec<_>>()
-                    .join("/")
+                    .join(" or ")
             })
             .filter(|types| !types.is_empty())
             .unwrap_or_else(|| "string".to_string()),
@@ -422,7 +433,7 @@ mod tests {
     }
 
     // Room for fusion_delegate + skill-system + memory-system + explore-stack tools; keep definitions lean.
-    const MAX_TOOL_DEFINITION_BYTES: usize = 46_000;
+    const MAX_TOOL_DEFINITION_BYTES: usize = 50_000;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {

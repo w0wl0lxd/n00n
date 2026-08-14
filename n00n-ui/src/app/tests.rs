@@ -8,15 +8,20 @@ use crate::selection::{SelectableZone, SelectionState, SelectionZone};
 use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use n00n_agent::permissions::PermissionManager;
+use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_agent::{
     ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
     McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
     ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
-use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
+use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
+use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::{
+    StoredMode, StoredSessionLifecycle, StoredSessionStateSnapshot, StoredStateScope,
+    StoredThinking, TranscriptEntry,
+};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
 use std::path::{Path, PathBuf};
@@ -856,7 +861,7 @@ fn enter_executes_new_command() {
     type_slash(&mut app);
     app.update(Msg::Key(key(KeyCode::Char('n'))));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(matches!(&actions[0], Action::NewSession));
+    assert!(matches!(&actions[0], Action::NewSession { .. }));
     assert!(!app.command_palette.is_active());
 }
 
@@ -882,8 +887,13 @@ fn reset_session_clears_plan() {
     app.help_modal.toggle();
     let (_tx, rx) = flume::bounded::<crate::components::btw_modal::BtwEvent>(1);
     app.btw_modal.open("q", rx);
+    let previous_id = app.state.session.id;
     let actions = app.reset_session();
-    assert!(matches!(&actions[0], Action::NewSession));
+    assert!(matches!(
+        &actions[0],
+        Action::NewSession { previous_id: id } if *id == previous_id
+    ));
+    assert_ne!(app.state.session.id, previous_id);
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.state.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
@@ -1852,16 +1862,19 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     app.update(agent_msg(AgentEvent::TextDelta {
         text: "partial".into(),
     }));
-    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "t1".into(),
-        tool: "bash".into(),
-        summary: "running".into(),
-        annotation: None,
-        input: None,
-        raw_input: None,
-        output: None,
-        render_header: None,
-    }))));
+    for id in ["t1", "t2"] {
+        app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
+            id: id.into(),
+            tool: "bash".into(),
+            summary: "running".into(),
+            annotation: None,
+            input: None,
+            raw_input: None,
+            output: None,
+            render_header: None,
+        }))));
+    }
+    render_chat(&mut app, 0, Rect::new(0, 0, 80, 20));
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(actions.is_empty());
@@ -1871,6 +1884,33 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     assert!(matches!(&actions[0], Action::CancelAgent { .. }));
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.chats[0].in_progress_count(), 0);
+    assert_eq!(
+        app.chats[0].tool_status("t1"),
+        Some(crate::components::ToolStatus::Error)
+    );
+    assert_eq!(
+        app.chats[0].tool_status("t2"),
+        Some(crate::components::ToolStatus::Error)
+    );
+
+    app.update(agent_msg_with_run_id(
+        AgentEvent::ToolDone(Box::new(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash".into(),
+            output: ToolOutput::Plain("late".into()),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        })),
+        1,
+    ));
+    render_chat(&mut app, 0, Rect::new(0, 0, 80, 20));
+    assert_eq!(app.chats[0].in_progress_count(), 0);
+    assert_eq!(
+        app.chats[0].tool_status("t1"),
+        Some(crate::components::ToolStatus::Error),
+        "stale success replaced cancellation"
+    );
 }
 
 #[test]
@@ -2431,6 +2471,10 @@ fn session_has_content_covers_each_branch() {
     assert!(session_has_content(&session));
     session.meta.queued_messages.clear();
 
+    session.meta.lifecycle = StoredSessionLifecycle::Cancelled;
+    assert!(session_has_content(&session));
+    session.meta.lifecycle = StoredSessionLifecycle::Idle;
+
     session.meta.mode = Some(StoredMode::Plan);
     assert!(session_has_content(&session));
     session.meta.mode = Some(StoredMode::Build);
@@ -2441,6 +2485,75 @@ fn session_has_content_covers_each_branch() {
 
     session.messages.push(Message::user("hello".into()));
     assert!(session_has_content(&session));
+}
+
+#[test]
+fn unchanged_session_snapshot_keeps_revision_and_updated_at() {
+    let mut app = test_app();
+    let first = app.session_snapshot();
+    let second = app.session_snapshot();
+
+    assert_eq!(second.meta.revision, first.meta.revision);
+    assert_eq!(second.updated_at, first.updated_at);
+}
+
+#[test]
+fn session_snapshot_advances_revision_for_semantic_changes() {
+    let mut app = test_app();
+    let mut revision = app.session_snapshot().meta.revision;
+    let mut assert_changed = |app: &mut App, change| {
+        let next = app.session_snapshot().meta.revision;
+        assert!(next > revision, "{change} did not advance revision");
+        revision = next;
+    };
+
+    app.shared_history = Some(Arc::new(ArcSwap::from_pointee(vec![Message::user(
+        "history".into(),
+    )])));
+    assert_changed(&mut app, "history");
+
+    app.shared_transcript = Some(Arc::new(ArcSwap::from_pointee(vec![
+        TranscriptEntry::Message(Message::user("transcript".into())),
+    ])));
+    assert_changed(&mut app, "transcript");
+
+    app.shared_tool_outputs = Some(Arc::new(Mutex::new(HashMap::from([(
+        "tool".into(),
+        ToolOutput::TodoList(Vec::new()),
+    )]))));
+    assert_changed(&mut app, "tool output");
+
+    app.state.token_usage.input = 1;
+    app.state.context_size = 2;
+    assert_changed(&mut app, "usage");
+
+    app.permissions
+        .add_session_rule(n00n_config::PermissionRule {
+            tool: n00n_config::ToolKey::native("bash"),
+            scope: Some("cargo test".into()),
+            effect: n00n_config::Effect::Allow,
+        });
+    assert_changed(&mut app, "permission");
+
+    app.input_box.set_input("draft");
+    assert_changed(&mut app, "draft");
+
+    app.queue_and_notify(queued_msg("queued"));
+    assert_changed(&mut app, "queue");
+
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "child".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+    assert_changed(&mut app, "subagent");
+
+    app.state.session.title.push_str(" changed");
+    assert_changed(&mut app, "title");
 }
 
 #[test]
@@ -2478,7 +2591,101 @@ fn drain_writer(app: App, writer: Arc<StorageWriter>) {
     Arc::try_unwrap(writer)
         .ok()
         .expect("app must hold the only other writer reference")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
+}
+
+#[test]
+fn checkpoint_session_is_durable_before_returning() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let session_id = app.state.session.id;
+    app.state
+        .session
+        .messages
+        .push(Message::user("checkpoint".into()));
+
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+
+    let loaded = AppSession::load(session_id, &dir).unwrap();
+    assert_eq!(
+        serde_json::to_value(&loaded.messages).unwrap(),
+        serde_json::to_value(&app.state.session.messages).unwrap()
+    );
+    drain_writer(app, writer);
+}
+
+#[test]
+fn save_session_captures_plugin_state_snapshot() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    let handle = host.event_handle().unwrap();
+    let session_id = app.state.session.id;
+    let mut snapshot = StoredSessionStateSnapshot::new(3);
+    snapshot
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({"todos": [{"content": "ship", "status": "in_progress"}]}),
+        )
+        .unwrap();
+    app.state.session.meta.state_snapshot = Some(snapshot);
+    app.lua_event_handle = Some(handle);
+    app.hydrate_plugin_state();
+    app.state
+        .session
+        .messages
+        .push(Message::user("persist state".into()));
+
+    app.save_session();
+    assert!(app.state.session.meta.state_snapshot.is_some());
+    drain_writer(app, writer);
+
+    let loaded = AppSession::load(session_id, &dir).unwrap();
+    let payload = loaded
+        .meta
+        .state_snapshot
+        .as_ref()
+        .unwrap()
+        .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+        .unwrap();
+    assert_eq!(
+        payload,
+        Some(&serde_json::json!({"todos": [{"content": "ship", "status": "in_progress"}]}))
+    );
+}
+
+#[test]
+fn apply_loaded_session_hydrates_plugin_state_snapshot() {
+    let mut app = test_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    let handle = host.event_handle().unwrap();
+    app.lua_event_handle = Some(handle.clone());
+    let mut loaded = AppSession::new("test-model", "/tmp/test");
+    loaded.messages.push(Message::user("restore state".into()));
+    let loaded_id = loaded.id;
+    let mut snapshot = StoredSessionStateSnapshot::new(9);
+    snapshot
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({"todos": [{"content": "resume", "status": "pending"}]}),
+        )
+        .unwrap();
+    loaded.meta.state_snapshot = Some(snapshot);
+    let model = app.state.model.clone();
+
+    app.apply_loaded_session(loaded, &model);
+
+    let identity = SessionIdentity::root(SessionRef::from_id(loaded_id));
+    let captured = handle.capture_state(&identity, 10).unwrap();
+    assert_eq!(
+        captured
+            .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+            .unwrap(),
+        Some(&serde_json::json!({"todos": [{"content": "resume", "status": "pending"}]}))
+    );
 }
 
 #[test]
@@ -2583,7 +2790,8 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
@@ -2622,7 +2830,8 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the restarted storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
@@ -2684,7 +2893,8 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
@@ -2718,7 +2928,8 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     Arc::try_unwrap(writer)
         .ok()
         .expect("test owns the restarted storage writer")
-        .shutdown(WRITER_DRAIN_TIMEOUT);
+        .shutdown(WRITER_DRAIN_TIMEOUT)
+        .unwrap();
 }
 
 #[test]
@@ -3659,7 +3870,9 @@ fn plan_form_menu_options(
         assert!(matches!(app.state.plan, PlanState::Ready(_)));
     }
     assert_eq!(
-        actions.iter().any(|a| matches!(a, Action::NewSession)),
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::NewSession { .. })),
         has_new_session
     );
     let expected_msg = implement_msg(PlanForm::new().parallel());
@@ -3686,7 +3899,7 @@ fn clear_and_implement_defers_submission_until_new_session() {
 
     let actions = app.implement_plan(true);
 
-    assert!(matches!(&actions[..], [Action::NewSession]));
+    assert!(matches!(&actions[..], [Action::NewSession { .. }]));
     assert_ne!(app.state.session.id, old_session_id);
     let pending = app
         .pending_plan_submit

@@ -451,7 +451,8 @@ Listen for one or more events. Returns an id you can pass to
 `del_autocmd` later to remove the listener.
 
 Built-in events fired by the host: `"TurnStart"`, `"TurnEnd"`,
-`"TurnError"`, `"ToolStart"`, `"ToolDone"`, `"SessionReset"`.
+`"TurnError"`, `"ToolStart"`, `"ToolDone"`, `"SessionReset"`,
+`"SessionFocus"`.
 Plugins can also fire their own
 events with `exec_autocmds`.
 
@@ -2805,7 +2806,13 @@ Starts a new session in the current project.
 
   to submit right away; focus (boolean) switch the UI to the new session;
 
-  - `parent_id` (`string?`) session that spawned this session.
+  - `parent_id` (`string?`) session that spawned this session; tool (string) for a
+
+  direct host-executed bootstrap. Tool cannot be combined with prompt. Input
+
+
+  (table) and title (string?) require tool.
+
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 
@@ -5842,6 +5849,13 @@ function M.replace(content, old_string, new_string, replace_all)
 function M.new(opts)
 ```
 
+### `require("n00n.html")`
+
+```lua
+--- Convert HTML to compact text while omitting script, style, and noscript content.
+function M.strip(html)
+```
+
 ### `require("n00n.list_picker")`
 
 ```lua
@@ -5995,6 +6009,12 @@ function M.make_local_tool(schema, on_submit)
 -- Provides a unified interface for launching subagents with model resolution,
 -- system prompts, tool setup, and optional structured output validation.
 
+-- Return a fresh table containing the orchestration tool names.
+-- Use it as a denylist when child agents must not launch more orchestration.
+-- Example: local excluded = subagent.orchestration_tools()
+-- @return string[]
+function M.orchestration_tools()
+
 -- Launch a subagent with the given options.
 -- Returns (result | nil, err, cost, usage, model_spec)
 --
@@ -6012,6 +6032,7 @@ function M.make_local_tool(schema, on_submit)
 --   include_mcp: Include MCP tools (default: true)
 --   only_tools: Optional allowlist of tool names
 --   except_tools: Optional denylist of tool names
+--   allow_orchestration: Expose recursive orchestration tools (default: false)
 --   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
@@ -6104,7 +6125,8 @@ function TextInput:render(prefix, prefix_width, width)
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
 -- max_line_bytes (optional) per-line byte cap applied at render time,
--- max_width (optional) display-width cap, hide_collapsed (default false).
+-- max_width (optional) display-width cap, hide_collapsed (default false),
+-- header_until_blank keeps a leading metadata block outside the content limit.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
@@ -6143,5 +6165,36 @@ function ToolView.restore(output, opts)
 function M.normalize(result)
 function M.add(total, value)
 function M.price(model_spec, result)
+```
+
+### `require("n00n.web_backend")`
+
+```lua
+--- Select the configured web backend or return a configuration error.
+function M.select(requested, firecrawl_configured, fallback, firecrawl_config_error)
+
+--- Remove credentials and control characters before displaying a URL.
+function M.sanitize_url(value)
+
+--- Combine provenance and content within strict line and byte limits.
+function M.bounded(content, provenance, max_lines, max_bytes)
+
+--- Mark external content as untrusted and identify its backend source.
+function M.wrap(content, source)
+
+--- Add fetch provenance while stripping URL credentials from every displayed URL.
+function M.fetch(content, backend, requested_url, source_url, final_url)
+
+--- Format credential-safe fetch provenance and content within output limits.
+function M.bounded_fetch(content, backend, requested_url, source_url, final_url, max_lines, max_bytes)
+
+--- Mark external content as untrusted while enforcing output limits.
+function M.bounded_wrap(content, source, max_lines, max_bytes)
+
+--- Format compact Firecrawl results with untrusted-content provenance.
+function M.firecrawl_search(results)
+
+--- Format Firecrawl results within strict line and byte limits.
+function M.bounded_firecrawl_search(results, max_lines, max_bytes)
 ```
 

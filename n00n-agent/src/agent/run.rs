@@ -203,6 +203,7 @@ pub struct Agent<'h> {
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
     registry: Arc<crate::tools::ToolRegistry>,
+    admission_scope: Arc<str>,
     audience: ToolAudience,
     workflow: bool,
     local_tools: LocalTools,
@@ -219,6 +220,13 @@ impl<'h> Agent<'h> {
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
         let supports_tool_examples = params.model.supports_tool_examples();
         let fusion_enabled = params.config.fusion.enabled;
+        let admission_scope = params
+            .identity
+            .as_ref()
+            .map(SessionIdentity::session_id)
+            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
+                Arc::<str>::from(id.to_string())
+            });
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
         } else {
@@ -260,6 +268,7 @@ impl<'h> Agent<'h> {
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
             registry: params.registry,
+            admission_scope,
             audience: params.audience,
             workflow: false,
             local_tools: LocalTools::default(),
@@ -344,6 +353,32 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn total_cost(&self) -> f64 {
         self.total_cost
+    }
+
+    /// Runs one tool and emits its completion event.
+    ///
+    /// # Errors
+    /// Returns an error when the completion event cannot be delivered.
+    pub async fn run_tool(
+        &self,
+        id: String,
+        name: &str,
+        input: &Value,
+    ) -> Result<ToolDoneEvent, AgentError> {
+        let ctx = self.tool_context();
+        let done = tool_dispatch::run(
+            &self.registry,
+            self.mcp.as_ref(),
+            id,
+            name,
+            input,
+            &ctx,
+            tool_dispatch::Emit::Notify,
+        )
+        .await;
+        self.event_tx
+            .send(AgentEvent::ToolDone(Box::new(done.clone())))?;
+        Ok(done)
     }
 
     /// Runs the agent loop with the given input.
@@ -536,9 +571,6 @@ impl<'h> Agent<'h> {
         &self,
         metadata: Option<&RequestDeliveryMetadata>,
     ) -> Result<bool, AgentError> {
-        if self.permissions.is_yolo() {
-            return Ok(true);
-        }
         let Some(response_rx) = self.user_response_rx.as_deref() else {
             return Ok(false);
         };
@@ -605,6 +637,10 @@ impl<'h> Agent<'h> {
             }
             Err(e) if e.is_auth_error() => {
                 return self.wait_for_reauth(e).await;
+            }
+            Err(e) if e.is_cancelled() => {
+                warn!(error = %e, model = %self.model.id, self.num_turns, "stream_message cancelled");
+                return Err(e);
             }
             Err(e) => {
                 error!(error = %e, model = %self.model.id, self.num_turns, "stream_message failed");
@@ -952,6 +988,7 @@ impl<'h> Agent<'h> {
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             identity: self.identity.clone(),
             registry: Arc::clone(&self.registry),
+            admission_scope: Arc::clone(&self.admission_scope),
             workflow: self.workflow,
             audience: self.audience,
             local_tools: Arc::clone(&self.local_tools),
@@ -1579,6 +1616,17 @@ mod tests {
     }
 
     #[test]
+    fn yolo_mode_does_not_auto_approve_ambiguous_request_replay() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent.permissions.set_yolo(true);
+
+            assert!(!agent.approve_ambiguous_request_replay(None).await.unwrap());
+        });
+    }
+
+    #[test]
     fn ambiguous_request_replay_propagates_closed_approval_channel() {
         smol::block_on(async {
             let mut history = History::new(Vec::new());
@@ -1880,6 +1928,7 @@ mod tests {
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
+        tool_requests: Arc<Mutex<Vec<Value>>>,
         cancel_on_request: Option<usize>,
         calls: AtomicUsize,
     }
@@ -1889,6 +1938,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                tool_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: None,
                 calls: AtomicUsize::new(0),
             }
@@ -1900,6 +1950,7 @@ mod tests {
                 Self {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
+                    tool_requests: Arc::new(Mutex::new(Vec::new())),
                     cancel_on_request: None,
                     calls: AtomicUsize::new(0),
                 },
@@ -1911,6 +1962,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                tool_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: Some(request),
                 calls: AtomicUsize::new(0),
             }
@@ -1923,7 +1975,7 @@ mod tests {
             _: &'a Model,
             messages: &'a [Message],
             _: &'a System,
-            _: &'a Value,
+            tools: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
             _: Option<&'a SessionRef>,
@@ -1934,6 +1986,7 @@ mod tests {
                     return Err(AgentError::Cancelled);
                 }
                 self.requests.lock().unwrap().push(messages.to_vec());
+                self.tool_requests.lock().unwrap().push(tools.clone());
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -2004,6 +2057,17 @@ mod tests {
         registry: Arc<crate::tools::ToolRegistry>,
     ) -> (Agent<'_>, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
+        let vars = crate::template::env_vars();
+        let filter = ToolFilter::from_config(&config, &default_model(), &[]);
+        let tools = registry.definitions(
+            &vars,
+            &crate::tools::DescriptionContext {
+                filter: &filter,
+                audience: ToolAudience::MAIN,
+                workflow: false,
+            },
+            false,
+        );
         let agent = Agent::new(
             AgentParams {
                 provider: Arc::new(provider),
@@ -2032,11 +2096,23 @@ mod tests {
                 history,
                 system: System::from("system"),
                 event_tx: EventSender::new(raw_tx, 0),
-                tools: serde_json::json!([]),
-                tool_filter: ToolFilter::All,
+                tools,
+                tool_filter: filter,
             },
         );
         (agent, event_rx)
+    }
+
+    #[test]
+    fn tool_context_preserves_agent_session_identity() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let identity = SessionIdentity::root(SessionRef::generate());
+        agent.identity = Some(identity.clone());
+
+        let ctx = agent.tool_context();
+
+        assert_eq!(ctx.identity, Some(identity));
     }
 
     fn make_agent_with_config(

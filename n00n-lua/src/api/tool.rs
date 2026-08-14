@@ -1,7 +1,7 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,8 +19,8 @@ use n00n_agent::tools::registry::{RegisteredTool, ToolRegistry};
 use n00n_agent::tools::schema::{ParamSchema, to_json_schema, try_from_json, validate};
 use n00n_agent::tools::{
     BoxFuture, Deadline, DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError,
-    PermissionScopes, ToolAudience, ToolContext, ToolExecResult, ToolFilter, ToolInvocation,
-    is_tool_enabled, timeout_annotation,
+    PermissionScopes, ToolAdmissionClass, ToolAudience, ToolContext, ToolExecResult, ToolFilter,
+    ToolInvocation, is_tool_enabled, timeout_annotation,
 };
 use n00n_agent::{
     AgentEvent, BufferSnapshot, ImageMediaType, ImageSource, InstructionBlock, SharedBuf,
@@ -71,6 +71,24 @@ type ToolHandlesFn = Box<dyn Fn(&str) -> Option<ToolHandles>>;
 
 thread_local! {
     static LOCAL_TOOL_HANDLES: RefCell<Option<ToolHandlesFn>> = const { RefCell::new(None) };
+    static NESTED_DISPATCH_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) struct NestedDispatchGuard;
+
+pub(crate) fn enter_nested_dispatch() -> NestedDispatchGuard {
+    NESTED_DISPATCH_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    NestedDispatchGuard
+}
+
+fn nested_dispatch_active() -> bool {
+    NESTED_DISPATCH_DEPTH.with(|depth| depth.get() > 0)
+}
+
+impl Drop for NestedDispatchGuard {
+    fn drop(&mut self) {
+        NESTED_DISPATCH_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
 }
 
 pub(crate) fn set_local_tool_handles(f: impl Fn(&str) -> Option<ToolHandles> + 'static) {
@@ -126,6 +144,7 @@ pub(crate) struct PendingTool {
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
     pub(crate) kind: Option<Arc<str>>,
+    pub(crate) workload: Option<ToolAdmissionClass>,
     pub(crate) handler_key: RegistryKey,
     pub(crate) header_key: Option<RegistryKey>,
     pub(crate) restore_key: Option<RegistryKey>,
@@ -148,6 +167,7 @@ pub(crate) struct LuaTool {
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
     pub(crate) kind: Option<Arc<str>>,
+    pub(crate) workload: Option<ToolAdmissionClass>,
     pub(crate) tx: Sender<Request>,
     pub(crate) plugin: Arc<str>,
     pub(crate) has_header_fn: bool,
@@ -214,6 +234,11 @@ impl Tool for LuaTool {
         self.kind.as_deref()
     }
 
+    fn admission_class(&self) -> ToolAdmissionClass {
+        self.workload
+            .unwrap_or_else(|| ToolAdmissionClass::for_tool(&self.name, self.kind.as_deref()))
+    }
+
     fn examples(&self) -> Option<Value> {
         self.examples.clone()
     }
@@ -247,6 +272,7 @@ impl Tool for LuaTool {
             input: validated,
             tx: self.tx.clone(),
             permission_state,
+            nested: nested_dispatch_active(),
             mutable_path_field: self.mutable_path_field.clone(),
             timeout: self.timeout,
             start_annotation: self.start_annotation.clone(),
@@ -267,6 +293,7 @@ struct LuaToolInvocation {
     input: Value,
     tx: Sender<Request>,
     permission_state: PermissionState,
+    nested: bool,
     mutable_path_field: Option<Arc<str>>,
     timeout: Option<Duration>,
     start_annotation: Option<StartAnnotation>,
@@ -282,6 +309,7 @@ impl ToolInvocation for LuaToolInvocation {
         let plugin = Arc::clone(&self.plugin);
         let input = self.input.clone();
         let tx = self.tx.clone();
+        let nested = self.nested;
         let fallback = tool.to_string();
         HeaderFuture::Pending {
             fallback: fallback.clone(),
@@ -291,6 +319,7 @@ impl ToolInvocation for LuaToolInvocation {
                         plugin: Arc::clone(&plugin),
                         tool: Arc::clone(&tool),
                         input,
+                        nested,
                         reply: reply_tx,
                     })
                     .await;
@@ -340,6 +369,7 @@ impl ToolInvocation for LuaToolInvocation {
                 tool_use_id: id.clone(),
             },
             ctx: Box::new(LuaCtx::start(ctx)),
+            nested: self.nested,
             reply: reply_tx,
         };
         let tx = self.tx.clone();
@@ -359,6 +389,7 @@ impl ToolInvocation for LuaToolInvocation {
                 let plugin = Arc::clone(&self.plugin);
                 let tool = Arc::clone(&self.tool);
                 let input = self.input.clone();
+                let nested = self.nested;
                 let fallback = input.to_string();
                 Box::pin(async move {
                     if tx
@@ -366,6 +397,7 @@ impl ToolInvocation for LuaToolInvocation {
                             plugin,
                             tool,
                             input,
+                            nested,
                             reply: reply_tx,
                         })
                         .await
@@ -396,6 +428,7 @@ impl ToolInvocation for LuaToolInvocation {
         let input = self.input;
         let tx = self.tx;
         let tool_timeout = self.timeout;
+        let nested = self.nested;
 
         Box::pin(async move {
             let effective_secs: Option<u64> = match tool_timeout {
@@ -429,6 +462,7 @@ impl ToolInvocation for LuaToolInvocation {
                         Deadline::At(t) => Some(t),
                         Deadline::None => None,
                     },
+                    nested,
                     reply: reply_tx,
                     live,
                 })
@@ -1172,6 +1206,14 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<String>("kind")
         .ok()
         .map(|s| Arc::from(s.as_str()));
+    let workload = match spec.get::<Option<String>>("workload")? {
+        Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
+            mlua::Error::runtime(
+                "register_tool: workload must be cheap, standard, expensive, or orchestrator",
+            )
+        })?),
+        None => None,
+    };
     let audience = parse_audience(audiences)?;
     let timeout = parse_timeout(spec)?;
     let start_annotation = parse_start_annotation(spec, &schema_val)?;
@@ -1215,6 +1257,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             schema: param_schema,
             audience,
             kind,
+            workload,
             handler_key,
             header_key,
             restore_key,
@@ -1672,6 +1715,7 @@ mod tests {
             input,
             tx,
             permission_state: PermissionState::Ready(None),
+            nested: false,
             mutable_path_field: None,
             timeout: Some(Duration::from_mins(1)),
             start_annotation: None,
@@ -1721,6 +1765,7 @@ mod tests {
             schema,
             audience: ToolAudience::default(),
             kind: None,
+            workload: None,
             tx,
             plugin: Arc::from("test"),
             has_header_fn: false,
@@ -1831,6 +1876,7 @@ mod tests {
             input: serde_json::json!({"command": "ls"}),
             tx,
             permission_state: PermissionState::NeedsCompute,
+            nested: false,
             mutable_path_field: None,
             timeout: None,
             start_annotation: None,
@@ -1849,6 +1895,7 @@ mod tests {
             input: serde_json::json!({"command": "echo hi"}),
             tx: tx2,
             permission_state: PermissionState::NeedsCompute,
+            nested: false,
             mutable_path_field: None,
             timeout: None,
             start_annotation: None,
@@ -1873,6 +1920,7 @@ mod tests {
             input: serde_json::json!({"command": "cargo test"}),
             tx,
             permission_state: PermissionState::NeedsCompute,
+            nested: false,
             mutable_path_field: None,
             timeout: None,
             start_annotation: None,

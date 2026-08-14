@@ -60,7 +60,7 @@ Apply multiple non-adjacent string edits to a single file atomically. Applied in
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `edits` | array | yes |  |
+| `edits` | array of objects | yes |  |
 | `path` | string | yes |  |
 
 ### `edit_lines` *(lua plugin)*
@@ -119,12 +119,12 @@ Find files by glob pattern. Respects .gitignore. Returns matching paths sorted b
 
 ### `grep` *(lua plugin)*
 
-Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
+Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: PCRE look-around (e.g. `(?!...)`, `(?<!...)`) is not supported. Use Rust regex syntax.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `include` | string | no | Glob pattern (e.g. '*.rs'). |
-| `path` | string | no | Directory or file to search. |
+| `path` | string or array of strings | no | Directory or file to search, or an array of paths, such as ["src", "tests"]. |
 | `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
@@ -144,7 +144,7 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `crop` | array | no | [x,y,w,h]; <=8000 edge/4MP. |
+| `crop` | array of integers | no | [x,y,w,h]; <=8000 edge/4MP. |
 | `path` | string | yes |  |
 | `allow_gif_animation` | boolean | no | Raw GIF opt-in. |
 | `tile_width` | integer | no | Default 2000; max 4MP. |
@@ -165,7 +165,7 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 | `query` | string | no |  | Natural language question or symbol/file names to explore (for explore/query commands) |
 | `command` | string | yes |  | CodeGraph command to run |
 | `timeout_secs` | integer | no | 30 | Timeout in seconds for CodeGraph operations |
-| `files` | array | no |  | Array of file paths for affected command |
+| `files` | array of strings | no |  | Array of file paths for affected command |
 | `search` | string | no |  | Search query for query command |
 
 ### `semblem` *(lua plugin)*
@@ -208,7 +208,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
+| `tool_calls` | array of objects | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `code_execution` *(lua plugin)*
 
@@ -225,7 +225,7 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `questions` | array | yes | List of questions to ask the user |
+| `questions` | array of objects | yes | List of questions to ask the user |
 
 ### `tmux` *(lua plugin)*
 
@@ -318,7 +318,7 @@ Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentr
 | `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
 | `model` | string | no |  | Exact model override. |
 | `use_summary` | boolean | no |  | Use Summary Agent index for retrieval. |
-| `thinking` | string/integer | no |  | Thinking mode. Default: "adaptive". |
+| `thinking` | string or integer | no |  | Thinking mode. Default: "adaptive". |
 | `background` | boolean | no |  | Start in background; return agent_id. |
 | `auto_tier` | boolean | no |  | Auto-route tier from step prompt. |
 
@@ -335,7 +335,7 @@ Launch isolated agent; combine independent calls with batch. research (default) 
 | `model` | string | no | Exact model override. |
 | `output_schema` | object | no | Output JSON schema. Result returned as validated JSON string. |
 | `prompt` | string | yes | Task prompt. |
-| `thinking` | string/integer | no | Thinking mode. Omit to inherit. |
+| `thinking` | string or integer | no | Thinking mode. Omit to inherit. |
 | `subagent_type` | string | no | research (default) or general. |
 
 ### `workflow` *(lua plugin)*
@@ -345,8 +345,8 @@ Run sandboxed Lua workflow for multi-stage agent orchestration.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `resume` | string | no | Paused run_id. Replays journaled agent() calls. |
-| `inputs` | object | no | Free-form object exposed as global `inputs`. |
-| `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. |
+| `inputs` | object | no | Free-form object exposed as global `inputs`; defaults to `{}` when omitted. |
+| `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs. |
 | `timeout_secs` | integer | no | Wall-clock timeout for this run (minimum 60s). May shorten, but cannot exceed, the configured workflow timeout. |
 
 ### `todo_write` *(lua plugin)*
@@ -355,7 +355,7 @@ Create or update a structured todo list to track tasks. Use after EACH completed
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `todos` | array | yes | The updated todo list |
+| `todos` | array of objects | yes | The updated todo list |
 
 ### `memory` *(lua plugin)*
 
@@ -431,7 +431,7 @@ Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done â€
 
 ### `webfetch` *(lua plugin)*
 
-Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.
+Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside code_execution to avoid context bloat.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -441,9 +441,9 @@ Fetch a URL and return its contents. Supports markdown (default), text, or html.
 
 ### `websearch` *(lua plugin)*
 
-Search the web for real-time information using Exa AI.
+Search the web for real-time information using Firecrawl or Exa.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `num_results` | integer | no | 8 | Number of results to return |
+| `num_results` | integer | no | 8; Exa 1-100, Firecrawl 1-10 | Number of results |
 | `query` | string | yes |  | Search query |

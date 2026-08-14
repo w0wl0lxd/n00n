@@ -10,7 +10,7 @@ use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue
 use n00n_agent::agent::LoadedInstructions;
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::{
-    Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolLive,
+    Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext, ToolLive,
 };
 use n00n_config::{AgentConfig, ToolOutputLines};
 
@@ -46,7 +46,7 @@ fn send_live_buf(lua: &mlua::Lua, buf: &mlua::AnyUserData) -> mlua::Result<()> {
         });
     }
     if let Some(sink) = sink {
-        let _ = sink.send(ToolLive::Buf(shared));
+        let _ = sink.try_send(ToolLive::Buf(shared));
     }
     Ok(())
 }
@@ -118,6 +118,7 @@ enum Caps {
         config: Arc<AgentConfig>,
         workflow: bool,
         audience: ToolAudience,
+        identity: Option<SessionIdentity>,
     },
     Restore {
         state: Option<serde_json::Value>,
@@ -153,6 +154,7 @@ impl LuaCtx {
                 config: Arc::clone(&ctx.config),
                 workflow: ctx.workflow,
                 audience: ctx.audience,
+                identity: ctx.identity.clone(),
             },
         )
     }
@@ -176,6 +178,14 @@ impl LuaCtx {
         match &self.caps {
             Caps::Handler { agent, .. } => Some(agent),
             _ => None,
+        }
+    }
+
+    pub(crate) fn session_identity(&self) -> Option<SessionIdentity> {
+        match &self.caps {
+            Caps::Handler { agent, .. } => agent.identity.clone(),
+            Caps::Start { identity, .. } => identity.clone(),
+            Caps::Restore { .. } => None,
         }
     }
 
@@ -395,6 +405,19 @@ impl UserData for LuaCtx {
             }
         });
 
+        methods.add_method("state_owner", |lua, this, scope: String| {
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
+            };
+            let access = match this.plugin_state("state_owner") {
+                Ok(access) => access,
+                Err(error) => return Ok((LuaValue::Nil, Some(error))),
+            };
+            let owner = access.identity.owner(scope).to_string();
+            Ok((LuaValue::String(lua.create_string(owner)?), None))
+        });
+
         methods.add_method(
             "state_replace",
             |lua, this, (scope, value): (String, LuaValue)| {
@@ -452,13 +475,16 @@ impl UserData for LuaCtx {
             Ok((previous, None))
         });
 
-        methods.add_method("set_deadline", |lua, this, secs: u64| {
+        methods.add_method("set_deadline", |lua, this, secs: Option<u64>| {
             if let Some(error) = this.inactive_pair() {
                 return Ok(error);
             }
             if !matches!(this.caps, Caps::Handler { .. }) {
                 return Ok(this.cap_err_pair("set_deadline"));
             }
+            let Some(secs) = secs else {
+                return Ok((LuaValue::Nil, None));
+            };
             let handle = active_task(lua);
             let cell = handle
                 .lock()
@@ -597,9 +623,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_context_keeps_tool_use_id_and_resets_per_call_state() {
-        let agent = AgentContext::from(&populated_ctx());
+    fn agent_context_keeps_tool_use_id_and_identity_and_resets_per_call_state() {
+        let ctx = populated_ctx();
+        let expected_identity = ctx.identity.clone();
+        let agent = AgentContext::from(&ctx);
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
+        assert_eq!(agent.identity, expected_identity);
         assert!(matches!(agent.deadline, Deadline::None));
         assert_eq!(agent.tool_output_lines, ToolOutputLines::default());
         assert!(agent.local_tools.is_empty());
@@ -620,6 +649,7 @@ mod tests {
         );
         let inner = agent.to_tool_context();
         assert_eq!(inner.tool_use_id, None);
+        assert_eq!(inner.identity, agent.identity);
         assert!(inner.live_sink.is_none(), "sink must not be inherited");
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
     }

@@ -696,10 +696,21 @@ impl OpenAi {
         let storage = self.storage.as_ref().ok_or_else(|| AgentError::Config {
             message: "OpenAI credential storage is unavailable".into(),
         })?;
-        let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER) else {
+        let codex_path = self.codex.then(auth::codex_auth_path_from_env).flatten();
+        let codex_tokens = codex_path
+            .as_deref()
+            .map(auth::load_codex_tokens)
+            .transpose()?
+            .flatten();
+        let uses_codex_file = codex_tokens.is_some();
+        let Some(tokens) =
+            codex_tokens.or_else(|| n00n_storage::auth::load_tokens(storage, auth::PROVIDER))
+        else {
             if self.codex {
                 return Err(AgentError::Config {
-                    message: "OpenAI Codex authentication not available".into(),
+                    message:
+                        "OpenAI Codex authentication not available; run `n00n auth login codex`"
+                            .into(),
                 });
             }
             let mut resolved = auth::resolve_api_key(storage)?;
@@ -716,8 +727,23 @@ impl OpenAi {
                 Some(observed) => observed,
                 None => &tokens,
             };
-            self.synchronize_oauth_tokens(refresh_basis, force_refresh, attempt_nonce)
+            if let Some(codex_path) = codex_path.as_deref().filter(|_| uses_codex_file) {
+                let path = codex_path.to_path_buf();
+                let basis = copy_oauth_tokens(refresh_basis);
+                smol::unblock(move || {
+                    auth::synchronize_codex_tokens(
+                        &path,
+                        &basis,
+                        force_refresh,
+                        auth::refresh_tokens,
+                    )
+                })
                 .await?
+                .tokens
+            } else {
+                self.synchronize_oauth_tokens(refresh_basis, force_refresh, attempt_nonce)
+                    .await?
+            }
         } else {
             debug!(
                 process_instance_nonce = process_instance_nonce(),
@@ -1258,7 +1284,7 @@ impl OpenAi {
     ) -> CodexAttempt {
         if attempt.previous_response_id.is_some()
             && (is_missing_previous_response(&attempt)
-                || should_clear_response_chain(&attempt.result))
+                || should_clear_response_chain(&attempt.result, response_chain_lock.is_some()))
         {
             self.clear_response_chain(session_id, response_chain_lock)
                 .await;
@@ -1286,10 +1312,13 @@ impl OpenAi {
     ) -> CodexAttempt {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
-        // Codex keeps continuation state only while its WebSocket stays connected.
-        // Full-history replay is therefore required after a connection change.
+        // Without server-side response storage, a WebSocket reconnection must be able to replay
+        // full history instead of relying on a continuation chain.
         let mut opts = opts;
         opts.allow_history_replay = true;
+        // The OpenAI Coding Plan endpoint rejects `prompt_cache_options`, so
+        // disable message-cache breakpoints for Codex requests.
+        opts.message_cache_breakpoints = 0;
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
@@ -1321,6 +1350,7 @@ impl OpenAi {
         } else {
             None
         };
+        let persist_response_chain = response_chain_lock.is_some();
         let stream_timeout = self.compat.stream_timeout();
         let connection_reusable = self
             .response_connection_is_reusable(
@@ -1330,7 +1360,7 @@ impl OpenAi {
                 attempt_nonce,
             )
             .await;
-        if !connection_reusable {
+        if !connection_reusable && !persist_response_chain {
             debug!(
                 chain_reset = true,
                 chain_reset_reason = "socket_not_reusable",
@@ -1386,12 +1416,13 @@ impl OpenAi {
             tools,
             previous_response_id.as_deref(),
             Some(&prompt_cache_key),
-            false,
+            persist_response_chain,
             &opts,
             true,
         );
         let mut full_history_body = None;
         let full_history_fallback_available = previous_response_id.is_some()
+            && !persist_response_chain
             && (!opts.protect_history_replay || opts.allow_history_replay);
         log_responses_request(
             "websocket",
@@ -1421,7 +1452,7 @@ impl OpenAi {
                             tools,
                             None,
                             Some(&prompt_cache_key),
-                            false,
+                            persist_response_chain,
                             &opts,
                             true,
                         )
@@ -1460,26 +1491,34 @@ impl OpenAi {
                             .await;
                     }
                     warn!("OpenAI Responses WebSocket unavailable; falling back to HTTP");
-                    let fallback_body = full_history_body.get_or_insert_with(|| {
-                        super::websocket::build_request_body(
-                            model,
-                            messages,
-                            system,
-                            tools,
-                            None,
-                            Some(&prompt_cache_key),
-                            false,
-                            &opts,
-                            true,
-                        )
-                    });
+                    let fallback_body = if persist_response_chain {
+                        &body
+                    } else {
+                        full_history_body.get_or_insert_with(|| {
+                            super::websocket::build_request_body(
+                                model,
+                                messages,
+                                system,
+                                tools,
+                                None,
+                                Some(&prompt_cache_key),
+                                false,
+                                &opts,
+                                true,
+                            )
+                        })
+                    };
                     log_responses_request(
                         "http_sse",
                         fallback_body,
                         messages.len(),
-                        messages.len(),
-                        false,
-                        true,
+                        if persist_response_chain {
+                            incremental_messages.len()
+                        } else {
+                            messages.len()
+                        },
+                        persist_response_chain && previous_response_id.is_some(),
+                        !persist_response_chain,
                     );
                     let fallback_auth = loop {
                         let preflight = match self.pre_send_auth(attempt_nonce).await {
@@ -1559,7 +1598,9 @@ impl OpenAi {
                     )
                     .await
                     {
-                        Ok((response_id, response)) => (response_id, response, false),
+                        Ok((response_id, response)) => {
+                            (response_id, response, persist_response_chain)
+                        }
                         Err(error) => {
                             return self
                                 .finish_codex_attempt(
@@ -1596,7 +1637,7 @@ impl OpenAi {
             tools_hash,
             &state_scope_hash,
             messages,
-            false,
+            persist_response_chain,
             response_chain_lock.as_ref(),
         )
         .await;
@@ -2294,8 +2335,8 @@ fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
         && normalized == format!("not found: {}", previous_response_id.to_ascii_lowercase())
 }
 
-fn should_clear_response_chain<T>(result: &Result<T, AgentError>) -> bool {
-    result.is_err()
+fn should_clear_response_chain<T>(result: &Result<T, AgentError>, durable_chain: bool) -> bool {
+    result.is_err() && !durable_chain
 }
 
 fn is_definitive_responses_rejection(error: &AgentError) -> bool {
@@ -2795,7 +2836,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn approved_ephemeral_preflight_failure_rebuilds_second_turn_with_full_history() {
+    fn durable_preflight_failure_continues_second_turn_from_persisted_response() {
         smol::block_on(async {
             let temp_dir = TempDir::new().unwrap();
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2889,8 +2930,13 @@ mod tests {
             .unwrap();
             let storage = StateDir::from_path(temp_dir.path().to_path_buf());
             provider.storage = Some(storage.clone());
-            provider.response_state_storage = Some(storage);
+            provider.response_state_storage = Some(storage.clone());
             let session_id = SessionRef::generate();
+            let mut session = n00n_storage::sessions::Session::<Message, TokenUsage, Value>::new(
+                "model", "/project",
+            );
+            session.id = session_id.id();
+            session.save(&storage).unwrap();
             let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
             let tools = serde_json::json!([]);
             let (event_tx, _event_rx) = flume::unbounded();
@@ -2934,20 +2980,20 @@ mod tests {
             let first_body = body_rx.recv_async().await.unwrap();
             let second_body = body_rx.recv_async().await.unwrap();
             assert!(first_body.get("previous_response_id").is_none());
-            assert_eq!(first_body["store"], false);
-            assert!(second_body.get("previous_response_id").is_none());
-            assert_eq!(second_body["store"], false);
-            assert_eq!(second_body["input"].as_array().unwrap().len(), 3);
+            assert_eq!(first_body["store"], true);
+            assert_eq!(second_body["previous_response_id"], "resp_first");
+            assert_eq!(second_body["store"], true);
+            assert_eq!(second_body["input"].as_array().unwrap().len(), 1);
 
-            let sessions_dir = temp_dir.path().join(n00n_storage::sessions::SESSIONS_DIR);
-            let session_prefix = session_id.id().to_string();
-            assert!(std::fs::read_dir(sessions_dir).unwrap().all(|entry| {
-                !entry
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(&session_prefix)
-            }));
+            let lock = provider
+                .lock_response_chain(Some(&session_id))
+                .await
+                .unwrap()
+                .expect("durable response-chain lock");
+            let chain = load_openai_response_chain(&storage, session_id.id(), &lock)
+                .unwrap()
+                .expect("persisted response chain");
+            assert_eq!(chain.response_id, "resp_second");
         });
     }
 
@@ -4514,17 +4560,19 @@ mod tests {
     #[test]
     fn successful_socket_local_continuation_keeps_response_chain() {
         let success: Result<(), AgentError> = Ok(());
-        assert!(!should_clear_response_chain(&success));
+        assert!(!should_clear_response_chain(&success, false));
 
         let transport_error: Result<(), AgentError> =
             Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into());
-        assert!(should_clear_response_chain(&transport_error));
+        assert!(should_clear_response_chain(&transport_error, false));
+        assert!(!should_clear_response_chain(&transport_error, true));
 
         let api_error: Result<(), AgentError> = Err(AgentError::Api {
             status: 500,
             message: "temporary".into(),
         });
-        assert!(should_clear_response_chain(&api_error));
+        assert!(should_clear_response_chain(&api_error, false));
+        assert!(!should_clear_response_chain(&api_error, true));
     }
 
     #[test]

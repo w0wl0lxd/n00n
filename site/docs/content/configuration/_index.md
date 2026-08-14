@@ -107,17 +107,25 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_output_bytes` | usize | `16384` | 1024 | Max tool output size (bytes) |
 | `max_output_lines` | usize | `500` | 10 | Max tool output lines |
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
+| `max_depth` | usize | `4` | 1 | Maximum session lineage depth |
+| `max_total_descendants` | usize | `16` | 1 | Maximum total descendants per session lineage root |
+| `max_active_descendants` | usize | `8` | 1 | Maximum active descendants per session lineage root |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
+
+Keep `max_depth` and `max_active_descendants` at or below `max_total_descendants`. n00n reports a configuration error at startup if either value is higher.
 
 ### `agent.fusion`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable beta Fusion planning, sidekick execution, and lead review for this session |
-| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |
+| `lead_model` | string | `codex/gpt-5.6-sol` | Lead and supervisor model when Fusion is enabled without an explicit model override. |
+| `sidekick_model` | string | `codex/gpt-5.6-luna` | Exact routine-coding sidekick model. Tier routing cannot replace it. |
+| `sidekick_thinking` | string | `max` | Sidekick reasoning setting. |
+| `sidekick_tier` | string | `weak` | Legacy compatibility field; ignored when `sidekick_model` is set. |
 
-Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. `sidekick_tier` selects a conservative sidekick model. Optional `plugins.fusion.auto_tier` lets trusted configuration choose the tier from the brief.
+Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. The exact sidekick model and thinking setting are used for every delegation, so tier routing cannot redirect routine coding. Explicit `--model` choices take precedence over the Fusion lead default.
 
 ### `provider`
 
@@ -191,7 +199,6 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `auto_tier` | boolean | `true` | - | Allow trusted configuration to route the sidekick tier. |
 | `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`
@@ -256,6 +263,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
+| `backend` | string | `"auto"` | - | Fetch backend: auto, firecrawl, or direct. Auto uses Firecrawl when FIRECRAWL_API_URL is a valid non-empty URL. |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `max_response_bytes` | integer | `5242880` | 1024 | Stop reading a response after this many bytes. |
@@ -264,6 +272,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
+| `backend` | string | `"auto"` | - | Search backend: auto, firecrawl, or exa. Auto uses Firecrawl when FIRECRAWL_API_URL is a valid non-empty URL. |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `max_response_bytes` | integer | `5242880` | 1024 | Stop reading a response after this many bytes. |
@@ -272,10 +281,36 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (default 24, no hard maximum). |
+| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (default 24, hard maximum 64). |
 | `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (default 4, hard max 8). |
 | `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (default 2, hard max 4). |
 | `timeout_secs` | integer | `600` | 60 | Maximum deadline for one workflow run; per-run timeout_secs may only shorten it. |
+
+## Firecrawl
+
+Set `FIRECRAWL_API_URL` in your environment or a `.env` file. A public Firecrawl service must use HTTPS, and its hostname must resolve to at least one validated public IPv4 address. Local Firecrawl means a same-host service reached through an IPv4 loopback address. The value may be an origin root or end in `/v2`; both forms resolve to the same endpoints. IPv6 literal API bases are not supported. `FIRECRAWL_API_KEY` is optional.
+
+```text
+FIRECRAWL_API_URL=http://127.0.0.1:3002/v2
+FIRECRAWL_API_KEY=fc-example
+```
+
+For Docker, publish the API port on `127.0.0.1` instead of `0.0.0.0`, then use that IPv4 loopback port in `FIRECRAWL_API_URL`.
+
+Both web plugins default to `backend = "auto"`. Auto uses Firecrawl only when `FIRECRAWL_API_URL` is valid and non-empty. A missing or empty value selects Exa for websearch and the direct client for webfetch. A malformed non-empty value is reported as a configuration error instead of silently falling back. You can choose a backend explicitly:
+
+```lua
+n00n.setup({
+    plugins = {
+        websearch = { backend = "firecrawl" },
+        webfetch = { backend = "firecrawl" },
+    },
+})
+```
+
+Explicit Firecrawl mode reports an error when `FIRECRAWL_API_URL` is missing.
+
+Target URL and DNS checks are defense in depth, not an SSRF guarantee. A remote Firecrawl service resolves scrape targets independently, including after DNS changes. Run Firecrawl workers with egress isolation that blocks private, link-local, metadata, and internal destinations. n00n performs hostname lookup on a blocking worker. A request timeout stops waiting for that lookup, but the operating-system lookup may finish in the background.
 
 ## Validation
 

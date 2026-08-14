@@ -65,14 +65,28 @@ impl PluginPermissions {
     }
 
     pub fn from_manifest(manifest: &toml::Value) -> Self {
-        const DEFAULT_PERMISSION: bool = true;
+        const DEFAULT_PERMISSION: bool = false;
         let perms = manifest.get("permissions");
-        let mut allowed = [true; 5];
+        let mut allowed = [false; 5];
         for perm in Permission::ALL {
-            allowed[perm as usize] = perms
-                .and_then(|p| p.get(perm.manifest_key()))
-                .and_then(toml::Value::as_bool)
-                .unwrap_or_else(|| DEFAULT_PERMISSION);
+            if let Some(perm_table) = perms {
+                if let Some(value) = perm_table.get(perm.manifest_key()) {
+                    if let Some(b) = value.as_bool() {
+                        allowed[perm as usize] = b;
+                    } else {
+                        warn!(
+                            permission = %perm,
+                            value_type = value.type_str(),
+                            "invalid permission value in manifest (expected boolean), denying"
+                        );
+                        allowed[perm as usize] = DEFAULT_PERMISSION;
+                    }
+                } else {
+                    allowed[perm as usize] = DEFAULT_PERMISSION;
+                }
+            } else {
+                allowed[perm as usize] = DEFAULT_PERMISSION;
+            }
         }
         Self { allowed }
     }
@@ -189,10 +203,10 @@ mod tests {
         .unwrap();
         let p = PluginPermissions::from_manifest(&val);
         assert!(!p.is_allowed(Permission::FsRead));
-        assert!(p.is_allowed(Permission::FsWrite));
+        assert!(!p.is_allowed(Permission::FsWrite));
         assert!(!p.is_allowed(Permission::Net));
-        assert!(p.is_allowed(Permission::Run));
-        assert!(p.is_allowed(Permission::Env));
+        assert!(!p.is_allowed(Permission::Run));
+        assert!(!p.is_allowed(Permission::Env));
     }
 
     #[test]
@@ -200,8 +214,42 @@ mod tests {
         let val: toml::Value = toml::from_str("[package]\nname = \"test\"").unwrap();
         let p = PluginPermissions::from_manifest(&val);
         for perm in Permission::ALL {
-            assert!(p.is_allowed(perm), "{perm} should default to allowed");
+            assert!(!p.is_allowed(perm), "{perm} should default to denied");
         }
+    }
+
+    #[test]
+    fn from_manifest_explicit_allow() {
+        let val: toml::Value = toml::from_str(
+            r"
+            [permissions]
+            fs_read = true
+            ",
+        )
+        .unwrap();
+        let p = PluginPermissions::from_manifest(&val);
+        assert!(p.is_allowed(Permission::FsRead));
+        assert!(!p.is_allowed(Permission::FsWrite));
+        assert!(!p.is_allowed(Permission::Net));
+        assert!(!p.is_allowed(Permission::Run));
+        assert!(!p.is_allowed(Permission::Env));
+    }
+
+    #[test]
+    fn from_manifest_invalid_type_denies() {
+        let val: toml::Value = toml::from_str(
+            r#"
+            [permissions]
+            fs_read = "true"
+            "#,
+        )
+        .unwrap();
+        let p = PluginPermissions::from_manifest(&val);
+        assert!(!p.is_allowed(Permission::FsRead));
+        assert!(!p.is_allowed(Permission::FsWrite));
+        assert!(!p.is_allowed(Permission::Net));
+        assert!(!p.is_allowed(Permission::Run));
+        assert!(!p.is_allowed(Permission::Env));
     }
 
     #[test]

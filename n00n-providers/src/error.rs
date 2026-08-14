@@ -69,6 +69,8 @@ pub enum AgentError {
     Api { status: u16, message: String },
     #[error("{message}")]
     Config { message: String },
+    #[error("{message}")]
+    SetupRequired { message: String },
     #[error("tool error in {tool}: {message}")]
     Tool { tool: String, message: String },
     #[error(transparent)]
@@ -142,6 +144,7 @@ impl AgentError {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
             Self::Config { .. }
+            | Self::SetupRequired { .. }
             | Self::Tool { .. }
             | Self::Storage
             | Self::Channel
@@ -159,20 +162,19 @@ impl AgentError {
     }
 
     /// Converts failures that may have occurred after the provider accepted the
-    /// request or emitted output into [`AgentError::RequestSent`], which is not
-    /// retryable. Transport-level failures are treated as request-sent once the
-    /// request has left the client. API/server errors are only suppressed when
-    /// output has already been emitted or the request was accepted, preserving
-    /// retryability when no output has been accepted.
+    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
+    /// failures are treated as request-sent once the request has left the client.
+    /// API/server errors are only suppressed when output has already been emitted
+    /// or the request was accepted, preserving retryability when no output has been
+    /// accepted.
     ///
-    /// `server_is_overloaded` is never suppressed: it is a transient capacity
-    /// signal and must be retried by the agent loop even if the request left the
-    /// client, because the provider explicitly asks us to try again later.
+    /// `server_is_overloaded` is preserved on requests that were not sent. Once a
+    /// request may have been accepted, `RequestSent` is normally non-retryable to
+    /// prevent an automatic duplicate request, but a `server_is_overloaded` message
+    /// inside `RequestSent` is still retryable so capacity errors can back off and
+    /// resubmit.
     #[must_use]
     pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
-        if self.is_server_overloaded() {
-            return self;
-        }
         let emitted_or_accepted = metadata
             .as_ref()
             .is_some_and(RequestDeliveryMetadata::emitted_or_accepted);
@@ -243,13 +245,29 @@ impl AgentError {
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
             | Self::HistoryReplayRequired { .. }
-            | Self::RequestSent { .. } => false,
+            | Self::RequestSent { .. }
+            | Self::SetupRequired { .. } => false,
         }
     }
 
     #[must_use]
     pub fn is_auth_error(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. })
+    }
+
+    #[must_use]
+    pub fn is_history_replay_required(&self) -> bool {
+        matches!(self, Self::HistoryReplayRequired { .. })
+    }
+
+    #[must_use]
+    pub fn is_setup_required(&self) -> bool {
+        matches!(self, Self::SetupRequired { .. })
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
     }
 
     #[must_use]
@@ -260,7 +278,7 @@ impl AgentError {
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            Self::Config { message } => message.clone(),
+            Self::Config { message } | Self::SetupRequired { message } => message.clone(),
             Self::Api { status: 429, .. } => "rate limited, try again in a moment".into(),
             Self::Api { status: 529, .. } => "provider is overloaded, try again later".into(),
             Self::Api { message, .. } if Self::is_overload_message(message) => {
@@ -390,6 +408,14 @@ mod tests {
         assert_eq!(api(status).is_auth_error(), expected);
     }
 
+    #[test]
+    fn history_replay_required_is_detected() {
+        let err = AgentError::HistoryReplayRequired {
+            reason: HistoryReplayReason::ContinuationNotFound,
+        };
+        assert!(err.is_history_replay_required());
+    }
+
     #[test_case(429, "Rate limited"        ; "rate_limited")]
     #[test_case(529, "Provider is overloaded" ; "overloaded")]
     #[test_case(500, "Server error (500)"  ; "server_error")]
@@ -494,17 +520,54 @@ mod tests {
     }
 
     #[test]
-    fn server_overloaded_is_not_suppressed_to_request_sent() {
+    fn accepted_server_overload_is_suppressed_to_request_sent_but_still_retryable() {
         let err = api_msg(
             400,
             "server_is_overloaded: Our servers are currently overloaded. Please try again later.",
         );
-        let metadata = Some(RequestDeliveryMetadata::new(
-            RequestDeliveryPhase::SentAwaitingAcceptance,
-        ));
-        assert!(matches!(
-            err.suppress_retry_after_send(metadata),
-            AgentError::Api { status: 400, .. }
-        ));
+        let metadata = Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::Accepted));
+        let err = err.suppress_retry_after_send(metadata);
+
+        assert!(matches!(err, AgentError::RequestSent { .. }));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn unsent_server_overload_remains_retryable() {
+        let err = api_msg(
+            400,
+            "server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        );
+        let metadata = Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent));
+        let err = err.suppress_retry_after_send(metadata);
+
+        assert!(matches!(err, AgentError::Api { status: 400, .. }));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn setup_required_error_is_recognized() {
+        let err = AgentError::SetupRequired {
+            message: "missing API key".into(),
+        };
+        assert!(err.is_setup_required());
+        assert!(!err.is_cancelled());
+        assert!(!err.is_auth_error());
+    }
+
+    #[test]
+    fn unexpected_config_error_is_not_setup_required() {
+        let err = AgentError::Config {
+            message: "invalid provider URL".into(),
+        };
+        assert!(!err.is_setup_required());
+    }
+
+    #[test]
+    fn cancelled_error_is_recognized() {
+        let err = AgentError::Cancelled;
+        assert!(err.is_cancelled());
+        assert!(!err.is_setup_required());
+        assert!(!err.is_auth_error());
     }
 }

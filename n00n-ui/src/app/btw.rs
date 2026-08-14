@@ -18,6 +18,7 @@ say so; do not offer to look it up.\n</system-reminder>";
 
 const BTW_FALLBACK_SYSTEM: &str = "You are a helpful coding assistant. Answer concisely \
 from the conversation context.";
+const PROVIDER_EVENT_QUEUE_CAPACITY: usize = 256;
 
 /// The reminder leads so the model treats the question as a quick aside, not a task to act on.
 pub(crate) fn btw_question(question: &str) -> Message {
@@ -52,20 +53,29 @@ async fn run_btw(
     messages: Vec<Message>,
     btw_tx: Sender<BtwEvent>,
 ) {
-    let (event_tx, event_rx) = flume::unbounded();
+    let (event_tx, event_rx) = flume::bounded(PROVIDER_EVENT_QUEUE_CAPACITY);
     let tools = Value::Array(vec![]);
     let messages = n00n_providers::adapt_images_for_model(&model, &messages);
     let messages = n00n_providers::adapt_files_for_model(&model, &messages);
 
-    let stream_fut = provider.stream_message(
-        &model,
-        &messages,
-        &system,
-        &tools,
-        &event_tx,
-        RequestOptions::default(),
-        None,
-    );
+    let _permit = n00n_providers::admission::ProviderAdmission::global()
+        .acquire(model.provider.as_ref())
+        .await;
+    let stream_fut = async move {
+        let result = provider
+            .stream_message(
+                &model,
+                &messages,
+                &system,
+                &tools,
+                &event_tx,
+                RequestOptions::default(),
+                None,
+            )
+            .await;
+        drop(event_tx);
+        result
+    };
 
     let forward_fut = async {
         while let Ok(event) = event_rx.recv_async().await {
@@ -94,9 +104,12 @@ async fn run_btw(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     const Q: &str = "why sqlite?";
+    const TEST_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn user_text(msg: &Message) -> String {
         msg.content
@@ -106,6 +119,87 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    struct ImmediateProvider;
+
+    impl Provider for ImmediateProvider {
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a System,
+            _: &'a Value,
+            event_tx: &'a flume::Sender<ProviderEvent>,
+            _: RequestOptions,
+            _: Option<&'a n00n_storage::id::SessionRef>,
+        ) -> n00n_providers::provider::BoxFuture<
+            'a,
+            Result<n00n_providers::StreamResponse, n00n_providers::AgentError>,
+        > {
+            Box::pin(async move {
+                event_tx
+                    .send_async(ProviderEvent::TextDelta {
+                        text: "first".into(),
+                    })
+                    .await?;
+                event_tx
+                    .send_async(ProviderEvent::ThinkingDelta {
+                        text: "second".into(),
+                    })
+                    .await?;
+                Ok(n00n_providers::StreamResponse {
+                    message: Message::assistant("done".into()),
+                    usage: n00n_providers::TokenUsage::default(),
+                    stop_reason: Some(n00n_providers::StopReason::EndTurn),
+                })
+            })
+        }
+
+        fn list_models(
+            &self,
+        ) -> n00n_providers::provider::BoxFuture<
+            '_,
+            Result<Vec<n00n_providers::ModelInfo>, n00n_providers::AgentError>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[test]
+    fn completed_provider_finishes_btw_stream() {
+        let (btw_tx, btw_rx) = flume::bounded(4);
+        let completed = smol::block_on(async {
+            future::race(
+                async {
+                    run_btw(
+                        Arc::new(ImmediateProvider),
+                        Model::from_spec("anthropic/test").unwrap(),
+                        System::from("system"),
+                        vec![Message::user("question".into())],
+                        btw_tx,
+                    )
+                    .await;
+                    true
+                },
+                async {
+                    smol::Timer::after(TEST_COMPLETION_TIMEOUT).await;
+                    false
+                },
+            )
+            .await
+        });
+
+        assert!(completed, "completed provider left BTW task parked");
+        assert!(matches!(
+            btw_rx.try_recv(),
+            Ok(BtwEvent::TextDelta(text)) if text == "first"
+        ));
+        assert!(matches!(
+            btw_rx.try_recv(),
+            Ok(BtwEvent::TextDelta(text)) if text == "second"
+        ));
+        assert!(matches!(btw_rx.try_recv(), Ok(BtwEvent::Done)));
     }
 
     #[test]

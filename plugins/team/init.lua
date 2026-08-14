@@ -64,6 +64,8 @@ local MAX_SWARM_ROUNDS = 4
 local DEFAULT_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
+local TEAM_TIMEOUT_GRACE_SECS = 30
+local TEAM_OUTER_TIMEOUT_SECS = TEAM_TIMEOUT_SECS + TEAM_TIMEOUT_GRACE_SECS
 local MAX_RELAY_BYTES = 12000
 local DEFAULT_MAX_WAVE_RETRIES = 3
 local MAX_WAVE_RETRIES = 5
@@ -796,22 +798,34 @@ end
 local finish_run
 
 local function run_team(input, ctx)
+  if input.timeout_secs and input.timeout_secs > TEAM_TIMEOUT_SECS then
+    return {
+      llm_output = "timeout_secs must be at most " .. TEAM_TIMEOUT_SECS,
+      is_error = true,
+    }
+  end
   if input.background then
     local forwarded = {}
     for key, value in pairs(input) do
       forwarded[key] = value
     end
     forwarded.background = false
-    local prompt = "Use the team tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
-    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    local title = "team: " .. n00n.ui.truncate_text(input.goal or "", 60).head
+    local id, err = n00n.session.new({
+      tool = "team",
+      input = forwarded,
+      title = title,
+      focus = false,
+    })
     if not id then
       return { llm_output = err, is_error = true }
     end
-    local title = "team: " .. (input.goal or ""):sub(1, 60)
-    pcall(function()
-      n00n.session.set_title({ id = id, title = title })
-    end)
-    return n00n.json.encode({ agent_id = id, status = "started", title = title })
+
+    local output, output_err = n00n.json.encode({ agent_id = id, status = "started", title = title })
+    if output_err then
+      return { llm_output = "failed to encode team status: " .. tostring(output_err), is_error = true }
+    end
+    return output
   end
 
   local requested_mode = input.mode
@@ -822,9 +836,9 @@ local function run_team(input, ctx)
   if input.thinking == nil then
     input.thinking = "adaptive"
   end
+  input.timeout_secs = input.timeout_secs or TEAM_TIMEOUT_SECS
   input._agent_budget = new_agent_guard(input.max_agents, input.timeout_secs)
 
-  -- Enforce wall-clock timeout for in-flight subagent calls
   ctx:set_deadline(input.timeout_secs)
 
   local goal = input.goal
@@ -1091,9 +1105,10 @@ n00n.api.register_tool({
   name = "team",
   description = description,
   kind = "execute",
+  workload = "orchestrator",
   audiences = { "main", "workflow" },
   schema = schema,
-  timeout = TEAM_TIMEOUT_SECS,
+  timeout = TEAM_OUTER_TIMEOUT_SECS,
   handler = handler,
   header = header,
 })

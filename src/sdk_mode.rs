@@ -17,7 +17,7 @@ use std::time::Instant;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
 use flume::{Receiver, Sender};
-use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
+use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams, SessionStatePersistence};
 use n00n_agent::mcp;
 use n00n_agent::permissions::PermissionAnswer;
 use n00n_agent::prompt::ResolvedSlots;
@@ -445,6 +445,7 @@ pub struct SdkParams {
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
     pub prompt_slots: ResolvedSlots,
+    pub state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     pub fast: bool,
     pub workflow: bool,
 }
@@ -465,6 +466,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         timeouts,
         openai_options,
         prompt_slots,
+        state_persistence,
         fast,
         workflow,
     } = params;
@@ -495,6 +497,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         timeouts,
         openai_options,
         prompt_slots: Arc::new(prompt_slots),
+        state_persistence,
         excluded_tools: vec![QUESTION_TOOL_NAME],
         mcp_handle,
         initial_wd: cwd.clone(),
@@ -1052,6 +1055,7 @@ impl EventPump {
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
             | AgentEvent::QueueItemConsumed { .. }
+            | AgentEvent::QueueDrained { .. }
             | AgentEvent::AutoCompacting
             | AgentEvent::CompactionDone
             | AgentEvent::FusionPhase { .. }

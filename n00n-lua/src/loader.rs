@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use include_dir::{Dir, include_dir};
+use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_config::{PluginsConfig, RawConfig};
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredSessionStateSnapshot;
 
+use crate::api::firecrawl::BundledCapability;
 use crate::api::keymap::KeymapReader;
 use crate::api::options::{PluginOptionSpecs, PluginOpts};
 use crate::api::util::command::{HintReader, LuaCommandReader, UiAction};
@@ -25,127 +27,123 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 struct BundledPlugin {
     name: &'static str,
     dir: Dir<'static>,
+    capability: Option<BundledCapability>,
+}
+
+const fn bundled(name: &'static str, dir: Dir<'static>) -> BundledPlugin {
+    BundledPlugin {
+        name,
+        dir,
+        capability: None,
+    }
+}
+
+const fn privileged(
+    name: &'static str,
+    dir: Dir<'static>,
+    capability: BundledCapability,
+) -> BundledPlugin {
+    BundledPlugin {
+        name,
+        dir,
+        capability: Some(capability),
+    }
 }
 
 /// `lib` is not a default builtin; it exists so plugins can
 /// `require()` shared modules across boundaries.
 static BUNDLED_PLUGINS: &[BundledPlugin] = &[
-    BundledPlugin {
-        name: "agent_control",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
-    },
-    BundledPlugin {
-        name: "arbor",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
-    },
-    BundledPlugin {
-        name: "blackboard",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
-    },
-    BundledPlugin {
-        name: "sessions",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
-    },
-    BundledPlugin {
-        name: "semblem",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
-    },
-    BundledPlugin {
-        name: "index",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
-    },
-    BundledPlugin {
-        name: "webfetch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/webfetch"),
-    },
-    BundledPlugin {
-        name: "websearch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/websearch"),
-    },
-    BundledPlugin {
-        name: "bash",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/bash"),
-    },
-    BundledPlugin {
-        name: "batch",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/batch"),
-    },
-    BundledPlugin {
-        name: "grep",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep"),
-    },
-    BundledPlugin {
-        name: "glob",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob"),
-    },
-    BundledPlugin {
-        name: "skill",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/skill"),
-    },
-    BundledPlugin {
-        name: "memory",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/memory"),
-    },
-    BundledPlugin {
-        name: "question",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/question"),
-    },
-    BundledPlugin {
-        name: "todo_write",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/todo_write"),
-    },
-    BundledPlugin {
-        name: "read",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/read"),
-    },
-    BundledPlugin {
-        name: "write",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/write"),
-    },
-    BundledPlugin {
-        name: "edit",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/edit"),
-    },
-    BundledPlugin {
-        name: "explore",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/explore"),
-    },
-    BundledPlugin {
-        name: "fusion",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/fusion"),
-    },
-    BundledPlugin {
-        name: "task",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/task"),
-    },
-    BundledPlugin {
-        name: "workflow",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
-    },
-    BundledPlugin {
-        name: "team",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/team"),
-    },
-    BundledPlugin {
-        name: "tmux",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux"),
-    },
-    BundledPlugin {
-        name: "code_execution",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
-    },
-    BundledPlugin {
-        name: "codegraph",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
-    },
-    BundledPlugin {
-        name: "view_image",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
-    },
-    BundledPlugin {
-        name: "lib",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/lib"),
-    },
+    bundled(
+        "agent_control",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
+    ),
+    bundled(
+        "arbor",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
+    ),
+    bundled(
+        "blackboard",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
+    ),
+    bundled(
+        "sessions",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
+    ),
+    bundled(
+        "semblem",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
+    ),
+    bundled(
+        "index",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
+    ),
+    privileged(
+        "webfetch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/webfetch"),
+        BundledCapability::WebFetch,
+    ),
+    privileged(
+        "websearch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/websearch"),
+        BundledCapability::WebSearch,
+    ),
+    bundled("bash", include_dir!("$CARGO_MANIFEST_DIR/../plugins/bash")),
+    bundled(
+        "batch",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/batch"),
+    ),
+    bundled("grep", include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep")),
+    bundled("glob", include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob")),
+    bundled(
+        "skill",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/skill"),
+    ),
+    bundled(
+        "memory",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/memory"),
+    ),
+    bundled(
+        "question",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/question"),
+    ),
+    bundled(
+        "todo_write",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/todo_write"),
+    ),
+    bundled("read", include_dir!("$CARGO_MANIFEST_DIR/../plugins/read")),
+    bundled(
+        "write",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/write"),
+    ),
+    bundled("edit", include_dir!("$CARGO_MANIFEST_DIR/../plugins/edit")),
+    bundled(
+        "explore",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/explore"),
+    ),
+    bundled(
+        "fusion",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/fusion"),
+    ),
+    bundled("task", include_dir!("$CARGO_MANIFEST_DIR/../plugins/task")),
+    bundled(
+        "workflow",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
+    ),
+    bundled("team", include_dir!("$CARGO_MANIFEST_DIR/../plugins/team")),
+    bundled("tmux", include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux")),
+    bundled(
+        "code_execution",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
+    ),
+    bundled(
+        "codegraph",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
+    ),
+    bundled(
+        "view_image",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
+    ),
+    bundled("lib", include_dir!("$CARGO_MANIFEST_DIR/../plugins/lib")),
 ];
 
 pub(crate) fn lib_dir() -> &'static Dir<'static> {
@@ -163,6 +161,13 @@ static BUNDLED_DIRS: LazyLock<&'static [&'static Dir<'static>]> = LazyLock::new(
 
 pub struct PluginHost {
     inner: Option<LuaThread>,
+    state_leases: Arc<StateLeases>,
+}
+
+#[derive(Default)]
+struct StateLeases {
+    next: AtomicU64,
+    current: Mutex<HashMap<n00nId, u64>>,
 }
 
 impl Drop for PluginHost {
@@ -204,12 +209,18 @@ impl PluginHost {
     /// Returns an error if the Lua runtime cannot be spawned.
     pub fn with_jit(registry: Arc<ToolRegistry>, jit: bool) -> Result<Self, PluginError> {
         let lua = runtime::spawn(registry, *BUNDLED_DIRS, jit)?;
-        Ok(Self { inner: Some(lua) })
+        Ok(Self {
+            inner: Some(lua),
+            state_leases: Arc::new(StateLeases::default()),
+        })
     }
 
     #[must_use]
     pub fn disabled() -> Self {
-        Self { inner: None }
+        Self {
+            inner: None,
+            state_leases: Arc::new(StateLeases::default()),
+        }
     }
 
     /// Stop the Lua thread from taking new work without joining it, so the
@@ -312,15 +323,16 @@ impl PluginHost {
 
         let mut prepared = Vec::with_capacity(config.names.len());
         for builtin in &config.names {
-            let dir = match BUNDLED_PLUGINS.iter().find(|p| p.name == builtin.as_str()) {
-                Some(p) => &p.dir,
-                None => {
-                    return Err(PluginError::UnknownPlugin {
-                        plugin: builtin.clone(),
-                    });
-                }
+            let Some(bundled) = BUNDLED_PLUGINS
+                .iter()
+                .find(|plugin| plugin.name == builtin.as_str())
+            else {
+                return Err(PluginError::UnknownPlugin {
+                    plugin: builtin.clone(),
+                });
             };
-            let init = dir
+            let init = bundled
+                .dir
                 .get_file("init.lua")
                 .and_then(|f| f.contents_utf8())
                 .ok_or_else(|| PluginError::Lua {
@@ -332,7 +344,12 @@ impl PluginHost {
                 .get(builtin.as_str())
                 .cloned()
                 .map_or_else(Arc::default, Arc::new);
-            prepared.push((Arc::from(builtin.as_str()), init.to_owned(), opts));
+            prepared.push((
+                Arc::from(builtin.as_str()),
+                init.to_owned(),
+                opts,
+                bundled.capability,
+            ));
         }
 
         // Pipeline: queue every LoadSource before collecting any reply. The
@@ -342,7 +359,7 @@ impl PluginHost {
         // rest from loading; the first error (in send order) is returned.
         let tx = self.tx()?;
         let mut replies = Vec::with_capacity(prepared.len());
-        for (name, source, opts) in prepared {
+        for (name, source, opts, bundled_capability) in prepared {
             let (reply_tx, reply_rx) = flume::bounded(1);
             tx.send(Request::LoadSource {
                 name,
@@ -350,6 +367,7 @@ impl PluginHost {
                 plugin_dir: None,
                 permissions: PluginPermissions::trusted(),
                 opts,
+                bundled_capability,
                 reply: reply_tx,
             })
             .map_err(|_| PluginError::HostDead)?;
@@ -392,6 +410,7 @@ impl PluginHost {
             plugin_dir,
             permissions,
             opts,
+            bundled_capability: None,
             reply: reply_tx,
         })
         .map_err(|_| PluginError::HostDead)?;
@@ -524,6 +543,7 @@ impl PluginHost {
         self.inner.as_ref().map(|t| EventHandle {
             tx: t.tx.clone(),
             prio_tx: t.prio_tx.clone(),
+            state_leases: Arc::clone(&self.state_leases),
         })
     }
 
@@ -563,6 +583,54 @@ pub struct EventHandle {
     tx: flume::Sender<Request>,
     /// User-initiated requests bypass queued bulk work (session restores).
     prio_tx: flume::Sender<Request>,
+    state_leases: Arc<StateLeases>,
+}
+
+impl SessionStatePersistence for EventHandle {
+    fn hydrate(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+    ) -> Result<u64, String> {
+        let owner = identity.session_id().id();
+        let mut current = self
+            .state_leases
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.drop_state_owner(owner)
+            .map_err(|error| error.to_string())?;
+        let lease = self.state_leases.next.fetch_add(1, Ordering::Relaxed);
+        current.insert(owner, lease);
+        if let Err(error) = self.hydrate_state(identity, snapshot) {
+            current.remove(&owner);
+            return Err(error.to_string());
+        }
+        Ok(lease)
+    }
+
+    fn capture(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+    ) -> Result<StoredSessionStateSnapshot, String> {
+        self.capture_state(identity, revision)
+            .map_err(|error| error.to_string())
+    }
+
+    fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String> {
+        let mut current = self
+            .state_leases
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.get(&owner) != Some(&lease) {
+            return Ok(());
+        }
+        current.remove(&owner);
+        self.drop_state_owner(owner)
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl EventHandle {
@@ -570,6 +638,7 @@ impl EventHandle {
         Self {
             tx,
             prio_tx: flume::unbounded().0,
+            state_leases: Arc::new(StateLeases::default()),
         }
     }
 
@@ -587,22 +656,43 @@ impl EventHandle {
         Self {
             tx: shared.clone(),
             prio_tx: shared,
+            state_leases: Arc::new(StateLeases::default()),
         }
     }
 
-    pub fn run_command(&self, plugin: Arc<str>, command: Arc<str>, args: String) {
+    pub fn run_command(
+        &self,
+        plugin: Arc<str>,
+        command: Arc<str>,
+        args: String,
+        identity: Option<SessionIdentity>,
+    ) {
         let _ = self.prio_tx.try_send(Request::RunCommand {
             plugin,
             command,
             args,
+            identity,
         });
+    }
+
+    /// Collects prompt slots from the plugin host.
+    ///
+    /// # Errors
+    /// Returns [`PluginError::HostDead`] if the plugin host is unavailable.
+    pub fn try_collect_prompt_slots(&self) -> Result<ResolvedSlots, PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::CollectPromptSlots { reply })
+            .map_err(|_| PluginError::HostDead)?;
+        recv.recv().map_err(|_| PluginError::HostDead)
     }
 
     #[must_use]
     pub fn collect_prompt_slots(&self) -> ResolvedSlots {
-        let (tx, rx) = flume::bounded(1);
-        let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
-        rx.recv().unwrap_or_else(|_| ResolvedSlots::default())
+        self.try_collect_prompt_slots().unwrap_or_else(|error| {
+            tracing::warn!(%error, "plugin prompt slots unavailable; using empty slots");
+            ResolvedSlots::default()
+        })
     }
 
     pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
@@ -827,6 +917,15 @@ mod tests {
     }
 
     #[test]
+    fn try_collect_prompt_slots_reports_disconnected_host() {
+        let handle = EventHandle::disconnected_for_test();
+        assert!(matches!(
+            handle.try_collect_prompt_slots(),
+            Err(PluginError::HostDead)
+        ));
+    }
+
+    #[test]
     fn task_and_team_builtins_coexist() {
         let reg = Arc::new(ToolRegistry::new());
         let _host = PluginHost::with_all_builtins(Arc::clone(&reg)).unwrap();
@@ -901,18 +1000,30 @@ mod tests {
     fn run_command_sends_correct_request() {
         let (prio_tx, prio_rx) = flume::bounded(8);
         let (tx, _rx) = flume::bounded(8);
-        let handle = EventHandle { tx, prio_tx };
-        handle.run_command(Arc::from("myplugin"), Arc::from("/greet"), "world".into());
+        let handle = EventHandle {
+            tx,
+            prio_tx,
+            state_leases: Arc::new(StateLeases::default()),
+        };
+        let identity = SessionIdentity::root(n00n_storage::id::SessionRef::generate());
+        handle.run_command(
+            Arc::from("myplugin"),
+            Arc::from("/greet"),
+            "world".into(),
+            Some(identity.clone()),
+        );
         let req = prio_rx.try_recv().unwrap();
         match req {
             Request::RunCommand {
                 plugin,
                 command,
                 args,
+                identity: request_identity,
             } => {
                 assert_eq!(plugin.as_ref(), "myplugin");
                 assert_eq!(command.as_ref(), "/greet");
                 assert_eq!(args, "world");
+                assert_eq!(request_identity, Some(identity));
             }
             _ => panic!("expected RunCommand"),
         }

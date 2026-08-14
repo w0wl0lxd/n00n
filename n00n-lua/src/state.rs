@@ -52,7 +52,7 @@ pub(crate) struct PluginStateIdentity {
 }
 
 impl PluginStateIdentity {
-    fn owner(&self, scope: PluginStateScope) -> n00nId {
+    pub(crate) fn owner(&self, scope: PluginStateScope) -> n00nId {
         match scope {
             PluginStateScope::Session => self.session_id,
             PluginStateScope::Root => self.root_session_id,
@@ -240,6 +240,22 @@ impl PluginStateStore {
     }
 }
 
+fn validate_replacement(
+    inner: &StateInner,
+    identity: &PluginStateIdentity,
+    replacement_key: &StateKey,
+    replacement_value: &Value,
+) -> Result<(), PluginStateError> {
+    let mut candidate = candidate_for(inner, identity, Some(replacement_key))?;
+    candidate.set_plugin_state(
+        &replacement_key.plugin,
+        PLUGIN_STATE_SCHEMA_VERSION,
+        replacement_key.scope.stored(),
+        replacement_value.clone(),
+    )?;
+    Ok(())
+}
+
 fn candidate_for(
     inner: &StateInner,
     identity: &PluginStateIdentity,
@@ -270,22 +286,6 @@ fn candidate_for(
         }
     }
     Ok(candidate)
-}
-
-fn validate_replacement(
-    inner: &StateInner,
-    identity: &PluginStateIdentity,
-    replacement_key: &StateKey,
-    replacement_value: &Value,
-) -> Result<(), PluginStateError> {
-    let mut candidate = candidate_for(inner, identity, Some(replacement_key))?;
-    candidate.set_plugin_state(
-        &replacement_key.plugin,
-        PLUGIN_STATE_SCHEMA_VERSION,
-        replacement_key.scope.stored(),
-        replacement_value.clone(),
-    )?;
-    Ok(())
 }
 
 fn validate_value_size(value: &Value) -> Result<(), PluginStateError> {

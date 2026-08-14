@@ -27,6 +27,9 @@ pub const MIN_MAX_INPUT_LINES: u32 = 1;
 pub const DEFAULT_MCP_TOOL_DESC_MAX_CHARS: usize = 200;
 
 pub const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
+pub const DEFAULT_MAX_DEPTH: usize = 4;
+pub const DEFAULT_MAX_TOTAL_DESCENDANTS: usize = 16;
+pub const DEFAULT_MAX_ACTIVE_DESCENDANTS: usize = 8;
 pub const DEFAULT_COMPACTION_BUFFER: CompactionBuffer = CompactionBuffer::Percent(20);
 
 pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -34,6 +37,9 @@ pub const DEFAULT_LOW_SPEED_TIMEOUT_SECS: u64 = 120;
 pub const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 300;
 pub const DEFAULT_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
 pub const MAX_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
+pub const DEFAULT_FUSION_LEAD_MODEL: &str = "codex/gpt-5.6-sol";
+pub const DEFAULT_FUSION_SIDEKICK_MODEL: &str = "codex/gpt-5.6-luna";
+pub const DEFAULT_FUSION_SIDEKICK_THINKING: &str = "max";
 
 pub const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
 pub const DEFAULT_MAX_LOG_FILES: u32 = 10;
@@ -42,6 +48,9 @@ pub const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
 pub const MIN_OUTPUT_BYTES: usize = 1024;
 pub const MIN_OUTPUT_LINES: usize = 10;
 pub const MIN_MAX_CONTINUATION_TURNS: u32 = 1;
+pub const MIN_MAX_DEPTH: usize = 1;
+pub const MIN_MAX_TOTAL_DESCENDANTS: usize = 1;
+pub const MIN_MAX_ACTIVE_DESCENDANTS: usize = 1;
 pub const MIN_COMPACTION_BUFFER: u32 = 1_000;
 const MAX_COMPACTION_PERCENT: u8 = 99;
 const COMPACTION_BUFFER_EXPECTED: &str =
@@ -176,6 +185,8 @@ pub enum ConfigError {
     },
     #[error("invalid config: always_thinking: {0}")]
     Thinking(#[from] ThinkingParseError),
+    #[error("invalid config: agent.fusion.sidekick_thinking: {0}")]
+    InvalidFusionSidekickThinking(ThinkingParseError),
     #[error(
         "invalid config: plugins.{tool} was removed; {tool} is provided by the edit plugin, \
          set plugins.edit = {{ {tool} = true|false }} instead"
@@ -190,6 +201,16 @@ pub enum ConfigError {
         "invalid config: agent.fusion.sidekick_tier must be weak, medium, or strong, got {tier:?}"
     )]
     InvalidFusionSidekickTier { tier: crate::providers::Tier },
+    #[error(
+        "invalid config: agent lineage limits require max_depth <= max_total_descendants and \
+         max_active_descendants <= max_total_descendants (got max_depth={max_depth}, \
+         max_total_descendants={max_total_descendants}, max_active_descendants={max_active_descendants})"
+    )]
+    InvalidLineageLimits {
+        max_depth: usize,
+        max_total_descendants: usize,
+        max_active_descendants: usize,
+    },
 }
 
 fn check(
@@ -491,6 +512,9 @@ pub struct AgentFileConfig {
     pub max_output_bytes: Option<usize>,
     pub max_output_lines: Option<usize>,
     pub max_continuation_turns: Option<u32>,
+    pub max_depth: Option<usize>,
+    pub max_total_descendants: Option<usize>,
+    pub max_active_descendants: Option<usize>,
     pub compaction_buffer: Option<CompactionBuffer>,
     pub mcp_tool_desc_max_chars: Option<usize>,
     pub dynamic_tools: Option<DynamicToolFileConfig>,
@@ -501,6 +525,9 @@ pub struct AgentFileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct FusionFileConfig {
     pub enabled: Option<bool>,
+    pub lead_model: Option<String>,
+    pub sidekick_model: Option<String>,
+    pub sidekick_thinking: Option<String>,
     pub sidekick_tier: Option<crate::providers::Tier>,
 }
 
@@ -519,6 +546,9 @@ impl AgentFileConfig {
             max_output_bytes,
             max_output_lines,
             max_continuation_turns,
+            max_depth,
+            max_total_descendants,
+            max_active_descendants,
             compaction_buffer,
             mcp_tool_desc_max_chars
         );
@@ -538,6 +568,15 @@ impl AgentFileConfig {
             (Some(base), Some(over)) => {
                 if over.enabled.is_some() {
                     base.enabled = over.enabled;
+                }
+                if over.lead_model.is_some() {
+                    base.lead_model.clone_from(&over.lead_model);
+                }
+                if over.sidekick_model.is_some() {
+                    base.sidekick_model.clone_from(&over.sidekick_model);
+                }
+                if over.sidekick_thinking.is_some() {
+                    base.sidekick_thinking.clone_from(&over.sidekick_thinking);
                 }
                 if over.sidekick_tier.is_some() {
                     base.sidekick_tier = over.sidekick_tier;
@@ -1094,6 +1133,15 @@ pub struct AgentConfig {
     #[config(default = DEFAULT_MAX_CONTINUATION_TURNS, min = MIN_MAX_CONTINUATION_TURNS, desc = "Max automatic continuation turns")]
     pub max_continuation_turns: u32,
 
+    #[config(default = DEFAULT_MAX_DEPTH, min = MIN_MAX_DEPTH, desc = "Maximum session lineage depth")]
+    pub max_depth: usize,
+
+    #[config(default = DEFAULT_MAX_TOTAL_DESCENDANTS, min = MIN_MAX_TOTAL_DESCENDANTS, desc = "Maximum total descendants per session lineage root")]
+    pub max_total_descendants: usize,
+
+    #[config(default = DEFAULT_MAX_ACTIVE_DESCENDANTS, min = MIN_MAX_ACTIVE_DESCENDANTS, desc = "Maximum active descendants per session lineage root")]
+    pub max_active_descendants: usize,
+
     #[config(default = DEFAULT_COMPACTION_BUFFER, ty = "u32 | string", default_doc = "20%", desc = "Context reserved for compaction: token count or percent of the context window (e.g. \"20%\")")]
     pub compaction_buffer: CompactionBuffer,
 
@@ -1122,6 +1170,9 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusionConfig {
     pub enabled: bool,
+    pub lead_model: String,
+    pub sidekick_model: String,
+    pub sidekick_thinking: String,
     pub sidekick_tier: crate::providers::Tier,
 }
 
@@ -1129,6 +1180,9 @@ impl Default for FusionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            lead_model: DEFAULT_FUSION_LEAD_MODEL.to_owned(),
+            sidekick_model: DEFAULT_FUSION_SIDEKICK_MODEL.to_owned(),
+            sidekick_thinking: DEFAULT_FUSION_SIDEKICK_THINKING.to_owned(),
             sidekick_tier: crate::providers::Tier::Weak,
         }
     }
@@ -1175,6 +1229,15 @@ impl AgentConfig {
         let fusion = if let Some(ff) = file.fusion {
             FusionConfig {
                 enabled: ff.enabled.map_or(false, |enabled| enabled),
+                lead_model: ff
+                    .lead_model
+                    .unwrap_or_else(|| DEFAULT_FUSION_LEAD_MODEL.to_owned()),
+                sidekick_model: ff
+                    .sidekick_model
+                    .unwrap_or_else(|| DEFAULT_FUSION_SIDEKICK_MODEL.to_owned()),
+                sidekick_thinking: ff
+                    .sidekick_thinking
+                    .unwrap_or_else(|| DEFAULT_FUSION_SIDEKICK_THINKING.to_owned()),
                 sidekick_tier: ff
                     .sidekick_tier
                     .map_or(crate::providers::Tier::Weak, |tier| tier),
@@ -1194,6 +1257,13 @@ impl AgentConfig {
             max_continuation_turns: file
                 .max_continuation_turns
                 .unwrap_or_else(|| DEFAULT_MAX_CONTINUATION_TURNS),
+            max_depth: file.max_depth.unwrap_or_else(|| DEFAULT_MAX_DEPTH),
+            max_total_descendants: file
+                .max_total_descendants
+                .unwrap_or_else(|| DEFAULT_MAX_TOTAL_DESCENDANTS),
+            max_active_descendants: file
+                .max_active_descendants
+                .unwrap_or_else(|| DEFAULT_MAX_ACTIVE_DESCENDANTS),
             compaction_buffer: file
                 .compaction_buffer
                 .unwrap_or_else(|| DEFAULT_COMPACTION_BUFFER),
@@ -1206,6 +1276,19 @@ impl AgentConfig {
             dynamic_tools,
             fusion,
         }
+    }
+
+    fn validate_lineage_limits(&self) -> Result<(), ConfigError> {
+        if self.max_depth > self.max_total_descendants
+            || self.max_active_descendants > self.max_total_descendants
+        {
+            return Err(ConfigError::InvalidLineageLimits {
+                max_depth: self.max_depth,
+                max_total_descendants: self.max_total_descendants,
+                max_active_descendants: self.max_active_descendants,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1381,6 +1464,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
+        self.agent.validate_lineage_limits()?;
         self.provider.validate()?;
         self.provider.validate_openai_coding_plan_slots()?;
         if self.agent.fusion.sidekick_tier == crate::providers::Tier::Compaction {
@@ -1388,6 +1472,8 @@ impl Config {
                 tier: self.agent.fusion.sidekick_tier,
             });
         }
+        StoredThinking::parse_setting(&self.agent.fusion.sidekick_thinking)
+            .map_err(ConfigError::InvalidFusionSidekickThinking)?;
         self.storage.validate()?;
         Ok(())
     }
@@ -2162,6 +2248,7 @@ fn insert_permission_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Tier;
     use n00n_storage::sessions::Effort;
     use std::fs;
     use tempfile::TempDir;
@@ -2260,6 +2347,15 @@ mod tests {
             !config.agent.fusion.enabled,
             "agent Fusion must default off independently"
         );
+        assert_eq!(config.agent.fusion.lead_model, DEFAULT_FUSION_LEAD_MODEL);
+        assert_eq!(
+            config.agent.fusion.sidekick_model,
+            DEFAULT_FUSION_SIDEKICK_MODEL
+        );
+        assert_eq!(
+            config.agent.fusion.sidekick_thinking,
+            DEFAULT_FUSION_SIDEKICK_THINKING
+        );
     }
 
     #[test]
@@ -2290,6 +2386,15 @@ mod tests {
             crate::providers::Tier::Medium
         );
         assert!(!merged.always_fusion);
+
+        let explicit: RawConfig = toml::from_str(
+            "[agent.fusion]\nlead_model = \"anthropic/lead\"\nsidekick_model = \"openai/sidekick\"\nsidekick_thinking = \"high\"\n",
+        )
+        .unwrap();
+        let explicit = explicit.into_config(false).unwrap();
+        assert_eq!(explicit.agent.fusion.lead_model, "anthropic/lead");
+        assert_eq!(explicit.agent.fusion.sidekick_model, "openai/sidekick");
+        assert_eq!(explicit.agent.fusion.sidekick_thinking, "high");
     }
 
     #[test]
@@ -2304,6 +2409,32 @@ mod tests {
                 .contains("unknown field `implicit_model_switch`"),
             "unexpected parse error: {error}"
         );
+    }
+
+    #[test]
+    fn fusion_invalid_sidekick_thinking_is_rejected() {
+        let raw: RawConfig =
+            toml::from_str("[agent.fusion]\nsidekick_thinking = \"impossible\"\n").unwrap();
+        let config = raw.into_config(false).unwrap();
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickThinking(_))
+        ));
+    }
+
+    #[test]
+    fn fusion_compaction_sidekick_tier_is_rejected() {
+        let raw: RawConfig =
+            toml::from_str("[agent.fusion]\nenabled = true\nsidekick_tier = \"compaction\"\n")
+                .unwrap();
+        let config = raw.into_config(false).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickTier {
+                tier: Tier::Compaction
+            })
+        ));
     }
 
     #[test]
@@ -2940,6 +3071,23 @@ mod tests {
         assert_eq!(bash.opts["timeout_secs"], serde_json::json!(180));
     }
 
+    #[test]
+    fn firecrawl_backend_options_flow_into_config() {
+        let raw: RawConfig = toml::from_str(
+            "[plugins.websearch]\nbackend = \"firecrawl\"\n\
+             [plugins.webfetch]\nbackend = \"direct\"\n",
+        )
+        .unwrap();
+        let config = raw.into_config(false).unwrap();
+        assert_eq!(
+            config.plugins.opts["websearch"]["backend"],
+            serde_json::json!("firecrawl")
+        );
+        assert_eq!(
+            config.plugins.opts["webfetch"]["backend"],
+            serde_json::json!("direct")
+        );
+    }
     #[test]
     fn into_config_wires_plugin_names_and_opts() {
         let raw: RawConfig = toml::from_str(
