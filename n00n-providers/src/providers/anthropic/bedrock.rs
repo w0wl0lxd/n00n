@@ -933,7 +933,8 @@ mod tests {
     #[test]
     fn decode_eventstream_rejects_oversized_total_len() {
         let mut frame = vec![0u8; MIN_EVENTSTREAM_FRAME];
-        frame[0..4].copy_from_slice(&(MAX_EVENTSTREAM_FRAME_LEN as u32 + 1).to_be_bytes());
+        let over_cap = u32::try_from(MAX_EVENTSTREAM_FRAME_LEN).expect("cap fits in u32") + 1;
+        frame[0..4].copy_from_slice(&over_cap.to_be_bytes());
         let err = decode_eventstream_frame(&frame).unwrap_err();
         assert!(matches!(err, AgentError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData));
     }
@@ -941,7 +942,8 @@ mod tests {
     #[test]
     fn decode_eventstream_rejects_headers_len_past_total_len() {
         let mut frame = vec![0u8; MIN_EVENTSTREAM_FRAME];
-        frame[0..4].copy_from_slice(&(MIN_EVENTSTREAM_FRAME as u32).to_be_bytes());
+        let total_len = u32::try_from(MIN_EVENTSTREAM_FRAME).expect("minimum fits in u32");
+        frame[0..4].copy_from_slice(&total_len.to_be_bytes());
         frame[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
         let err = decode_eventstream_frame(&frame).unwrap_err();
         assert!(matches!(err, AgentError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData));
@@ -1097,7 +1099,7 @@ aws_session_token = MYTOKEN\n";
         smol::block_on(async {
             let (tx, _rx) = flume::unbounded();
             let mut parser = shared::EventParser::new();
-            parser
+            let flow = parser
                 .process(
                     "content_block_delta",
                     r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Par"}}"#,
@@ -1105,6 +1107,7 @@ aws_session_token = MYTOKEN\n";
                 )
                 .await
                 .unwrap();
+            assert_eq!(flow, ControlFlow::Continue(()));
 
             let err = parser.finish().unwrap_err();
             assert!(err.is_retryable());
