@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786710371661,
+  "lastUpdate": 1786710424559,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -18353,6 +18353,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 177647,
             "range": "± 12419",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba90633cf8345d99c4b14e70a15a2722706130d8",
+          "message": "chore: remove the arbor backend (#358)\n\n* chore: remove the arbor backend\n\nArbor required an external, unmaintained CLI and duplicated capability\ncodegraph already provides natively. Deletes the n00n-arbor crate, the\narbor Lua bindings and bundled plugin, and all tool/prompt/doc wiring.\n\nexplore's relations intent now routes caller/callee lookups and free-text\ngraph queries to codegraph instead of arbor. codegraph has no equivalent\nfor arbor's project-map, blast-radius diff, or index-status commands, so\nthose are gone rather than faked; the tool schema and docs reflect that.\n\n* docs: regenerate the tool and Lua API reference after the arbor removal\n\n* docs: drop stale arbor row from tool naming RFC\n\n* fix: remove thoughtbox from NATIVE_EFFICIENT_TOOLS and activate_tool plugin\n\n- Remove 'thoughtbox' from NATIVE_EFFICIENT_TOOLS in n00n-agent/src/prompt.rs\n- Remove activate_tool plugin (plugins/activate_tool/init.lua)\n- Update token profile baseline to reflect 30 tools (down from 31)\n- Update cache_prefix, main_tools_payload, main_tools_schemas, and system_prompt metrics\n\n* fix(n00n-lua): update JobStore kill test to new start/kill signatures",
+          "timestamp": "2026-08-14T08:11:11-04:00",
+          "tree_id": "1017ca9cf986b695f324b6fcb9414bdd205f045b",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/ba90633cf8345d99c4b14e70a15a2722706130d8"
+        },
+        "date": 1786710422588,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6463959,
+            "range": "± 184143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2449987,
+            "range": "± 3594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2445485,
+            "range": "± 52972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7647444,
+            "range": "± 22523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3866814,
+            "range": "± 16922",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3865790,
+            "range": "± 12036",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554132,
+            "range": "± 1163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168059,
+            "range": "± 280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167874,
+            "range": "± 2074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1039723,
+            "range": "± 9668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 655757,
+            "range": "± 7431",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 654208,
+            "range": "± 12637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 49489,
+            "range": "± 1818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 185146,
+            "range": "± 3211",
             "unit": "ns/iter"
           }
         ]
