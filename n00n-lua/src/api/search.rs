@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table, Value};
+use n00n_config::SearchConfig;
 use n00n_search::{
     DEFAULT_MAX_REDIRECTS, ExtractRequest, Extractor, FetchLimits, HttpTransport, MAX_SOURCE_BYTES,
     UrlPolicy,
@@ -6,12 +9,20 @@ use n00n_search::{
 
 use super::util::{convert::err_pair, ctx::LuaCtx};
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
+use crate::plugin_permissions::{Permission, PluginPermissions};
 
-pub(crate) fn create_search_table(lua: &Lua) -> LuaResult<Table> {
+const SEARCH_DISABLED_MSG: &str = "search is disabled in configuration";
+
+pub(crate) fn create_search_table(
+    lua: &Lua,
+    permissions: &PluginPermissions,
+) -> LuaResult<Table> {
     let table = lua.create_table()?;
     table.set(
         "extract",
-        lua.create_async_function(
+        permissions.guard_async(
+            Permission::Net,
+            lua,
             |lua, (ctx, request): (mlua::UserDataRef<LuaCtx>, Value)| async move {
                 extract(lua, ctx, request).await
             },
@@ -29,6 +40,17 @@ async fn extract(
         Ok(request) => request,
         Err(error) => return err_pair(&lua, error),
     };
+    if let Err(message) = ctx.ensure_active() {
+        return err_pair(&lua, message);
+    }
+    let config = match lua.app_data_ref::<Arc<SearchConfig>>() {
+        Ok(config) => config,
+        Err(error) => return err_pair(&lua, error),
+    };
+    if !config.enabled() {
+        return err_pair(&lua, SEARCH_DISABLED_MSG);
+    }
+    drop(config);
     let cancel = ctx.cancel_token();
     drop(ctx);
     let extractor = match Extractor::new(
@@ -79,6 +101,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
 mod tests {
     use mlua::{Function, LuaSerdeExt};
     use n00n_agent::cancel::CancelToken;
+    use n00n_config::{RawConfig, SearchFileConfig};
     use n00n_search::{ExtractFormat, ExtractRequest};
 
     use super::*;
@@ -93,12 +116,31 @@ mod tests {
         }
     }
 
+    fn enabled_config() -> Arc<SearchConfig> {
+        Arc::new(
+            RawConfig {
+                search: SearchFileConfig {
+                    enabled: Some(true),
+                },
+                ..RawConfig::default()
+            }
+            .into_config(false)
+            .unwrap()
+            .search,
+        )
+    }
+
+    fn install_search_table(lua: &Lua) -> Function {
+        lua.set_app_data(enabled_config());
+        let table = create_search_table(lua, &PluginPermissions::trusted()).unwrap();
+        table.get("extract").unwrap()
+    }
+
     #[test]
     fn bridge_observes_context_cancellation_before_network_dispatch() {
         smol::block_on(async {
             let lua = Lua::new();
-            let table = create_search_table(&lua).unwrap();
-            let function: Function = table.get("extract").unwrap();
+            let function = install_search_table(&lua);
             let (trigger, token) = CancelToken::new();
             trigger.cancel();
             let ctx = lua.create_userdata(LuaCtx::for_test(token)).unwrap();
@@ -113,8 +155,7 @@ mod tests {
     fn bridge_returns_validation_errors_as_lua_pairs() {
         smol::block_on(async {
             let lua = Lua::new();
-            let table = create_search_table(&lua).unwrap();
-            let function: Function = table.get("extract").unwrap();
+            let function = install_search_table(&lua);
             let ctx = lua
                 .create_userdata(LuaCtx::for_test(CancelToken::none()))
                 .unwrap();
@@ -130,6 +171,41 @@ mod tests {
                     .to_str()
                     .unwrap()
                     .contains("invalid urls")
+            );
+        });
+    }
+
+    #[test]
+    fn extract_is_denied_without_net_permission() {
+        smol::block_on(async {
+            let lua = Lua::new();
+            let table = create_search_table(&lua, &PluginPermissions::denied()).unwrap();
+            let function: Function = table.get("extract").unwrap();
+            let ctx = lua
+                .create_userdata(LuaCtx::for_test(CancelToken::none()))
+                .unwrap();
+            let input = lua.to_value(&request()).unwrap();
+            let error = function.call_async::<Value>((ctx, input)).await;
+            assert!(error.unwrap_err().to_string().contains("permission denied"));
+        });
+    }
+
+    #[test]
+    fn extract_rejects_disabled_search_config() {
+        smol::block_on(async {
+            let lua = Lua::new();
+            lua.set_app_data(Arc::new(SearchConfig::default()));
+            let table = create_search_table(&lua, &PluginPermissions::trusted()).unwrap();
+            let function: Function = table.get("extract").unwrap();
+            let ctx = lua
+                .create_userdata(LuaCtx::for_test(CancelToken::none()))
+                .unwrap();
+            let input = lua.to_value(&request()).unwrap();
+            let (value, error): (Value, Value) = function.call_async((ctx, input)).await.unwrap();
+            assert!(value.is_nil());
+            assert_eq!(
+                error.as_string().unwrap().to_str().unwrap(),
+                SEARCH_DISABLED_MSG
             );
         });
     }

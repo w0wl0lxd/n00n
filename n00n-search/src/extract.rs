@@ -89,7 +89,11 @@ fn render_content(
 ) -> Result<ExtractedContent, Error> {
     let content_type = match fetched.content_type.as_deref() {
         Some(value) => base_content_type(value),
-        None => "text/plain",
+        None => {
+            return Err(Error::UnsupportedContentType {
+                content_type: "undisclosed (missing Content-Type header)".into(),
+            });
+        }
     };
     if !is_text_content(content_type) {
         return Err(Error::UnsupportedContentType {
@@ -115,7 +119,6 @@ fn render_content(
         final_url: fetched.final_url,
         content_type: content_type.into(),
         content,
-        truncated: false,
         trust: ContentTrust::ExternalUntrusted,
     })
 }

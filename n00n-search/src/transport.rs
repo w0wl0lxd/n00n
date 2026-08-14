@@ -63,7 +63,7 @@ impl Transport for HttpTransport {
             if let Some(resolve_map) = resolve_map {
                 builder = builder.dns_resolve(resolve_map);
             }
-            let client = builder.build().map_err(transport_error)?;
+            let client = builder.build().map_err(|error| transport_error(&error))?;
             let http_request = Request::get(url.as_str())
                 .header("user-agent", USER_AGENT)
                 .body(AsyncBody::empty())
@@ -73,7 +73,7 @@ impl Transport for HttpTransport {
             let response = client
                 .send_async(http_request)
                 .await
-                .map_err(transport_error)?;
+                .map_err(|error| transport_error(&error))?;
             let status = response.status().as_u16();
             let headers = response
                 .headers()
@@ -130,7 +130,7 @@ async fn resolve_and_validate(url: &ValidatedUrl) -> Result<Option<ResolveMap>, 
     Ok(Some(resolve_map))
 }
 
-fn transport_error(error: isahc::Error) -> Error {
+fn transport_error(error: &isahc::Error) -> Error {
     if error.is_timeout() {
         Error::Timeout
     } else {
@@ -239,6 +239,11 @@ impl<T: Transport> Fetcher<T> {
                 let next = url.as_url().join(location).map_err(|error| Error::Parse {
                     message: error.to_string(),
                 })?;
+                if url.as_url().scheme() == "https" && next.scheme() != "https" {
+                    return Err(Error::PolicyDenied {
+                        reason: "redirect downgraded the scheme",
+                    });
+                }
                 url = self.policy.validate(next.as_str())?;
                 continue;
             }

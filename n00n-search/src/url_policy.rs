@@ -212,9 +212,11 @@ fn is_special_v6(address: Ipv6Addr) -> bool {
         || address.is_multicast()
         || (segments[0] & 0xfe00) == 0xfc00
         || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] & 0xffc0) == 0xfec0
         || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || (segments[0] == 0x0064 && segments[1] == 0xff9b)
         || (segments[0] == 0x0100 && segments[1] == 0)
-        || address.to_ipv4_mapped().is_some_and(is_special_v4)
+        || address.to_ipv4().is_some_and(is_special_v4)
 }
 
 #[cfg(test)]
@@ -239,10 +241,9 @@ mod tests {
         let url = UrlPolicy::untrusted_page()
             .validate("https://example.com/")
             .unwrap();
-        assert!(
-            url.validate_resolved_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)))
-                .is_err()
-        );
+        assert!(url
+            .validate_resolved_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)))
+            .is_err());
     }
 
     #[test]
@@ -250,10 +251,9 @@ mod tests {
         let url = UrlPolicy::untrusted_page()
             .validate("https://example.com/")
             .unwrap();
-        assert!(
-            url.validate_resolved_ip(IpAddr::V6(Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 1)))
-                .is_err()
-        );
+        assert!(url
+            .validate_resolved_ip(IpAddr::V6(Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 1)))
+            .is_err());
     }
 
     #[test]
