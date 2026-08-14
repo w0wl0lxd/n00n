@@ -356,6 +356,10 @@ impl Model {
                     .and_then(|d| d.supports_files)
             })
             .or_else(|| {
+                // Excludes codex ids from the "gpt-5.6" catch-all prefix on gpt-5.6-sol.
+                if self.provider.as_ref() == "openai" && self.id.contains(GPT_CODEX_MARKER) {
+                    return Some(false);
+                }
                 manifest.and_then(|m| {
                     let lookup_id = match self.id.strip_prefix(&format!("{}/", self.provider)) {
                         Some(stripped) => stripped,
