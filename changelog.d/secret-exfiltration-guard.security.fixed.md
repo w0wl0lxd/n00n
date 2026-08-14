@@ -1,0 +1,1 @@
+Add heuristic secret/PII detection to edit and write tools. Require justification when content may contain secrets (api keys, tokens, passwords, authorization headers). Prevents accidental secret exfiltration via file operations.
