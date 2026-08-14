@@ -76,10 +76,18 @@ const fn model_entry(
         tier,
         family: ModelFamily::Gpt,
         vision,
+        files: false,
         default,
         max_output_tokens,
         context_window,
         pricing,
+    }
+}
+
+const fn with_files(entry: ModelEntry) -> ModelEntry {
+    ModelEntry {
+        files: true,
+        ..entry
     }
 }
 
@@ -105,13 +113,14 @@ const fn with_coding_plan(
         max_output_tokens,
         context_window,
         vision,
+        files: false,
         default,
         pricing: coding_plan_pricing(entry.tier),
         ..entry
     }
 }
 
-const OPENAI_GPT_5_6_LUNA: ModelEntry = model_entry(
+const OPENAI_GPT_5_6_LUNA: ModelEntry = with_files(model_entry(
     &["gpt-5.6-luna"],
     ModelTier::Weak,
     true,
@@ -125,9 +134,9 @@ const OPENAI_GPT_5_6_LUNA: ModelEntry = model_entry(
         cache_read: 0.10,
         fast: None,
     },
-);
+));
 
-const OPENAI_GPT_5_6_TERRA: ModelEntry = model_entry(
+const OPENAI_GPT_5_6_TERRA: ModelEntry = with_files(model_entry(
     &["gpt-5.6-terra"],
     ModelTier::Medium,
     true,
@@ -141,9 +150,9 @@ const OPENAI_GPT_5_6_TERRA: ModelEntry = model_entry(
         cache_read: 0.25,
         fast: None,
     },
-);
+));
 
-const OPENAI_GPT_5_6_SOL: ModelEntry = model_entry(
+const OPENAI_GPT_5_6_SOL: ModelEntry = with_files(model_entry(
     &["gpt-5.6-sol", "gpt-5.6"],
     ModelTier::Strong,
     true,
@@ -160,7 +169,7 @@ const OPENAI_GPT_5_6_SOL: ModelEntry = model_entry(
             output: 60.00,
         }),
     },
-);
+));
 
 const OPENAI_GPT_5_4_NANO: ModelEntry = model_entry(
     &["gpt-5.4-nano"],
