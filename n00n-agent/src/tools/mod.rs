@@ -491,28 +491,25 @@ pub fn is_expected_walk_io_error(kind: ErrorKind) -> bool {
     matches!(kind, ErrorKind::PermissionDenied | ErrorKind::NotFound)
 }
 
-/// `ignore::Error::Loop` carries no `io::Error`, so it is invisible to
-/// [`is_expected_walk_io_error`] and needs its own recursive check.
-fn is_walk_loop_error(err: &ignore::Error) -> bool {
-    match err {
-        ignore::Error::Loop { .. } => true,
-        ignore::Error::WithLineNumber { err, .. }
-        | ignore::Error::WithPath { err, .. }
-        | ignore::Error::WithDepth { err, .. } => is_walk_loop_error(err),
-        ignore::Error::Partial(errs) => errs.iter().any(is_walk_loop_error),
-        _ => false,
-    }
-}
-
 /// Shared classifier for every caller that iterates an
 /// `ignore::Walk`/`WalkParallel` (grep, glob, Lua `fs` helpers). Expected
 /// conditions should log at `debug!`; everything else stays at `warn!`.
+///
+/// `ignore::Error::Loop` carries no `io::Error`, so it needs its own arm rather
+/// than falling through to [`is_expected_walk_io_error`].
 #[must_use]
 pub fn is_expected_walk_error(err: &ignore::Error) -> bool {
-    is_walk_loop_error(err)
-        || err
-            .io_error()
-            .is_some_and(|e| is_expected_walk_io_error(e.kind()))
+    match err {
+        ignore::Error::Loop { .. } => true,
+        ignore::Error::Io(e) => is_expected_walk_io_error(e.kind()),
+        ignore::Error::WithLineNumber { err, .. }
+        | ignore::Error::WithPath { err, .. }
+        | ignore::Error::WithDepth { err, .. } => is_expected_walk_error(err),
+        // An aggregate is only expected when every part of it is: one unexpected
+        // member downgraded to `debug!` would hide a genuine I/O failure.
+        ignore::Error::Partial(errs) => !errs.is_empty() && errs.iter().all(is_expected_walk_error),
+        _ => false,
+    }
 }
 
 #[must_use]
@@ -1376,6 +1373,35 @@ mod tests {
             ))),
         };
         assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_classifies_a_wholly_expected_partial() {
+        let err = ignore::Error::Partial(vec![
+            ignore::Error::Loop {
+                ancestor: PathBuf::from("/a"),
+                child: PathBuf::from("/a/b/a"),
+            },
+            ignore::Error::Io(std::io::Error::from(ErrorKind::PermissionDenied)),
+        ]);
+        assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_rejects_a_partial_hiding_an_unexpected_member() {
+        let err = ignore::Error::Partial(vec![
+            ignore::Error::Loop {
+                ancestor: PathBuf::from("/a"),
+                child: PathBuf::from("/a/b/a"),
+            },
+            ignore::Error::Io(std::io::Error::from(ErrorKind::TimedOut)),
+        ]);
+        assert!(!is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_rejects_an_empty_partial() {
+        assert!(!is_expected_walk_error(&ignore::Error::Partial(vec![])));
     }
 
     #[test]

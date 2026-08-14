@@ -261,6 +261,13 @@ impl MessagesPanel {
         }) else {
             return false;
         };
+        // A provider that streamed deltas before erroring has already filled these
+        // buffers; leaving them splices the failed summary into the agent's next
+        // response.
+        self.streaming_text.clear();
+        self.streaming_thinking.clear();
+        self.thinking_collapsed = false;
+        self.thinking_started = None;
         self.messages[message_index] = DisplayMessage::new(
             DisplayRole::Assistant,
             format!("Auto-compaction failed: {reason}. Continuing without compacting."),
