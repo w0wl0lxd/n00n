@@ -4,7 +4,7 @@
 
 ### Token-Efficient Exploration
 
-Prefer `codegraph`, `arbor`, `semblem`, `index`, and `rtk` over broad greps and raw shell output; compress before context. Use `explore` as the primary entry point for codebase questions, routing to the appropriate structural backend. Filter and pipeline with `code_execution` to reduce context usage.
+Prefer `codegraph`, `semblem`, `index`, and `rtk` over broad greps and raw shell output; compress before context. Use `explore` as the primary entry point for codebase questions, routing to the appropriate structural backend. Filter and pipeline with `code_execution` to reduce context usage.
 
 ### TDD / Red-Green-Refactor
 
