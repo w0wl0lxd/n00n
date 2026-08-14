@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786710424559,
+  "lastUpdate": 1786712509959,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -18461,6 +18461,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 185146,
             "range": "± 3211",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb1784b6c6f3c421dbdea4e32e002509fe5b106a",
+          "message": "fix(providers): surface truncated streams instead of returning partial responses (#359)\n\n* fix(providers): surface truncated streams instead of returning partial responses\n\nAnthropic (direct and Bedrock), Google, and the shared OpenAI-compatible\nSSE parser (OpenRouter, Mistral, DeepSeek, Zai, Copilot, custom, and\nother OpenAI-compatible providers) all returned a complete-looking\nStreamResponse when the underlying stream closed before its terminal\nevent (message_stop, a Gemini finishReason, or [DONE]). Downstream code\nhad no way to tell a genuinely finished turn from one cut off by a\ndropped connection, so a truncated response was treated as final and\nnever retried.\n\nAlso hardened Bedrock's eventstream frame decoder against a\nwire-declared total_len/headers_len that under- or over-runs the frame,\nand fixed a Devin stream-read failure being wrapped in a non-retryable\nAgentError::Api instead of a retryable AgentError::Io.\n\n* fix(providers): accept a terminal finish_reason as a clean stream end\n\nNot every OpenAI-compatible server emits [DONE]; requiring it would turn a\nworking provider into an unbroken retry loop. A stream cut mid-flight has\nneither marker.\n\n* test(providers): rename stream test fixtures off a flagged word\n\nThe partial-delta fixtures used \"Hel\", which the spell checker reports as\na misspelling of help/hell/heal and which failed the required Spell check.\n\"Par\" reads the same way as a truncated delta without tripping it.\n\n* fix(providers): satisfy clippy in bedrock eventstream tests\n\nReplace two usize-to-u32 casts with checked conversions and assert the\nControlFlow returned by the parser instead of discarding it.\n\nAlso give the tui-bridge daemon handshake test a 30s deadline instead of\na fixed 1s budget; a loaded CI runner needs longer to bind the socket,\nwhich made the test fail intermittently across every open branch.\n\n* test(n00n): move constants before statements in tui_bridge test\n\n* fix: move Instant import to cfg(unix) test to avoid unused import on Windows\n\n* fix(n00n-lua): update JobStore kill test to new start/kill signatures",
+          "timestamp": "2026-08-14T08:45:35-04:00",
+          "tree_id": "0ccf95e58dec7abbeb9ee2678cc9a5d6ff130a51",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/eb1784b6c6f3c421dbdea4e32e002509fe5b106a"
+        },
+        "date": 1786712508794,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 8413085,
+            "range": "± 40812",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1719904,
+            "range": "± 5404",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1720748,
+            "range": "± 16305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9553066,
+            "range": "± 165556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3412684,
+            "range": "± 19344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3395645,
+            "range": "± 78405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 860415,
+            "range": "± 4381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 107409,
+            "range": "± 8264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 109139,
+            "range": "± 7568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1294366,
+            "range": "± 10866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 546062,
+            "range": "± 5083",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 542085,
+            "range": "± 5248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48315,
+            "range": "± 2945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 158534,
+            "range": "± 2388",
             "unit": "ns/iter"
           }
         ]
