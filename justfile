@@ -73,22 +73,11 @@ setup-git-hooks:
 secrets:
     gitleaks detect --source . --redact --no-banner --config .gitleaks.toml
 
-# Check local explore index health for arbor and codegraph.
+# Check local explore index health for codegraph.
 explore-health PROJECT=".":
     #!/usr/bin/env bash
     set -euo pipefail
     project="{{PROJECT}}"
-    echo "== arbor =="
-    if command -v arbor >/dev/null 2>&1; then
-        arbor status "$project" || true
-    else
-        echo "arbor CLI: not installed"
-    fi
-    if [[ -f "$project/.arbor/graph.json" ]]; then
-        echo "arbor graph.json: present"
-    else
-        echo "arbor graph.json: missing"
-    fi
     echo "== codegraph =="
     if command -v codegraph >/dev/null 2>&1; then
         codegraph --version || true
