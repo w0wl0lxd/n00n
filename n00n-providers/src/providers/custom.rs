@@ -188,6 +188,9 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
         pricing,
         max_output_tokens,
         context_window,
+        thinking_dialect: None,
+        thinking_fields: None,
+        body_override: None,
     }
 }
 

@@ -20,6 +20,7 @@ use tracing::warn;
 use crate::id::{n00nId, n00nIdParseError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use zstd::stream::{Decoder, Encoder};
 
 use crate::{
@@ -500,6 +501,68 @@ impl FromStr for Effort {
             .find(|e| e.as_str() == s)
             .ok_or_else(|| ThinkingParseError::Unknown(s.to_string()))
     }
+}
+
+/// Serializable identifier for a built-in effort dialect, resolved to the
+/// actual dialect by `n00n_providers::effort_dialect_for`. Lives here so both
+/// `n00n-config` (providers.toml) and `n00n-providers` (dynamic provider
+/// script JSON) can deserialize it without a cross-dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EffortDialectId {
+    Standard,
+    OpenaiExtended,
+    PreferHigh,
+    HighOnly,
+    Glm,
+    DeepSeek,
+    AnthropicAdaptive,
+    TensorX,
+}
+
+/// One toggle object written to a request body based on the thinking state.
+/// `on` is merged for Effort/Budget, `adaptive` for Adaptive (falling back to
+/// `on`), `off` is set for Off. `budget_key` nests the resolved budget inside
+/// this toggle's object when no explicit budget path is configured.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToggleEntry {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_key: Option<String>,
+}
+
+/// Request-body layout for thinking values. `effort_path` and `budget_path`
+/// are dot-separated paths; `toggles` are written to their `path` values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ThinkingFieldConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_max: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toggles: Vec<ToggleEntry>,
+}
+
+/// Per-model request body manipulation. Three operations run in order:
+/// `defaults` (fills absent keys), `replace` (deep-merges, overwriting), and
+/// `filter` (strips keys). Every provider guards its conversation field, so
+/// none of the three can touch `messages`, `input`, or `contents`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BodyOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

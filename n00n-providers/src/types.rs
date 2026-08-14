@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 pub use n00n_storage::sessions::Effort;
+pub use n00n_storage::sessions::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
 use n00n_storage::sessions::{
     MIN_THINKING_BUDGET, StoredReasoningContext, StoredReasoningMode, StoredThinking, TitleSource,
 };
@@ -839,6 +840,23 @@ pub mod dialect {
         adaptive: Some(High),
         off: Some(OFF),
     };
+}
+
+/// Resolve a config-level dialect id to the dialect it names. Lives here
+/// because the dialect consts do, while the id is a storage type shared with
+/// `n00n-config`.
+#[must_use]
+pub fn effort_dialect_for(id: EffortDialectId) -> &'static EffortDialect<'static> {
+    match id {
+        EffortDialectId::Standard => &dialect::STANDARD,
+        EffortDialectId::OpenaiExtended => &dialect::OPENAI_EXTENDED,
+        EffortDialectId::PreferHigh => &dialect::PREFER_HIGH,
+        EffortDialectId::HighOnly => &dialect::HIGH_ONLY,
+        EffortDialectId::Glm => &dialect::GLM,
+        EffortDialectId::DeepSeek => &dialect::DEEPSEEK,
+        EffortDialectId::AnthropicAdaptive => &dialect::ANTHROPIC_ADAPTIVE,
+        EffortDialectId::TensorX => &dialect::TENSORX,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

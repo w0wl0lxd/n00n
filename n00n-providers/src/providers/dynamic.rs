@@ -92,6 +92,9 @@ impl ScriptModel {
             pricing: self.pricing.unwrap_or_else(Default::default),
             max_output_tokens: Some(self.max_output_tokens),
             context_window: self.context_window,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 }
