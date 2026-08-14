@@ -74,7 +74,27 @@ local SECRET_KEYWORDS = {
   "passwd=",
 }
 
+-- Generic credential suffixes with word boundaries to catch assignments like
+-- my_api_key, user_credential, etc.
+local CREDENTIAL_SUFFIXES = {
+  "_key",
+  "-key",
+  "_credential",
+  "-credential",
+  "_secret",
+  "-secret",
+  "_token",
+  "-token",
+  "_password",
+  "-password",
+}
+
 local TOKEN_VALUE_PATTERN = "[=:]%s*[\"']?([A-Za-z0-9+/_%-]+)"
+
+-- PII patterns: email, phone-like, SSN-like
+local EMAIL_PATTERN = "[A-Za-z0-9._%%+-]+@[A-Za-z0-9.-]+%.[A-Za-z]{2,}"
+local PHONE_PATTERN = "%d%d%d[-.]?%d%d%d[-.]?%d%d%d%d"
+local SSN_PATTERN = "%d%d%d[-.]%d%d[-.]%d%d%d%d"
 
 local function lower(s)
   return s:lower()
@@ -86,6 +106,31 @@ local function contains_keyword(s)
     if l:find(kw, 1, true) then
       return kw
     end
+  end
+  return nil
+end
+
+local function contains_credential_suffix(s)
+  local l = lower(s)
+  for _, suffix in ipairs(CREDENTIAL_SUFFIXES) do
+    -- Use word boundary pattern to match suffix at end of identifier
+    local pattern = "%w+" .. suffix .. "%f[%W]"
+    if l:find(pattern) then
+      return suffix
+    end
+  end
+  return nil
+end
+
+local function contains_pii(s)
+  if s:find(EMAIL_PATTERN) then
+    return "email address"
+  end
+  if s:find(PHONE_PATTERN) then
+    return "phone number"
+  end
+  if s:find(SSN_PATTERN) then
+    return "SSN-like pattern"
   end
   return nil
 end
@@ -110,6 +155,18 @@ function M.check(text)
   local kw = contains_keyword(text)
   if kw and looks_like_secret_value(text) then
     return false, "content may contain a secret pattern near '" .. kw .. "'"
+  end
+
+  -- Check for generic credential-key assignments with word boundaries
+  local suffix = contains_credential_suffix(text)
+  if suffix and looks_like_secret_value(text) then
+    return false, "content may contain a secret pattern near '" .. suffix .. "'"
+  end
+
+  -- Check for PII patterns
+  local pii = contains_pii(text)
+  if pii then
+    return false, "content may contain PII (" .. pii .. ")"
   end
 
   -- Direct header-style credential exposure.
