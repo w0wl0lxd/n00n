@@ -1039,7 +1039,10 @@ pub async fn parse_sse(
         content_blocks.push(ContentBlock::ToolUse { id, name, input });
     }
 
-    if !terminated {
+    // Not every OpenAI-compatible server emits `[DONE]`, so a terminal
+    // `finish_reason` counts as a clean end too. A stream cut mid-flight has
+    // neither.
+    if !terminated && stop_reason.is_none() {
         return Err(stream_truncated_error());
     }
 
@@ -1296,6 +1299,20 @@ data: [DONE]\n";
                 starts,
                 vec![("c1".into(), "bash".into()), ("c2".into(), "read".into()),]
             );
+        });
+    }
+
+    #[test]
+    fn parse_sse_stream_ended_by_finish_reason_alone_is_accepted() {
+        smol::block_on(async {
+            let sse = "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{\"content\":\"whole\"}}]}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap();
+
+            assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
         });
     }
 
