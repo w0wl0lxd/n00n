@@ -218,9 +218,9 @@ local function diff_result(edit_result, summary)
 end
 
 local opts = n00n.api.register_options({
-  multiedit = { default = true, desc = "Provide the `multiedit` tool." },
-  edit_lines = { default = true, desc = "Provide the line-based `edit_lines` tool." },
-  insert_lines = { default = true, desc = "Provide the line-based `insert_lines` tool." },
+  multiedit = { default = true, desc = "Provide the `edit_file_bulk` tool." },
+  edit_lines = { default = true, desc = "Provide the line-based `edit_file_lines` tool." },
+  insert_lines = { default = true, desc = "Provide the line-based `insert_file_lines` tool." },
 })
 
 local function register_tool_if(enabled, tool)

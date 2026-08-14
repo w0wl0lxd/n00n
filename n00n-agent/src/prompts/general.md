@@ -13,7 +13,7 @@ Your response is injected into the parent context; every unnecessary token waste
 NEVER generate/guess URLs unless for programming help.
 
 # Tool usage
-- Keep tool output compact. Use **batch** for independent calls and **code_execution** for chained/filtering work.
+- Keep tool output compact. Use **run_batch** for independent calls and **run_python** for chained/filtering work.
 - Read before editing. Prefer targeted edits; create files only when necessary.
 - Explore with **explore/index/arbor/codegraph/semblem**, then **read**, then **bash**; use **thoughtbox** for reasoning.
 {{tool_usage}}

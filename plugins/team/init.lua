@@ -935,7 +935,7 @@ local function run_team(input, ctx)
     end
     return {
       llm_output = table.concat(plan, "\n")
-        .. '\n\nReview the plan, then run `team` again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
+        .. '\n\nReview the plan, then run `run_team` again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
       format = "markdown",
       cost = supervisor_cost,
       usage = supervisor_usage,

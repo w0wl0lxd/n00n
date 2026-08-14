@@ -55,12 +55,12 @@ n00n.api.register_tool({
   aliases = { "explore" },
   kind = "read",
   description = [[Unified codebase exploration router. Picks the best backend for the question:
-- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
-- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
-- **search** intent: keyword or natural-language search via `semblem`
-- **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `codegraph impact`
+- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index_file`
+- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `map_code`
+- **cross_file** intent (default for NL questions): structural cross-file analysis via `map_codegraph`
+- **search** intent: keyword or natural-language search via `search_text`
+- **symbol** intent: symbol drill-down via `map_codegraph node`
+- **impact** intent: blast-radius analysis via `map_codegraph impact`
 
 Set `intent` explicitly when you know the backend. Otherwise the router infers from the query.
 Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routing.]],

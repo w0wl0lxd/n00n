@@ -37,23 +37,25 @@ use uuid::Uuid;
 
 use crate::cli::Cli;
 
+/// Keyed by canonical tool name; callers normalize deprecated aliases first so
+/// the SDK wire names stay stable across the rename.
 const TOOL_NAME_MAP: &[(&str, &str)] = &[
-    ("bash", "Bash"),
-    ("read", "Read"),
-    ("edit", "Edit"),
-    ("write", "Write"),
-    ("grep", "Grep"),
-    ("glob", "Glob"),
-    ("todo_write", "TodoWrite"),
-    ("webfetch", "WebFetch"),
-    ("websearch", "WebSearch"),
-    ("task", "Task"),
-    ("multiedit", "MultiEdit"),
-    ("code_execution", "CodeExecution"),
-    ("index", "Index"),
-    ("memory", "Memory"),
-    ("question", "Question"),
-    ("skill", "Skill"),
+    ("run_shell", "Bash"),
+    ("read_file", "Read"),
+    ("edit_file", "Edit"),
+    ("write_file", "Write"),
+    ("search_code", "Grep"),
+    ("search_files", "Glob"),
+    ("update_todo", "TodoWrite"),
+    ("fetch_url", "WebFetch"),
+    ("search_web", "WebSearch"),
+    ("run_task", "Task"),
+    ("edit_file_bulk", "MultiEdit"),
+    ("run_python", "CodeExecution"),
+    ("index_file", "Index"),
+    ("use_memory", "Memory"),
+    ("ask_user", "Question"),
+    ("load_skill", "Skill"),
 ];
 
 /// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
@@ -392,9 +394,10 @@ impl StreamSynth {
 }
 
 fn n00n_to_claude_tool_name(name: &str) -> &str {
+    let canonical = n00n_config::canonical_tool_name(name);
     TOOL_NAME_MAP
         .iter()
-        .find(|(m, _)| *m == name)
+        .find(|(m, _)| *m == canonical)
         .map_or(name, |(_, c)| *c)
 }
 
@@ -1275,24 +1278,32 @@ mod tests {
             .map_or(name, |(m, _)| *m)
     }
 
-    #[test_case("bash", "Bash")]
-    #[test_case("read", "Read")]
-    #[test_case("edit", "Edit")]
-    #[test_case("write", "Write")]
-    #[test_case("grep", "Grep")]
-    #[test_case("glob", "Glob")]
-    #[test_case("todo_write", "TodoWrite")]
-    #[test_case("webfetch", "WebFetch")]
-    #[test_case("websearch", "WebSearch")]
-    #[test_case("task", "Task")]
-    #[test_case("multiedit", "MultiEdit")]
-    #[test_case("code_execution", "CodeExecution")]
-    #[test_case("index", "Index")]
-    #[test_case("memory", "Memory")]
-    #[test_case("question", "Question")]
+    #[test_case("run_shell", "Bash")]
+    #[test_case("read_file", "Read")]
+    #[test_case("edit_file", "Edit")]
+    #[test_case("write_file", "Write")]
+    #[test_case("search_code", "Grep")]
+    #[test_case("search_files", "Glob")]
+    #[test_case("update_todo", "TodoWrite")]
+    #[test_case("fetch_url", "WebFetch")]
+    #[test_case("search_web", "WebSearch")]
+    #[test_case("run_task", "Task")]
+    #[test_case("edit_file_bulk", "MultiEdit")]
+    #[test_case("run_python", "CodeExecution")]
+    #[test_case("index_file", "Index")]
+    #[test_case("use_memory", "Memory")]
+    #[test_case("ask_user", "Question")]
     fn n00n_to_claude_roundtrip(n00n: &str, claude: &str) {
         assert_eq!(n00n_to_claude_tool_name(n00n), claude);
         assert_eq!(claude_to_n00n_tool_name(claude), n00n);
+    }
+
+    #[test_case("bash", "Bash")]
+    #[test_case("read", "Read")]
+    #[test_case("multiedit", "MultiEdit")]
+    #[test_case("code_execution", "CodeExecution")]
+    fn deprecated_alias_maps_to_same_claude_name(alias: &str, claude: &str) {
+        assert_eq!(n00n_to_claude_tool_name(alias), claude);
     }
 
     #[test]

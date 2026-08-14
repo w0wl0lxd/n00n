@@ -20,8 +20,8 @@ NEVER generate/guess URLs unless for programming help.
 # Tool usage
 
 - Tool results grow context. Minimize verbose calls; prefer compact results.
-- Use **batch** for 2+ independent reads/greps/globs. Never call sequentially.
-- Use **code_execution** for dependent/chained calls (e.g. glob then read matches) or filtering large outputs.
+- Use **run_batch** for 2+ independent reads/greps/globs. Never call sequentially.
+- Use **run_python** for dependent/chained calls (e.g. glob then read matches) or filtering large outputs.
 - Prefer **explore/index/arbor/codegraph/semblem** for codebase questions, then **read**, then **grep**, and **thoughtbox** for reasoning.
 {{tool_usage}}
 

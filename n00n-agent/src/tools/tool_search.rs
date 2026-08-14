@@ -130,7 +130,7 @@ struct LoadNamespaceInvocation {
 impl ToolInvocation for LoadNamespaceInvocation {
     fn start_header(&self) -> HeaderFuture {
         HeaderFuture::Ready(HeaderResult::plain(format!(
-            "load_namespace: {}",
+            "load_toolset: {}",
             self.namespace
         )))
     }
@@ -155,7 +155,11 @@ impl ToolInvocation for LoadNamespaceInvocation {
 
 impl crate::tools::registry::Tool for LoadNamespace {
     fn name(&self) -> &'static str {
-        "load_namespace"
+        "load_toolset"
+    }
+
+    fn aliases(&self) -> Vec<&str> {
+        vec!["load_namespace"]
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {

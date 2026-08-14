@@ -37,7 +37,7 @@ use crate::cancel::{CancelMap, CancelToken};
 use crate::mcp::McpSession;
 use crate::permissions::PermissionManager;
 use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
-use n00n_config::ToolOutputLines;
+use n00n_config::{ToolOutputLines, canonical_tool_name};
 use n00n_providers::RequestOptions;
 use n00n_providers::provider::Provider;
 use n00n_providers::{Model, ModelFamily, ModelPricing, ModelTier, OpenAiOptions};
@@ -60,10 +60,11 @@ pub enum ToolFilter {
 impl ToolFilter {
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
+        let name = canonical_tool_name(name);
         match self {
             Self::All => true,
-            Self::Only(allowed) => allowed.iter().any(|n| n == name),
-            Self::AllExcept(blocked) => !blocked.iter().any(|n| n == name),
+            Self::Only(allowed) => allowed.iter().any(|n| canonical_tool_name(n) == name),
+            Self::AllExcept(blocked) => !blocked.iter().any(|n| canonical_tool_name(n) == name),
         }
     }
 
@@ -72,7 +73,10 @@ impl ToolFilter {
         match self {
             Self::Only(mut allowed) => {
                 for name in names {
-                    if !allowed.contains(&name) {
+                    if !allowed
+                        .iter()
+                        .any(|held| canonical_tool_name(held) == canonical_tool_name(&name))
+                    {
                         allowed.push(name);
                     }
                 }
@@ -92,12 +96,19 @@ impl ToolFilter {
             Self::Only(allowed) => Self::Only(
                 allowed
                     .into_iter()
-                    .filter(|n| !names.iter().any(|x| *x == n))
+                    .filter(|n| {
+                        !names
+                            .iter()
+                            .any(|x| canonical_tool_name(x) == canonical_tool_name(n))
+                    })
                     .collect(),
             ),
             Self::AllExcept(mut blocked) => {
                 for &n in names {
-                    if !blocked.iter().any(|b| b == n) {
+                    if !blocked
+                        .iter()
+                        .any(|b| canonical_tool_name(b) == canonical_tool_name(n))
+                    {
                         blocked.push(n.to_owned());
                     }
                 }

@@ -1,5 +1,6 @@
 //! Active skill tool-policy enforcement for the agent dispatch path.
 
+use n00n_config::canonical_tool_name;
 use serde_json::Value;
 
 pub const SKILL_TOOL_NAME: &str = "load_skill";
@@ -118,7 +119,8 @@ pub fn normalize_tool_name(tool_name: &str) -> String {
     } else {
         tool_name.to_owned()
     };
-    as_internal.replace('-', "_").to_ascii_lowercase()
+    let normalized = as_internal.replace('-', "_").to_ascii_lowercase();
+    canonical_tool_name(&normalized).to_owned()
 }
 
 fn bare_tool_name(normalized: &str) -> Option<&str> {

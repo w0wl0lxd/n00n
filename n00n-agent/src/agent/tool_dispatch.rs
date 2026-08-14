@@ -34,13 +34,13 @@ const DOOM_LOOP_THRESHOLD: usize = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 const MCP_MUTATION_BLOCKED_IN_PLAN: &str =
     "MCP tool is not explicitly marked read-only and cannot run in plan mode";
-const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in plan mode";
+const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "run_python is not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
 const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
 const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers"];
-const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
+const BASH_BLOCKED_IN_PLAN: &str = "run_shell command is not provably read-only in plan mode";
 
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

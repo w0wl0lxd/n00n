@@ -15,46 +15,46 @@ const SECTIONS: &[(&str, &[&str])] = &[
     (
         "File Operations",
         &[
-            "bash",
-            "read",
-            "write",
-            "edit",
-            "multiedit",
-            "edit_lines",
-            "insert_lines",
-            "explore",
-            "glob",
-            "grep",
-            "index",
+            "run_shell",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "edit_file_bulk",
+            "edit_file_lines",
+            "insert_file_lines",
+            "explore_code",
+            "search_files",
+            "search_code",
+            "index_file",
             "view_image",
-            "codegraph",
-            "semblem",
-            "arbor",
+            "map_codegraph",
+            "search_text",
+            "map_code",
         ],
     ),
     (
         "Execution & Control",
-        &["batch", "code_execution", "question", "tmux"],
+        &["run_batch", "run_python", "ask_user", "tmux"],
     ),
     (
         "Agent & Knowledge",
         &[
-            "agent_list",
-            "agent_status",
-            "agent_control",
-            "blackboard",
-            "team",
-            "task",
-            "workflow",
-            "todo_write",
-            "memory",
-            "skill",
-            "tool_search",
-            "load_namespace",
-            "fusion_delegate",
+            "list_agents",
+            "get_agent",
+            "control_agent",
+            "use_blackboard",
+            "run_team",
+            "run_task",
+            "run_workflow",
+            "update_todo",
+            "use_memory",
+            "load_skill",
+            "search_tools",
+            "load_toolset",
+            "delegate_fusion",
         ],
     ),
-    ("Web", &["webfetch", "websearch"]),
+    ("Web", &["fetch_url", "search_web"]),
 ];
 
 struct ToolInfo {
@@ -222,7 +222,7 @@ fn redact_path(input: &str, target: &str, placeholder: &str) -> String {
 }
 
 /// Plugins bake env-specific values into their `description` at registration:
-/// `bash` interpolates `n00n.uv.cwd()` and `websearch` interpolates
+/// `run_shell` interpolates `n00n.uv.cwd()` and `search_web` interpolates
 /// `os.date("%Y-%m-%d")`. Scrub both so `gen-docs-check` is stable across
 /// machines and days. CWD is replaced before HOME so a cwd nested under ~
 /// doesn't get partially mangled.

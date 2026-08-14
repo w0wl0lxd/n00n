@@ -103,7 +103,7 @@ pub const EDIT_SUB_TOOLS: &[&str] = &["edit_lines", "insert_lines", "multiedit"]
 pub const FILE_WRITE_TOOLS: &[&str] = &[
     "write_file",
     "edit_file",
-    "edit_files",
+    "edit_file_bulk",
     "edit_file_lines",
     "insert_file_lines",
 ];

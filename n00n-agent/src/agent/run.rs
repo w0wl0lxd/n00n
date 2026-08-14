@@ -1049,8 +1049,8 @@ impl<'h> Agent<'h> {
     fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
         let mut dirty = false;
         for done in results {
-            match done.tool.as_ref() {
-                "tool_search" => {
+            match n00n_config::canonical_tool_name(done.tool.as_ref()) {
+                "search_tools" => {
                     let text = done.output.as_text();
                     if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) {
                         for item in items {
@@ -1061,7 +1061,7 @@ impl<'h> Agent<'h> {
                         }
                     }
                 }
-                "load_namespace" => {
+                "load_toolset" => {
                     let text = done.output.as_text();
                     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&text)
                         && let Some(ns) = obj.get("namespace").and_then(|v| v.as_str())

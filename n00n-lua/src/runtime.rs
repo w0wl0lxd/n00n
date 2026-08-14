@@ -68,7 +68,7 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
         match registry.register(&tool, &source) {
             Ok(()) => {}
             Err(RegistryError::NameConflict { name, .. })
-                if name == "tool_search" || name == "load_namespace" => {}
+                if name == "search_tools" || name == "load_toolset" => {}
             Err(e) => {
                 return Err(PluginError::Lua {
                     plugin: "builtin".to_owned(),
@@ -2095,6 +2095,7 @@ impl LuaRuntime {
             .map(|t| {
                 let tool: Arc<dyn Tool> = Arc::new(LuaTool {
                     name: Arc::clone(&t.name),
+                    aliases: t.aliases.clone(),
                     description: t.description.clone(),
                     schema: t.schema,
                     audience: t.audience,
