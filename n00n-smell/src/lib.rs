@@ -91,11 +91,17 @@ impl SmellIndex {
     }
 
     pub fn open_or_create(path: &Path, _config: &SearchConfig) -> Result<Self, SmellError> {
-        fs::create_dir_all(path)?;
+        fs::create_dir_all(path).map_err(|source| SmellError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let schema = build_schema();
         let index_path = path.join("tantivy_index");
         if !index_path.is_dir() {
-            fs::create_dir_all(&index_path)?;
+            fs::create_dir_all(&index_path).map_err(|source| SmellError::Io {
+                path: index_path.clone(),
+                source,
+            })?;
         }
         let directory = MmapDirectory::open(&index_path).map_err(|source| SmellError::Search {
             message: source.to_string(),
@@ -137,7 +143,10 @@ impl SmellIndex {
                 document_count: 0,
             });
         }
-        let raw = fs::read_to_string(metadata_path)?;
+        let raw = fs::read_to_string(&metadata_path).map_err(|source| SmellError::Io {
+            path: metadata_path,
+            source,
+        })?;
         let metadata: IndexMetadata =
             serde_json::from_str(&raw).map_err(|err| SmellError::Config {
                 message: err.to_string(),
@@ -153,7 +162,11 @@ impl SmellIndex {
         let raw = serde_json::to_string_pretty(&metadata).map_err(|err| SmellError::Config {
             message: err.to_string(),
         })?;
-        fs::write(self.path.join("metadata.json"), raw)?;
+        let metadata_path = self.path.join("metadata.json");
+        fs::write(&metadata_path, raw).map_err(|source| SmellError::Io {
+            path: metadata_path,
+            source,
+        })?;
         Ok(())
     }
 
@@ -183,9 +196,15 @@ impl SmellIndex {
         let index_path = self.path.join("tantivy_index");
         let schema = build_schema();
         if index_path.exists() {
-            fs::remove_dir_all(&index_path)?;
+            fs::remove_dir_all(&index_path).map_err(|source| SmellError::Io {
+                path: index_path.clone(),
+                source,
+            })?;
         }
-        fs::create_dir_all(&index_path)?;
+        fs::create_dir_all(&index_path).map_err(|source| SmellError::Io {
+            path: index_path.clone(),
+            source,
+        })?;
         let index = Index::create_in_dir(&index_path, schema.clone())?;
         *self = Self::from_parts(self.path.clone(), index, &schema)?;
 
@@ -488,17 +507,22 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
     Ok(smells)
 }
 
-fn language_for_path(path: &str) -> String {
-    Path::new(path)
-        .extension()
+fn language_for_path(path: &Path) -> String {
+    path.extension()
         .and_then(std::ffi::OsStr::to_str)
         .map_or_else(|| String::from("text"), str::to_ascii_lowercase)
 }
 
 fn acquire_lock(path: &Path) -> Result<File, SmellError> {
     let lock_path = path.join(".lock");
-    fs::create_dir_all(path)?;
-    let file = File::create(lock_path)?;
+    fs::create_dir_all(path).map_err(|source| SmellError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let file = File::create(&lock_path).map_err(|source| SmellError::Io {
+        path: lock_path,
+        source,
+    })?;
     file.try_lock_exclusive().map_err(|_| SmellError::Locked)?;
     Ok(file)
 }
