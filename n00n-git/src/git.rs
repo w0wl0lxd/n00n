@@ -224,10 +224,12 @@ pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
 
         let parent_ids: Vec<_> = commit.parent_ids().collect();
         if let Some(parent_id) = parent_ids.first() {
-            current = repo
-                .find_object(*parent_id)
-                .ok()
-                .and_then(|obj| obj.try_into_commit().ok());
+            let parent_obj = repo.find_object(*parent_id).map_err(|e| {
+                GitError::GitOperation(format!("failed to find parent object: {e}"))
+            })?;
+            current = Some(parent_obj.try_into_commit().map_err(|e| {
+                GitError::GitOperation(format!("parent object is not a commit: {e}"))
+            })?);
         } else {
             break;
         }
