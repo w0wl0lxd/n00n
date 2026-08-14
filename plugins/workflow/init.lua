@@ -61,7 +61,7 @@ local ASYNC_RUNTIME_MIN_TIMEOUT_SECS = 60
 
 local description = [[Run sandboxed Lua workflow for multi-stage agent orchestration.
 
-Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item, and also accepts pipeline(items, stage1, stage2, ...); phase(name, fn), log(...), inputs.
+Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item, and also accepts pipeline(items, stage1, stage2, ..., opts?); phase(name, fn), log(...), inputs.
 
 `inputs` is `{}` when omitted. Lua tables have no `.map`; use `pipeline(items, stages)` or `ipairs`. No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, hard maximum 64) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
 
