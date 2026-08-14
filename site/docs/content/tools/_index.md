@@ -465,7 +465,7 @@ Local git operations via n00n-git.
 | `target` | string | no |  |
 | `command` | string | yes |  |
 | `file` | string | no |  |
-| `files` | array | no |  |
+| `files` | array of strings | no |  |
 | `ref_a` | string | no |  |
 
 ### `github` *(lua plugin)*
