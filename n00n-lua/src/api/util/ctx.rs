@@ -184,6 +184,8 @@ impl LuaCtx {
             cancel,
             tool_output_lines: ToolOutputLines::default(),
             finish_tx: None,
+            active: Arc::new(AtomicBool::new(true)),
+            plugin_state: None,
         }
     }
 
