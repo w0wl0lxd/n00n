@@ -1881,4 +1881,195 @@ mod tests {
         assert_eq!(result[0].id, "opencode/free-model");
         assert_eq!(result[0].pricing.as_ref().unwrap().input, 0.0);
     }
+
+    // --- Live API checks ---
+    //
+    // These hit the real OpenCode Zen / Go endpoints and are skipped (not
+    // failed) when `OPENCODE_API_KEY` is absent, so CI and contributors
+    // without a key still get a green run. Run explicitly with:
+    //   OPENCODE_API_KEY=... cargo nextest run -p n00n-providers live_opencode
+
+    /// Returns `None` (meaning "skip this test") unless a non-blank
+    /// `OPENCODE_API_KEY` is present in the environment.
+    fn live_key_or_skip(test_name: &str) -> Option<String> {
+        match std::env::var("OPENCODE_API_KEY") {
+            Ok(key) if !key.trim().is_empty() => Some(key),
+            _ => {
+                eprintln!("skipping {test_name}: OPENCODE_API_KEY not set");
+                None
+            }
+        }
+    }
+
+    /// Live model discovery plus a full completion against OpenCode Zen
+    /// (`opencode/<model>`), checking both the final assembled message and
+    /// that streamed `TextDelta` events were actually emitted along the way.
+    ///
+    /// `#[ignore]`d so a default `cargo nextest run` reports it as ignored,
+    /// never as a silent pass — CI has no key and must never read a
+    /// vacuously-skipped test as evidence the provider works.
+    #[test]
+    #[ignore = "requires OPENCODE_API_KEY; run with --run-ignored ignored-only"]
+    fn live_opencode_zen_completion() {
+        let Some(_key) = live_key_or_skip("live_opencode_zen_completion") else {
+            return;
+        };
+
+        smol::block_on(async {
+            let provider = Opencode::new(super::super::Timeouts::default())
+                .expect("construct Opencode provider");
+
+            let models = provider
+                .do_list_models()
+                .await
+                .expect("live model discovery against opencode.ai/zen");
+            assert!(
+                models.iter().any(|m| m.id == "opencode/gpt-5-nano"),
+                "expected the Zen catalog to include opencode/gpt-5-nano among {} models",
+                models.len()
+            );
+
+            let model = Model::from_spec("opencode/gpt-5-nano").expect("resolve zen model spec");
+            let messages = vec![Message::user(
+                "Reply with exactly the word: pong".to_string(),
+            )];
+            let (tx, rx) = flume::unbounded();
+            let response = provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::new(),
+                    &json!([]),
+                    &tx,
+                    RequestOptions::default(),
+                    None,
+                )
+                .await
+                .expect("live completion against opencode.ai/zen");
+
+            let text: String = response
+                .message
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    crate::ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(!text.is_empty(), "expected non-empty completion text");
+
+            let saw_delta = rx
+                .drain()
+                .any(|e| matches!(e, ProviderEvent::TextDelta { .. }));
+            assert!(saw_delta, "expected at least one streamed TextDelta event");
+        });
+    }
+
+    /// Live completion against OpenCode Go (`opencode/opencode-go/<model>`),
+    /// a separate models.dev catalog entry with its own base URL
+    /// (`https://opencode.ai/zen/go/v1`) and curated model set, reached
+    /// through the same `OPENCODE_API_KEY`.
+    ///
+    /// `#[ignore]`d — see `live_opencode_zen_completion` for why.
+    #[test]
+    #[ignore = "requires OPENCODE_API_KEY; run with --run-ignored ignored-only"]
+    fn live_opencode_go_completion() {
+        let Some(_key) = live_key_or_skip("live_opencode_go_completion") else {
+            return;
+        };
+
+        smol::block_on(async {
+            let provider = Opencode::new(super::super::Timeouts::default())
+                .expect("construct Opencode provider");
+
+            let model = Model::from_spec("opencode/opencode-go/deepseek-v4-flash")
+                .expect("resolve opencode-go model spec");
+            let messages = vec![Message::user(
+                "Reply with exactly the word: pong".to_string(),
+            )];
+            let (tx, _rx) = flume::unbounded();
+            let response = provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::new(),
+                    &json!([]),
+                    &tx,
+                    RequestOptions::default(),
+                    None,
+                )
+                .await
+                .expect("live completion against opencode.ai/zen/go");
+
+            let has_text = response
+                .message
+                .content
+                .iter()
+                .any(|b| matches!(b, crate::ContentBlock::Text { .. }));
+            assert!(
+                has_text,
+                "expected text content from opencode-go completion, got: {:?}",
+                response.message.content
+            );
+        });
+    }
+
+    /// Live tool-call round trip against OpenCode Zen: the model is asked to
+    /// invoke a tool, and both the assembled `ToolUse` block and the
+    /// streamed `ToolUseStart` event are checked.
+    ///
+    /// `#[ignore]`d — see `live_opencode_zen_completion` for why.
+    #[test]
+    #[ignore = "requires OPENCODE_API_KEY; run with --run-ignored ignored-only"]
+    fn live_opencode_zen_tool_call() {
+        let Some(_key) = live_key_or_skip("live_opencode_zen_tool_call") else {
+            return;
+        };
+
+        smol::block_on(async {
+            let provider = Opencode::new(super::super::Timeouts::default())
+                .expect("construct Opencode provider");
+
+            let model = Model::from_spec("opencode/gpt-5-nano").expect("resolve zen model spec");
+            let messages = vec![Message::user(
+                "Call the get_weather tool for Paris. Use the tool, do not answer in text."
+                    .to_string(),
+            )];
+            let tools = json!([{
+                "name": "get_weather",
+                "description": "Get the current weather for a city",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"]
+                }
+            }]);
+            let (tx, rx) = flume::unbounded();
+            let response = provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::new(),
+                    &tools,
+                    &tx,
+                    RequestOptions::default(),
+                    None,
+                )
+                .await
+                .expect("live tool-call completion against opencode.ai/zen");
+
+            let tool_uses: Vec<_> = response.message.tool_uses().collect();
+            assert!(
+                !tool_uses.is_empty(),
+                "expected at least one tool call, got content: {:?}",
+                response.message.content
+            );
+            assert_eq!(tool_uses[0].1, "get_weather");
+
+            let saw_start = rx.drain().any(
+                |e| matches!(e, ProviderEvent::ToolUseStart { name, .. } if name == "get_weather"),
+            );
+            assert!(saw_start, "expected a ToolUseStart event for get_weather");
+        });
+    }
 }
