@@ -27,7 +27,7 @@ use n00n_config::RawConfig;
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
 use crate::api::firecrawl::BundledCapability;
-use crate::api::r#fn::{JobOwner, JobSpec, JobStore, deliver_job_event};
+use crate::api::r#fn::{JobOwner, JobStore, deliver_job_event};
 use crate::api::keymap::KeymapReader;
 use crate::api::keymap::{KeymapStore, KeymapWriter};
 use crate::api::options::{PluginOptionSpecs, PluginOpts, collect_plugin_options};
@@ -3437,6 +3437,7 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::r#fn::JobSpec;
     use crate::api::tool::ToolCallReply;
 
     const ASYNC_CANCEL_TEST_TIMEOUT: Duration = Duration::from_secs(2);

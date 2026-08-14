@@ -615,6 +615,7 @@ mod tests {
     const OWNER_TASK_ID: u64 = 1;
     const FOREIGN_TASK_ID: u64 = 2;
     const UNKNOWN_JOB_ID: u32 = 999;
+    #[cfg(unix)]
     const SLEEP_CMD: &str = "sleep 30";
     const EVENT_DEADLINE: Duration = Duration::from_secs(5);
 
