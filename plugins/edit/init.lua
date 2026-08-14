@@ -6,6 +6,10 @@ local replace_lines = require("edit_helpers").replace_lines
 
 local SNIPPET_MAX_CHARS = 32
 local FALLBACK_VIEW_LINES = 10
+-- A diff never truncates (see diff_view below), but `math.huge` risks a NaN
+-- from `% math.huge` and grows buffers without bound on a pathological
+-- input. This cap is far past any real diff while staying a finite number.
+local DIFF_VIEW_MAX_LINES = 1000000
 
 local EDIT_LINES_DESCRIPTION =
   "Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete."
@@ -143,7 +147,11 @@ end
 -- ever, a diff is exactly the change and hiding part of it lies.
 local function diff_view(blocks, path)
   local buf = n00n.ui.buf()
-  local view = ToolView.new(buf, { max_lines = math.huge, keep = "head" })
+  local view = ToolView.new(buf, {
+    max_lines = DIFF_VIEW_MAX_LINES,
+    max_expand_lines = DIFF_VIEW_MAX_LINES,
+    keep = "head",
+  })
   resolve_block_nrs(blocks, path)
   local w = gutter_width(blocks)
   local fmt = w > 0 and ("%" .. w .. "s ") or nil
@@ -278,6 +286,15 @@ n00n.api.register_tool({
       return { llm_output = "error: " .. secret_reason .. "; provide justification to edit", is_error = true }
     end
 
+    -- Also check unescaped version for secret patterns
+    local unescaped = fuzzy_replace.unescape(input.new_string)
+    if unescaped ~= input.new_string then
+      local unescaped_reason = secret_check.reason(unescaped)
+      if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return { llm_output = "error: " .. unescaped_reason .. "; provide justification to edit", is_error = true }
+      end
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return fuzzy_replace.replace(content, input.old_string, input.new_string, input.replace_all or false)
     end)
@@ -354,9 +371,25 @@ register_tool_if(opts.multiedit, {
       local secret_reason = secret_check.reason(edit.new_string)
       if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
         return {
-          llm_output = "error: edits[" .. i .. "] " .. secret_reason .. "; provide justification to multiedit",
+          llm_output = "error: edits[" .. (i - 1) .. "] " .. secret_reason .. "; provide justification to multiedit",
           is_error = true,
         }
+      end
+
+      -- Also check unescaped version for secret patterns
+      local unescaped = fuzzy_replace.unescape(edit.new_string)
+      if unescaped ~= edit.new_string then
+        local unescaped_reason = secret_check.reason(unescaped)
+        if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+          return {
+            llm_output = "error: edits["
+              .. (i - 1)
+              .. "] "
+              .. unescaped_reason
+              .. "; provide justification to multiedit",
+            is_error = true,
+          }
+        end
       end
     end
 
@@ -432,6 +465,15 @@ register_tool_if(opts.edit_lines, {
       return { llm_output = "error: " .. secret_reason .. "; provide justification to edit_lines", is_error = true }
     end
 
+    -- Also check unescaped version for secret patterns
+    local unescaped = fuzzy_replace.unescape(input.new_string)
+    if unescaped ~= input.new_string then
+      local unescaped_reason = secret_check.reason(unescaped)
+      if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return { llm_output = "error: " .. unescaped_reason .. "; provide justification to edit_lines", is_error = true }
+      end
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return replace_lines(content, input.start, input["end"], input.new_string)
     end)
@@ -485,6 +527,18 @@ register_tool_if(opts.insert_lines, {
     local secret_reason = secret_check.reason(input.new_string)
     if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
       return { llm_output = "error: " .. secret_reason .. "; provide justification to insert_lines", is_error = true }
+    end
+
+    -- Also check unescaped version for secret patterns
+    local unescaped = fuzzy_replace.unescape(input.new_string)
+    if unescaped ~= input.new_string then
+      local unescaped_reason = secret_check.reason(unescaped)
+      if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return {
+          llm_output = "error: " .. unescaped_reason .. "; provide justification to insert_lines",
+          is_error = true,
+        }
+      end
     end
 
     local result, err = apply_edit(input.path, ctx, function(content)
