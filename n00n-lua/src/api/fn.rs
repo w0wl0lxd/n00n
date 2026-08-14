@@ -3,6 +3,7 @@ use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -11,9 +12,11 @@ use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::fs::expand_tilde;
 use crate::plugin_permissions::PluginPermissions;
-use crate::runtime::with_task_jobs;
+use crate::runtime::{active_task_id, with_jobs};
 
 const READER_BUF_SIZE: usize = 8 * 1024;
+const OWNER_TASK: &str = "task";
+const OWNER_PLUGIN: &str = "plugin";
 
 #[derive(Clone)]
 pub(crate) enum JobSpec {
@@ -28,18 +31,67 @@ pub(crate) enum JobEvent {
     Exit(i32),
 }
 
+/// Lifetime of a job. Task-owned jobs die with the call that started them;
+/// plugin-owned jobs survive until their plugin unloads or reloads.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum JobOwner {
+    Task(u64),
+    Plugin(Arc<str>),
+}
+
 struct JobMeta {
+    owner: JobOwner,
     pid: u32,
-    alive: bool,
     on_stdout: Option<RegistryKey>,
     on_stderr: Option<RegistryKey>,
     on_exit: Option<RegistryKey>,
     event_rx: Option<flume::Receiver<JobEvent>>,
 }
 
+impl JobMeta {
+    fn can_access(&self, task_id: Option<u64>, plugin: &str) -> bool {
+        match &self.owner {
+            JobOwner::Task(owner_id) => task_id == Some(*owner_id),
+            JobOwner::Plugin(owner_plugin) => owner_plugin.as_ref() == plugin,
+        }
+    }
+}
+
 pub(crate) struct JobStore {
     jobs: HashMap<u32, JobMeta>,
     next_id: u32,
+}
+
+/// Holds a receiver borrowed out of the store for the duration of a
+/// `jobwait`, and hands it back on drop so a timed-out or cancelled wait
+/// does not strand the job's remaining events.
+struct CheckedOutReceiver {
+    lua: Lua,
+    job_id: u32,
+    receiver: flume::Receiver<JobEvent>,
+}
+
+impl CheckedOutReceiver {
+    fn new(lua: &Lua, job_id: u32, receiver: flume::Receiver<JobEvent>) -> Self {
+        Self {
+            lua: lua.clone(),
+            job_id,
+            receiver,
+        }
+    }
+
+    fn get(&self) -> &flume::Receiver<JobEvent> {
+        &self.receiver
+    }
+}
+
+impl Drop for CheckedOutReceiver {
+    fn drop(&mut self) {
+        let receiver = self.receiver.clone();
+        with_jobs(&self.lua, |store| {
+            store.restore_receiver(self.job_id, receiver);
+        });
+    }
 }
 
 impl JobStore {
@@ -53,6 +105,7 @@ impl JobStore {
     #[allow(clippy::needless_pass_by_value)]
     pub fn start(
         &mut self,
+        owner: JobOwner,
         spec: JobSpec,
         cwd: Option<String>,
         env: Option<HashMap<String, String>>,
@@ -156,8 +209,8 @@ impl JobStore {
         self.jobs.insert(
             id,
             JobMeta {
+                owner,
                 pid,
-                alive: true,
                 on_stdout,
                 on_stderr,
                 on_exit,
@@ -168,8 +221,8 @@ impl JobStore {
         Ok(id)
     }
 
-    pub fn has_alive_jobs(&self) -> bool {
-        self.jobs.values().any(|j| j.alive)
+    pub fn is_empty(&self, owner: &JobOwner) -> bool {
+        !self.jobs.values().any(|job| job.owner == *owner)
     }
 
     pub fn callback_key(&self, job_id: u32, event: &JobEvent) -> Option<&RegistryKey> {
@@ -181,15 +234,37 @@ impl JobStore {
         }
     }
 
-    pub fn take_receiver(&mut self, job_id: u32) -> Option<flume::Receiver<JobEvent>> {
-        let meta = self.jobs.get_mut(&job_id)?;
-        meta.event_rx.take()
+    pub fn take_receiver(
+        &mut self,
+        job_id: u32,
+        task_id: Option<u64>,
+        plugin: &str,
+    ) -> Option<flume::Receiver<JobEvent>> {
+        let job = self.jobs.get_mut(&job_id)?;
+        job.can_access(task_id, plugin)
+            .then(|| job.event_rx.take())?
     }
 
-    pub fn drain_events(&self, buf: &mut Vec<(u32, JobEvent)>) {
+    pub fn restore_receiver(&mut self, job_id: u32, receiver: flume::Receiver<JobEvent>) {
+        if let Some(job) = self.jobs.get_mut(&job_id)
+            && job.event_rx.is_none()
+        {
+            job.event_rx = Some(receiver);
+        }
+    }
+
+    pub fn drain_events(&self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
+        self.drain_matching(buf, |job| job.owner == *owner);
+    }
+
+    pub fn drain_plugin_events(&self, buf: &mut Vec<(u32, JobEvent)>) {
+        self.drain_matching(buf, |job| matches!(job.owner, JobOwner::Plugin(_)));
+    }
+
+    fn drain_matching(&self, buf: &mut Vec<(u32, JobEvent)>, keep: impl Fn(&JobMeta) -> bool) {
         buf.clear();
-        for (&id, meta) in &self.jobs {
-            if let Some(ref rx) = meta.event_rx {
+        for (&id, job) in self.jobs.iter().filter(|(_, job)| keep(job)) {
+            if let Some(ref rx) = job.event_rx {
                 while let Ok(event) = rx.try_recv() {
                     buf.push((id, event));
                 }
@@ -197,36 +272,53 @@ impl JobStore {
         }
     }
 
-    pub fn mark_dead(&mut self, job_id: u32) {
-        if let Some(meta) = self.jobs.get_mut(&job_id) {
-            meta.alive = false;
-        }
-    }
-
-    pub fn kill(&mut self, job_id: u32) {
-        if let Some(meta) = self.jobs.get_mut(&job_id)
-            && meta.alive
+    pub fn kill(&mut self, job_id: u32, task_id: Option<u64>, plugin: &str) {
+        if let Some(job) = self.jobs.get_mut(&job_id)
+            && job.can_access(task_id, plugin)
         {
-            kill_job(meta);
+            kill_job(job);
         }
     }
 
-    pub fn kill_all(&mut self) {
-        for meta in self.jobs.values_mut() {
-            if meta.alive {
-                kill_job(meta);
+    /// Kill and forget every job belonging to {owner}. Used when a task
+    /// scope ends and when a plugin is unloaded or reloaded.
+    pub fn kill_owner(&mut self, lua: &Lua, owner: &JobOwner) {
+        let ids = self
+            .jobs
+            .iter()
+            .filter_map(|(&id, job)| (job.owner == *owner).then_some(id))
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.remove(lua, id, true);
+        }
+    }
+
+    /// Forget a job that already exited, releasing its callback keys.
+    pub fn finish(&mut self, lua: &Lua, job_id: u32) {
+        self.remove(lua, job_id, false);
+    }
+
+    fn remove(&mut self, lua: &Lua, job_id: u32, kill: bool) {
+        if let Some(mut job) = self.jobs.remove(&job_id) {
+            if kill {
+                kill_job(&mut job);
             }
-        }
-    }
-
-    pub fn clear(&mut self, lua: &Lua) {
-        for (_, meta) in self.jobs.drain() {
-            for key in [meta.on_stdout, meta.on_stderr, meta.on_exit]
+            for key in [job.on_stdout, job.on_stderr, job.on_exit]
                 .into_iter()
                 .flatten()
             {
-                lua.remove_registry_value(key).ok();
+                if let Err(error) = lua.remove_registry_value(key) {
+                    tracing::warn!(job_id, %error, "failed to drop job callback key");
+                }
             }
+        }
+    }
+}
+
+impl Drop for JobStore {
+    fn drop(&mut self) {
+        for job in self.jobs.values_mut() {
+            kill_job(job);
         }
     }
 }
@@ -269,6 +361,9 @@ fn kill_job(meta: &mut JobMeta) {
 ///   `on_stdout` (function?) called with `(job_id, line)` for each stdout line.
 ///   `on_stderr` (function?) called with `(job_id, line)` for each stderr line.
 ///   `on_exit` (function?) called with `(job_id, code)` when the process finishes.
+///   `owner` (string?) job lifetime. `"task"` (default) ends the job with
+///     the current call. `"plugin"` keeps it alive until the plugin unloads
+///     or reloads.
 /// @return (integer) Job id.
 /// @example
 /// -- String mode (shell features available)
@@ -279,9 +374,11 @@ fn kill_job(meta: &mut JobMeta) {
 /// })
 /// -- List mode (preserves argument quoting)
 /// local id = n00n.fn.jobstart({ "git", "commit", "-m", "feat: preserve spaces" }, opts)
+/// -- Plugin-owned watcher that outlives the call that started it
+/// local watcher = n00n.fn.jobstart("tail -F app.log", { owner = "plugin" })
 #[lua_fn(guard = Run)]
 #[allow(clippy::needless_pass_by_value)]
-fn jobstart(lua: &Lua, cmd: Value, opts: Option<Table>) -> LuaResult<u32> {
+fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>) -> LuaResult<u32> {
     let spec = match cmd {
         Value::String(s) => {
             let cmd = s.to_str()?.to_string();
@@ -314,6 +411,25 @@ fn jobstart(lua: &Lua, cmd: Value, opts: Option<Table>) -> LuaResult<u32> {
         }
     };
 
+    let owner_name: Option<String> = opts
+        .as_ref()
+        .map(|opts| opts.get("owner"))
+        .transpose()?
+        .flatten();
+    let owner = match owner_name.as_deref() {
+        None | Some(OWNER_TASK) => active_task_id(lua).map(JobOwner::Task).ok_or_else(|| {
+            mlua::Error::runtime(format!(
+                "jobstart: no active task; use owner = {OWNER_PLUGIN:?}"
+            ))
+        })?,
+        Some(OWNER_PLUGIN) => JobOwner::Plugin(Arc::clone(&plugin)),
+        Some(other) => {
+            return Err(mlua::Error::runtime(format!(
+                "jobstart: unknown owner {other:?}; expected {OWNER_TASK:?} or {OWNER_PLUGIN:?}"
+            )));
+        }
+    };
+
     let (cwd, env, on_stdout, on_stderr, on_exit) = match opts {
         Some(ref opts) => {
             let cwd: Option<String> = opts.get("cwd").ok();
@@ -341,8 +457,8 @@ fn jobstart(lua: &Lua, cmd: Value, opts: Option<Table>) -> LuaResult<u32> {
         None => (None, None, None, None, None),
     };
 
-    with_task_jobs(lua, |store| {
-        store.start(spec, cwd, env, on_stdout, on_stderr, on_exit)
+    with_jobs(lua, |store| {
+        store.start(owner, spec, cwd, env, on_stdout, on_stderr, on_exit)
     })
     .map_err(mlua::Error::runtime)
 }
@@ -355,8 +471,9 @@ fn jobstart(lua: &Lua, cmd: Value, opts: Option<Table>) -> LuaResult<u32> {
 /// @example
 /// n00n.fn.jobstop(id)
 #[lua_fn(guard = Run)]
-fn jobstop(lua: &Lua, job_id: u32) -> LuaResult<()> {
-    with_task_jobs(lua, |store| store.kill(job_id));
+fn jobstop(lua: &Lua, #[ctx] plugin: Arc<str>, job_id: u32) -> LuaResult<()> {
+    let task_id = active_task_id(lua);
+    with_jobs(lua, |store| store.kill(job_id, task_id, &plugin));
     Ok(())
 }
 
@@ -378,9 +495,16 @@ fn jobstop(lua: &Lua, job_id: u32) -> LuaResult<()> {
 ///   print(result.stdout)
 /// end
 #[lua_fn(guard = Run)]
-async fn jobwait(lua: Lua, job_id: u32, timeout_ms: Option<u64>) -> LuaResult<Value> {
-    let rx = with_task_jobs(&lua, |store| store.take_receiver(job_id))
+async fn jobwait(
+    lua: Lua,
+    #[ctx] plugin: Arc<str>,
+    job_id: u32,
+    timeout_ms: Option<u64>,
+) -> LuaResult<Value> {
+    let task_id = active_task_id(&lua);
+    let receiver = with_jobs(&lua, |store| store.take_receiver(job_id, task_id, &plugin))
         .ok_or_else(|| mlua::Error::runtime("unknown job id or already waited"))?;
+    let rx = CheckedOutReceiver::new(&lua, job_id, receiver);
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or_else(|| 30_000));
     let deadline = smol::Timer::after(timeout);
@@ -390,7 +514,7 @@ async fn jobwait(lua: Lua, job_id: u32, timeout_ms: Option<u64>) -> LuaResult<Va
     let mut stderr_lines = Vec::new();
 
     let exit_code = loop {
-        let event = futures_lite::future::or(async { rx.recv_async().await.ok() }, async {
+        let event = futures_lite::future::or(async { rx.get().recv_async().await.ok() }, async {
             (&mut deadline).await;
             None
         })
@@ -414,15 +538,18 @@ async fn jobwait(lua: Lua, job_id: u32, timeout_ms: Option<u64>) -> LuaResult<Va
     Ok(mlua::Value::Table(result))
 }
 
-/// Fire the job's Lua callback for {event} (if any) and mark the job
-/// dead on exit. Shared by `jobwait` and the async dispatch loop so
-/// both deliver events identically.
+/// Fire the job's Lua callback for {event} (if any) and forget the job
+/// on exit. Shared by `jobwait` and the async dispatch loop so both
+/// deliver events identically.
 pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> LuaResult<()> {
-    let callback = with_task_jobs(lua, |store| {
+    let callback = with_jobs(lua, |store| {
         store
             .callback_key(job_id, event)
             .and_then(|key| lua.registry_value::<Function>(key).ok())
     });
+    if let JobEvent::Exit(_) = event {
+        with_jobs(lua, |store| store.finish(lua, job_id));
+    }
     if let Some(callback) = callback {
         let arg = match event {
             JobEvent::Stdout(line) | JobEvent::Stderr(line) => {
@@ -431,9 +558,6 @@ pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> Lua
             JobEvent::Exit(code) => Value::Integer(i64::from(*code)),
         };
         callback.call::<()>((job_id, arg))?;
-    }
-    if let JobEvent::Exit(_) = event {
-        with_task_jobs(lua, |store| store.mark_dead(job_id));
     }
     Ok(())
 }
@@ -464,13 +588,21 @@ lua_table! {
     /// Job functions need the `run` permission. `executable` needs the `env`
     /// permission.
     ///
+    /// A job belongs to the call that started it unless you pass
+    /// `owner = "plugin"`, which keeps it running until the plugin unloads
+    /// or reloads. Only the owning task or plugin can stop or wait on a job.
+    ///
     /// ```lua
     /// local id = n00n.fn.jobstart("git status", {
     ///   on_exit = function(code) print("done: " .. code) end,
     /// })
     /// ```
-    "n00n.fn" => pub(crate) fn create_fn_table(perms: &PluginPermissions), DOCS [
-        jobstart(perms), jobstop(perms), jobwait(perms), executable(perms),
+    "n00n.fn" => pub(crate) fn create_fn_table(
+        plugin: Arc<str>,
+        perms: &PluginPermissions,
+    ), DOCS [
+        jobstart(perms, plugin), jobstop(perms, plugin), jobwait(perms, plugin),
+        executable(perms),
     ]
 }
 
@@ -478,14 +610,32 @@ lua_table! {
 mod tests {
     use super::*;
 
+    const TEST_PLUGIN: &str = "test-plugin";
+    const OTHER_PLUGIN: &str = "other-plugin";
+    const OWNER_TASK_ID: u64 = 1;
+    const FOREIGN_TASK_ID: u64 = 2;
+    const UNKNOWN_JOB_ID: u32 = 999;
+    #[cfg(unix)]
+    const SLEEP_CMD: &str = "sleep 30";
+    const EVENT_DEADLINE: Duration = Duration::from_secs(5);
+
     fn make_store() -> JobStore {
         JobStore::new()
     }
 
-    fn start_echo(store: &mut JobStore) -> u32 {
+    fn task_owner(id: u64) -> JobOwner {
+        JobOwner::Task(id)
+    }
+
+    fn plugin_owner() -> JobOwner {
+        JobOwner::Plugin(Arc::from(TEST_PLUGIN))
+    }
+
+    fn start_shell(store: &mut JobStore, owner: JobOwner, cmd: &str) -> u32 {
         store
             .start(
-                JobSpec::Shell("echo hello".to_string()),
+                owner,
+                JobSpec::Shell(cmd.to_string()),
                 None,
                 None,
                 None,
@@ -495,10 +645,48 @@ mod tests {
             .unwrap()
     }
 
+    fn start_echo(store: &mut JobStore) -> u32 {
+        start_shell(store, task_owner(OWNER_TASK_ID), "echo hello")
+    }
+
+    #[cfg(unix)]
+    fn group_alive(pid: u32) -> bool {
+        use rustix::process::{Pid, test_kill_process_group};
+        i32::try_from(pid)
+            .ok()
+            .and_then(Pid::from_raw)
+            .is_some_and(|pid| test_kill_process_group(pid).is_ok())
+    }
+
+    #[cfg(unix)]
+    fn wait_for_group_exit(pid: u32) -> bool {
+        (0..500).any(|_| {
+            thread::sleep(Duration::from_millis(10));
+            !group_alive(pid)
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_the_store_kills_its_jobs() {
+        let mut store = make_store();
+        let id = start_shell(&mut store, task_owner(OWNER_TASK_ID), SLEEP_CMD);
+        let pid = store.jobs[&id].pid;
+        assert!(group_alive(pid), "job should be running before the drop");
+
+        drop(store);
+
+        assert!(
+            wait_for_group_exit(pid),
+            "dropping the store must not orphan the process group"
+        );
+    }
+
     #[test]
     fn start_invalid_cwd_returns_error() {
         let mut store = make_store();
         let result = store.start(
+            task_owner(OWNER_TASK_ID),
             JobSpec::Shell("echo hello".to_string()),
             Some("/nonexistent_dir_abc_xyz_123".into()),
             None,
@@ -510,41 +698,130 @@ mod tests {
     }
 
     #[test]
-    fn has_alive_jobs_tracks_state() {
+    fn finishing_a_job_removes_it() {
+        let lua = Lua::new();
         let mut store = make_store();
-        assert!(!store.has_alive_jobs());
+        let owner = task_owner(OWNER_TASK_ID);
+        assert!(store.is_empty(&owner));
 
         let id = start_echo(&mut store);
-        assert!(store.has_alive_jobs());
+        assert!(!store.is_empty(&owner));
+        let rx = store
+            .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+            .unwrap();
+        while !matches!(rx.recv_timeout(EVENT_DEADLINE).unwrap(), JobEvent::Exit(_)) {}
 
-        store.mark_dead(id);
-        assert!(!store.has_alive_jobs());
+        store.finish(&lua, id);
+        assert!(store.is_empty(&owner));
     }
 
     #[test]
-    fn noop_on_nonexistent_or_dead_jobs() {
+    fn unknown_job_operations_are_noops() {
         let mut store = make_store();
-        store.mark_dead(999);
-        store.kill(999);
-
-        let id = start_echo(&mut store);
-        store.mark_dead(id);
-        store.kill(id);
-
-        assert!(store.callback_key(999, &JobEvent::Exit(0)).is_none());
+        store.kill(UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        assert!(
+            store
+                .take_receiver(UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN)
+                .is_none()
+        );
+        assert!(
+            store
+                .callback_key(UNKNOWN_JOB_ID, &JobEvent::Exit(0))
+                .is_none()
+        );
     }
 
     #[test]
     fn take_receiver_lifecycle() {
         let mut store = make_store();
-        assert!(store.take_receiver(999).is_none());
-
         let id = start_echo(&mut store);
-        assert!(store.take_receiver(id).is_some());
         assert!(
-            store.take_receiver(id).is_none(),
+            store
+                .take_receiver(id, Some(FOREIGN_TASK_ID), TEST_PLUGIN)
+                .is_none(),
+            "another task must not access the job"
+        );
+        assert!(
+            store
+                .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+                .is_some()
+        );
+        assert!(
+            store
+                .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+                .is_none(),
             "second take should fail (receiver already moved)"
         );
+    }
+
+    #[test]
+    fn restore_receiver_hands_the_events_back() {
+        let mut store = make_store();
+        let id = start_echo(&mut store);
+        let rx = store
+            .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+            .unwrap();
+
+        store.restore_receiver(id, rx);
+
+        assert!(
+            store
+                .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+                .is_some(),
+            "a restored receiver can be taken again"
+        );
+    }
+
+    #[test]
+    fn plugin_owned_jobs_are_reachable_only_by_their_plugin() {
+        let mut store = make_store();
+        let id = start_shell(&mut store, plugin_owner(), "echo hello");
+
+        assert!(
+            store
+                .take_receiver(id, Some(OWNER_TASK_ID), OTHER_PLUGIN)
+                .is_none()
+        );
+        assert!(store.take_receiver(id, None, TEST_PLUGIN).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_requires_owner_access() {
+        let lua = Lua::new();
+        let mut store = make_store();
+        let id = start_shell(&mut store, task_owner(OWNER_TASK_ID), SLEEP_CMD);
+        let pid = store.jobs[&id].pid;
+
+        store.kill(id, Some(FOREIGN_TASK_ID), TEST_PLUGIN);
+        assert!(group_alive(pid), "a foreign task must not kill the job");
+
+        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        assert!(wait_for_group_exit(pid));
+        store.finish(&lua, id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_cleanup_is_isolated() {
+        let lua = Lua::new();
+        let mut store = make_store();
+        let task = task_owner(OWNER_TASK_ID);
+        let plugin = plugin_owner();
+        let task_job = start_shell(&mut store, task.clone(), SLEEP_CMD);
+        let plugin_job = start_shell(&mut store, plugin.clone(), SLEEP_CMD);
+        let task_pid = store.jobs[&task_job].pid;
+        let plugin_pid = store.jobs[&plugin_job].pid;
+
+        store.kill_owner(&lua, &task);
+
+        assert!(store.is_empty(&task));
+        assert!(!store.is_empty(&plugin));
+        assert!(wait_for_group_exit(task_pid));
+        assert!(group_alive(plugin_pid), "plugin jobs outlive the task");
+
+        store.kill_owner(&lua, &plugin);
+        assert!(wait_for_group_exit(plugin_pid));
     }
 
     #[test]
@@ -602,10 +879,12 @@ mod tests {
     fn take_receiver_delivers_events() {
         let mut store = make_store();
         let id = start_echo(&mut store);
-        let rx = store.take_receiver(id).unwrap();
+        let rx = store
+            .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+            .unwrap();
 
         let mut got_exit = false;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + EVENT_DEADLINE;
         while std::time::Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(JobEvent::Exit(_)) => {
@@ -620,17 +899,18 @@ mod tests {
     }
 
     #[test]
-    fn drain_events_collects_from_all_jobs() {
+    fn drain_events_filters_by_owner() {
         let mut store = make_store();
-        let id = start_echo(&mut store);
+        let task_job = start_echo(&mut store);
+        let plugin_job = start_shell(&mut store, plugin_owner(), "echo plugin");
 
         let mut buf = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + EVENT_DEADLINE;
         loop {
-            store.drain_events(&mut buf);
+            store.drain_events(&task_owner(OWNER_TASK_ID), &mut buf);
             if buf
                 .iter()
-                .any(|(jid, e)| *jid == id && matches!(e, JobEvent::Exit(_)))
+                .any(|(jid, e)| *jid == task_job && matches!(e, JobEvent::Exit(_)))
             {
                 break;
             }
@@ -638,18 +918,38 @@ mod tests {
                 std::time::Instant::now() <= deadline,
                 "should receive exit event for completed job"
             );
-            std::thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(50));
         }
+        assert!(buf.iter().all(|(job_id, _)| *job_id != plugin_job));
+
+        let deadline = std::time::Instant::now() + EVENT_DEADLINE;
+        loop {
+            store.drain_plugin_events(&mut buf);
+            if buf
+                .iter()
+                .any(|(jid, e)| *jid == plugin_job && matches!(e, JobEvent::Exit(_)))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "should receive exit event for the plugin-owned job"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(buf.iter().all(|(job_id, _)| *job_id != task_job));
     }
 
     #[test]
     fn drain_events_empty_after_take() {
         let mut store = make_store();
         let id = start_echo(&mut store);
-        let _rx = store.take_receiver(id).unwrap();
+        let _rx = store
+            .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
+            .unwrap();
 
         let mut buf = Vec::new();
-        store.drain_events(&mut buf);
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut buf);
         assert!(
             buf.is_empty(),
             "drained receiver yields no events via drain_events"
