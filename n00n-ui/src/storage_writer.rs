@@ -957,7 +957,11 @@ mod tests {
         writer.send(Box::new(session));
 
         let latest = std::thread::scope(|scope| {
-            let query = scope.spawn(|| writer.latest_snapshot(id).unwrap());
+            let query = scope.spawn(|| {
+                writer
+                    .latest_snapshot_with_timeout(id, DRAIN_TIMEOUT)
+                    .unwrap()
+            });
             release.send(()).unwrap();
             query.join().unwrap()
         });

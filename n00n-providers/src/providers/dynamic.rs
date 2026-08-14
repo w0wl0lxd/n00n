@@ -720,6 +720,7 @@ impl Provider for DynamicProvider {
                     pricing: m.pricing,
                     supports_thinking: None,
                     supports_vision: m.supports_vision,
+                    supports_files: None,
                     tier: None,
                     is_free: None,
                     is_promo: None,

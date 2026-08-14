@@ -1,0 +1,35 @@
+- # Skill system v2
+- Skill system v2: recursive discovery, frontmatter policy, agent enforcement, search ranking, and structured plans.
+- Memory tool v2: keyword search, YAML frontmatter metadata, append, and lite-layer session recall hints.
+- Added native Cursor `AgentService/Run` spike (HTTP/2 Connect via reqwest duplex streaming) with IDE auth, discovery, checkpoints, checksum headers, and a live Auto/`default` pong path gated by `N00N_CURSOR_LIVE_TESTS=1`.
+- Added lead-owned beta Fusion orchestration (`--fusion` / `always_fusion` / `[agent.fusion]`): a lead agent plans, delegates execution to a conservative sidekick via `fusion_delegate`, and reviews the result. Fusion remains off by default, delegation is lead-directed, and per-lane cost stats are reported on done events.
+- <!-- markdownlint-disable MD041 -->
+- Added first-tier explore tooling with `explore` intent routing, expanded `arbor`/`codegraph`/`semblem` commands, native/CLI fallbacks, and `rtk`/`bash` hardening.
+- Added a native tmux tool for managing sessions, windows, and panes.
+- Added host-owned, root- and session-scoped Lua plugin state with bounded snapshots, lifecycle restoration, and cleanup.
+- Sessions now restore plugin state and todo lists across restarts in UI, SDK, ACP, print, and agent modes.
+- Added secure local Firecrawl backends for web search and fetch, with bounded output and clear provenance.
+- Add in-memory Arbor `graph.json` indexing in `n00n-arbor` with symbol/file/id lookup, caller/callee queries, and shortest-path tracing for explore-tool integration.
+- Refresh Arbor graph indexes when status reports stale state and validate graph.json shape (including node holes) before building in-memory indexes.Route Arbor callers/callees/trace_path through the in-memory graph.json index when available, falling back to Arbor CLI subprocess calls for map/diff/query/status.Add qualified-name/file/kind symbol resolution, calls-only edge traversal, and richer graph node metadata for Arbor graph queries.Added `parallel_tool_calls` support to OpenAI-compatible, OpenAI Responses, and Codex WebSocket request bodies. Models that support it can now emit multiple tool calls in a single turn, which n00n executes in parallel and returns in one follow-up, reducing round-trips and repeated input-token costs. Provider support is controlled by a new `supports_parallel_tool_calls` flag in `n00n-providers` TOML configs.Add `n00n-codegraph` with a native `n00n.codegraph` Lua API and refactor the codegraph plugin to use it for explore calls with timeout handling.Add `rusqlite` with bundled SQLite and query `.codegraph/codegraph.db` in-process for explore lookups, with CLI fallback when the database is missing or unreadable.
+- Enable the unified `explore` built-in by default, update agent prompts and AGENTS.md guidance, and add a `just explore-health` recipe for local index checks.
+- Add explore plugin coverage to shared restore-card integration tests and regenerate tool docs after explore integration.
+- Add a unified `explore` tool that routes queries to `index`, `arbor`, or `codegraph` based on intent, with optional per-session result caching.
+- Add native Devin provider implementation using Connect protocol over gRPC-Web.
+- The new implementation:
+- Reads credentials from `~/.local/share/devin/credentials.toml` or `WINDSURF_API_KEY`/`DEVIN_API_KEY` env
+- Implements `GetUserJwt` exchange to obtain user JWT
+- Implements `GetChatMessageRequest` encoder and `GetChatMessageResponse` decoder using hand-rolled protobuf
+- Implements streaming response parser for Connect frames with gzip decompression
+- Emits ProviderEvents: `TextDelta`, `ThinkingDelta`, `ToolUseStart`/`ToolUseDelta`/`ToolUseEnd`, `Done`/`Error`
+- Supports tool definitions in requests and tool-call streaming in responses
+- Adds a full Devin model catalog from the live CLI model list
+- Resolves display model ids to wire uids via `GetCliModelConfigs`
+- Allows provider-only model specs like `n00n -m devin` by selecting the provider default
+- Replaces the ACP-based `devin` provider with a native HTTP implementation that calls Devin's gRPC-Web API directly.
+- Add OpenAI Chat Completions message-level prompt cache breakpoints for gpt-5.6+ models.
+- Migrate supported non-Codex OpenAI models to Responses API with safe Chat Completions fallback. API-key requests are intentionally stateless: they use `store: false` and send full history on every turn, so provider-side response storage is not enabled.
+- Extended non-Codex OpenAI Responses API with July 2026 model features: explicit prompt-cache options and breakpoints, reasoning mode and context, service-tier fast, safety identifiers, moderation, built-in tool conversion, and output item parsing for gpt-5.5/5.6.
+- Added native `semblem` built-in with `n00n-search` BM25 indexing and `n00n-semble` Lua bindings.
+- <!-- markdownlint-disable MD041 -->
+- Added per-model `thinking_dialect`, `thinking_fields`, and `body_override` config for dynamic providers (script `models`/`info`) and custom providers (`providers.toml`), letting a model declare where thinking values go in the request body and shape the body with `defaults`/`replace`/`filter` after the provider's own setup.
+- Show prompt-cache hit percentages in the status bar and token usage panel for every provider that reports cached token usage.
