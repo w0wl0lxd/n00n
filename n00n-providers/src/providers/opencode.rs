@@ -135,12 +135,17 @@ impl ProviderData {
     /// Resolve API key from environment or storage
     pub fn resolve_api_key(&self, state_dir: &StateDir) -> Option<String> {
         for var in &self.env_keys {
-            if let Ok(val) = std::env::var(var) {
+            if let Ok(val) = std::env::var(var)
+                && !val.trim().is_empty()
+            {
                 debug!(provider = %self.display_name, var = %var, "api key resolved from env");
                 return Some(val);
             }
         }
-        if let Some(key) = self.load_key_from_storage(state_dir) {
+        if let Some(key) = self
+            .load_key_from_storage(state_dir)
+            .filter(|k| !k.trim().is_empty())
+        {
             debug!(provider = %self.display_name, "api key resolved from storage");
             return Some(key);
         }
@@ -152,7 +157,7 @@ impl ProviderData {
     pub fn env_key_set(&self) -> Option<&str> {
         self.env_keys
             .iter()
-            .find(|e| std::env::var(e).is_ok())
+            .find(|e| std::env::var(e).is_ok_and(|v| !v.trim().is_empty()))
             .map(std::string::String::as_str)
     }
 
@@ -1102,6 +1107,31 @@ mod tests {
             _ => panic!("expected KeyBased"),
         }
         remove_env("N00N_TEST_AUTH_KEY");
+    }
+
+    #[test]
+    fn catalog_provider_resolve_api_key_skips_empty_env() {
+        let (_tmp, state_dir) = temp_state_dir();
+        set_env("N00N_TEST_EMPTY_KEY", "");
+        let provider = CatalogProvider {
+            name: "Test".into(),
+            env: vec!["N00N_TEST_EMPTY_KEY".into()],
+            npm: "@ai-sdk/openai-compatible".into(),
+            api: None,
+            models: HashMap::new(),
+        };
+        let provider_data = ProviderData::new(
+            "test".into(),
+            &provider,
+            EndpointType::ChatCompletions,
+            HashMap::new(),
+        );
+        assert!(provider_data.resolve_api_key(&state_dir).is_none());
+        assert!(matches!(
+            provider_data.build_auth(&state_dir),
+            Authentication::NoAuth
+        ));
+        remove_env("N00N_TEST_EMPTY_KEY");
     }
 
     #[test]
