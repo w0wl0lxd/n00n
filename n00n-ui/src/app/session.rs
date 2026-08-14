@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, transcript_to_display};
 use crate::components::DisplayRole;
@@ -11,17 +12,29 @@ use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
-    StoredDelivery, StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode,
-    StoredQueuedMessage, StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
+    SessionError, StoredDelivery, StoredDirectTool, StoredImageMediaType, StoredImageSource,
+    StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
+    StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
 };
 
 use crate::AppSession;
 
 use super::session_state::{SessionState, stored_to_rules};
 use super::{App, Mode, PendingInput, PlanState};
+use crate::agent::shared_queue::QueueItem;
 use crate::agent::{Delivery, QueuedMessage};
 
 const INITIAL_STATE_REVISION: u64 = 0;
+
+pub(super) fn plugin_state_identity(session: &AppSession) -> SessionIdentity {
+    let root_id = session.meta.root_session_id.map_or(session.id, |root| root);
+    let session_id = SessionRef::from_id(session.id);
+    if root_id == session.id {
+        SessionIdentity::root(session_id)
+    } else {
+        SessionIdentity::child(session_id, SessionRef::from_id(root_id))
+    }
+}
 
 fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u64 {
     let Some(snapshot) = snapshot else {
@@ -44,6 +57,9 @@ pub(crate) fn session_has_content(session: &AppSession) -> bool {
         || session.meta.input_draft.is_some()
         || !session.meta.queued_messages.is_empty()
         || !session.meta.queued_submissions.is_empty()
+        || !session.meta.queued_direct_tools.is_empty()
+        || session.meta.direct_output.is_some()
+        || session.meta.lifecycle == StoredSessionLifecycle::Cancelled
         || session.meta.mode != Some(n00n_storage::sessions::StoredMode::Build)
         || session.meta.plan_path.is_some()
         || session.meta.plan_written
@@ -158,6 +174,7 @@ fn restored_submission(
 }
 
 impl App {
+    #[allow(dead_code)]
     pub(crate) fn has_content(&self) -> bool {
         session_has_content(&self.state.session)
     }
@@ -168,6 +185,15 @@ impl App {
             return;
         }
         self.storage_writer.send(Box::new(snapshot));
+    }
+
+    pub(crate) fn checkpoint_session(&mut self, timeout: Duration) -> Result<(), SessionError> {
+        let snapshot = self.session_snapshot_with_plugin_state();
+        if !session_has_content(&snapshot) {
+            return Ok(());
+        }
+        self.storage_writer
+            .persist_and_wait(Box::new(snapshot), timeout)
     }
 
     pub(crate) fn session_snapshot(&mut self) -> AppSession {
@@ -210,23 +236,12 @@ impl App {
         );
     }
 
-    pub(crate) fn checkpoint_session(&mut self) {
-        let snapshot = self.session_snapshot();
-        if session_has_content(&snapshot) {
-            self.storage_writer.send(Box::new(snapshot));
-        }
-    }
-
     pub(crate) fn hydrate_plugin_state(&mut self) {
         let Some(handle) = &self.lua_event_handle else {
             return;
         };
         let session_id = self.state.session.id;
-        let identity = SessionIdentity::root(SessionRef::from_id(session_id));
-        if let Err(error) = handle.drop_state_owner(session_id) {
-            tracing::warn!(%session_id, %error, "failed to clear stale plugin session state");
-            return;
-        }
+        let identity = plugin_state_identity(&self.state.session);
         if let Err(error) =
             handle.hydrate_state(&identity, self.state.session.meta.state_snapshot.clone())
         {
@@ -239,7 +254,7 @@ impl App {
             return;
         };
         let session_id = self.state.session.id;
-        let identity = SessionIdentity::root(SessionRef::from_id(session_id));
+        let identity = plugin_state_identity(&self.state.session);
         let persisted_revision =
             state_revision_or_initial(self.state.session.meta.state_snapshot.as_ref());
         let revision = self
@@ -275,6 +290,17 @@ impl App {
             .into_iter()
             .map(|(input, delivery)| stored_message(input, delivery))
             .collect();
+        let queued_direct_tools: Vec<_> = self
+            .queue
+            .direct_tools()
+            .into_iter()
+            .map(|(tool, input)| StoredDirectTool { tool, input })
+            .collect();
+        if !queued_direct_tools.is_empty() {
+            self.state.session.meta.queued_direct_tools = queued_direct_tools;
+        } else if !self.state.session.meta.lifecycle.is_active() {
+            self.state.session.meta.queued_direct_tools.clear();
+        }
 
         self.state.session.meta.subagents = self
             .chats
@@ -376,6 +402,15 @@ impl App {
         for (msg, input, delivery) in queued {
             self.queue_restored_submission(msg, input, delivery);
         }
+        for bootstrap in self.state.session.meta.queued_direct_tools.clone() {
+            self.run_id += 1;
+            self.status = super::Status::Streaming;
+            self.queue.push_direct_tool(QueueItem::DirectTool {
+                run_id: self.run_id,
+                tool: bootstrap.tool,
+                input: bootstrap.input,
+            });
+        }
 
         self.fire_restore_items(restore_items);
 
@@ -429,7 +464,8 @@ impl App {
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
         self.save_session();
-        self.drop_plugin_state(self.state.session.id);
+        let previous_id = self.state.session.id;
+        self.drop_plugin_state(previous_id);
         self.reset_ui_chrome();
         self.state.token_usage = TokenUsage::default();
         self.state.context_size = 0;
@@ -441,7 +477,7 @@ impl App {
         self.hydrate_plugin_state();
         self.fire_session_autocmd("SessionReset", serde_json::json!({}));
         self.fire_session_focus_autocmd();
-        vec![Action::NewSession]
+        vec![Action::NewSession { previous_id }]
     }
 
     pub(super) fn open_rewind_picker(&mut self) -> Vec<Action> {
@@ -485,6 +521,7 @@ impl App {
         ))]
     }
 
+    #[allow(dead_code)]
     pub(crate) fn apply_loaded_session(
         &mut self,
         session: AppSession,
@@ -512,6 +549,7 @@ impl App {
         self.loaded_session_snapshot()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn load_session(&mut self, session_id: n00nId) -> Vec<Action> {
         let mut session = match AppSession::load(session_id, &self.storage) {
             Ok(s) => s,

@@ -19,13 +19,14 @@ workspace = true
 clap = { workspace = true }
 color-eyre = { workspace = true }
 fs2 = { workspace = true }
-n00n-git = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tantivy = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -355,6 +355,32 @@ impl<'h> Agent<'h> {
         self.total_cost
     }
 
+    /// Runs one tool and emits its completion event.
+    ///
+    /// # Errors
+    /// Returns an error when the completion event cannot be delivered.
+    pub async fn run_tool(
+        &self,
+        id: String,
+        name: &str,
+        input: &Value,
+    ) -> Result<ToolDoneEvent, AgentError> {
+        let ctx = self.tool_context();
+        let done = tool_dispatch::run(
+            &self.registry,
+            self.mcp.as_ref(),
+            id,
+            name,
+            input,
+            &ctx,
+            tool_dispatch::Emit::Notify,
+        )
+        .await;
+        self.event_tx
+            .send(AgentEvent::ToolDone(Box::new(done.clone())))?;
+        Ok(done)
+    }
+
     /// Runs the agent loop with the given input.
     ///
     /// # Errors
@@ -545,9 +571,6 @@ impl<'h> Agent<'h> {
         &self,
         metadata: Option<&RequestDeliveryMetadata>,
     ) -> Result<bool, AgentError> {
-        if self.permissions.is_yolo() {
-            return Ok(true);
-        }
         let Some(response_rx) = self.user_response_rx.as_deref() else {
             return Ok(false);
         };
@@ -1593,6 +1616,17 @@ mod tests {
     }
 
     #[test]
+    fn yolo_mode_does_not_auto_approve_ambiguous_request_replay() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent.permissions.set_yolo(true);
+
+            assert!(!agent.approve_ambiguous_request_replay(None).await.unwrap());
+        });
+    }
+
+    #[test]
     fn ambiguous_request_replay_propagates_closed_approval_channel() {
         smol::block_on(async {
             let mut history = History::new(Vec::new());
@@ -2067,6 +2101,18 @@ mod tests {
             },
         );
         (agent, event_rx)
+    }
+
+    #[test]
+    fn tool_context_preserves_agent_session_identity() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let identity = SessionIdentity::root(SessionRef::generate());
+        agent.identity = Some(identity.clone());
+
+        let ctx = agent.tool_context();
+
+        assert_eq!(ctx.identity, Some(identity));
     }
 
     fn make_agent_with_config(

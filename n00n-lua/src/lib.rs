@@ -16,14 +16,14 @@ pub use api::keymap::{KeymapEntry, KeymapReader, KeymapSnapshot};
 pub use api::options::{OptionSpec, OptionType, PluginOptionSpecs};
 pub use api::util::command::{
     Anchor, Axis, Border, Dimension, Edge, FloatConfig, FloatConfigPatch, HintReader, HintSnapshot,
-    LuaCommandInfo, LuaCommandReader, SessionReply, SessionRequest, Split, TitlePos, UiAction,
-    WinCommand, WinEvent,
+    LuaCommandInfo, LuaCommandReader, SessionBootstrap, SessionReply, SessionRequest, Split,
+    TitlePos, UiAction, WinCommand, WinEvent,
 };
 pub use docs::{DocKind, FnDoc, ModuleDoc, ParamDoc, api_docs};
 pub use error::PluginError;
 pub use loader::{EventHandle, PluginHost};
 pub use plugin_permissions::{Permission, PluginPermissions};
-pub use runtime::{RestoreItem, WARM_TOOL_CAP};
+pub use runtime::{CANCEL_INTERRUPT_GRACE, RestoreItem, WARM_TOOL_CAP};
 
 pub mod test_support {
     use crate::KeymapReader;

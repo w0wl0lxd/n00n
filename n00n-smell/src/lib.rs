@@ -1,17 +1,17 @@
 #![allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
 
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, QueryParser};
 use tantivy::schema::{Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value};
 use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, doc};
-
-use n00n_git::conflicts::{self, ConflictsOptions, GitConflicts};
 
 mod error;
 pub use error::SmellError;
@@ -425,43 +425,67 @@ fn document_to_result(
 }
 
 fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
-    let conflicts = conflicts::find(repo, &ConflictsOptions::default())?;
-    Ok(convert_conflicts(&conflicts))
-}
-
-fn convert_conflicts(conflicts: &GitConflicts) -> Vec<SmellFinding> {
     let mut smells = Vec::new();
-    for file in &conflicts.files {
-        let language = language_for_path(&file.path);
-        for finding in &file.findings {
-            let (start_line, end_line, content) = if let Some(ref hunk) = finding.hunk {
-                let content = match (hunk.ours.as_ref(), hunk.base.as_ref(), hunk.theirs.as_ref()) {
-                    (Some(ours), _, _) if !ours.is_empty() => ours.join("\n"),
-                    (_, Some(base), _) if !base.is_empty() => base.join("\n"),
-                    (_, _, Some(theirs)) if !theirs.is_empty() => theirs.join("\n"),
-                    _ => String::new(),
-                };
-                (hunk.start_line, hunk.end_line, content)
-            } else {
-                (
-                    finding.line,
-                    finding.line,
-                    finding.content.clone().unwrap_or_else(String::new),
-                )
-            };
 
-            smells.push(SmellFinding {
-                path: file.path.clone(),
-                start_line: start_line as usize,
-                end_line: end_line as usize,
-                kind: finding.kind.clone(),
-                message: finding.message.clone(),
-                content,
-                language: language.clone(),
-            });
+    let todo_regex = Regex::new(r"(?i)\bTODO\b")?;
+    let fixme_regex = Regex::new(r"(?i)\bFIXME\b")?;
+    let hack_regex = Regex::new(r"(?i)\bHACK\b")?;
+    let placeholder_regex = Regex::new(r"(?i)\b(placeholder|tbd|xxx)\b")?;
+
+    for entry in walkdir::WalkDir::new(repo)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        let relative_path = path.strip_prefix(repo).map_err(|_| SmellError::Config {
+            message: format!("Failed to get relative path for {}", path.display()),
+        })?;
+
+        let file = File::open(path).map_err(|source| SmellError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let reader = BufReader::new(file);
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line.map_err(|source| SmellError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+            let mut kind = None;
+            let mut message = String::new();
+
+            if todo_regex.is_match(&line) {
+                kind = Some("todo".to_string());
+                message = "TODO comment found".to_string();
+            } else if fixme_regex.is_match(&line) {
+                kind = Some("fixme".to_string());
+                message = "FIXME comment found".to_string();
+            } else if hack_regex.is_match(&line) {
+                kind = Some("hack".to_string());
+                message = "HACK comment found".to_string();
+            } else if placeholder_regex.is_match(&line) {
+                kind = Some("placeholder".to_string());
+                message = "Placeholder phrase found".to_string();
+            }
+
+            if let Some(k) = kind {
+                smells.push(SmellFinding {
+                    path: relative_path.to_string_lossy().to_string(),
+                    start_line: line_num + 1,
+                    end_line: line_num + 1,
+                    kind: k,
+                    message,
+                    content: line.trim().to_string(),
+                    language: language_for_path(relative_path),
+                });
+            }
         }
     }
-    smells
+
+    Ok(smells)
 }
 
 fn language_for_path(path: &str) -> String {

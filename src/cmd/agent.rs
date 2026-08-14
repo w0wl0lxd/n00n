@@ -27,6 +27,7 @@ use n00n_agent::tools::ToolRegistry;
 use n00n_agent::{AgentConfig, McpHandle, PermissionsConfig, prompt::ResolvedSlots};
 #[cfg(unix)]
 use n00n_agent::{AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope};
+use n00n_config::providers::ProvidersConfig;
 use n00n_config::{load_env_files, load_permissions};
 use n00n_daemon::ControlError;
 use n00n_daemon::backend::WorkerBackend;
@@ -411,7 +412,14 @@ fn prepare_agent_env(
         stream: config.provider.stream_timeout,
     };
 
-    let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
+    let providers_toml = ProvidersConfig::load();
+    let model = setup::resolve_model_with_fusion(
+        model_arg,
+        &config.provider,
+        &providers_toml,
+        &storage,
+        Some(&config.agent.fusion),
+    )?;
     let model_spec = model.spec();
     setup::install_panic_log_hook();
 

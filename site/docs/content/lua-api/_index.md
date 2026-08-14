@@ -88,7 +88,6 @@ a string belongs.
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.arbor`](#n00n-arbor) | Graph-based code analysis via Arbor CLI. |
 | [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
-| [`n00n.github`](#n00n-github) | GitHub REST API client using reqwest. |
 | [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
 | [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
@@ -2808,7 +2807,13 @@ Starts a new session in the current project.
 
   to submit right away; focus (boolean) switch the UI to the new session;
 
-  - `parent_id` (`string?`) session that spawned this session.
+  - `parent_id` (`string?`) session that spawned this session; tool (string) for a
+
+  direct host-executed bootstrap. Tool cannot be combined with prompt. Input
+
+
+  (table) and title (string?) require tool.
+
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 
@@ -5551,165 +5556,6 @@ Show project file structure from the index using native SQLite when available, o
 **Returns:** (`string?`, `string?`) output and optional error message.
 
 
-## n00n.github {#n00n-github}
-
-GitHub REST API client using reqwest. Provides structured access to GitHub issues, pull requests, and repository metadata. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
-
----
-
-### `n00n.github.list_issues()` {#n00n-github-list_issues}
-
-```lua
-n00n.github.list_issues({owner}, {repo}[, {token}])
-```
-
-List issues in a GitHub repository.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Array of issue objects with number, title, state, user, body, and html_url.
-
----
-
-### `n00n.github.create_issue()` {#n00n-github-create_issue}
-
-```lua
-n00n.github.create_issue({owner}, {repo}, {title}[, {body}[, {token}]])
-```
-
-Create a new issue in a GitHub repository. Requires authentication.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{title}` (`string`) Issue title.
-- `{body}` (`string?`) Issue body (markdown). Optional.
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Created issue object with number, title, state, user, body, and html_url.
-
----
-
-### `n00n.github.list_prs()` {#n00n-github-list_prs}
-
-```lua
-n00n.github.list_prs({owner}, {repo}[, {token}])
-```
-
-List pull requests in a GitHub repository.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Array of pull request objects with number, title, state, user, head, base, body, and html_url.
-
----
-
-### `n00n.github.get_repo()` {#n00n-github-get_repo}
-
-```lua
-n00n.github.get_repo({owner}, {repo}[, {token}])
-```
-
-Get repository metadata from GitHub.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Repository object with name, full_name, description, language, stargazers_count, forks_count, and html_url.
-
----
-
-### `n00n.github.get_issue()` {#n00n-github-get_issue}
-
-```lua
-n00n.github.get_issue({owner}, {repo}, {issue_number}[, {token}])
-```
-
-Get a single issue from GitHub.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{issue_number}` (`integer`) Issue number.
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Issue object with number, title, state, user, body, and html_url.
-
----
-
-### `n00n.github.get_pr()` {#n00n-github-get_pr}
-
-```lua
-n00n.github.get_pr({owner}, {repo}, {pr_number}[, {token}])
-```
-
-Get a single pull request from GitHub.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{pr_number}` (`integer`) Pull request number.
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Pull request object with number, title, state, user, head, base, body, and html_url.
-
----
-
-### `n00n.github.create_pr()` {#n00n-github-create_pr}
-
-```lua
-n00n.github.create_pr({owner}, {repo}, {head}, {base}, {title}[, {body}[, {token}]])
-```
-
-Create a new pull request in a GitHub repository. Requires authentication.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{head}` (`string`) The name of the branch where your changes are implemented.
-- `{base}` (`string`) The name of the branch you want the changes pulled into.
-- `{title}` (`string`) Pull request title.
-- `{body}` (`string?`) Pull request body (markdown). Optional.
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Created pull request object with number, title, state, and html_url.
-
----
-
-### `n00n.github.add_comment()` {#n00n-github-add_comment}
-
-```lua
-n00n.github.add_comment({owner}, {repo}, {issue_number}, {body}[, {token}])
-```
-
-Add a comment to an issue or pull request. Requires authentication.
-
-**Parameters:**
-
-- `{owner}` (`string`) Repository owner (username or organization).
-- `{repo}` (`string`) Repository name.
-- `{issue_number}` (`integer`) Issue or pull request number.
-- `{body}` (`string`) Comment body (markdown).
-- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
-
-**Returns:** (`table`) Created comment object with id and html_url.
-
-
 ## n00n.semblem {#n00n-semblem}
 
 BM25 code search and related-chunk lookup via the native `.n00n/search/` index.
@@ -6060,6 +5906,13 @@ function M.replace(content, old_string, new_string, replace_all)
 function M.new(opts)
 ```
 
+### `require("n00n.html")`
+
+```lua
+--- Convert HTML to compact text while omitting script, style, and noscript content.
+function M.strip(html)
+```
+
 ### `require("n00n.list_picker")`
 
 ```lua
@@ -6213,6 +6066,12 @@ function M.make_local_tool(schema, on_submit)
 -- Provides a unified interface for launching subagents with model resolution,
 -- system prompts, tool setup, and optional structured output validation.
 
+-- Return a fresh table containing the orchestration tool names.
+-- Use it as a denylist when child agents must not launch more orchestration.
+-- Example: local excluded = subagent.orchestration_tools()
+-- @return string[]
+function M.orchestration_tools()
+
 -- Launch a subagent with the given options.
 -- Returns (result | nil, err, cost, usage, model_spec)
 --
@@ -6230,6 +6089,7 @@ function M.make_local_tool(schema, on_submit)
 --   include_mcp: Include MCP tools (default: true)
 --   only_tools: Optional allowlist of tool names
 --   except_tools: Optional denylist of tool names
+--   allow_orchestration: Expose recursive orchestration tools (default: false)
 --   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
@@ -6322,7 +6182,8 @@ function TextInput:render(prefix, prefix_width, width)
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
 -- max_line_bytes (optional) per-line byte cap applied at render time,
--- max_width (optional) display-width cap, hide_collapsed (default false).
+-- max_width (optional) display-width cap, hide_collapsed (default false),
+-- header_until_blank keeps a leading metadata block outside the content limit.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
@@ -6361,5 +6222,36 @@ function ToolView.restore(output, opts)
 function M.normalize(result)
 function M.add(total, value)
 function M.price(model_spec, result)
+```
+
+### `require("n00n.web_backend")`
+
+```lua
+--- Select the configured web backend or return a configuration error.
+function M.select(requested, firecrawl_configured, fallback, firecrawl_config_error)
+
+--- Remove credentials and control characters before displaying a URL.
+function M.sanitize_url(value)
+
+--- Combine provenance and content within strict line and byte limits.
+function M.bounded(content, provenance, max_lines, max_bytes)
+
+--- Mark external content as untrusted and identify its backend source.
+function M.wrap(content, source)
+
+--- Add fetch provenance while stripping URL credentials from every displayed URL.
+function M.fetch(content, backend, requested_url, source_url, final_url)
+
+--- Format credential-safe fetch provenance and content within output limits.
+function M.bounded_fetch(content, backend, requested_url, source_url, final_url, max_lines, max_bytes)
+
+--- Mark external content as untrusted while enforcing output limits.
+function M.bounded_wrap(content, source, max_lines, max_bytes)
+
+--- Format compact Firecrawl results with untrusted-content provenance.
+function M.firecrawl_search(results)
+
+--- Format Firecrawl results within strict line and byte limits.
+function M.bounded_firecrawl_search(results, max_lines, max_bytes)
 ```
 
