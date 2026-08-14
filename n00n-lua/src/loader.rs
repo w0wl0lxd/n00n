@@ -58,10 +58,6 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
     ),
     bundled(
-        "arbor",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
-    ),
-    bundled(
         "blackboard",
         include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
     ),
