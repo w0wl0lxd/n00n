@@ -87,7 +87,10 @@ pub(crate) fn create_n00n_global(
         "ui",
         ui::create_ui_table(lua, ui_action_tx, Arc::clone(&plugin))?,
     )?;
-    n00n.set("fn", r#fn::create_fn_table(lua, permissions)?)?;
+    n00n.set(
+        "fn",
+        r#fn::create_fn_table(lua, Arc::clone(&plugin), permissions)?,
+    )?;
     split::split__register(&n00n, lua)?;
     n00n.set("async", r#async::create_async_table(lua)?)?;
     n00n.set(

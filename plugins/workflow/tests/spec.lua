@@ -1,3 +1,5 @@
+local pipeline_args = require("pipeline_args")
+
 local failures = {}
 
 local function case(name, fn)
@@ -335,6 +337,35 @@ case("workflow_json_encode_reports_errors", function()
   local encoded, err = n00n.json.encode(function() end)
   eq(encoded, nil, "unsupported values must not produce JSON")
   assert(err ~= nil, "JSON encoding failures must be returned")
+end)
+
+case("pipeline_accepts_variadic_stages_with_optional_trailing_opts", function()
+  local a, b = function() end, function() end
+  local stages, opts, err = pipeline_args.normalize(a, b)
+  eq(err, nil)
+  eq(#stages, 2)
+  eq(opts, nil)
+  stages, opts, err = pipeline_args.normalize(a, b, { concurrency = 3 })
+  eq(err, nil)
+  eq(#stages, 2)
+  eq(opts.concurrency, 3)
+  stages, opts, err = pipeline_args.normalize({ a, b }, { concurrency = 2 })
+  eq(err, nil)
+  eq(#stages, 2)
+  eq(opts.concurrency, 2)
+end)
+
+case("pipeline_rejects_a_nil_stage_instead_of_silently_dropping_it", function()
+  local a, b = function() end, function() end
+  local stages, _, err = pipeline_args.normalize(a, nil, b)
+  eq(stages, nil)
+  eq(err, "pipeline: stages must be functions, got nil at argument 3")
+  stages, _, err = pipeline_args.normalize(a, b, "opts")
+  eq(stages, nil)
+  eq(err, "pipeline: stages must be functions, got string at argument 4")
+  local _, opts, trailing_err = pipeline_args.normalize(a, b, nil)
+  eq(trailing_err, nil, "an omitted trailing opts must stay legal")
+  eq(opts, nil)
 end)
 
 if #failures > 0 then

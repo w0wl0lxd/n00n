@@ -1,9 +1,7 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table, Value};
 use n00n_search::{
-    extract::Extractor,
-    transport::{DEFAULT_MAX_REDIRECTS, FetchLimits, HttpTransport},
-    types::{ExtractRequest, MAX_SOURCE_BYTES},
-    url_policy::UrlPolicy,
+    DEFAULT_MAX_REDIRECTS, ExtractRequest, Extractor, FetchLimits, HttpTransport, MAX_SOURCE_BYTES,
+    UrlPolicy,
 };
 
 use super::util::{convert::err_pair, ctx::LuaCtx};
@@ -81,7 +79,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
 mod tests {
     use mlua::{Function, LuaSerdeExt};
     use n00n_agent::cancel::CancelToken;
-    use n00n_search::types::{ExtractFormat, ExtractRequest};
+    use n00n_search::{ExtractFormat, ExtractRequest};
 
     use super::*;
 
