@@ -5,12 +5,11 @@ use std::sync::{Arc, Mutex};
 
 use n00n_config::{
     DefaultEffect, Effect, FILE_WRITE_TOOLS, PermissionRule, PermissionTarget, PermissionsConfig,
-    ToolKey, append_permission_rule,
+    ToolKey, append_permission_rule, canonical_tool_name,
 };
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::tools::canonical_tool_name;
 use crate::{AgentEvent, EventSender};
 
 pub const DEFAULT_DENY_GUIDANCE: &str =

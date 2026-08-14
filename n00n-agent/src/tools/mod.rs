@@ -62,8 +62,8 @@ impl ToolFilter {
     pub fn matches(&self, name: &str) -> bool {
         match self {
             Self::All => true,
-            Self::Only(allowed) => allowed.iter().any(|candidate| same_tool(candidate, name)),
-            Self::AllExcept(blocked) => !blocked.iter().any(|candidate| same_tool(candidate, name)),
+            Self::Only(allowed) => allowed.iter().any(|n| n == name),
+            Self::AllExcept(blocked) => !blocked.iter().any(|n| n == name),
         }
     }
 
@@ -72,7 +72,7 @@ impl ToolFilter {
         match self {
             Self::Only(mut allowed) => {
                 for name in names {
-                    if !allowed.iter().any(|candidate| same_tool(candidate, &name)) {
+                    if !allowed.contains(&name) {
                         allowed.push(name);
                     }
                 }
@@ -88,17 +88,17 @@ impl ToolFilter {
             return self;
         }
         match self {
-            Self::All => Self::AllExcept(names.iter().map(|name| (*name).to_owned()).collect()),
-            Self::Only(mut allowed) => {
-                allowed.retain(|candidate| {
-                    !names.iter().any(|excluded| same_tool(candidate, excluded))
-                });
-                Self::Only(allowed)
-            }
+            Self::All => Self::AllExcept(names.iter().map(|s| (*s).to_owned()).collect()),
+            Self::Only(allowed) => Self::Only(
+                allowed
+                    .into_iter()
+                    .filter(|n| !names.iter().any(|x| *x == n))
+                    .collect(),
+            ),
             Self::AllExcept(mut blocked) => {
-                for &name in names {
-                    if !blocked.iter().any(|candidate| same_tool(candidate, name)) {
-                        blocked.push(name.to_owned());
+                for &n in names {
+                    if !blocked.iter().any(|b| b == n) {
+                        blocked.push(n.to_owned());
                     }
                 }
                 Self::AllExcept(blocked)
@@ -111,33 +111,36 @@ impl ToolFilter {
         match (self, other) {
             (Self::All, other) => other.clone(),
             (current, Self::All) => current,
-            (Self::Only(current_allowed), Self::Only(other_allowed)) => Self::Only(
-                current_allowed
+            (Self::Only(current_allowed), Self::Only(other_allowed)) => {
+                let intersection: Vec<String> = current_allowed
                     .into_iter()
-                    .filter(|name| other_allowed.iter().any(|other| same_tool(name, other)))
-                    .collect(),
-            ),
-            (Self::AllExcept(mut current_blocked), Self::AllExcept(other_blocked)) => {
-                for name in other_blocked {
-                    if !current_blocked
-                        .iter()
-                        .any(|current| same_tool(current, name))
-                    {
-                        current_blocked.push(name.clone());
-                    }
+                    .filter(|n| other_allowed.iter().any(|o| o == n.as_str()))
+                    .collect();
+                if intersection.is_empty() {
+                    Self::Only(vec![]) // No tools allowed
+                } else {
+                    Self::Only(intersection)
                 }
-                Self::AllExcept(current_blocked)
+            }
+            (Self::AllExcept(current_blocked), Self::AllExcept(other_blocked)) => {
+                let union: Vec<String> = current_blocked
+                    .into_iter()
+                    .chain(other_blocked.iter().cloned())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                Self::AllExcept(union)
             }
             (Self::Only(allowed), Self::AllExcept(blocked)) => Self::Only(
                 allowed
                     .into_iter()
-                    .filter(|name| !blocked.iter().any(|other| same_tool(name, other)))
+                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
                     .collect(),
             ),
             (Self::AllExcept(blocked), Self::Only(allowed)) => Self::Only(
                 allowed
                     .iter()
-                    .filter(|name| !blocked.iter().any(|other| same_tool(name, other)))
+                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
                     .cloned()
                     .collect(),
             ),
@@ -185,9 +188,12 @@ pub fn filter_definitions(definitions: &mut Value, filter: &ToolFilter) {
 #[must_use]
 pub fn has_definition(definitions: &Value, name: &str) -> bool {
     definitions.as_array().is_some_and(|definitions| {
-        definitions
-            .iter()
-            .any(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
+        definitions.iter().any(|definition| {
+            definition
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate == name)
+        })
     })
 }
 
@@ -217,23 +223,25 @@ pub fn default_active_tools() -> ActiveTools {
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
 pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
-    !disabled_tools.iter().any(|s| s == name)
+    !disabled_tools.iter().any(|disabled| disabled == name)
 }
 
-pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
-pub const BATCH_TOOL_NAME: &str = "batch";
-pub const BASH_TOOL_NAME: &str = "bash";
-pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
-pub const EDIT_TOOL_NAME: &str = "edit";
-pub const GLOB_TOOL_NAME: &str = "glob";
-pub const GREP_TOOL_NAME: &str = "grep";
-pub const MULTIEDIT_TOOL_NAME: &str = "multiedit";
-pub const QUESTION_TOOL_NAME: &str = "question";
-pub const READ_TOOL_NAME: &str = "read";
-pub const TASK_TOOL_NAME: &str = "task";
-pub const TODOWRITE_TOOL_NAME: &str = "todo_write";
+pub const AGENT_CONTROL_TOOL_NAME: &str = "control_agent";
+pub const BATCH_TOOL_NAME: &str = "run_batch";
+pub const BASH_TOOL_NAME: &str = "run_shell";
+pub const CODE_EXECUTION_TOOL_NAME: &str = "run_python";
+pub const EDIT_TOOL_NAME: &str = "edit_file";
+pub const GLOB_TOOL_NAME: &str = "search_files";
+pub const GREP_TOOL_NAME: &str = "search_code";
+pub const MULTIEDIT_TOOL_NAME: &str = "edit_file_bulk";
+pub const QUESTION_TOOL_NAME: &str = "ask_user";
+pub const READ_TOOL_NAME: &str = "read_file";
+pub const TASK_TOOL_NAME: &str = "run_task";
+pub const TODOWRITE_TOOL_NAME: &str = "update_todo";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
-pub const WRITE_TOOL_NAME: &str = "write";
+pub const WRITE_TOOL_NAME: &str = "write_file";
+
+pub use n00n_config::TOOL_ALIASES;
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 pub(crate) const DEADLINE_EXCEEDED: &str = "timeout exceeded";

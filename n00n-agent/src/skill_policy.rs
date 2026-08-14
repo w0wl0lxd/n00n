@@ -118,8 +118,7 @@ pub fn normalize_tool_name(tool_name: &str) -> String {
     } else {
         tool_name.to_owned()
     };
-    let normalized = as_internal.replace('-', "_").to_ascii_lowercase();
-    crate::tools::canonical_tool_name(&normalized).to_owned()
+    as_internal.replace('-', "_").to_ascii_lowercase()
 }
 
 fn bare_tool_name(normalized: &str) -> Option<&str> {
