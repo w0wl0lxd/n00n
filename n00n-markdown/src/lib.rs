@@ -397,7 +397,7 @@ fn parse_table_cells(line: &str) -> Vec<String> {
             current = String::new();
             i += 1;
         } else {
-            let ch = inner[i..].chars().next().map_or('\0', |c| c);
+            let ch = inner[i..].chars().next().unwrap_or('\0');
             current.push(ch);
             i += ch.len_utf8();
         }
