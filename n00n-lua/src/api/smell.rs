@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mlua::{Lua, Result as LuaResult, Table};
+use mlua::{Lua, Result as LuaResult, Table, Value};
 
+use crate::api::util::convert::err_pair;
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 
-fn smell_binary_path() -> Result<PathBuf, mlua::Error> {
+fn smell_binary_path() -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var("N00N_SMELL") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
@@ -36,7 +37,7 @@ fn smell_binary_path() -> Result<PathBuf, mlua::Error> {
         return Ok(path);
     }
 
-    Err(mlua::Error::external(
+    Err(String::from(
         "n00n-smell binary not found; set N00N_SMELL or build the workspace",
     ))
 }
@@ -49,31 +50,27 @@ fn which(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn resolve_project(project: &str) -> Result<PathBuf, mlua::Error> {
+fn resolve_project(project: &str) -> Result<PathBuf, String> {
     let path = Path::new(project);
     if !path.is_dir() {
-        return Err(mlua::Error::external(format!(
-            "project path is not a directory: {project}"
-        )));
+        return Err(format!("project path is not a directory: {project}"));
     }
     path.canonicalize()
-        .map_err(|err| mlua::Error::external(format!("failed to resolve {project}: {err}")))
+        .map_err(|err| format!("failed to resolve {project}: {err}"))
 }
 
-fn run_smell(args: &[&str]) -> Result<String, mlua::Error> {
+fn run_smell(args: &[&str]) -> Result<String, String> {
     let binary = smell_binary_path()?;
     let output = Command::new(binary)
         .args(args)
         .output()
-        .map_err(|err| mlua::Error::external(format!("failed to run n00n-smell: {err}")))?;
+        .map_err(|err| format!("failed to run n00n-smell: {err}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if output.status.success() {
         Ok(stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(mlua::Error::external(format!(
-            "n00n-smell failed: {stderr}{stdout}",
-        )))
+        Err(format!("n00n-smell failed: {stderr}{stdout}"))
     }
 }
 
@@ -89,16 +86,24 @@ pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     table.set("has_index", has_index)?;
 
-    let index = lua.create_function(|_, project: String| {
-        let project = resolve_project(&project)?;
-        run_smell(&["index", &project.to_string_lossy()])?;
-        Ok(())
+    let index = lua.create_function(|lua, project: String| {
+        let project = match resolve_project(&project) {
+            Ok(project) => project,
+            Err(err) => return err_pair(lua, err),
+        };
+        match run_smell(&["index", &project.to_string_lossy()]) {
+            Ok(_) => Ok((Value::Boolean(true), Value::Nil)),
+            Err(err) => err_pair(lua, err),
+        }
     })?;
     table.set("index", index)?;
 
     let search = lua.create_function(
-        |_, (project, query, kind, top_k): (String, String, Option<String>, Option<usize>)| {
-            let project = resolve_project(&project)?;
+        |lua, (project, query, kind, top_k): (String, String, Option<String>, Option<usize>)| {
+            let project = match resolve_project(&project) {
+                Ok(project) => project,
+                Err(err) => return err_pair(lua, err),
+            };
             let mut owned = vec![
                 "search".to_owned(),
                 project.to_string_lossy().into_owned(),
@@ -113,7 +118,10 @@ pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
                 owned.push(n.to_string());
             }
             let args: Vec<&str> = owned.iter().map(String::as_str).collect();
-            run_smell(&args)
+            match run_smell(&args) {
+                Ok(output) => Ok((Value::String(lua.create_string(&output)?), Value::Nil)),
+                Err(err) => err_pair(lua, err),
+            }
         },
     )?;
     table.set("search", search)?;
@@ -147,7 +155,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(nil) or raises an error.",
+            returns: "(boolean, string?) true on success, or nil plus an error message.",
             example: "",
         },
         FnDoc {
@@ -176,7 +184,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     desc: "Maximum number of results (default 5).",
                 },
             ],
-            returns: "(string) Ranked smell output.",
+            returns: "(string?, string?) Ranked smell output, or nil plus an error message.",
             example: "",
         },
     ],

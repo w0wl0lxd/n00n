@@ -25,8 +25,14 @@ n00n.api.register_tool({
     type = "object",
     required = { "command" },
     properties = {
-      command = { type = "string" },
-      query = { type = "string" },
+      command = { type = "string", description = "index or search." },
+      repo = { type = "string", description = "Repository path. Defaults to the current directory." },
+      query = { type = "string", description = "Search text. Required for search." },
+      kind = {
+        type = "string",
+        description = "Filter search results by kind: conflict, todo, fixme, hack, placeholder.",
+      },
+      top_k = { type = "integer", description = "Maximum number of search results. Defaults to 5." },
     },
   },
 
@@ -55,9 +61,9 @@ n00n.api.register_tool({
       return { llm_output = "error: failed to publish smell results: " .. tostring(live_err), is_error = true }
     end
 
-    local ok, output
+    local ok, output, err
     if command == "index" then
-      ok = pcall(smell.index, repo)
+      ok, err = smell.index(repo)
       if ok then
         output = "smell index rebuilt for " .. repo
       end
@@ -65,13 +71,14 @@ n00n.api.register_tool({
       if not input.query or input.query:match("^%s*$") then
         return { llm_output = "error: query is required for search", is_error = true }
       end
-      ok, output = pcall(smell.search, repo, input.query, input.kind, input.top_k or 5)
+      output, err = smell.search(repo, input.query, input.kind, input.top_k or 5)
+      ok = output ~= nil
     else
       return { llm_output = "error: unsupported command: " .. tostring(command), is_error = true }
     end
 
     if not ok then
-      return { llm_output = "error: smell failed: " .. tostring(output), is_error = true }
+      return { llm_output = "error: smell failed: " .. tostring(err), is_error = true }
     end
 
     output = (output or ""):gsub("\n+$", "")

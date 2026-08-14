@@ -1,7 +1,7 @@
 #![allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
 
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -443,6 +443,33 @@ fn document_to_result(
     })
 }
 
+/// Directory names pruned from the walk before descending into them: VCS
+/// metadata, the scanner's own index, and common build/dependency output
+/// that is never worth surfacing as a code smell.
+const EXCLUDED_DIRS: &[&str] = &[".git", ".n00n", "target", "node_modules"];
+
+fn is_excluded_dir(entry: &walkdir::DirEntry) -> bool {
+    entry.file_type().is_dir()
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| EXCLUDED_DIRS.contains(&name))
+}
+
+/// Sniffs the first 8KiB of a file for a NUL byte, the same heuristic git
+/// and ripgrep use to tell binary content from text without reading the
+/// whole file.
+fn is_binary_file(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 8192];
+    let Ok(bytes_read) = file.take(buf.len() as u64).read(&mut buf) else {
+        return false;
+    };
+    buf[..bytes_read].contains(&0)
+}
+
 fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
     let mut smells = Vec::new();
 
@@ -451,8 +478,9 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
     let hack_regex = Regex::new(r"(?i)\bHACK\b")?;
     let placeholder_regex = Regex::new(r"(?i)\b(placeholder|tbd|xxx)\b")?;
 
-    for entry in walkdir::WalkDir::new(repo)
+    'files: for entry in walkdir::WalkDir::new(repo)
         .into_iter()
+        .filter_entry(|e| !is_excluded_dir(e))
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
     {
@@ -461,6 +489,10 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
             message: format!("Failed to get relative path for {}", path.display()),
         })?;
 
+        if is_binary_file(path) {
+            continue;
+        }
+
         let file = File::open(path).map_err(|source| SmellError::Io {
             path: path.to_path_buf(),
             source,
@@ -468,10 +500,12 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
         let reader = BufReader::new(file);
 
         for (line_num, line) in reader.lines().enumerate() {
-            let line = line.map_err(|source| SmellError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
+            // Skip files that turn out not to be valid UTF-8 past the
+            // binary sniff, or that fail mid-read (e.g. permissions):
+            // a comment scan should degrade file-by-file, not abort.
+            let Ok(line) = line else {
+                continue 'files;
+            };
 
             let mut kind = None;
             let mut message = String::new();
