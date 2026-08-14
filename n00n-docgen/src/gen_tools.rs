@@ -42,8 +42,6 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "codegraph",
             "search_text",
             "semblem",
-            "map_code",
-            "arbor",
         ],
     ),
     (

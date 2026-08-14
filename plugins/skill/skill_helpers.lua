@@ -424,15 +424,10 @@ end
 function M.graph_rank_signals(project)
   local root = project or n00n.uv.cwd() or "."
   local signals = {
-    arbor_indexed = false,
     codegraph_indexed = false,
   }
   if n00n.fs.metadata(n00n.fs.joinpath(root, ".codegraph")) then
     signals.codegraph_indexed = true
-  end
-  if n00n.arbor and n00n.arbor.available and n00n.arbor.available() then
-    local ok, indexed = pcall(n00n.arbor.status, root)
-    signals.arbor_indexed = ok and indexed
   end
   return signals
 end
@@ -442,9 +437,6 @@ function M.graph_rank_bonus(skill, signals)
     return 0
   end
   local bonus = 0
-  if signals.arbor_indexed then
-    bonus = bonus + 5
-  end
   if signals.codegraph_indexed then
     bonus = bonus + 3
   end

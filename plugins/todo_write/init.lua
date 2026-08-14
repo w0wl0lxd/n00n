@@ -172,6 +172,22 @@ local function build_lines(todo_items, include_activity)
   return lines
 end
 
+-- ToolView is a required module; an incompatible restore snapshot can hit
+-- an edge it does not defend against. `lines` is already the exact content
+-- to show, so the fallback just skips ToolView's expand/collapse chrome.
+local function safe_restore_lines(lines, opts)
+  local ok, result = pcall(function()
+    return ToolView.restore_lines(lines, opts)
+  end)
+  if ok then
+    return result
+  end
+  n00n.log.warn("todo_write restore: falling back to plain output: " .. tostring(result))
+  local fallback_buf = n00n.ui.buf()
+  fallback_buf:set_lines(lines)
+  return fallback_buf
+end
+
 render_panel = function(visible)
   ensure_win(visible)
   local lines = build_lines()
@@ -230,7 +246,7 @@ n00n.api.register_tool({
     if #restored_items == 0 then
       return nil
     end
-    return ToolView.restore_lines(build_lines(restored_items, false), {
+    return safe_restore_lines(build_lines(restored_items, false), {
       max_lines = DEFAULT_PREVIEW_LINES,
       keep = "head",
     })
@@ -272,7 +288,7 @@ n00n.api.register_tool({
     end
     return {
       llm_output = "",
-      body = ToolView.restore_lines(build_lines(next_items, false), {
+      body = safe_restore_lines(build_lines(next_items, false), {
         max_lines = DEFAULT_PREVIEW_LINES,
         keep = "head",
       }),

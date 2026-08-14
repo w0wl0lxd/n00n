@@ -270,6 +270,14 @@ fn sanitize_trailer_code(code: &str) -> &str {
     }
 }
 
+/// Maps a Devin stream read failure to a retryable `AgentError::Io`.
+async fn read_stream_chunk(
+    reader: &mut (impl futures_lite::io::AsyncRead + Unpin),
+    buffer: &mut [u8],
+) -> Result<usize, AgentError> {
+    reader.read(buffer).await.map_err(AgentError::Io)
+}
+
 fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
     if payload.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
@@ -833,21 +841,12 @@ impl Devin {
         let mut buffer = vec![0u8; 8192];
 
         'stream: loop {
-            let n = futures_lite::future::or(
-                async {
-                    reader.read(&mut buffer).await.map_err(|e| AgentError::Api {
-                        status: 0,
-                        message: format!("failed to read response: {e}"),
-                    })
-                },
-                async {
-                    smol::Timer::after(stream_deadline.saturating_duration_since(Instant::now()))
-                        .await;
-                    Err(AgentError::Timeout {
-                        secs: self.timeouts.stream.as_secs(),
-                    })
-                },
-            )
+            let n = futures_lite::future::or(read_stream_chunk(&mut reader, &mut buffer), async {
+                smol::Timer::after(stream_deadline.saturating_duration_since(Instant::now())).await;
+                Err(AgentError::Timeout {
+                    secs: self.timeouts.stream.as_secs(),
+                })
+            })
             .await?;
 
             if n == 0 {
@@ -1020,6 +1019,7 @@ impl Provider for Devin {
                     pricing: Some(e.pricing),
                     supports_thinking: None,
                     supports_vision: Some(e.vision),
+                    supports_files: None,
                     tier: Some(e.tier),
                     is_free: None,
                     is_promo: None,
@@ -1039,6 +1039,34 @@ impl Provider for Devin {
 mod tests {
     use super::*;
     use prost::Message as ProstMessage;
+
+    struct FailingReader;
+
+    impl futures_lite::io::AsyncRead for FailingReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(
+                ErrorKind::ConnectionReset,
+                "connection reset",
+            )))
+        }
+    }
+
+    #[test]
+    fn read_stream_chunk_maps_io_error_to_retryable_agent_error() {
+        smol::block_on(async {
+            let mut reader = FailingReader;
+            let mut buffer = [0u8; 8];
+            let err = read_stream_chunk(&mut reader, &mut buffer)
+                .await
+                .unwrap_err();
+            assert!(err.is_retryable());
+            assert!(matches!(err, AgentError::Io(_)));
+        });
+    }
 
     #[test]
     fn normalize_session_token_adds_prefix() {

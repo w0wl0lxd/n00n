@@ -25,6 +25,13 @@ use super::shared;
 
 const BEDROCK_API_VERSION: &str = "bedrock-2023-05-31";
 const MIN_EVENTSTREAM_FRAME: usize = 16;
+/// AWS eventstream frames are prelude(12) + headers + payload + crc(4).
+const EVENTSTREAM_PRELUDE_LEN: usize = 12;
+const EVENTSTREAM_CRC_LEN: usize = 4;
+/// Caps a single frame's declared length, matching the connect-frame cap
+/// used elsewhere in this crate. A wire-declared `total_len` above this is
+/// treated as corrupt rather than buffered.
+const MAX_EVENTSTREAM_FRAME_LEN: usize = 16 * 1024 * 1024;
 const CONTAINER_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const REFRESH_MARGIN: Duration = Duration::from_mins(5);
 
@@ -415,6 +422,20 @@ fn decode_eventstream_frame(buf: &[u8]) -> Result<(usize, Option<Vec<u8>>), Agen
     let total_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
     let headers_len = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
 
+    let frame_overhead = EVENTSTREAM_PRELUDE_LEN + EVENTSTREAM_CRC_LEN;
+    if !(MIN_EVENTSTREAM_FRAME..=MAX_EVENTSTREAM_FRAME_LEN).contains(&total_len) {
+        return Err(io_error(
+            std::io::ErrorKind::InvalidData,
+            format!("eventstream frame declares invalid total_len {total_len}"),
+        ));
+    }
+    if headers_len > total_len - frame_overhead {
+        return Err(io_error(
+            std::io::ErrorKind::InvalidData,
+            format!("eventstream frame declares invalid headers_len {headers_len}"),
+        ));
+    }
+
     if buf.len() < total_len {
         return Err(io_error(
             std::io::ErrorKind::UnexpectedEof,
@@ -422,12 +443,10 @@ fn decode_eventstream_frame(buf: &[u8]) -> Result<(usize, Option<Vec<u8>>), Agen
         ));
     }
 
-    let prelude_size = 12; // total_len(4) + headers_len(4) + prelude_crc(4)
-    let message_crc_size = 4;
-    let headers_end = prelude_size + headers_len;
-    let payload_end = total_len - message_crc_size;
+    let headers_end = EVENTSTREAM_PRELUDE_LEN + headers_len;
+    let payload_end = total_len - EVENTSTREAM_CRC_LEN;
 
-    let headers_bytes = &buf[prelude_size..headers_end];
+    let headers_bytes = &buf[EVENTSTREAM_PRELUDE_LEN..headers_end];
     let payload_bytes = &buf[headers_end..payload_end];
 
     let mut event_type = None;
@@ -681,6 +700,12 @@ impl Provider for Bedrock {
                         frame_buf[2],
                         frame_buf[3],
                     ]) as usize;
+                    if peek_total > MAX_EVENTSTREAM_FRAME_LEN {
+                        return Err(io_error(
+                            std::io::ErrorKind::InvalidData,
+                            format!("eventstream frame declares oversized total_len {peek_total}"),
+                        ));
+                    }
                     if frame_buf.len() < peek_total {
                         break;
                     }
@@ -697,12 +722,12 @@ impl Provider for Bedrock {
                     if let ControlFlow::Break(()) =
                         parser.process(&event_type, &json, event_tx).await?
                     {
-                        return Ok(parser.finish());
+                        return parser.finish();
                     }
                 }
             }
 
-            Ok(parser.finish())
+            parser.finish()
         })
     }
 
@@ -905,6 +930,33 @@ mod tests {
         assert!(data.is_none());
     }
 
+    #[test]
+    fn decode_eventstream_rejects_oversized_total_len() {
+        let mut frame = vec![0u8; MIN_EVENTSTREAM_FRAME];
+        let over_cap = u32::try_from(MAX_EVENTSTREAM_FRAME_LEN).expect("cap fits in u32") + 1;
+        frame[0..4].copy_from_slice(&over_cap.to_be_bytes());
+        let err = decode_eventstream_frame(&frame).unwrap_err();
+        assert!(matches!(err, AgentError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData));
+    }
+
+    #[test]
+    fn decode_eventstream_rejects_headers_len_past_total_len() {
+        let mut frame = vec![0u8; MIN_EVENTSTREAM_FRAME];
+        let total_len = u32::try_from(MIN_EVENTSTREAM_FRAME).expect("minimum fits in u32");
+        frame[0..4].copy_from_slice(&total_len.to_be_bytes());
+        frame[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        let err = decode_eventstream_frame(&frame).unwrap_err();
+        assert!(matches!(err, AgentError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData));
+    }
+
+    #[test]
+    fn decode_eventstream_rejects_total_len_below_frame_overhead() {
+        let mut frame = vec![0u8; MIN_EVENTSTREAM_FRAME];
+        frame[0..4].copy_from_slice(&1u32.to_be_bytes());
+        let err = decode_eventstream_frame(&frame).unwrap_err();
+        assert!(matches!(err, AgentError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData));
+    }
+
     #[test_case("ValidationException", 400, "Access denied" ; "validation_exception")]
     #[test_case("ThrottlingException", 429, "Rate exceeded" ; "throttling_exception")]
     #[test_case("UnknownException", 500, "oops" ; "unknown_maps_to_500")]
@@ -1030,7 +1082,7 @@ aws_session_token = MYTOKEN\n";
                     .is_break()
             );
 
-            let resp = parser.finish();
+            let resp = parser.finish().unwrap();
             assert_eq!(resp.usage.input, 10);
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello")
@@ -1039,6 +1091,27 @@ aws_session_token = MYTOKEN\n";
                 rx.drain()
                     .any(|e| matches!(e, ProviderEvent::TextDelta { text } if text == "Hello"))
             );
+        });
+    }
+
+    #[test]
+    fn event_parser_without_message_stop_is_retryable() {
+        smol::block_on(async {
+            let (tx, _rx) = flume::unbounded();
+            let mut parser = shared::EventParser::new();
+            let flow = parser
+                .process(
+                    "content_block_delta",
+                    r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Par"}}"#,
+                    &tx,
+                )
+                .await
+                .unwrap();
+            assert_eq!(flow, ControlFlow::Continue(()));
+
+            let err = parser.finish().unwrap_err();
+            assert!(err.is_retryable());
+            assert!(matches!(err, AgentError::Io(_)));
         });
     }
 

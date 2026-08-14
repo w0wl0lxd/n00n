@@ -218,7 +218,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = '- Use the **grep** tool when searching for specific content across files. Use the `pattern` parameter (not `command`). Avoid PCRE look-around like `(?!...)` or `(?<!...)` — they are not supported. For multiple paths, pass an array: `{"path": ["src", "tests"]}`.',
+  content = '- Use the **grep** tool when searching for specific content across files. Use the `pattern` parameter (not `command`). Rust regex has no PCRE look-around (`(?!...)`, `(?<!...)`) or backreferences (`\\1`, `\\k<name>`) — rewrite the pattern instead. For multiple paths, pass an array: `{"path": ["src", "tests"]}`.',
 })
 
 n00n.api.register_tool({
@@ -227,7 +227,7 @@ n00n.api.register_tool({
   kind = "search",
   workload = "cheap",
   modes = { "default", "research", "build", "compact" },
-  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: PCRE look-around (e.g. `(?!...)`, `(?<!...)`) is not supported. Use Rust regex syntax.]],
+  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: this is Rust regex, not PCRE — no look-around (`(?!...)`, `(?<!...)`) and no backreferences (`\1`, `\k<name>`).]],
 
   schema = {
     type = "object",

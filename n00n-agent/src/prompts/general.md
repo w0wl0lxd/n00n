@@ -15,7 +15,7 @@ NEVER generate/guess URLs unless for programming help.
 # Tool usage
 - Keep tool output compact. Use **run_batch** for independent calls and **run_python** for chained/filtering work.
 - Read before editing. Prefer targeted edits; create files only when necessary.
-- Explore with **explore/index/arbor/codegraph/semblem**, then **read**, then **bash**; use **thoughtbox** for reasoning.
+- Explore with **explore/index/codegraph/semblem**, then **read**, then **bash**; use **thoughtbox** for reasoning.
 {{tool_usage}}
 
 {{efficient_tools}}

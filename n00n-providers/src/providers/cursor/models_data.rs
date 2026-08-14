@@ -4,6 +4,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.25,
@@ -20,6 +21,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -36,6 +38,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -52,6 +55,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -68,6 +72,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -84,6 +89,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -100,6 +106,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -116,6 +123,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -132,6 +140,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -148,6 +157,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -164,6 +174,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.0,
@@ -180,6 +191,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.0,
@@ -196,6 +208,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: true,
         pricing: crate::model::ModelPricing {
             input: 0.5,
@@ -212,6 +225,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -228,6 +242,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -244,6 +259,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -260,6 +276,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -276,6 +293,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -292,6 +310,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -308,6 +327,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -324,6 +344,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -340,6 +361,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -356,6 +378,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -372,6 +395,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -388,6 +412,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -404,6 +429,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -420,6 +446,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -436,6 +463,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.0,
@@ -452,6 +480,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.0,
@@ -468,6 +497,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.0,
@@ -484,6 +514,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.0,
@@ -500,6 +531,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.5,
@@ -516,6 +548,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -532,6 +565,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -548,6 +582,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -564,6 +599,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -580,6 +616,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -596,6 +633,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -612,6 +650,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -628,6 +667,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -644,6 +684,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -660,6 +701,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -676,6 +718,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -692,6 +735,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -708,6 +752,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -724,6 +769,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -740,6 +786,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -756,6 +803,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -772,6 +820,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -788,6 +837,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -804,6 +854,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -820,6 +871,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -836,6 +888,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -852,6 +905,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -868,6 +922,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -884,6 +939,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -900,6 +956,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -916,6 +973,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -932,6 +990,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -948,6 +1007,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -964,6 +1024,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -980,6 +1041,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -996,6 +1058,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1012,6 +1075,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1028,6 +1092,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1044,6 +1109,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1060,6 +1126,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1076,6 +1143,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1092,6 +1160,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1108,6 +1177,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1124,6 +1194,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1140,6 +1211,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1156,6 +1228,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1172,6 +1245,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1188,6 +1262,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1204,6 +1279,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1220,6 +1296,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1236,6 +1313,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1252,6 +1330,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1268,6 +1347,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1284,6 +1364,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1300,6 +1381,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1316,6 +1398,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1332,6 +1415,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1348,6 +1432,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1364,6 +1449,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1380,6 +1466,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1396,6 +1483,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 10.0,
@@ -1412,6 +1500,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1428,6 +1517,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1444,6 +1534,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1460,6 +1551,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1476,6 +1568,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1492,6 +1585,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1508,6 +1602,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1524,6 +1619,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1540,6 +1636,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1556,6 +1653,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -1572,6 +1670,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1588,6 +1687,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1604,6 +1704,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1620,6 +1721,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1636,6 +1738,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1652,6 +1755,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1668,6 +1772,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1684,6 +1789,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1700,6 +1806,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1716,6 +1823,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1732,6 +1840,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1748,6 +1857,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -1764,6 +1874,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 6.0,
@@ -1780,6 +1891,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 6.0,
@@ -1796,6 +1908,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1812,6 +1925,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1828,6 +1942,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1844,6 +1959,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1860,6 +1976,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1876,6 +1993,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1892,6 +2010,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1908,6 +2027,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1924,6 +2044,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1940,6 +2061,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1956,6 +2078,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1972,6 +2095,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -1988,6 +2112,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2004,6 +2129,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2020,6 +2146,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2036,6 +2163,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2052,6 +2180,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2068,6 +2197,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2084,6 +2214,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2100,6 +2231,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2116,6 +2248,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -2132,6 +2265,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -2148,6 +2282,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -2164,6 +2299,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -2180,6 +2316,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.5,
@@ -2196,6 +2333,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2212,6 +2350,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2228,6 +2367,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2244,6 +2384,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2260,6 +2401,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2276,6 +2418,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 5.0,
@@ -2292,6 +2435,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -2308,6 +2452,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -2324,6 +2469,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -2340,6 +2486,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -2356,6 +2503,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -2372,6 +2520,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -2388,6 +2537,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.75,
@@ -2404,6 +2554,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2420,6 +2571,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2436,6 +2588,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2452,6 +2605,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2468,6 +2622,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2484,6 +2639,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2500,6 +2656,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2516,6 +2673,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2532,6 +2690,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2548,6 +2707,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2564,6 +2724,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2580,6 +2741,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.0,
@@ -2596,6 +2758,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gemini,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.5,
@@ -2612,6 +2775,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gemini,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.5,
@@ -2628,6 +2792,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gemini,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.5,
@@ -2644,6 +2809,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gemini,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.5,
@@ -2660,6 +2826,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Strong,
         family: crate::model::ModelFamily::Gemini,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 2.0,
@@ -2676,6 +2843,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.75,
@@ -2692,6 +2860,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.75,
@@ -2708,6 +2877,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.75,
@@ -2724,6 +2894,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.75,
@@ -2740,6 +2911,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.75,
@@ -2756,6 +2928,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.2,
@@ -2772,6 +2945,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.2,
@@ -2788,6 +2962,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.2,
@@ -2804,6 +2979,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.2,
@@ -2820,6 +2996,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.2,
@@ -2836,6 +3013,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -2852,6 +3030,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -2868,6 +3047,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.25,
@@ -2884,6 +3064,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: true,
         pricing: crate::model::ModelPricing {
             input: 1.25,
@@ -2900,6 +3081,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.25,
@@ -2916,6 +3098,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gemini,
         vision: false,
+        files: false,
         default: true,
         pricing: crate::model::ModelPricing {
             input: 0.5,
@@ -2932,6 +3115,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Gemini,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.5,
@@ -2948,6 +3132,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -2964,6 +3149,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Claude,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 3.0,
@@ -2980,6 +3166,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Weak,
         family: crate::model::ModelFamily::Gpt,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.25,
@@ -2996,6 +3183,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Generic,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 0.95,
@@ -3012,6 +3200,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Glm,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.4,
@@ -3028,6 +3217,7 @@ pub(crate) const MODELS: &[crate::model::ModelEntry] = &[
         tier: crate::model::ModelTier::Medium,
         family: crate::model::ModelFamily::Glm,
         vision: false,
+        files: false,
         default: false,
         pricing: crate::model::ModelPricing {
             input: 1.4,

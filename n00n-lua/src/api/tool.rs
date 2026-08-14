@@ -48,6 +48,12 @@ const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PLAIN_HEADER_STYLE: &str = "tool";
 const MAX_SAFE_INTEGER_I64: i64 = 9_007_199_254_740_991;
 const MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
+/// Budget for dispatching a call whose shared deadline is already exhausted,
+/// granted only to tools that opt in via `register_tool{deadline_grace=true}`.
+/// Failing before dispatch would deny such a tool (e.g. `batch`) the chance
+/// to settle its own state gracefully instead of the caller seeing a bare
+/// "timeout exceeded"; every other tool keeps today's fail-fast behavior.
+const EXHAUSTED_DEADLINE_GRACE_SECS: u64 = 5;
 
 type DescribeFn = Box<dyn Fn(&str, &str, &Value) -> Option<String>>;
 
@@ -158,6 +164,7 @@ pub(crate) struct PendingTool {
     pub(crate) describe_key: Option<RegistryKey>,
     pub(crate) defer_loading: bool,
     pub(crate) namespace: Option<Arc<str>>,
+    pub(crate) deadline_grace: bool,
 }
 
 pub(crate) type PendingTools = Arc<Mutex<Vec<PendingTool>>>;
@@ -182,6 +189,10 @@ pub(crate) struct LuaTool {
     pub(crate) has_describe_fn: bool,
     pub(crate) defer_loading: bool,
     pub(crate) namespace: Option<Arc<str>>,
+    /// Opt-in: dispatch this tool even when the shared deadline is already
+    /// exhausted, granting `EXHAUSTED_DEADLINE_GRACE_SECS` to gracefully
+    /// settle instead of failing before the Lua handler ever runs.
+    pub(crate) deadline_grace: bool,
 }
 
 impl Tool for LuaTool {
@@ -281,6 +292,7 @@ impl Tool for LuaTool {
             nested: nested_dispatch_active(),
             mutable_path_field: self.mutable_path_field.clone(),
             timeout: self.timeout,
+            deadline_grace: self.deadline_grace,
             start_annotation: self.start_annotation.clone(),
         }))
     }
@@ -302,6 +314,7 @@ struct LuaToolInvocation {
     nested: bool,
     mutable_path_field: Option<Arc<str>>,
     timeout: Option<Duration>,
+    deadline_grace: bool,
     start_annotation: Option<StartAnnotation>,
 }
 
@@ -434,20 +447,33 @@ impl ToolInvocation for LuaToolInvocation {
         let input = self.input;
         let tx = self.tx;
         let tool_timeout = self.timeout;
+        let deadline_grace = self.deadline_grace;
         let nested = self.nested;
 
         Box::pin(async move {
-            let effective_secs: Option<u64> = match tool_timeout {
+            // A deadline_grace tool still gets dispatched past an exhausted
+            // deadline, but with a fresh short-lived one: the stale past
+            // instant would arm the Lua runtime's watchdog immediately,
+            // racing the handler's own settle logic (see execute() callers).
+            let grace_deadline =
+                Deadline::after(Duration::from_secs(EXHAUSTED_DEADLINE_GRACE_SECS));
+            let (effective_secs, dispatch_deadline): (Option<u64>, Deadline) = match tool_timeout {
                 Some(d) => match deadline.cap_timeout(d.as_secs()) {
-                    Ok(s) => Some(s),
+                    Ok(s) => (Some(s), deadline),
+                    Err(_) if deadline_grace => {
+                        (Some(EXHAUSTED_DEADLINE_GRACE_SECS), grace_deadline)
+                    }
                     Err(e) => return Err(e).into(),
                 },
                 None => match deadline {
                     Deadline::At(_) => match deadline.cap_timeout(u64::MAX) {
-                        Ok(s) => Some(s),
+                        Ok(s) => (Some(s), deadline),
+                        Err(_) if deadline_grace => {
+                            (Some(EXHAUSTED_DEADLINE_GRACE_SECS), grace_deadline)
+                        }
                         Err(e) => return Err(e).into(),
                     },
-                    Deadline::None => None,
+                    Deadline::None => (None, Deadline::None),
                 },
             };
 
@@ -464,7 +490,7 @@ impl ToolInvocation for LuaToolInvocation {
                     tool: Arc::clone(&tool),
                     input,
                     ctx: Box::new(lua_ctx),
-                    deadline: match deadline {
+                    deadline: match dispatch_deadline {
                         Deadline::At(t) => Some(t),
                         Deadline::None => None,
                     },
@@ -688,6 +714,9 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 ///   permission_scopes (string|function) Field name in schema (string) or `function(input)` returning a list of path scopes that need write permission.
 ///   mutable_path    (string)   Schema field name (type: string) for the primary path the tool writes.
 ///   start_annotation (string|table) Schema field used to annotate the start header with a count (string) or timeout (`{ field, kind="timeout" }`).
+///   deadline_grace  (boolean)  Optional. When true, dispatch even if the shared agent deadline
+///                              is already exhausted, granting a brief grace window so the
+///                              handler can settle its own state gracefully. Default: false.
 /// @return
 /// @example
 /// n00n.api.register_tool({
@@ -1273,6 +1302,13 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<Option<bool>>("defer_loading")?
         .unwrap_or_else(|| false);
 
+    // Opt-in: still dispatch this tool when the shared deadline is already
+    // exhausted, so it can settle its own state gracefully. See
+    // EXHAUSTED_DEADLINE_GRACE_SECS; every other tool keeps the fail-fast.
+    let deadline_grace: bool = spec
+        .get::<Option<bool>>("deadline_grace")?
+        .unwrap_or_else(|| false);
+
     let namespace: Option<Arc<str>> = spec
         .get("namespace")
         .ok()
@@ -1303,6 +1339,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             describe_key,
             defer_loading,
             namespace,
+            deadline_grace,
         });
 
     Ok(())
@@ -1751,6 +1788,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: Some(Duration::from_mins(1)),
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         }
@@ -1812,6 +1850,7 @@ mod tests {
             has_describe_fn: false,
             defer_loading: false,
             namespace: None,
+            deadline_grace: false,
         }
     }
 
@@ -1913,6 +1952,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: None,
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         };
@@ -1932,6 +1972,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: None,
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         };
@@ -1957,6 +1998,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: None,
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         };

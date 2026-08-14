@@ -1101,6 +1101,9 @@ impl<'h> Agent<'h> {
                 error = %e,
                 "auto-compaction failed; continuing without compacting"
             );
+            self.event_tx.send(AgentEvent::AutoCompactFailed {
+                error: e.to_string(),
+            })?;
             return Ok(false);
         }
         Ok(true)

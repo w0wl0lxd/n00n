@@ -5,6 +5,10 @@ local replace_lines = require("edit_helpers").replace_lines
 
 local SNIPPET_MAX_CHARS = 32
 local FALLBACK_VIEW_LINES = 10
+-- A diff never truncates (see diff_view below), but `math.huge` risks a NaN
+-- from `% math.huge` and grows buffers without bound on a pathological
+-- input. This cap is far past any real diff while staying a finite number.
+local DIFF_VIEW_MAX_LINES = 1000000
 
 local EDIT_LINES_DESCRIPTION =
   "Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete."
@@ -142,7 +146,11 @@ end
 -- ever, a diff is exactly the change and hiding part of it lies.
 local function diff_view(blocks, path)
   local buf = n00n.ui.buf()
-  local view = ToolView.new(buf, { max_lines = math.huge, keep = "head" })
+  local view = ToolView.new(buf, {
+    max_lines = DIFF_VIEW_MAX_LINES,
+    max_expand_lines = DIFF_VIEW_MAX_LINES,
+    keep = "head",
+  })
   resolve_block_nrs(blocks, path)
   local w = gutter_width(blocks)
   local fmt = w > 0 and ("%" .. w .. "s ") or nil

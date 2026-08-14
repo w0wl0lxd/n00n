@@ -1166,6 +1166,7 @@ impl<'t> EventLoop<'t> {
             n00n_agent::AgentEvent::Done { .. }
                 | n00n_agent::AgentEvent::Error { .. }
                 | n00n_agent::AgentEvent::CompactionDone
+                | n00n_agent::AgentEvent::AutoCompactFailed { .. }
         );
         if capture && let Err(error) = self.capture_plugin_state(idx) {
             warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state");

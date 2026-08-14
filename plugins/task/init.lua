@@ -314,6 +314,20 @@ local function header(input)
   return input.description
 end
 
+-- ToolView is a required module; an incompatible restore snapshot can hit
+-- an edge it does not defend against. Never let a restore crash the whole
+-- callback over a rendering failure: fall back to a plain buffer.
+local function safe_restore(fn, output)
+  local ok, result = pcall(fn)
+  if ok then
+    return result
+  end
+  n00n.log.warn("task restore: falling back to plain output: " .. tostring(result))
+  local buf = n00n.ui.buf()
+  buf:set_lines(n00n.split(output, "\n"))
+  return buf
+end
+
 -- Standalone runs render markdown on the Rust side (format = "markdown");
 -- this mirrors that for restore and batch children, which build the body here.
 local function restore(_input, output, is_error, ctx)
@@ -327,10 +341,14 @@ local function restore(_input, output, is_error, ctx)
     local width = math.max(n00n.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)
     local ok, md_lines = pcall(n00n.ui.markdown, output, width)
     if ok then
-      return ToolView.restore_lines(md_lines, opts)
+      return safe_restore(function()
+        return ToolView.restore_lines(md_lines, opts)
+      end, output)
     end
   end
-  return ToolView.restore(output, opts)
+  return safe_restore(function()
+    return ToolView.restore(output, opts)
+  end, output)
 end
 
 n00n.api.register_tool({
