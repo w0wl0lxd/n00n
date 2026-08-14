@@ -525,6 +525,10 @@ n00n.api.register_tool({
   workload = "orchestrator",
   audiences = { "main", "research_sub", "general_sub" },
   defer_loading = true,
+  -- An already-exhausted shared deadline must still reach Batch:run so it
+  -- can settle pending children with INSUFFICIENT_TIME_ERROR instead of the
+  -- caller seeing a bare dispatch-layer timeout.
+  deadline_grace = true,
   schema = schema,
   header = function(input)
     return #tool_calls_of(input) .. " tools"
