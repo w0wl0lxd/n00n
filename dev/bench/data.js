@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786595200721,
+  "lastUpdate": 1786689260536,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -17273,6 +17273,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 136273,
             "range": "± 11949",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "65551ecbbdc408c71dc9bcf8b6ef15187ac2ebf5",
+          "message": "fix(ui): stop TUI panicking with no attached terminal (#355)\n\nn00n panicked with \"failed to initialize terminal: Os { code: 6, ... }\"\n(ENXIO) whenever the TUI started headless, piped, or otherwise without a\nTTY (20x in the runtime log). `ratatui::init()` panics by design;\n`TerminalGuard::init()` already returned a `color_eyre::Result` and its\ncaller already documented \"returns an error if the terminal cannot be\ninitialized\", so the graceful-error plumbing was already there — it just\ncalled the panicking constructor. Swap to `ratatui::try_init()` with a\nclear \"needs an interactive terminal\" context message.\n\nInvestigated the rest of the originally-reported panic/reliability list\nagainst the real runtime logs and current source; none of the others need\na code change here:\n- rustls \"no CryptoProvider\" panic and the streaming_content.rs\n  `Option::unwrap()` panic are both already fixed by ef5214c9c\n  (2026-07-30); every log occurrence of both predates that commit.\n- the daemon \"already running\" stale-PID report doesn't match a real gap:\n  `n00n-daemon/src/lock.rs`'s `blocks_new_listener` already calls\n  `pid_alive(existing.pid)` before ever refusing a start, and has since the\n  daemon feature itself landed.\n- the reported \"broken-pipe panic on stderr at shutdown\" turned out to be\n  a false positive: the one matching log line is a *different* Rust\n  binary's panic text, captured as part of a `bash` tool call's own\n  output, not an n00n process panic.",
+          "timestamp": "2026-08-14T02:10:17-04:00",
+          "tree_id": "dfc37f7ae6f1b6e734d33863a290fb4d28524c17",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/65551ecbbdc408c71dc9bcf8b6ef15187ac2ebf5"
+        },
+        "date": 1786689259525,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6621057,
+            "range": "± 17132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2446040,
+            "range": "± 3556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2442758,
+            "range": "± 23940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7908733,
+            "range": "± 15258",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3860471,
+            "range": "± 17386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3764615,
+            "range": "± 78219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 555542,
+            "range": "± 1017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168010,
+            "range": "± 351",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 161593,
+            "range": "± 304",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1052060,
+            "range": "± 2948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 630699,
+            "range": "± 5161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 631570,
+            "range": "± 3190",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 63626,
+            "range": "± 6677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 139391,
+            "range": "± 25316",
             "unit": "ns/iter"
           }
         ]
