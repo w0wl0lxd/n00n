@@ -745,7 +745,7 @@ mod tests {
     /// The fixture previously declared `edges(source_id, target_id)` while the
     /// index codegraph actually writes uses `edges(source, target)`. Every
     /// caller/callee/impact query therefore failed at runtime with
-    /// "no such column: e.target_id" while the tests passed against the wrong
+    /// `no such column: e.target_id` while the tests passed against the wrong
     /// schema. Pin the column names so the fixture cannot drift back.
     #[test]
     fn fixture_edges_match_the_indexed_schema() {
