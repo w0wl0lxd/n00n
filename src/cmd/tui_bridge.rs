@@ -500,6 +500,12 @@ mod tests {
         use n00n_daemon::protocol::{ControlRequest, ControlResponse, PROTOCOL_VERSION};
         use tempfile::TempDir;
 
+        // A loaded CI runner needs far longer than an idle developer machine to
+        // bind the socket and answer, so budget seconds rather than a fixed 1s.
+        const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
+        const CONNECT_POLL: Duration = Duration::from_millis(20);
+
+        let started = Instant::now();
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
         let (tx, rx) = flume::unbounded();
         respond_live(
@@ -515,12 +521,6 @@ mod tests {
         let handle = spawn(tmp.path(), tx).map_err(|e| e.to_string())?;
         let sock = daemon_socket_in(tmp.path());
 
-        // A loaded CI runner needs far longer than a idle developer machine to
-        // bind the socket and answer, so budget seconds rather than a fixed 1s.
-        const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
-        const CONNECT_POLL: Duration = Duration::from_millis(20);
-
-        let started = Instant::now();
         let mut connected = false;
         while started.elapsed() < CONNECT_DEADLINE {
             thread::sleep(CONNECT_POLL);
