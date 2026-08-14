@@ -76,6 +76,7 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
             let Some(name) = definition.get("name").and_then(Value::as_str) else {
                 return true;
             };
+            let name = n00n_config::canonical_tool_name(name);
             // Bash is the only execute-kind tool allowed in plan mode, and only
             // for commands that pass the read-only classifier.
             if name == crate::tools::BASH_TOOL_NAME {

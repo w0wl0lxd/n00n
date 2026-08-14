@@ -65,6 +65,7 @@ pub const MIN_LOW_SPEED_TIMEOUT_SECS: u64 = 1;
 pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
 
 pub const DEFAULT_BUILTINS: &[&str] = &[
+    "activate_tool",
     "agent_control",
     "arbor",
     "bash",
@@ -1148,18 +1149,18 @@ impl ToolOutputLines {
 
     #[must_use]
     pub fn get(&self, name: &str) -> usize {
-        match name {
-            "bash" => self.bash,
-            "code_execution" => self.code_execution,
-            "task" => self.task,
-            "workflow" => self.workflow,
-            "index" => self.index,
-            "grep" | "glob" => self.grep,
-            "arbor" | "codegraph" | "explore" => self.explore,
-            "read" => self.read,
-            "memory" => self.write,
+        match canonical_tool_name(name) {
+            "run_shell" => self.bash,
+            "run_python" => self.code_execution,
+            "run_task" => self.task,
+            "run_workflow" => self.workflow,
+            "index_file" => self.index,
+            "search_code" | "search_files" => self.grep,
+            "map_code" | "map_codegraph" | "explore_code" => self.explore,
+            "read_file" => self.read,
+            "use_memory" => self.write,
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
-            "webfetch" | "websearch" => self.web,
+            "fetch_url" | "search_web" => self.web,
             _ => self.other,
         }
     }

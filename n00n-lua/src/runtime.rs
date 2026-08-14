@@ -1681,6 +1681,9 @@ impl LuaRuntime {
             let plugins = Rc::clone(&plugins);
             crate::api::tool::set_local_tool_handles(move |tool| {
                 let plugins = plugins.borrow();
+                // Batch children name their tools as persisted, which may be a
+                // deprecated alias.
+                let tool = n00n_config::canonical_tool_name(tool);
                 let tk = plugins.values().find_map(|tools| tools.get(tool))?;
                 let to_fn = |key: Option<&RegistryKey>| {
                     key.and_then(|k| lua.registry_value::<Function>(k).ok())
@@ -2289,6 +2292,9 @@ fn plugin_fn(
 ) -> Option<(Function, LuaValue)> {
     let func = {
         let plugins = plugins.borrow();
+        // Persisted sessions store the pre-rename tool names, so resolve
+        // deprecated aliases before looking the callback up.
+        let tool = n00n_config::canonical_tool_name(tool);
         let key = key(plugins.get(plugin)?.get(tool)?)?;
         match lua.registry_value::<Function>(key) {
             Ok(f) => f,
@@ -2354,9 +2360,12 @@ async fn restore_item(
 ) -> Result<Option<RestoreReply>, String> {
     let (func, plugin_name) = {
         let plugins = plugins.borrow();
+        // Persisted sessions store the pre-rename tool names, so resolve
+        // deprecated aliases before looking the plugin up.
+        let tool = n00n_config::canonical_tool_name(&item.tool);
         let Some((pname, tk)) = plugins
             .iter()
-            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))
+            .find_map(|(pname, tools)| tools.get(tool).map(|tk| (Arc::clone(pname), tk)))
         else {
             return Ok(None);
         };

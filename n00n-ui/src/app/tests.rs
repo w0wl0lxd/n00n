@@ -4391,7 +4391,10 @@ fn fast_restored_from_session_meta() {
     let mut session = AppSession::new("anthropic/claude-opus-4-8", "/tmp/test");
     session.meta.fast = true;
 
-    let state = SessionState::from_session(session, &test_model(), &storage);
+    // Fallback model built without live provider resolution, so this
+    // doesn't depend on credentials being configured in the environment.
+    let fallback = n00n_providers::Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    let state = SessionState::from_session(session, &fallback, &storage);
     assert!(state.fast);
 }
 
