@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786699668673,
+  "lastUpdate": 1786699908428,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -18029,6 +18029,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 114719,
             "range": "± 20556",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "98aceb5b014437b4eb2a35469c28220b5d7f0cf1",
+          "message": "Merge pull request #351 from w0wl0lxd/revive/n00n-redact\n\nrefactor: consolidate tool-arg redaction into shared n00n-redact crate",
+          "timestamp": "2026-08-14T05:25:12-04:00",
+          "tree_id": "3e3f0bbf205e30be7cd75e205232fc2f7bfb4642",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/98aceb5b014437b4eb2a35469c28220b5d7f0cf1"
+        },
+        "date": 1786699907384,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6684266,
+            "range": "± 130056",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2217575,
+            "range": "± 8328",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2210259,
+            "range": "± 102268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8006972,
+            "range": "± 271472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4294558,
+            "range": "± 35110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4296212,
+            "range": "± 108298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 579634,
+            "range": "± 4021",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 186991,
+            "range": "± 462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 186763,
+            "range": "± 1282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1065334,
+            "range": "± 7934",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588219,
+            "range": "± 1496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 587811,
+            "range": "± 1833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81312,
+            "range": "± 650",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 114024,
+            "range": "± 3720",
             "unit": "ns/iter"
           }
         ]
