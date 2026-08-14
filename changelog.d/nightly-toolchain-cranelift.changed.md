@@ -1,0 +1,1 @@
+n00n now builds on a floating Rust nightly toolchain instead of stable, with the Cranelift codegen backend enabled for dev builds (release builds still use LLVM). CI toolchain steps were switched to nightly, the MSRV job was removed since a floating-nightly policy has no minimum supported version, and the `rust-version` field was dropped from all workspace manifests accordingly.

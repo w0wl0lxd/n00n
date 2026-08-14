@@ -5,7 +5,6 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version.workspace = true
 description = "Offline cold-start token profiling and CI regression gates for n00n"
 publish = false
 

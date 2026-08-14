@@ -2,3 +2,13 @@
 # which rustc's `-nodefaultlibs` musl link would otherwise drop.
 [target.aarch64-unknown-linux-musl]
 rustflags = ["-C", "link-arg=-lgcc"]
+
+# Cranelift for dev builds only; release keeps LLVM. Windows/macOS CI jobs
+# override this back to llvm via CARGO_PROFILE_DEV_CODEGEN_BACKEND (cranelift's
+# unwinding support is experimental on those hosts and n00n's own code
+# catches panics via catch_unwind).
+[unstable]
+codegen-backend = true
+
+[profile.dev]
+codegen-backend = "cranelift"
