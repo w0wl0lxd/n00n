@@ -892,6 +892,7 @@ impl OpenAi {
         credential_hash: &str,
         stream_timeout: Duration,
         attempt_nonce: u64,
+        idempotency_key: Option<String>,
     ) -> Result<(Option<String>, StreamResponse), super::websocket::WebSocketAttemptError>
     where
         F: FnMut() -> Value,
@@ -1000,6 +1001,7 @@ impl OpenAi {
                     },
                     event_tx,
                     stream_timeout,
+                    idempotency_key.clone(),
                 )
                 .await;
             match &result {
@@ -1471,6 +1473,7 @@ impl OpenAi {
                     &socket_credential_hash,
                     stream_timeout,
                     attempt_nonce,
+                    opts.idempotency_key.clone(),
                 )
                 .await;
             match websocket_result {
@@ -3595,6 +3598,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap_err();
@@ -3865,6 +3869,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap_err();
@@ -3978,6 +3983,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4013,6 +4019,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4106,6 +4113,7 @@ mod tests {
                     &old_credential_hash,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4210,6 +4218,7 @@ mod tests {
                     &old_credential_hash,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4227,6 +4236,7 @@ mod tests {
                     &old_credential_hash,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4375,6 +4385,7 @@ mod tests {
                 TEST_CREDENTIAL_HASH,
                 TEST_STREAM_TIMEOUT,
                 0,
+                None,
             );
 
             let cancelled = futures_lite::future::race(
