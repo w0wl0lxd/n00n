@@ -523,7 +523,7 @@ pub(crate) async fn parse_sse(
         }
     }
 
-    Ok(parser.finish())
+    parser.finish()
 }
 
 #[cfg(test)]
@@ -749,7 +749,10 @@ event: content_block_stop\n\
 data: {\"type\":\"content_block_stop\"}\n\
 \n\
 event: message_delta\n\
-data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n";
 
             let (tx, rx) = flume::unbounded();
             let resp = parse_sse(mock_response(sse_data.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
@@ -993,7 +996,10 @@ event: content_block_stop\n\
 data: {\"type\":\"content_block_stop\"}\n\
 \n\
 event: message_delta\n\
-data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n";
 
             let (tx, _rx) = flume::unbounded();
             let resp = parse_sse(mock_response(sse_data.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
@@ -1039,7 +1045,10 @@ event: content_block_stop\n\
 data: {\"type\":\"content_block_stop\"}\n\
 \n\
 event: message_delta\n\
-data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n";
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n";
 
             let (tx, rx) = flume::unbounded();
             let resp = parse_sse(mock_response(sse_data), &tx, TEST_STREAM_TIMEOUT)
@@ -1088,7 +1097,10 @@ event: content_block_stop\n\
 data: {\"type\":\"content_block_stop\"}\n\
 \n\
 event: message_delta\n\
-data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n";
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n";
 
             let (tx, _rx) = flume::unbounded();
             let resp = parse_sse(mock_response(sse_data), &tx, TEST_STREAM_TIMEOUT)
@@ -1101,6 +1113,29 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
             assert!(
                 matches!(&resp.message.content[1], ContentBlock::Text { text } if text == "Hi")
             );
+        });
+    }
+
+    #[test]
+    fn parse_sse_stream_without_terminator_is_retryable() {
+        smol::block_on(async {
+            let sse_data = b"\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Par\"}}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let err = parse_sse(mock_response(sse_data), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap_err();
+
+            assert!(err.is_retryable());
+            assert!(matches!(err, AgentError::Io(_)));
         });
     }
 }
