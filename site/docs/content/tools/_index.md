@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 34 built-in tools. This is the full reference.
+n00n ships with 33 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -88,7 +88,7 @@ Insert lines before `line` number. Existing lines shift down.
 
 Unified codebase exploration router. Picks the best backend for the question:
 - **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
+- **relations** intent: caller/callee maps via `codegraph`
 - **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
 - **search** intent: keyword or natural-language search via `semblem`
 - **symbol** intent: symbol drill-down via `codegraph node`
@@ -96,17 +96,14 @@ Unified codebase exploration router. Picks the best backend for the question:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `token_budget` | integer | no |  |
+| `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
 | `path` | string | no | File path for skeleton queries. A file extension selects the index backend in auto mode. |
-| `from_symbol` | string | no |  |
 | `symbol` | string | no |  |
-| `use_cache` | boolean | no |  |
-| `intent` | string | no |  |
-| `to_symbol` | string | no |  |
 | `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
 | `command` | string | no |  |
-| `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
-| `project` | string | no | Project root for arbor/codegraph queries (defaults to cwd). |
+| `use_cache` | boolean | no |  |
+| `project` | string | no | Project root for codegraph queries (defaults to cwd). |
+| `intent` | string | no |  |
 
 ### `glob` *(lua plugin)*
 
@@ -182,23 +179,6 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 | `mode` | string | no |  |
 | `content` | string | no | Content filter for search (docs, config, code, or all) |
 | `top_k` | integer | no |  |
-
-### `arbor` *(lua plugin)*
-
-Graph-based code analysis using Arbor. Returns structured, compact
-caller/callee/project maps; prefer it over broad grep or unfiltered reads
-for relationship and impact questions.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `token_budget` | integer | no |  |
-| `path` | string | no |  |
-| `from_symbol` | string | no |  |
-| `symbol` | string | no |  |
-| `command` | string | yes |  |
-| `project` | string | no |  |
-| `operation` | string | no |  |
-| `to_symbol` | string | no |  |
 
 ## Execution & Control
 
