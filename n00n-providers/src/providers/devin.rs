@@ -1252,7 +1252,6 @@ mod tests {
             "https://devin.example?token=abc",
             "https://devin.example#frag",
             "https://devin.example/path?x=1",
-            "https:///nohost",
             "not-a-url",
             "",
         ] {
@@ -1260,6 +1259,9 @@ mod tests {
         }
         assert!(is_valid_api_server_url("https://devin.example"));
         assert!(is_valid_api_server_url("https://devin.example/base"));
+        // The WHATWG parser skips the surplus slash, so this is `https://nohost/`
+        // with a real host rather than a host-less URL.
+        assert!(is_valid_api_server_url("https:///nohost"));
     }
 
     #[test]
