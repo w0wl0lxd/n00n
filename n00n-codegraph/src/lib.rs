@@ -4,6 +4,7 @@
 
 mod db;
 
+use std::ffi::OsStr;
 use std::io::{Error, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -14,6 +15,17 @@ use wait_timeout::ChildExt;
 
 const CODEGRAPH_BINARY: &str = "codegraph";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const PROJECT_PATH_FLAG: &str = "--path";
+const PROJECT_POSITIONAL_SEPARATOR: &str = "--";
+const EXPLORE_SUBCOMMAND: &str = "explore";
+const CALLERS_SUBCOMMAND: &str = "callers";
+const CALLEES_SUBCOMMAND: &str = "callees";
+const IMPACT_SUBCOMMAND: &str = "impact";
+const AFFECTED_SUBCOMMAND: &str = "affected";
+const NODE_SUBCOMMAND: &str = "node";
+const QUERY_SUBCOMMAND: &str = "query";
+const SYNC_SUBCOMMAND: &str = "sync";
+const FILES_SUBCOMMAND: &str = "files";
 
 pub struct Client;
 
@@ -233,24 +245,57 @@ impl Client {
         Self::files_cli(project, timeout_secs)
     }
 
-    fn explore_cli(
-        query: &str,
+    /// Builds the argv for a `codegraph` subcommand.
+    ///
+    /// Every subcommand except `sync` takes the project through `--path` and
+    /// accepts only its own positionals; passing the project positionally makes
+    /// the CLI reject the call with "too many arguments", and for the variadic
+    /// `explore <query...>` it is silently appended to the query text instead.
+    fn cli_args<'a>(
+        subcommand: &'a str,
+        project: &'a Path,
+        positionals: &'a [&'a str],
+    ) -> Vec<&'a OsStr> {
+        let mut args: Vec<&OsStr> = Vec::with_capacity(positionals.len() + 4);
+        args.push(subcommand.as_ref());
+        if subcommand == SYNC_SUBCOMMAND {
+            args.push(PROJECT_POSITIONAL_SEPARATOR.as_ref());
+            args.push(project.as_os_str());
+            return args;
+        }
+        args.push(PROJECT_PATH_FLAG.as_ref());
+        args.push(project.as_os_str());
+        args.push(PROJECT_POSITIONAL_SEPARATOR.as_ref());
+        for positional in positionals {
+            args.push(positional.as_ref());
+        }
+        args
+    }
+
+    fn run_cli(
+        subcommand: &str,
         project: &Path,
+        positionals: &[&str],
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
         let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
-            .arg("explore")
-            .arg("--")
-            .arg(query)
-            .arg(project)
+            .args(Self::cli_args(subcommand, project, positionals))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|source| CodegraphError::Exec { source })?;
 
-        Self::wait_for_output(child, timeout, "explore")
+        Self::wait_for_output(child, timeout, subcommand)
+    }
+
+    fn explore_cli(
+        query: &str,
+        project: &Path,
+        timeout_secs: Option<u64>,
+    ) -> Result<String, CodegraphError> {
+        Self::run_cli(EXPLORE_SUBCOMMAND, project, &[query], timeout_secs)
     }
 
     fn callers_cli(
@@ -258,19 +303,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
-            .arg("callers")
-            .arg("--")
-            .arg(symbol)
-            .arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "callers")
+        Self::run_cli(CALLERS_SUBCOMMAND, project, &[symbol], timeout_secs)
     }
 
     fn callees_cli(
@@ -278,19 +311,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
-            .arg("callees")
-            .arg("--")
-            .arg(symbol)
-            .arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "callees")
+        Self::run_cli(CALLEES_SUBCOMMAND, project, &[symbol], timeout_secs)
     }
 
     fn impact_cli(
@@ -298,19 +319,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
-            .arg("impact")
-            .arg("--")
-            .arg(symbol)
-            .arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "impact")
+        Self::run_cli(IMPACT_SUBCOMMAND, project, &[symbol], timeout_secs)
     }
 
     fn affected_cli(
@@ -318,21 +327,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let mut cmd = Command::new(CODEGRAPH_BINARY);
-        cmd.arg("affected").arg("--");
-        for file in files {
-            cmd.arg(file);
-        }
-        cmd.arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let child = cmd
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "affected")
+        Self::run_cli(AFFECTED_SUBCOMMAND, project, files, timeout_secs)
     }
 
     fn node_cli(
@@ -340,19 +335,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
-            .arg("node")
-            .arg("--")
-            .arg(name)
-            .arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "node")
+        Self::run_cli(NODE_SUBCOMMAND, project, &[name], timeout_secs)
     }
 
     fn query_cli(
@@ -360,49 +343,15 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
-            .arg("query")
-            .arg("--")
-            .arg(search)
-            .arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "query")
+        Self::run_cli(QUERY_SUBCOMMAND, project, &[search], timeout_secs)
     }
 
     fn sync_cli(project: &Path, timeout_secs: Option<u64>) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
-            .arg("sync")
-            .arg("--")
-            .arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "sync")
+        Self::run_cli(SYNC_SUBCOMMAND, project, &[], timeout_secs)
     }
 
     fn files_cli(project: &Path, timeout_secs: Option<u64>) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
-        let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
-            .arg("files")
-            .arg("--")
-            .arg(project)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| CodegraphError::Exec { source })?;
-
-        Self::wait_for_output(child, timeout, "files")
+        Self::run_cli(FILES_SUBCOMMAND, project, &[], timeout_secs)
     }
 
     fn wait_for_output(
@@ -528,6 +477,56 @@ mod tests {
             }
             other => panic!("expected Cli error, got: {other:?}"),
         }
+    }
+
+    fn args_of(subcommand: &str, project: &Path, positionals: &[&str]) -> Vec<String> {
+        Client::cli_args(subcommand, project, positionals)
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// `codegraph <sub>` accepts the project only through `--path`. Passing it
+    /// positionally makes the CLI reject the call with "too many arguments",
+    /// and for the variadic `explore <query...>` it is silently swallowed into
+    /// the query text, which returns answers for the wrong question.
+    #[test]
+    fn project_is_passed_as_a_path_flag_not_a_positional() {
+        let project = Path::new("/tmp/project");
+        for (subcommand, positionals) in [
+            (super::EXPLORE_SUBCOMMAND, &["how does auth work"][..]),
+            (super::CALLERS_SUBCOMMAND, &["restore_item"][..]),
+            (super::CALLEES_SUBCOMMAND, &["restore_item"][..]),
+            (super::IMPACT_SUBCOMMAND, &["restore_item"][..]),
+            (super::NODE_SUBCOMMAND, &["restore_item"][..]),
+            (super::QUERY_SUBCOMMAND, &["restore"][..]),
+            (super::FILES_SUBCOMMAND, &[][..]),
+            (super::AFFECTED_SUBCOMMAND, &["src/a.rs", "src/b.rs"][..]),
+        ] {
+            let args = args_of(subcommand, project, positionals);
+            let mut expected = vec![
+                subcommand.to_owned(),
+                super::PROJECT_PATH_FLAG.to_owned(),
+                project.to_string_lossy().into_owned(),
+                super::PROJECT_POSITIONAL_SEPARATOR.to_owned(),
+            ];
+            expected.extend(positionals.iter().map(|p| (*p).to_owned()));
+            assert_eq!(args, expected, "argv for {subcommand}");
+        }
+    }
+
+    /// `sync [path]` is the one subcommand that takes the project positionally.
+    #[test]
+    fn sync_keeps_the_project_positional() {
+        let project = Path::new("/tmp/project");
+        assert_eq!(
+            args_of(super::SYNC_SUBCOMMAND, project, &[]),
+            vec![
+                super::SYNC_SUBCOMMAND.to_owned(),
+                super::PROJECT_POSITIONAL_SEPARATOR.to_owned(),
+                project.to_string_lossy().into_owned(),
+            ]
+        );
     }
 
     #[test]
