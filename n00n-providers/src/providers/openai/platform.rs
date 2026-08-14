@@ -1351,6 +1351,8 @@ impl OpenAi {
             None
         };
         let persist_response_chain = response_chain_lock.is_some();
+        // The OpenAI Coding Plan endpoint rejects server-side `store=true`.
+        let store = false;
         let stream_timeout = self.compat.stream_timeout();
         let connection_reusable = self
             .response_connection_is_reusable(
@@ -1416,7 +1418,7 @@ impl OpenAi {
             tools,
             previous_response_id.as_deref(),
             Some(&prompt_cache_key),
-            persist_response_chain,
+            store,
             &opts,
             true,
         );
@@ -1452,7 +1454,7 @@ impl OpenAi {
                             tools,
                             None,
                             Some(&prompt_cache_key),
-                            persist_response_chain,
+                            store,
                             &opts,
                             true,
                         )
@@ -2980,9 +2982,9 @@ mod tests {
             let first_body = body_rx.recv_async().await.unwrap();
             let second_body = body_rx.recv_async().await.unwrap();
             assert!(first_body.get("previous_response_id").is_none());
-            assert_eq!(first_body["store"], true);
+            assert_eq!(first_body["store"], false);
             assert_eq!(second_body["previous_response_id"], "resp_first");
-            assert_eq!(second_body["store"], true);
+            assert_eq!(second_body["store"], false);
             assert_eq!(second_body["input"].as_array().unwrap().len(), 1);
 
             let lock = provider

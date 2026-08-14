@@ -138,10 +138,10 @@ impl DevinCredentials {
         }
         Ok(Some(Self {
             session_token: normalize_session_token(&session_token),
-            api_server_url: match creds.api_server_url {
-                Some(url) => url,
-                None => DEVIN_API_URL.to_string(),
-            },
+            api_server_url: resolve_api_server_url(
+                DEVIN_API_URL.to_string(),
+                creds.api_server_url.as_deref(),
+            ),
         }))
     }
 }
@@ -156,8 +156,23 @@ fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
     }
 }
 
+fn is_valid_api_server_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    !trimmed.is_empty()
+        && (trimmed.starts_with("https://") && trimmed.len() > "https://".len()
+            || trimmed.starts_with("http://") && trimmed.len() > "http://".len())
+}
+
 fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
-    explicit.map_or(configured, str::to_string)
+    let chosen = explicit
+        .filter(|u| is_valid_api_server_url(u))
+        .map_or(configured, |u| u.trim().to_string());
+    let chosen = chosen.trim_end_matches('/').to_string();
+    if is_valid_api_server_url(&chosen) {
+        chosen
+    } else {
+        DEVIN_API_URL.to_string()
+    }
 }
 
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
@@ -604,14 +619,10 @@ impl Devin {
             });
         }
 
-        let base_url = if auth_response.custom_api_server_url.is_empty() {
-            creds.api_server_url.clone()
-        } else {
-            auth_response
-                .custom_api_server_url
-                .trim_end_matches('/')
-                .to_string()
-        };
+        let base_url = resolve_api_server_url(
+            creds.api_server_url.clone(),
+            Some(&auth_response.custom_api_server_url),
+        );
 
         Ok((auth_response.user_jwt, base_url))
     }
@@ -1195,6 +1206,22 @@ mod tests {
         assert_eq!(
             resolve_api_server_url("https://configured.example".to_string(), None),
             "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_url_falls_back_to_configured() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url")),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn invalid_configured_and_explicit_urls_fall_back_to_default() {
+        assert_eq!(
+            resolve_api_server_url("not-a-url".to_string(), Some("also-not-a-url")),
+            DEVIN_API_URL
         );
     }
 
