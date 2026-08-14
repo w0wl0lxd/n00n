@@ -835,9 +835,7 @@ async fn shutdown_all(inner: &mut McpManagerInner) {
         .into_iter()
         .map(|transport| smol::spawn(async move { transport.shutdown().await }))
         .collect();
-    for task in tasks {
-        task.await;
-    }
+    futures_lite::future::join_all(tasks).await;
     info!("MCP command loop shutting down");
 }
 
