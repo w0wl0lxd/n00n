@@ -445,18 +445,29 @@ impl ToolInvocation for LuaToolInvocation {
         let nested = self.nested;
 
         Box::pin(async move {
-            let effective_secs: Option<u64> = match tool_timeout {
+            // A deadline_grace tool still gets dispatched past an exhausted
+            // deadline, but with a fresh short-lived one: the stale past
+            // instant would arm the Lua runtime's watchdog immediately,
+            // racing the handler's own settle logic (see execute() callers).
+            let grace_deadline =
+                Deadline::after(Duration::from_secs(EXHAUSTED_DEADLINE_GRACE_SECS));
+            let (effective_secs, dispatch_deadline): (Option<u64>, Deadline) = match tool_timeout {
                 Some(d) => match deadline.cap_timeout(d.as_secs()) {
-                    Ok(s) => Some(s),
+                    Ok(s) => (Some(s), deadline),
+                    Err(_) if deadline_grace => {
+                        (Some(EXHAUSTED_DEADLINE_GRACE_SECS), grace_deadline)
+                    }
                     Err(e) => return Err(e).into(),
                 },
                 None => match deadline {
                     Deadline::At(_) => match deadline.cap_timeout(u64::MAX) {
-                        Ok(s) => Some(s),
-                        Err(_) if deadline_grace => Some(EXHAUSTED_DEADLINE_GRACE_SECS),
+                        Ok(s) => (Some(s), deadline),
+                        Err(_) if deadline_grace => {
+                            (Some(EXHAUSTED_DEADLINE_GRACE_SECS), grace_deadline)
+                        }
                         Err(e) => return Err(e).into(),
                     },
-                    Deadline::None => None,
+                    Deadline::None => (None, Deadline::None),
                 },
             };
 
@@ -473,7 +484,7 @@ impl ToolInvocation for LuaToolInvocation {
                     tool: Arc::clone(&tool),
                     input,
                     ctx: Box::new(lua_ctx),
-                    deadline: match deadline {
+                    deadline: match dispatch_deadline {
                         Deadline::At(t) => Some(t),
                         Deadline::None => None,
                     },
@@ -697,6 +708,9 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 ///   permission_scopes (string|function) Field name in schema (string) or `function(input)` returning a list of path scopes that need write permission.
 ///   mutable_path    (string)   Schema field name (type: string) for the primary path the tool writes.
 ///   start_annotation (string|table) Schema field used to annotate the start header with a count (string) or timeout (`{ field, kind="timeout" }`).
+///   deadline_grace  (boolean)  Optional. When true, dispatch even if the shared agent deadline
+///                              is already exhausted, granting a brief grace window so the
+///                              handler can settle its own state gracefully. Default: false.
 /// @return
 /// @example
 /// n00n.api.register_tool({
@@ -1741,6 +1755,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: Some(Duration::from_mins(1)),
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         }
@@ -1903,6 +1918,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: None,
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         };
@@ -1922,6 +1938,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: None,
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         };
@@ -1947,6 +1964,7 @@ mod tests {
             nested: false,
             mutable_path_field: None,
             timeout: None,
+            deadline_grace: false,
             start_annotation: None,
             has_start_fn: false,
         };
