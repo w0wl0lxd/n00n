@@ -180,12 +180,12 @@ pub fn find(path: &Path, options: &ConflictsOptions) -> Result<GitConflicts, Git
             continue;
         }
 
-        let rela_bstr: &gix::bstr::BStr = rela_path.as_ref();
-        let is_unmerged = is_unmerged(&index, rela_bstr);
+        let relative_bstr: &gix::bstr::BStr = rela_path.as_ref();
+        let is_unmerged = is_unmerged(&index, relative_bstr);
 
-        let rela = gix::path::try_from_bstr(rela_path)
+        let relative = gix::path::try_from_bstr(rela_path)
             .map_err(|e| GitError::GitOperation(format!("invalid relative path: {e}")))?;
-        let file_path = workdir.join(rela.as_ref());
+        let file_path = workdir.join(relative.as_ref());
 
         match scan_file(&file_path, options, is_unmerged) {
             Ok(mut conflict_file) => {
