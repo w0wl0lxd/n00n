@@ -1383,7 +1383,7 @@ mod tests {
 
     #[test]
     fn parse_sse_stream_without_finish_reason_is_retryable() {
-        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hel\"}]}}]}\n\n";
+        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"par\"}]}}]}\n\n";
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
         let err = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();

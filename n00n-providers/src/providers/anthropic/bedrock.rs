@@ -1100,7 +1100,7 @@ aws_session_token = MYTOKEN\n";
             parser
                 .process(
                     "content_block_delta",
-                    r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}"#,
+                    r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Par"}}"#,
                     &tx,
                 )
                 .await
