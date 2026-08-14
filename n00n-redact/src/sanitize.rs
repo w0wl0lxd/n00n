@@ -1,14 +1,11 @@
 //! Word-level sanitizer for free-text activity descriptions and malformed
-//! tool-argument JSON. Moved verbatim from the n00n-lua activity sanitizer so
-//! its output stays byte-identical; `sanitize_text` just adds the caller's
-//! character cap on top.
+//! tool-argument JSON.
 
 use crate::REDACTED;
 
-/// Minimum length for a bare `Basic` or `Bearer` value before it is treated as
-/// an HTTP authentication credential. Shorter or non-base64-ish values are
-/// left alone to avoid over-redacting common prose (`the basic idea`,
-/// `the bearer of bad news`).
+/// Minimum length for a bare `Basic` value before it is treated as an HTTP
+/// authentication credential. Shorter or non-base64-ish values are left alone
+/// to avoid over-redacting common prose such as `the basic idea`.
 const AUTH_CREDENTIAL_MIN_CHARS: usize = 9;
 
 /// Substring-matched secret key fragments for free text, deliberately shorter
@@ -49,6 +46,9 @@ pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
 /// one-line activity messages and compact log previews.
 #[must_use]
 pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
+    if super::looks_like_secret_value(raw) {
+        return truncate(REDACTED, max_chars);
+    }
     let words = raw.split_whitespace().collect::<Vec<_>>();
     let sanitized = sanitize_words(&words)
         .into_iter()
@@ -64,7 +64,9 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
 /// values where newlines should stay intact.
 #[must_use]
 pub(crate) fn sanitize_text_preserve_newlines(raw: &str, max_chars: usize) -> String {
-    // Tokenize into words and line separators, preserving exact separator positions
+    if super::looks_like_secret_value(raw) {
+        return truncate(REDACTED, max_chars);
+    }
     let tokens = tokenize_with_line_breaks(raw);
     let sanitized = sanitize_tokens(tokens);
     truncate(&sanitized, max_chars)
@@ -81,54 +83,31 @@ enum Token<'a> {
 fn tokenize_with_line_breaks(text: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let mut word_start = None;
-    let mut i = 0;
-    let bytes = text.as_bytes();
+    let mut characters = text.char_indices().peekable();
 
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        if c == '\r' {
-            // Flush any pending word
-            if let Some(start) = word_start {
-                tokens.push(Token::Word(&text[start..i]));
-                word_start = None;
+    while let Some((index, character)) = characters.next() {
+        if !character.is_whitespace() {
+            word_start.get_or_insert(index);
+            continue;
+        }
+        if let Some(start) = word_start.take() {
+            tokens.push(Token::Word(&text[start..index]));
+        }
+        match character {
+            '\r' if characters.peek().is_some_and(|(_, next)| *next == '\n') => {
+                if let Some((next_index, _)) = characters.next() {
+                    tokens.push(Token::LineBreak(&text[index..next_index + 1]));
+                }
             }
-            // Check for \r\n
-            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                tokens.push(Token::LineBreak("\r\n"));
-                i += 2;
-            } else {
-                tokens.push(Token::LineBreak("\r"));
-                i += 1;
+            '\r' | '\n' => {
+                tokens.push(Token::LineBreak(&text[index..index + character.len_utf8()]));
             }
-        } else if c == '\n' {
-            // Flush any pending word
-            if let Some(start) = word_start {
-                tokens.push(Token::Word(&text[start..i]));
-                word_start = None;
-            }
-            tokens.push(Token::LineBreak("\n"));
-            i += 1;
-        } else if c.is_whitespace() {
-            // Flush any pending word on whitespace
-            if let Some(start) = word_start {
-                tokens.push(Token::Word(&text[start..i]));
-                word_start = None;
-            }
-            i += 1;
-        } else {
-            // Non-whitespace character
-            if word_start.is_none() {
-                word_start = Some(i);
-            }
-            i += 1;
+            _ => {}
         }
     }
-
-    // Flush final word
     if let Some(start) = word_start {
         tokens.push(Token::Word(&text[start..]));
     }
-
     tokens
 }
 
@@ -184,9 +163,9 @@ fn sanitize_words(words: &[&str]) -> Vec<Option<String>> {
     while index < words.len() {
         let word = words[index];
         if is_authentication_scheme(word)
-            && words
-                .get(index + 1)
-                .is_some_and(|next| is_auth_credential_value(next))
+            && words.get(index + 1).is_some_and(|next| {
+                word.eq_ignore_ascii_case("bearer") || is_basic_auth_credential(next)
+            })
         {
             let scheme = if word.eq_ignore_ascii_case("basic") {
                 "Basic"
@@ -286,11 +265,7 @@ fn is_authentication_scheme(value: &str) -> bool {
     value.eq_ignore_ascii_case("bearer") || value.eq_ignore_ascii_case("basic")
 }
 
-fn is_auth_credential_value(value: &str) -> bool {
-    is_secret_token(value) || is_basic_auth_credential(value)
-}
-
-fn is_basic_auth_credential(value: &str) -> bool {
+pub(crate) fn is_basic_auth_credential(value: &str) -> bool {
     let trimmed = value.trim_matches(|character: char| {
         !character.is_ascii_alphanumeric()
             && character != '+'
@@ -532,9 +507,15 @@ mod tests {
     }
 
     #[test]
-    fn preserves_bearer_in_prose() {
-        let sanitized = sanitize_text("the bearer of bad news", 80);
-        assert_eq!(sanitized, "the bearer of bad news");
+    fn redacts_arbitrary_bearer_credentials() {
+        let sanitized = sanitize_text("value Bearer visible-token trailing", 80);
+        assert_eq!(sanitized, "value Bearer [redacted] trailing");
+    }
+
+    #[test]
+    fn redacts_basic_credentials_after_unicode_whitespace() {
+        let sanitized = sanitize_text_preserve_newlines("Basic\u{2003}dXNlcjpwYXNzd29yZA==", 80);
+        assert_eq!(sanitized, REDACTED);
     }
 
     #[test]
@@ -545,14 +526,6 @@ mod tests {
 
     #[test]
     fn redacts_sensitive_key_value_split_across_lines() {
-        let input = "password:\nplain-value";
-        let sanitized = sanitize_text_preserve_newlines(input, 200);
-        assert!(sanitized.contains("[redacted]"));
-        assert!(!sanitized.contains("plain-value"));
-    }
-
-    #[test]
-    fn redacts_sensitive_key_value_split_across_lines_with_colon() {
         let input = "password:\nplain-value";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
         assert!(sanitized.contains("[redacted]"));

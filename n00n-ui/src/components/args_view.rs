@@ -98,7 +98,7 @@ fn redact_display_value(value: &serde_json::Value) -> serde_json::Value {
                     Err(_) => serde_json::Value::String(REDACTED.to_owned()),
                 }
             }
-            Err(_) if text.starts_with('{') || text.starts_with('[') => {
+            Err(_) if text.trim_start().starts_with(['{', '[']) => {
                 serde_json::Value::String(n00n_redact::redact_json_arg(text))
             }
             Err(_) => value.clone(),
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn malformed_stringified_json_redacts_embedded_credentials() {
-        let view = render(&json!({ "payload": r#"{"user":"bob","api_key":"short"}"# }));
+        let view = render(&json!({ "payload": r#"  {"user":"bob","api_key":"short"}"# }));
         let text = lines_text(&view);
         assert!(text.contains("user"));
         assert!(text.contains("bob"));

@@ -1,7 +1,7 @@
 use std::ops::ControlFlow;
 
 use flume::Sender;
-use n00n_redact::{redact_json_arg, redact_json_value_for_log};
+use n00n_redact::{redact_json_arg, redact_json_value_for_log_text};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -404,7 +404,7 @@ impl EventParser {
                                 tool_index = self.current_block_idx,
                                 has_tool_name = !name.is_empty(),
                                 tool_name_length = name.len(),
-                                json = %redact_json_value_for_log(&v),
+                                json = %redact_json_value_for_log_text(&v),
                                 "tool input JSON"
                             );
                             v

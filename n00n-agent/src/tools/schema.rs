@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter, Write};
 
 use jsonrepair::{Options as RepairOpts, loads as repair_loads};
-use n00n_redact::{redact_json_arg, redact_json_value_for_log};
+use n00n_redact::{redact_json_arg, redact_json_value_for_log_text};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
@@ -809,7 +809,7 @@ fn log_coercion(
 fn format_value_for_log(value: &Value) -> String {
     match value {
         Value::String(raw) => preview(&redact_json_arg(raw)),
-        _ => preview(&redact_json_value_for_log(value).to_string()),
+        _ => preview(&redact_json_value_for_log_text(value)),
     }
 }
 

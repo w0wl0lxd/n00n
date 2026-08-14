@@ -234,26 +234,32 @@ pub fn redact_json_value(value: &Value) -> Value {
 /// sanitizer as a best-effort safety net.
 #[must_use]
 pub fn redact_json_arg(arg: &str) -> String {
-    let redacted = match serde_json::from_str::<Value>(arg) {
-        Ok(value) => redact_json_value_for_log(&value),
+    match serde_json::from_str::<Value>(arg) {
+        Ok(value) => redact_json_value_for_log_text(&value),
         Err(error) => {
             debug!(%error, "tool argument JSON parse failed; sanitizing text");
-            return sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS);
+            sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS)
         }
-    };
+    }
+}
+
+/// Redacts and serializes a parsed JSON value for bounded log output.
+#[must_use]
+pub fn redact_json_value_for_log_text(value: &Value) -> String {
+    let redacted = redact_json_value_for_log(value);
     match serde_json::to_string(&redacted) {
         Ok(text) => sanitize::truncate(&text, LOG_ARG_MAX_CHARS),
         Err(error) => {
-            debug!(%error, "redacted tool argument serialization failed; sanitizing text");
-            sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS)
+            debug!(%error, "redacted tool argument serialization failed");
+            REDACTED.to_owned()
         }
     }
 }
 
 /// Log-path variant of `redact_json_value`: in addition to secret keys, it
 /// replaces string values that look like embedded secrets (JWTs, provider
-/// tokens, cloud access keys) even under benign key names. Kept separate so
-/// display and search redaction stay key-anchored only.
+/// tokens, cloud access keys) even under benign key names. Structural callers
+/// can use `redact_json_value` when they require key-only redaction.
 #[must_use]
 pub fn redact_json_value_for_log(value: &Value) -> Value {
     match value {
@@ -311,9 +317,6 @@ const JWT_MIN_PAYLOAD_CHARS: usize = 16;
 const AWS_ACCESS_KEY_PREFIX_CHARS: usize = 4;
 const AWS_ACCESS_KEY_ID_CHARS: usize = 20;
 
-/// Minimum characters after `Bearer ` before a value is treated as a token.
-const BEARER_VALUE_MIN_CHARS: usize = 40;
-
 /// Returns true when `value` is shaped like a secret that has no key to
 /// anchor on, including authentication credentials, private keys, JWTs,
 /// provider-prefixed tokens, and AWS access key ids. Conservative by design:
@@ -324,10 +327,14 @@ pub fn looks_like_secret_value(value: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    if let Some((scheme, credential)) = trimmed.split_once(' ')
-        && (scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic"))
-    {
-        return credential.trim().len() >= BEARER_VALUE_MIN_CHARS;
+    let mut words = trimmed.split_whitespace();
+    if let (Some(scheme), Some(credential)) = (words.next(), words.next()) {
+        if scheme.eq_ignore_ascii_case("bearer") {
+            return true;
+        }
+        if scheme.eq_ignore_ascii_case("basic") {
+            return sanitize::is_basic_auth_credential(credential);
+        }
     }
     is_private_key(trimmed)
         || contains_url_userinfo_credentials(trimmed)
@@ -527,6 +534,8 @@ mod tests {
         assert!(looks_like_secret_value(
             "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.abc-DEF_ghi",
         ));
+        assert!(looks_like_secret_value("Bearer visible-token"));
+        assert!(looks_like_secret_value("Basic\u{2003}dXNlcjpwYXNzd29yZA=="));
         let private_key = format!(
             "-----BEGIN {kind} PRIVATE KEY-----\nplaceholder\n-----END {kind} PRIVATE KEY-----",
             kind = "OPENSSH",
@@ -576,7 +585,7 @@ mod tests {
         assert!(!looks_like_secret_value("ghp_short"));
         assert!(!looks_like_secret_value("AKIA0"));
         assert!(!looks_like_secret_value("AA€€€€€€"));
-        assert!(!looks_like_secret_value("Bearer short"));
+        assert!(looks_like_secret_value("Bearer short"));
         assert!(!looks_like_secret_value("plain text"));
         assert!(!looks_like_secret_value(""));
         assert!(!looks_like_secret_value("gpt-4o-mini"));
@@ -599,12 +608,12 @@ mod tests {
     }
 
     #[test]
-    fn display_redaction_stays_key_anchored() {
+    fn structural_redaction_stays_key_anchored() {
         let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
         let redacted = redact_json_value(&json!({ "note": jwt }));
         assert_eq!(
             redacted["note"], jwt,
-            "UI redaction must not use value patterns"
+            "structural redaction must not use value patterns"
         );
     }
 
@@ -645,6 +654,12 @@ mod tests {
         let out = redact_json_arg(r#"{"token":"sk-123","user":""#);
         assert!(!out.contains("sk-123"), "token value leaked: {out}");
         assert!(out.contains("token"), "key name should stay: {out}");
+    }
+
+    #[test_case(r#"{"url":"https://alice:s3cret@example.com"#; "url userinfo")]
+    #[test_case("preamble -----BEGIN RSA PRIVATE KEY----- secret"; "private key")]
+    fn redact_json_arg_rejects_secret_shaped_malformed_text(input: &str) {
+        assert_eq!(redact_json_arg(input), REDACTED);
     }
 
     #[test]
@@ -708,15 +723,14 @@ mod tests {
     fn redact_json_arg_caps_large_valid_json_payload() {
         use serde_json::json;
         let large_value = json!({
-            "data": "x".repeat(3000),
-            "nested": {
-                "more": "y".repeat(3000)
-            }
+            "data": "x".repeat(LOG_ARG_MAX_CHARS * 2),
+            "password": "must-not-leak",
         });
         let large_json = serde_json::to_string(&large_value).unwrap();
         let redacted = redact_json_arg(&large_json);
         assert!(redacted.chars().count() <= LOG_ARG_MAX_CHARS);
         assert!(redacted.ends_with('…'));
+        assert_eq!(redacted, redact_json_value_for_log_text(&large_value));
     }
 
     #[test]

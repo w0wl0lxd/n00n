@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use flume::Sender;
 use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
-use n00n_redact::redact_json_arg;
+use n00n_redact::{redact_json_arg, redact_json_value_for_log_text};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -994,7 +994,7 @@ pub async fn parse_sse(
                     tool_index = idx,
                     has_tool_name = !acc.name.is_empty(),
                     tool_name_length = acc.name.len(),
-                    json = %redact_json_arg(&acc.arguments),
+                    json = %redact_json_value_for_log_text(&v),
                     "tool input JSON"
                 );
                 v
