@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 35 built-in tools. This is the full reference.
+n00n ships with 34 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -194,23 +194,6 @@ Code-smell index. index, search.
 | `repo` | string | no |  |
 | `kind` | string | no |  |
 | `top_k` | integer | no |  |
-
-### `arbor` *(lua plugin)*
-
-Graph-based code analysis using Arbor. Returns structured, compact
-caller/callee/project maps; prefer it over broad grep or unfiltered reads
-for relationship and impact questions.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `token_budget` | integer | no |  |
-| `path` | string | no |  |
-| `from_symbol` | string | no |  |
-| `symbol` | string | no |  |
-| `command` | string | yes |  |
-| `project` | string | no |  |
-| `operation` | string | no |  |
-| `to_symbol` | string | no |  |
 
 ## Execution & Control
 

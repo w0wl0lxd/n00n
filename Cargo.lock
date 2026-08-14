@@ -3483,7 +3483,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-smell"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "clap",
  "color-eyre",

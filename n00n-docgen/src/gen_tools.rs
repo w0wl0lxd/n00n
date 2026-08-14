@@ -30,7 +30,6 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "codegraph",
             "semblem",
             "smell",
-            "arbor",
         ],
     ),
     (
