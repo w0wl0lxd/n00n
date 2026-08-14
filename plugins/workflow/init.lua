@@ -60,7 +60,7 @@ local ASYNC_RUNTIME_MIN_TIMEOUT_SECS = 60
 
 local description = [[Run sandboxed Lua workflow for multi-stage agent orchestration.
 
-Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.
+Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item, and also accepts pipeline(items, stage1, stage2, ...); phase(name, fn), log(...), inputs.
 
 `inputs` is `{}` when omitted. Lua tables have no `.map`; use `pipeline(items, stages)` or `ipairs`. No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, hard maximum 64) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
 
@@ -431,6 +431,9 @@ local function parallel(fns, popts)
   if #fns > MAX_PARALLEL_BRANCHES then
     error("parallel: branch count exceeds " .. MAX_PARALLEL_BRANCHES, 0)
   end
+  if popts ~= nil and type(popts) ~= "table" then
+    error("parallel: opts must be a table, got " .. type(popts), 0)
+  end
   popts = popts or {}
   local concurrency = max_concurrent_agents
   if type(popts.concurrency) == "number" then
@@ -471,12 +474,36 @@ end
 -- Claude-parity pipeline: each item flows independently through stages, with
 -- no cross-item barrier between stages. Concurrent item chains share the
 -- parallel() concurrency cap.
-local function pipeline(items, stages, popts)
+-- Stages may be passed as an array or variadically. The variadic form matches
+-- the shape models most often write, which otherwise landed a stage function in
+-- the opts slot and raised a raw "attempt to index function" from inside
+-- parallel(), attributed to the caller's line with no mention of the argument.
+local function pipeline(items, stages, ...)
   if type(items) ~= "table" then
     error("pipeline: items must be an array", 0)
   end
+  local popts
+  if type(stages) == "function" then
+    local collected = { stages }
+    for i = 1, select("#", ...) do
+      local extra = select(i, ...)
+      if type(extra) == "function" then
+        collected[#collected + 1] = extra
+      elseif type(extra) == "table" and i == select("#", ...) then
+        popts = extra
+      elseif extra ~= nil then
+        error("pipeline: stages must be functions, got " .. type(extra), 0)
+      end
+    end
+    stages = collected
+  else
+    popts = select(1, ...)
+  end
   if type(stages) ~= "table" then
     error("pipeline: stages must be an array of functions", 0)
+  end
+  if popts ~= nil and type(popts) ~= "table" then
+    error("pipeline: opts must be a table, got " .. type(popts), 0)
   end
   if #items > MAX_PIPELINE_ITEMS then
     error("pipeline: item count exceeds " .. MAX_PIPELINE_ITEMS, 0)
