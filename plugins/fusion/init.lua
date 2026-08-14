@@ -110,7 +110,7 @@ local function handler(input, ctx)
     audience = "general_sub",
     include_mcp = false,
     except_tools = {
-      "fusion_delegate",
+      "delegate_fusion",
       "task",
       "team",
       "workflow",

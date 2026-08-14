@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::template::Vars;
 use crate::{BufferSnapshot, ToolOutput};
 
+use super::admission::{ToolAdmission, ToolAdmissionClass};
 use super::schema::sanitize_tool_input_schema;
 use super::{DescriptionContext, ToolContext};
 
@@ -244,6 +245,9 @@ pub trait Tool: Send + Sync + 'static {
     fn tool_kind(&self) -> Option<&str> {
         None
     }
+    fn admission_class(&self) -> ToolAdmissionClass {
+        ToolAdmissionClass::for_tool(self.name(), self.tool_kind())
+    }
     fn defer_loading(&self) -> bool {
         false
     }
@@ -342,6 +346,7 @@ impl<'a> IntoIterator for &'a ToolsSnapshot {
 /// Lock-free reads via `ArcSwap`, writes swap in a new snapshot atomically.
 pub struct ToolRegistry {
     tools: ArcSwap<ToolsSnapshot>,
+    admission: Arc<ToolAdmission>,
     warned_aliases: Mutex<HashSet<String>>,
 }
 
@@ -360,10 +365,21 @@ pub enum RegistryError {
 impl ToolRegistry {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_admission(Arc::new(ToolAdmission::new()))
+    }
+
+    #[must_use]
+    pub fn with_admission(admission: Arc<ToolAdmission>) -> Self {
         Self {
             tools: ArcSwap::from_pointee(ToolsSnapshot::empty()),
+            admission,
             warned_aliases: Mutex::new(HashSet::new()),
         }
+    }
+
+    #[must_use]
+    pub fn admission(&self) -> &ToolAdmission {
+        &self.admission
     }
 
     /// The process-wide registry. Every tool in it comes from a Lua plugin

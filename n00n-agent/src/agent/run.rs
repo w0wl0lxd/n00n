@@ -2259,7 +2259,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: tool_id.into(),
                     name: tool_name.into(),
-                    input: if tool_name == "fusion_delegate" {
+                    input: if tool_name == "delegate_fusion" {
                         serde_json::json!({
                             "description": "Implement parser fix",
                             "goal": "Implement the parser fix and add focused tests",
@@ -2348,9 +2348,9 @@ mod tests {
             assert!(agent.fusion_state.is_none());
             assert!(
                 !agent.tools.as_array().unwrap().iter().any(|tool| {
-                    tool.get("name").and_then(Value::as_str) == Some("fusion_delegate")
+                    tool.get("name").and_then(Value::as_str) == Some("delegate_fusion")
                 }),
-                "disabled Fusion must not advertise fusion_delegate"
+                "disabled Fusion must not advertise delegate_fusion"
             );
 
             agent.run(default_input()).await.unwrap();
@@ -2383,7 +2383,7 @@ mod tests {
     fn disabled_hallucinated_delegate_is_denied_without_subagent_launch() {
         smol::block_on(async {
             let (provider, requests) = MockProvider::recording(vec![
-                tool_call_response("fusion_delegate", "delegate-1"),
+                tool_call_response("delegate_fusion", "delegate-1"),
                 text_response(StopReason::EndTurn),
             ]);
             let mut history = History::new(Vec::new());
@@ -2484,14 +2484,14 @@ mod tests {
     fn successful_delegate_is_followed_by_exactly_one_lead_review_turn() {
         smol::block_on(async {
             let (provider, requests) = MockProvider::recording(vec![
-                tool_call_response("fusion_delegate", "delegate-1"),
+                tool_call_response("delegate_fusion", "delegate-1"),
                 text_response(StopReason::EndTurn),
             ]);
             let calls = Arc::new(AtomicUsize::new(0));
             let call_counter = Arc::clone(&calls);
             let mut local = std::collections::HashMap::new();
             local.insert(
-                "fusion_delegate".to_owned(),
+                "delegate_fusion".to_owned(),
                 Arc::new(move |_: &Value| {
                     call_counter.fetch_add(1, Ordering::Relaxed);
                     Ok("sidekick completed".to_owned())
@@ -2548,7 +2548,7 @@ mod tests {
     fn delegate_failure_is_followed_by_exactly_one_lead_fallback(error: &str) {
         smol::block_on(async {
             let (provider, requests) = MockProvider::recording(vec![
-                tool_call_response("fusion_delegate", "delegate-1"),
+                tool_call_response("delegate_fusion", "delegate-1"),
                 text_response(StopReason::EndTurn),
             ]);
             let calls = Arc::new(AtomicUsize::new(0));
@@ -2556,7 +2556,7 @@ mod tests {
             let error = error.to_owned();
             let mut local = std::collections::HashMap::new();
             local.insert(
-                "fusion_delegate".to_owned(),
+                "delegate_fusion".to_owned(),
                 Arc::new(move |_: &Value| {
                     call_counter.fetch_add(1, Ordering::Relaxed);
                     Err(error.clone())

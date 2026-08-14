@@ -5,6 +5,7 @@
 //! quotes, camelCase keys, extra wrappers). Plan mode rejects writes to
 //! anything but the plan file before they reach the tool.
 
+pub mod admission;
 mod file_tracker;
 pub mod grep;
 pub mod interpreter_bridge;
@@ -12,6 +13,7 @@ pub mod registry;
 pub mod schema;
 pub mod tool_search;
 
+pub use admission::{AdmissionError, ToolAdmission, ToolAdmissionClass, ToolAdmissionGuard};
 pub use file_tracker::FileReadTracker;
 pub use registry::{
     ActiveTools, BoxFuture, ExecFuture, HeaderFuture, HeaderResult, ParseError, PermissionScopes,
@@ -183,12 +185,9 @@ pub fn filter_definitions(definitions: &mut Value, filter: &ToolFilter) {
 #[must_use]
 pub fn has_definition(definitions: &Value, name: &str) -> bool {
     definitions.as_array().is_some_and(|definitions| {
-        definitions.iter().any(|definition| {
-            definition
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|candidate| same_tool(candidate, name))
-        })
+        definitions
+            .iter()
+            .any(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
     })
 }
 
@@ -218,36 +217,23 @@ pub fn default_active_tools() -> ActiveTools {
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
 pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
-    !disabled_tools
-        .iter()
-        .any(|disabled| same_tool(disabled, name))
+    !disabled_tools.iter().any(|s| s == name)
 }
 
-pub const AGENT_CONTROL_TOOL_NAME: &str = "control_agent";
-pub const BATCH_TOOL_NAME: &str = "run_batch";
-pub const BASH_TOOL_NAME: &str = "run_shell";
-pub const CODE_EXECUTION_TOOL_NAME: &str = "run_python";
-pub const EDIT_TOOL_NAME: &str = "edit_file";
-pub const GLOB_TOOL_NAME: &str = "search_files";
-pub const GREP_TOOL_NAME: &str = "search_code";
-pub const MULTIEDIT_TOOL_NAME: &str = "edit_file_bulk";
-pub const QUESTION_TOOL_NAME: &str = "ask_user";
-pub const READ_TOOL_NAME: &str = "read_file";
-pub const TASK_TOOL_NAME: &str = "run_task";
-pub const TODOWRITE_TOOL_NAME: &str = "update_todo";
+pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
+pub const BATCH_TOOL_NAME: &str = "batch";
+pub const BASH_TOOL_NAME: &str = "bash";
+pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
+pub const EDIT_TOOL_NAME: &str = "edit";
+pub const GLOB_TOOL_NAME: &str = "glob";
+pub const GREP_TOOL_NAME: &str = "grep";
+pub const MULTIEDIT_TOOL_NAME: &str = "multiedit";
+pub const QUESTION_TOOL_NAME: &str = "question";
+pub const READ_TOOL_NAME: &str = "read";
+pub const TASK_TOOL_NAME: &str = "task";
+pub const TODOWRITE_TOOL_NAME: &str = "todo_write";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
-pub const WRITE_TOOL_NAME: &str = "write_file";
-
-pub use n00n_config::TOOL_ALIASES;
-
-#[must_use]
-pub fn canonical_tool_name(name: &str) -> &str {
-    n00n_config::canonical_tool_name(name)
-}
-
-fn same_tool(left: &str, right: &str) -> bool {
-    canonical_tool_name(left) == canonical_tool_name(right)
-}
+pub const WRITE_TOOL_NAME: &str = "write";
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 pub(crate) const DEADLINE_EXCEEDED: &str = "timeout exceeded";
@@ -313,6 +299,40 @@ pub fn timeout_annotation(secs: u64) -> String {
 pub type LocalToolFn = Arc<dyn Fn(&Value) -> Result<String, String> + Send + Sync>;
 pub type LocalTools = Arc<HashMap<String, LocalToolFn>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionIdentity {
+    session_id: SessionRef,
+    root_session_id: SessionRef,
+}
+
+impl SessionIdentity {
+    #[must_use]
+    pub fn root(session_id: SessionRef) -> Self {
+        Self {
+            root_session_id: session_id.clone(),
+            session_id,
+        }
+    }
+
+    #[must_use]
+    pub fn child(session_id: SessionRef, root_session_id: SessionRef) -> Self {
+        Self {
+            session_id,
+            root_session_id,
+        }
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> &SessionRef {
+        &self.session_id
+    }
+
+    #[must_use]
+    pub fn root_session_id(&self) -> &SessionRef {
+        &self.root_session_id
+    }
+}
+
 #[derive(Clone)]
 pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
@@ -334,7 +354,12 @@ pub struct ToolContext {
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub opts: RequestOptions,
     pub subagent_cancels: Arc<CancelMap<String>>,
+    /// Immutable session and root identity of the agent executing this tool.
+    pub identity: Option<SessionIdentity>,
     pub registry: Arc<ToolRegistry>,
+    /// Stable identity used by registry-scoped per-agent admission. Child
+    /// sessions receive their own scope, while nested calls in one agent share it.
+    pub admission_scope: Arc<str>,
     pub tool_filter: ToolFilter,
     pub workflow: bool,
     pub audience: ToolAudience,
@@ -474,22 +499,34 @@ pub(crate) fn truncate_bytes(line: &str, max_bytes: usize) -> String {
 #[must_use]
 pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String {
     const TRUNCATED_MARKER: &str = "[truncated]";
+    if max_bytes == 0 || max_lines == 0 {
+        return String::new();
+    }
     let mut lines = text.lines();
     let mut result = String::new();
     let mut truncated = false;
 
     for _ in 0..max_lines {
         let Some(line) = lines.next() else { break };
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(line);
-        if result.len() > max_bytes {
-            let boundary = result.floor_char_boundary(max_bytes);
-            result.truncate(boundary);
+        let separator = usize::from(!result.is_empty());
+        if result
+            .len()
+            .saturating_add(separator)
+            .saturating_add(line.len())
+            > max_bytes
+        {
+            let remaining = max_bytes.saturating_sub(result.len().saturating_add(separator));
+            if separator != 0 && remaining > 0 {
+                result.push('\n');
+            }
+            result.push_str(&line[..line.floor_char_boundary(remaining)]);
             truncated = true;
             break;
         }
+        if separator != 0 {
+            result.push('\n');
+        }
+        result.push_str(line);
     }
 
     if !truncated && lines.next().is_some() {
@@ -497,56 +534,35 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
     }
 
     if truncated {
-        result.push('\n');
-        result.push_str(TRUNCATED_MARKER);
+        let suffix = if result.is_empty() {
+            TRUNCATED_MARKER.to_owned()
+        } else {
+            format!("\n{TRUNCATED_MARKER}")
+        };
+        if suffix.len() >= max_bytes {
+            result.clear();
+            suffix[..suffix.floor_char_boundary(max_bytes)].clone_into(&mut result);
+        } else {
+            let content_limit = max_bytes - suffix.len();
+            result.truncate(result.floor_char_boundary(content_limit));
+            result.push_str(&suffix);
+        }
     }
     result
 }
 
-pub const CANONICAL_BUILTIN_TOOL_NAMES: &[&str] = &[
-    "read_file",
-    "write_file",
-    "edit_file",
-    "edit_file_bulk",
-    "edit_file_lines",
-    "insert_file_lines",
-    "run_shell",
-    "run_python",
-    "run_batch",
-    "search_files",
-    "search_code",
-    "index_file",
-    "explore_code",
-    "search_text",
-    "map_code",
-    "map_codegraph",
-    "view_image",
-    "fetch_url",
-    "search_web",
-    "ask_user",
-    "list_agents",
-    "get_agent",
-    "control_agent",
-    "run_team",
-    "run_task",
-    "run_workflow",
-    "use_blackboard",
-    "update_todo",
-    "use_memory",
-    "load_skill",
-    "search_tools",
-    "load_toolset",
-    "delegate_fusion",
-];
-
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
-    CANONICAL_BUILTIN_TOOL_NAMES.contains(&canonical_tool_name(name))
+    n00n_config::DEFAULT_BUILTINS.contains(&name) || n00n_config::EDIT_SUB_TOOLS.contains(&name)
 }
 
 #[must_use]
 pub fn all_builtin_tool_names() -> Vec<&'static str> {
-    CANONICAL_BUILTIN_TOOL_NAMES.to_vec()
+    n00n_config::DEFAULT_BUILTINS
+        .iter()
+        .chain(n00n_config::EDIT_SUB_TOOLS.iter())
+        .copied()
+        .collect()
 }
 
 use n00n_providers::{Message, ProviderEvent, StreamResponse, System};
@@ -593,6 +609,9 @@ fn fallback_model() -> Model {
         pricing: ModelPricing::ZERO,
         max_output_tokens: None,
         context_window: FALLBACK_CONTEXT_WINDOW,
+        thinking_dialect: None,
+        thinking_fields: None,
+        body_override: None,
     }
 }
 
@@ -633,7 +652,9 @@ pub fn interpreter_ctx(
         prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
         opts: RequestOptions::default(),
         subagent_cancels: Arc::new(CancelMap::new()),
+        identity: None,
         registry,
+        admission_scope: crate::tools::ToolAdmission::new_scope(),
         tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,
@@ -674,7 +695,8 @@ pub mod test_support {
 
     use super::{
         AgentMode, Arc, CancelToken, DescriptionContext, FileReadTracker, LazyLock,
-        PermissionManager, ToolContext, ToolRegistry, Value, interpreter_ctx, registry,
+        PermissionManager, SessionIdentity, ToolContext, ToolRegistry, Value, interpreter_ctx,
+        registry,
     };
 
     pub const GUARDED_TOOL_NAME: &str = "guarded_mock";
@@ -750,6 +772,9 @@ pub mod test_support {
             Arc::new(ToolRegistry::new()),
         );
         ctx.tool_use_id = tool_use_id.map(String::from);
+        ctx.identity = Some(SessionIdentity::root(
+            n00n_storage::id::SessionRef::generate(),
+        ));
         ctx
     }
 
@@ -789,6 +814,33 @@ mod tests {
     use super::*;
 
     const LINE_LIMIT: usize = 500;
+
+    #[test]
+    fn root_session_identity_uses_one_id() {
+        let session_id = n00n_storage::id::SessionRef::generate();
+        let identity = SessionIdentity::root(session_id.clone());
+
+        assert_eq!(identity.session_id(), &session_id);
+        assert_eq!(identity.root_session_id(), &session_id);
+    }
+
+    #[test]
+    fn descendant_session_identities_inherit_root_and_remain_distinct() {
+        let root = SessionIdentity::root(n00n_storage::id::SessionRef::generate());
+        let child = SessionIdentity::child(
+            n00n_storage::id::SessionRef::generate(),
+            root.root_session_id().clone(),
+        );
+        let grandchild = SessionIdentity::child(
+            n00n_storage::id::SessionRef::generate(),
+            child.root_session_id().clone(),
+        );
+
+        assert_ne!(child.session_id(), root.session_id());
+        assert_ne!(grandchild.session_id(), child.session_id());
+        assert_eq!(child.root_session_id(), root.root_session_id());
+        assert_eq!(grandchild.root_session_id(), root.root_session_id());
+    }
 
     #[test_case(true  ; "vision_model_keeps_view_image")]
     #[test_case(false ; "text_only_model_loses_view_image")]
@@ -839,6 +891,13 @@ mod tests {
         assert_eq!(result, expected);
     }
 
+    #[test_case("abcdefghij\nklmno", 2, 15, "abc\n[truncated]" ; "short_byte_limit_keeps_marker")]
+    #[test_case("one\ntwo", 0, 10, "" ; "zero_line_limit")]
+    #[test_case("one", 10, 0, "" ; "zero_byte_limit")]
+    fn truncate_output_edge_cases(input: &str, max_lines: usize, max_bytes: usize, expected: &str) {
+        assert_eq!(truncate_output(input, max_lines, max_bytes), expected);
+    }
+
     #[test]
     fn truncate_output_respects_line_and_byte_limits() {
         const MAX_LINES: usize = 2000;
@@ -850,10 +909,12 @@ mod tests {
             .join("\n");
         let result = truncate_output(&many_lines, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
+        assert!(result.len() <= MAX_BYTES);
 
         let many_bytes = "x".repeat(MAX_BYTES + 1000);
         let result = truncate_output(&many_bytes, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
+        assert!(result.len() <= MAX_BYTES);
     }
 
     #[test]
@@ -1214,25 +1275,12 @@ mod tests {
     }
 
     #[test]
-    fn builtin_names_are_unique_canonical_identifiers() {
+    fn all_builtin_names_no_duplicates() {
         let names = all_builtin_tool_names();
         let mut seen = std::collections::HashSet::new();
         for name in &names {
             assert!(seen.insert(name), "duplicate builtin tool name: {name}");
-            assert_eq!(canonical_tool_name(name), *name);
-            assert!(name.len() <= 32, "builtin tool name is too long: {name}");
         }
-    }
-
-    #[test]
-    fn mixed_alias_filters_apply_restrictions() {
-        let allowed = ToolFilter::Only(vec!["read".to_owned()]);
-        assert!(allowed.matches(READ_TOOL_NAME));
-        assert!(!allowed.clone().excluding(&[READ_TOOL_NAME]).matches("read"));
-
-        let intersected = allowed.intersect(&ToolFilter::Only(vec![READ_TOOL_NAME.to_owned()]));
-        assert!(intersected.matches("read"));
-        assert!(intersected.matches(READ_TOOL_NAME));
     }
 
     #[test]
