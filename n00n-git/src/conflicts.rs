@@ -743,6 +743,8 @@ mod tests {
                 .arg(root)
                 .env("HOME", root)
                 .env("XDG_CONFIG_HOME", root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", root.join(".gitconfig"))
                 .args(args)
                 .output()
                 .unwrap();
@@ -775,6 +777,8 @@ mod tests {
         let _ = Command::new("git")
             .arg("-C")
             .arg(root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", root.join(".gitconfig"))
             .args(["merge", "theirs"])
             .output();
 
