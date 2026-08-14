@@ -53,8 +53,10 @@ pub(crate) fn create_n00n_global(
     permissions: &PluginPermissions,
     opts: PluginOpts,
     bundled_capability: Option<BundledCapability>,
+    search_config: Arc<SearchConfig>,
 ) -> LuaResult<Table> {
     let n00n = lua.create_table()?;
+    lua.set_app_data(search_config);
 
     let api = tool::create_api_table(lua, pending, Arc::clone(&plugin), opts)?;
     autocmd::add_autocmd_methods(&api, lua, Arc::clone(&plugin))?;
@@ -136,6 +138,7 @@ mod tests {
             None,
             &PluginPermissions::trusted(),
             Arc::default(),
+            None,
             Arc::clone(&search_config),
         )
         .unwrap();
