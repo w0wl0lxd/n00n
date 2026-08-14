@@ -662,6 +662,8 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     const TIERS: [ModelTier; 4] = [
         ModelTier::Weak,
         ModelTier::Medium,
@@ -1220,18 +1222,16 @@ mod tests {
     #[test]
     fn supports_files_reads_static_entry_flag() {
         // gpt-5.6 entries are flagged as file-capable; gpt-5.5 is not.
-        assert!(
-            Model::from_spec("openai/gpt-5.6-sol")
-                .unwrap()
-                .supports_files()
-        );
-        assert!(!Model::from_spec("openai/gpt-5.5").unwrap().supports_files());
+        let manifest = ManifestRegistry::get("openai").expect("openai manifest");
+        assert!(lookup_entry(manifest.models, "gpt-5.6-sol").unwrap().files);
+        assert!(!lookup_entry(manifest.models, "gpt-5.5").unwrap().files);
     }
 
     #[test]
     fn discovered_supports_files_flows_into_unknown_model() {
         use crate::model::ModelInfo;
 
+        let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-files-model";
         {
@@ -1262,6 +1262,7 @@ mod tests {
     fn discovered_context_window_flows_into_from_base_for_unknown_model() {
         use crate::model::ModelInfo;
 
+        let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-context-window-model";
         let expected_window: u32 = 131_072;
@@ -1303,5 +1304,16 @@ mod tests {
         );
         assert_eq!(wrapped.spec(), format!("my-ollama-wrap/{model_id}"));
         assert_eq!(wrapped.context_window, expected_window);
+    }
+
+    #[test]
+    fn coding_plan_models_disable_file_support() {
+        for entry in crate::providers::openai::codex_models() {
+            assert!(
+                !entry.files,
+                "coding-plan model {prefix:?} should not support files",
+                prefix = entry.prefixes
+            );
+        }
     }
 }
