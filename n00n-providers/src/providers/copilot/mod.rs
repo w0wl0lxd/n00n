@@ -743,7 +743,7 @@ impl Provider for Copilot {
             debug!(model = %model.id, ?endpoint, "running Copilot request");
             match endpoint {
                 Endpoint::ChatCompletions => {
-                    self.stream_chat_completions(model, messages, system, tools, event_tx, opts)
+                    self.stream_chat_completions(model, messages, system, tools, event_tx, &opts)
                         .await
                 }
                 Endpoint::Responses => {
