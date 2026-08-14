@@ -369,6 +369,7 @@ fn handle_print_event(
         | AgentEvent::QueueItemConsumed { .. }
         | AgentEvent::QueueDrained { .. }
         | AgentEvent::AutoCompacting
+        | AgentEvent::AutoCompactFailed { .. }
         | AgentEvent::CompactionDone
         | AgentEvent::FusionPhase { .. }
         | AgentEvent::AuthRequired

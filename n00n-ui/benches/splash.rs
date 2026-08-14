@@ -15,7 +15,7 @@ fn bench_splash_render(c: &mut Criterion) {
         b.iter(|| {
             buf.reset();
             splash.render(black_box(area), &mut buf, ACCENT);
-        })
+        });
     });
 
     let large_area = Rect::new(0, 0, 200, 60);
@@ -25,7 +25,7 @@ fn bench_splash_render(c: &mut Criterion) {
         b.iter(|| {
             large_buf.reset();
             splash.render(black_box(large_area), &mut large_buf, ACCENT);
-        })
+        });
     });
 }
 

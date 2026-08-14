@@ -221,6 +221,9 @@ discarded.
   - `permission_scopes` (`string|function`) Field name in schema (string) or `function(input)` returning a list of path scopes that need write permission.
   - `mutable_path` (`string`) Schema field name (type: string) for the primary path the tool writes.
   - `start_annotation` (`string|table`) Schema field used to annotate the start header with a count (string) or timeout (`{ field, kind="timeout" }`).
+  - `deadline_grace` (`boolean`) Optional. When true, dispatch even if the shared agent deadline
+    is already exhausted, granting a brief grace window so the
+    handler can settle its own state gracefully. Default: false.
 
 **Example:**
 
