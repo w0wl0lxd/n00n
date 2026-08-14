@@ -1,0 +1,19 @@
+[package]
+name = "n00n-redact"
+description = "Shared secret redaction for tool arguments, display, and logs."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,1 +1,0 @@
-Add qualified-name/file/kind symbol resolution, calls-only edge traversal, and richer graph node metadata for Arbor graph queries.

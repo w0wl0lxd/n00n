@@ -3921,6 +3921,59 @@ fn bash_handler_allows_head_capped_search_without_justification() {
     );
 }
 
+#[test_case::test_case("git log --oneline -20" ; "git_log_dash_n_shorthand")]
+#[test_case::test_case("git log -n5 --oneline" ; "git_log_attached_n")]
+#[test_case::test_case("rg --max-depth 1 needle ." ; "rg_max_depth")]
+fn bash_handler_allows_natively_bounded_commands_without_justification(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    match exec_tool(&reg, "bash", serde_json::json!({ "command": command })) {
+        Ok(output) => assert!(
+            !output.contains("justification is required"),
+            "expected {command} to run without justification: {output}"
+        ),
+        Err(error) => assert!(
+            !error.contains("justification is required"),
+            "expected {command} to avoid the guardrail: {error}"
+        ),
+    }
+}
+
+/// `-m`/`--max-count` bound matches *per file*, not the overall result size,
+/// so they must not satisfy the rg/grep/git-grep guardrail on their own.
+#[test_case::test_case("rg -m 5 needle ." ; "rg_dash_m")]
+#[test_case::test_case("rg --max-count=5 needle ." ; "rg_max_count_equals")]
+#[test_case::test_case("grep -m 5 needle ." ; "grep_dash_m")]
+#[test_case::test_case("git grep -m 5 needle" ; "git_grep_dash_m")]
+#[test_case::test_case("git grep needle" ; "git_grep_unbounded")]
+fn bash_handler_still_blocks_per_file_bounds(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": command })).unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "expected {command} to still require justification: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_broad_command_message_names_a_remedy() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "rg needle ." }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.contains("--max-depth") || err.contains("head"),
+        "expected an actionable remedy in the guardrail message: {err}"
+    );
+}
+
 #[test]
 fn bash_handler_rewrites_each_managed_compound_segment() {
     if skip_without_rtk("bash_handler_rewrites_each_managed_compound_segment") {
@@ -3938,6 +3991,148 @@ fn bash_handler_rewrites_each_managed_compound_segment() {
     assert!(
         !output.contains("rtk is enabled"),
         "compound command was rejected instead of rewritten: {output}"
+    );
+}
+
+#[test]
+fn bash_handler_rewrites_git_compound_segments_independently() {
+    if skip_without_rtk("bash_handler_rewrites_git_compound_segments_independently") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "git config --get remote.origin.url && git worktree list --porcelain"
+        }),
+    )
+    .expect("git compound command was not safely rewritten");
+
+    assert!(
+        output.contains("n00n"),
+        "unexpected compound output: {output}"
+    );
+}
+
+#[test]
+fn bash_handler_caps_streamed_output_while_collecting() {
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "printf '%020000d' 0"
+        }),
+    )
+    .expect("large output command failed");
+
+    assert!(output.len() < 17_000, "output exceeded configured cap");
+    assert!(output.contains("[truncated "), "missing truncation marker");
+}
+
+/// The rtk fallback lookup must resolve the real git subcommand past the
+/// global options `sanitize_git_command` prepends, and a managed command
+/// must run (rewritten or passed through) rather than being rejected.
+#[test_case::test_case("git config --get remote.origin.url" ; "git_config_fallback")]
+#[test_case::test_case("git --no-optional-locks -c core.fsmonitor=false worktree list --porcelain" ; "git_worktree_with_global_options")]
+#[test_case::test_case("gh pr list --state open" ; "gh_pr_list")]
+fn bash_handler_runs_managed_commands_past_global_options(command: &str) {
+    if skip_without_rtk("bash_handler_runs_managed_commands_past_global_options") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+        .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+}
+
+/// rtk's `git` wrapper can silently drop `--porcelain` in favor of its own
+/// prose formatting. A `--porcelain` request must run unrewritten so the
+/// real machine-readable git output reaches the model.
+#[test]
+fn bash_handler_preserves_porcelain_flag_instead_of_rewriting() {
+    if skip_without_rtk("bash_handler_preserves_porcelain_flag_instead_of_rewriting") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "git worktree list --porcelain" }),
+    )
+    .expect("git worktree list --porcelain was rejected");
+
+    assert!(
+        output.contains("worktree "),
+        "expected real porcelain output, got: {output}"
+    );
+}
+
+/// A segment rtk has no rewrite for must not fail the whole compound when
+/// other segments rewrite cleanly.
+#[test]
+fn bash_handler_passes_through_unrewritable_compound_segment() {
+    if skip_without_rtk("bash_handler_passes_through_unrewritable_compound_segment") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "git status && npm outdated" }),
+    )
+    .expect("compound command with an unrewritable segment was rejected");
+
+    assert!(
+        !output.contains("rtk is enabled"),
+        "compound command was rejected instead of partially rewritten: {output}"
+    );
+}
+
+/// A segment rtk rejects on policy grounds (unsupported `find` flags) must
+/// still fail the whole compound, even next to a segment eligible for the
+/// pass-through above.
+#[test]
+fn bash_handler_still_rejects_compound_with_policy_violation() {
+    if skip_without_rtk("bash_handler_still_rejects_compound_with_policy_violation") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let error = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "npm outdated && find . -maxdepth 1 -delete" }),
+    )
+    .expect_err("compound command with a policy-violating segment ran");
+
+    assert!(
+        error.contains("unsupported find flags"),
+        "expected the policy violation to surface, got: {error}"
+    );
+}
+
+/// The unbounded-command justification guardrail runs before rtk rewriting
+/// and must still reject a broad segment next to a clean one.
+#[test]
+fn bash_handler_still_requires_justification_for_broad_compound_segment() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "git status && find . -type f" }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback: {err}"
     );
 }
 

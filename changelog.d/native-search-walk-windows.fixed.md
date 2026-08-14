@@ -1,1 +1,0 @@
-Fix n00n-search walk test path assertion to be cross-platform on Windows.

@@ -66,7 +66,6 @@ pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
 
 pub const DEFAULT_BUILTINS: &[&str] = &[
     "agent_control",
-    "arbor",
     "bash",
     "batch",
     "blackboard",
@@ -1107,7 +1106,7 @@ impl ToolOutputLines {
             "workflow" => self.workflow,
             "index" => self.index,
             "grep" | "glob" => self.grep,
-            "arbor" | "codegraph" | "explore" => self.explore,
+            "codegraph" | "explore" => self.explore,
             "read" => self.read,
             "memory" => self.write,
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
