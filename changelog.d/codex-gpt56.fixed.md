@@ -1,1 +1,0 @@
-Removed the bare `gpt-5.6` alias from the Codex model catalog; it is a model family, not a selectable model.
