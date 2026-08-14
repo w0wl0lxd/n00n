@@ -1,0 +1,1 @@
+Per-model file input support flags: static model tables carry a `files` flag (regular OpenAI GPT-5.6 model entries support files; coding-plan/Codex entries remain disabled with `files` set to `false`), discovery can report file support, and overrides still take precedence.
