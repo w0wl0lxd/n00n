@@ -3,6 +3,7 @@ use std::io::{Write, stdout};
 use std::path::Path;
 
 use color_eyre::Result;
+use color_eyre::eyre::Context;
 use crossterm::Command;
 use crossterm::ExecutableCommand;
 use crossterm::clipboard::CopyToClipboard;
@@ -55,7 +56,8 @@ impl TerminalMux {
 
 impl TerminalGuard {
     pub(crate) fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
-        let terminal = ratatui::init();
+        let terminal = ratatui::try_init()
+            .wrap_err("n00n's TUI needs an interactive terminal (TTY); none is attached")?;
         let guard = Self;
         stdout().execute(EnableBracketedPaste)?;
         stdout().execute(EnableMouseCapture)?;
