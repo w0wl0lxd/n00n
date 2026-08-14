@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786697767259,
+  "lastUpdate": 1786697825682,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -17705,6 +17705,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 193690,
             "range": "± 1728",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ad8d18b23c6304aff5b68b1198141f86540d2b68",
+          "message": "test(n00n-lua): restore JobStore kill coverage (#366)\n\nRe-add the kill_job_terminates_long_running_child test that was dropped\nwhen the cargo-wrapper fix was simplified before merge.",
+          "timestamp": "2026-08-14T04:39:35-04:00",
+          "tree_id": "315cb07d4dbcce7a0be5246669b8b30b041390fe",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/ad8d18b23c6304aff5b68b1198141f86540d2b68"
+        },
+        "date": 1786697823938,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6464120,
+            "range": "± 180497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2446788,
+            "range": "± 6048",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2446303,
+            "range": "± 6329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7598639,
+            "range": "± 136896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3838278,
+            "range": "± 13669",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3745529,
+            "range": "± 16349",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 574460,
+            "range": "± 2939",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167937,
+            "range": "± 1708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167729,
+            "range": "± 293",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1072509,
+            "range": "± 12311",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 634329,
+            "range": "± 4657",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 635386,
+            "range": "± 5713",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 51044,
+            "range": "± 4332",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 162126,
+            "range": "± 15766",
             "unit": "ns/iter"
           }
         ]
