@@ -350,7 +350,7 @@ fn contains_url_userinfo_credentials(value: &str) -> bool {
         let authority = &value[scheme_end + 3..];
         let authority_end = authority
             .find(['/', '?', '#'])
-            .map_or(authority.len(), |end| end);
+            .unwrap_or_else(|| authority.len());
         authority[..authority_end]
             .rsplit_once('@')
             .and_then(|(userinfo, _)| userinfo.split_once(':'))

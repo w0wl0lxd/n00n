@@ -655,7 +655,7 @@ fn start_event_pump(
 
 fn next_request_id(counter: &AtomicI64) -> Option<RequestId> {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .ok()
         .and_then(|id| id.checked_add(1))
         .map(RequestId::Number)
