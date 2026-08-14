@@ -25,6 +25,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+        with:
+          shared-key: 'linux-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: 'dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4'  # stable
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
