@@ -155,8 +155,8 @@ pub fn affected_database(files: &[&str], project: &Path) -> Result<String, Codeg
         .prepare(
             "SELECT DISTINCT caller.file_path
              FROM nodes n
-             JOIN edges e ON e.target_id = n.id
-             JOIN nodes caller ON caller.id = e.source_id
+             JOIN edges e ON e.target = n.id
+             JOIN nodes caller ON caller.id = e.source
              WHERE n.id = ?1 AND e.kind = ?2",
         )
         .map_err(|source| CodegraphError::Sqlite { source })?;
@@ -166,8 +166,8 @@ pub fn affected_database(files: &[&str], project: &Path) -> Result<String, Codeg
         .prepare(
             "SELECT DISTINCT callee.file_path
              FROM nodes n
-             JOIN edges e ON e.source_id = n.id
-             JOIN nodes callee ON callee.id = e.target_id
+             JOIN edges e ON e.source = n.id
+             JOIN nodes callee ON callee.id = e.target
              WHERE n.id = ?1 AND e.kind = ?2",
         )
         .map_err(|source| CodegraphError::Sqlite { source })?;
@@ -327,8 +327,8 @@ pub fn search_callers(
             "SELECT caller.id, caller.name, caller.qualified_name, caller.file_path, caller.start_line, caller.end_line, \
              caller.signature, caller.docstring \
              FROM nodes n \
-             JOIN edges e ON e.target_id = n.id \
-             JOIN nodes caller ON caller.id = e.source_id \
+             JOIN edges e ON e.target = n.id \
+             JOIN nodes caller ON caller.id = e.source \
              WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2 \
              LIMIT ?3",
         )
@@ -365,8 +365,8 @@ pub fn search_callees(
             "SELECT callee.id, callee.name, callee.qualified_name, callee.file_path, callee.start_line, callee.end_line, \
              callee.signature, callee.docstring \
              FROM nodes n \
-             JOIN edges e ON e.source_id = n.id \
-             JOIN nodes callee ON callee.id = e.target_id \
+             JOIN edges e ON e.source = n.id \
+             JOIN nodes callee ON callee.id = e.target \
              WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2 \
              LIMIT ?3",
         )
@@ -405,14 +405,14 @@ pub fn search_impact(
              UNION
              SELECT n2.id, n2.name, n2.qualified_name, n2.file_path, n2.start_line, n2.end_line, n2.signature, n2.docstring
              FROM nodes n
-             JOIN edges e ON e.source_id = n.id
-             JOIN nodes n2 ON n2.id = e.target_id
+             JOIN edges e ON e.source = n.id
+             JOIN nodes n2 ON n2.id = e.target
              WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2
              UNION
              SELECT n2.id, n2.name, n2.qualified_name, n2.file_path, n2.start_line, n2.end_line, n2.signature, n2.docstring
              FROM nodes n
-             JOIN edges e ON e.target_id = n.id
-             JOIN nodes n2 ON n2.id = e.source_id
+             JOIN edges e ON e.target = n.id
+             JOIN nodes n2 ON n2.id = e.source
              WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2
              LIMIT ?3",
         )
@@ -700,12 +700,16 @@ mod tests {
                 type_parameters TEXT
             );
             CREATE TABLE edges (
-                id TEXT PRIMARY KEY,
-                source_id TEXT NOT NULL,
-                target_id TEXT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                target TEXT NOT NULL,
                 kind TEXT NOT NULL,
-                FOREIGN KEY (source_id) REFERENCES nodes(id),
-                FOREIGN KEY (target_id) REFERENCES nodes(id)
+                metadata TEXT,
+                line INTEGER,
+                col INTEGER,
+                provenance TEXT DEFAULT NULL,
+                FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE,
+                FOREIGN KEY (target) REFERENCES nodes(id) ON DELETE CASCADE
             );
             CREATE VIRTUAL TABLE nodes_fts USING fts5(
                 id UNINDEXED,
@@ -725,8 +729,8 @@ mod tests {
                 'node-3', 'function', 'process', 'n00n::process',
                 'src/process.rs', 'rust', 5, 15, 0, 0, 'process data', 'fn process()', 'pub', 1, 0, 0, 0, NULL, NULL
             );
-            INSERT INTO edges VALUES ('edge-1', 'node-2', 'node-1', 'calls');
-            INSERT INTO edges VALUES ('edge-2', 'node-2', 'node-3', 'calls');
+            INSERT INTO edges (source, target, kind) VALUES ('node-2', 'node-1', 'calls');
+            INSERT INTO edges (source, target, kind) VALUES ('node-2', 'node-3', 'calls');
             INSERT INTO nodes_fts(id, name, qualified_name, docstring)
                 VALUES ('node-1', 'restore_item', 'n00n_lua::restore_item', 'restore helper');",
         )
@@ -736,6 +740,41 @@ mod tests {
     #[test]
     fn fts_query_quotes_terms() {
         assert_eq!(fts_query("session restore"), "\"session\" OR \"restore\"");
+    }
+
+    /// The fixture previously declared `edges(source_id, target_id)` while the
+    /// index codegraph actually writes uses `edges(source, target)`. Every
+    /// caller/callee/impact query therefore failed at runtime with
+    /// "no such column: e.target_id" while the tests passed against the wrong
+    /// schema. Pin the column names so the fixture cannot drift back.
+    #[test]
+    fn fixture_edges_match_the_indexed_schema() {
+        const REQUIRED_COLUMNS: [&str; 3] = ["source", "target", "kind"];
+        const REJECTED_COLUMNS: [&str; 2] = ["source_id", "target_id"];
+
+        let conn = Connection::open_in_memory().expect("memory db");
+        write_fixture(&conn);
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('edges')")
+            .expect("pragma");
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("columns");
+
+        for column in REQUIRED_COLUMNS {
+            assert!(
+                columns.iter().any(|name| name == column),
+                "fixture edges is missing {column}: {columns:?}"
+            );
+        }
+        for column in REJECTED_COLUMNS {
+            assert!(
+                !columns.iter().any(|name| name == column),
+                "fixture edges still declares {column}: {columns:?}"
+            );
+        }
     }
 
     #[test]

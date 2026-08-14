@@ -205,6 +205,17 @@ function M.extract_file_path(query)
   return nil
 end
 
+-- Keyword/semantic search input. Also the degraded route when the intent's own
+-- backend is unavailable, so it must not depend on an index the caller lacks.
+function M.search_backend_input(input)
+  return {
+    command = "search",
+    query = input.query,
+    repo = input.project or ".",
+    mode = input.mode or "bm25",
+  }
+end
+
 function M.build_backend_input(input, intent)
   local project = input.project or "."
 
@@ -220,13 +231,7 @@ function M.build_backend_input(input, intent)
   end
 
   if intent == "search" then
-    return "semblem",
-      {
-        command = "search",
-        query = input.query,
-        repo = project,
-        mode = input.mode or "bm25",
-      }
+    return "semblem", M.search_backend_input(input)
   end
 
   if intent == "relations" or intent == "trace" then
