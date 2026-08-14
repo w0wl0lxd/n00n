@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786689260536,
+  "lastUpdate": 1786695941428,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -17381,6 +17381,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 139391,
             "range": "± 25316",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cdacbb49d37edb95433fb0e119233dd8019f7adf",
+          "message": "fix(codegraph): pass the project as --path and read the indexed edge columns (#352)\n\n* fix(codegraph): pass the project as --path and read the indexed edge columns\n\nThe codegraph CLI takes the project through -p/--path on every subcommand\nexcept sync. Passing it as an extra positional made node, query, callers,\ncallees, impact and files fail with \"too many arguments\", and explore, whose\npositional is variadic, silently folded the path into the search query and\nanswered a different question.\n\nThe graph queries joined edges.source_id and edges.target_id, but the index\ncodegraph writes declares source and target, so every caller/callee/impact\nquery failed with \"no such column: e.target_id\". The test fixture declared the\nsame wrong columns, so the tests certified the bug; it now mirrors the indexed\nschema and a guard test pins the column names.\n\nexplore now falls back to keyword search when its chosen backend is\nunavailable, and reports the degraded route, instead of failing the call.\n\n* fix(codegraph): backtick the error string in the fixture guard doc comment\n\n* fix(explore): derive a fallback search query when the call has no free text\n\nCommand-only calls such as { command = \"callers\", symbol = \"restore_item\" }\ncarry no query, so the degraded route reached the search backend with a nil\nquery and was rejected before it could run. Fall back to the named symbol,\nthe trace endpoints, or the path, and report a clear error when the call\nnames none of them.\n\nAlso import OsStr rather than qualifying it inline.",
+          "timestamp": "2026-08-14T04:06:20-04:00",
+          "tree_id": "d0d074f05296c025cb3ed1811d4f4ce1bfa634dc",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/cdacbb49d37edb95433fb0e119233dd8019f7adf"
+        },
+        "date": 1786695940146,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6709079,
+            "range": "± 192663",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2306303,
+            "range": "± 6959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2270780,
+            "range": "± 66306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8060474,
+            "range": "± 28419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4314991,
+            "range": "± 15981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4300724,
+            "range": "± 24504",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 580556,
+            "range": "± 2442",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192279,
+            "range": "± 230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192146,
+            "range": "± 1738",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1048301,
+            "range": "± 12916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 583686,
+            "range": "± 8352",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582479,
+            "range": "± 10517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 49213,
+            "range": "± 7945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 192745,
+            "range": "± 8164",
             "unit": "ns/iter"
           }
         ]
