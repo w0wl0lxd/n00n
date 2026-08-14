@@ -4,6 +4,7 @@
 
 mod db;
 
+use std::ffi::OsStr;
 use std::io::{Error, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -254,8 +255,8 @@ impl Client {
         subcommand: &'a str,
         project: &'a Path,
         positionals: &'a [&'a str],
-    ) -> Vec<&'a std::ffi::OsStr> {
-        let mut args: Vec<&std::ffi::OsStr> = Vec::with_capacity(positionals.len() + 4);
+    ) -> Vec<&'a OsStr> {
+        let mut args: Vec<&OsStr> = Vec::with_capacity(positionals.len() + 4);
         args.push(subcommand.as_ref());
         if subcommand == SYNC_SUBCOMMAND {
             args.push(PROJECT_POSITIONAL_SEPARATOR.as_ref());

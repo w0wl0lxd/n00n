@@ -26,7 +26,11 @@ local function fallback_dispatch(input, ctx, failed_backend)
   if failed_backend == FALLBACK_BACKEND then
     return nil, nil, "no further fallback"
   end
-  local output, err = n00n.agent.call_tool(ctx, FALLBACK_BACKEND, router.search_backend_input(input))
+  local backend_input = router.search_backend_input(input)
+  if not backend_input.query then
+    return nil, nil, "no query, symbol, or path to search for"
+  end
+  local output, err = n00n.agent.call_tool(ctx, FALLBACK_BACKEND, backend_input)
   if err then
     return nil, nil, err
   end

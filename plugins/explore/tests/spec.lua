@@ -167,6 +167,13 @@ case("search_backend_input_is_the_degraded_route", function()
   eq(routed.mode, input.mode)
 end)
 
+case("degraded_route_falls_back_to_the_named_symbol_when_there_is_no_query", function()
+  eq(router.search_backend_input({ command = "callers", symbol = "restore_item" }).query, "restore_item")
+  eq(router.search_backend_input({ command = "trace_path", from_symbol = "a", to_symbol = "b" }).query, "a b")
+  eq(router.search_backend_input({ command = "skeleton", path = "src/main.rs" }).query, "src/main.rs")
+  eq(router.search_backend_input({ command = "status" }).query, nil)
+end)
+
 case("skeleton_intent_routes_to_index", function()
   eq(router.normalize_intent({ query = "skeleton src/main.rs", intent = "skeleton" }), "skeleton")
   local backend, input = router.build_backend_input({ query = "skeleton src/main.rs", intent = "skeleton" }, "skeleton")
