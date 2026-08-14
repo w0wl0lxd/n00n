@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786718793608,
+  "lastUpdate": 1786720853131,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -18893,6 +18893,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 174880,
             "range": "± 20062",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2c2798daadd990bc88a9c7f340e5a493ecbf685e",
+          "message": "fix(tools,mcp,lua): classify walk errors, fix MCP name collision, kill batch/restore crashes\n\n* fix(tools,mcp,lua): classify expected walk errors, fix MCP name collision, and kill batch/restore crashes\n\nKills the loudest 0.6.0 runtime jank plus two release blockers found in a\nparallel log audit:\n\n- classify expected grep/glob walk errors (permission denied, vanished\n  files, symlink loops) as debug instead of warn, with a single skipped-count\n  summary instead of thousands of individual lines\n- consolidate per-tool MCP description-truncation logging into one line per\n  server\n- raise the memory plugin's directory cap and make the limit error name the\n  largest entries instead of just refusing\n- add PostCompact hook timeout parity with PreCompact, and stop the\n  \"Auto-compacting...\" UI card getting stuck forever when compaction fails\n- rename the devin changelog fragment so `just changelog` doesn't abort, and\n  widen `just lint` to `--all-targets` (closing a gap where `n00n-arbor`'s\n  example was never linted)\n- stop `batch` calls under a near-exhausted subagent deadline from getting\n  killed mid-flight by the watchdog interrupt; children now settle with a\n  clear \"insufficient time remaining\" error\n- stop MCP servers whose name matches a built-in tool (e.g. `codegraph`)\n  from being silently disabled forever; tool names are already namespaced\n  per server, so the collision was never real\n- guard task/todo_write/workflow session restore against a `ToolView`\n  rendering failure crashing the whole callback\n- broaden grep's PCRE-unsupported hint to also name backreferences\n- dedup consecutive identical MCP child stderr lines instead of re-logging\n  a stuck retry loop one line per retry\n- replace edit's unbounded `math.huge` diff-view cap with a large finite one\n\n* fix(mcp): resolve clippy --all-targets violations and regenerate tool docs\n\nCI's widened `just lint` (--all-targets) caught two real hits in the new\nStderrDedup code: a disallowed unwrap_or_default masking an invariant, and\nan unused match-arm binding. Also regenerate the grep tool's doc page for\nthe broadened PCRE hint text.\n\n* fix(lua): resolve clippy --all-targets violations in the perf bench\n\nThe widened --all-targets gate now lints benches too, surfacing 5\npre-existing hits in n00n-lua/benches/perf.rs (a manual harness that was\nnever linted before): two expect_used, a precision-loss cast, and an\nuninlined format arg.\n\n* fix(lua): exempt luau_perf bench from unwrap_used under --all-targets\n\nSame widened-gate fallout as perf.rs: this bench's Lua VM setup and\ncriterion Bencher::iter closures use unwrap() throughout (FFI setup that\nshould abort loudly on failure, not something worth threading Result\nthrough). Exempt it the same way clippy.toml already exempts tests.\n\n* fix(tools,ui): require every partial walk error to be expected and clear failed compaction streams\n\nAn ignore::Error::Partial mixing a symlink loop with a TimedOut was\nclassified as expected, so grep and glob downgraded a genuine I/O failure to\ndebug. fail_pending_compaction left the streamed deltas in place, letting a\nfailed summary render beside the next response. The splash bench also\ntripped semicolon_if_nothing_returned on the Windows lint job.\n\n* fix(lua): grant exhausted-deadline grace to batch so it settles children\n\n* fix(n00n-lua): update JobStore kill test to new start/kill signatures\n\n* fix(lua): send a fresh grace deadline instead of the stale exhausted one\n\nDeadline::after(EXHAUSTED_DEADLINE_GRACE_SECS) now backs the grace\ndispatch on the Some(d) and Deadline::At(_) arms alike, so an\nalready-past agent deadline no longer reaches the Lua watchdog as-is.\nPreviously the watchdog armed on a past instant and raised\nINTERRUPT_DEADLINE_MSG within its 10ms poll, racing (and usually\nbeating) Batch:run's own settle loop before deadline_grace could do\nanything. The Some(d) arm also gained the missing grace branch, so\ndeadline_grace=true is no longer silently inert for a tool that also\ndeclares a timeout. register_tool's option list now documents\ndeadline_grace alongside the other opt-in fields.\n\n* docs(agent): describe the Partial-aggregate debug widening explicitly\n\nis_expected_walk_error's recursive rewrite (see the \"require every\npartial walk error to be expected\" fix) didn't just correct\nPartial([Loop, TimedOut]) staying at warn; it also widened\nclassification for a Partial bundling two-or-more already-expected io\nkinds (e.g. [PermissionDenied, NotFound]) to debug. Previously\nignore::Error::io_error() returned None once errs.len() != 1, so that\ncase fell through to warn even though every member was individually\nexpected. Spell this out in the doc comment so the behavior change is\ndiscoverable without diffing the match arms.\n\n* fix(ui): update stale McpHandle::send callers to the unit-returning signature\n\n8ce4a954b changed McpHandle::send from returning\nResult<(), flume::TrySendError<McpCommand>> to () (it now warns\ninternally), but two n00n-ui callers still treated it as fallible:\nagent/mod.rs:128 wrapped it in `if let Err(e) = ... { warn!(...) }`,\nwhich no longer compiles (E0308, breaking the whole workspace build\nand every CI job downstream of it), and agent_loop.rs:600 bound the\nunit result with `let _ =`, which still compiles but is now stale\nsyntax implying a fallibility that no longer exists. Both now call\nsend() bare, matching the existing correct call at mcp/mod.rs:2027.\n\n* docs(lua): regenerate Lua API docs for the deadline_grace option\n\n* fix(agent,lua): resolve review findings for runtime log noise\\n\\n- Log MCP reconnect completion only after a successful refresh.\\n- Skip unreadable-directory glob test when running as root.",
+          "timestamp": "2026-08-14T15:14:11Z",
+          "tree_id": "49852bf8ca3d3bbfef04824b8ca2c15b254057ab",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/2c2798daadd990bc88a9c7f340e5a493ecbf685e"
+        },
+        "date": 1786720851691,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6707776,
+            "range": "± 67997",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220728,
+            "range": "± 5622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2220151,
+            "range": "± 30822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8055471,
+            "range": "± 249057",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4353318,
+            "range": "± 43917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4554764,
+            "range": "± 21898",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584771,
+            "range": "± 901",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192448,
+            "range": "± 972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192461,
+            "range": "± 2756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045385,
+            "range": "± 11275",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 591641,
+            "range": "± 2657",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 590083,
+            "range": "± 1414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48201,
+            "range": "± 2926",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 138683,
+            "range": "± 11506",
             "unit": "ns/iter"
           }
         ]
