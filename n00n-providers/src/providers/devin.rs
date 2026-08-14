@@ -22,6 +22,7 @@ use isahc::{AsyncReadResponseExt, HttpClient};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
+use url::Url;
 
 use crate::model::ModelEntry;
 use crate::provider::{BoxFuture, Provider};
@@ -50,7 +51,6 @@ const DEVIN_AUTH_PATH: &str = "/exa.auth_pb.AuthService/GetUserJwt";
 const DEVIN_CHAT_PATH: &str = "/exa.api_server_pb.ApiServerService/GetChatMessage";
 const DEVIN_CLI_MODEL_CONFIGS_PATH: &str = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
 const DEVIN_SESSION_TOKEN_PREFIX: &str = "devin-session-token$";
-const URL_SCHEME_SEPARATOR: &str = "://";
 const HTTP_SCHEME: &str = "http";
 const HTTPS_SCHEME: &str = "https";
 const DEFAULT_TEMPERATURE: f64 = 0.4;
@@ -159,19 +159,24 @@ fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
     }
 }
 
+/// API paths are appended to this value by string concatenation, so a query or
+/// fragment would swallow the path. `Url` also normalizes the scheme, which a
+/// prefix match does not: schemes are case-insensitive.
 fn is_valid_api_server_url(url: &str) -> bool {
-    let Some((scheme, authority)) = url.trim().split_once(URL_SCHEME_SEPARATOR) else {
+    let Ok(parsed) = Url::parse(url.trim()) else {
         return false;
     };
-    !authority.is_empty()
-        && (scheme.eq_ignore_ascii_case(HTTP_SCHEME) || scheme.eq_ignore_ascii_case(HTTPS_SCHEME))
+    matches!(parsed.scheme(), HTTP_SCHEME | HTTPS_SCHEME)
+        && parsed.host_str().is_some_and(|host| !host.is_empty())
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
 }
 
 fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
     let chosen = explicit
         .filter(|u| is_valid_api_server_url(u))
         .map_or(configured, |u| u.trim().to_string());
-    let chosen = chosen.trim_end_matches('/').to_string();
+    let chosen = chosen.trim().trim_end_matches('/').to_string();
     if is_valid_api_server_url(&chosen) {
         chosen
     } else {
@@ -1224,6 +1229,9 @@ mod tests {
     /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
     /// request and session token to the default service instead of the
     /// configured endpoint.
+    /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
+    /// request and session token to the default service instead of the
+    /// configured endpoint.
     #[test]
     fn url_scheme_comparison_is_case_insensitive() {
         for url in ["HTTPS://devin.example", "Http://devin.example"] {
@@ -1234,6 +1242,32 @@ mod tests {
         }
         assert!(!is_valid_api_server_url("https://"));
         assert!(!is_valid_api_server_url("ftp://devin.example"));
+    }
+
+    /// API paths are appended by concatenation, so a query or fragment would
+    /// place the path after `?` or `#` and the request would never reach it.
+    #[test]
+    fn urls_carrying_a_query_or_fragment_are_rejected() {
+        for url in [
+            "https://devin.example?token=abc",
+            "https://devin.example#frag",
+            "https://devin.example/path?x=1",
+            "https:///nohost",
+            "not-a-url",
+            "",
+        ] {
+            assert!(!is_valid_api_server_url(url), "should reject: {url}");
+        }
+        assert!(is_valid_api_server_url("https://devin.example"));
+        assert!(is_valid_api_server_url("https://devin.example/base"));
+    }
+
+    #[test]
+    fn whitespace_padded_configured_url_is_trimmed_not_discarded() {
+        assert_eq!(
+            resolve_api_server_url("  https://configured.example/  ".to_string(), None),
+            "https://configured.example"
+        );
     }
 
     #[test]
