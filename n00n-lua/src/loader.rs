@@ -208,13 +208,6 @@ impl PluginHost {
     /// # Errors
     /// Returns an error if the Lua runtime cannot be spawned.
     pub fn with_jit(registry: Arc<ToolRegistry>, jit: bool) -> Result<Self, PluginError> {
-<<<<<<< HEAD
-        let lua = runtime::spawn(registry, *BUNDLED_DIRS, jit)?;
-        Ok(Self {
-            inner: Some(lua),
-            state_leases: Arc::new(StateLeases::default()),
-        })
-=======
         Self::with_jit_and_search_config(registry, jit, Arc::new(SearchConfig::default()))
     }
 
@@ -228,8 +221,10 @@ impl PluginHost {
         search_config: Arc<SearchConfig>,
     ) -> Result<Self, PluginError> {
         let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit)?;
-        Ok(Self { inner: Some(lua) })
->>>>>>> 070514ca2 (feat(search): add native extraction core)
+        Ok(Self {
+            inner: Some(lua),
+            state_leases: Arc::new(StateLeases::default()),
+        })
     }
 
     #[must_use]

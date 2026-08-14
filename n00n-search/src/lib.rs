@@ -19,6 +19,8 @@ pub use extract::Extractor;
 pub use index::{
     IndexMetadata, Progress, Query, SearchConfig, SearchIndex, SearchMode, SearchResult,
 };
-pub use transport::{FetchLimits, Fetcher};
-pub use types::{ExtractionResult, FetchedContent};
+pub use transport::{DEFAULT_MAX_REDIRECTS, FetchLimits, Fetcher, HttpTransport};
+pub use types::{
+    ExtractFormat, ExtractRequest, ExtractionResult, FetchedContent, MAX_SOURCE_BYTES,
+};
 pub use url_policy::UrlPolicy;

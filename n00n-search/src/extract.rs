@@ -39,13 +39,11 @@ impl<T: Transport> Extractor<T> {
             {
                 Ok(content) => results.push(content),
                 Err(error) => {
+                    let kind = error_kind(&error).into();
                     if first_error.is_none() {
-                        first_error = Some(error.clone());
+                        first_error = Some(error);
                     }
-                    failures.push(PartialFailure {
-                        engine: None,
-                        kind: error_kind(&error).into(),
-                    });
+                    failures.push(PartialFailure { engine: None, kind });
                 }
             }
         }
