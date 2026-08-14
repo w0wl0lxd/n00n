@@ -4310,6 +4310,7 @@ dependencies = [
  "tree-sitter-yaml",
  "tree-sitter-zig",
  "unicode-width",
+ "url",
 ]
 
 [[package]]
@@ -4354,6 +4355,7 @@ dependencies = [
  "libc",
  "n00n-config",
  "n00n-storage",
+ "prost",
  "reqwest",
  "rusqlite",
  "rustls",
@@ -5339,6 +5341,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "962200e2d7d551451297d9fdce85138374019ada198e30ea9ede38034e27604c"
 dependencies = [
  "parking_lot",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
