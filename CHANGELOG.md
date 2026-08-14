@@ -4,12 +4,104 @@ All notable user-facing changes are documented in this file. Entries are
 generated from `changelog.d/` fragments at release time via `just changelog`.
 See `changelog.d/README.md` for the fragment convention.
 
-
-
-
-## [0.5.0] - 2026-07-28
+## [0.5.1] - 2026-08-14
 
 ### Added
+
+- # Skill system v2
+- Skill system v2: recursive discovery, frontmatter policy, agent enforcement, search ranking, and structured plans.
+- Memory tool v2: keyword search, YAML frontmatter metadata, append, and lite-layer session recall hints.
+- Added native Cursor `AgentService/Run` spike (HTTP/2 Connect via reqwest duplex streaming) with IDE auth, discovery, checkpoints, checksum headers, and a live Auto/`default` pong path gated by `N00N_CURSOR_LIVE_TESTS=1`.
+- Added lead-owned beta Fusion orchestration (`--fusion` / `always_fusion` / `[agent.fusion]`): a lead agent plans, delegates execution to a conservative sidekick via `fusion_delegate`, and reviews the result. Fusion remains off by default, delegation is lead-directed, and per-lane cost stats are reported on done events.
+- <!-- markdownlint-disable MD041 -->
+- Added first-tier explore tooling with `explore` intent routing, expanded `arbor`/`codegraph`/`semblem` commands, native/CLI fallbacks, and `rtk`/`bash` hardening.
+- Added a native tmux tool for managing sessions, windows, and panes.
+- Added host-owned, root- and session-scoped Lua plugin state with bounded snapshots, lifecycle restoration, and cleanup.
+- Sessions now restore plugin state and todo lists across restarts in UI, SDK, ACP, print, and agent modes.
+- Added secure local Firecrawl backends for web search and fetch, with bounded output and clear provenance.
+- Add in-memory Arbor `graph.json` indexing in `n00n-arbor` with symbol/file/id lookup, caller/callee queries, and shortest-path tracing for explore-tool integration.
+- Refresh Arbor graph indexes when status reports stale state and validate graph.json shape (including node holes) before building in-memory indexes.Route Arbor callers/callees/trace_path through the in-memory graph.json index when available, falling back to Arbor CLI subprocess calls for map/diff/query/status.Add qualified-name/file/kind symbol resolution, calls-only edge traversal, and richer graph node metadata for Arbor graph queries.Added `parallel_tool_calls` support to OpenAI-compatible, OpenAI Responses, and Codex WebSocket request bodies. Models that support it can now emit multiple tool calls in a single turn, which n00n executes in parallel and returns in one follow-up, reducing round-trips and repeated input-token costs. Provider support is controlled by a new `supports_parallel_tool_calls` flag in `n00n-providers` TOML configs.Add `n00n-codegraph` with a native `n00n.codegraph` Lua API and refactor the codegraph plugin to use it for explore calls with timeout handling.Add `rusqlite` with bundled SQLite and query `.codegraph/codegraph.db` in-process for explore lookups, with CLI fallback when the database is missing or unreadable.
+- Enable the unified `explore` built-in by default, update agent prompts and AGENTS.md guidance, and add a `just explore-health` recipe for local index checks.
+- Add explore plugin coverage to shared restore-card integration tests and regenerate tool docs after explore integration.
+- Add a unified `explore` tool that routes queries to `index`, `arbor`, or `codegraph` based on intent, with optional per-session result caching.
+- Add native Devin provider implementation using Connect protocol over gRPC-Web.
+- The new implementation:
+- Reads credentials from `~/.local/share/devin/credentials.toml` or `WINDSURF_API_KEY`/`DEVIN_API_KEY` env
+- Implements `GetUserJwt` exchange to obtain user JWT
+- Implements `GetChatMessageRequest` encoder and `GetChatMessageResponse` decoder using hand-rolled protobuf
+- Implements streaming response parser for Connect frames with gzip decompression
+- Emits ProviderEvents: `TextDelta`, `ThinkingDelta`, `ToolUseStart`/`ToolUseDelta`/`ToolUseEnd`, `Done`/`Error`
+- Supports tool definitions in requests and tool-call streaming in responses
+- Adds a full Devin model catalog from the live CLI model list
+- Resolves display model ids to wire uids via `GetCliModelConfigs`
+- Allows provider-only model specs like `n00n -m devin` by selecting the provider default
+- Replaces the ACP-based `devin` provider with a native HTTP implementation that calls Devin's gRPC-Web API directly.
+- Add OpenAI Chat Completions message-level prompt cache breakpoints for gpt-5.6+ models.
+- Migrate supported non-Codex OpenAI models to Responses API with safe Chat Completions fallback. API-key requests are intentionally stateless: they use `store: false` and send full history on every turn, so provider-side response storage is not enabled.
+- Extended non-Codex OpenAI Responses API with July 2026 model features: explicit prompt-cache options and breakpoints, reasoning mode and context, service-tier fast, safety identifiers, moderation, built-in tool conversion, and output item parsing for gpt-5.5/5.6.
+- Added native `semblem` built-in with `n00n-search` BM25 indexing and `n00n-semble` Lua bindings.
+- <!-- markdownlint-disable MD041 -->
+- Added per-model `thinking_dialect`, `thinking_fields`, and `body_override` config for dynamic providers (script `models`/`info`) and custom providers (`providers.toml`), letting a model declare where thinking values go in the request body and shape the body with `defaults`/`replace`/`filter` after the provider's own setup.
+- Show prompt-cache hit percentages in the status bar and token usage panel for every provider that reports cached token usage.
+
+### Changed
+
+- Refactored `plugins/task` and `plugins/workflow` to launch subagents through the shared `n00n.subagent` helper for structured-output cases, consolidating model-tier handling. Team submodules (validation, quorum, summary) retain direct `n00n.agent.session` calls for test compatibility with mock contexts.
+- Demote expected runtime log messages to reduce noise from tool parameters, glob walks, MCP tool descriptions, provider credentials, and cancelled streams.Demote OpenAI response-chain fallback and provider retry logs to `info`.Log `HistoryReplayRequired` and cancelled agent states at appropriate levels and reduce provider manifest noise.Group child sessions by research, planning, review, and orchestration role in the session picker.
+
+### Fixed
+
+- Harden Cursor Run paced-body heartbeat timing assertion against CI load flakes.
+- Ensure the arbor graph index is fresh before native queries and return nil for empty native result tables so the CLI fallback is used.
+- Fixed local provider discovery to be silent when unconfigured, updated Devin model pricing, and made custom providers inherit model metadata from their base protocol manifest.
+- Fixed session resume and plan context handling, reduced log noise from missing compaction hooks, unconfigured providers, and MCP name conflicts, and made auto-compaction continue on provider errors instead of stopping the session.
+- Fixed CodeRabbit review findings from merged PRs #199 and #200: shared StoredMode mapping, propagated auto-compaction cancellation and plan-read failures, initialized UI plan_path from restored sessions, and made swallowed Lua/storage diagnostics visible.
+- Also fixed subagent mode selection (`n00n.agent.session` now accepts `mode`) and enabled deferred tools (`batch`, `agent_control`, `view_image`) by default so recent features are not silently disabled.
+- Fixed Arbor map and diff failures when results contain numeric fields.
+- Stopped raw tool-call JSON from obscuring each tool's purpose-built header and output rendering.
+- Retry OpenAI `server_is_overloaded` capacity errors instead of suppressing them, and make `RequestSent` overloads retryable so the agent loop and `team`/`workflow` budgets do not give up on transient provider-side failures.
+- Refund agent-call budget slots for transient provider/transport errors in the shared `n00n.guard` runaway detector, so `team` and `workflow` runs do not exhaust their budgets on temporary outages.
+- Raise the default `team` agent-call budget from 16 to 24, matching the `workflow` default and giving wave validation retries enough headroom.Fixed expanded tool arguments staying collapsed, broadened secret argument redaction, and kept one-line argument previews expandable.
+- Tolerate corrupt `ToolTelemetry` and `StoredFusionUsage` fields when loading sessions.Improve built-in tool schemas to reduce model-side parse failures.
+- Fixed model fallback so the last selected model is used by default, and only falls back to recent/auto-detected providers when that model is unavailable. Codex is now shown as a saved provider in the login picker when its OAuth tokens are present.Fixed a plugin host test to surface session tool-definition errors as tool errors.
+- Allow null and empty object as empty tool list in n00n.agent.session.
+- ACP server: validate request IDs and handle invalid UTF-8 on stdin. Plugin permissions: default to deny instead of allow. TUI: check for terminal before starting interactive UI.
+- Fixed missing `Tier` import in `n00n-config` tests and regenerated docs.
+- Removed unused `MockProvider` helper to satisfy clippy.
+- Fix log-audit-session-write-amplification dirty follow-up.
+- Fix review-correctness dirty follow-up.
+- Fix session-task-cursor-crashes dirty follow-up.
+- Addressed subagent delivery policy dirty follow-up in cleanup pass.
+- Bumped the generated tool-definition byte budget to account for new built-in tools.
+- Hardened agent session recovery, OpenAI response continuation, UI-only deletion, and lineage handling to prevent lost progress and runaway subagent loops.Harden session reads and process shutdown against signal and crash conditions.
+- Restored multi-JSON-per-line parsing for ACP stdin input.
+- Build commands run through configured shell wrappers instead of bypassing them through rtk.
+- Bounded model-emitted tool calls so excess work queues instead of starting every command at once. Cheap reads use a wider lane, while process-backed tools share an eight-call limit and nested agents share a four-call limit.
+- Finish side-question streams when providers complete without emitting a terminal event.
+- Prevent cancellation and timeout interrupts from aborting batch, task, team, and workflow cleanup.
+- Removed the bare `gpt-5.6` alias from the Codex model catalog; it is a model family, not a selectable model.Prevent automatic replay of accepted Codex requests, honor full-history replay protection, and default enabled Fusion sessions to a Sol lead with Luna Max coding delegates.
+- Fix auto-compaction to handle `server_is_overloaded` errors, pre-truncate history to fit within the model's context window before streaming, and raise the default PreCompact hook timeout to 60s.
+- Ignore non-protobuf end-stream frames in the Cursor provider instead of aborting the turn.
+- Stop duplicating a failed tool's full output below its collapsed snapshot; only show the error if its last line is not already visible in the snapshot tail.
+- Register `swe-1-7-max` and `swe-1-7-medium` as the canonical Devin model ids with `swe-1-7` and dot-prefixed variants (`swe-1.7`/`swe-1.7-max`/`swe-1.7-medium`) as aliases, and correct the `swe-1-7` family context window to `262_144` tokens.
+- Validate the `devin`/`devin2` `base_url` before using it for authentication, falling back to the configured API server when it is missing or is not an `http://`/`https://` URL. This fixes `failed to build auth request: invalid format` errors when a provider name like `devin2` is configured.
+- Map Devin gRPC `ModelUsageStats` to `TokenUsage` correctly, treating `input_tokens` as the total prompt and the cache fields as additive details. Invalid cache breakdowns are ignored instead of changing the meaning of `input_tokens` based on counter magnitudes.
+- Report the full resumed conversation size in the post-compaction `TurnComplete` event using the active model tokenizer, continuation prompt, and tool definitions, so the context meter no longer drops sharply after compaction.
+- Sync the discovered model context window from the model slot to every session, fixing multi-session discovery that could leave the UI using the default 128k window.
+- Fix Devin token tracking by preserving the reported `ModelUsageStats.input_tokens` value while keeping `cache_read_tokens` and `cache_write_tokens` in their own categories.
+- Demote expected `glob` permission-denied walk errors from `warn` to `debug` in `n00n.fs.glob`, reducing log noise when scanning directories that include unreadable container or system paths.
+- Keep task progress timers and recent actions updating while isolated agents run, and prevent child cancellation or concurrent response state from aborting unrelated work.
+- Fix n00n-search walk test path assertion to be cross-platform on Windows.n00n now restores saved models only when their provider is available and auto-detects from available built-in, custom, and script providers without treating `providers.toml` as a global provider allowlist.
+- Hardened team and workflow timeouts, resumable orchestration state, native graph fallbacks, daemon session-mode restoration, and Codegraph source reads against malformed, missing, stale, and untrusted state.
+- Fixed review findings from the native explore tools stack: explore router now preserves symbol case, uses injective cache keys, routes file-extension queries and "what does X call" correctly, and disables caching by default to avoid stale post-edit results. Codegraph no longer deadlocks on large output, and agent control read loops now propagate I/O errors and EOF distinctly.
+- Re-disabled message-cache breakpoints for OpenAI Codex, preventing `Unsupported parameter: prompt_cache_options` errors on the Coding Plan endpoint.
+- Fixed handling of empty tool arguments in the Devin provider, which had caused `invalid_argument` stream failures.
+- Fail closed instead of silently running raw commands when enabled RTK rewriting cannot safely rewrite an RTK-managed bash command.
+- Report storage writer shutdown failures instead of silently accepting unpersisted session snapshots.
+- Kept tool arguments searchable when their preview is collapsed, broadened secret-key redaction, and capped argument preview lines by bytes like other tool output.
+- Prevent the TUI from exiting when a selected provider cannot start. It now keeps the selected model, opens login, detects Codex CLI authentication, and shows the provider error in the UI.
+- Don't convert retryable WebSocket API errors (including `server_is_overloaded` and 5xx `server_error`) into `RequestSent` before any output is emitted, so they are retried with the correct user-facing message instead of "not retrying".
+- Workflow script errors now point to the workflow source, and the tool guidance clarifies how to map Lua input tables.
 
 - Added a `devin` provider for Agent Client Protocol access via the devin acp subprocess.
 - Added support for overriding the devin ACP CLI command per provider via `base_url` (e.g. `devin2`).
@@ -41,8 +133,6 @@ See `changelog.d/README.md` for the fragment convention.
 - Token-profile CI gate for cold-start tool schemas and system prompt; fails nextest when committed baselines regress beyond absolute deltas.
 - Added privacy-safe task and team telemetry with conserved cache-aware token usage and per-model cost accumulation across supervisors, roles, quorum validators, swarms, compaction, and charged failures.
 
-### Changed
-
 - Bash now requires a brief justification before running broad or unbounded commands, including chained and piped commands, while keeping simple command scopes focused.Removed the hard-coded 24/32 agent-call ceilings in `team` and `workflow`; `max_agents`/`max_agents_per_run` are now user-configurable with no hard maximum. Added a shared `n00n.guard` runaway detector that enforces call budgets, wall-clock timeouts, repeated-prompt loops, and consecutive subagent errors.
 - Refactored `plugins/team` to launch subagents through the shared `n00n.subagent` helper, consolidating structured-output and model-tier handling with `task` and `workflow`.
 - Split ChatGPT/Codex Coding Plan into a dedicated `codex` provider with OAuth device flow (`n00n auth login codex`), while `openai` keeps full context windows and API-key authentication.
@@ -53,8 +143,6 @@ See `changelog.d/README.md` for the fragment convention.
 - Removed additional `#[allow(clippy::...)]` attributes from small crates and refactored `n00n-storage` `append` into helpers.Update SWE-1.7 context window to 262K tokens.
 - # Tool preference guidance
 - Prompt and instruction guidance now steer agents toward token-efficient, pre-indexed exploration tools. `codegraph` and `arbor` are included in the native efficient-tools list, system/general/research prompts describe the `codegraph`/`arbor`/`index` ladder before `grep`/`read`, and `AGENTS.md` adds a "Token-efficient exploration" section covering `rtk` and `tooned`.
-
-### Fixed
 
 - Fix hang when models emit only reasoning without final text.
 - Build assistant message with both `Thinking` and `Text` content blocks
@@ -118,5 +206,3 @@ See `changelog.d/README.md` for the fragment convention.
 - Improved OpenAI prompt cache routing and Google explicit cache reuse, billing, and token accounting.
 - Reduced per-turn token overhead by compressing system/subagent prompts, tightening default output limits, and improving `dynamic_tool_size` observability. Prompt templates are smaller, tool-output line/byte defaults are lower, and the token-measurement binary now reports per-tool and per-prompt costs.Use model-aware tiktoken vocabularies (cl100k/o200k) for context-size estimation, choosing o200k for GPT-4o/GPT-4.1/GPT-5/o-series models. Adjust Anthropic cache breakpoints by conversation length so short sessions pay for fewer cache writes and long sessions cache more prefixes.
 - Reduced the `skill` tool definition size by moving skill enumeration behind a `list` parameter, and added tiktoken-based token accounting for messages and tool definitions to the agent context window.
-
-## [Unreleased]

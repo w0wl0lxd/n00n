@@ -1,1 +1,0 @@
-Migrate supported non-Codex OpenAI models to Responses API with safe Chat Completions fallback. API-key requests are intentionally stateless: they use `store: false` and send full history on every turn, so provider-side response storage is not enabled.
