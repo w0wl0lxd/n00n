@@ -597,7 +597,7 @@ pub fn fusion_lead_system_append() -> &'static str {
 /// System prompt appendix for sidekick lane.
 #[must_use]
 pub fn fusion_sidekick_system_append() -> &'static str {
-    "Fusion sidekick lane: execute the delegated brief efficiently. Prefer index/codegraph/arbor \
+    "Fusion sidekick lane: execute the delegated brief efficiently. Prefer index/codegraph \
      before broad reads. Return concise file:line evidence, test results, and a short summary — \
      not full file dumps."
 }

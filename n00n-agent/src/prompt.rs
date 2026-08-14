@@ -33,7 +33,6 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 
 const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
     "explore",
-    "arbor",
     "batch",
     "code_execution",
     "codegraph",
@@ -311,7 +310,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: explore, arbor, batch, code_execution, codegraph, index, semblem, task, thoughtbox";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: explore, batch, code_execution, codegraph, index, semblem, task, thoughtbox";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();

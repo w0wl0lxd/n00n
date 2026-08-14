@@ -5,7 +5,6 @@
 #![allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 
 pub(crate) mod agent;
-pub(crate) mod arbor;
 pub(crate) mod r#async;
 pub(crate) mod autocmd;
 pub(crate) mod base64;
@@ -94,7 +93,6 @@ pub(crate) fn create_n00n_global(
     )?;
     n00n.set("agent", agent::create_agent_table(lua)?)?;
     n00n.set("workflow", workflow::create_workflow_table(lua)?)?;
-    n00n.set("arbor", arbor::create_arbor_table(lua)?)?;
     n00n.set("codegraph", codegraph::create_codegraph_table(lua)?)?;
     n00n.set("semblem", semblem::create_semblem_table(lua)?)?;
     n00n.set("smell", smell::create_smell_table(lua)?)?;
