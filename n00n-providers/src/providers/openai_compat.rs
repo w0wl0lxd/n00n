@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use flume::Sender;
 use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use n00n_redact::redact_json_arg;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -989,22 +990,45 @@ pub async fn parse_sse(
     for (idx, acc) in tool_accumulators.into_iter().enumerate() {
         let input: Value = match serde_json::from_str(&acc.arguments) {
             Ok(v) => {
-                debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
+                debug!(
+                    tool_index = idx,
+                    has_tool_name = !acc.name.is_empty(),
+                    tool_name_length = acc.name.len(),
+                    json = %redact_json_arg(&acc.arguments),
+                    "tool input JSON"
+                );
                 v
             }
             Err(e) => {
-                warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
+                warn!(
+                    error = %e,
+                    tool_index = idx,
+                    has_tool_name = !acc.name.is_empty(),
+                    tool_name_length = acc.name.len(),
+                    json = %redact_json_arg(&acc.arguments),
+                    "malformed tool JSON, falling back to {{}}"
+                );
                 Value::Object(serde_json::Map::default())
             }
         };
         let id = if acc.id.is_empty() {
-            warn!(raw_name = %acc.name, raw_args = %acc.arguments, "provider sent empty tool_use id; substituting placeholder");
+            warn!(
+                tool_index = idx,
+                has_tool_name = !acc.name.is_empty(),
+                tool_name_length = acc.name.len(),
+                raw_args = %redact_json_arg(&acc.arguments),
+                "provider sent empty tool_use id; substituting placeholder"
+            );
             format!("n00n_unnamed_{idx}")
         } else {
             acc.id
         };
         let name = if acc.name.is_empty() {
-            warn!(%id, raw_args = %acc.arguments, "provider sent empty tool_use name; substituting placeholder");
+            warn!(
+                tool_index = idx,
+                raw_args = %redact_json_arg(&acc.arguments),
+                "provider sent empty tool_use name; substituting placeholder"
+            );
             "n00n_unknown_tool".to_owned()
         } else {
             acc.name

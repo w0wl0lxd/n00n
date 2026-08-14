@@ -122,7 +122,7 @@ impl AgentHandles {
 
     pub(crate) fn send_mcp(&self, cmd: McpCommand) {
         if let Some(ref h) = self.mcp_handle {
-            h.send(cmd);
+            let _ = h.send(cmd);
         }
     }
 

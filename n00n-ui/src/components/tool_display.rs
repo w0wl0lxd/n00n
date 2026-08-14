@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
+use unicode_width::UnicodeWidthChar;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -41,6 +42,28 @@ pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
 
 const CODE_OUTPUT_DIVIDER: &str = "    ────────────";
+const TOOL_LABEL_MAX_WIDTH: usize = 12;
+
+fn truncate_label(name: &str) -> String {
+    if name.width() <= TOOL_LABEL_MAX_WIDTH {
+        return name.to_owned();
+    }
+    let mut width = 0;
+    for (idx, ch) in name.char_indices() {
+        #[allow(clippy::manual_unwrap_or)]
+        let ch_width = match ch.width() {
+            Some(w) => w,
+            None => 1,
+        };
+        if width + ch_width > TOOL_LABEL_MAX_WIDTH.saturating_sub(1) {
+            let mut out = name[..idx].to_owned();
+            out.push('…');
+            return out;
+        }
+        width += ch_width;
+    }
+    name.to_owned()
+}
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -405,7 +428,7 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         render_header: Option<&BufferSnapshot>,
     ) {
-        let label: String = tool_name.chars().take(12).collect();
+        let label: String = truncate_label(tool_name);
         let mut spans = vec![
             Span::styled(label, theme::current().tool_prefix),
             Span::styled("  ", theme::current().tool_dim),
@@ -742,7 +765,7 @@ pub fn build_tool_lines(
         if !search.is_empty() {
             b.push_search_text(&search);
         }
-        let view = args_view::render_args(
+        let mut view = args_view::render_args(
             input,
             rctx.tool_output_lines.get(tool_name),
             b.limits.output,
@@ -759,6 +782,12 @@ pub fn build_tool_lines(
                 b.lines.push(line);
             }
             b.push_truncation_count(view.hidden);
+        } else if input.is_object()
+            && view.lines.len() == 1
+            && let Some(mut line) = view.lines.pop()
+        {
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
+            b.lines.push(line);
         }
     }
     let show_output = if let Some(ref snapshot) = msg.render_snapshot {
@@ -1060,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn single_line_args_suppress_arguments_block() {
+    fn single_line_args_render_inline() {
         let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
         msg.tool_raw_input = Some(Arc::new(serde_json::json!({ "query": "needle" })));
         let tl = build_tool_lines(
@@ -1071,11 +1100,41 @@ mod tests {
         );
         let text = lines_text(&tl);
         assert!(!text.contains("Arguments:"));
-        assert!(!text.contains("needle"));
         assert!(
-            tl.search_text.contains("needle"),
+            text.contains("query: needle"),
+            "single-line object arg renders inline"
+        );
+        assert!(tl.search_text.contains("needle"));
+    }
+
+    #[test]
+    fn single_line_scalar_args_stay_suppressed() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!("plain scalar")));
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&tl);
+        assert!(!text.contains("Arguments:"));
+        assert!(!text.contains("plain scalar"));
+        assert!(
+            tl.search_text.contains("plain scalar"),
             "suppressed args must stay searchable"
         );
+    }
+
+    #[test]
+    fn truncate_label_shortens_by_display_width() {
+        assert_eq!(truncate_label("read"), "read");
+        let long = truncate_label(&"a".repeat(20));
+        assert!(long.ends_with('…'));
+        assert!(long.width() <= TOOL_LABEL_MAX_WIDTH);
+        let cjk = truncate_label("日本語ラベルかな");
+        assert!(cjk.ends_with('…'));
+        assert!(cjk.width() <= TOOL_LABEL_MAX_WIDTH);
     }
 
     #[test]
