@@ -64,6 +64,7 @@ pub struct ModelInfo {
     pub pricing: Option<ModelPricing>,
     pub supports_thinking: Option<bool>,
     pub supports_vision: Option<bool>,
+    pub supports_files: Option<bool>,
     pub tier: Option<ModelTier>,
     pub is_free: Option<bool>,
     pub is_promo: Option<bool>,
@@ -82,6 +83,7 @@ impl ModelInfo {
             pricing: None,
             supports_thinking: None,
             supports_vision: None,
+            supports_files: None,
             tier: None,
             is_free: None,
             is_promo: None,
@@ -181,6 +183,8 @@ pub struct ModelEntry {
     pub family: ModelFamily,
     /// Gates vision-only tools (`view_image`) and image blocks at request time.
     pub vision: bool,
+    /// Gates file input at request time; per-model truth when known.
+    pub files: bool,
     pub default: bool,
     pub pricing: ModelPricing,
     pub max_output_tokens: u32,
@@ -342,12 +346,35 @@ impl Model {
         if let Some(files) = self.supports_files_override {
             return files;
         }
-        // For now, only OpenAI Responses API supports file input
-        // TODO: Add per-model file support flags as they become available
-        self.provider.as_ref() == "openai"
-            && self
-                .normalized_openai_model_id()
-                .is_some_and(|model_id| model_id.starts_with("gpt-5.6"))
+        let manifest = ManifestRegistry::for_slug(&self.provider);
+        manifest
+            .and_then(|m| {
+                model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .discovered(m.slug, &self.id)
+                    .and_then(|d| d.supports_files)
+            })
+            .or_else(|| {
+                manifest.and_then(|m| {
+                    let lookup_id = match self.id.strip_prefix(&format!("{}/", self.provider)) {
+                        Some(stripped) => stripped,
+                        None => self.id.as_str(),
+                    };
+                    match lookup_entry(m.models, lookup_id) {
+                        Ok(entry) => Some(entry.files),
+                        Err(_) => None,
+                    }
+                })
+            })
+            .unwrap_or_else(|| {
+                // Fallback for models missing from the static tables: only the
+                // OpenAI Responses API supports file input today.
+                self.provider.as_ref() == "openai"
+                    && self
+                        .normalized_openai_model_id()
+                        .is_some_and(|model_id| model_id.starts_with("gpt-5.6"))
+            })
     }
 
     #[must_use]
@@ -1187,6 +1214,47 @@ mod tests {
     }
 
     #[test]
+    fn supports_files_reads_static_entry_flag() {
+        // gpt-5.6 entries are flagged as file-capable; gpt-5.5 is not.
+        assert!(
+            Model::from_spec("openai/gpt-5.6-sol")
+                .unwrap()
+                .supports_files()
+        );
+        assert!(!Model::from_spec("openai/gpt-5.5").unwrap().supports_files());
+    }
+
+    #[test]
+    fn discovered_supports_files_flows_into_unknown_model() {
+        use crate::model::ModelInfo;
+
+        let slug: Arc<str> = Arc::from("ollama");
+        let model_id = "test-discovered-files-model";
+        {
+            let mut reg = model_registry().write().unwrap();
+            reg.set_known_models(
+                &slug,
+                vec![ModelInfo {
+                    id: model_id.to_string(),
+                    name: None,
+                    context_window: None,
+                    max_output_tokens: None,
+                    pricing: None,
+                    supports_thinking: None,
+                    supports_vision: None,
+                    supports_files: Some(true),
+                    tier: None,
+                    is_free: None,
+                    is_promo: None,
+                    provider_info: None,
+                }],
+            );
+        }
+        let model = Model::from_base(ManifestRegistry::get("ollama").unwrap(), "ollama", model_id);
+        assert!(model.supports_files());
+    }
+
+    #[test]
     fn discovered_context_window_flows_into_from_base_for_unknown_model() {
         use crate::model::ModelInfo;
 
@@ -1207,6 +1275,7 @@ mod tests {
                     pricing: None,
                     supports_thinking: None,
                     supports_vision: None,
+                    supports_files: None,
                     tier: None,
                     is_free: None,
                     is_promo: None,
