@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786695941428,
+  "lastUpdate": 1786696629858,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -17489,6 +17489,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 192745,
             "range": "± 8164",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0522a467d590643ff383d9c37aff58b27365c987",
+          "message": "fix(providers): send store=false for Codex and validate Devin base_url (#347)\n\n* fix(providers): send store=false for Codex and validate Devin base_url\n\n* fix(providers): ignore empty opencode API keys\n\n* fix(providers): drop a store-disabled response chain once its socket is gone\n\nA store=false response is held only in the connection-local cache of the\nsocket that produced it, and the service evicts the cached id when a turn\nfails. A durable chain id therefore cannot outlive either event, but the\nchain was only reset when it had not been persisted, so a session with\nresponse_state_storage replayed a dead previous_response_id on every later\nturn and the endpoint answered previous_response_not_found each time.\n\nReset the chain whenever the socket is not reusable, and clear it after any\nfailed turn rather than only for non-durable chains.\n\nCompare the API server URL scheme case-insensitively. A configured\nHTTPS://host was rejected as malformed, and the silent fallback sent the\nauthentication request and session token to the default service instead of\nthe configured endpoint.\n\n* fix(providers): parse the Devin API URL and reject blank opencode keys\n\nis_valid_api_server_url matched a scheme prefix, so it accepted hostless\nURLs and URLs carrying a query or fragment. API paths are appended by\nconcatenation, so a configured https://host?token=abc placed the request\npath after the query and the call never reached it. Parse with Url and\nrequire an http(s) scheme, a host, and no query or fragment.\n\nload_key_from_storage returned a persisted empty or whitespace key as\nSome, so every is_some() caller treated the provider as configured and\nsent an unauthenticated request that came back as a misleading token\nexpired 401.\n\n* test(devin): drop the wrong host-less URL expectation\n\nhttps:///nohost is not host-less: the WHATWG parser skips the surplus slash\nand normalizes it to https://nohost/. https:// is the real empty-host case\nand is already asserted rejected.",
+          "timestamp": "2026-08-14T04:29:36-04:00",
+          "tree_id": "988a2d43e3f9844bedba79243b95e5a0bc947884",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/0522a467d590643ff383d9c37aff58b27365c987"
+        },
+        "date": 1786696628450,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6708895,
+            "range": "± 57027",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2266659,
+            "range": "± 62336",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2260857,
+            "range": "± 59398",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8067490,
+            "range": "± 48766",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4368111,
+            "range": "± 67172",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4365708,
+            "range": "± 26615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 581102,
+            "range": "± 3165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192438,
+            "range": "± 458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192453,
+            "range": "± 634",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1046051,
+            "range": "± 12701",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 583955,
+            "range": "± 2189",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582665,
+            "range": "± 1370",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 66557,
+            "range": "± 5970",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 152458,
+            "range": "± 25914",
             "unit": "ns/iter"
           }
         ]
