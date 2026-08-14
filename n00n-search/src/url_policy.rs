@@ -162,8 +162,7 @@ impl UrlPolicy {
 }
 
 fn parse_http_url(input: &str) -> Result<Url, Error> {
-    let url =
-        Url::parse(input).map_err(|error| Error::validation("url", error.to_string()))?;
+    let url = Url::parse(input).map_err(|error| Error::validation("url", error.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(Error::PolicyDenied {
             reason: "only HTTP and HTTPS URLs are allowed",
