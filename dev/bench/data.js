@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786713843610,
+  "lastUpdate": 1786717691673,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -18677,6 +18677,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 171489,
             "range": "± 11801",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "83cf97c08733d47b58d96e22428967bd4c025462",
+          "message": "ci(perf): cancel stale runs and cache the CodeQL Rust build (#372)",
+          "timestamp": "2026-08-14T10:21:44-04:00",
+          "tree_id": "c08910918d8d0f0328ee2ec56078ffcbabc923e4",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/83cf97c08733d47b58d96e22428967bd4c025462"
+        },
+        "date": 1786717690249,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6684112,
+            "range": "± 84956",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220762,
+            "range": "± 7150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2220204,
+            "range": "± 8103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7967594,
+            "range": "± 42545",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4339497,
+            "range": "± 27407",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4301687,
+            "range": "± 26713",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584700,
+            "range": "± 3819",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191696,
+            "range": "± 783",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191631,
+            "range": "± 480",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1036429,
+            "range": "± 12179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588631,
+            "range": "± 1307",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588691,
+            "range": "± 2558",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 76058,
+            "range": "± 4942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 185597,
+            "range": "± 15855",
             "unit": "ns/iter"
           }
         ]
