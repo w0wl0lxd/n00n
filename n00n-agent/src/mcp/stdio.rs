@@ -76,18 +76,16 @@ impl StderrDedup {
             self.repeats += 1;
             return StderrDedupAction::Suppress;
         }
-        let action = if self.repeats > 0 {
-            StderrDedupAction::FlushThenLog {
-                previous: self.last.clone().unwrap_or_default(),
-                repeats: self.repeats,
-                current: line.to_owned(),
-            }
-        } else {
-            StderrDedupAction::Log(line.to_owned())
-        };
-        self.last = Some(line.to_owned());
+        let repeats = self.repeats;
         self.repeats = 0;
-        action
+        match self.last.replace(line.to_owned()) {
+            Some(previous) if repeats > 0 => StderrDedupAction::FlushThenLog {
+                previous,
+                repeats,
+                current: line.to_owned(),
+            },
+            _ => StderrDedupAction::Log(line.to_owned()),
+        }
     }
 
     /// Call once the stream ends, to report a trailing run of repeats that
@@ -532,7 +530,7 @@ mod tests {
                 assert_eq!(repeats, 2, "two suppressed repeats after the first log");
                 assert_eq!(current, "different");
             }
-            other => panic!("expected FlushThenLog, got a different action"),
+            _ => panic!("expected FlushThenLog, got a different action"),
         }
     }
 
