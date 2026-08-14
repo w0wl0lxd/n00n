@@ -89,31 +89,41 @@ pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     table.set("has_index", has_index)?;
 
-    let index = lua.create_function(|_, project: String| {
-        let project = resolve_project(&project)?;
-        run_smell(&["index", &project.to_string_lossy()])?;
-        Ok(())
+    let index = lua.create_function(|_, project: String| -> LuaResult<(bool, Option<String>)> {
+        let outcome = resolve_project(&project)
+            .and_then(|path| run_smell(&["index", &path.to_string_lossy()]).map(|_| ()));
+        match outcome {
+            Ok(()) => Ok((true, None)),
+            Err(err) => Ok((false, Some(err.to_string()))),
+        }
     })?;
     table.set("index", index)?;
 
     let search = lua.create_function(
-        |_, (project, query, kind, top_k): (String, String, Option<String>, Option<usize>)| {
-            let project = resolve_project(&project)?;
-            let mut owned = vec![
-                "search".to_owned(),
-                project.to_string_lossy().into_owned(),
-                query,
-            ];
-            if let Some(k) = kind {
-                owned.push("--kind".to_owned());
-                owned.push(k);
+        |_,
+         (project, query, kind, top_k): (String, String, Option<String>, Option<usize>)|
+         -> LuaResult<(Option<String>, Option<String>)> {
+            let outcome = resolve_project(&project).and_then(|path| {
+                let mut owned = vec![
+                    "search".to_owned(),
+                    path.to_string_lossy().into_owned(),
+                    query,
+                ];
+                if let Some(k) = kind {
+                    owned.push("--kind".to_owned());
+                    owned.push(k);
+                }
+                if let Some(n) = top_k {
+                    owned.push("--top-k".to_owned());
+                    owned.push(n.to_string());
+                }
+                let args: Vec<&str> = owned.iter().map(String::as_str).collect();
+                run_smell(&args)
+            });
+            match outcome {
+                Ok(output) => Ok((Some(output), None)),
+                Err(err) => Ok((None, Some(err.to_string()))),
             }
-            if let Some(n) = top_k {
-                owned.push("--top-k".to_owned());
-                owned.push(n.to_string());
-            }
-            let args: Vec<&str> = owned.iter().map(String::as_str).collect();
-            run_smell(&args)
         },
     )?;
     table.set("search", search)?;
@@ -124,7 +134,7 @@ pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
 pub(crate) const DOCS: ModuleDoc = ModuleDoc {
     name: "n00n.smell",
     kind: DocKind::Table,
-    desc: "Persistent code-smell and comment index. Stores conflict markers, TODO/FIXME/HACK comments, and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.",
+    desc: "Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.",
     fns: &[
         FnDoc {
             name: "has_index",
@@ -147,7 +157,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(nil) or raises an error.",
+            returns: "(boolean, string|nil) true on success, or false and the error message.",
             example: "",
         },
         FnDoc {
@@ -168,7 +178,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ParamDoc {
                     name: "{kind}",
                     ty: "string",
-                    desc: "Optional kind filter: conflict, todo, fixme, hack, placeholder.",
+                    desc: "Optional kind filter: todo, fixme, hack, placeholder.",
                 },
                 ParamDoc {
                     name: "{top_k}",
@@ -176,7 +186,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     desc: "Maximum number of results (default 5).",
                 },
             ],
-            returns: "(string) Ranked smell output.",
+            returns: "(string|nil, string|nil) Ranked smell output, or nil and the error message.",
             example: "",
         },
     ],

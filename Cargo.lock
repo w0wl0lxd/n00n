@@ -3487,13 +3487,13 @@ dependencies = [
  "clap",
  "color-eyre",
  "fs2",
+ "ignore",
  "regex",
  "serde",
  "serde_json",
  "tantivy",
  "tempfile",
  "thiserror 2.0.19",
- "walkdir",
 ]
 
 [[package]]
