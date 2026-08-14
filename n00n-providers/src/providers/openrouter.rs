@@ -369,6 +369,9 @@ mod tests {
             pricing: ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 200_000,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         };
         (effort_dialect(info), model)
     }

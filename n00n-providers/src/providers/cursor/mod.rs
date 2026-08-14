@@ -990,6 +990,9 @@ mod tests {
             pricing: ModelPricing::ZERO,
             max_output_tokens: Some(32_768),
             context_window: 128_000,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 

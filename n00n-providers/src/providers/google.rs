@@ -1084,6 +1084,9 @@ mod tests {
             pricing: ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 1_048_576,
+            thinking_dialect: None,
+            thinking_fields: None,
+            body_override: None,
         }
     }
 
