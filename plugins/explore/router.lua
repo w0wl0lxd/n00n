@@ -47,20 +47,12 @@ function M.normalize_intent(input)
     return "cross_file"
   end
 
-  if query:match("trace.?path") or query:match("call path") or query:match("^trace%s") or query:match("trace from") then
-    return "trace"
-  end
-
   if
     query:match("caller")
     or query:match("callee")
     or query:match("who calls")
     or query:match("what calls")
     or query:match("what does%s+.-call$")
-    or query:match("^map$")
-    or query:match("project map")
-    or query:match("^status$")
-    or query:match("^diff$")
   then
     return "relations"
   end
@@ -88,14 +80,11 @@ function M.normalize_intent(input)
     end
   end
 
-  if query:match("trace") then
-    return "trace"
-  end
-
   return "cross_file"
 end
 
-function M.parse_arbor_command(input)
+-- Maps a relations-intent request onto one of codegraph's commands.
+function M.parse_relations_command(input)
   if input.command then
     return input.command
   end
@@ -106,18 +95,6 @@ function M.parse_arbor_command(input)
   end
   if query:match("callee") or query:match("what does%s+.-call$") then
     return "callees"
-  end
-  if query:match("trace.?path") or query:match("call path") or query:match("^trace%s") or query:match("trace from") then
-    return "trace_path"
-  end
-  if query:match("^diff") then
-    return "diff"
-  end
-  if query:match("^map") or query:match("project map") then
-    return "map"
-  end
-  if query:match("^status") then
-    return "status"
   end
   return "query"
 end
@@ -175,22 +152,6 @@ function M.extract_symbol(query, command)
   return trimmed
 end
 
-function M.extract_trace_symbols(query)
-  local trimmed = trim(query)
-  local normalized = lower(query)
-
-  local token = "[%w_%.:%->]+"
-  local _, _, from_pos, from_symbol, to_pos, to_symbol =
-    normalized:find("from%s+()(" .. token .. ")%s+to%s+()(" .. token .. ")")
-  if from_pos and to_pos and from_symbol and to_symbol then
-    local function slice(pos, sym)
-      return trim(trimmed:sub(pos, pos + #sym - 1))
-    end
-    return slice(from_pos, from_symbol), slice(to_pos, to_symbol)
-  end
-  return nil, nil
-end
-
 function M.extract_file_path(query)
   if not query or query == "" then
     return nil
@@ -246,28 +207,20 @@ function M.build_backend_input(input, intent)
     return "semblem", M.search_backend_input(input)
   end
 
-  if intent == "relations" or intent == "trace" then
-    local command = M.parse_arbor_command(input)
+  if intent == "relations" then
+    local command = M.parse_relations_command(input)
     local backend_input = {
       command = command,
-      project = project,
+      projectPath = project,
     }
 
-    if command == "trace_path" then
-      local from_symbol = input.from_symbol
-      local to_symbol = input.to_symbol
-      if not from_symbol or not to_symbol then
-        from_symbol, to_symbol = M.extract_trace_symbols(input.query)
-      end
-      backend_input.from_symbol = from_symbol
-      backend_input.to_symbol = to_symbol
-    elseif command == "map" then
-      backend_input.token_budget = input.token_budget
-    elseif command ~= "diff" and command ~= "status" then
+    if command == "query" then
+      backend_input.query = input.query
+    else
       backend_input.symbol = input.symbol or M.extract_symbol(input.query, command)
     end
 
-    return "arbor", backend_input
+    return "codegraph", backend_input
   end
 
   if intent == "symbol" then

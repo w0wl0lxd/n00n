@@ -23,7 +23,6 @@ use n00n_config::{PluginsConfig, ToolOutputLines};
 use n00n_lua::PluginHost;
 use serde_json::{Map, Value, json};
 
-const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
 const BLACKBOARD_SRC: &str = include_str!("../../plugins/blackboard/init.lua");
@@ -85,7 +84,6 @@ impl<T> Drop for LivePreviewGuard<T> {
 fn load_host() -> PluginHost {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    host.load_source("arbor", ARBOR_SRC).unwrap();
     host.load_source("bash", BASH_SRC).unwrap();
     host.load_source("batch", BATCH_SRC).unwrap();
     host.load_source("codegraph", CODEGRAPH_SRC).unwrap();
@@ -680,81 +678,6 @@ fn workflow_script_mismatch_starts_zero_agents() {
     );
 }
 
-#[test_case::test_case(
-    json!({ "command": "callers", "symbol": "target", "project": "/fixture" }),
-    "callers of target\n  caller (function) src/lib.rs:7";
-    "callers"
-)]
-#[test_case::test_case(
-    json!({ "command": "callers", "symbol": "orphan", "project": "/fixture" }),
-    "No callers found for symbol 'orphan'";
-    "empty_callers"
-)]
-#[test_case::test_case(
-    json!({ "command": "callees", "symbol": "target", "project": "/fixture" }),
-    "callees of target\n  callee (function) src/lib.rs:11";
-    "callees"
-)]
-#[test_case::test_case(
-    json!({
-        "command": "trace_path",
-        "from_symbol": "caller",
-        "to_symbol": "target",
-        "project": "/fixture"
-    }),
-    "trace_path caller -> target\n  target (function) src/lib.rs:9";
-    "trace_path"
-)]
-fn arbor_native_graph_operations_do_not_require_cli(input: Value, expected: &str) {
-    let output = execute_plugin_with_native_mock(
-        "arbor",
-        ARBOR_SRC,
-        r#"
-            n00n.arbor.available = function() return false end
-            n00n.arbor.check_binary = function() error("CLI must not be called") end
-            n00n.arbor.graph_index_available = function() return true end
-            n00n.arbor.ensure_fresh_index = function() error("CLI must not be called") end
-            n00n.arbor.callers = function() error("CLI must not be called") end
-            n00n.arbor.callees = function() error("CLI must not be called") end
-            n00n.arbor.graph_callers = function(symbol)
-                if symbol == "orphan" then return {} end
-                return { { name = "caller", kind = "function", path = "src/lib.rs", line = 7 } }
-            end
-            n00n.arbor.graph_callees = function()
-                return { { name = "callee", kind = "function", path = "src/lib.rs", line = 11 } }
-            end
-            n00n.arbor.graph_trace_path = function()
-                return { { name = "target", kind = "function", path = "src/lib.rs", line = 9 } }
-            end
-        "#,
-        input,
-    )
-    .expect("native Arbor operation should succeed without the CLI");
-
-    assert_eq!(output, expected);
-}
-
-#[test_case::test_case(())]
-fn arbor_native_refresh_failure_does_not_fall_back_to_cli(_case: ()) {
-    let error = execute_plugin_with_native_mock(
-        "arbor",
-        ARBOR_SRC,
-        r#"
-            n00n.arbor.available = function() return true end
-            n00n.arbor.graph_index_available = function() return true end
-            n00n.arbor.ensure_fresh_index = function() error("refresh failed") end
-            n00n.arbor.callers = function() error("CLI must not be called") end
-        "#,
-        json!({ "command": "callers", "symbol": "target", "project": "/fixture" }),
-    )
-    .expect_err("native refresh failure must not query a stale CLI index");
-
-    assert!(
-        error.contains("failed to refresh graph index"),
-        "unexpected error: {error}"
-    );
-}
-
 #[test]
 fn codegraph_native_database_does_not_require_cli() {
     let output = execute_plugin_with_native_mock(
@@ -773,14 +696,6 @@ fn codegraph_native_database_does_not_require_cli() {
     assert_eq!(output, "native result");
 }
 
-#[test_case::test_case(
-    "arbor",
-    ARBOR_SRC,
-    r"n00n.arbor.available = function() return false end",
-    json!({ "command": "map", "project": "/fixture" }),
-    "Arbor CLI not found";
-    "arbor_map"
-)]
 #[test_case::test_case(
     "codegraph",
     CODEGRAPH_SRC,
@@ -920,13 +835,6 @@ fn task_restore_rebuilds_old_plain_persisted_output() {
     "where is session restore",
     "/tmp/project";
     "codegraph"
-)]
-#[test_case::test_case(
-    "arbor",
-    json!({ "command": "callers", "symbol": "restore_item", "project": "/tmp/project" }),
-    "callers restore_item",
-    "/tmp/project";
-    "arbor"
 )]
 #[test_case::test_case(
     "semblem",
