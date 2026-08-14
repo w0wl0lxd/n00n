@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 35 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -427,3 +427,40 @@ Search the web for real-time information using Firecrawl or Exa.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8; Exa 1-100, Firecrawl 1-10 | Number of results |
 | `query` | string | yes |  | Search query |
+
+## Repository
+
+### `git` *(lua plugin)*
+
+Local git operations via n00n-git.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ref_b` | string | no |  |
+| `path` | string | no |  |
+| `output` | string | no |  |
+| `message` | string | no |  |
+| `count` | integer | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `file` | string | no |  |
+| `files` | array of strings | no |  |
+| `ref_a` | string | no |  |
+
+### `github` *(lua plugin)*
+
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN or gh CLI.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `issue_number` | number | no |  |
+| `head` | string | no |  |
+| `owner` | string | no |  |
+| `body` | string | no |  |
+| `repo` | string | no |  |
+| `title` | string | no |  |
+| `command` | string | yes |  |
+| `base` | string | no |  |
+| `pr_number` | number | no |  |
