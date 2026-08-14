@@ -1336,9 +1336,14 @@ data: [DONE]\n";
             let sse = "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{\"content\":\"whole\"}}]}\n";
 
             let (tx, _rx) = flume::unbounded();
-            let resp = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
-                .await
-                .unwrap();
+            let resp = parse_sse(
+                Cursor::new(sse.as_bytes()),
+                &tx,
+                TEST_STREAM_TIMEOUT,
+                &RequestOptions::default(),
+            )
+            .await
+            .unwrap();
 
             assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
         });
@@ -1350,9 +1355,14 @@ data: [DONE]\n";
             let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n";
 
             let (tx, _rx) = flume::unbounded();
-            let err = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
-                .await
-                .unwrap_err();
+            let err = parse_sse(
+                Cursor::new(sse.as_bytes()),
+                &tx,
+                TEST_STREAM_TIMEOUT,
+                &RequestOptions::default(),
+            )
+            .await
+            .unwrap_err();
 
             assert!(err.is_retryable());
             assert!(matches!(err, AgentError::Io(_)));

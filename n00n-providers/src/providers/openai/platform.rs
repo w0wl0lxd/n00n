@@ -1000,6 +1000,7 @@ impl OpenAi {
                     },
                     event_tx,
                     stream_timeout,
+                    None,
                 )
                 .await;
             match &result {
