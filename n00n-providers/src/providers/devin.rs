@@ -1477,4 +1477,35 @@ mod tests {
             } if id == "call-1" && name == "bash" && map.is_empty()
         ));
     }
+
+    /// Exercises `with_auth`, the construction path a `devin2`-named dynamic
+    /// provider uses. Skips cleanly when no Devin credentials are found.
+    #[test]
+    #[ignore = "needs a real Devin session token; run with --include-ignored / --run-ignored"]
+    fn with_auth_round_trips_a_live_session_token_like_a_devin2_instance() {
+        let Some(creds) = discover_credentials().expect("credential discovery should not error")
+        else {
+            eprintln!(
+                "skipping with_auth_round_trips_a_live_session_token_like_a_devin2_instance: \
+                 no Devin credentials found (set DEVIN_API_KEY/WINDSURF_API_KEY or provide \
+                 ~/.local/share/devin/credentials.toml)"
+            );
+            return;
+        };
+
+        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer(&creds.session_token)));
+        let provider = Devin::with_auth(&auth, super::Timeouts::default())
+            .expect("construct a devin2-style provider via with_auth");
+
+        smol::block_on(async {
+            let models = provider
+                .list_models()
+                .await
+                .expect("list_models over the with_auth/devin2 path");
+            assert!(
+                !models.is_empty(),
+                "devin2-style with_auth path should report at least one model"
+            );
+        });
+    }
 }
