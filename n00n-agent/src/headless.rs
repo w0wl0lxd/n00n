@@ -373,7 +373,7 @@ struct ModelChangeRequest {
 
 enum InteractiveMessage {
     Input(AgentInput),
-    ModelChange(ModelChangeRequest),
+    ModelChange(Box<ModelChangeRequest>),
 }
 
 pub struct InteractiveHandle {
@@ -493,7 +493,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         model_rx
                             .recv_async()
                             .await
-                            .map(InteractiveMessage::ModelChange)
+                            .map(|req| InteractiveMessage::ModelChange(Box::new(req)))
                     },
                 )
                 .await;
