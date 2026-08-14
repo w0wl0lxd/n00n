@@ -4,10 +4,20 @@
 //!   * PR-C: TOON encoding shrinks structured tool output vs JSON.
 //!   * PR-B: `TokenUsage::cost` prices completions from provider pricing.
 
+use std::error::Error;
+
 use n00n_providers::model::{Model, ModelPricing, TokenUsage};
 use serde_json::json;
 
-fn main() {
+// Byte counts from a serialized tool-output payload, comparing json/toon
+// encoding size. Always far below f64's 52-bit exact-integer range, so the
+// cast for a percentage display carries no real precision loss.
+#[allow(clippy::cast_precision_loss)]
+fn percent_saved(toon_bytes: usize, json_bytes: usize) -> f64 {
+    100.0 * (1.0 - toon_bytes as f64 / json_bytes as f64)
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
     // (1) TOON vs JSON size on a representative tool-output payload (PR-C).
     let payload = json!({
         "files": (0..50)
@@ -18,14 +28,13 @@ fn main() {
             }))
             .collect::<Vec<_>>(),
     });
-    let json = serde_json::to_string(&payload).expect("json");
-    let toon = toon_format::encode_default(&payload).expect("toon");
-    let saved = 100.0 * (1.0 - toon.len() as f64 / json.len() as f64);
+    let json = serde_json::to_string(&payload)?;
+    let toon = toon_format::encode_default(&payload)?;
+    let saved = percent_saved(toon.len(), json.len());
     println!(
-        "payload: json={}B toon={}B saved={:.1}%",
+        "payload: json={}B toon={}B saved={saved:.1}%",
         json.len(),
         toon.len(),
-        saved
     );
 
     // (2) TokenUsage::cost throughput + a sample cost (PR-B).
@@ -43,7 +52,7 @@ fn main() {
         cache_read: 0,
     };
     let cost = usage.cost(&pricing, false);
-    println!("sample cost (1M in / 100k out @ $3/$15): ${:.4}", cost);
+    println!("sample cost (1M in / 100k out @ $3/$15): ${cost:.4}");
 
     // (3) Resolved-model cost for a known spec.
     if let Ok(m) = Model::from_spec("anthropic/claude-3-5-haiku-20241022") {
@@ -53,11 +62,10 @@ fn main() {
             cache_creation: 0,
             cache_read: 0,
         };
-        println!(
-            "haiku 10k/2k cost: ${:.6}",
-            u.cost(&m.pricing, m.supports_fast())
-        );
+        let haiku_cost = u.cost(&m.pricing, m.supports_fast());
+        println!("haiku 10k/2k cost: ${haiku_cost:.6}");
     }
 
     println!("bench ok");
+    Ok(())
 }
