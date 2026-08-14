@@ -336,8 +336,13 @@ pub fn looks_like_secret_value(value: &str) -> bool {
         || is_aws_access_key_id(trimmed)
 }
 
+/// PEM private-key header/footer markers, shared with `sanitize` so the
+/// free-text path can mask a key block instead of only detecting one.
+pub(crate) const PRIVATE_KEY_BEGIN: &str = "-----BEGIN ";
+pub(crate) const PRIVATE_KEY_SUFFIX: &str = " PRIVATE KEY-----";
+
 fn is_private_key(value: &str) -> bool {
-    value.contains("-----BEGIN ") && value.contains(" PRIVATE KEY-----")
+    value.contains(PRIVATE_KEY_BEGIN) && value.contains(PRIVATE_KEY_SUFFIX)
 }
 
 fn contains_url_userinfo_credentials(value: &str) -> bool {
@@ -645,6 +650,16 @@ mod tests {
         let out = redact_json_arg(r#"{"token":"sk-123","user":""#);
         assert!(!out.contains("sk-123"), "token value leaked: {out}");
         assert!(out.contains("token"), "key name should stay: {out}");
+    }
+
+    #[test]
+    fn redact_json_arg_redacts_private_key_in_malformed_json() {
+        let out = redact_json_arg("{\"note\":\"-----BEGIN PRIVATE KEY-----\\nMII...");
+        assert!(!out.contains("MII"), "private key leaked: {out}");
+        assert!(
+            out.contains(REDACTED),
+            "key block should be redacted: {out}"
+        );
     }
 
     #[test]

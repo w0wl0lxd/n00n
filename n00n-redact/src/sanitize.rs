@@ -3,7 +3,7 @@
 //! its output stays byte-identical; `sanitize_text` just adds the caller's
 //! character cap on top.
 
-use crate::REDACTED;
+use crate::{PRIVATE_KEY_BEGIN, PRIVATE_KEY_SUFFIX, REDACTED};
 
 /// Minimum length for a bare `Basic` or `Bearer` value before it is treated as
 /// an HTTP authentication credential. Shorter or non-base64-ish values are
@@ -49,7 +49,8 @@ pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
 /// one-line activity messages and compact log previews.
 #[must_use]
 pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
-    let words = raw.split_whitespace().collect::<Vec<_>>();
+    let masked = redact_private_key_blocks(raw);
+    let words = masked.split_whitespace().collect::<Vec<_>>();
     let sanitized = sanitize_words(&words)
         .into_iter()
         .flatten()
@@ -64,10 +65,47 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
 /// values where newlines should stay intact.
 #[must_use]
 pub(crate) fn sanitize_text_preserve_newlines(raw: &str, max_chars: usize) -> String {
+    let masked = redact_private_key_blocks(raw);
     // Tokenize into words and line separators, preserving exact separator positions
-    let tokens = tokenize_with_line_breaks(raw);
+    let tokens = tokenize_with_line_breaks(&masked);
     let sanitized = sanitize_tokens(tokens);
     truncate(&sanitized, max_chars)
+}
+
+/// Masks PEM private-key blocks with `REDACTED` before word-level
+/// tokenization runs, since a multi-line header and body would otherwise
+/// survive as several unrecognized words instead of one secret-shaped
+/// value. An unterminated header is treated as a key through the end of the
+/// text rather than left partially exposed.
+fn redact_private_key_blocks(text: &str) -> String {
+    const END_MARKER: &str = "-----END ";
+
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(begin_at) = rest.find(PRIVATE_KEY_BEGIN) {
+        let header_rest = &rest[begin_at + PRIVATE_KEY_BEGIN.len()..];
+        let Some(suffix_at) = header_rest.find(PRIVATE_KEY_SUFFIX) else {
+            result.push_str(&rest[..begin_at]);
+            result.push_str(REDACTED);
+            return result;
+        };
+        let header_end = begin_at + PRIVATE_KEY_BEGIN.len() + suffix_at + PRIVATE_KEY_SUFFIX.len();
+        let block_end = rest[header_end..]
+            .find(END_MARKER)
+            .map_or(rest.len(), |end_at| {
+                let end_header_start = header_end + end_at;
+                rest[end_header_start..]
+                    .find(PRIVATE_KEY_SUFFIX)
+                    .map_or(rest.len(), |end_suffix_at| {
+                        end_header_start + end_suffix_at + PRIVATE_KEY_SUFFIX.len()
+                    })
+            });
+        result.push_str(&rest[..begin_at]);
+        result.push_str(REDACTED);
+        rest = &rest[block_end..];
+    }
+    result.push_str(rest);
+    result
 }
 
 #[derive(Clone, Copy)]
@@ -675,5 +713,56 @@ mod tests {
         let input = "café\nnaïve résumé";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
         assert_eq!(sanitized, "café\nnaïve résumé");
+    }
+
+    /// Assembled at runtime from fragments so secret scanners do not flag
+    /// these fixtures as a real key. The value is meaningless either way.
+    fn fake_key_body() -> String {
+        format!("{}{}", "MIIBOgIB", "AAJBAK")
+    }
+
+    /// Builds a PEM header or footer without ever spelling one out in source,
+    /// for the same reason as `fake_key_body`.
+    fn pem_marker(boundary: &str, label: &str) -> String {
+        let label = if label.is_empty() {
+            String::new()
+        } else {
+            format!("{label} ")
+        };
+        format!("-----{boundary} {label}PRIVATE KEY-----")
+    }
+
+    #[test]
+    fn redacts_a_complete_pem_private_key_block() {
+        let body = fake_key_body();
+        let begin = pem_marker("BEGIN", "RSA");
+        let end = pem_marker("END", "RSA");
+        let input = format!("note: {begin}\n{body}\n{end}\ntrailer");
+        let sanitized = sanitize_text(&input, 500);
+        assert!(sanitized.contains("[redacted]"));
+        assert!(!sanitized.contains(&body));
+        assert!(sanitized.contains("note:"));
+        assert!(sanitized.contains("trailer"));
+    }
+
+    #[test]
+    fn redacts_a_truncated_pem_private_key_block_with_no_footer() {
+        let body = fake_key_body();
+        let begin = pem_marker("BEGIN", "");
+        let input = format!("note: {begin}\n{body}");
+        let sanitized = sanitize_text(&input, 500);
+        assert!(sanitized.contains("[redacted]"));
+        assert!(!sanitized.contains(&body));
+        assert!(sanitized.contains("note:"));
+    }
+
+    #[test]
+    fn redacts_pem_block_in_malformed_json_via_preserve_newlines_path() {
+        let body = fake_key_body();
+        let begin = pem_marker("BEGIN", "");
+        let input = format!("{{\"note\":\"{begin}\\n{body}\"");
+        let sanitized = sanitize_text_preserve_newlines(&input, 500);
+        assert!(sanitized.contains("[redacted]"));
+        assert!(!sanitized.contains(&body));
     }
 }
