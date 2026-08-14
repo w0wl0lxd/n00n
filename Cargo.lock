@@ -3343,7 +3343,6 @@ dependencies = [
  "n00n-storage",
  "pin-project-lite",
  "regex",
- "reqwest",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -3494,8 +3493,6 @@ dependencies = [
  "tantivy",
  "tempfile",
  "thiserror 2.0.19",
- "tracing",
- "tracing-subscriber",
  "walkdir",
 ]
 

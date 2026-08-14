@@ -303,6 +303,7 @@ fs2 = "0.4.3"
 inventory = "0.3"
 url = "2"
 quanta = { version = "0.12.6", default-features = false }
+walkdir = "2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
