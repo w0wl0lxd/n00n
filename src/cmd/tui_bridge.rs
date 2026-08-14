@@ -294,7 +294,7 @@ mod tests {
     use n00n_daemon::backend::ControlBackend;
     use n00n_lua::SessionReply;
     use serde_json::json;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     fn respond_live(rx: flume::Receiver<UiAction>, body: Value) {
         thread::spawn(move || {
@@ -498,6 +498,7 @@ mod tests {
         use n00n_daemon::client;
         use n00n_daemon::paths::daemon_socket_in;
         use n00n_daemon::protocol::{ControlRequest, ControlResponse, PROTOCOL_VERSION};
+        use std::time::Instant;
         use tempfile::TempDir;
 
         // A loaded CI runner needs far longer than an idle developer machine to
