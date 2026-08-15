@@ -10,7 +10,6 @@ homepage = "https://github.com/w0wl0lxd/n00n"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "tui", "coding"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.97"
 
 [[bin]]
 name = "n00n"
@@ -89,7 +88,6 @@ edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/w0wl0lxd/n00n"
-rust-version = "1.97"
 
 [workspace.dependencies]
 n00n-agent = { path = "n00n-agent" }
@@ -330,11 +328,14 @@ clone_on_ref_ptr = "deny"
 redundant_clone = "deny"
 manual_assert = "deny"
 disallowed_methods = "deny"
-# These style lints suggest `unwrap_or`/`unwrap_or_default`, which are
-# disallowed above; allowing them avoids clippy auto-fix introducing banned methods.
+# These style lints suggest `unwrap_or`/`unwrap_or_default`/`assert_eq!`,
+# which the workspace bans or does not use at scale; allowing them avoids
+# clippy auto-fix introducing banned methods or mass-rewriting test asserts.
 unnecessary_lazy_evaluations = "allow"
 unnecessary_map_or = "allow"
 unwrap_or_default = "allow"
+assert_is_empty = "allow"
+result_large_err = "allow"
 
 [profile.bench]
 debug = true

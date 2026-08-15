@@ -4035,7 +4035,6 @@ mod tests {
 
     #[test]
     #[allow(clippy::large_futures)]
-    #[allow(clippy::result_large_err)]
     fn token_refresh_during_new_socket_handshake_reconnects_before_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

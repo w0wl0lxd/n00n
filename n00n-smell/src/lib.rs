@@ -579,7 +579,7 @@ pub fn format_results(results: &[SearchResult]) -> String {
                     .content
                     .lines()
                     .next()
-                    .map_or(result.content.as_str(), std::convert::identity)
+                    .unwrap_or_else(|| result.content.as_str())
             )
         })
         .collect::<Vec<_>>()

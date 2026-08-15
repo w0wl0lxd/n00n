@@ -725,7 +725,7 @@ fn render_list<T: PickerItem>(
             (true, true) => {
                 let s = t
                     .item_selected
-                    .fg(t.accent.fg.map_or(Color::default(), |c| c));
+                    .fg(t.accent.fg.unwrap_or_else(Color::default));
                 (s, theme::dim_style(s, 0.4))
             }
             (true, false) => (t.item_selected, t.item_selected),

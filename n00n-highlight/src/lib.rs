@@ -95,7 +95,7 @@ pub fn syntax_for_path(path: &str) -> &'static SyntaxReference {
         .ok()
         .flatten()
         .unwrap_or_else(|| {
-            let ext = path.rsplit('.').next().map_or(path, |ext| ext);
+            let ext = path.rsplit('.').next().unwrap_or_else(|| path);
             syntax_for_token(ext)
         })
 }
