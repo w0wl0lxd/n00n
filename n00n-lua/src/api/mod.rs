@@ -43,7 +43,7 @@ use crate::api::firecrawl::BundledCapability;
 use crate::api::options::PluginOpts;
 use crate::api::tool::PendingTools;
 use crate::api::util::command::UiAction;
-use crate::plugin_permissions::PluginPermissions;
+use crate::plugin_permissions::{Permission, PluginPermissions};
 
 pub(crate) fn create_n00n_global(
     lua: &Lua,
@@ -78,7 +78,9 @@ pub(crate) fn create_n00n_global(
     n00n.set("json", json::create_json_table(lua)?)?;
     n00n.set("yaml", yaml::create_yaml_table(lua)?)?;
     n00n.set("net", net::create_net_table(lua, permissions)?)?;
-    n00n.set("search", search::create_search_table(lua)?)?;
+    if search_config.enabled() && permissions.is_allowed(Permission::Net) {
+        n00n.set("search", search::create_search_table(lua)?)?;
+    }
     n00n.set("text", text::create_text_table(lua)?)?;
     n00n.set(
         "session",

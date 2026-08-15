@@ -274,7 +274,7 @@ impl LuaCtx {
         Arc::clone(&self.active)
     }
 
-    fn ensure_active(&self) -> Result<(), String> {
+    pub(crate) fn ensure_active(&self) -> Result<(), String> {
         if self.active.load(Ordering::Acquire) {
             Ok(())
         } else {

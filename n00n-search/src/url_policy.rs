@@ -212,9 +212,25 @@ fn is_special_v6(address: Ipv6Addr) -> bool {
         || address.is_multicast()
         || (segments[0] & 0xfe00) == 0xfc00
         || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] & 0xffc0) == 0xfec0
         || (segments[0] == 0x2001 && segments[1] == 0x0db8)
         || (segments[0] == 0x0100 && segments[1] == 0)
         || address.to_ipv4_mapped().is_some_and(is_special_v4)
+        || ipv4_compatible(address).is_some_and(is_special_v4)
+        || nat64_embedded_v4(address).is_some_and(is_special_v4)
+}
+
+fn ipv4_compatible(address: Ipv6Addr) -> Option<[u8; 4]> {
+    let segments = address.segments();
+    let zero = segments[0..5].iter().all(|&s| s == 0) && segments[5] == 0;
+    zero.then(|| (((segments[6] as u32) << 16) | segments[7] as u32).to_be_bytes())
+}
+
+fn nat64_embedded_v4(address: Ipv6Addr) -> Option<[u8; 4]> {
+    let segments = address.segments();
+    let prefix =
+        segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..5].iter().all(|&s| s == 0);
+    prefix.then(|| (((segments[6] as u32) << 16) | segments[7] as u32).to_be_bytes())
 }
 
 #[cfg(test)]
@@ -253,6 +269,27 @@ mod tests {
         assert!(
             url.validate_resolved_ip(IpAddr::V6(Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 1)))
                 .is_err()
+        );
+    }
+
+    #[test_case(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 1) ; "site_local_fec0")]
+    #[test_case(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0x7f00, 0x1) ; "ipv4_compatible_loopback")]
+    #[test_case(Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0x0a00, 0x1) ; "nat64_private_v4")]
+    fn untrusted_page_rejects_embedded_special_ipv6(address: Ipv6Addr) {
+        let url = UrlPolicy::untrusted_page()
+            .validate("https://example.com/")
+            .unwrap();
+        assert!(url.validate_resolved_ip(IpAddr::V6(address)).is_err());
+    }
+
+    #[test]
+    fn untrusted_page_allows_public_ipv4_compatible_form() {
+        let url = UrlPolicy::untrusted_page()
+            .validate("https://example.com/")
+            .unwrap();
+        assert!(
+            url.validate_resolved_ip(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0x0808, 0x0808)))
+                .is_ok()
         );
     }
 

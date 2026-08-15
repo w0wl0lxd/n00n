@@ -89,7 +89,11 @@ fn render_content(
 ) -> Result<ExtractedContent, Error> {
     let content_type = match fetched.content_type.as_deref() {
         Some(value) => base_content_type(value),
-        None => "text/plain",
+        None => {
+            return Err(Error::UnsupportedContentType {
+                content_type: "unknown".into(),
+            });
+        }
     };
     if !is_text_content(content_type) {
         return Err(Error::UnsupportedContentType {
@@ -115,7 +119,6 @@ fn render_content(
         final_url: fetched.final_url,
         content_type: content_type.into(),
         content,
-        truncated: false,
         trust: ContentTrust::ExternalUntrusted,
     })
 }
@@ -234,6 +237,32 @@ mod tests {
             assert!(matches!(
                 extractor
                     .extract_one("https://example.com/image", &ExtractFormat::Markdown)
+                    .await,
+                Err(Error::UnsupportedContentType { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn undeclared_content_type_is_rejected() {
+        smol::block_on(async {
+            let response = TransportResponse {
+                status: 200,
+                headers: vec![],
+                body: Box::pin(Cursor::new(b"opaque bytes".to_vec())),
+            };
+            let extractor = Extractor::new(
+                OneResponse(Mutex::new(Some(response))),
+                UrlPolicy::untrusted_page(),
+                FetchLimits {
+                    max_response_bytes: 1_024,
+                    max_redirects: 1,
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                extractor
+                    .extract_one("https://example.com", &ExtractFormat::Text)
                     .await,
                 Err(Error::UnsupportedContentType { .. })
             ));

@@ -25,6 +25,9 @@ async fn extract(
     ctx: mlua::UserDataRef<LuaCtx>,
     request: Value,
 ) -> LuaResult<(Value, Value)> {
+    if let Err(error) = ctx.ensure_active() {
+        return err_pair(&lua, error);
+    }
     let request = match lua.from_value::<ExtractRequest>(request) {
         Ok(request) => request,
         Err(error) => return err_pair(&lua, error),

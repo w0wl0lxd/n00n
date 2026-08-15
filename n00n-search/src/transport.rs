@@ -239,7 +239,13 @@ impl<T: Transport> Fetcher<T> {
                 let next = url.as_url().join(location).map_err(|error| Error::Parse {
                     message: error.to_string(),
                 })?;
-                url = self.policy.validate(next.as_str())?;
+                let next_url = self.policy.validate(next.as_str())?;
+                if url.as_url().scheme() == "https" && next_url.as_url().scheme() != "https" {
+                    return Err(Error::PolicyDenied {
+                        reason: "redirect would downgrade the transport scheme",
+                    });
+                }
+                url = next_url;
                 continue;
             }
             if !(200..300).contains(&response.status) {
@@ -386,6 +392,31 @@ mod tests {
             assert!(matches!(
                 fetcher.fetch("https://example.com").await,
                 Err(Error::PolicyDenied { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn redirect_scheme_downgrade_is_rejected() {
+        smol::block_on(async {
+            let transport = FakeTransport::new(vec![response(
+                302,
+                &[("Location", "http://example.com/page")],
+                &[],
+            )]);
+            let fetcher = Fetcher::new(
+                transport,
+                UrlPolicy::untrusted_page(),
+                FetchLimits {
+                    max_response_bytes: 64,
+                    max_redirects: 1,
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                fetcher.fetch("https://example.com").await,
+                Err(Error::PolicyDenied { reason })
+                    if reason == "redirect would downgrade the transport scheme"
             ));
         });
     }
