@@ -1,7 +1,7 @@
 local shorten_path = require("n00n.shorten_path")
 
 local DESCRIPTION =
-  [[View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).]]
+  [[View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_file` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).]]
 
 -- Anthropic rejects images over 5MB base64; 3MB raw is ~4MB encoded,
 -- which leaves headroom.

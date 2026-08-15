@@ -5800,6 +5800,7 @@ return M
 
 ```lua
 -- Policy enforcement wrapper for tool calls.
+M.canonical_tool_name = canonical_tool_name
 function M.evaluate_policy(agent_id, session_type, tags, tool_name)
 function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 ```
@@ -5810,7 +5811,7 @@ function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 -- Cost-aware model-tier router (OrchMAS-style adaptive role allocation).
 -- Pure lexical heuristic: no model call. Maps a subtask prompt to one of
 -- "weak" | "medium" | "strong" so cheap work stays cheap and hard work
--- gets a bigger model. Used by the `task` tool (opt-in auto_tier) and Team.
+-- gets a bigger model. Used by the `run_task` tool (opt-in auto_tier) and Team.
 
 -- @param prompt string Subtask description.
 -- @return "weak" | "medium" | "strong"

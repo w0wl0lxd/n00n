@@ -6,7 +6,7 @@ use arc_swap::ArcSwap;
 use n00n_agent::ToolOutput;
 use n00n_agent::permissions::PermissionManager;
 use n00n_config::Effect;
-use n00n_providers::{Message, Model, ThinkingConfig, TokenUsage};
+use n00n_providers::{Message, Model, ModelResolver, ThinkingConfig, TokenUsage};
 use n00n_storage::sessions::{StoredEffect, StoredMode, StoredRule};
 use n00n_storage::{StateDir, TranscriptEntry};
 use serde_json::Value;
@@ -39,10 +39,20 @@ impl SessionState {
         fallback_model: &Model,
         storage: &StateDir,
     ) -> Self {
-        let model = Model::from_spec(&session.model).unwrap_or_else(|_| {
+        let model = if let Ok(model) = ModelResolver::current().resolve(&session.model) {
+            model
+        } else if let Ok(model) = Model::from_spec(&session.model) {
+            // Fall back to the static tables when the provider is currently
+            // unconfigured, so the session keeps its model capabilities
+            // (thinking, fast, plan mode) instead of collapsing to the default.
+            model
+        } else {
+            tracing::warn!(
+                "saved session model is no longer configured or available; using current model"
+            );
             session.model = fallback_model.spec();
             fallback_model.clone()
-        });
+        };
 
         let mode = match session.meta.mode {
             Some(StoredMode::Plan) => Mode::Plan,
