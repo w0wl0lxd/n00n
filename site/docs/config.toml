@@ -4,7 +4,6 @@ compile_sass = true
 build_search_index = false
 
 [markdown.highlighting]
-enabled = true
 style = "inline"
 light_theme = "catppuccin-latte"
 dark_theme = "catppuccin-mocha"
