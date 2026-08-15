@@ -455,13 +455,13 @@ end
 
 --- Tool entry points --------------------------------------------------------
 
-local function tool_calls_of(input)
-  return input.tool_calls or input.tool_uses or {}
+local function tool_calls_of(input, fallback)
+  return input.tool_calls or input.tool_uses or fallback
 end
 
 local function handler(input, ctx)
   local tool_calls = tool_calls_of(input)
-  if #tool_calls > MAX_BATCH_SIZE then
+  if type(tool_calls) == "table" and #tool_calls > MAX_BATCH_SIZE then
     return { llm_output = DISCARDED_ERROR, is_error = true }
   end
   local children, err = prepare_children(tool_calls)
@@ -504,7 +504,7 @@ end
 -- `tool_uses` the same way live `parse`/`validate` remaps it.
 local function restore(input, output, _is_error, rctx)
   local tol = rctx:tool_output_lines()
-  local children = prepare_children(tool_calls_of(input))
+  local children = prepare_children(tool_calls_of(input, {}))
   if not children then
     return ToolView.restore(output, { max_lines = tol.other, keep = "head" })
   end
@@ -538,7 +538,7 @@ n00n.api.register_tool({
   deadline_grace = true,
   schema = schema,
   header = function(input)
-    return #tool_calls_of(input) .. " tools"
+    return #tool_calls_of(input, {}) .. " tools"
   end,
   handler = handler,
   restore = restore,

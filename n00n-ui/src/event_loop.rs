@@ -2317,10 +2317,11 @@ impl<'t> EventLoop<'t> {
 
     fn refresh_models(&self) {
         let available = Arc::clone(&self.ctx.available_models);
+        let refreshed = Arc::new(ArcSwapOption::empty());
         let warn_tx = self.warn_tx.clone();
-        available.store(None);
         smol::spawn(async move {
-            fetch_all_models(|batch| merge_batch(&available, batch, &warn_tx), None).await;
+            fetch_all_models(|batch| merge_batch(&refreshed, batch, &warn_tx), None).await;
+            available.store(refreshed.load_full());
         })
         .detach();
     }

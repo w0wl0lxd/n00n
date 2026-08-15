@@ -17,6 +17,7 @@ use crate::runtime::{active_task_id, with_jobs};
 const READER_BUF_SIZE: usize = 8 * 1024;
 const OWNER_TASK: &str = "task";
 const OWNER_PLUGIN: &str = "plugin";
+const DEFER_DELAY_RANGE_ERR: &str = "defer delay is out of range";
 
 #[derive(Clone)]
 pub(crate) enum JobSpec {
@@ -237,7 +238,7 @@ impl JobStore {
     ) -> Result<u32, &'static str> {
         let deadline = Instant::now()
             .checked_add(delay)
-            .ok_or("defer delay is out of range")?;
+            .ok_or(DEFER_DELAY_RANGE_ERR)?;
         let id = self.next_id;
         self.next_id += 1;
         self.jobs.insert(
@@ -818,7 +819,7 @@ mod tests {
             .unwrap();
         let mut store = make_store();
         let result = store.defer(task_owner(OWNER_TASK_ID), Duration::MAX, callback);
-        assert_eq!(result.unwrap_err(), "defer delay is out of range");
+        assert_eq!(result.unwrap_err(), DEFER_DELAY_RANGE_ERR);
     }
 
     #[test]
