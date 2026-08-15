@@ -36,7 +36,7 @@ impl ExtractRequest {
         if self.urls.is_empty() || self.urls.len() > MAX_EXTRACT_URLS {
             return Err(Error::validation(
                 "urls",
-                &format!("must contain 1 to {MAX_EXTRACT_URLS} URLs"),
+                format!("must contain 1 to {MAX_EXTRACT_URLS} URLs"),
             ));
         }
         if self.max_bytes_per_source == 0 || self.max_bytes_per_source > MAX_SOURCE_BYTES {
