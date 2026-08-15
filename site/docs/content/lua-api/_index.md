@@ -73,6 +73,7 @@ a string belongs.
 | [`n00n.keymap`](#n00n-keymap) | Key mappings, modeled after `vim.keymap`. |
 | [`n00n.log`](#n00n-log) | Structured logging for plugins. |
 | [`n00n.net`](#n00n-net) | HTTP client for fetching web content. |
+| [`n00n.search`](#n00n-search) | Native, keyless extraction of bounded public web content. |
 | [`n00n.session`](#n00n-session) | Host session primitives. |
 | [`n00n.text`](#n00n-text) | Text transformation utilities. |
 | [`n00n.treesitter`](#n00n-treesitter) | Tree-sitter parsing and query API. |
@@ -2673,6 +2674,38 @@ if err then
 else
   print(res.status, res.body)
 end
+```
+
+
+## n00n.search {#n00n-search}
+
+Native, keyless extraction of bounded public web content.
+
+---
+
+### `n00n.search.extract()` {#n00n-search-extract}
+
+```lua
+n00n.search.extract(ctx, request)
+```
+
+Extract public URLs with manual redirect validation, DNS pinning, byte limits, and tool cancellation. Requires [search].enabled = true and the plugin's net permission.
+
+**Parameters:**
+
+- `ctx` (`LuaCtx`) Current tool context; cancellation stops the operation.
+- `request` (`table`) Extraction request. Fields: urls (array of 1 to 20 public http(s) URLs), format ("markdown", "text", or "html"), max_bytes_per_source (1 to 10485760 bytes).
+
+**Returns:** (`table|nil`, `string|nil`) Extraction response or an error.
+
+**Example:**
+
+```lua
+local result, err = n00n.search.extract(ctx, {
+  urls = { "https://example.com/doc" },
+  format = "markdown",
+  max_bytes_per_source = 262144,
+})
 ```
 
 
@@ -5678,6 +5711,9 @@ M.EMPTY_OLD_STRING = "old_string must not be empty"
 -- whitespace and indentation drift. Returns the new content, or nil plus
 -- one of the error constants above.
 function M.replace(content, old_string, new_string, replace_all)
+
+-- Expose unescape for validation in edit tools
+M.unescape = unescape
 ```
 
 ### `require("n00n.guard")`
@@ -5779,6 +5815,28 @@ function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 -- @param prompt string Subtask description.
 -- @return "weak" | "medium" | "strong"
 function M.route_tier(prompt)
+```
+
+### `require("n00n.secret_check")`
+
+```lua
+-- Heuristic secret/PII pattern detection for tool content validation.
+--
+-- Example:
+--
+--     local secret_check = require("n00n.secret_check")
+--     local reason = secret_check.reason("api_key=sk_test_abcdefghijklmnopqrstuvwxyz")
+--     if reason then error(reason) end
+--
+-- This is intentionally conservative: it flags common secret-bearing keywords and
+-- patterns so tools can surface a warning or require a justification. It does not
+-- attempt to be exhaustive, and it may false-positive on example keys in docs.
+
+-- Returns (ok, reason). If ok is false, reason explains what triggered.
+function M.check(text)
+
+-- Convenience: returns a warning string if triggered, nil otherwise.
+function M.reason(text)
 ```
 
 ### `require("n00n.shorten_path")`

@@ -538,4 +538,7 @@ function M.replace(content, old_string, new_string, replace_all)
   return nil, M.NO_MATCH
 end
 
+-- Expose unescape for validation in edit tools
+M.unescape = unescape
+
 return M
