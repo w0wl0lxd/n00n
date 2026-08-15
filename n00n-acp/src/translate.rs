@@ -17,7 +17,7 @@ fn fenced(text: &str) -> String {
         .split(|c: char| c != '`')
         .map(str::len)
         .max()
-        .map_or(0, std::convert::identity);
+        .unwrap_or_else(|| 0);
     let fence = "`".repeat(MIN_FENCE_LEN.max(longest_backtick_run + 1));
     format!("{fence}\n{text}\n{fence}")
 }

@@ -694,12 +694,8 @@ fn no_session() -> AcpError {
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, AcpError> {
-    serde_json::from_value(
-        raw.get("params")
-            .cloned()
-            .map_or(Value::Null, std::convert::identity),
-    )
-    .map_err(|e| AcpError::invalid_params().data(json_str(&e)))
+    serde_json::from_value(raw.get("params").cloned().unwrap_or_else(|| Value::Null))
+        .map_err(|e| AcpError::invalid_params().data(json_str(&e)))
 }
 
 fn json_str(e: &impl std::fmt::Display) -> Value {
