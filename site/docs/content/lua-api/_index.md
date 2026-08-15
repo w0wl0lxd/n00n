@@ -1446,6 +1446,30 @@ end
 
 ---
 
+### `n00n.fn.defer()` {#n00n-fn-defer}
+
+```lua
+n00n.fn.defer({delay_ms}, {callback})
+```
+
+Run a callback after a delay without spawning a process.
+
+The timer belongs to the current tool call and is cancelled when that call
+ends.
+
+**Parameters:**
+
+- `{delay_ms}` (`integer`) Delay in milliseconds.
+- `{callback}` (`function`) Called after the delay.
+
+**Example:**
+
+```lua
+n00n.fn.defer(1000, function() refresh() end)
+```
+
+---
+
 ### `n00n.fn.executable()` {#n00n-fn-executable}
 
 ```lua

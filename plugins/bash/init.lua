@@ -410,7 +410,7 @@ end
 
 local DEFAULT_MAX_LINE_BYTES = 400
 local LIVE_OUTPUT_FLUSH_LINES = 32
-local LIVE_OUTPUT_FLUSH_SECS = 1
+local LIVE_OUTPUT_FLUSH_MS = 1000
 
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
@@ -857,14 +857,12 @@ n00n.api.register_tool({
         return
       end
       flush_scheduled = true
-      n00n.fn.jobstart("sleep " .. LIVE_OUTPUT_FLUSH_SECS, {
-        on_exit = function()
-          flush_scheduled = false
-          if not finished and collector.line_count > published_line_count then
-            flush_view()
-          end
-        end,
-      })
+      n00n.fn.defer(LIVE_OUTPUT_FLUSH_MS, function()
+        flush_scheduled = false
+        if not finished and collector.line_count > published_line_count then
+          flush_view()
+        end
+      end)
     end
 
     local function append_output(line)

@@ -34,7 +34,9 @@ use n00n_providers::Timeouts;
 use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_with_openai_options, unconfigured_provider,
 };
-use n00n_providers::{ContentBlock, Message, Model, ModelResolver, OpenAiOptions};
+use n00n_providers::{
+    ContentBlock, Message, Model, ModelCatalogError, ModelResolver, OpenAiOptions,
+};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
@@ -613,6 +615,19 @@ fn merge_batch(
         }
     }
     available.store(Some(Arc::new(merged)));
+}
+
+fn resolve_model_selection(
+    spec: &str,
+    discovered: Option<&[String]>,
+) -> Result<Model, ModelCatalogError> {
+    ModelResolver::current().resolve(spec).or_else(|error| {
+        if discovered.is_some_and(|models| models.iter().any(|candidate| candidate == spec)) {
+            Model::from_spec(spec).map_err(|_| ModelCatalogError::InvalidModel)
+        } else {
+            Err(error)
+        }
+    })
 }
 
 fn startup_login_completed(initial_slot: &Arc<ModelSlot>, current_slot: &Arc<ModelSlot>) -> bool {
@@ -2267,7 +2282,8 @@ impl<'t> EventLoop<'t> {
     }
 
     fn change_model(&mut self, spec: &str) {
-        match ModelResolver::current().resolve(spec) {
+        let discovered = self.ctx.available_models.load_full();
+        match resolve_model_selection(spec, discovered.as_deref().map(Vec::as_slice)) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,
@@ -2477,9 +2493,9 @@ mod tests {
         DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
         PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, authorize_ui_delete, bounded_direct_output,
         cancel_stored_session, complete_model_fetch_with, direct_paused_team_payload,
-        draw_then_post_terminal, paused_team_payload, paused_team_run, should_save_periodically,
-        startup_login_completed, startup_provider_with, take_painted_submissions,
-        validated_paused_team_payload,
+        draw_then_post_terminal, paused_team_payload, paused_team_run, resolve_model_selection,
+        should_save_periodically, startup_login_completed, startup_provider_with,
+        take_painted_submissions, validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::ArcSwap;
@@ -2500,6 +2516,13 @@ mod tests {
     };
     use std::{cell::Cell as Counter, io, sync::Arc};
     use test_case::test_case;
+
+    #[test]
+    fn discovered_nested_model_spec_resolves_for_selection() {
+        let spec = "opencode/opencode-go/deepseek-v4-flash";
+        let model = resolve_model_selection(spec, Some(&[spec.to_string()])).unwrap();
+        assert_eq!(model.spec(), spec);
+    }
 
     #[test]
     fn startup_provider_failure_preserves_model_and_requests_login_once() {

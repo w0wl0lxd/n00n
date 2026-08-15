@@ -23,7 +23,11 @@ local ERROR_PREFIX = "[ERROR] "
 local EMPTY_ERROR = "provide at least one tool call"
 local NESTED_ERROR = "cannot nest batch inside batch"
 local CANCELLED_ERROR = "cancelled"
-local DISCARDED_ERROR = string.format("maximum of %d tools per batch", MAX_BATCH_SIZE)
+local DISCARDED_ERROR = string.format(
+  "maximum of %d tools per batch; split the work into batches of at most %d calls",
+  MAX_BATCH_SIZE,
+  MAX_BATCH_SIZE
+)
 -- Below this many seconds left on a shared caller deadline, starting more
 -- concurrent children is a bet against the watchdog interrupt, not real work.
 local MIN_BATCH_DEADLINE_SECS = 5

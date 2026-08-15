@@ -1415,6 +1415,28 @@ fn async_job_on_exit_receives_exit_code() {
     assert_eq!(out, "code=42");
 }
 
+#[test]
+fn deferred_callback_finishes_without_spawning_a_job() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "defer_finish",
+            description = "finishes after a timer",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                n00n.fn.defer(1, function(timer_id, code)
+                    ctx:finish("code=" .. tostring(code))
+                end)
+            end
+        }})"#,
+    );
+    host.load_source("defer_finish", &src).unwrap();
+    let out = exec_tool(&reg, "defer_finish", serde_json::json!({})).unwrap();
+    assert_eq!(out, "code=0");
+}
+
 #[cfg(unix)]
 #[test]
 fn jobwait_fires_callbacks_while_waiting() {

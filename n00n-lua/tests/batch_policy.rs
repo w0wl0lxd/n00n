@@ -26,7 +26,8 @@ const MAX_BATCH_SIZE: usize = 4;
 const ERROR_PREFIX: &str = "[ERROR] ";
 const EMPTY_ERROR: &str = "provide at least one tool call";
 const NESTED_ERROR: &str = "cannot nest batch inside batch";
-const DISCARDED_ERROR: &str = "maximum of 4 tools per batch";
+const DISCARDED_ERROR: &str =
+    "maximum of 4 tools per batch; split the work into batches of at most 4 calls";
 const INSUFFICIENT_TIME_ERROR: &str = "insufficient time remaining in shared deadline";
 const SUMMARY_ALL_OK_FMT: &str = "All {} tools executed successfully.";
 const SUMMARY_MIXED_FMT: &str = "Executed {}/{} successfully. {} failed.";
