@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786798346434,
+  "lastUpdate": 1786804998413,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -19863,6 +19863,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 193197,
             "range": "± 13013",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "45121b8d9bc922d65b7bc5ad485db2b01c9f0b2d",
+          "message": "Merge pull request #385 from w0wl0lxd/fix/monty-0.0.21\n\nfix(interpreter): bump monty v0.0.18 to v0.0.21",
+          "timestamp": "2026-08-15T10:31:00-04:00",
+          "tree_id": "6e834bc7e0c9d3e5dfb16a3a175083a84b1fd9ee",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/45121b8d9bc922d65b7bc5ad485db2b01c9f0b2d"
+        },
+        "date": 1786804995922,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5012703,
+            "range": "± 38823",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1895457,
+            "range": "± 10348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1888161,
+            "range": "± 39302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 6008731,
+            "range": "± 29566",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2963766,
+            "range": "± 61957",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2900612,
+            "range": "± 11655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 430010,
+            "range": "± 4387",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130281,
+            "range": "± 178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130245,
+            "range": "± 198",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 823889,
+            "range": "± 2529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 488913,
+            "range": "± 2786",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 489194,
+            "range": "± 5331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58416,
+            "range": "± 2300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 128539,
+            "range": "± 15002",
             "unit": "ns/iter"
           }
         ]
