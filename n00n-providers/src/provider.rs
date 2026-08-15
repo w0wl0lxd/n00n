@@ -540,7 +540,10 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
 }
 
 fn is_expected_provider_absence(error: &AgentError) -> bool {
-    matches!(error, AgentError::Config { .. })
+    matches!(
+        error,
+        AgentError::Config { .. } | AgentError::SetupRequired { .. }
+    )
 }
 
 /// Fetches all available models from all providers asynchronously.
@@ -690,11 +693,15 @@ mod tests {
         let not_configured = AgentError::Config {
             message: "API key not configured".into(),
         };
+        let setup_required = AgentError::SetupRequired {
+            message: "authentication required".into(),
+        };
         let io_error = AgentError::Io(io::Error::other("credential store unavailable"));
         let lock_error = AgentError::CredentialLockTimeout { millis: 100 };
         let storage_error = AgentError::Storage;
 
         assert!(is_expected_provider_absence(&not_configured));
+        assert!(is_expected_provider_absence(&setup_required));
         assert!(!is_expected_provider_absence(&io_error));
         assert!(!is_expected_provider_absence(&lock_error));
         assert!(!is_expected_provider_absence(&storage_error));

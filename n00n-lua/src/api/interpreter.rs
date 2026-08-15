@@ -26,6 +26,12 @@ const BRIDGE_CLOSED: &str = "tool bridge closed (cancelled)";
 
 type CallResults = Vec<(u32, Result<Value, String>)>;
 
+fn unstreamed_stdout(stdout: &str, streamed_bytes: usize) -> Option<&str> {
+    stdout
+        .get(streamed_bytes..)
+        .filter(|remaining| !remaining.is_empty())
+}
+
 fn run_ruff(args: &[&str], code: &str) -> Option<String> {
     let mut child = Command::new("ruff")
         .args(args)
@@ -205,8 +211,10 @@ async fn interpreter_run(
             }
         })
         .map_err(|e| e.to_string());
-        if let Ok(ir) = &result {
-            for line in ir.stdout[flushed..].lines() {
+        if let Ok(ir) = &result
+            && let Some(remaining) = unstreamed_stdout(&ir.stdout, flushed)
+        {
+            for line in remaining.lines() {
                 let _ = tx.send(BridgeMsg::Line(line.to_owned()));
             }
         }
@@ -253,7 +261,20 @@ async fn interpreter_run(
 
 #[cfg(test)]
 mod tests {
-    use super::ruff_fix;
+    use super::{ruff_fix, unstreamed_stdout};
+
+    #[test]
+    fn streamed_output_past_retained_stdout_is_not_sliced() {
+        let stdout = "é".repeat(8_192);
+        assert_eq!(stdout.len(), 16_384);
+        assert_eq!(unstreamed_stdout(&stdout, 16_395), None);
+    }
+
+    #[test]
+    fn streamed_output_offset_must_be_utf8_boundary() {
+        assert_eq!(unstreamed_stdout("é-rest", 1), None);
+        assert_eq!(unstreamed_stdout("é-rest", 2), Some("-rest"));
+    }
 
     #[test]
     fn ruff_fix_removes_unused_import_and_formats() {
