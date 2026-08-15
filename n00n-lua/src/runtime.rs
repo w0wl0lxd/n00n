@@ -1743,7 +1743,7 @@ impl LuaRuntime {
             store.clear_plugin(name);
         }
         if let Some(keys) = self.plugins.borrow_mut().remove(name) {
-            for (_, tk) in keys {
+            for (_, tk) in keys.keys {
                 if let Err(e) = self.lua.remove_registry_value(tk.handler) {
                     tracing::warn!(plugin = name, error = %e, "failed to drop lua handler key");
                 }
