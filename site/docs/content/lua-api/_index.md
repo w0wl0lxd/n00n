@@ -5732,6 +5732,12 @@ function M.route_tier(prompt)
 ```lua
 -- Heuristic secret/PII pattern detection for tool content validation.
 --
+-- Example:
+--
+--     local secret_check = require("n00n.secret_check")
+--     local reason = secret_check.reason("api_key=sk_test_abcdefghijklmnopqrstuvwxyz")
+--     if reason then error(reason) end
+--
 -- This is intentionally conservative: it flags common secret-bearing keywords and
 -- patterns so tools can surface a warning or require a justification. It does not
 -- attempt to be exhaustive, and it may false-positive on example keys in docs.

@@ -1,5 +1,11 @@
 -- Heuristic secret/PII pattern detection for tool content validation.
 --
+-- Example:
+--
+--     local secret_check = require("n00n.secret_check")
+--     local reason = secret_check.reason("api_key=sk_test_abcdefghijklmnopqrstuvwxyz")
+--     if reason then error(reason) end
+--
 -- This is intentionally conservative: it flags common secret-bearing keywords and
 -- patterns so tools can surface a warning or require a justification. It does not
 -- attempt to be exhaustive, and it may false-positive on example keys in docs.
@@ -183,8 +189,14 @@ function M.check(text)
     return false, "content contains a private key block"
   end
 
-  -- Direct header-style credential exposure.
+  -- Direct header-style credential exposure, with and without a colon.
   local l = lower(text)
+  if l:find("authorization") then
+    local value = text:match("[Bb]earer%s+([%w%+%/%=%._%-]+)") or text:match("[Bb]asic%s+([%w%+%/%=%._%-]+)")
+    if value and #value >= 16 then
+      return false, "content contains an authorization header"
+    end
+  end
   if l:find("authorization: bearer ", 1, true) or l:find("authorization: basic ", 1, true) then
     return false, "content contains an authorization header"
   end
