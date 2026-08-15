@@ -1426,15 +1426,16 @@ fn deferred_callback_finishes_without_spawning_a_job() {
             schema = {MINIMAL_SCHEMA},
             audiences = {{ "main" }},
             handler = function(input, ctx)
-                n00n.fn.defer(1, function(timer_id, code)
-                    ctx:finish("code=" .. tostring(code))
+                local scheduled_id
+                scheduled_id = n00n.fn.defer(1, function(timer_id, code)
+                    ctx:finish("code=" .. tostring(code) .. ",id=" .. tostring(timer_id == scheduled_id))
                 end)
             end
         }})"#,
     );
     host.load_source("defer_finish", &src).unwrap();
     let out = exec_tool(&reg, "defer_finish", serde_json::json!({})).unwrap();
-    assert_eq!(out, "code=0");
+    assert_eq!(out, "code=0,id=true");
 }
 
 #[cfg(unix)]

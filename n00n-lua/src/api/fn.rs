@@ -520,11 +520,11 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
 ///
 /// @param delay_ms integer Delay in milliseconds.
 /// @param callback function Called with the timer id and exit code `0` after the delay.
-/// @return
+/// @return integer Timer job id accepted by `jobstop`.
 /// @example
 /// n00n.fn.defer(1000, function(timer_id, code) refresh() end)
 #[lua_fn(guard = Run)]
-fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<()> {
+fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<u32> {
     let owner = active_task_id(lua)
         .map(JobOwner::Task)
         .ok_or_else(|| mlua::Error::runtime("defer: no active task"))?;
@@ -532,8 +532,7 @@ fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<()> {
     with_jobs(lua, |store| {
         store.defer(owner, Duration::from_millis(delay_ms), callback)
     })
-    .map_err(mlua::Error::runtime)?;
-    Ok(())
+    .map_err(mlua::Error::runtime)
 }
 
 /// Kill a running job immediately (SIGKILL on Unix). Safe to call on

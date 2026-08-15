@@ -1463,6 +1463,8 @@ callback does not outlive that callback's task scope.
 - `{delay_ms}` (`integer`) Delay in milliseconds.
 - `{callback}` (`function`) Called with the timer id and exit code `0` after the delay.
 
+**Returns:** integer Timer job id accepted by `jobstop`.
+
 **Example:**
 
 ```lua
