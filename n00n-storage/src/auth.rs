@@ -68,10 +68,10 @@ impl ProviderCredentials {
 
 #[must_use]
 pub fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+        |_| 0,
+        |d| u64::try_from(d.as_millis()).unwrap_or_else(|_| u64::MAX),
+    )
 }
 
 fn auth_path(dir: &StateDir, filename: &str) -> PathBuf {
