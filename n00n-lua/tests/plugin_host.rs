@@ -28,9 +28,7 @@ use n00n_providers::{
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
-// Bumped for the native git/github tool definitions; keep new tool schemas
-// lean rather than raising this further.
-const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 46_500;
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())

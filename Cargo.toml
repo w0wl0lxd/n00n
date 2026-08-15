@@ -74,6 +74,7 @@ members = [
   "n00n-redact",
   "n00n-search",
   "n00n-semble",
+  "n00n-smell",
   "n00n-storage",
   "n00n-config-macro",
   "n00n-lua-macro",
@@ -107,6 +108,7 @@ n00n-highlight = { path = "n00n-highlight" }
 n00n-codegraph = { path = "n00n-codegraph" }
 n00n-git = { path = "n00n-git" }
 n00n-semble = { path = "n00n-semble" }
+n00n-smell = { path = "n00n-smell" }
 n00n-markdown = { path = "n00n-markdown" }
 n00n-daemon = { path = "n00n-daemon" }
 n00n-token-profile = { path = "n00n-token-profile" }
@@ -310,6 +312,7 @@ tantivy = "0.26.1"
 fs2 = "0.4.3"
 inventory = "0.3"
 quanta = { version = "0.12.6", default-features = false }
+walkdir = "2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
