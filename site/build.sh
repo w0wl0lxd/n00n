@@ -20,21 +20,27 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 
 # 1. Copy static landing page files
-cp index.html "$OUT/"
-cp asciinema-player.css "$OUT/"
-cp asciinema-player.min.js "$OUT/"
-cp demo.cast "$OUT/"
-cp doom.mp4 "$OUT/"
-cp doom-av1.mp4 "$OUT/"
-cp ../install.sh "$OUT/"
-cp ../install.ps1 "$OUT/"
-cp favicon.ico "$OUT/"
-cp favicon-16x16.png "$OUT/"
-cp favicon-32x32.png "$OUT/"
-cp apple-touch-icon.png "$OUT/"
-cp android-chrome-192x192.png "$OUT/"
-cp android-chrome-512x512.png "$OUT/"
-cp site.webmanifest "$OUT/"
+for asset in \
+  index.html \
+  asciinema-player.css \
+  asciinema-player.min.js \
+  doom.mp4 \
+  doom-av1.mp4 \
+  ../install.sh \
+  ../install.ps1 \
+  favicon.ico \
+  favicon-16x16.png \
+  favicon-32x32.png \
+  apple-touch-icon.png \
+  android-chrome-192x192.png \
+  android-chrome-512x512.png \
+  site.webmanifest; do
+  if [ ! -f "$asset" ]; then
+    echo "error: site asset '$asset' is missing or unreadable" >&2
+    exit 1
+  fi
+  cp "$asset" "$OUT/"
+done
 
 # 2. Build Zola docs
 cd docs
