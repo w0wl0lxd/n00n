@@ -224,7 +224,7 @@ pub async fn compact(
     event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: Message::assistant(summary),
         usage,
-        model: model.id.clone(),
+        model: model.spec(),
         context_size: Some(context_size),
     })))?;
     event_tx.send(AgentEvent::CompactionDone)?;

@@ -830,7 +830,7 @@ impl<'h> Agent<'h> {
             .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
                 message: response.message.clone(),
                 usage: response.usage,
-                model: self.model.id.clone(),
+                model: self.model.spec(),
                 context_size: Some(response.usage.context_tokens()),
             })))
     }
@@ -1187,7 +1187,7 @@ impl<'h> Agent<'h> {
             .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
                 message: Message::assistant(summary),
                 usage,
-                model: self.model.id.clone(),
+                model: self.model.spec(),
                 context_size: Some(self.context_size),
             })))?;
         self.event_tx.send(AgentEvent::CompactionDone)?;

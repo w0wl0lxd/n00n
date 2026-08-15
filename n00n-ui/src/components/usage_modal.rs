@@ -151,6 +151,9 @@ pub(crate) fn attributed_costs(
         .iter()
         .try_fold((0.0, 0.0), |(cost, savings), (id, usage)| {
             let pricing = pricing_for(id, current)?;
+            if pricing.is_zero() {
+                return None;
+            }
             let usage = TokenUsage::from(*usage);
             Some((
                 cost + usage.cost(&pricing, fast),
@@ -168,10 +171,10 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         theme.keybind_section,
     )));
 
-    let total_cost = if ctx.model.pricing.is_zero() {
-        None
+    let total_cost = if ctx.by_model.is_empty() {
+        (!ctx.model.pricing.is_zero()).then(|| ctx.total.cost(&ctx.model.pricing, ctx.fast))
     } else {
-        Some(ctx.total.cost(&ctx.model.pricing, ctx.fast))
+        attributed_costs(ctx.by_model, ctx.model, ctx.fast).map(|(cost, _)| cost)
     };
     lines.push(Line::from(totals_row(ctx.total, total_cost, theme)));
     lines.push(Line::from(Span::styled(
@@ -180,6 +183,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         ),
         theme.status_dim,
     )));
+    lines.extend(pricing_lines(ctx, theme));
 
     if let Some(state) = ctx.quota {
         lines.push(Line::default());
@@ -215,10 +219,14 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         let pricing = pricing_for(id, ctx.model);
         let token_usage = TokenUsage::from(*usage);
         let (cost, savings) = pricing.as_ref().map_or((None, None), |p| {
-            (
-                Some(token_usage.cost(p, ctx.fast)),
-                Some(token_usage.savings_cost(p, ctx.fast)),
-            )
+            if p.is_zero() {
+                (None, None)
+            } else {
+                (
+                    Some(token_usage.cost(p, ctx.fast)),
+                    Some(token_usage.savings_cost(p, ctx.fast)),
+                )
+            }
         });
         lines.push(Line::from(model_row(
             id,
@@ -232,6 +240,66 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     }
 
     lines
+}
+fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
+    let mut rates = if ctx.by_model.is_empty() {
+        vec![(ctx.model.id.clone(), ctx.model.pricing)]
+    } else {
+        ctx.by_model
+            .keys()
+            .filter_map(|id| pricing_for(id, ctx.model).map(|pricing| (id.clone(), pricing)))
+            .collect::<Vec<_>>()
+    };
+    rates.retain(|(_, pricing)| !pricing.is_zero());
+    if rates.is_empty() {
+        return Vec::new();
+    }
+    rates.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut lines = vec![
+        Line::default(),
+        Line::from(Span::styled(
+            format!("{PREFIX}Prices per 1M tokens"),
+            theme.keybind_section,
+        )),
+    ];
+    for (id, pricing) in rates {
+        let pricing = pricing.effective(ctx.fast);
+        lines.push(Line::from(vec![
+            Span::raw(PREFIX),
+            Span::styled(format!("{id}: "), Style::new().fg(theme.foreground)),
+            Span::styled(
+                format!(
+                    "input ${}  output ${}  cache read ${}  cache write ${}",
+                    format_price(pricing.input),
+                    format_price(pricing.output),
+                    format_price(pricing.cache_read),
+                    format_price(pricing.cache_write),
+                ),
+                theme.status_dim,
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{PREFIX}Estimates use current reported rates and selected mode. Coding-plan values are API-equivalent, not subscription charges."
+        ),
+        theme.status_dim,
+    )));
+    lines
+}
+
+fn format_price(price: f64) -> String {
+    let formatted = format!("{price:.4}");
+    let trimmed = formatted.trim_end_matches('0');
+    let decimals = trimmed
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    if decimals >= 2 {
+        trimmed.to_owned()
+    } else {
+        format!("{price:.2}")
+    }
 }
 
 fn cache_hit_rate(usage: &TokenUsage) -> Option<f64> {
@@ -293,7 +361,7 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
         gap(),
         h("saved $"),
         gap(),
-        Span::styled(format!("{:>6}", "cost"), theme.status_dim),
+        Span::styled(format!("{:>6}", "est $"), theme.status_dim),
     ]
 }
 
@@ -584,6 +652,78 @@ mod tests {
     }
 
     #[test]
+    fn priced_models_show_effective_token_rates() {
+        let theme = crate::theme::current();
+        let model = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let total = TokenUsage {
+            input: 1_000_000,
+            output: 100_000,
+            cache_read: 500_000,
+            cache_creation: 200_000,
+        };
+        let by_model = HashMap::from([(
+            model.id.clone(),
+            StoredTokenUsage {
+                input: total.input,
+                output: total.output,
+                cache_read: total.cache_read,
+                cache_creation: total.cache_creation,
+            },
+        )]);
+        let lines = build_lines(
+            &UsageModalContext {
+                total: &total,
+                by_model: &by_model,
+                model: &model,
+                fast: false,
+                quota: None,
+            },
+            &theme,
+        );
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("Prices per 1M tokens"));
+        assert!(text.contains("input $5.00"));
+        assert!(text.contains("output $30.00"));
+        assert!(text.contains("cache read $0.50"));
+        assert!(text.contains("cache write $6.25"));
+        assert!(text.contains("API-equivalent"));
+    }
+
+    #[test]
+    fn zero_priced_models_keep_usage_without_price_metrics() {
+        let theme = crate::theme::current();
+        let model = Model::from_spec("ollama/test-model").unwrap();
+        let total = TokenUsage {
+            input: 100,
+            output: 20,
+            ..TokenUsage::default()
+        };
+        let lines = build_lines(
+            &UsageModalContext {
+                total: &total,
+                by_model: &HashMap::new(),
+                model: &model,
+                fast: false,
+                quota: None,
+            },
+            &theme,
+        );
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(!text.contains("Prices per 1M tokens"));
+        assert!(text.contains("in 100"));
+    }
+
+    #[test]
     fn attributed_costs_price_each_model_separately() {
         let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
         let mut by_model = HashMap::new();
@@ -611,6 +751,26 @@ mod tests {
             (savings - token_usage.savings_cost(&current.pricing, false) * 2.0).abs()
                 > f64::EPSILON
         );
+    }
+
+    #[test]
+    fn attributed_costs_resolve_provider_qualified_models() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        let by_model = HashMap::from([("openai/gpt-5.6-sol".into(), usage)]);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
+        let pricing = Model::from_spec("openai/gpt-5.6-sol").unwrap().pricing;
+        let token_usage = TokenUsage::from(usage);
+
+        assert!((cost - token_usage.cost(&pricing, false)).abs() < f64::EPSILON);
+        assert!((savings - token_usage.savings_cost(&pricing, false)).abs() < f64::EPSILON);
+        assert!((cost - token_usage.cost(&current.pricing, false)).abs() > f64::EPSILON);
     }
 
     #[test]
