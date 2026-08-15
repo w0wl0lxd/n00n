@@ -525,7 +525,7 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
 /// callback does not outlive that callback's task scope.
 ///
 /// @param delay_ms integer Delay in milliseconds.
-/// @param callback function Called with the timer id and exit code `0` after the delay.
+/// @param callback function Called with the timer id and exit code `0` after the delay or cancellation by `jobstop`.
 /// @return (integer) Timer job id accepted by `jobstop`.
 /// @example
 /// n00n.fn.defer(1000, function(timer_id, code) refresh() end)
@@ -541,10 +541,11 @@ fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<u32> {
     .map_err(mlua::Error::runtime)
 }
 
-/// Kill a running job immediately (SIGKILL on Unix). Safe to call on
-/// jobs that already exited or on unknown ids.
+/// Kill a running process immediately (SIGKILL on Unix) or cancel a deferred
+/// timer. Safe to call on jobs that already exited or on unknown ids. A
+/// cancelled timer's callback runs with exit code `0`.
 ///
-/// @param job_id integer Job id returned by `jobstart`.
+/// @param job_id integer Job id returned by `jobstart` or `defer`.
 /// @return
 /// @example
 /// n00n.fn.jobstop(id)
@@ -836,7 +837,7 @@ mod tests {
         let mut store = make_store();
         let owner = task_owner(OWNER_TASK_ID);
         let id = store
-            .defer(owner.clone(), Duration::from_secs(60), callback)
+            .defer(owner.clone(), Duration::from_mins(1), callback)
             .unwrap();
 
         // Cancelling a pending timer must notify the waiting callback, the same
@@ -846,7 +847,6 @@ mod tests {
         let mut events = Vec::new();
         store.drain_events(&owner, &mut events);
         assert!(matches!(events.as_slice(), [(event_id, JobEvent::Exit(0))] if *event_id == id));
-
         store.finish(&lua, id);
         assert!(store.is_empty(&owner));
     }

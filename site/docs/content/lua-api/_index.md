@@ -1398,12 +1398,13 @@ local watcher = n00n.fn.jobstart("tail -F app.log", { owner = "plugin" })
 n00n.fn.jobstop({job_id})
 ```
 
-Kill a running job immediately (SIGKILL on Unix). Safe to call on
-jobs that already exited or on unknown ids.
+Kill a running process immediately (SIGKILL on Unix) or cancel a deferred
+timer. Safe to call on jobs that already exited or on unknown ids. A
+cancelled timer's callback runs with exit code `0`.
 
 **Parameters:**
 
-- `{job_id}` (`integer`) Job id returned by `jobstart`.
+- `{job_id}` (`integer`) Job id returned by `jobstart` or `defer`.
 
 **Example:**
 
@@ -1461,7 +1462,7 @@ callback does not outlive that callback's task scope.
 **Parameters:**
 
 - `{delay_ms}` (`integer`) Delay in milliseconds.
-- `{callback}` (`function`) Called with the timer id and exit code `0` after the delay.
+- `{callback}` (`function`) Called with the timer id and exit code `0` after the delay or cancellation by `jobstop`.
 
 **Returns:** (`integer`) Timer job id accepted by `jobstop`.
 
