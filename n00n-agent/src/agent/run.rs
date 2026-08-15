@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tracing::{error, info, warn};
 
+use n00n_config::canonical_tool_name;
 use n00n_redact::demoted;
 
 use n00n_providers::provider::Provider;
@@ -76,21 +77,22 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
             let Some(name) = definition.get("name").and_then(Value::as_str) else {
                 return true;
             };
+            let canonical = canonical_tool_name(name);
             // Bash is the only execute-kind tool allowed in plan mode, and only
             // for commands that pass the read-only classifier.
-            if name == crate::tools::BASH_TOOL_NAME {
+            if canonical == crate::tools::BASH_TOOL_NAME {
                 return true;
             }
             // Keep the historical name-based guard and extend it to any tool
             // whose kind is "execute", so a renamed code_execution tool is
             // also filtered out.
-            if name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+            if canonical == crate::tools::CODE_EXECUTION_TOOL_NAME {
                 return false;
             }
             // Only remove tools we can positively identify as execute-kind.
             // MCP and other unregistered tools are left for the dispatch layer.
             registry
-                .get(name)
+                .get(canonical)
                 .map_or(true, |entry| entry.tool.tool_kind() != Some("execute"))
         });
     }
