@@ -3,16 +3,8 @@ name: Links
 on:
   push:
     branches: ["main"]
-    paths:
-      - "**/*.md"
-      - "**/*.html"
-      - ".github/workflows/links.yml"
   pull_request:
     branches: ["main"]
-    paths:
-      - "**/*.md"
-      - "**/*.html"
-      - ".github/workflows/links.yml"
   schedule:
     - cron: "47 5 * * 1"
   workflow_dispatch:

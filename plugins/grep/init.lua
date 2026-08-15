@@ -222,7 +222,8 @@ n00n.api.register_prompt_hint({
 })
 
 n00n.api.register_tool({
-  name = "grep",
+  name = "search_code",
+  aliases = { "grep" },
   kind = "search",
   workload = "cheap",
   modes = { "default", "research", "build", "compact" },

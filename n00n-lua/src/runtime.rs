@@ -22,7 +22,7 @@ use n00n_agent::tools::{
 use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
 use serde_json::Value;
 
-use n00n_config::{RawConfig, SearchConfig};
+use n00n_config::{RawConfig, SearchConfig, canonical_tool_name};
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
@@ -68,7 +68,8 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
         match registry.register(&tool, &source) {
             Ok(()) => {}
             Err(RegistryError::NameConflict { name, .. })
-                if name == "tool_search" || name == "load_namespace" => {}
+                if canonical_tool_name(&name) == "search_tools"
+                    || canonical_tool_name(&name) == "load_toolset" => {}
             Err(e) => {
                 return Err(PluginError::Lua {
                     plugin: "builtin".to_owned(),
@@ -1405,7 +1406,7 @@ fn spawn_runtime_request(
                 let plugins = rt.plugins.borrow();
                 plugins
                     .get(&*plugin)
-                    .and_then(|tools| tools.get(&*tool))
+                    .and_then(|tools| tools.lookup(&tool))
                     .and_then(|keys| keys.start.as_ref())
                     .and_then(|key| rt.lua.registry_value::<Function>(key).ok())
             };
@@ -1595,7 +1596,22 @@ struct ToolKeys {
     describe: Option<RegistryKey>,
 }
 
-type PluginMap = Rc<RefCell<HashMap<Arc<str>, HashMap<Arc<str>, ToolKeys>>>>;
+struct PluginTools {
+    keys: HashMap<Arc<str>, ToolKeys>,
+    alias_to_canonical: HashMap<Arc<str>, Arc<str>>,
+}
+
+impl PluginTools {
+    fn lookup(&self, tool: &str) -> Option<&ToolKeys> {
+        self.keys.get(tool).or_else(|| {
+            self.alias_to_canonical
+                .get(tool)
+                .and_then(|c| self.keys.get(c))
+        })
+    }
+}
+
+type PluginMap = Rc<RefCell<HashMap<Arc<str>, PluginTools>>>;
 
 struct LuaRuntime {
     /// Held for its Drop (joins the poker thread). Field order matters:
@@ -1688,7 +1704,7 @@ impl LuaRuntime {
             let plugins = Rc::clone(&plugins);
             crate::api::tool::set_local_tool_handles(move |tool| {
                 let plugins = plugins.borrow();
-                let tk = plugins.values().find_map(|tools| tools.get(tool))?;
+                let tk = plugins.values().find_map(|tools| tools.lookup(tool))?;
                 let to_fn = |key: Option<&RegistryKey>| {
                     key.and_then(|k| lua.registry_value::<Function>(k).ok())
                 };
@@ -1728,7 +1744,7 @@ impl LuaRuntime {
             store.clear_plugin(name);
         }
         if let Some(keys) = self.plugins.borrow_mut().remove(name) {
-            for (_, tk) in keys {
+            for (_, tk) in keys.keys {
                 if let Err(e) = self.lua.remove_registry_value(tk.handler) {
                     tracing::warn!(plugin = name, error = %e, "failed to drop lua handler key");
                 }
@@ -2123,6 +2139,7 @@ impl LuaRuntime {
             .map(|t| {
                 let tool: Arc<dyn Tool> = Arc::new(LuaTool {
                     name: Arc::clone(&t.name),
+                    aliases: t.aliases.clone(),
                     description: t.description.clone(),
                     schema: t.schema,
                     audience: t.audience,
@@ -2164,6 +2181,14 @@ impl LuaRuntime {
             });
         }
 
+        let alias_to_canonical: HashMap<Arc<str>, Arc<str>> = pending
+            .iter()
+            .flat_map(|t| {
+                t.aliases
+                    .iter()
+                    .map(|alias| (Arc::clone(alias), Arc::clone(&t.name)))
+            })
+            .collect();
         let keys: HashMap<Arc<str>, ToolKeys> = pending
             .into_iter()
             .map(|t| {
@@ -2183,7 +2208,13 @@ impl LuaRuntime {
                 )
             })
             .collect();
-        self.plugins.borrow_mut().insert(name, keys);
+        self.plugins.borrow_mut().insert(
+            name,
+            PluginTools {
+                keys,
+                alias_to_canonical,
+            },
+        );
 
         Ok(())
     }
@@ -2298,7 +2329,7 @@ fn plugin_fn(
 ) -> Option<(Function, LuaValue)> {
     let func = {
         let plugins = plugins.borrow();
-        let key = key(plugins.get(plugin)?.get(tool)?)?;
+        let key = key(plugins.get(plugin)?.lookup(tool)?)?;
         match lua.registry_value::<Function>(key) {
             Ok(f) => f,
             Err(e) => {
@@ -2365,7 +2396,7 @@ async fn restore_item(
         let plugins = plugins.borrow();
         let Some((pname, tk)) = plugins
             .iter()
-            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))
+            .find_map(|(pname, tools)| tools.lookup(&item.tool).map(|tk| (Arc::clone(pname), tk)))
         else {
             return Ok(None);
         };
@@ -2695,7 +2726,7 @@ fn run_describe(
 ) -> Option<String> {
     let func: Function = {
         let plugins_ref = plugins.borrow();
-        let key = plugins_ref.get(plugin)?.get(tool)?.describe.as_ref()?;
+        let key = plugins_ref.get(plugin)?.lookup(tool)?.describe.as_ref()?;
         lua.registry_value(key).ok()?
     };
     let arg = match json_to_lua(lua, dctx) {
@@ -2824,7 +2855,7 @@ async fn run_tool_call(
         let Some(keys) = plugins_ref.get(&*plugin) else {
             return ToolCallReply::err(format!("plugin not loaded: {plugin}"));
         };
-        let Some(tool_keys) = keys.get(&*tool) else {
+        let Some(tool_keys) = keys.lookup(&tool) else {
             return ToolCallReply::err(format!("tool not found: {tool}"));
         };
         match lua.registry_value(&tool_keys.handler) {

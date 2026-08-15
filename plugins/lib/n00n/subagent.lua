@@ -8,7 +8,7 @@ local route_tier = require("n00n.route_tier").route_tier
 local usage = require("n00n.usage")
 local structured_output = require("n00n.structured_output")
 
-local ORCHESTRATION_TOOLS = { "task", "team", "workflow", "agent_control", "batch" }
+local ORCHESTRATION_TOOLS = { "run_task", "run_team", "run_workflow", "control_agent", "run_batch" }
 
 -- Return a fresh table containing the orchestration tool names.
 -- Use it as a denylist when child agents must not launch more orchestration.

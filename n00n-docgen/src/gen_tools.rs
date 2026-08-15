@@ -15,46 +15,46 @@ const SECTIONS: &[(&str, &[&str])] = &[
     (
         "File Operations",
         &[
-            "bash",
-            "read",
-            "write",
-            "edit",
-            "multiedit",
-            "edit_lines",
-            "insert_lines",
-            "explore",
-            "glob",
-            "grep",
-            "index",
+            "run_shell",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "edit_file_bulk",
+            "edit_file_lines",
+            "insert_file_lines",
+            "explore_code",
+            "search_files",
+            "search_code",
+            "index_file",
             "view_image",
-            "codegraph",
-            "semblem",
+            "map_codegraph",
+            "search_text",
             "smell",
         ],
     ),
     (
         "Execution & Control",
-        &["batch", "code_execution", "question", "tmux"],
+        &["run_batch", "run_python", "ask_user", "tmux"],
     ),
     (
         "Agent & Knowledge",
         &[
-            "agent_list",
-            "agent_status",
-            "agent_control",
-            "blackboard",
-            "team",
-            "task",
-            "workflow",
-            "todo_write",
-            "memory",
-            "skill",
-            "tool_search",
-            "load_namespace",
-            "fusion_delegate",
+            "list_agents",
+            "get_agent",
+            "control_agent",
+            "use_blackboard",
+            "run_team",
+            "run_task",
+            "run_workflow",
+            "update_todo",
+            "use_memory",
+            "load_skill",
+            "search_tools",
+            "load_toolset",
+            "delegate_fusion",
         ],
     ),
-    ("Web", &["webfetch", "websearch"]),
+    ("Web", &["fetch_url", "search_web"]),
     ("Repository", &["git", "github"]),
 ];
 
@@ -223,7 +223,7 @@ fn redact_path(input: &str, target: &str, placeholder: &str) -> String {
 }
 
 /// Plugins bake env-specific values into their `description` at registration:
-/// `bash` interpolates `n00n.uv.cwd()` and `websearch` interpolates
+/// `run_shell` interpolates `n00n.uv.cwd()` and `search_web` interpolates
 /// `os.date("%Y-%m-%d")`. Scrub both so `gen-docs-check` is stable across
 /// machines and days. CWD is replaced before HOME so a cwd nested under ~
 /// doesn't get partially mangled.
@@ -397,6 +397,7 @@ static DATE_RE: std::sync::LazyLock<Regex> =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use n00n_config::canonical_tool_name;
     use test_case::test_case;
 
     #[test_case("2026-07-05", "YYYY-MM-DD"; "simple date")]
@@ -470,18 +471,26 @@ mod tests {
             .map(n00n_agent::tools::RegisteredTool::name)
             .collect();
 
-        let mut sectioned: HashSet<&str> = HashSet::new();
+        let mut sectioned: HashSet<String> = HashSet::new();
         for (_, names) in SECTIONS {
             for &n in *names {
+                let canonical = canonical_tool_name(n);
                 assert!(
-                    registered.contains(n),
+                    registered.contains(canonical),
                     "SECTIONS references \"{n}\" which isn't a registered tool"
                 );
-                assert!(sectioned.insert(n), "\"{n}\" appears in multiple sections");
+                assert!(
+                    sectioned.insert(canonical.to_owned()),
+                    "\"{n}\" appears in multiple sections"
+                );
             }
         }
 
-        let unsectioned: Vec<&str> = registered.difference(&sectioned).copied().collect();
+        let unsectioned: Vec<String> = registered
+            .iter()
+            .filter(|n| !sectioned.contains(canonical_tool_name(n)))
+            .map(|n| (*n).to_owned())
+            .collect();
         assert!(
             unsectioned.is_empty(),
             "registered tools missing from SECTIONS: {unsectioned:?}"

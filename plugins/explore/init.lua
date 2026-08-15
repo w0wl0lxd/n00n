@@ -82,7 +82,8 @@ local function dispatch(input, ctx, use_cache)
 end
 
 n00n.api.register_tool({
-  name = "explore",
+  name = "explore_code",
+  aliases = { "explore" },
   kind = "read",
   description = [[Unified codebase exploration router. Picks the best backend for the question:
 - **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
