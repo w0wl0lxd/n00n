@@ -626,6 +626,9 @@ pub fn is_builtin_tool(name: &str) -> bool {
         || n00n_config::EDIT_SUB_TOOLS
             .iter()
             .any(|builtin| canonical_tool_name(builtin) == canonical)
+        || n00n_config::TOOL_ALIASES
+            .iter()
+            .any(|(_, alias_canonical)| *alias_canonical == canonical)
 }
 
 #[must_use]

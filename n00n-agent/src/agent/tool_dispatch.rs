@@ -379,7 +379,9 @@ async fn run_authorized(
             crate::fusion::FUSION_DELEGATE_BLOCKED.into(),
         );
     }
-    if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+    if ctx.mode.plan_path().is_some()
+        && canonical_tool_name(name) == crate::tools::CODE_EXECUTION_TOOL_NAME
+    {
         return tool_done_error(
             id,
             Arc::from(crate::tools::CODE_EXECUTION_TOOL_NAME),
@@ -387,7 +389,7 @@ async fn run_authorized(
         );
     }
     if ctx.mode.plan_path().is_some()
-        && name == crate::tools::BASH_TOOL_NAME
+        && canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME
         && !plan_bash_is_read_only(input)
     {
         return tool_done_error(
