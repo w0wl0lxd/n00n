@@ -79,9 +79,10 @@ pub(crate) fn create_n00n_global(
     n00n.set("json", json::create_json_table(lua)?)?;
     n00n.set("yaml", yaml::create_yaml_table(lua)?)?;
     n00n.set("net", net::create_net_table(lua, permissions)?)?;
-    if search_config.enabled() && permissions.is_allowed(Permission::Net) {
-        n00n.set("search", search::create_search_table(lua)?)?;
-    }
+    n00n.set(
+        "search",
+        search::create_search_table(lua, permissions, search_config)?,
+    )?;
     n00n.set("text", text::create_text_table(lua)?)?;
     n00n.set(
         "session",
@@ -116,9 +117,11 @@ pub(crate) fn create_n00n_global(
 
 #[cfg(test)]
 mod tests {
+    use n00n_agent::cancel::CancelToken;
     use n00n_config::{RawConfig, SearchFileConfig};
 
     use super::*;
+    use crate::api::util::ctx::LuaCtx;
 
     #[test]
     fn api_construction_installs_read_only_search_config() {
@@ -152,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_search_config_omits_the_search_api() {
+    fn disabled_search_extract_returns_an_error() {
         let lua = Lua::new();
         let search_config = Arc::new(
             RawConfig {
@@ -178,11 +181,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(n00n.get::<Option<Table>>("search").unwrap().is_none());
+        let (value, err) = call_extract(&lua, &n00n).unwrap();
+        assert!(value.is_nil());
+        assert!(
+            err.as_str().unwrap().contains("disabled"),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
-    fn denied_net_permission_omits_the_search_api() {
+    fn denied_net_permission_extract_returns_an_error() {
         let lua = Lua::new();
         let search_config = Arc::new(
             RawConfig {
@@ -208,6 +216,20 @@ mod tests {
         )
         .unwrap();
 
-        assert!(n00n.get::<Option<Table>>("search").unwrap().is_none());
+        let (value, err) = call_extract(&lua, &n00n).unwrap();
+        assert!(value.is_nil());
+        assert!(
+            err.as_str().unwrap().contains("net permission"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    fn call_extract(lua: &Lua, n00n: &Table) -> LuaResult<(mlua::Value, mlua::Value)> {
+        let extract: mlua::Function = n00n.get::<Table>("search").unwrap().get("extract").unwrap();
+        lua.globals()
+            .set("_ctx", LuaCtx::for_test(CancelToken::none()))
+            .unwrap();
+        let ctx: mlua::UserDataRef<LuaCtx> = lua.globals().get("_ctx").unwrap();
+        extract.call((ctx, mlua::Value::Nil))
     }
 }

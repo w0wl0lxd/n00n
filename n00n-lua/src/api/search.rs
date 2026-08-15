@@ -1,19 +1,29 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table, Value};
+use n00n_config::SearchConfig;
 use n00n_search::{
     DEFAULT_MAX_REDIRECTS, ExtractRequest, Extractor, FetchLimits, HttpTransport, MAX_SOURCE_BYTES,
     UrlPolicy,
 };
+use std::sync::Arc;
 
 use super::util::{convert::err_pair, ctx::LuaCtx};
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
+use crate::plugin_permissions::{Permission, PluginPermissions};
 
-pub(crate) fn create_search_table(lua: &Lua) -> LuaResult<Table> {
+pub(crate) fn create_search_table(
+    lua: &Lua,
+    permissions: &PluginPermissions,
+    search_config: Arc<SearchConfig>,
+) -> LuaResult<Table> {
     let table = lua.create_table()?;
+    let permissions = permissions.clone();
     table.set(
         "extract",
         lua.create_async_function(
-            |lua, (ctx, request): (mlua::UserDataRef<LuaCtx>, Value)| async move {
-                extract(lua, ctx, request).await
+            move |lua, (ctx, request): (mlua::UserDataRef<LuaCtx>, Value)| {
+                let permissions = permissions.clone();
+                let search_config = search_config.clone();
+                async move { extract(lua, ctx, permissions, search_config, request).await }
             },
         )?,
     )?;
@@ -23,10 +33,18 @@ pub(crate) fn create_search_table(lua: &Lua) -> LuaResult<Table> {
 async fn extract(
     lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
+    permissions: PluginPermissions,
+    search_config: Arc<SearchConfig>,
     request: Value,
 ) -> LuaResult<(Value, Value)> {
     if let Err(error) = ctx.ensure_active() {
         return err_pair(&lua, error);
+    }
+    if !permissions.is_allowed(Permission::Net) {
+        return err_pair(&lua, "n00n.search.extract requires the net permission");
+    }
+    if !search_config.enabled() {
+        return err_pair(&lua, "n00n.search.extract is disabled by the search config");
     }
     let request = match lua.from_value::<ExtractRequest>(request) {
         Ok(request) => request,
