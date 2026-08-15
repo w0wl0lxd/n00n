@@ -73,6 +73,7 @@ a string belongs.
 | [`n00n.keymap`](#n00n-keymap) | Key mappings, modeled after `vim.keymap`. |
 | [`n00n.log`](#n00n-log) | Structured logging for plugins. |
 | [`n00n.net`](#n00n-net) | HTTP client for fetching web content. |
+| [`n00n.search`](#n00n-search) | Native, keyless extraction of bounded public web content. |
 | [`n00n.session`](#n00n-session) | Host session primitives. |
 | [`n00n.text`](#n00n-text) | Text transformation utilities. |
 | [`n00n.treesitter`](#n00n-treesitter) | Tree-sitter parsing and query API. |
@@ -2672,6 +2673,34 @@ if err then
 else
   print(res.status, res.body)
 end
+```
+
+
+## n00n.search {#n00n-search}
+
+Native, keyless extraction of bounded public web content.
+
+---
+
+### `n00n.search.extract()` {#n00n-search-extract}
+
+```lua
+n00n.search.extract(ctx, request)
+```
+
+Extract public URLs with manual redirect validation, DNS pinning, byte limits, and tool cancellation.
+
+**Parameters:**
+
+- `ctx` (`LuaCtx`) Current tool context; cancellation stops the operation.
+- `request` (`table`) Extraction request containing urls, format, query, chunks_per_source, and max_bytes_per_source.
+
+**Returns:** (`table|nil`, `string|nil`) Extraction response or an error.
+
+**Example:**
+
+```lua
+local result, err = n00n.search.extract(ctx, request)
 ```
 
 
