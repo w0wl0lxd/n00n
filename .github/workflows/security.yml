@@ -43,4 +43,3 @@ jobs:
         with:
           install_args: cargo:cargo-deny
       - run: cargo deny --workspace check
-        continue-on-error: true
