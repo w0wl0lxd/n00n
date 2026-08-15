@@ -311,7 +311,7 @@ impl Copilot {
         let system = System::from(system);
         let thinking = opts.thinking;
         let mut body = responses::build_body(
-            model, messages, &system, tools, None, None, false, &opts, true,
+            model, messages, &system, tools, None, None, false, opts, true,
         );
         if let Some(info) = self.reasoning_info_for(model) {
             apply_responses_reasoning(&mut body, thinking, model, &effort_dialect(&info));
@@ -327,7 +327,7 @@ impl Copilot {
             event_tx,
             &resolved,
             self.stream_timeout,
-            &opts,
+            opts,
         )
         .await
         .map(|(_, response)| response)
