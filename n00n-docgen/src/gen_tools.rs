@@ -39,7 +39,6 @@ const SECTIONS: &[(&str, &[&str])] = &[
     (
         "Agent & Knowledge",
         &[
-            "activate_tool",
             "list_agents",
             "get_agent",
             "control_agent",
@@ -55,7 +54,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "delegate_fusion",
         ],
     ),
-    ("Web", &["fetch_url", "search_web"]),
+    ("Web", &["fetch_url", "search_web", "web_search_exa"]),
     ("Repository", &["git", "github"]),
 ];
 
@@ -486,10 +485,10 @@ mod tests {
             }
         }
 
-        let unsectioned: Vec<&str> = registered
+        let unsectioned: Vec<String> = registered
             .iter()
-            .filter(|n| !sectioned.contains(**n))
-            .copied()
+            .filter(|n| !sectioned.contains(canonical_tool_name(n)))
+            .map(|n| (*n).to_owned())
             .collect();
         assert!(
             unsectioned.is_empty(),
