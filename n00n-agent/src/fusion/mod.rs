@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use crate::tools::ToolAudience;
 
-pub(crate) const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
-pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
+pub(crate) const FUSION_DELEGATE_TOOL: &str = "delegate_fusion";
+pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "delegate_fusion is unavailable for this request";
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
 const MUTATION_SIGNALS: &[&str] = &[

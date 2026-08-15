@@ -101,7 +101,7 @@ impl ModelCatalog {
             .specs
             .iter()
             .any(|candidate| is_compatible_spec(input, candidate))
-            || is_live_discovery_only_spec(input)
+            || is_arbitrary_model_provider_spec(input)
         {
             return Ok(input.to_string());
         }
@@ -191,15 +191,14 @@ fn is_compatible_spec(input: &str, catalogued: &str) -> bool {
         })
 }
 
-fn is_live_discovery_only_spec(spec: &str) -> bool {
+fn is_arbitrary_model_provider_spec(spec: &str) -> bool {
     if !is_spec(spec) {
         return false;
     }
     let Some((provider, _)) = spec.split_once('/') else {
         return false;
     };
-    ManifestRegistry::for_slug(provider)
-        .is_some_and(|manifest| manifest.accepts_arbitrary_models && manifest.models.is_empty())
+    ManifestRegistry::for_slug(provider).is_some_and(|manifest| manifest.accepts_arbitrary_models)
 }
 
 fn is_discoverable_spec(spec: &str) -> bool {
@@ -323,9 +322,13 @@ mod tests {
     fn empty_static_manifest_accepts_live_discovered_model_specs() {
         let catalog = ModelCatalog::from_specs([]);
 
-        assert!(is_live_discovery_only_spec("opencode/opencode/big-pickle"));
-        assert!(!is_live_discovery_only_spec("openai/not-in-static-catalog"));
-        assert!(!is_live_discovery_only_spec("opencode/"));
+        assert!(is_arbitrary_model_provider_spec(
+            "opencode/opencode/big-pickle"
+        ));
+        assert!(!is_arbitrary_model_provider_spec(
+            "openai/not-in-static-catalog"
+        ));
+        assert!(!is_arbitrary_model_provider_spec("opencode/"));
         assert_eq!(
             catalog
                 .canonical_spec("opencode/opencode/big-pickle")

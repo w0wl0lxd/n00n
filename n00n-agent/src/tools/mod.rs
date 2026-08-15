@@ -619,7 +619,11 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
 
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
-    n00n_config::DEFAULT_BUILTINS.contains(&name) || n00n_config::EDIT_SUB_TOOLS.contains(&name)
+    n00n_config::DEFAULT_BUILTINS.contains(&name)
+        || n00n_config::EDIT_SUB_TOOLS.contains(&name)
+        || n00n_config::TOOL_ALIASES
+            .iter()
+            .any(|(_, canonical)| *canonical == name)
 }
 
 #[must_use]
