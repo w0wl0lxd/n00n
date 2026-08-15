@@ -194,18 +194,19 @@ impl SmellIndex {
         });
 
         let index_path = self.path.join("tantivy_index");
+        let temp_path = self.path.join("tantivy_index.tmp");
         let schema = build_schema();
-        if index_path.exists() {
-            fs::remove_dir_all(&index_path).map_err(|source| SmellError::Io {
-                path: index_path.clone(),
+        if temp_path.exists() {
+            fs::remove_dir_all(&temp_path).map_err(|source| SmellError::Io {
+                path: temp_path.clone(),
                 source,
             })?;
         }
-        fs::create_dir_all(&index_path).map_err(|source| SmellError::Io {
-            path: index_path.clone(),
+        fs::create_dir_all(&temp_path).map_err(|source| SmellError::Io {
+            path: temp_path.clone(),
             source,
         })?;
-        let index = Index::create_in_dir(&index_path, schema.clone())?;
+        let index = Index::create_in_dir(&temp_path, schema.clone())?;
         *self = Self::from_parts(self.path.clone(), index, &schema)?;
 
         let mut writer = self.writer()?;
@@ -230,6 +231,17 @@ impl SmellIndex {
             }
         }
         writer.commit()?;
+        drop(writer);
+        if index_path.exists() {
+            fs::remove_dir_all(&index_path).map_err(|source| SmellError::Io {
+                path: index_path.clone(),
+                source,
+            })?;
+        }
+        fs::rename(&temp_path, &index_path).map_err(|source| SmellError::Io {
+            path: temp_path.clone(),
+            source,
+        })?;
         self.write_metadata(smells.len())?;
 
         progress(Progress {
@@ -465,12 +477,32 @@ fn collect_smells(repo: &Path) -> Result<Vec<SmellFinding>, SmellError> {
             message: format!("Failed to get relative path for {}", path.display()),
         })?;
 
-        // Non-UTF-8 files are treated as binary and skipped.
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
+        let content = match fs::read(path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(_) => continue,
+            },
+            Err(source) => {
+                eprintln!(
+                    "warning: unreadable file {}: {source}",
+                    relative_path.display()
+                );
+                continue;
+            }
         };
 
         for (line_num, line) in content.lines().enumerate() {
+            let trimmed = line.trim_start();
+            let is_comment = trimmed.starts_with("//")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("--")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+                || trimmed.starts_with(';')
+                || trimmed.starts_with('%');
+            if !is_comment {
+                continue;
+            }
             let mut kind = None;
             let mut message = String::new();
 
