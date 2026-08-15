@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786765985638,
+  "lastUpdate": 1786768173531,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -19323,6 +19323,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 177718,
             "range": "± 18550",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d34e01fc7c9aaaa5a6c184445c81149693ce4c71",
+          "message": "Merge pull request #361 from w0wl0lxd/revive/native-search-core\n\nfeat(search): native web extraction core",
+          "timestamp": "2026-08-15T00:22:56-04:00",
+          "tree_id": "6d3b0a201c869e3f4cdc93bd3f5f95e94122759f",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/d34e01fc7c9aaaa5a6c184445c81149693ce4c71"
+        },
+        "date": 1786768172132,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6725724,
+            "range": "± 142794",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221049,
+            "range": "± 4511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2223216,
+            "range": "± 33364",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7899832,
+            "range": "± 84333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4335758,
+            "range": "± 31519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4295843,
+            "range": "± 87018",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584316,
+            "range": "± 4074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191511,
+            "range": "± 1789",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191732,
+            "range": "± 1128",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1034284,
+            "range": "± 12308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 587927,
+            "range": "± 2914",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 587765,
+            "range": "± 7082",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 71710,
+            "range": "± 4753",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 185543,
+            "range": "± 15290",
             "unit": "ns/iter"
           }
         ]
