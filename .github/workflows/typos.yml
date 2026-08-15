@@ -3,24 +3,8 @@ name: Typos
 on:
   push:
     branches: ["main"]
-    paths:
-      - "**/*.rs"
-      - "**/*.md"
-      - "**/*.lua"
-      - "**/*.py"
-      - "**/*.toml"
-      - ".github/workflows/**"
-      - "typos.toml"
   pull_request:
     branches: ["main"]
-    paths:
-      - "**/*.rs"
-      - "**/*.md"
-      - "**/*.lua"
-      - "**/*.py"
-      - "**/*.toml"
-      - ".github/workflows/**"
-      - "typos.toml"
   workflow_dispatch:
 
 permissions:
