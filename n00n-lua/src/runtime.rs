@@ -2854,7 +2854,7 @@ async fn run_tool_call(
         let Some(keys) = plugins_ref.get(&*plugin) else {
             return ToolCallReply::err(format!("plugin not loaded: {plugin}"));
         };
-        let Some(tool_keys) = keys.lookup(&*tool) else {
+        let Some(tool_keys) = keys.lookup(&tool) else {
             return ToolCallReply::err(format!("tool not found: {tool}"));
         };
         match lua.registry_value(&tool_keys.handler) {
