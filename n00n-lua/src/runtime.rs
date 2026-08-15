@@ -1671,6 +1671,7 @@ impl LuaRuntime {
         lua.set_app_data(HintStore::new());
         lua.set_app_data(hint_writer);
         lua.set_app_data(Arc::clone(&registry));
+        lua.set_app_data(Arc::clone(&search_config));
 
         register_builtin_tools(&registry)?;
 
