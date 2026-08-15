@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786763259151,
+  "lastUpdate": 1786765985638,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -19215,6 +19215,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 190635,
             "range": "± 8674",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "753db41d1437e50a0ac2d1d76dcb4602ec55bba4",
+          "message": "fix(providers): retry RequestSent errors with idempotency keys (#364)\n\n* fix(providers): retry RequestSent errors with idempotency keys\n\n* fix: update call sites for idempotency key parameter\n\n- Update ResponseAccumulator::new() calls to pass idempotency_key parameter\n- Add idempotency_key parameter to WebSocket stream_message and stream_websocket methods\n- Update all test call sites to pass None for idempotency_key\n- Fix Copilot stream_chat_completions call to pass opts parameter\n\n* fix(providers): borrow RequestOptions in Copilot chat completions\n\n* fix(providers): send idempotency key in Copilot headers and preserve opts for Responses\n\n* fix(providers): gate idempotency-key retries on confirmed provider support\n\n- RequestOptions gains idempotency_supported, set only on the OpenAI\n  platform path; parse_sse (openai-compat and responses) attaches the key\n  to delivery metadata only when supported, so custom/local and Copilot\n  streams are never marked retryable after send.\n- user_message for RequestSent now mirrors is_retryable instead of keying\n  on key presence alone.\n- Fix RequestOptions literals and websocket test call sites for the new\n  key parameter.\n\n* fix(providers): thread idempotency key through remaining call sites\n\n- Add idempotency_key: None to the agent RequestOptions initializer.\n- Pass &RequestOptions::default() to parse_sse test call sites.\n- Pass None idempotency keys to stream_message_with_keepalive tests.\n\n* fix(providers): repair RequestDeliveryMetadata literals and stale parse_sse test calls\n\n* fix(agent): set idempotency_supported in the run RequestOptions initializer\n\n* fix(providers): drop needless borrows of RequestOptions in Copilot",
+          "timestamp": "2026-08-14T23:46:27-04:00",
+          "tree_id": "8bbc760f04c2694df239fdabbf8d140ac05f8840",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/753db41d1437e50a0ac2d1d76dcb4602ec55bba4"
+        },
+        "date": 1786765983444,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6691764,
+            "range": "± 10288",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2224719,
+            "range": "± 4417",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2221654,
+            "range": "± 60745",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8128843,
+            "range": "± 18400",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4349215,
+            "range": "± 25113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4301080,
+            "range": "± 19124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585502,
+            "range": "± 1517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191644,
+            "range": "± 373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191620,
+            "range": "± 407",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1037908,
+            "range": "± 23337",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 589124,
+            "range": "± 1644",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588805,
+            "range": "± 3485",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79379,
+            "range": "± 3094",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 177718,
+            "range": "± 18550",
             "unit": "ns/iter"
           }
         ]
