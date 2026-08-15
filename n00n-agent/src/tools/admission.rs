@@ -6,6 +6,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use n00n_config::canonical_tool_name;
+
 use crate::cancel::CancelToken;
 
 pub const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 8;
@@ -310,9 +312,6 @@ impl Drop for ToolAdmissionGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use n00n_config::canonical_tool_name;
-
-    use crate::cancel::CancelToken;
 
     #[test]
     fn classifies_wrappers_without_consuming_expensive_lane() {
