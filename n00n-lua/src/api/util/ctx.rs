@@ -20,7 +20,7 @@ use crate::api::util::convert::json_to_lua;
 use crate::api::util::state_convert::{
     json_to_lua as state_json_to_lua, lua_to_json as state_lua_to_json,
 };
-use crate::runtime::{active_task, lock_cell};
+use crate::runtime::{active_task, lock_cell, task_deadline};
 use crate::state::{PluginStateIdentity, PluginStateScope, PluginStateStore};
 
 const CONTEXT_INACTIVE_MSG: &str = "state context is no longer active";
@@ -514,6 +514,19 @@ impl UserData for LuaCtx {
             cell.deadline_secs.set(Some(secs));
             cell.deadline.set(Some(deadline));
             Ok((LuaValue::Nil, None))
+        });
+
+        methods.add_method("deadline_remaining", |lua, this, ()| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
+            let handle = active_task(lua);
+            let remaining_secs = task_deadline(&handle)
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs());
+            let value = remaining_secs.map_or(LuaValue::Nil, |secs| {
+                LuaValue::Integer(i64::try_from(secs).unwrap_or_else(|_| i64::MAX))
+            });
+            Ok((value, None))
         });
 
         methods.add_method("record_read", |_, this, path: String| {

@@ -135,6 +135,11 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         "codegraph",
         include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
     ),
+    bundled("git", include_dir!("$CARGO_MANIFEST_DIR/../plugins/git")),
+    bundled(
+        "github",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/github"),
+    ),
     bundled(
         "view_image",
         include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),

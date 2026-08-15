@@ -1064,6 +1064,22 @@ fn stream_reset_clears_streaming_and_fails_tools() {
     assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
 }
 
+#[test]
+fn failed_compaction_clears_the_partially_streamed_summary() {
+    let mut panel = test_panel();
+    panel.messages.push(DisplayMessage::compaction_pending());
+    panel.streaming_thinking.set_buffer("partial thinking");
+    panel.streaming_text.set_buffer("partial summary");
+    panel.thinking_collapsed = true;
+
+    assert!(panel.fail_pending_compaction("stream ended early"));
+
+    assert!(panel.streaming_thinking.is_empty());
+    assert!(panel.streaming_text.is_empty());
+    assert!(!panel.thinking_collapsed);
+    assert!(panel.thinking_started.is_none());
+}
+
 const N00N_PREFIX_LEN: u16 = 6;
 
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
