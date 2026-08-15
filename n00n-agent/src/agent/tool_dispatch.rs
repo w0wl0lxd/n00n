@@ -370,7 +370,9 @@ async fn run_authorized(
     if !ctx.tool_filter.matches(name) {
         return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
     }
-    if name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
+    if canonical_tool_name(name) == crate::fusion::FUSION_DELEGATE_TOOL
+        && !fusion_delegate_authorized
+    {
         return tool_done_error(
             id,
             Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
@@ -427,7 +429,7 @@ async fn run_authorized(
     let started = Instant::now();
 
     if ctx.mode.plan_path().is_some()
-        && name != crate::tools::BASH_TOOL_NAME
+        && canonical_tool_name(name) != crate::tools::BASH_TOOL_NAME
         && entry
             .as_ref()
             .is_some_and(|entry| entry.tool.tool_kind() == Some("execute"))
@@ -576,7 +578,7 @@ async fn run_authorized(
                 }
             }
         }
-    } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
+    } else if let Some(mcp) = mcp.filter(|_| canonical_tool_name(name) == TOOL_SEARCH_TOOL_NAME) {
         let _admission = match ctx
             .registry
             .admission()
@@ -959,7 +961,8 @@ pub(super) async fn process_tool_calls(
         let normalized_name = name
             .strip_prefix("functions.")
             .map_or(name.as_str(), |value| value);
-        let is_fusion_delegate = normalized_name == crate::fusion::FUSION_DELEGATE_TOOL;
+        let is_fusion_delegate =
+            canonical_tool_name(normalized_name) == crate::fusion::FUSION_DELEGATE_TOOL;
         if is_fusion_delegate
             && ctx.config.fusion.enabled
             && let Value::Object(arguments) = &mut input

@@ -606,7 +606,10 @@ fn merge_batch(
         .unwrap_or_else(Vec::new);
     let catalog = ModelCatalog::current();
     for spec in &batch.models {
-        if catalog.allows_live(spec) && !merged.contains(spec) {
+        let well_formed = spec
+            .split_once('/')
+            .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty());
+        if well_formed && !merged.contains(spec) {
             merged.push(spec.clone());
         }
     }

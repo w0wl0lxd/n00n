@@ -209,7 +209,9 @@ fn is_discoverable_spec(spec: &str) -> bool {
     let Some((provider, _)) = spec.split_once('/') else {
         return false;
     };
-    ManifestRegistry::for_slug(provider).is_some_and(|manifest| manifest.accepts_arbitrary_models)
+    provider_available(provider)
+        && ManifestRegistry::for_slug(provider)
+            .is_some_and(|manifest| manifest.accepts_arbitrary_models)
 }
 
 #[cfg(test)]

@@ -1213,6 +1213,11 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
                 }
                 collected.push(Arc::from(alias.as_str()));
             }
+            if table.raw_len() != collected.len() {
+                return Err(mlua::Error::runtime(
+                    "register_tool: 'aliases' must be a dense sequence of strings",
+                ));
+            }
             collected
         }
         _ => {

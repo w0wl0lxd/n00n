@@ -619,16 +619,25 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
 
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
-    n00n_config::DEFAULT_BUILTINS.contains(&name) || n00n_config::EDIT_SUB_TOOLS.contains(&name)
+    let canonical = canonical_tool_name(name);
+    n00n_config::DEFAULT_BUILTINS
+        .iter()
+        .any(|builtin| canonical_tool_name(builtin) == canonical)
+        || n00n_config::EDIT_SUB_TOOLS
+            .iter()
+            .any(|builtin| canonical_tool_name(builtin) == canonical)
 }
 
 #[must_use]
 pub fn all_builtin_tool_names() -> Vec<&'static str> {
-    n00n_config::DEFAULT_BUILTINS
+    let mut names: Vec<&'static str> = n00n_config::DEFAULT_BUILTINS
         .iter()
         .chain(n00n_config::EDIT_SUB_TOOLS.iter())
-        .copied()
-        .collect()
+        .map(|builtin| canonical_tool_name(builtin))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 use n00n_providers::{Message, ProviderEvent, StreamResponse, System};

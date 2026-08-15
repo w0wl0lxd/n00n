@@ -334,7 +334,7 @@ n00n.api.register_tool({
 
 register_tool_if(opts.multiedit, {
   name = "edit_file_bulk",
-  aliases = { "multiedit" },
+  aliases = { "multiedit", "multi_edit" },
   kind = "edit",
   mutable_path = "path",
   permission_scopes = "path",

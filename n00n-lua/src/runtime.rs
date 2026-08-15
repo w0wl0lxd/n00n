@@ -22,7 +22,7 @@ use n00n_agent::tools::{
 use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
 use serde_json::Value;
 
-use n00n_config::{RawConfig, SearchConfig};
+use n00n_config::{RawConfig, SearchConfig, canonical_tool_name};
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
@@ -68,7 +68,8 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
         match registry.register(&tool, &source) {
             Ok(()) => {}
             Err(RegistryError::NameConflict { name, .. })
-                if name == "search_tools" || name == "load_toolset" => {}
+                if canonical_tool_name(&name) == "search_tools"
+                    || canonical_tool_name(&name) == "load_toolset" => {}
             Err(e) => {
                 return Err(PluginError::Lua {
                     plugin: "builtin".to_owned(),
