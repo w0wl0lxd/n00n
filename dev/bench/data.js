@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786771090067,
+  "lastUpdate": 1786776260807,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -19539,6 +19539,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 131704,
             "range": "± 13305",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dc2c00e3e676ea8cc9a0cd6b07b124315642d672",
+          "message": "chore: migrate workspace to nightly-2026-08-14 with Cranelift for dev builds (#371)\n\n* chore: migrate workspace to nightly-2026-08-14 with Cranelift for dev builds\n\nSwitches rust-toolchain.toml and every CI toolchain step from stable to a\npinned nightly (dated rather than floating, since rust-cache keys on the\nactive compiler and this repo is already over GitHub's 10GB cache limit).\n\nEnables the Cranelift codegen backend for dev-profile builds via\n.cargo/config.toml; release builds keep LLVM. Windows and macOS CI jobs\noverride back to LLVM for dev too, since cranelift's unwinding support is\nexperimental on those hosts and n00n's own code relies on catch_unwind.\n\nRemoves the MSRV job: a floating/pinned-nightly-only policy has no minimum\nsupported version to gate on. Confirmed MSRV (1.97) is not itself a required\nbranch-protection status check (only the aggregate CI job is), so removing\nit does not block existing PRs. Drops the now-meaningless rust-version field\nfrom all workspace manifests accordingly.\n\n* fix(ci): keep the Coverage job on LLVM codegen\n\ncargo-llvm-cov's -C instrument-coverage is LLVM-specific; cranelift\nrejects it outright (\"error: -Cinstrument-coverage is LLVM specific\nand not supported by Cranelift\"), breaking every build script in the\nCoverage job. Override the dev-profile codegen backend back to llvm\nthere, same mechanism already used for the Windows/macOS jobs.\n\n* fix(ci): keep the Linux Test job on LLVM codegen and fix nightly lints\n\n- Add the missing CARGO_PROFILE_DEV_CODEGEN_BACKEND=llvm override to the\n  Linux test job; cranelift's unwinding cannot run the catch_unwind-based\n  admission tests (already overridden for Windows, macOS, and Coverage).\n- Replace the identity map_or in n00n-redact flagged by the new nightly\n  clippy::map-or-identity lint.\n- Use AtomicI64::try_update (fetch_update is deprecated on this nightly).\n\n* fix: resolve nightly clippy lints and cargo config issues\n\n- Replace map_or with unwrap_or to fix clippy::map-or-identity lints\n- Remove [unstable] codegen-backend and [profile.dev] cranelift config\n- Remove CARGO_PROFILE_DEV_CODEGEN_BACKEND=llvm CI overrides\n\nThis makes Cranelift opt-in only and fixes compatibility with stable cargo.\n\n* fix: replace remaining disallowed unwrap_or uses flagged by nightly clippy\n\n* chore: drop rust-version inherit in n00n-git for nightly workspace\n\n* chore(lint): allow clippy::assert_is_empty for the nightly toolchain\n\n* fix(redact): replace useless format! in test fixture\n\n* refactor: replace identity map_or with unwrap_or_else and fix Result closures\n\nThe newer nightly clippy flags map_or(x, identity) (map_or_identity) and\nthe disallowed-methods list bans Option::unwrap_or. Convert all identity\nmap_or calls to unwrap_or_else, and use |_| closures where the value is a\nResult.\n\n* refactor: fix identity map_or call sites and allow result_large_err\n\nThe newer nightly clippy flags identity closures passed to map_or more\nbroadly (including std::convert::identity and tuple-destructuring\npatterns). Convert the remaining sites to unwrap_or_else. Allow\nresult_large_err for the hand-rolled WebSocketAttemptError, whose payload\nsizes are deliberate.\n\n* refactor: convert remaining identity map_or calls in n00n-acp\n\n* refactor: convert final identity map_or calls in theme\n\n* refactor: apply newer nightly clippy suggestions across the UI and Lua API\n\n- Replace .ok().is_some_and() with Result::is_ok_and.\n- Convert identity map_or and map(f).unwrap_or_else(g) chains to\n  unwrap_or_else / map_or_else where the newer clippy flags them.\n\n* fix(ci): align release toolchain with the nightly pin and drop unused cranelift component\n\nThe workspace toolchain is nightly-2026-08-14, but release.yml still\ninstalled stable and only added targets to it; install the pinned nightly\nwith targets. The cranelift backend component is no longer selected after\nthe earlier config removal, so stop installing it.\n\n* merge: bring in n00n-smell and drop its rust-version inherit for nightly\n\n* refactor: fix identity map_or in smell result preview\n\n* fix: address CodeRabbit review on the nightly migration\n\n- Propagate autocmd option errors instead of defaulting once to false.\n- Log job wait() failures instead of dropping the OS error.\n- Document the pinned nightly-2026-08-14 toolchain in the changelog\n  fragment (no floating channel, no cranelift claims).\n- Install the pinned nightly with its build target in release.yml.\n- Scope result_large_err to the four websocket functions instead of\n  allowing it workspace-wide.\n\n* fix: scope result_large_err allows to the actual websocket functions\n\n* chore(lint): allow result_large_err workspace-wide after all\n\nThe scoped per-function allows surfaced further sites in closures and\ntest helpers; the deliberately rich WebSocketAttemptError type makes the\nworkspace-wide allow the consistent choice.",
+          "timestamp": "2026-08-15T06:30:58Z",
+          "tree_id": "6276cc07ee96195b15b07e18dfcde904a9b4e149",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/dc2c00e3e676ea8cc9a0cd6b07b124315642d672"
+        },
+        "date": 1786776259024,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7289473,
+            "range": "± 136114",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1492416,
+            "range": "± 15602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1484917,
+            "range": "± 53993",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8139378,
+            "range": "± 64068",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2869554,
+            "range": "± 16835",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2871271,
+            "range": "± 33724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 735955,
+            "range": "± 5486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 89409,
+            "range": "± 4237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 89438,
+            "range": "± 3776",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1086565,
+            "range": "± 6645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 456648,
+            "range": "± 11379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 456533,
+            "range": "± 2681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 56541,
+            "range": "± 676",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 90148,
+            "range": "± 8522",
             "unit": "ns/iter"
           }
         ]
