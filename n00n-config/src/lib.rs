@@ -287,7 +287,7 @@ impl RawConfig {
         self.ui.merge(overlay.ui);
         self.agent.merge(&overlay.agent);
         self.provider.merge(overlay.provider);
-        self.search.merge(overlay.search);
+        self.search.merge(&overlay.search);
         self.storage.merge(&overlay.storage);
         for (name, plugin) in overlay.plugins {
             let entry = self.plugins.entry(name).or_default();
@@ -325,7 +325,7 @@ impl RawConfig {
             ui: UiConfig::from_file(self.ui),
             agent: AgentConfig::from_file(self.agent.clone(), no_rtk, disabled_tools),
             provider: ProviderConfig::from_file(self.provider),
-            search: SearchConfig::from_file(self.search),
+            search: SearchConfig::from_file(&self.search),
             storage: StorageConfig::from_file(&self.storage),
             permissions: PermissionsConfig::default(),
             plugins: PluginsConfig::from_plugins(&self.plugins),
@@ -623,7 +623,7 @@ pub struct SearchFileConfig {
 }
 
 impl SearchFileConfig {
-    fn merge(&mut self, overlay: Self) {
+    fn merge(&mut self, overlay: &Self) {
         merge_option!(self, overlay, enabled);
     }
 }
@@ -1396,7 +1396,7 @@ impl SearchConfig {
         self.enabled
     }
 
-    const fn from_file(file: SearchFileConfig) -> Self {
+    const fn from_file(file: &SearchFileConfig) -> Self {
         Self {
             enabled: matches!(file.enabled, Some(true)),
         }

@@ -22,7 +22,7 @@ pub(crate) fn create_search_table(
         lua.create_async_function(
             move |lua, (ctx, request): (mlua::UserDataRef<LuaCtx>, Value)| {
                 let permissions = permissions.clone();
-                let search_config = search_config.clone();
+                let search_config = Arc::clone(&search_config);
                 async move { extract(lua, ctx, permissions, search_config, request).await }
             },
         )?,

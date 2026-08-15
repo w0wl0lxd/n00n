@@ -23,6 +23,7 @@ pub use transport::{
     DEFAULT_MAX_REDIRECTS, FetchLimits, FetchResponse as FetchedContent, Fetcher, HttpTransport,
 };
 pub use types::{
-    ExtractFormat, ExtractRequest, ExtractionResult, MAX_SOURCE_BYTES, MAX_TOTAL_RENDERED_BYTES,
+    ExtractFormat, ExtractRequest, ExtractionResult, MAX_EXTRACT_URLS, MAX_SOURCE_BYTES,
+    MAX_TOTAL_RENDERED_BYTES,
 };
 pub use url_policy::UrlPolicy;
