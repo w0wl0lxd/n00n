@@ -59,7 +59,7 @@ async fn forward_provider_events(
 pub(crate) async fn stream_with_retry(
     ctx: StreamContext<'_>,
 ) -> Result<StreamResponse, AgentError> {
-    let opts = ctx.opts.clamped(ctx.model);
+    let opts = ctx.opts.clamped(ctx.model).with_idempotency_key();
     let messages = n00n_providers::adapt_images_for_model(ctx.model, ctx.messages);
     let messages = n00n_providers::adapt_files_for_model(ctx.model, &messages);
     let messages = &*messages;

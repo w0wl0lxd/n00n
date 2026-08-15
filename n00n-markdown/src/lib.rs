@@ -371,8 +371,8 @@ fn is_separator_row(line: &str) -> bool {
 
 fn parse_table_cells(line: &str) -> Vec<String> {
     let t = line.trim();
-    let inner = t.strip_prefix('|').map_or(t, |s| s);
-    let inner = inner.strip_suffix('|').map_or(inner, |s| s);
+    let inner = t.strip_prefix('|').unwrap_or_else(|| t);
+    let inner = inner.strip_suffix('|').unwrap_or_else(|| inner);
 
     let bytes = inner.as_bytes();
     let mut cells = Vec::new();
@@ -397,7 +397,7 @@ fn parse_table_cells(line: &str) -> Vec<String> {
             current = String::new();
             i += 1;
         } else {
-            let ch = inner[i..].chars().next().map_or('\0', |c| c);
+            let ch = inner[i..].chars().next().unwrap_or_else(|| '\0');
             current.push(ch);
             i += ch.len_utf8();
         }

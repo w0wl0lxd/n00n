@@ -165,6 +165,7 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
         pricing: Some(pricing),
         supports_thinking: Some(supports_thinking),
         supports_vision: Some(supports_vision),
+        supports_files: None,
         tier: None,
         is_free: None,
         is_promo: None,
@@ -238,7 +239,7 @@ impl Provider for OpenRouter {
             let extra_headers = [("HTTP-Referer", REFERER), ("X-OpenRouter-Title", APP_TITLE)];
             let response = self
                 .compat
-                .do_stream(model, &extra_headers, &body, event_tx, &auth)
+                .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
                 .await?;
 
             let hit = response.usage.cache_read > 0;

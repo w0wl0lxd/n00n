@@ -252,6 +252,30 @@ impl MessagesPanel {
         true
     }
 
+    pub fn fail_pending_compaction(&mut self, reason: &str) -> bool {
+        let Some(message_index) = self.messages.iter().rposition(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        }) else {
+            return false;
+        };
+        // A provider that streamed deltas before erroring has already filled these
+        // buffers; leaving them splices the failed summary into the agent's next
+        // response.
+        self.streaming_text.clear();
+        self.streaming_thinking.clear();
+        self.thinking_collapsed = false;
+        self.thinking_started = None;
+        self.messages[message_index] = DisplayMessage::new(
+            DisplayRole::Assistant,
+            format!("Auto-compaction failed: {reason}. Continuing without compacting."),
+        );
+        self.cache.invalidate_from_msg_count();
+        true
+    }
+
     pub fn load_messages(&mut self, mut msgs: Vec<DisplayMessage>) {
         if !self.show_thinking {
             for msg in &mut msgs {
@@ -547,7 +571,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(&inst_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
 
         if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
@@ -661,7 +685,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         if !seg.truncation.any() && !exp.any() {
             return false;
         }
@@ -935,7 +959,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(&tool_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         if !truncation.any() && !exp.any() {
             return false;
         }
@@ -1656,7 +1680,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         let rctx = self.rctx();
         let tl = Self::build_tool_segment_lines(msg, status, &rctx, exp);
 

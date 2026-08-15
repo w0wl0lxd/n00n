@@ -42,6 +42,7 @@ hk.local.pkl
 # Generated code-intelligence indexes
 /.codegraph/
 /.n00n/search/
+/.specify/workflows/runs/
 
 # Throwaway validation spikes
 /spikes/

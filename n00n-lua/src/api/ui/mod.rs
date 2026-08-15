@@ -1132,8 +1132,7 @@ mod tests {
                     && line
                         .get::<Table>(1)
                         .and_then(|s| s.get::<String>(2))
-                        .ok()
-                        .is_some_and(|s| s == STYLE_CODE_BAR))
+                        .is_ok_and(|s| s == STYLE_CODE_BAR))
                 .then_some(line)
             })
             .expect("code bar line");

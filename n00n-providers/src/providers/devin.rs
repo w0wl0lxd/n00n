@@ -332,7 +332,7 @@ fn encode_devin_tools(tools: &Value) -> Result<Vec<Vec<u8>>, AgentError> {
             .get("strict")
             .or_else(|| function.get("strict"))
             .and_then(Value::as_bool)
-            .map_or(false, std::convert::identity);
+            .unwrap_or_else(|| false);
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
             name: name.to_string(),
             description: description.map_or(String::new(), std::string::ToString::to_string),
@@ -1015,6 +1015,7 @@ impl Provider for Devin {
                     pricing: Some(e.pricing),
                     supports_thinking: None,
                     supports_vision: Some(e.vision),
+                    supports_files: None,
                     tier: Some(e.tier),
                     is_free: None,
                     is_promo: None,

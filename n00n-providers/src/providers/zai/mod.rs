@@ -111,6 +111,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 1.20,
@@ -127,6 +128,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -143,6 +145,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 1.00,
@@ -159,6 +162,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.00,
@@ -175,6 +179,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.60,
@@ -191,6 +196,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.00,
@@ -207,6 +213,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.20,
@@ -223,6 +230,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Glm,
             vision: false,
+            files: false,
             default: false,
             pricing: ModelPricing {
                 input: 0.60,
@@ -318,7 +326,7 @@ impl Provider for Zai {
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             match self
                 .compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
             {
                 Err(AgentError::Api { status, message })

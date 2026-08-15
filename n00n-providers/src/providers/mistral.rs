@@ -61,6 +61,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 1.5,
@@ -77,6 +78,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.15,
@@ -93,6 +95,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.20,
@@ -231,7 +234,7 @@ impl Provider for Mistral {
             }
             let response = self
                 .compat
-                .do_stream(model, &extra_headers, &body, event_tx, &auth)
+                .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
                 .await?;
 
             let hit = response.usage.cache_read > 0;
@@ -303,6 +306,7 @@ impl Provider for Mistral {
                         pricing: None,
                         supports_thinking,
                         supports_vision: Some(supports_vision),
+                        supports_files: None,
                         tier: None,
                         is_free: None,
                         is_promo: None,

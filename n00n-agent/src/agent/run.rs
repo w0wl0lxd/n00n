@@ -430,6 +430,8 @@ impl<'h> Agent<'h> {
             allow_history_replay: self.permissions.is_yolo(),
             safety_identifier: None,
             moderation: false,
+            idempotency_key: None,
+            idempotency_supported: false,
         };
 
         info!(
@@ -1101,6 +1103,9 @@ impl<'h> Agent<'h> {
                 error = %e,
                 "auto-compaction failed; continuing without compacting"
             );
+            self.event_tx.send(AgentEvent::AutoCompactFailed {
+                error: e.to_string(),
+            })?;
             return Ok(false);
         }
         Ok(true)

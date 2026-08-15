@@ -2458,7 +2458,7 @@ where
                             None
                         }
                     };
-                    let record_tag = tag.as_deref().map_or("?", |t| t);
+                    let record_tag = tag.as_deref().unwrap_or_else(|| "?");
                     warn!(
                         path = %path.display(),
                         error = %error,

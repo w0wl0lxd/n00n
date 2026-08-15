@@ -125,9 +125,7 @@ impl AgentHandles {
             warn!("MCP command dropped: no MCP command loop is running");
             return;
         };
-        if let Err(e) = h.send(cmd) {
-            warn!(error = %e, "MCP command loop is gone, server state unchanged");
-        }
+        h.send(cmd);
     }
 
     pub(crate) fn respawn(

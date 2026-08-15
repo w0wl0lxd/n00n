@@ -892,6 +892,7 @@ impl OpenAi {
         credential_hash: &str,
         stream_timeout: Duration,
         attempt_nonce: u64,
+        idempotency_key: Option<String>,
     ) -> Result<(Option<String>, StreamResponse), super::websocket::WebSocketAttemptError>
     where
         F: FnMut() -> Value,
@@ -1000,6 +1001,7 @@ impl OpenAi {
                     },
                     event_tx,
                     stream_timeout,
+                    idempotency_key.clone(),
                 )
                 .await;
             match &result {
@@ -1314,7 +1316,7 @@ impl OpenAi {
         let socket_credential_hash = credential_hash(auth);
         // Without server-side response storage, a WebSocket reconnection must be able to replay
         // full history instead of relying on a continuation chain.
-        let mut opts = opts;
+        let mut opts = opts.with_idempotency_key().with_idempotency_supported();
         opts.allow_history_replay = true;
         // The OpenAI Coding Plan endpoint rejects `prompt_cache_options`, so
         // disable message-cache breakpoints for Codex requests.
@@ -1471,6 +1473,9 @@ impl OpenAi {
                     &socket_credential_hash,
                     stream_timeout,
                     attempt_nonce,
+                    opts.idempotency_supported
+                        .then(|| opts.idempotency_key.clone())
+                        .flatten(),
                 )
                 .await;
             match websocket_result {
@@ -1602,6 +1607,7 @@ impl OpenAi {
                         event_tx,
                         &fallback_auth.resolved,
                         stream_timeout,
+                        &opts,
                     )
                     .await
                     {
@@ -1785,6 +1791,7 @@ impl OpenAi {
                 event_tx,
                 &auth,
                 self.compat.stream_timeout(),
+                &opts,
             )
             .await
         })
@@ -2171,7 +2178,7 @@ impl Provider for OpenAi {
             self.with_oauth_retry(|| async {
                 let auth = self.current_auth();
                 self.compat
-                    .do_stream(model, &[], &body, event_tx, &auth)
+                    .do_stream(model, &[], &body, event_tx, &auth, &opts)
                     .await
             })
             .await
@@ -3593,6 +3600,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap_err();
@@ -3863,6 +3871,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap_err();
@@ -3976,6 +3985,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4011,6 +4021,7 @@ mod tests {
                     TEST_CREDENTIAL_HASH,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4024,7 +4035,6 @@ mod tests {
 
     #[test]
     #[allow(clippy::large_futures)]
-    #[allow(clippy::result_large_err)]
     fn token_refresh_during_new_socket_handshake_reconnects_before_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4104,6 +4114,7 @@ mod tests {
                     &old_credential_hash,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4208,6 +4219,7 @@ mod tests {
                     &old_credential_hash,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4225,6 +4237,7 @@ mod tests {
                     &old_credential_hash,
                     Duration::from_secs(2),
                     0,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -4373,6 +4386,7 @@ mod tests {
                 TEST_CREDENTIAL_HASH,
                 TEST_STREAM_TIMEOUT,
                 0,
+                None,
             );
 
             let cancelled = futures_lite::future::race(

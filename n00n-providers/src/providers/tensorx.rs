@@ -162,7 +162,7 @@ impl Provider for TensorX {
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }
@@ -261,6 +261,7 @@ impl Provider for TensorX {
                                     pricing,
                                     supports_thinking,
                                     supports_vision: Some(supports_vision),
+                                    supports_files: None,
                                     tier: None,
                                     is_free: None,
                                     is_promo: None,

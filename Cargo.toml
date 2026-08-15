@@ -10,7 +10,6 @@ homepage = "https://github.com/w0wl0lxd/n00n"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "tui", "coding"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.97"
 
 [[bin]]
 name = "n00n"
@@ -65,6 +64,7 @@ members = [
   "n00n-config",
   "n00n-daemon",
   "n00n-docgen",
+  "n00n-git",
   "n00n-highlight",
   "n00n-interpreter",
   "n00n-lua",
@@ -73,6 +73,7 @@ members = [
   "n00n-redact",
   "n00n-search",
   "n00n-semble",
+  "n00n-smell",
   "n00n-storage",
   "n00n-config-macro",
   "n00n-lua-macro",
@@ -87,7 +88,6 @@ edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/w0wl0lxd/n00n"
-rust-version = "1.97"
 
 [workspace.dependencies]
 n00n-agent = { path = "n00n-agent" }
@@ -96,6 +96,7 @@ n00n-config = { path = "n00n-config" }
 n00n-interpreter = { path = "n00n-interpreter" }
 n00n-providers = { path = "n00n-providers" }
 n00n-redact = { path = "n00n-redact" }
+n00n-search = { path = "n00n-search" }
 n00n-storage = { path = "n00n-storage" }
 n00n-ui = { path = "n00n-ui" }
 n00n-lua = { path = "n00n-lua" }
@@ -103,8 +104,9 @@ n00n-config-macro = { path = "n00n-config-macro" }
 n00n-lua-macro = { path = "n00n-lua-macro" }
 n00n-highlight = { path = "n00n-highlight" }
 n00n-codegraph = { path = "n00n-codegraph" }
-n00n-search = { path = "n00n-search" }
+n00n-git = { path = "n00n-git" }
 n00n-semble = { path = "n00n-semble" }
+n00n-smell = { path = "n00n-smell" }
 n00n-markdown = { path = "n00n-markdown" }
 n00n-daemon = { path = "n00n-daemon" }
 n00n-token-profile = { path = "n00n-token-profile" }
@@ -144,6 +146,7 @@ ignore = "0.4"
 memchr = "2"
 strum = { version = "0.27", features = ["derive"] }
 htmd = "0.5"
+url = "2.5.8"
 tempfile = "3"
 prost = "0.14"
 
@@ -209,6 +212,8 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "http2",
   "stream",
+  "blocking",
+  "json",
 ] }
 process_alive = "0.2.0"
 isahc = { version = "1.7", default-features = false, features = [
@@ -294,11 +299,18 @@ rusqlite = { version = "0.40.1", default-features = false, features = [
   "bundled",
   "modern_sqlite",
 ] }
+gix = { version = "0.84", default-features = false, features = [
+  "sha1",
+  "revision",
+  "status",
+  "blob-diff",
+  "blame",
+] }
 tantivy = "0.26.1"
 fs2 = "0.4.3"
 inventory = "0.3"
-url = "2"
 quanta = { version = "0.12.6", default-features = false }
+walkdir = "2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -316,11 +328,14 @@ clone_on_ref_ptr = "deny"
 redundant_clone = "deny"
 manual_assert = "deny"
 disallowed_methods = "deny"
-# These style lints suggest `unwrap_or`/`unwrap_or_default`, which are
-# disallowed above; allowing them avoids clippy auto-fix introducing banned methods.
+# These style lints suggest `unwrap_or`/`unwrap_or_default`/`assert_eq!`,
+# which the workspace bans or does not use at scale; allowing them avoids
+# clippy auto-fix introducing banned methods or mass-rewriting test asserts.
 unnecessary_lazy_evaluations = "allow"
 unnecessary_map_or = "allow"
 unwrap_or_default = "allow"
+assert_is_empty = "allow"
+result_large_err = "allow"
 
 [profile.bench]
 debug = true

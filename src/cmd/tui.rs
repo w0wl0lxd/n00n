@@ -219,6 +219,9 @@ fn build_stack(
         fallback_config,
         &mut warnings,
     )?;
+    plugin_host
+        .set_search_config(Arc::new(config.search.clone()))
+        .context("configure lua search services")?;
     if let Err(e) = plugin_host.load_builtins(&config.plugins) {
         let e = color_eyre::eyre::Report::from(e).wrap_err("load builtin plugins");
         if reloading {
@@ -539,7 +542,7 @@ fn handle_reload(
     *warnings = new_warnings;
     let focused = f.min(tabs.len() - 1);
     tracing::info!(
-        elapsed_ms = u64::try_from(started.elapsed().as_millis()).map_or(u64::MAX, |ms| ms),
+        elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX),
         tabs = tabs.len(),
         "reload: rebuilt plugins and config"
     );

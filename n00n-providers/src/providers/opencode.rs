@@ -261,6 +261,7 @@ impl ProviderData {
                     }),
                     supports_thinking: None,
                     supports_vision: None,
+                    supports_files: None,
                     tier: None,
                     is_free: None,
                     is_promo: None,
@@ -529,7 +530,7 @@ impl Opencode {
         );
         super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
         self.chat_compat
-            .do_stream(model, &[], &body, event_tx, auth)
+            .do_stream(model, &[], &body, event_tx, auth, opts)
             .await
     }
 

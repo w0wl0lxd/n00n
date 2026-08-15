@@ -73,6 +73,7 @@ a string belongs.
 | [`n00n.keymap`](#n00n-keymap) | Key mappings, modeled after `vim.keymap`. |
 | [`n00n.log`](#n00n-log) | Structured logging for plugins. |
 | [`n00n.net`](#n00n-net) | HTTP client for fetching web content. |
+| [`n00n.search`](#n00n-search) | Native, keyless extraction of bounded public web content. |
 | [`n00n.session`](#n00n-session) | Host session primitives. |
 | [`n00n.text`](#n00n-text) | Text transformation utilities. |
 | [`n00n.treesitter`](#n00n-treesitter) | Tree-sitter parsing and query API. |
@@ -87,7 +88,9 @@ a string belongs.
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
+| [`n00n.github`](#n00n-github) | GitHub REST API client using reqwest. |
 | [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
+| [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -221,6 +224,9 @@ discarded.
   - `permission_scopes` (`string|function`) Field name in schema (string) or `function(input)` returning a list of path scopes that need write permission.
   - `mutable_path` (`string`) Schema field name (type: string) for the primary path the tool writes.
   - `start_annotation` (`string|table`) Schema field used to annotate the start header with a count (string) or timeout (`{ field, kind="timeout" }`).
+  - `deadline_grace` (`boolean`) Optional. When true, dispatch even if the shared agent deadline
+    is already exhausted, granting a brief grace window so the
+    handler can settle its own state gracefully. Default: false.
 
 **Example:**
 
@@ -2668,6 +2674,38 @@ if err then
 else
   print(res.status, res.body)
 end
+```
+
+
+## n00n.search {#n00n-search}
+
+Native, keyless extraction of bounded public web content.
+
+---
+
+### `n00n.search.extract()` {#n00n-search-extract}
+
+```lua
+n00n.search.extract(ctx, request)
+```
+
+Extract public URLs with manual redirect validation, DNS pinning, byte limits, and tool cancellation. Requires [search].enabled = true and the plugin's net permission.
+
+**Parameters:**
+
+- `ctx` (`LuaCtx`) Current tool context; cancellation stops the operation.
+- `request` (`table`) Extraction request. Fields: urls (array of 1 to 20 public http(s) URLs), format ("markdown", "text", or "html"), max_bytes_per_source (1 to 10485760 bytes).
+
+**Returns:** (`table|nil`, `string|nil`) Extraction response or an error.
+
+**Example:**
+
+```lua
+local result, err = n00n.search.extract(ctx, {
+  urls = { "https://example.com/doc" },
+  format = "markdown",
+  max_bytes_per_source = 262144,
+})
 ```
 
 
@@ -5184,6 +5222,165 @@ Show project file structure from the index using native SQLite when available, o
 **Returns:** (`string?`, `string?`) output and optional error message.
 
 
+## n00n.github {#n00n-github}
+
+GitHub REST API client using reqwest. Provides structured access to GitHub issues, pull requests, and repository metadata. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
+
+---
+
+### `n00n.github.list_issues()` {#n00n-github-list_issues}
+
+```lua
+n00n.github.list_issues({owner}, {repo}[, {token}])
+```
+
+List issues in a GitHub repository.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Array of issue objects with number, title, state, user, body, and html_url.
+
+---
+
+### `n00n.github.create_issue()` {#n00n-github-create_issue}
+
+```lua
+n00n.github.create_issue({owner}, {repo}, {title}[, {body}[, {token}]])
+```
+
+Create a new issue in a GitHub repository. Requires authentication.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{title}` (`string`) Issue title.
+- `{body}` (`string?`) Issue body (markdown). Optional.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Created issue object with number, title, state, user, body, and html_url.
+
+---
+
+### `n00n.github.list_prs()` {#n00n-github-list_prs}
+
+```lua
+n00n.github.list_prs({owner}, {repo}[, {token}])
+```
+
+List pull requests in a GitHub repository.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Array of pull request objects with number, title, state, user, head, base, body, and html_url.
+
+---
+
+### `n00n.github.get_repo()` {#n00n-github-get_repo}
+
+```lua
+n00n.github.get_repo({owner}, {repo}[, {token}])
+```
+
+Get repository metadata from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Repository object with name, full_name, description, language, stargazers_count, forks_count, and html_url.
+
+---
+
+### `n00n.github.get_issue()` {#n00n-github-get_issue}
+
+```lua
+n00n.github.get_issue({owner}, {repo}, {issue_number}[, {token}])
+```
+
+Get a single issue from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{issue_number}` (`integer`) Issue number.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Issue object with number, title, state, user, body, and html_url.
+
+---
+
+### `n00n.github.get_pr()` {#n00n-github-get_pr}
+
+```lua
+n00n.github.get_pr({owner}, {repo}, {pr_number}[, {token}])
+```
+
+Get a single pull request from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{pr_number}` (`integer`) Pull request number.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Pull request object with number, title, state, user, head, base, body, and html_url.
+
+---
+
+### `n00n.github.create_pr()` {#n00n-github-create_pr}
+
+```lua
+n00n.github.create_pr({owner}, {repo}, {head}, {base}, {title}[, {body}[, {token}]])
+```
+
+Create a new pull request in a GitHub repository. Requires authentication.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{head}` (`string`) The name of the branch where your changes are implemented.
+- `{base}` (`string`) The name of the branch you want the changes pulled into.
+- `{title}` (`string`) Pull request title.
+- `{body}` (`string?`) Pull request body (markdown). Optional.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Created pull request object with number, title, state, and html_url.
+
+---
+
+### `n00n.github.add_comment()` {#n00n-github-add_comment}
+
+```lua
+n00n.github.add_comment({owner}, {repo}, {issue_number}, {body}[, {token}])
+```
+
+Add a comment to an issue or pull request. Requires authentication.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{issue_number}` (`integer`) Issue or pull request number.
+- `{body}` (`string`) Comment body (markdown).
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Created comment object with id and html_url.
+
+
 ## n00n.semblem {#n00n-semblem}
 
 BM25 code search and related-chunk lookup via the native `.n00n/search/` index.
@@ -5258,6 +5455,62 @@ Estimate token savings from using a hybrid/semantic embedder. Requires the sembl
 - `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
 
 **Returns:** (`string?`, `string?`) savings summary and optional error message.
+
+
+## n00n.smell {#n00n-smell}
+
+Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.
+
+---
+
+### `n00n.smell.has_index()` {#n00n-smell-has_index}
+
+```lua
+n00n.smell.has_index({project})
+```
+
+Returns true when `.n00n/smells/metadata.json` exists in the project root.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when a smell index is present.
+
+---
+
+### `n00n.smell.index()` {#n00n-smell-index}
+
+```lua
+n00n.smell.index({project})
+```
+
+Build or rebuild the smell index for a repository by invoking n00n-smell.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`, `string|nil`) true on success, or false and the error message.
+
+---
+
+### `n00n.smell.search()` {#n00n-smell-search}
+
+```lua
+n00n.smell.search({project}, {query}, {kind?}, {top_k?})
+```
+
+Search the smell index by keyword and optional kind.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{query}` (`string`) Keyword or phrase.
+- `{kind}` (`string`) Optional kind filter: todo, fixme, hack, placeholder.
+- `{top_k}` (`integer`) Maximum number of results (default 5).
+
+**Returns:** (`string|nil`, `string|nil`) Ranked smell output, or nil and the error message.
 
 
 ## n00n.workflow {#n00n-workflow}
@@ -5458,6 +5711,9 @@ M.EMPTY_OLD_STRING = "old_string must not be empty"
 -- whitespace and indentation drift. Returns the new content, or nil plus
 -- one of the error constants above.
 function M.replace(content, old_string, new_string, replace_all)
+
+-- Expose unescape for validation in edit tools
+M.unescape = unescape
 ```
 
 ### `require("n00n.guard")`
@@ -5559,6 +5815,28 @@ function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 -- @param prompt string Subtask description.
 -- @return "weak" | "medium" | "strong"
 function M.route_tier(prompt)
+```
+
+### `require("n00n.secret_check")`
+
+```lua
+-- Heuristic secret/PII pattern detection for tool content validation.
+--
+-- Example:
+--
+--     local secret_check = require("n00n.secret_check")
+--     local reason = secret_check.reason("api_key=sk_test_abcdefghijklmnopqrstuvwxyz")
+--     if reason then error(reason) end
+--
+-- This is intentionally conservative: it flags common secret-bearing keywords and
+-- patterns so tools can surface a warning or require a justification. It does not
+-- attempt to be exhaustive, and it may false-positive on example keys in docs.
+
+-- Returns (ok, reason). If ok is false, reason explains what triggered.
+function M.check(text)
+
+-- Convenience: returns a warning string if triggered, nil otherwise.
+function M.reason(text)
 ```
 
 ### `require("n00n.shorten_path")`
