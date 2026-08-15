@@ -32,8 +32,6 @@ use n00n_providers::{ContentBlock, Message};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
-use n00n_redact::demoted;
-
 use crate::tools::schema::{sanitize_tool_input_schema, truncate_on_word_boundary};
 
 use self::config::{
@@ -540,18 +538,9 @@ impl McpSession {
 }
 
 impl McpHandle {
-    /// Send an MCP command.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the command channel is full or disconnected.
-    pub fn send(&self, cmd: McpCommand) -> Result<(), flume::TrySendError<McpCommand>> {
-        self.cmd_tx.try_send(cmd)
-    }
-
-    pub fn send_shutdown(&self, cmd: McpCommand) {
+    pub fn send(&self, cmd: McpCommand) {
         if let Err(e) = self.cmd_tx.try_send(cmd) {
-            warn!(error = %e, "MCP command loop is gone during shutdown");
+            warn!(error = %e, "MCP command loop is gone");
         }
     }
 
@@ -623,7 +612,7 @@ impl McpHandle {
 
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = flume::bounded(1);
-        self.send_shutdown(McpCommand::Shutdown { ack: ack_tx });
+        self.send(McpCommand::Shutdown { ack: ack_tx });
         let finished = futures_lite::future::or(
             async {
                 let _ = ack_rx.recv_async().await;
@@ -651,9 +640,10 @@ pub async fn start(cwd: &Path, max_desc_chars: usize) -> (Option<McpHandle>, Mcp
 
 pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Option<McpHandle> {
     if config.is_empty() {
-        demoted!("no MCP servers configured, skipping");
+        tracing::info!("no MCP servers configured, skipping");
         return None;
     }
+
     let defer_tools = config.defer_tools.unwrap_or_else(|| DEFAULT_DEFER_TOOLS);
     let mut inner = parse_entries(config);
     inner.max_desc_chars = max_desc_chars;
@@ -820,9 +810,10 @@ async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
         );
         return;
     }
-    match refresh_server(inner, server_name).await {
-        Ok(()) => demoted!(server = server_name, "MCP reconnect complete"),
-        Err(e) => warn!(server = %server_name, error = %e, "reconnect failed"),
+    if let Err(e) = refresh_server(inner, server_name).await {
+        warn!(server = %server_name, error = %e, "reconnect failed");
+    } else {
+        info!(server = server_name, "MCP reconnect complete");
     }
 }
 
@@ -848,7 +839,7 @@ async fn shutdown_all(inner: &mut McpManagerInner) {
     for task in tasks {
         task.await;
     }
-    demoted!("MCP command loop shutting down");
+    info!("MCP command loop shutting down");
 }
 
 /// Tear the old transport down and wipe tools/prompts *before* starting the new one. That way
@@ -964,10 +955,6 @@ fn parse_entries(config: McpConfig) -> McpManagerInner {
         let (config, status) = match parse_server(name.clone(), raw) {
             Ok(sc) if disabled => (Some(sc), McpServerStatus::Disabled),
             Ok(sc) => (Some(sc), McpServerStatus::Connecting),
-            Err(McpError::BuiltInConflict { server }) => {
-                debug!(server = %server, "MCP server conflicts with built-in tool; disabling");
-                (None, McpServerStatus::Disabled)
-            }
             Err(e) => {
                 warn!(server = %name, error = %e, "invalid MCP server config");
                 (None, McpServerStatus::Failed(e.to_string()))
@@ -1055,6 +1042,7 @@ fn publish(
             && entry.status != McpServerStatus::Disabled
         {
             let always_load = entry.config.as_ref().is_some_and(|c| c.always_load);
+            let mut truncated_tools = 0usize;
             for t in &entry.tools {
                 tools.insert(
                     Arc::clone(&t.qualified_name),
@@ -1067,15 +1055,8 @@ fn publish(
 
                 let description_chars = t.description.chars().count();
                 let description = if description_chars > max_desc_chars {
-                    let truncated = truncate_on_word_boundary(&t.description, max_desc_chars);
-                    warn!(
-                        tool = %t.qualified_name,
-                        original_len = description_chars,
-                        truncated_len = truncated.chars().count(),
-                        max_len = max_desc_chars,
-                        "truncated MCP tool description"
-                    );
-                    truncated
+                    truncated_tools += 1;
+                    truncate_on_word_boundary(&t.description, max_desc_chars)
                 } else {
                     t.description.clone()
                 };
@@ -1091,6 +1072,14 @@ fn publish(
                         "input_schema": input_schema,
                     }),
                 });
+            }
+            if truncated_tools > 0 {
+                debug!(
+                    server = %entry.name,
+                    truncated_tools,
+                    max_len = max_desc_chars,
+                    "truncated MCP tool descriptions"
+                );
             }
             for p in &entry.prompts {
                 prompts.insert(
@@ -1592,6 +1581,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_entries_loads_server_named_after_a_builtin_tool() {
+        let config = make_config(vec![("codegraph", stdio_raw(&["codegraph-mcp"]))]);
+        let inner = parse_entries(config);
+        assert_eq!(inner.entries.len(), 1);
+        assert_eq!(inner.entries[0].name, "codegraph");
+        assert_eq!(inner.entries[0].status, McpServerStatus::Connecting);
+        assert!(
+            inner.entries[0].config.is_some(),
+            "a server name matching a built-in tool must still load: wire tool \
+             names are namespaced as server__tool and never collide"
+        );
+    }
+
+    #[test]
     fn parse_entries_sorts_servers_by_name() {
         let config = make_config(vec![
             ("zeta", stdio_raw(&["z"])),
@@ -2022,7 +2025,7 @@ mod tests {
                 handle,
             } = prepare_manager(config).unwrap();
             let (ack_tx, ack_rx) = flume::bounded(1);
-            handle.send_shutdown(McpCommand::Shutdown { ack: ack_tx });
+            handle.send(McpCommand::Shutdown { ack: ack_tx });
 
             assert!(!initialize_deferred(&mut inner, &index, &snapshot, &cmd_rx).await);
             assert_eq!(ack_rx.recv_async().await, Ok(()));
@@ -2269,6 +2272,36 @@ mod tests {
         let desc = descriptors[0].definition["description"].as_str().unwrap();
         assert!(desc.len() <= 103);
         assert!(desc.ends_with("..."));
+    }
+
+    #[test]
+    fn publish_truncates_every_long_description_in_a_server() {
+        let t = FakeTransport::new();
+        let mut entry = fake_entry("srv", Arc::clone(&t) as _);
+        entry.tools[0].description = "a".repeat(500);
+        entry.tools.push(McpToolDef {
+            qualified_name: intern(format!("srv{SEPARATOR}second")),
+            raw_name: "second".into(),
+            description: "b".repeat(500),
+            input_schema: json!({}),
+            read_only: false,
+        });
+        let inner = McpManagerInner {
+            entries: vec![entry],
+            generation: 0,
+            max_desc_chars: 100,
+        };
+        let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
+        let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
+        publish(&inner, &index, &snapshot, 100);
+
+        let descriptors = &index.load().descriptors;
+        assert_eq!(descriptors.len(), 2);
+        for descriptor in descriptors.iter() {
+            let desc = descriptor.definition["description"].as_str().unwrap();
+            assert!(desc.len() <= 103, "tool: {}", descriptor.qualified_name);
+            assert!(desc.ends_with("..."), "tool: {}", descriptor.qualified_name);
+        }
     }
 
     #[test]

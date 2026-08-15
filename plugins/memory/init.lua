@@ -46,6 +46,16 @@ local function filter_entries(entries, tag_filter)
   return filtered
 end
 
+local function check_dir_capacity(dir, existing_size, payload)
+  local projected = helpers.dir_total_bytes(dir) - existing_size + #payload
+  if projected <= helpers.MAX_DIR_BYTES then
+    return true
+  end
+  local hint = helpers.format_largest_entries(dir, helpers.LARGEST_ENTRIES_HINT)
+  return nil,
+    "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit;" .. hint .. " delete stale entries first"
+end
+
 local function clamp_limit(limit)
   if type(limit) ~= "number" then
     return helpers.DEFAULT_SEARCH_LIMIT
@@ -178,8 +188,9 @@ local function cmd_write(path, content, metadata, dir, ctx, input)
   if lc > helpers.MAX_LINES_PER_FILE then
     return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
   end
-  if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
-    return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
+  local capacity_ok, capacity_err = check_dir_capacity(dir, existing_size, payload)
+  if not capacity_ok then
+    return nil, capacity_err
   end
   n00n.fs.mkdir(dir, { parents = true })
   local ok, write_err = n00n.fs.write(file_path, payload)
@@ -221,8 +232,9 @@ local function cmd_append(path, content, dir, ctx)
     return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
   end
   local existing_size = meta and meta.size or 0
-  if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
-    return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
+  local capacity_ok, capacity_err = check_dir_capacity(dir, existing_size, payload)
+  if not capacity_ok then
+    return nil, capacity_err
   end
   n00n.fs.mkdir(dir, { parents = true })
   local ok, write_err = n00n.fs.write(file_path, payload)
