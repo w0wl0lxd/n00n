@@ -351,9 +351,9 @@ impl InputBox {
             let cursor_col: usize = line
                 .chars()
                 .take(self.buffer.x())
-                .map(|c| c.width().map_or(1, |w| w))
+                .map(|c| c.width().unwrap_or_else(|| 1))
                 .sum();
-            cast::usize_to_u16(cursor_col.checked_div(ew).map_or(0, |v| v))
+            cast::usize_to_u16(cursor_col.checked_div(ew).unwrap_or_else(|| 0))
         };
 
         lines_above + wrap_row

@@ -539,7 +539,7 @@ fn handle_reload(
     *warnings = new_warnings;
     let focused = f.min(tabs.len() - 1);
     tracing::info!(
-        elapsed_ms = u64::try_from(started.elapsed().as_millis()).map_or(u64::MAX, |ms| ms),
+        elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX),
         tabs = tabs.len(),
         "reload: rebuilt plugins and config"
     );

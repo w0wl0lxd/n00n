@@ -558,7 +558,7 @@ fn wrap_spans(spans: Vec<Span>, max_width: usize) -> Vec<Vec<Span>> {
                 }
                 result.push(mem::take(&mut current));
                 remaining = max_width;
-                text = text.strip_prefix(' ').map_or(text, |s| s);
+                text = text.strip_prefix(' ').unwrap_or_else(|| text);
                 continue;
             }
             let (take, skip) = if fits < text.len() {

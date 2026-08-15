@@ -434,7 +434,7 @@ impl SpawnCtx {
         let identity = session_identity(&session)
             .map_err(|error| eyre!("invalid session identity: {error}"))?;
         if let Some(handle) = &self.lua_event_handle {
-            let root_id = session.meta.root_session_id.map_or(session.id, |root| root);
+            let root_id = session.meta.root_session_id.unwrap_or_else(|| session.id);
             if !self.hydrated_roots.borrow().contains(&root_id) {
                 let root_snapshot = if root_id == session.id {
                     session.meta.state_snapshot.clone()

@@ -495,7 +495,7 @@ fn render_search(frame: &mut Frame, area: Rect, s: &Session) {
     let cursor_byte = TextBuffer::char_to_byte(&query, s.search.x());
     let (before, rest) = query.split_at(cursor_byte);
     let mut chars = rest.chars();
-    let cursor_char = chars.next().map_or(' ', |c| c);
+    let cursor_char = chars.next().unwrap_or_else(|| ' ');
     let after = chars.as_str();
 
     let mut spans = vec![super::chevron_span()];
@@ -532,7 +532,7 @@ fn build_highlighted_line<'a>(
     let mut width = 0usize;
 
     for (i, ch) in text.chars().enumerate() {
-        let cw = ch.width().map_or(0, |w| w);
+        let cw = ch.width().unwrap_or_else(|| 0);
         if width + cw > max_width {
             break;
         }

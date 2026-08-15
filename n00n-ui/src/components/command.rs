@@ -478,12 +478,12 @@ impl CommandPalette {
             .iter()
             .map(|item| self.item_name(item).len())
             .max()
-            .map_or(0, |v| v);
+            .unwrap_or_else(|| 0);
         let max_desc = filtered
             .iter()
             .map(|item| self.item_description(item).len())
             .max()
-            .map_or(0, |v| v);
+            .unwrap_or_else(|| 0);
         let popup_width = cast::usize_to_u16(PAD + max_name + GAP + max_desc + PAD);
 
         let popup = Rect {

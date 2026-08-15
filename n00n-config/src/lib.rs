@@ -446,7 +446,7 @@ impl CompactionBuffer {
         match self {
             Self::Tokens(n) => n,
             Self::Percent(p) => u32::try_from(u64::from(context_window) * u64::from(p) / 100)
-                .map_or(u32::MAX, |v| v),
+                .unwrap_or_else(|_| u32::MAX),
         }
     }
 }
@@ -973,7 +973,9 @@ impl UiConfig {
             splash_animation: f.splash_animation.is_none_or(|v| v),
             mascot: f.mascot.is_none_or(|v| v),
             scrollbar: f.scrollbar.is_none_or(|v| v),
-            flash_duration_ms: f.flash_duration_ms.map_or(DEFAULT_FLASH_DURATION_MS, |v| v),
+            flash_duration_ms: f
+                .flash_duration_ms
+                .unwrap_or_else(|| DEFAULT_FLASH_DURATION_MS),
             typewriter_ms_per_char: f
                 .typewriter_ms_per_char
                 .unwrap_or_else(|| DEFAULT_TYPEWRITER_MS_PER_CHAR),
@@ -1049,17 +1051,17 @@ impl ToolOutputLines {
         let d = Self::DEFAULT;
         let f = f.unwrap_or_else(ToolOutputLinesFile::default);
         Self {
-            bash: f.bash.map_or(d.bash, |v| v),
-            code_execution: f.code_execution.map_or(d.code_execution, |v| v),
-            task: f.task.map_or(d.task, |v| v),
-            workflow: f.workflow.map_or(d.workflow, |v| v),
-            index: f.index.map_or(d.index, |v| v),
-            grep: f.grep.map_or(d.grep, |v| v),
-            explore: f.explore.map_or(d.explore, |v| v),
-            read: f.read.map_or(d.read, |v| v),
-            write: f.write.map_or(d.write, |v| v),
-            web: f.web.map_or(d.web, |v| v),
-            other: f.other.map_or(d.other, |v| v),
+            bash: f.bash.unwrap_or_else(|| d.bash),
+            code_execution: f.code_execution.unwrap_or_else(|| d.code_execution),
+            task: f.task.unwrap_or_else(|| d.task),
+            workflow: f.workflow.unwrap_or_else(|| d.workflow),
+            index: f.index.unwrap_or_else(|| d.index),
+            grep: f.grep.unwrap_or_else(|| d.grep),
+            explore: f.explore.unwrap_or_else(|| d.explore),
+            read: f.read.unwrap_or_else(|| d.read),
+            write: f.write.unwrap_or_else(|| d.write),
+            web: f.web.unwrap_or_else(|| d.web),
+            other: f.other.unwrap_or_else(|| d.other),
         }
     }
 
@@ -1229,7 +1231,7 @@ impl AgentConfig {
 
         let fusion = if let Some(ff) = file.fusion {
             FusionConfig {
-                enabled: ff.enabled.map_or(false, |enabled| enabled),
+                enabled: ff.enabled.unwrap_or_else(|| false),
                 lead_model: ff
                     .lead_model
                     .unwrap_or_else(|| DEFAULT_FUSION_LEAD_MODEL.to_owned()),
@@ -1241,7 +1243,7 @@ impl AgentConfig {
                     .unwrap_or_else(|| DEFAULT_FUSION_SIDEKICK_THINKING.to_owned()),
                 sidekick_tier: ff
                     .sidekick_tier
-                    .map_or(crate::providers::Tier::Weak, |tier| tier),
+                    .unwrap_or_else(|| crate::providers::Tier::Weak),
             }
         } else {
             FusionConfig::default()
@@ -1251,10 +1253,10 @@ impl AgentConfig {
             no_rtk,
             max_output_bytes: file
                 .max_output_bytes
-                .map_or(DEFAULT_MAX_OUTPUT_BYTES, |v| v),
+                .unwrap_or_else(|| DEFAULT_MAX_OUTPUT_BYTES),
             max_output_lines: file
                 .max_output_lines
-                .map_or(DEFAULT_MAX_OUTPUT_LINES, |v| v),
+                .unwrap_or_else(|| DEFAULT_MAX_OUTPUT_LINES),
             max_continuation_turns: file
                 .max_continuation_turns
                 .unwrap_or_else(|| DEFAULT_MAX_CONTINUATION_TURNS),
@@ -1340,19 +1342,19 @@ impl ProviderConfig {
             default_model: f.default_model,
             connect_timeout: Duration::from_secs(
                 f.connect_timeout_secs
-                    .map_or(DEFAULT_CONNECT_TIMEOUT_SECS, |v| v),
+                    .unwrap_or_else(|| DEFAULT_CONNECT_TIMEOUT_SECS),
             ),
             low_speed_timeout: Duration::from_secs(
                 f.low_speed_timeout_secs
-                    .map_or(DEFAULT_LOW_SPEED_TIMEOUT_SECS, |v| v),
+                    .unwrap_or_else(|| DEFAULT_LOW_SPEED_TIMEOUT_SECS),
             ),
             stream_timeout: Duration::from_secs(
                 f.stream_timeout_secs
-                    .map_or(DEFAULT_STREAM_TIMEOUT_SECS, |v| v),
+                    .unwrap_or_else(|| DEFAULT_STREAM_TIMEOUT_SECS),
             ),
             openai_coding_plan_slots: f
                 .openai_coding_plan_slots
-                .map_or(DEFAULT_OPENAI_CODING_PLAN_SLOTS, |slots| slots),
+                .unwrap_or_else(|| DEFAULT_OPENAI_CODING_PLAN_SLOTS),
         }
     }
 
@@ -1399,11 +1401,15 @@ impl Default for StorageConfig {
 impl StorageConfig {
     fn from_file(f: &StorageFileConfig) -> Self {
         Self {
-            max_log_bytes: f.max_log_bytes_mb.map_or(DEFAULT_MAX_LOG_BYTES_MB, |v| v) * 1024 * 1024,
-            max_log_files: f.max_log_files.map_or(DEFAULT_MAX_LOG_FILES, |v| v),
+            max_log_bytes: f
+                .max_log_bytes_mb
+                .unwrap_or_else(|| DEFAULT_MAX_LOG_BYTES_MB)
+                * 1024
+                * 1024,
+            max_log_files: f.max_log_files.unwrap_or_else(|| DEFAULT_MAX_LOG_FILES),
             input_history_size: f
                 .input_history_size
-                .map_or(DEFAULT_INPUT_HISTORY_SIZE, |v| v),
+                .unwrap_or_else(|| DEFAULT_INPUT_HISTORY_SIZE),
         }
     }
 }
@@ -1718,7 +1724,7 @@ fn build_permissions(
     global: &PermissionsFileConfig,
     project: &PermissionsFileConfig,
 ) -> PermissionsConfig {
-    let global_default = global.default.map_or(DefaultEffect::Prompt, |v| v);
+    let global_default = global.default.unwrap_or_else(|| DefaultEffect::Prompt);
     let default = if let Some(d) = project.default
         && d != DefaultEffect::Allow
     {

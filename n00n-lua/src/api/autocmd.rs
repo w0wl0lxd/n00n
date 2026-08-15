@@ -151,7 +151,7 @@ fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
 fn create_autocmd(lua: &Lua, #[ctx] plugin: Arc<str>, event: Value, opts: Table) -> LuaResult<u64> {
     let events = parse_string_or_seq(event, "event")?;
     let callback: Function = opts.get("callback")?;
-    let once: bool = opts.get("once").map_or(false, |v| v);
+    let once: bool = opts.get("once").unwrap_or_else(|_| false);
     let patterns = match opts.get::<Value>("pattern")? {
         Value::Nil => None,
         v => Some(parse_string_or_seq(v, "pattern")?),
