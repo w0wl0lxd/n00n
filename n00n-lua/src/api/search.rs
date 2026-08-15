@@ -88,11 +88,15 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             ParamDoc {
                 name: "request",
                 ty: "table",
-                desc: "Extraction request containing urls, format, and max_bytes_per_source.",
+                desc: "Extraction request. Fields: urls (array of 1 to 20 public http(s) URLs), format (\"markdown\", \"text\", or \"html\"), max_bytes_per_source (1 to 10485760 bytes).",
             },
         ],
         returns: "(table|nil, string|nil) Extraction response or an error.",
-        example: "local result, err = n00n.search.extract(ctx, request)",
+        example: r#"local result, err = n00n.search.extract(ctx, {
+  urls = { "https://example.com/doc" },
+  format = "markdown",
+  max_bytes_per_source = 262144,
+})"#,
     }],
 };
 
