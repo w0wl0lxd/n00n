@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786776260807,
+  "lastUpdate": 1786794926834,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -19647,6 +19647,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 90148,
             "range": "± 8522",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "91d31c35e4038ee91b325a45c850595b04eb1dac",
+          "message": "Merge pull request #381 from w0wl0lxd/fix/opencode-provider\n\nfeat(providers): add the OpenCode Go provider",
+          "timestamp": "2026-08-15T07:42:49-04:00",
+          "tree_id": "99d6207f43cbca82ad2d7e0a81d972372cea05db",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/91d31c35e4038ee91b325a45c850595b04eb1dac"
+        },
+        "date": 1786794925611,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7240155,
+            "range": "± 26826",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1485915,
+            "range": "± 43471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1485490,
+            "range": "± 70486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8108867,
+            "range": "± 24790",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2868160,
+            "range": "± 160539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2866894,
+            "range": "± 14568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 734877,
+            "range": "± 2300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 80844,
+            "range": "± 733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 80677,
+            "range": "± 3802",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1087297,
+            "range": "± 3334",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 457538,
+            "range": "± 11693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 457317,
+            "range": "± 1570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 49723,
+            "range": "± 5163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 125363,
+            "range": "± 7943",
             "unit": "ns/iter"
           }
         ]
