@@ -17,6 +17,7 @@ use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
 use n00n_agent::{
     AgentEvent, BufferSnapshot, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
+use n00n_config::canonical_tool_name;
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
 use n00n_providers::{CacheHealth, ContentBlock, Message, Role, TokenUsage};
 use n00n_storage::sessions::TranscriptEntry;
@@ -140,7 +141,7 @@ impl Chat {
             }
             AgentEvent::ToolDone(e) => {
                 let plan_write = plan_path.filter(|pp| e.wrote_to(pp));
-                let is_full_write = &*e.tool == WRITE_TOOL_NAME;
+                let is_full_write = canonical_tool_name(&e.tool) == WRITE_TOOL_NAME;
                 self.messages_panel.tool_done(*e);
                 if let Some(pp) = plan_write {
                     let content = if is_full_write {

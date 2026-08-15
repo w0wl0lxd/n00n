@@ -21,7 +21,8 @@ local function build_view(content, path, ctx)
 end
 
 n00n.api.register_tool({
-  name = "write",
+  name = "write_file",
+  aliases = { "write" },
   kind = "edit",
   mutable_path = "path",
   permission_scopes = "path",

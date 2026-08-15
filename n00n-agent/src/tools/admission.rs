@@ -6,13 +6,21 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use n00n_config::canonical_tool_name;
+
 use crate::cancel::CancelToken;
 
 pub const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 8;
 pub const DEFAULT_MAX_CONCURRENT_CHEAP_TOOLS: usize = 32;
 pub const DEFAULT_MAX_CONCURRENT_AGENT_TOOLS: usize = 4;
 
-const ORCHESTRATOR_TOOLS: &[&str] = &["agent_control", "batch", "task", "team", "workflow"];
+const ORCHESTRATOR_TOOLS: &[&str] = &[
+    "control_agent",
+    "run_batch",
+    "run_task",
+    "run_team",
+    "run_workflow",
+];
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 const CHEAP_TOOL_KINDS: &[&str] = &["cheap", "read", "metadata", "search"];
 const ORCHESTRATOR_TOOL_KINDS: &[&str] = &["orchestrator", "fanout"];
@@ -43,14 +51,15 @@ impl ToolAdmissionClass {
 
     #[must_use]
     pub fn for_tool(name: &str, kind: Option<&str>) -> Self {
-        if ORCHESTRATOR_TOOLS.contains(&name)
+        let canonical = canonical_tool_name(name);
+        if ORCHESTRATOR_TOOLS.contains(&canonical)
             || kind.is_some_and(|k| ORCHESTRATOR_TOOL_KINDS.contains(&k))
         {
             return Self::Orchestrator;
         }
         if matches!(
-            name,
-            "read" | "glob" | "grep" | "view_image" | "tool_search"
+            canonical,
+            "read_file" | "search_files" | "search_code" | "view_image" | "search_tools"
         ) || kind.is_some_and(|k| CHEAP_TOOL_KINDS.contains(&k))
         {
             return Self::Cheap;
@@ -303,7 +312,6 @@ impl Drop for ToolAdmissionGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cancel::CancelToken;
 
     #[test]
     fn classifies_wrappers_without_consuming_expensive_lane() {

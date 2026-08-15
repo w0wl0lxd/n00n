@@ -1,6 +1,47 @@
 -- Policy enforcement wrapper for tool calls.
 local M = {}
 
+local TOOL_ALIASES = {
+  agent_control = "control_agent",
+  agent_list = "list_agents",
+  agent_status = "get_agent",
+  batch = "run_batch",
+  bash = "run_shell",
+  blackboard = "use_blackboard",
+  code_execution = "run_python",
+  codegraph = "map_codegraph",
+  edit = "edit_file",
+  edit_lines = "edit_file_lines",
+  explore = "explore_code",
+  fusion_delegate = "delegate_fusion",
+  glob = "search_files",
+  grep = "search_code",
+  index = "index_file",
+  insert_lines = "insert_file_lines",
+  load_namespace = "load_toolset",
+  memory = "use_memory",
+  multi_edit = "edit_file_bulk",
+  multiedit = "edit_file_bulk",
+  question = "ask_user",
+  read = "read_file",
+  semblem = "search_text",
+  skill = "load_skill",
+  task = "run_task",
+  team = "run_team",
+  todo_write = "update_todo",
+  tool_search = "search_tools",
+  webfetch = "fetch_url",
+  websearch = "search_web",
+  workflow = "run_workflow",
+  write = "write_file",
+}
+
+local function canonical_tool_name(name)
+  return TOOL_ALIASES[name] or name
+end
+
+M.canonical_tool_name = canonical_tool_name
+
 local ok, memory_helpers = pcall(require, "memory.memory_helpers")
 
 local function project_id()
@@ -42,6 +83,7 @@ local function load_policies()
 end
 
 function M.evaluate_policy(agent_id, session_type, tags, tool_name)
+  tool_name = canonical_tool_name(tool_name)
   local policies = load_policies()
   if not policies or not policies.rules or #policies.rules == 0 then
     return { allowed = true }
@@ -105,7 +147,7 @@ function M.evaluate_policy(agent_id, session_type, tags, tool_name)
 
   if rule.restricted_tools and #rule.restricted_tools > 0 then
     for _, restricted in ipairs(rule.restricted_tools) do
-      if restricted == tool_name then
+      if canonical_tool_name(restricted) == tool_name then
         return { allowed = false, reason = "tool " .. tool_name .. " is restricted by policy" }
       end
     end
@@ -114,7 +156,7 @@ function M.evaluate_policy(agent_id, session_type, tags, tool_name)
   if rule.allowed_tools and #rule.allowed_tools > 0 then
     local allowed = false
     for _, allowed_tool in ipairs(rule.allowed_tools) do
-      if allowed_tool == tool_name then
+      if canonical_tool_name(allowed_tool) == tool_name then
         allowed = true
         break
       end

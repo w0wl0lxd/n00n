@@ -267,7 +267,8 @@ local function cmd_delete(path, dir)
 end
 
 n00n.api.register_tool({
-  name = "memory",
+  name = "use_memory",
+  aliases = { "memory" },
   description = "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information.",
 
   schema = {
