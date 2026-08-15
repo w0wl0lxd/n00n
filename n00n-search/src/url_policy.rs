@@ -223,14 +223,14 @@ fn is_special_v6(address: Ipv6Addr) -> bool {
 fn ipv4_compatible(address: Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = address.segments();
     let zero = segments[0..5].iter().all(|&s| s == 0) && segments[5] == 0;
-    zero.then(|| Ipv4Addr::from(((segments[6] as u32) << 16) | segments[7] as u32))
+    zero.then(|| Ipv4Addr::from((u32::from(segments[6]) << 16) | u32::from(segments[7])))
 }
 
 fn nat64_embedded_v4(address: Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = address.segments();
     let prefix =
         segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6].iter().all(|&s| s == 0);
-    prefix.then(|| Ipv4Addr::from(((segments[6] as u32) << 16) | segments[7] as u32))
+    prefix.then(|| Ipv4Addr::from((u32::from(segments[6]) << 16) | u32::from(segments[7])))
 }
 
 #[cfg(test)]
