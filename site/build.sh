@@ -36,7 +36,7 @@ for asset in \
   android-chrome-512x512.png \
   site.webmanifest; do
   if [ ! -f "$asset" ]; then
-    echo "error: site asset '$asset' is missing from the repository" >&2
+    echo "error: site asset '$asset' is missing or unreadable" >&2
     exit 1
   fi
   cp "$asset" "$OUT/"
