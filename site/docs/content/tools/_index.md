@@ -11,7 +11,7 @@ n00n ships with 35 built-in tools. This is the full reference.
 
 ## File Operations
 
-### `bash` *(lua plugin)*
+### `run_shell` *(lua plugin)*
 
 Execute a bash command.
 Commands run in <cwd> by default.
@@ -24,7 +24,7 @@ Commands run in <cwd> by default.
 | `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
-### `read` *(lua plugin)*
+### `read_file` *(lua plugin)*
 
 Read a file or directory. Returns contents with line numbers (1-indexed).
 
@@ -34,7 +34,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 | `path` | string | yes |  |
 | `limit` | integer | no |  |
 
-### `write` *(lua plugin)*
+### `write_file` *(lua plugin)*
 
 Write content to a file. Prefer edit or edit_lines for existing files.
 
@@ -44,7 +44,7 @@ Write content to a file. Prefer edit or edit_lines for existing files.
 | `content` | string | yes |  |
 | `justification` | string | no | Required when content may contain secrets/PII. Explain why this content is safe to write. |
 
-### `edit` *(lua plugin)*
+### `edit_file` *(lua plugin)*
 
 Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first.
 
@@ -56,7 +56,7 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this replacement is safe. |
 | `replace_all` | boolean | no |  |
 
-### `multiedit` *(lua plugin)*
+### `edit_file_bulk` *(lua plugin)*
 
 Apply multiple non-adjacent string edits to a single file atomically. Applied in sequence; all roll back if one fails.
 
@@ -66,7 +66,7 @@ Apply multiple non-adjacent string edits to a single file atomically. Applied in
 | `justification` | string | no | Required when any new_string may contain secrets/PII. Explain why these replacements are safe. |
 | `edits` | array of objects | yes |  |
 
-### `edit_lines` *(lua plugin)*
+### `edit_file_lines` *(lua plugin)*
 
 Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete.
 
@@ -78,7 +78,7 @@ Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `ne
 | `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this replacement is safe. |
 | `new_string` | string | yes |  |
 
-### `insert_lines` *(lua plugin)*
+### `insert_file_lines` *(lua plugin)*
 
 Insert lines before `line` number. Existing lines shift down.
 
@@ -89,7 +89,7 @@ Insert lines before `line` number. Existing lines shift down.
 | `line` | integer | yes |  |
 | `new_string` | string | yes |  |
 
-### `explore` *(lua plugin)*
+### `explore_code` *(lua plugin)*
 
 Unified codebase exploration router. Picks the best backend for the question:
 - **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
@@ -110,7 +110,7 @@ Unified codebase exploration router. Picks the best backend for the question:
 | `project` | string | no | Project root for codegraph queries (defaults to cwd). |
 | `intent` | string | no |  |
 
-### `glob` *(lua plugin)*
+### `search_files` *(lua plugin)*
 
 Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
 
@@ -119,7 +119,7 @@ Find files by glob pattern. Respects .gitignore. Returns matching paths sorted b
 | `pattern` | string | yes |  |
 | `path` | string | no |  |
 
-### `grep` *(lua plugin)*
+### `search_code` *(lua plugin)*
 
 Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: this is Rust regex, not PCRE — no look-around (`(?!...)`, `(?<!...)`) and no backreferences (`\1`, `\k<name>`).
 
@@ -132,7 +132,7 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 | `limit` | integer | no |  |
 | `context_before` | integer | no |  |
 
-### `index` *(lua plugin)*
+### `index_file` *(lua plugin)*
 
 Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.
 
@@ -142,7 +142,7 @@ Return a compact overview of a source file: imports, types, function signatures,
 
 ### `view_image` *(lua plugin)*
 
-View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
+View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_file` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -154,7 +154,7 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 | `static_image` | boolean | no | First-frame PNG. |
 | `tile_height` | integer | no | Default 2000; max 4MP. |
 
-### `codegraph` *(lua plugin)*
+### `map_codegraph` *(lua plugin)*
 
 Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
 
@@ -170,7 +170,7 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 | `files` | array of strings | no |  | Array of file paths for affected command |
 | `search` | string | no |  | Search query for query command |
 
-### `semblem` *(lua plugin)*
+### `search_text` *(lua plugin)*
 
 Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
 
@@ -187,7 +187,7 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 
 ## Execution & Control
 
-### `batch` *(lua plugin)*
+### `run_batch` *(lua plugin)*
 
 Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
 
@@ -195,7 +195,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 |-----------|------|----------|-------------|
 | `tool_calls` | array of objects | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
-### `code_execution` *(lua plugin)*
+### `run_python` *(lua plugin)*
 
 Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
 
@@ -204,7 +204,7 @@ Execute Python in sandboxed interpreter with tools as callable functions. Use fo
 | `timeout` | integer | no | 30 | Script timeout seconds |
 | `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
-### `question` *(lua plugin)*
+### `ask_user` *(lua plugin)*
 
 Ask the user questions during execution. Supports single/multi-select, custom answers, and tabbed multi-question forms. Put recommended options first with "(Recommended)" suffix.
 
@@ -236,14 +236,14 @@ Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix
 
 ## Agent & Knowledge
 
-### `agent_list` *(lua plugin)*
+### `list_agents` *(lua plugin)*
 
 List live background agents (task/team/workflow sessions).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 
-### `agent_status` *(lua plugin)*
+### `get_agent` *(lua plugin)*
 
 Show status for one live background agent.
 
@@ -251,7 +251,7 @@ Show status for one live background agent.
 |-----------|------|----------|-------------|
 | `agent_id` | string | yes | Live agent/session id. |
 
-### `agent_control` *(lua plugin)*
+### `control_agent` *(lua plugin)*
 
 Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
 
@@ -262,7 +262,7 @@ Mutate a background agent: message, stop, resume, or manage policy. Prefer agent
 | `action` | string | yes | Mutating control action. |
 | `agent_id` | string | no | Target agent id. |
 
-### `blackboard` *(lua plugin)*
+### `use_blackboard` *(lua plugin)*
 
 Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state.
 
@@ -277,7 +277,7 @@ Shared coordination for multi-agent sessions. Post observations, claim tasks ato
 | `task_id` | string | no | Task id. |
 | `claim` | object | no | Claim data. |
 
-### `team` *(lua plugin)*
+### `run_team` *(lua plugin)*
 
 Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.
 
@@ -307,7 +307,7 @@ Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentr
 | `background` | boolean | no |  | Start in background; return agent_id. |
 | `auto_tier` | boolean | no |  | Auto-route tier from step prompt. |
 
-### `task` *(lua plugin)*
+### `run_task` *(lua plugin)*
 
 Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.
 
@@ -323,7 +323,7 @@ Launch isolated agent; combine independent calls with batch. research (default) 
 | `thinking` | string or integer | no | Thinking mode. Omit to inherit. |
 | `subagent_type` | string | no | research (default) or general. |
 
-### `workflow` *(lua plugin)*
+### `run_workflow` *(lua plugin)*
 
 Run sandboxed Lua workflow for multi-stage agent orchestration.
 
@@ -334,7 +334,7 @@ Run sandboxed Lua workflow for multi-stage agent orchestration.
 | `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs. |
 | `timeout_secs` | integer | no | Wall-clock timeout for this run (minimum 60s). May shorten, but cannot exceed, the configured workflow timeout. |
 
-### `todo_write` *(lua plugin)*
+### `update_todo` *(lua plugin)*
 
 Create or update a structured todo list to track tasks. Use after EACH completed step. Send complete list each time (replace-all semantics). Use ONLY for multi-step work (3+ steps). Skip for trivial tasks.
 
@@ -342,7 +342,7 @@ Create or update a structured todo list to track tasks. Use after EACH completed
 |-----------|------|----------|-------------|
 | `todos` | array of objects | yes | The updated todo list |
 
-### `memory` *(lua plugin)*
+### `use_memory` *(lua plugin)*
 
 Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information.
 
@@ -360,7 +360,7 @@ Persistent, project-scoped scratchpad for learnings, patterns, decisions, and go
 | `content` | string | no |  | File content for 'write' or text to add for 'append' |
 | `topic` | string | no |  | Topic metadata for 'write' |
 
-### `skill` *(lua plugin)*
+### `load_skill` *(lua plugin)*
 
 Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills; then call with the exact skill `name`.
 
@@ -382,24 +382,24 @@ Load a skill that provides instructions and workflows for specific tasks. Use `l
 | `graph_rank` | boolean | no |  | With list=true and rank=true, add graph-index bonuses for path-scoped skills. |
 | `rank` | boolean | no |  | With list=true and path set, sort skills by relevance to the focus path. |
 
-### `tool_search` *(lua plugin)*
+### `search_tools` *(lua plugin)*
 
-Search for deferred tools by name or description. Returns a list of tools that can be loaded on demand.
+Search deferred tools by name or description when the needed capability is not already available. Do not use this when a loaded sibling tool already matches the task.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | Search query to match tool names or descriptions |
 | `namespace` | string | no | Optional namespace filter |
 
-### `load_namespace` *(lua plugin)*
+### `load_toolset` *(lua plugin)*
 
-Load all tools from a namespace. Returns the list of tools that were loaded.
+Load all deferred tools from a namespace when several sibling tools are needed. Do not use this for one known tool; use search_tools instead.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `namespace` | string | yes | Namespace to load |
 
-### `fusion_delegate` *(lua plugin)*
+### `delegate_fusion` *(lua plugin)*
 
 Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
@@ -414,7 +414,7 @@ Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done �
 
 ## Web
 
-### `webfetch` *(lua plugin)*
+### `fetch_url` *(lua plugin)*
 
 Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside code_execution to avoid context bloat.
 
@@ -424,7 +424,7 @@ Fetch a URL through Firecrawl or a direct request and return its contents. Suppo
 | `timeout` | integer | no | 30, max 120 | Timeout in seconds |
 | `format` | string | no |  | Output format: markdown (default), text, or html |
 
-### `websearch` *(lua plugin)*
+### `search_web` *(lua plugin)*
 
 Search the web for real-time information using Firecrawl or Exa.
 

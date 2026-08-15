@@ -39,21 +39,19 @@ impl SessionState {
         fallback_model: &Model,
         storage: &StateDir,
     ) -> Self {
-        let model = match ModelResolver::current().resolve(&session.model) {
-            Ok(model) => model,
+        let model = if let Ok(model) = ModelResolver::current().resolve(&session.model) {
+            model
+        } else if let Ok(model) = Model::from_spec(&session.model) {
             // Fall back to the static tables when the provider is currently
             // unconfigured, so the session keeps its model capabilities
             // (thinking, fast, plan mode) instead of collapsing to the default.
-            Err(_) => match Model::from_spec(&session.model) {
-                Ok(model) => model,
-                Err(_) => {
-                    tracing::warn!(
-                        "saved session model is no longer configured or available; using current model"
-                    );
-                    session.model = fallback_model.spec();
-                    fallback_model.clone()
-                }
-            },
+            model
+        } else {
+            tracing::warn!(
+                "saved session model is no longer configured or available; using current model"
+            );
+            session.model = fallback_model.spec();
+            fallback_model.clone()
         };
 
         let mode = match session.meta.mode {

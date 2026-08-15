@@ -1585,6 +1585,7 @@ fn validate_snapshot_lua_values(
     Ok(())
 }
 
+#[derive(Clone)]
 struct ToolKeys {
     handler: RegistryKey,
     header: Option<RegistryKey>,
@@ -2165,25 +2166,24 @@ impl LuaRuntime {
             });
         }
 
-        let keys: HashMap<Arc<str>, ToolKeys> = pending
-            .into_iter()
-            .map(|t| {
-                (
-                    t.name,
-                    ToolKeys {
-                        handler: t.handler_key,
-                        header: t.header_key,
-                        restore: t.restore_key,
-                        start: t.start_key,
-                        permission_scopes: match t.permission_scopes {
-                            Some(PermissionScopeSpec::Callback(k)) => Some(k),
-                            _ => None,
-                        },
-                        describe: t.describe_key,
-                    },
-                )
-            })
-            .collect();
+        let mut keys: HashMap<Arc<str>, ToolKeys> = HashMap::new();
+        for t in pending {
+            let key = ToolKeys {
+                handler: t.handler_key,
+                header: t.header_key,
+                restore: t.restore_key,
+                start: t.start_key,
+                permission_scopes: match t.permission_scopes {
+                    Some(PermissionScopeSpec::Callback(k)) => Some(k),
+                    _ => None,
+                },
+                describe: t.describe_key,
+            };
+            keys.insert(Arc::clone(&t.name), key.clone());
+            for alias in &t.aliases {
+                keys.insert(Arc::clone(alias), key.clone());
+            }
+        }
         self.plugins.borrow_mut().insert(name, keys);
 
         Ok(())
