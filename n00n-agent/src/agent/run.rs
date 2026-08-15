@@ -171,6 +171,12 @@ pub struct AgentRunParams<'h> {
     pub tool_filter: ToolFilter,
 }
 
+#[cfg(test)]
+enum TestCompactionHooks {
+    Enabled,
+    Disabled,
+}
+
 pub struct Agent<'h> {
     provider: Arc<dyn Provider>,
     model: Arc<Model>,
@@ -188,7 +194,8 @@ pub struct Agent<'h> {
     num_turns: u32,
     recent_calls: RecentCalls,
     auto_compact: bool,
-    compaction_hooks: Option<compaction::CompactionHooks>,
+    #[cfg(test)]
+    test_compaction_hooks: TestCompactionHooks,
     loaded_instructions: LoadedInstructions,
     pre_dispatch_rollback_len: Option<usize>,
     rollback_len: Option<usize>,
@@ -259,7 +266,8 @@ impl<'h> Agent<'h> {
             num_turns: 0,
             recent_calls: RecentCalls::new(),
             auto_compact: compaction::auto_compact_enabled(),
-            compaction_hooks: Some(compaction::CompactionHooks),
+            #[cfg(test)]
+            test_compaction_hooks: TestCompactionHooks::Enabled,
             loaded_instructions: LoadedInstructions::new(),
             pre_dispatch_rollback_len: None,
             rollback_len: None,
@@ -1154,6 +1162,10 @@ impl<'h> Agent<'h> {
             self.openai_options,
         );
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        #[cfg(test)]
+        let run_hooks = matches!(self.test_compaction_hooks, TestCompactionHooks::Enabled);
+        #[cfg(not(test))]
+        let run_hooks = true;
         let (usage, summary) = compaction::compact_history(
             &*compact_provider,
             &compact_model,
@@ -1164,7 +1176,7 @@ impl<'h> Agent<'h> {
             self.identity.as_ref().map(SessionIdentity::session_id),
             &cwd,
             None,
-            self.compaction_hooks,
+            run_hooks,
         )
         .await?;
         // Charge compaction to the pre-route lane before any Fusion switch.
@@ -2123,7 +2135,7 @@ mod tests {
                 tool_filter: filter,
             },
         );
-        agent.compaction_hooks = None;
+        agent.test_compaction_hooks = TestCompactionHooks::Disabled;
         (agent, event_rx)
     }
 

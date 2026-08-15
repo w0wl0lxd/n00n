@@ -48,10 +48,6 @@ function M.append_line(collector, line, max_lines, max_bytes)
   end
 end
 
-function M.should_flush(collector, last_flush, now, max_lines, max_secs)
-  return collector.line_count <= 2 or collector.line_count % max_lines == 0 or now - last_flush >= max_secs
-end
-
 function M.collected_output(collector, max_lines, max_bytes)
   local captured = table.concat(collector.parts)
   local output = truncate(captured, max_lines, max_bytes)

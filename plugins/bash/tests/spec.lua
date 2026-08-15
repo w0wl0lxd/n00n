@@ -123,20 +123,6 @@ case("output_collector_reports_full_truncated_byte_count", function()
   has(output, "[truncated ")
 end)
 
-case("output_collector_flushes_initial_periodic_and_elapsed_lines", function()
-  local collector = output_collector.new()
-  collector.line_count = 1
-  eq(output_collector.should_flush(collector, 10, 10, 32, 1), true)
-  collector.line_count = 2
-  eq(output_collector.should_flush(collector, 10, 10, 32, 1), true)
-  collector.line_count = 31
-  eq(output_collector.should_flush(collector, 10, 10, 32, 1), false)
-  eq(output_collector.should_flush(collector, 10, 11, 32, 1), true)
-
-  collector.line_count = 32
-  eq(output_collector.should_flush(collector, 10, 10, 32, 1), true)
-end)
-
 case("output_collector_returns_full_text_under_the_cap", function()
   local collector = output_collector.new()
   output_collector.append_line(collector, "line one", 500, 1024)

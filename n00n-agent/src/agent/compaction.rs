@@ -72,9 +72,6 @@ impl CompactionTier {
 
 const IMAGE_PLACEHOLDER: &str = "[image]";
 
-#[derive(Clone, Copy)]
-pub(super) struct CompactionHooks;
-
 pub(super) async fn compact_history(
     provider: &dyn n00n_providers::provider::Provider,
     model: &Model,
@@ -85,9 +82,9 @@ pub(super) async fn compact_history(
     session_id: Option<&n00n_storage::id::SessionRef>,
     cwd: &std::path::Path,
     transcript_path: Option<&std::path::Path>,
-    hooks: Option<CompactionHooks>,
+    run_hooks: bool,
 ) -> Result<(TokenUsage, String), AgentError> {
-    if hooks.is_some() {
+    if run_hooks {
         run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
     }
 
@@ -168,7 +165,7 @@ pub(super) async fn compact_history(
         .first_text_content()
         .map_or_else(String::new, std::string::ToString::to_string);
 
-    if hooks.is_some() {
+    if run_hooks {
         run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
     }
 
@@ -214,15 +211,15 @@ pub async fn compact(
     history: &mut History,
     event_tx: &EventSender,
 ) -> Result<(), AgentError> {
-    compact_with_hooks(provider, model, history, event_tx, Some(CompactionHooks)).await
+    compact_inner(provider, model, history, event_tx, true).await
 }
 
-async fn compact_with_hooks(
+async fn compact_inner(
     provider: &dyn n00n_providers::provider::Provider,
     model: &Model,
     history: &mut History,
     event_tx: &EventSender,
-    hooks: Option<CompactionHooks>,
+    run_hooks: bool,
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
@@ -236,7 +233,7 @@ async fn compact_with_hooks(
         None,
         &cwd,
         None,
-        hooks,
+        run_hooks,
     )
     .await?;
     let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
@@ -438,12 +435,12 @@ mod tests {
             let (event_tx, event_rx) = flume::unbounded();
             let mut history = History::new(vec![Message::user("before".into())]);
 
-            compact_with_hooks(
+            compact_inner(
                 &*provider,
                 &model,
                 &mut history,
                 &EventSender::new(event_tx, 0),
-                None,
+                false,
             )
             .await
             .expect("compact should succeed");
@@ -568,12 +565,12 @@ mod tests {
             let (event_tx, event_rx) = flume::unbounded();
             let mut history = History::new(vec![Message::user("before".into())]);
 
-            compact_with_hooks(
+            compact_inner(
                 &*provider,
                 &compact_model,
                 &mut history,
                 &EventSender::new(event_tx, 0),
-                None,
+                false,
             )
             .await
             .expect("compact should succeed");
@@ -610,12 +607,12 @@ mod tests {
                 },
             ]);
 
-            compact_with_hooks(
+            compact_inner(
                 &*provider,
                 &model,
                 &mut history,
                 &EventSender::new(raw_tx, 0),
-                None,
+                false,
             )
             .await
             .unwrap();
@@ -907,12 +904,12 @@ mod tests {
                 },
             ]);
 
-            compact_with_hooks(
+            compact_inner(
                 &*provider,
                 &model,
                 &mut history,
                 &EventSender::new(raw_tx, 0),
-                None,
+                false,
             )
             .await
             .unwrap();
@@ -1298,7 +1295,7 @@ mod tests {
                 None,
                 &std::env::current_dir().unwrap(),
                 None,
-                None,
+                false,
             )
             .await;
 
@@ -1351,7 +1348,7 @@ mod tests {
                 None,
                 &std::env::current_dir().unwrap(),
                 None,
-                None,
+                false,
             )
             .await;
 

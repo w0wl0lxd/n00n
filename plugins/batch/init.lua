@@ -138,13 +138,14 @@ local function child_body_buf(c, tol)
   return buf or ToolView.restore(output, { max_lines = tol[c.tool] or tol.other, keep = "head" })
 end
 
--- Parsing plus per-entry policy: entries past MAX_BATCH_SIZE and nested
--- batches are born terminal (error), so they render but never run. Only
--- a malformed entry fails the batch as a whole, and that happens before
--- anything runs.
+-- Parsing plus per-entry policy. Oversized and malformed batches fail before
+-- any entry preparation or dispatch; nested batches render but never run.
 local function prepare_children(tool_calls)
   if type(tool_calls) ~= "table" then
     return nil, "tool_calls must be an array"
+  end
+  if #tool_calls > MAX_BATCH_SIZE then
+    return nil, DISCARDED_ERROR
   end
   local children = {}
   for i, entry in ipairs(tool_calls) do
@@ -153,9 +154,7 @@ local function prepare_children(tool_calls)
       return nil, err
     end
     c.status = STATUS.PENDING
-    if i > MAX_BATCH_SIZE then
-      c.status, c.output = STATUS.ERROR, DISCARDED_ERROR
-    elseif canonical_tool_name(c.tool) == BATCH_TOOL_NAME then
+    if canonical_tool_name(c.tool) == BATCH_TOOL_NAME then
       c.status, c.output = STATUS.ERROR, NESTED_ERROR
     end
     c.header = header_spans(c.tool, c.params)

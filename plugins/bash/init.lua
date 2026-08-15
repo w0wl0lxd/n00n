@@ -810,8 +810,12 @@ n00n.api.register_tool({
 
     local collector = output_collector.new()
     local has_output = false
+    local finished = false
+    local flush_scheduled = false
+    local published_line_count = 0
 
     local function finish(exit_code)
+      finished = true
       local output = output_collector.collected_output(collector, max_lines, max_bytes)
 
       local is_error = exit_code ~= 0
@@ -843,7 +847,26 @@ n00n.api.register_tool({
 
     view:append({ { "Waiting for output...", "dim" } })
 
-    local last_view_flush = os.time()
+    local function flush_view()
+      view:flush()
+      published_line_count = collector.line_count
+    end
+
+    local function schedule_view_flush()
+      if flush_scheduled then
+        return
+      end
+      flush_scheduled = true
+      n00n.fn.jobstart("sleep " .. LIVE_OUTPUT_FLUSH_SECS, {
+        on_exit = function()
+          flush_scheduled = false
+          if not finished and collector.line_count > published_line_count then
+            flush_view()
+          end
+        end,
+      })
+    end
+
     local function append_output(line)
       if not has_output then
         has_output = true
@@ -851,12 +874,10 @@ n00n.api.register_tool({
       end
       output_collector.append_line(collector, line, max_lines, max_bytes)
       view:append_buffered(line)
-      local now = os.time()
-      if
-        output_collector.should_flush(collector, last_view_flush, now, LIVE_OUTPUT_FLUSH_LINES, LIVE_OUTPUT_FLUSH_SECS)
-      then
-        view:flush()
-        last_view_flush = now
+      if collector.line_count <= 2 or collector.line_count % LIVE_OUTPUT_FLUSH_LINES == 0 then
+        flush_view()
+      else
+        schedule_view_flush()
       end
     end
 

@@ -6039,6 +6039,8 @@ function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
 function ToolView:append(line)
+
+-- Append without publishing; call flush to render buffered content.
 function ToolView:append_buffered(line)
 function ToolView:append_text(text)
 

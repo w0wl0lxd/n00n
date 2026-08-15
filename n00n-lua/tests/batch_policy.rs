@@ -367,24 +367,16 @@ fn nested_batch_rejected_without_dispatch() {
 }
 
 #[test]
-fn overflow_entries_discarded_with_section() {
+fn overflow_batch_rejected_before_dispatch() {
     let (reg, _host) = load_batch_host();
     let entries: Vec<Value> = (0..=MAX_BATCH_SIZE)
         .map(|i| json!({ "tool": "ok", "parameters": { "tag": i.to_string() } }))
         .collect();
-    let out = run_batch(&reg, json!(entries)).expect("batch failed");
+    let error = run_batch(&reg, json!(entries)).expect_err("oversized batch succeeded");
+    assert_eq!(error, DISCARDED_ERROR);
     assert!(
-        out.contains(&format!("{ERROR_PREFIX}{DISCARDED_ERROR}")),
-        "got: {out}"
-    );
-    assert!(
-        out.ends_with(&summary_mixed(MAX_BATCH_SIZE, MAX_BATCH_SIZE + 1, 1)),
-        "got: {out}"
-    );
-    assert_eq!(
-        recorded_calls(&reg).len(),
-        MAX_BATCH_SIZE,
-        "only the first {MAX_BATCH_SIZE} entries may dispatch"
+        recorded_calls(&reg).is_empty(),
+        "oversized batches must not dispatch"
     );
 }
 

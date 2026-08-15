@@ -241,6 +241,7 @@ function ToolView:append(line)
   append_line(self, line, true)
 end
 
+-- Append without publishing; call flush to render buffered content.
 function ToolView:append_buffered(line)
   append_line(self, line, false)
 end
