@@ -10,6 +10,9 @@ env:
   CARGO_NET_RETRY: 10
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   changes:
     name: Detect changes
@@ -74,6 +77,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'linux-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just
@@ -88,6 +94,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'linux-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just cargo:cargo-nextest
@@ -115,6 +124,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'linux-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just
@@ -129,6 +141,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'linux-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just
@@ -143,6 +158,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'windows-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just
@@ -151,12 +169,15 @@ jobs:
     name: Lint (macOS)
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     steps:
       - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'macos-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just
@@ -171,6 +192,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'windows-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just
@@ -179,12 +203,15 @@ jobs:
     name: Test (macOS)
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     steps:
       - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'macos-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just cargo:cargo-nextest
@@ -199,6 +226,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'windows-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: just cargo:cargo-nextest
@@ -212,10 +242,13 @@ jobs:
       - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
         with:
           persist-credentials: false
-      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
       - uses: 'dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4' # stable
         with:
           components: llvm-tools-preview
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'linux-coverage'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: cargo:cargo-nextest cargo:cargo-llvm-cov
@@ -234,8 +267,11 @@ jobs:
       - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
         with:
           persist-credentials: false
-      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
       - uses: 'dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83' # 1.97.0
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'linux-msrv'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --workspace --all-targets
   rustdoc:
     name: Rustdoc
@@ -249,6 +285,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
+        with:
+          shared-key: 'linux-stable'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo doc --workspace --no-deps
   ci-pass:
     name: CI

@@ -3,6 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{GrepFileEntry, GrepLine, GrepMatchGroup};
 use flume;
@@ -13,9 +14,14 @@ use grep_searcher::{Sink, SinkContext, SinkFinish, SinkMatch};
 use ignore::WalkState;
 use tracing::{debug, warn};
 
-use super::{mtime, resolve_search_path, truncate_bytes, walk_builder};
+use super::{
+    is_expected_walk_error, is_expected_walk_io_error, mtime, resolve_search_path, truncate_bytes,
+    walk_builder,
+};
 
 pub(super) const INVALID_REGEX: &str = "invalid regex pattern";
+const UNSUPPORTED_PCRE_HINT: &str = "Note: PCRE-only constructs are not supported: look-around \
+    (e.g. (?!...), (?<!...)) and backreferences (e.g. \\1, \\k<name>). Use Rust regex syntax.";
 const MULTILINE_HEAP_LIMIT: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_LINE_BYTES: usize = 500;
 
@@ -73,15 +79,12 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
     );
 
     let matcher = if is_multiline {
-        RegexMatcher::new(&params.pattern).map_err(|e| {
-            format!("{INVALID_REGEX}: {e}. Note: PCRE look-around (e.g. (?!...), (?<!...)) is not supported. Use Rust regex syntax.")
-        })?
+        RegexMatcher::new(&params.pattern)
+            .map_err(|e| format!("{INVALID_REGEX}: {e}. {UNSUPPORTED_PCRE_HINT}"))?
     } else {
         RegexMatcher::new_line_matcher(&params.pattern)
             .or_else(|_| RegexMatcher::new(&params.pattern))
-            .map_err(|e| {
-                format!("{INVALID_REGEX}: {e}. Note: PCRE look-around (e.g. (?!...), (?<!...)) is not supported. Use Rust regex syntax.")
-            })?
+            .map_err(|e| format!("{INVALID_REGEX}: {e}. {UNSUPPORTED_PCRE_HINT}"))?
     };
 
     let patterns: Vec<&str> = params.include.as_deref().into_iter().collect();
@@ -109,21 +112,32 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
     let max_line_bytes = params.max_line_bytes;
     let (tx, rx) = flume::unbounded::<GrepFileEntry>();
     let base: Arc<Path> = Arc::from(base);
+    let walk_skipped = Arc::new(AtomicUsize::new(0));
+    let search_skipped = Arc::new(AtomicUsize::new(0));
 
     walker.build_parallel().run({
         let tx = tx.clone();
         let matcher = Arc::new(matcher);
         let base = Arc::clone(&base);
+        let walk_skipped = Arc::clone(&walk_skipped);
+        let search_skipped = Arc::clone(&search_skipped);
         move || {
             let mut searcher = builder.build();
             let matcher = Arc::clone(&matcher);
             let tx = tx.clone();
             let base = Arc::clone(&base);
+            let walk_skipped = Arc::clone(&walk_skipped);
+            let search_skipped = Arc::clone(&search_skipped);
             Box::new(move |entry| {
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        warn!(error = %e, "grep walk entry error");
+                        if is_expected_walk_error(&e) {
+                            walk_skipped.fetch_add(1, Ordering::Relaxed);
+                            debug!(error = %e, "grep walk entry error");
+                        } else {
+                            warn!(error = %e, "grep walk entry error");
+                        }
                         return WalkState::Continue;
                     }
                 };
@@ -139,7 +153,12 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
                     has_context,
                 };
                 if let Err(e) = searcher.search_path(&*matcher, &path, &mut sink) {
-                    warn!(path = %path.display(), error = %e, "grep search_path failed");
+                    if is_expected_walk_io_error(e.kind()) {
+                        search_skipped.fetch_add(1, Ordering::Relaxed);
+                        debug!(path = %path.display(), error = %e, "grep search_path failed");
+                    } else {
+                        warn!(path = %path.display(), error = %e, "grep search_path failed");
+                    }
                 }
 
                 if !groups.is_empty() {
@@ -156,6 +175,15 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
             })
         }
     });
+
+    let walk_skipped = walk_skipped.load(Ordering::Relaxed);
+    let search_skipped = search_skipped.load(Ordering::Relaxed);
+    if walk_skipped > 0 || search_skipped > 0 {
+        debug!(
+            walk_skipped,
+            search_skipped, "grep: skipped unreadable or vanished entries"
+        );
+    }
 
     drop(tx);
     let mut entries: Vec<GrepFileEntry> = rx.iter().collect();

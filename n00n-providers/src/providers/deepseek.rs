@@ -54,6 +54,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.14,
@@ -70,6 +71,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Generic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.435,

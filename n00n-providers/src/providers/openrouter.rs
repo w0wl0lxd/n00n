@@ -165,6 +165,7 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
         pricing: Some(pricing),
         supports_thinking: Some(supports_thinking),
         supports_vision: Some(supports_vision),
+        supports_files: None,
         tier: None,
         is_free: None,
         is_promo: None,
