@@ -430,6 +430,7 @@ impl<'h> Agent<'h> {
             allow_history_replay: self.permissions.is_yolo(),
             safety_identifier: None,
             moderation: false,
+            idempotency_key: None,
         };
 
         info!(
