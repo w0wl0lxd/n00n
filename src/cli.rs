@@ -465,8 +465,8 @@ mod tests {
     }
 
     #[test]
-    fn normalize_tool_name_multi_edit_rejects_snake_variant() {
-        assert!(normalize_tool_name("MultiEdit").is_err());
+    fn normalize_tool_name_multi_edit_camel_case() {
+        assert_eq!(normalize_tool_name("MultiEdit").unwrap(), "multi_edit");
     }
 
     #[test]

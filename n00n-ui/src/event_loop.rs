@@ -34,7 +34,7 @@ use n00n_providers::Timeouts;
 use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_with_openai_options, unconfigured_provider,
 };
-use n00n_providers::{ContentBlock, Message, Model, ModelCatalog, ModelResolver, OpenAiOptions};
+use n00n_providers::{ContentBlock, Message, Model, ModelResolver, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
@@ -604,7 +604,6 @@ fn merge_batch(
         .as_deref()
         .cloned()
         .unwrap_or_else(Vec::new);
-    let catalog = ModelCatalog::current();
     for spec in &batch.models {
         let well_formed = spec
             .split_once('/')
