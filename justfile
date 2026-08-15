@@ -92,3 +92,19 @@ explore-health PROJECT=".":
 
 # Full CI check
 ci: fmt-check lint pylint test gen-docs-check machete secrets
+
+# Local verification without the kache wrapper. The layered kache->sccache
+# cache can serve stale rlibs across worktrees when content is read during
+# proc-macro expansion (include_dir!, config macros) but is invisible to the
+# cache key (see kunobi-ninja/kache#760); use this when a local result must
+# be trusted over CI.
+verify-clean TARGET_DIR="/tmp/n00n-verify":
+    RUSTC_WRAPPER=sccache CARGO_TARGET_DIR={{TARGET_DIR}} cargo check --workspace --all-targets
+
+# Bump the pinned nightly toolchain (rust-toolchain.toml + CI/benchmarks/docs
+# toolchain pins). Do this on a cadence, not eagerly: newer nightlies bring
+# new clippy lints that must be fixed in the same change.
+bump-nightly DATE:
+    sed -i 's|nightly-[0-9]*-[0-9]*-[0-9]*|nightly-{{DATE}}|' rust-toolchain.toml
+    sed -i 's|nightly-[0-9]*-[0-9]*-[0-9]*|nightly-{{DATE}}|' .github/workflows/benchmarks.yml .github/workflows/docs.yml .github/workflows/release.yml
+    echo "toolchain bumped to nightly-{{DATE}}; run cargo check --workspace and fix any new clippy lints"
