@@ -21,6 +21,7 @@ pub(crate) mod keymap;
 pub(crate) mod log;
 pub(crate) mod net;
 pub(crate) mod options;
+pub(crate) mod search;
 pub(crate) mod semblem;
 pub(crate) mod session;
 pub(crate) mod slot;
@@ -37,6 +38,7 @@ pub(crate) mod yaml;
 use std::sync::Arc;
 
 use mlua::{Lua, Result as LuaResult, Table};
+use n00n_config::SearchConfig;
 
 use crate::api::firecrawl::BundledCapability;
 use crate::api::options::PluginOpts;
@@ -52,8 +54,10 @@ pub(crate) fn create_n00n_global(
     permissions: &PluginPermissions,
     opts: PluginOpts,
     bundled_capability: Option<BundledCapability>,
+    search_config: Arc<SearchConfig>,
 ) -> LuaResult<Table> {
     let n00n = lua.create_table()?;
+    lua.set_app_data(Arc::clone(&search_config));
 
     let api = tool::create_api_table(lua, pending, Arc::clone(&plugin), opts)?;
     autocmd::add_autocmd_methods(&api, lua, Arc::clone(&plugin))?;
@@ -75,6 +79,10 @@ pub(crate) fn create_n00n_global(
     n00n.set("json", json::create_json_table(lua)?)?;
     n00n.set("yaml", yaml::create_yaml_table(lua)?)?;
     n00n.set("net", net::create_net_table(lua, permissions)?)?;
+    n00n.set(
+        "search",
+        search::create_search_table(lua, permissions, search_config)?,
+    )?;
     n00n.set("text", text::create_text_table(lua)?)?;
     n00n.set(
         "session",
@@ -105,4 +113,130 @@ pub(crate) fn create_n00n_global(
     )?;
 
     Ok(n00n)
+}
+
+#[cfg(test)]
+mod tests {
+    use n00n_agent::cancel::CancelToken;
+    use n00n_config::{RawConfig, SearchFileConfig};
+
+    use super::*;
+    use crate::api::util::ctx::LuaCtx;
+
+    #[test]
+    fn api_construction_installs_read_only_search_config() {
+        let lua = Lua::new();
+        let search_config = Arc::new(
+            RawConfig {
+                search: SearchFileConfig {
+                    enabled: Some(true),
+                },
+                ..RawConfig::default()
+            }
+            .into_config(false)
+            .unwrap()
+            .search,
+        );
+
+        create_n00n_global(
+            &lua,
+            Arc::default(),
+            Arc::from("search-config-test"),
+            None,
+            &PluginPermissions::trusted(),
+            Arc::default(),
+            None,
+            Arc::clone(&search_config),
+        )
+        .unwrap();
+
+        let installed = lua.app_data_ref::<Arc<SearchConfig>>().unwrap();
+        assert!(Arc::ptr_eq(&installed, &search_config));
+    }
+
+    #[test]
+    fn disabled_search_extract_returns_an_error() {
+        let lua = Lua::new();
+        let search_config = Arc::new(
+            RawConfig {
+                search: SearchFileConfig {
+                    enabled: Some(false),
+                },
+                ..RawConfig::default()
+            }
+            .into_config(false)
+            .unwrap()
+            .search,
+        );
+
+        let n00n = create_n00n_global(
+            &lua,
+            Arc::default(),
+            Arc::from("search-config-test"),
+            None,
+            &PluginPermissions::trusted(),
+            Arc::default(),
+            None,
+            search_config,
+        )
+        .unwrap();
+
+        let (value, err) = call_extract(&lua, &n00n).unwrap();
+        assert!(value.is_nil());
+        assert!(
+            err.as_string()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("disabled"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn denied_net_permission_extract_returns_an_error() {
+        let lua = Lua::new();
+        let search_config = Arc::new(
+            RawConfig {
+                search: SearchFileConfig {
+                    enabled: Some(true),
+                },
+                ..RawConfig::default()
+            }
+            .into_config(false)
+            .unwrap()
+            .search,
+        );
+
+        let n00n = create_n00n_global(
+            &lua,
+            Arc::default(),
+            Arc::from("search-config-test"),
+            None,
+            &PluginPermissions::denied(),
+            Arc::default(),
+            None,
+            search_config,
+        )
+        .unwrap();
+
+        let (value, err) = call_extract(&lua, &n00n).unwrap();
+        assert!(value.is_nil());
+        assert!(
+            err.as_string()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("net permission"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    fn call_extract(lua: &Lua, n00n: &Table) -> LuaResult<(mlua::Value, mlua::Value)> {
+        let extract: mlua::Function = n00n.get::<Table>("search").unwrap().get("extract").unwrap();
+        let ctx = lua
+            .create_userdata(LuaCtx::for_test(CancelToken::none()))
+            .unwrap();
+        smol::block_on(extract.call_async((ctx, mlua::Value::Nil)))
+    }
 }
