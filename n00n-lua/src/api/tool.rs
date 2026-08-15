@@ -1571,11 +1571,11 @@ fn optional_nonnegative_integer(table: &mlua::Table, field: &str) -> Result<Opti
 fn extract_tool_usage(table: &mlua::Table) -> Result<ToolUsage, String> {
     let fresh_input = optional_nonnegative_integer(table, FRESH_INPUT_TOKENS_FIELD)?;
     let cache_read =
-        optional_nonnegative_integer(table, CACHE_READ_TOKENS_FIELD)?.map_or(0, |value| value);
+        optional_nonnegative_integer(table, CACHE_READ_TOKENS_FIELD)?.unwrap_or_else(|| 0);
     let cache_write =
-        optional_nonnegative_integer(table, CACHE_WRITE_TOKENS_FIELD)?.map_or(0, |value| value);
+        optional_nonnegative_integer(table, CACHE_WRITE_TOKENS_FIELD)?.unwrap_or_else(|| 0);
     let input = optional_nonnegative_integer(table, INPUT_TOKENS_FIELD)?;
-    let output = optional_nonnegative_integer(table, OUTPUT_TOKENS_FIELD)?.map_or(0, |value| value);
+    let output = optional_nonnegative_integer(table, OUTPUT_TOKENS_FIELD)?.unwrap_or_else(|| 0);
     let cached = cache_read
         .checked_add(cache_write)
         .ok_or_else(|| "tool usage cached input token categories overflow".to_owned())?;

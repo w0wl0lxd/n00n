@@ -366,7 +366,7 @@ async fn run_authorized(
     fusion_delegate_authorized: bool,
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
-    let name = name.strip_prefix("functions.").map_or(name, |value| value);
+    let name = name.strip_prefix("functions.").unwrap_or_else(|| name);
     if !ctx.tool_filter.matches(name) {
         return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
     }

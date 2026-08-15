@@ -571,7 +571,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(&inst_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
 
         if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
@@ -685,7 +685,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         if !seg.truncation.any() && !exp.any() {
             return false;
         }
@@ -959,7 +959,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(&tool_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         if !truncation.any() && !exp.any() {
             return false;
         }
@@ -1680,7 +1680,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .map_or(SectionFlags::default(), |v| v);
+            .unwrap_or_else(SectionFlags::default);
         let rctx = self.rctx();
         let tl = Self::build_tool_segment_lines(msg, status, &rctx, exp);
 

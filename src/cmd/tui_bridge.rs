@@ -173,7 +173,7 @@ fn build_team_resume_prompt(run_info: &Value) -> ControlResult<String> {
     let mode = run_info
         .get("mode")
         .and_then(Value::as_str)
-        .map_or("autonomous", |m| m);
+        .unwrap_or_else(|| "autonomous");
     let args = serde_json::json!({
         "goal": "resume",
         "resume": run_id,

@@ -29,6 +29,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "view_image",
             "map_codegraph",
             "search_text",
+            "smell",
         ],
     ),
     (

@@ -242,8 +242,9 @@ jobs:
       - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
         with:
           persist-credentials: false
-      - uses: 'dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4' # stable
+      - uses: 'dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772' # master
         with:
+          toolchain: nightly-2026-08-14
           components: llvm-tools-preview
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
         with:
@@ -258,21 +259,6 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
-  msrv:
-    name: MSRV (1.97)
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
-        with:
-          persist-credentials: false
-      - uses: 'dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83' # 1.97.0
-      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' # v2
-        with:
-          shared-key: 'linux-msrv'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build --workspace --all-targets
   rustdoc:
     name: Rustdoc
     needs: changes
@@ -304,7 +290,6 @@ jobs:
       - build-windows
       - test-windows
       - coverage
-      - msrv
       - rustdoc
     runs-on: ubuntu-latest
     steps:

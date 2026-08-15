@@ -195,7 +195,13 @@ impl JobStore {
         thread::Builder::new()
             .name("job-wait".into())
             .spawn(move || {
-                let code = child.wait().map_or(-1, |s| s.code().map_or(-1, |c| c));
+                let code = match child.wait() {
+                    Ok(status) => status.code().unwrap_or_else(|| -1),
+                    Err(error) => {
+                        tracing::error!(error = %error, "job wait failed");
+                        -1
+                    }
+                };
                 if let Some(h) = stdout_handle {
                     let _ = h.join();
                 }

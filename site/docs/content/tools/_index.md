@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 35 built-in tools. This is the full reference.
+n00n ships with 36 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -184,6 +184,18 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 | `mode` | string | no |  |
 | `content` | string | no | Content filter for search (docs, config, code, or all) |
 | `top_k` | integer | no |  |
+
+### `smell` *(lua plugin)*
+
+Code-smell index. index, search.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `repo` | string | no |  | Path to the project root. Defaults to the current working directory. |
+| `query` | string | no |  | Keyword or phrase to search for (required for search). |
+| `command` | string | yes |  | Smell command to run. |
+| `kind` | string | no |  | Optional smell kind filter (for search). |
+| `top_k` | integer | no | 5 | Maximum number of search results. |
 
 ## Execution & Control
 

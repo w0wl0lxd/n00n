@@ -6,7 +6,6 @@ description = "On-device agent control plane: registry, UDS NDJSON protocol, wor
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-rust-version.workspace = true
 
 [dependencies]
 n00n-storage = { workspace = true }

@@ -336,7 +336,7 @@ impl Model {
         let model_id = self
             .id
             .strip_prefix(OPENAI_MODEL_PREFIX)
-            .map_or(self.id.as_str(), std::convert::identity);
+            .unwrap_or_else(|| self.id.as_str());
         (model_id.starts_with(GPT_MODEL_PREFIX) && !model_id.contains(GPT_CODEX_MARKER))
             .then_some(model_id)
     }
@@ -440,9 +440,7 @@ impl Model {
         let version = version_and_suffix
             .split_once('-')
             .map_or(version_and_suffix, |(version, _)| version);
-        let (major, minor) = version
-            .split_once('.')
-            .map_or((version, "0"), std::convert::identity);
+        let (major, minor) = version.split_once('.').unwrap_or_else(|| (version, "0"));
         let (Ok(major), Ok(minor)) = (major.parse::<u16>(), minor.parse::<u16>()) else {
             return false;
         };

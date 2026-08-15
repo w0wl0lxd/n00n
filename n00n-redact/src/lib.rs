@@ -350,7 +350,7 @@ fn contains_url_userinfo_credentials(value: &str) -> bool {
         let authority = &value[scheme_end + 3..];
         let authority_end = authority
             .find(['/', '?', '#'])
-            .map_or(authority.len(), |end| end);
+            .unwrap_or_else(|| authority.len());
         authority[..authority_end]
             .rsplit_once('@')
             .and_then(|(userinfo, _)| userinfo.split_once(':'))
@@ -594,7 +594,7 @@ mod tests {
             "user": "bob",
             "note": jwt,
             "nested": { "data": format!("sk-{}", "a".repeat(48)) },
-            "list": [format!("AKIA0123456789ABCDEF")],
+            "list": ["AKIA0123456789ABCDEF".to_string()],
         });
         let redacted = redact_json_value_for_log(&value);
         assert_eq!(redacted["user"], "bob");
