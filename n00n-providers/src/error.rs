@@ -46,7 +46,6 @@ impl RequestDeliveryMetadata {
             phase,
             response_id: None,
             idempotency_key: None,
-            idempotency_supported: false,
             close_code: None,
             close_reason: None,
             emitted_event: false,
