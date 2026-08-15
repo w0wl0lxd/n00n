@@ -1405,7 +1405,7 @@ fn spawn_runtime_request(
                 let plugins = rt.plugins.borrow();
                 plugins
                     .get(&*plugin)
-                    .and_then(|tools| tools.lookup(tool))
+                    .and_then(|tools| tools.lookup(&tool))
                     .and_then(|keys| keys.start.as_ref())
                     .and_then(|key| rt.lua.registry_value::<Function>(key).ok())
             };
