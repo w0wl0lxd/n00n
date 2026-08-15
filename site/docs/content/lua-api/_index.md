@@ -2693,7 +2693,7 @@ Extract public URLs with manual redirect validation, DNS pinning, byte limits, a
 **Parameters:**
 
 - `ctx` (`LuaCtx`) Current tool context; cancellation stops the operation.
-- `request` (`table`) Extraction request containing urls, format, query, chunks_per_source, and max_bytes_per_source.
+- `request` (`table`) Extraction request containing urls, format, and max_bytes_per_source.
 
 **Returns:** (`table|nil`, `string|nil`) Extraction response or an error.
 

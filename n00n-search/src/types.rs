@@ -5,8 +5,8 @@ use crate::error::Error;
 pub const MAX_QUERY_BYTES: usize = 8_192;
 pub const MAX_SEARCH_RESULTS: usize = 100;
 pub const MAX_EXTRACT_URLS: usize = 20;
-pub const MAX_CHUNKS_PER_SOURCE: usize = 100;
 pub const MAX_SOURCE_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_TOTAL_RENDERED_BYTES: usize = 40 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -153,8 +153,6 @@ pub enum ExtractFormat {
 pub struct ExtractRequest {
     pub urls: Vec<String>,
     pub format: ExtractFormat,
-    pub query: Option<String>,
-    pub chunks_per_source: usize,
     pub max_bytes_per_source: usize,
 }
 
@@ -174,12 +172,6 @@ impl ExtractRequest {
             return Err(Error::validation(
                 "max_bytes_per_source",
                 "is outside the allowed range",
-            ));
-        }
-        if self.chunks_per_source > MAX_CHUNKS_PER_SOURCE {
-            return Err(Error::validation(
-                "chunks_per_source",
-                "exceeds the allowed maximum",
             ));
         }
         Ok(())
@@ -242,8 +234,6 @@ mod tests {
         let request = ExtractRequest {
             urls: Vec::new(),
             format: ExtractFormat::Markdown,
-            query: None,
-            chunks_per_source: 0,
             max_bytes_per_source: 1_024,
         };
         assert!(request.validate().is_err());
