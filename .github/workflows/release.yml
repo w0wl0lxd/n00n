@@ -77,7 +77,8 @@ jobs:
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.tar.gz"
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
           cp "target/${{ matrix.target }}/release/n00n-git" "n00n-git"
-          tar czf "${archive}" "${BINARY_NAME}" n00n-git
+          cp "target/${{ matrix.target }}/release/n00n-smell" "n00n-smell"
+          tar czf "${archive}" "${BINARY_NAME}" n00n-git n00n-smell
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
 
       - name: Upload artifact
@@ -117,7 +118,8 @@ jobs:
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.tar.gz"
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
           cp "target/${{ matrix.target }}/release/n00n-git" "n00n-git"
-          tar czf "${archive}" "${BINARY_NAME}" n00n-git
+          cp "target/${{ matrix.target }}/release/n00n-smell" "n00n-smell"
+          tar czf "${archive}" "${BINARY_NAME}" n00n-git n00n-smell
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
@@ -128,7 +130,8 @@ jobs:
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.zip"
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}.exe" "${BINARY_NAME}.exe"
           cp "target/${{ matrix.target }}/release/n00n-git.exe" "n00n-git.exe"
-          7z a "${archive}" "${BINARY_NAME}.exe" n00n-git.exe
+          cp "target/${{ matrix.target }}/release/n00n-smell.exe" "n00n-smell.exe"
+          7z a "${archive}" "${BINARY_NAME}.exe" n00n-git.exe n00n-smell.exe
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
 
       - name: Upload artifact

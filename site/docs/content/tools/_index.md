@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 35 built-in tools. This is the full reference.
+n00n ships with 36 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -40,8 +40,9 @@ Write content to a file. Prefer edit or edit_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `content` | string | yes |  |
 | `path` | string | yes |  |
+| `content` | string | yes |  |
+| `justification` | string | no | Required when content may contain secrets/PII. Explain why this content is safe to write. |
 
 ### `edit` *(lua plugin)*
 
@@ -49,10 +50,11 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `replace_all` | boolean | no |  |
 | `path` | string | yes | File path. |
-| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
 | `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
+| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
+| `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this replacement is safe. |
+| `replace_all` | boolean | no |  |
 
 ### `multiedit` *(lua plugin)*
 
@@ -60,8 +62,9 @@ Apply multiple non-adjacent string edits to a single file atomically. Applied in
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `edits` | array of objects | yes |  |
 | `path` | string | yes |  |
+| `justification` | string | no | Required when any new_string may contain secrets/PII. Explain why these replacements are safe. |
+| `edits` | array of objects | yes |  |
 
 ### `edit_lines` *(lua plugin)*
 
@@ -69,10 +72,11 @@ Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `ne
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `start` | integer | yes |  |
 | `path` | string | yes |  |
-| `new_string` | string | yes |  |
 | `end` | integer | yes |  |
+| `start` | integer | yes |  |
+| `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this replacement is safe. |
+| `new_string` | string | yes |  |
 
 ### `insert_lines` *(lua plugin)*
 
@@ -80,6 +84,7 @@ Insert lines before `line` number. Existing lines shift down.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this insertion is safe. |
 | `path` | string | yes |  |
 | `line` | integer | yes |  |
 | `new_string` | string | yes |  |
@@ -179,6 +184,18 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 | `mode` | string | no |  |
 | `content` | string | no | Content filter for search (docs, config, code, or all) |
 | `top_k` | integer | no |  |
+
+### `smell` *(lua plugin)*
+
+Code-smell index. index, search.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `repo` | string | no |  | Path to the project root. Defaults to the current working directory. |
+| `query` | string | no |  | Keyword or phrase to search for (required for search). |
+| `command` | string | yes |  | Smell command to run. |
+| `kind` | string | no |  | Optional smell kind filter (for search). |
+| `top_k` | integer | no | 5 | Maximum number of search results. |
 
 ## Execution & Control
 

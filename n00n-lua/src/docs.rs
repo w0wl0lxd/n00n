@@ -70,6 +70,7 @@ pub fn api_docs() -> Vec<&'static ModuleDoc> {
         &api::keymap::DOCS,
         &api::log::DOCS,
         &api::net::DOCS,
+        &api::search::DOCS,
         &api::session::DOCS,
         &api::text::DOCS,
         &api::treesitter::DOCS,
@@ -86,6 +87,7 @@ pub fn api_docs() -> Vec<&'static ModuleDoc> {
         &api::codegraph::DOCS,
         &api::github::DOCS,
         &api::semblem::DOCS,
+        &api::smell::DOCS,
         &api::workflow::DOCS,
         &api::yaml::DOCS,
     ]
@@ -97,6 +99,7 @@ mod tests {
     use std::sync::Arc;
 
     use mlua::{Lua, Table, Value};
+    use n00n_config::{RawConfig, SearchConfig, SearchFileConfig};
 
     use super::{DocKind, api_docs};
     use crate::api::create_n00n_global;
@@ -133,6 +136,17 @@ mod tests {
             &PluginPermissions::trusted(),
             Arc::default(),
             None,
+            Arc::new(
+                RawConfig {
+                    search: SearchFileConfig {
+                        enabled: Some(true),
+                    },
+                    ..RawConfig::default()
+                }
+                .into_config(false)
+                .unwrap()
+                .search,
+            ),
         )
         .unwrap();
 
@@ -184,6 +198,7 @@ mod tests {
             &PluginPermissions::trusted(),
             Arc::default(),
             None,
+            Arc::new(SearchConfig::default()),
         )
         .unwrap();
         assert!(matches!(
@@ -199,6 +214,17 @@ mod tests {
             &PluginPermissions::trusted(),
             Arc::default(),
             Some(crate::api::firecrawl::BundledCapability::WebSearch),
+            Arc::new(
+                RawConfig {
+                    search: SearchFileConfig {
+                        enabled: Some(true),
+                    },
+                    ..RawConfig::default()
+                }
+                .into_config(false)
+                .unwrap()
+                .search,
+            ),
         )
         .unwrap();
         let firecrawl: Table = privileged.get("firecrawl").unwrap();

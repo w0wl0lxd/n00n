@@ -602,6 +602,8 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
         .context("invalid config")?;
     config.permissions = load_permissions(&cwd);
 
+    host.set_search_config(Arc::new(config.search.clone()))
+        .context("configure lua search services")?;
     host.load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
@@ -690,6 +692,8 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
         .into_config(false)
         .context("invalid config")?;
 
+    host.set_search_config(Arc::new(config.search.clone()))
+        .context("configure lua search services")?;
     host.load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
