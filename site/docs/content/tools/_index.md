@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 33 built-in tools. This is the full reference.
+n00n ships with 35 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -121,7 +121,7 @@ Find files by glob pattern. Respects .gitignore. Returns matching paths sorted b
 
 ### `grep` *(lua plugin)*
 
-Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: PCRE look-around (e.g. `(?!...)`, `(?<!...)`) is not supported. Use Rust regex syntax.
+Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: this is Rust regex, not PCRE — no look-around (`(?!...)`, `(?<!...)`) and no backreferences (`\1`, `\k<name>`).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -432,3 +432,40 @@ Search the web for real-time information using Firecrawl or Exa.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8; Exa 1-100, Firecrawl 1-10 | Number of results |
 | `query` | string | yes |  | Search query |
+
+## Repository
+
+### `git` *(lua plugin)*
+
+Local git operations via n00n-git.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ref_b` | string | no |  |
+| `path` | string | no |  |
+| `output` | string | no |  |
+| `message` | string | no |  |
+| `count` | integer | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `file` | string | no |  |
+| `files` | array of strings | no |  |
+| `ref_a` | string | no |  |
+
+### `github` *(lua plugin)*
+
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN or gh CLI.
+
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `issue_number` | number | no |  |
+| `head` | string | no |  |
+| `owner` | string | no |  |
+| `body` | string | no |  |
+| `repo` | string | no |  |
+| `title` | string | no |  |
+| `command` | string | yes |  |
+| `base` | string | no |  |
+| `pr_number` | number | no |  |

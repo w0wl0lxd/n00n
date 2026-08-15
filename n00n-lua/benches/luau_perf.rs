@@ -9,6 +9,10 @@
 //! This benchmark uses the same low-level Luau FFI hooks as the runtime; the
 //! unsafe code is isolated to this file and exercised only during benchmarking.
 #![allow(unsafe_code)]
+// Bench setup and criterion's `Bencher::iter` closures are not production
+// code: a failure here should abort the run loudly, matching the same
+// exemption tests already get in clippy.toml.
+#![allow(clippy::unwrap_used)]
 
 use std::cell::Cell;
 use std::ffi::c_int;

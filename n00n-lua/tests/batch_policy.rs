@@ -9,11 +9,11 @@
 //! `n00n.async.gather`, with tool dispatch replaced by a scriptable Lua stub.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use n00n_agent::cancel::CancelToken;
-use n00n_agent::tools::ToolRegistry;
 use n00n_agent::tools::test_support::{stub_ctx, stub_ctx_with};
+use n00n_agent::tools::{Deadline, ToolRegistry};
 use n00n_agent::{AgentEvent, AgentMode, BufferSnapshot, EventSender, SpanStyle, ToolOutput};
 use n00n_config::ToolOutputLines;
 use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginHost};
@@ -27,6 +27,7 @@ const ERROR_PREFIX: &str = "[ERROR] ";
 const EMPTY_ERROR: &str = "provide at least one tool call";
 const NESTED_ERROR: &str = "cannot nest batch inside batch";
 const DISCARDED_ERROR: &str = "maximum of 25 tools per batch";
+const INSUFFICIENT_TIME_ERROR: &str = "insufficient time remaining in shared deadline";
 const SUMMARY_ALL_OK_FMT: &str = "All {} tools executed successfully.";
 const SUMMARY_MIXED_FMT: &str = "Executed {}/{} successfully. {} failed.";
 
@@ -303,6 +304,42 @@ fn invalid_input_errors_without_dispatch(tool_calls: Value, expected_err: &str) 
     assert!(
         recorded_calls(&reg).is_empty(),
         "nothing must be dispatched"
+    );
+}
+
+#[test]
+fn batch_settles_children_without_dispatch_when_deadline_is_exhausted() {
+    let (reg, _host) = load_batch_host();
+    let entry = reg.get(BATCH_TOOL).unwrap();
+    let inv = entry
+        .tool
+        .parse(&json!({
+            "tool_calls": [
+                { "tool": "ok", "parameters": { "tag": "a" } },
+                { "tool": "ok", "parameters": { "tag": "b" } },
+            ]
+        }))
+        .unwrap();
+    let mut ctx = stub_ctx(&AgentMode::Build);
+    ctx.deadline = Deadline::At(Instant::now());
+
+    let out = smol::block_on(async { inv.execute(&ctx).await })
+        .output
+        .expect("batch should settle children, not fail outright");
+    let text = match out {
+        ToolOutput::Plain(s) | ToolOutput::Markdown(s) => s.text,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    let expected = format!(
+        "{}{}{}",
+        section("ok", &format!("{ERROR_PREFIX}{INSUFFICIENT_TIME_ERROR}")),
+        section("ok", &format!("{ERROR_PREFIX}{INSUFFICIENT_TIME_ERROR}")),
+        summary_mixed(0, 2, 2)
+    );
+    assert_eq!(text, expected);
+    assert!(
+        recorded_calls(&reg).is_empty(),
+        "an exhausted deadline must skip dispatch entirely, not race the watchdog"
     );
 }
 

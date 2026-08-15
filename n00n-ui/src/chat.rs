@@ -173,6 +173,9 @@ impl Chat {
                 self.messages_panel
                     .push(DisplayMessage::compaction_pending());
             }
+            AgentEvent::AutoCompactFailed { error } => {
+                self.messages_panel.fail_pending_compaction(&error);
+            }
             AgentEvent::CompactionDone => {
                 if !self.messages_panel.complete_pending_compaction() {
                     self.messages_panel.flush();
@@ -1657,5 +1660,25 @@ mod tests {
         chat.flush();
         assert_eq!(chat.message_count(), 2);
         assert_eq!(chat.last_message_text(), "new");
+    }
+
+    #[test]
+    fn auto_compact_failed_resolves_pending_compaction_card() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+
+        chat.handle_event(AgentEvent::AutoCompacting, None);
+        assert!(chat.has_pending_compaction());
+
+        chat.handle_event(
+            AgentEvent::AutoCompactFailed {
+                error: "context overflow".into(),
+            },
+            None,
+        );
+        assert!(
+            !chat.has_pending_compaction(),
+            "a failed auto-compaction must not leave the UI stuck on the pending card"
+        );
+        assert!(chat.last_message_text().contains("context overflow"));
     }
 }
