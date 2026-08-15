@@ -606,7 +606,7 @@ fn merge_batch(
         .unwrap_or_else(Vec::new);
     let catalog = ModelCatalog::current();
     for spec in &batch.models {
-        if catalog.allows(spec) && !merged.contains(spec) {
+        if catalog.allows_live(spec) && !merged.contains(spec) {
             merged.push(spec.clone());
         }
     }

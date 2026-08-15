@@ -12,6 +12,7 @@
 --      batch.
 
 local ToolView = require("n00n.tool_view")
+local canonical_tool_name = require("n00n.policy").canonical_tool_name
 
 local MAX_BATCH_SIZE = 25
 local SEPARATOR = "──────────────────"
@@ -153,7 +154,7 @@ local function prepare_children(tool_calls)
     c.status = STATUS.PENDING
     if i > MAX_BATCH_SIZE then
       c.status, c.output = STATUS.ERROR, DISCARDED_ERROR
-    elseif c.tool == "batch" then
+    elseif canonical_tool_name(c.tool) == "run_batch" then
       c.status, c.output = STATUS.ERROR, NESTED_ERROR
     end
     c.header = header_spans(c.tool, c.params)

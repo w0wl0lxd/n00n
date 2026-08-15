@@ -124,6 +124,14 @@ impl ModelCatalog {
     pub fn allows(&self, input: &str) -> bool {
         self.resolve(input).is_ok()
     }
+
+    /// Whether the spec resolves in the catalog or is a model the provider
+    /// accepts through live discovery even though it is not in the static
+    /// tables (OpenRouter, Ollama, and other flexible providers).
+    #[must_use]
+    pub fn allows_live(&self, input: &str) -> bool {
+        self.allows(input) || is_discoverable_spec(input)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +200,16 @@ fn is_live_discovery_only_spec(spec: &str) -> bool {
     };
     ManifestRegistry::for_slug(provider)
         .is_some_and(|manifest| manifest.accepts_arbitrary_models && manifest.models.is_empty())
+}
+
+fn is_discoverable_spec(spec: &str) -> bool {
+    if !is_spec(spec) {
+        return false;
+    }
+    let Some((provider, _)) = spec.split_once('/') else {
+        return false;
+    };
+    ManifestRegistry::for_slug(provider).is_some_and(|manifest| manifest.accepts_arbitrary_models)
 }
 
 #[cfg(test)]

@@ -777,7 +777,6 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
     ("agent_control", "control_agent"),
     ("agent_list", "list_agents"),
     ("agent_status", "get_agent"),
-    ("arbor", "map_code"),
     ("batch", "run_batch"),
     ("bash", "run_shell"),
     ("blackboard", "use_blackboard"),

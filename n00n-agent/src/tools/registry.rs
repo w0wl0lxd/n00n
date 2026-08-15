@@ -303,6 +303,15 @@ impl ToolsSnapshot {
         for (i, tool) in tools.iter().enumerate() {
             by_name.insert(tool.name().to_owned(), i);
             for alias in tool.tool.aliases() {
+                if let Some(existing) = by_name.get(alias) {
+                    tracing::warn!(
+                        alias,
+                        canonical = tool.name(),
+                        collides_with = tools[*existing].name(),
+                        "dropping a tool alias that collides with another tool"
+                    );
+                    continue;
+                }
                 by_name.insert(alias.to_owned(), i);
             }
         }
@@ -437,7 +446,9 @@ impl ToolRegistry {
             let mut seen = HashSet::new();
             for candidate in names {
                 if !seen.insert(candidate.clone()) {
-                    conflict = Some("same tool alias".to_owned());
+                    conflict = Some(format!(
+                        "same tool alias: {candidate} is both the name and an alias"
+                    ));
                     return Arc::clone(current);
                 }
                 if let Some(existing) = current.get(&candidate) {
@@ -483,8 +494,10 @@ impl ToolRegistry {
                 for name in names {
                     if !seen.insert(name.clone()) {
                         conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: "same tool alias".to_owned(),
+                            name: name.clone(),
+                            existing: format!(
+                                "same tool alias: {name} is both the name and an alias"
+                            ),
                         });
                         return Arc::clone(current);
                     }
@@ -560,8 +573,10 @@ impl ToolRegistry {
                 for name in names {
                     if !seen.insert(name.clone()) {
                         conflict = Some(RegistryError::NameConflict {
-                            name,
-                            existing: "same tool alias".to_owned(),
+                            name: name.clone(),
+                            existing: format!(
+                                "same tool alias: {name} is both the name and an alias"
+                            ),
                         });
                         return Arc::clone(current);
                     }

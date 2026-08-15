@@ -111,12 +111,12 @@ local function handler(input, ctx)
     include_mcp = false,
     except_tools = {
       "delegate_fusion",
-      "task",
-      "team",
-      "workflow",
-      "agent_control",
+      "run_task",
+      "run_team",
+      "run_workflow",
+      "control_agent",
       "sessions",
-      "blackboard",
+      "use_blackboard",
     },
     system_append = SIDEKICK_SYSTEM,
   })

@@ -403,7 +403,10 @@ impl McpSession {
         }
         drop(loaded);
         if !deferred.is_empty() {
-            if existing.contains(TOOL_SEARCH_TOOL_NAME) || existing.contains("tool_search") {
+            let search_tool_taken = existing
+                .iter()
+                .any(|name| n00n_config::canonical_tool_name(name) == TOOL_SEARCH_TOOL_NAME);
+            if search_tool_taken {
                 warn!(
                     deferred = deferred.len(),
                     "a tool named {TOOL_SEARCH_TOOL_NAME} already exists; deferred MCP tools stay hidden"

@@ -5,7 +5,6 @@ local TOOL_ALIASES = {
   agent_control = "control_agent",
   agent_list = "list_agents",
   agent_status = "get_agent",
-  arbor = "map_code",
   batch = "run_batch",
   bash = "run_shell",
   blackboard = "use_blackboard",
@@ -40,6 +39,8 @@ local TOOL_ALIASES = {
 local function canonical_tool_name(name)
   return TOOL_ALIASES[name] or name
 end
+
+M.canonical_tool_name = canonical_tool_name
 
 local ok, memory_helpers = pcall(require, "memory.memory_helpers")
 

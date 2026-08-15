@@ -126,7 +126,12 @@ impl ToolFilter {
             (Self::Only(current_allowed), Self::Only(other_allowed)) => {
                 let intersection: Vec<String> = current_allowed
                     .into_iter()
-                    .filter(|n| other_allowed.iter().any(|o| o == n.as_str()))
+                    .filter(|n| {
+                        let canonical = canonical_tool_name(n);
+                        other_allowed
+                            .iter()
+                            .any(|o| canonical_tool_name(o) == canonical)
+                    })
                     .collect();
                 if intersection.is_empty() {
                     Self::Only(vec![]) // No tools allowed
@@ -146,13 +151,19 @@ impl ToolFilter {
             (Self::Only(allowed), Self::AllExcept(blocked)) => Self::Only(
                 allowed
                     .into_iter()
-                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .filter(|n| {
+                        let canonical = canonical_tool_name(n);
+                        !blocked.iter().any(|b| canonical_tool_name(b) == canonical)
+                    })
                     .collect(),
             ),
             (Self::AllExcept(blocked), Self::Only(allowed)) => Self::Only(
                 allowed
                     .iter()
-                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .filter(|n| {
+                        let canonical = canonical_tool_name(n);
+                        !blocked.iter().any(|b| canonical_tool_name(b) == canonical)
+                    })
                     .cloned()
                     .collect(),
             ),
@@ -235,7 +246,10 @@ pub fn default_active_tools() -> ActiveTools {
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
 pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
-    !disabled_tools.iter().any(|disabled| disabled == name)
+    let canonical = canonical_tool_name(name);
+    !disabled_tools
+        .iter()
+        .any(|disabled| canonical_tool_name(disabled) == canonical)
 }
 
 pub const AGENT_CONTROL_TOOL_NAME: &str = "control_agent";
