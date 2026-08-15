@@ -6039,6 +6039,7 @@ function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
 function ToolView:append(line)
+function ToolView:append_buffered(line)
 function ToolView:append_text(text)
 
 -- Replace the logical result in one publication. Expansion is view state,
