@@ -56,7 +56,7 @@ pub(crate) fn create_n00n_global(
     search_config: Arc<SearchConfig>,
 ) -> LuaResult<Table> {
     let n00n = lua.create_table()?;
-    lua.set_app_data(search_config);
+    lua.set_app_data(Arc::clone(&search_config));
 
     let api = tool::create_api_table(lua, pending, Arc::clone(&plugin), opts)?;
     autocmd::add_autocmd_methods(&api, lua, Arc::clone(&plugin))?;
@@ -147,5 +147,65 @@ mod tests {
 
         let installed = lua.app_data_ref::<Arc<SearchConfig>>().unwrap();
         assert!(Arc::ptr_eq(&installed, &search_config));
+    }
+
+    #[test]
+    fn disabled_search_config_omits_the_search_api() {
+        let lua = Lua::new();
+        let search_config = Arc::new(
+            RawConfig {
+                search: SearchFileConfig {
+                    enabled: Some(false),
+                },
+                ..RawConfig::default()
+            }
+            .into_config(false)
+            .unwrap()
+            .search,
+        );
+
+        let n00n = create_n00n_global(
+            &lua,
+            Arc::default(),
+            Arc::from("search-config-test"),
+            None,
+            &PluginPermissions::trusted(),
+            Arc::default(),
+            None,
+            search_config,
+        )
+        .unwrap();
+
+        assert!(n00n.get::<Option<Table>>("search").unwrap().is_none());
+    }
+
+    #[test]
+    fn denied_net_permission_omits_the_search_api() {
+        let lua = Lua::new();
+        let search_config = Arc::new(
+            RawConfig {
+                search: SearchFileConfig {
+                    enabled: Some(true),
+                },
+                ..RawConfig::default()
+            }
+            .into_config(false)
+            .unwrap()
+            .search,
+        );
+
+        let n00n = create_n00n_global(
+            &lua,
+            Arc::default(),
+            Arc::from("search-config-test"),
+            None,
+            &PluginPermissions::denied(),
+            Arc::default(),
+            None,
+            search_config,
+        )
+        .unwrap();
+
+        assert!(n00n.get::<Option<Table>>("search").unwrap().is_none());
     }
 }
