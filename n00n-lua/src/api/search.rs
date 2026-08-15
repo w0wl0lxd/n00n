@@ -78,7 +78,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
     fns: &[FnDoc {
         name: "extract",
         args: "ctx, request",
-        desc: "Extract public URLs with manual redirect validation, DNS pinning, byte limits, and tool cancellation.",
+        desc: "Extract public URLs with manual redirect validation, DNS pinning, byte limits, and tool cancellation. Requires [search].enabled = true and the plugin's net permission.",
         params: &[
             ParamDoc {
                 name: "ctx",
@@ -88,7 +88,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             ParamDoc {
                 name: "request",
                 ty: "table",
-                desc: "Extraction request containing urls, format, query, chunks_per_source, and max_bytes_per_source.",
+                desc: "Extraction request containing urls, format, and max_bytes_per_source.",
             },
         ],
         returns: "(table|nil, string|nil) Extraction response or an error.",
