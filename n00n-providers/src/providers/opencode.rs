@@ -1902,7 +1902,7 @@ mod tests {
         }
     }
 
-    /// Live model discovery plus a full completion against OpenCode Zen
+    /// Live model discovery plus a full completion against `OpenCode Zen`
     /// (`opencode/<model>`), checking both the final assembled message and
     /// that streamed `TextDelta` events were actually emitted along the way.
     ///
@@ -1966,7 +1966,7 @@ mod tests {
         });
     }
 
-    /// Live completion against OpenCode Go (`opencode/opencode-go/<model>`),
+    /// Live completion against `OpenCode Go` (`opencode/opencode-go/<model>`),
     /// a separate models.dev catalog entry with its own base URL
     /// (`https://opencode.ai/zen/go/v1`) and curated model set, reached
     /// through the same `OPENCODE_API_KEY`.
@@ -2015,7 +2015,7 @@ mod tests {
         });
     }
 
-    /// Live tool-call round trip against OpenCode Zen: the model is asked to
+    /// Live tool-call round trip against `OpenCode Zen`: the model is asked to
     /// invoke a tool, and both the assembled `ToolUse` block and the
     /// streamed `ToolUseStart` event are checked.
     ///
