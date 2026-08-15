@@ -172,7 +172,6 @@ impl CodexAttempt {
 }
 
 #[derive(Debug)]
-#[allow(clippy::result_large_err)]
 struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
@@ -876,7 +875,7 @@ impl OpenAi {
         result
     }
 
-    #[allow(clippy::large_futures)]
+    #[allow(clippy::large_futures, clippy::result_large_err)]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
     async fn stream_websocket<F>(
@@ -4036,7 +4035,6 @@ mod tests {
 
     #[test]
     #[allow(clippy::large_futures)]
-    #[allow(clippy::result_large_err)]
     fn token_refresh_during_new_socket_handshake_reconnects_before_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
