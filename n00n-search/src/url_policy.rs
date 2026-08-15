@@ -220,17 +220,17 @@ fn is_special_v6(address: Ipv6Addr) -> bool {
         || nat64_embedded_v4(address).is_some_and(is_special_v4)
 }
 
-fn ipv4_compatible(address: Ipv6Addr) -> Option<[u8; 4]> {
+fn ipv4_compatible(address: Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = address.segments();
     let zero = segments[0..5].iter().all(|&s| s == 0) && segments[5] == 0;
-    zero.then(|| (((segments[6] as u32) << 16) | segments[7] as u32).to_be_bytes())
+    zero.then(|| Ipv4Addr::from(((segments[6] as u32) << 16) | segments[7] as u32))
 }
 
-fn nat64_embedded_v4(address: Ipv6Addr) -> Option<[u8; 4]> {
+fn nat64_embedded_v4(address: Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = address.segments();
     let prefix =
         segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..5].iter().all(|&s| s == 0);
-    prefix.then(|| (((segments[6] as u32) << 16) | segments[7] as u32).to_be_bytes())
+    prefix.then(|| Ipv4Addr::from(((segments[6] as u32) << 16) | segments[7] as u32))
 }
 
 #[cfg(test)]
