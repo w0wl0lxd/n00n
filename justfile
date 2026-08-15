@@ -106,5 +106,5 @@ verify-clean TARGET_DIR="/tmp/n00n-verify":
 # new clippy lints that must be fixed in the same change.
 bump-nightly DATE:
     sed -i 's|nightly-[0-9]*-[0-9]*-[0-9]*|nightly-{{DATE}}|' rust-toolchain.toml
-    sed -i 's|nightly-[0-9]*-[0-9]*-[0-9]*|nightly-{{DATE}}|' .github/workflows/benchmarks.yml .github/workflows/docs.yml .github/workflows/release.yml
+    sed -i 's|nightly-[0-9]*-[0-9]*-[0-9]*|nightly-{{DATE}}|' .github/workflows/benchmarks.yml .github/workflows/docs.yml .github/workflows/release.yml .github/workflows/rust.yml
     echo "toolchain bumped to nightly-{{DATE}}; run cargo check --workspace and fix any new clippy lints"
