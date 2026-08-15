@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1405,7 +1405,7 @@ fn spawn_runtime_request(
                 let plugins = rt.plugins.borrow();
                 plugins
                     .get(&*plugin)
-                    .and_then(|tools| tools.get(&*tool))
+                    .and_then(|tools| tools.lookup(&*tool))
                     .and_then(|keys| keys.start.as_ref())
                     .and_then(|key| rt.lua.registry_value::<Function>(key).ok())
             };
@@ -1595,7 +1595,22 @@ struct ToolKeys {
     describe: Option<RegistryKey>,
 }
 
-type PluginMap = Rc<RefCell<HashMap<Arc<str>, HashMap<Arc<str>, Arc<ToolKeys>>>>>;
+struct PluginTools {
+    keys: HashMap<Arc<str>, ToolKeys>,
+    alias_to_canonical: HashMap<Arc<str>, Arc<str>>,
+}
+
+impl PluginTools {
+    fn lookup(&self, tool: &str) -> Option<&ToolKeys> {
+        self.keys.get(tool).or_else(|| {
+            self.alias_to_canonical
+                .get(tool)
+                .and_then(|c| self.keys.get(c))
+        })
+    }
+}
+
+type PluginMap = Rc<RefCell<HashMap<Arc<str>, PluginTools>>>;
 
 struct LuaRuntime {
     /// Held for its Drop (joins the poker thread). Field order matters:
@@ -1688,7 +1703,7 @@ impl LuaRuntime {
             let plugins = Rc::clone(&plugins);
             crate::api::tool::set_local_tool_handles(move |tool| {
                 let plugins = plugins.borrow();
-                let tk = plugins.values().find_map(|tools| tools.get(tool))?;
+                let tk = plugins.values().find_map(|tools| tools.lookup(tool))?;
                 let to_fn = |key: Option<&RegistryKey>| {
                     key.and_then(|k| lua.registry_value::<Function>(k).ok())
                 };
@@ -1728,12 +1743,7 @@ impl LuaRuntime {
             store.clear_plugin(name);
         }
         if let Some(keys) = self.plugins.borrow_mut().remove(name) {
-            // Aliases share one Arc<ToolKeys>, so drop each handler once.
-            let mut dropped: HashSet<*const ToolKeys> = HashSet::new();
             for (_, tk) in keys {
-                if !dropped.insert(Arc::as_ptr(&tk)) {
-                    continue;
-                }
                 if let Err(e) = self.lua.remove_registry_value(tk.handler) {
                     tracing::warn!(plugin = name, error = %e, "failed to drop lua handler key");
                 }
@@ -2170,25 +2180,40 @@ impl LuaRuntime {
             });
         }
 
-        let mut keys: HashMap<Arc<str>, Arc<ToolKeys>> = HashMap::new();
-        for t in pending {
-            let key = Arc::new(ToolKeys {
-                handler: t.handler_key,
-                header: t.header_key,
-                restore: t.restore_key,
-                start: t.start_key,
-                permission_scopes: match t.permission_scopes {
-                    Some(PermissionScopeSpec::Callback(k)) => Some(k),
-                    _ => None,
-                },
-                describe: t.describe_key,
-            });
-            keys.insert(Arc::clone(&t.name), Arc::clone(&key));
-            for alias in &t.aliases {
-                keys.insert(Arc::clone(alias), Arc::clone(&key));
-            }
-        }
-        self.plugins.borrow_mut().insert(name, keys);
+        let alias_to_canonical: HashMap<Arc<str>, Arc<str>> = pending
+            .iter()
+            .flat_map(|t| {
+                t.aliases
+                    .iter()
+                    .map(|alias| (Arc::clone(alias), Arc::clone(&t.name)))
+            })
+            .collect();
+        let keys: HashMap<Arc<str>, ToolKeys> = pending
+            .into_iter()
+            .map(|t| {
+                (
+                    t.name,
+                    ToolKeys {
+                        handler: t.handler_key,
+                        header: t.header_key,
+                        restore: t.restore_key,
+                        start: t.start_key,
+                        permission_scopes: match t.permission_scopes {
+                            Some(PermissionScopeSpec::Callback(k)) => Some(k),
+                            _ => None,
+                        },
+                        describe: t.describe_key,
+                    },
+                )
+            })
+            .collect();
+        self.plugins.borrow_mut().insert(
+            name,
+            PluginTools {
+                keys,
+                alias_to_canonical,
+            },
+        );
 
         Ok(())
     }
@@ -2303,7 +2328,7 @@ fn plugin_fn(
 ) -> Option<(Function, LuaValue)> {
     let func = {
         let plugins = plugins.borrow();
-        let key = key(plugins.get(plugin)?.get(tool)?)?;
+        let key = key(plugins.get(plugin)?.lookup(tool)?)?;
         match lua.registry_value::<Function>(key) {
             Ok(f) => f,
             Err(e) => {
@@ -2370,7 +2395,7 @@ async fn restore_item(
         let plugins = plugins.borrow();
         let Some((pname, tk)) = plugins
             .iter()
-            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))
+            .find_map(|(pname, tools)| tools.lookup(&*item.tool).map(|tk| (Arc::clone(pname), tk)))
         else {
             return Ok(None);
         };
