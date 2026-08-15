@@ -265,7 +265,7 @@ impl Cursor {
         }
 
         let text = if result.text.is_empty() {
-            result.result.map_or(String::new(), |t| t)
+            result.result.unwrap_or_else(String::new)
         } else {
             result.text
         };
@@ -683,7 +683,7 @@ async fn handle_thinking_event(
     let full = value
         .get("text")
         .and_then(serde_json::Value::as_str)
-        .map_or("", |v| v)
+        .unwrap_or_else(|| "")
         .to_string();
     if full.is_empty() {
         return Ok(());

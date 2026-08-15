@@ -1,5 +1,5 @@
 [toolchain]
-channel = "stable"
+channel = "nightly-2026-08-14"
 components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
 profile = "minimal"
 targets = ["x86_64-pc-windows-msvc"]

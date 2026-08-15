@@ -1,0 +1,1 @@
+n00n now builds on the pinned nightly-2026-08-14 Rust toolchain instead of stable. CI toolchain steps were switched to nightly, the MSRV job was removed since the pinned-nightly policy has no minimum supported version, and the `rust-version` field was dropped from all workspace manifests accordingly.

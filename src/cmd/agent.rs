@@ -101,7 +101,7 @@ fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
                     a.id,
                     a.backend,
                     a.status,
-                    a.title.as_deref().map_or("", |t| t)
+                    a.title.as_deref().unwrap_or_else(|| "")
                 );
             }
         }
@@ -1325,7 +1325,7 @@ fn print_agent_table(agents: &[AgentRecord]) {
             agent.id,
             agent.backend,
             agent.status,
-            agent.title.as_deref().map_or("", |title| title)
+            agent.title.as_deref().unwrap_or_else(|| "")
         );
     }
 }
@@ -1381,8 +1381,8 @@ pub fn list_client(
             "  {} - {} - {} - {}",
             agent.id,
             agent.status,
-            agent.model.as_deref().map_or("?", |m| m),
-            agent.title.as_deref().map_or("", |t| t)
+            agent.model.as_deref().unwrap_or_else(|| "?"),
+            agent.title.as_deref().unwrap_or_else(|| "")
         );
     }
 

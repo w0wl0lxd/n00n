@@ -402,7 +402,7 @@ fn ensure_blank_line(lines: &mut Vec<Line>) {
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
     for (i, ch) in text.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).map_or(0, |w| w);
+        let cw = UnicodeWidthChar::width(ch).unwrap_or_else(|| 0);
         if width + cw > max_width {
             return i;
         }
@@ -514,7 +514,7 @@ fn constrain_col_widths(col_widths: &mut [usize], available: usize) {
     }
     let mut excess = col_widths.iter().sum::<usize>().saturating_sub(available);
     while excess > 0 {
-        let max_w = col_widths.iter().copied().max().map_or(0, |w| w);
+        let max_w = col_widths.iter().copied().max().unwrap_or_else(|| 0);
         if max_w <= MIN_COL_WIDTH {
             break;
         }
@@ -558,7 +558,7 @@ fn wrap_spans(spans: Vec<Span>, max_width: usize) -> Vec<Vec<Span>> {
                 }
                 result.push(mem::take(&mut current));
                 remaining = max_width;
-                text = text.strip_prefix(' ').map_or(text, |s| s);
+                text = text.strip_prefix(' ').unwrap_or_else(|| text);
                 continue;
             }
             let (take, skip) = if fits < text.len() {
@@ -626,7 +626,7 @@ fn render_table(
         .iter()
         .map(std::vec::Vec::len)
         .max()
-        .map_or(0, |len| len);
+        .unwrap_or_else(|| 0);
     if col_count == 0 {
         return Vec::new();
     }
@@ -687,7 +687,7 @@ fn render_table(
             .iter()
             .map(std::vec::Vec::len)
             .max()
-            .map_or(1, |len| len);
+            .unwrap_or_else(|| 1);
         let row_emphasis = if header {
             Emphasis::BOLD
         } else {
