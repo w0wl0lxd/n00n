@@ -44,7 +44,7 @@ use crate::api::firecrawl::BundledCapability;
 use crate::api::options::PluginOpts;
 use crate::api::tool::PendingTools;
 use crate::api::util::command::UiAction;
-use crate::plugin_permissions::{Permission, PluginPermissions};
+use crate::plugin_permissions::PluginPermissions;
 
 pub(crate) fn create_n00n_global(
     lua: &Lua,

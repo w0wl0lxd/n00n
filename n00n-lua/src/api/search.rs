@@ -123,8 +123,6 @@ mod tests {
         ExtractRequest {
             urls: vec!["https://example.com".to_owned()],
             format: ExtractFormat::Text,
-            query: None,
-            chunks_per_source: 0,
             max_bytes_per_source: 1_024,
         }
     }
