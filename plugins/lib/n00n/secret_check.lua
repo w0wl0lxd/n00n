@@ -91,9 +91,17 @@ local CREDENTIAL_SUFFIXES = {
 
 local TOKEN_VALUE_PATTERN = "[=:]%s*[\"']?([A-Za-z0-9+/_%-]+)"
 
+-- PEM and OpenSSH armor markers. Armored key blocks start on their own line
+-- and need no assignment delimiter, so they bypass keyword checks.
+local PRIVATE_KEY_BEGIN = "-----BEGIN "
+local PRIVATE_KEY_SUFFIX = " PRIVATE KEY-----"
+
 -- PII patterns: email, phone-like, SSN-like
-local EMAIL_PATTERN = "[A-Za-z0-9._%%+-]+@[A-Za-z0-9.-]+%.[A-Za-z]{2,}"
-local PHONE_PATTERN = "%d%d%d[-.]?%d%d%d[-.]?%d%d%d%d"
+local EMAIL_PATTERN = "[%w%.%-_+]+@[%w%-]+%.[%a][%a%.]*%a"
+local PHONE_PATTERNS = {
+  "%(%d%d%d%)%s?%d%d%d[%-.]%d%d%d%d%f[%D]",
+  "%f[%d]%d%d%d[%-.]%d%d%d[%-.]%d%d%d%d%f[%D]",
+}
 local SSN_PATTERN = "%d%d%d[-.]%d%d[-.]%d%d%d%d"
 
 local function lower(s)
@@ -126,8 +134,10 @@ local function contains_pii(s)
   if s:find(EMAIL_PATTERN) then
     return "email address"
   end
-  if s:find(PHONE_PATTERN) then
-    return "phone number"
+  for _, pattern in ipairs(PHONE_PATTERNS) do
+    if s:find(pattern) then
+      return "phone number"
+    end
   end
   if s:find(SSN_PATTERN) then
     return "SSN-like pattern"
@@ -167,6 +177,10 @@ function M.check(text)
   local pii = contains_pii(text)
   if pii then
     return false, "content may contain PII (" .. pii .. ")"
+  end
+
+  if text:find(PRIVATE_KEY_BEGIN, 1, true) and text:find(PRIVATE_KEY_SUFFIX, 1, true) then
+    return false, "content contains a private key block"
   end
 
   -- Direct header-style credential exposure.
