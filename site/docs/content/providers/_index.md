@@ -212,6 +212,8 @@ No hardcoded model catalog. Use any model ID supported by this provider.
 
 No hardcoded model catalog. Use any model ID supported by this provider.
 
+OpenCode Go (`https://opencode.ai/zen/go/v1`) is a separate models.dev catalog entry with its own curated model set; select it with a spec like `opencode/opencode-go/<model>`, or `opencode/opencode-go` for the default model.
+
 By default n00n hides free models from the Opencode catalog. To list free models (they use a public fallback, no API key needed), add this to `~/.config/n00n/providers.toml`:
 
 ```toml
