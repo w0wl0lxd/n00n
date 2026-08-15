@@ -139,7 +139,7 @@ impl CodexAttempt {
     ) -> Self {
         let emitted_event = error.delivery.emitted_event;
         let definitive_rejection = error.definitive_rejection();
-        let delivery = Some(error.delivery.clone());
+        let delivery = Some((*error.delivery).clone());
         let provider_error = error.into_agent_error();
         Self {
             previous_response_id,
@@ -265,7 +265,7 @@ fn should_fallback_to_http(error: &super::websocket::WebSocketAttemptError) -> b
     error.transport_failure
         && !error.delivery.emitted_event
         && !error.error.is_auth_error()
-        && !matches!(&error.error, AgentError::CodingPlanAdmission { .. })
+        && !matches!(error.error.as_ref(), AgentError::CodingPlanAdmission { .. })
         && error.delivery.phase == RequestDeliveryPhase::NotSent
 }
 
@@ -1491,7 +1491,7 @@ impl OpenAi {
                                     previous_response_id,
                                     emitted_event: false,
                                     definitive_rejection: false,
-                                    delivery: Some(error.delivery),
+                                    delivery: Some(*error.delivery),
                                     result: Err(AgentError::HistoryReplayRequired {
                                         reason: HistoryReplayReason::ContinuationUnavailable,
                                     }),
@@ -3645,12 +3645,12 @@ mod tests {
             CodexAttempt::from_websocket_error(
                 None,
                 super::super::websocket::WebSocketAttemptError {
-                    error: AgentError::Api {
+                    error: Box::new(AgentError::Api {
                         status: 401,
                         message: "expired token".into(),
-                    },
+                    }),
                     transport_failure,
-                    delivery,
+                    delivery: Box::new(delivery),
                 },
             )
         };
@@ -4060,6 +4060,7 @@ mod tests {
                 let (first_stream, _) = listener.accept().await.unwrap();
                 let mut first = async_tungstenite::accept_hdr_async(
                     first_stream,
+                    #[allow(clippy::result_large_err)]
                     move |
                         _request: &async_tungstenite::tungstenite::handshake::server::Request,
                         response: async_tungstenite::tungstenite::handshake::server::Response,
@@ -4605,9 +4606,13 @@ mod tests {
     #[test]
     fn http_fallback_requires_transport_failure_before_output() {
         let transport = super::super::websocket::WebSocketAttemptError {
-            error: std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
+            error: Box::new(
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
+            ),
             transport_failure: true,
-            delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
+            delivery: Box::new(crate::RequestDeliveryMetadata::new(
+                crate::RequestDeliveryPhase::NotSent,
+            )),
         };
         assert!(should_fallback_to_http(&transport));
 
@@ -4617,47 +4622,53 @@ mod tests {
                     crate::RequestDeliveryPhase::SentAwaitingAcceptance,
                 );
                 d.emitted_event = true;
-                d
+                Box::new(d)
             },
             ..transport
         };
         assert!(!should_fallback_to_http(&after_output));
 
         let auth = super::super::websocket::WebSocketAttemptError {
-            error: AgentError::Api {
+            error: Box::new(AgentError::Api {
                 status: 401,
                 message: "expired".into(),
-            },
+            }),
             transport_failure: true,
-            delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
+            delivery: Box::new(crate::RequestDeliveryMetadata::new(
+                crate::RequestDeliveryPhase::NotSent,
+            )),
         };
         assert!(!should_fallback_to_http(&auth));
 
         let admission = super::super::websocket::WebSocketAttemptError {
-            error: AgentError::CodingPlanAdmission { retry_after: None },
+            error: Box::new(AgentError::CodingPlanAdmission { retry_after: None }),
             transport_failure: true,
-            delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
+            delivery: Box::new(crate::RequestDeliveryMetadata::new(
+                crate::RequestDeliveryPhase::NotSent,
+            )),
         };
         assert!(!should_fallback_to_http(&admission));
 
         let response_error = super::super::websocket::WebSocketAttemptError {
-            error: AgentError::Api {
+            error: Box::new(AgentError::Api {
                 status: 500,
                 message: "server".into(),
-            },
+            }),
             transport_failure: false,
-            delivery: crate::RequestDeliveryMetadata::new(
+            delivery: Box::new(crate::RequestDeliveryMetadata::new(
                 crate::RequestDeliveryPhase::SentAwaitingAcceptance,
-            ),
+            )),
         };
         assert!(!should_fallback_to_http(&response_error));
 
         let after_send = super::super::websocket::WebSocketAttemptError {
-            error: std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
-            transport_failure: true,
-            delivery: crate::RequestDeliveryMetadata::new(
-                crate::RequestDeliveryPhase::SentAwaitingAcceptance,
+            error: Box::new(
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
             ),
+            transport_failure: true,
+            delivery: Box::new(crate::RequestDeliveryMetadata::new(
+                crate::RequestDeliveryPhase::SentAwaitingAcceptance,
+            )),
         };
         assert!(!should_fallback_to_http(&after_send));
     }

@@ -335,7 +335,6 @@ unnecessary_lazy_evaluations = "allow"
 unnecessary_map_or = "allow"
 unwrap_or_default = "allow"
 assert_is_empty = "allow"
-result_large_err = "allow"
 
 [profile.bench]
 debug = true
