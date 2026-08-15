@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1585,7 +1585,6 @@ fn validate_snapshot_lua_values(
     Ok(())
 }
 
-#[derive(Clone)]
 struct ToolKeys {
     handler: RegistryKey,
     header: Option<RegistryKey>,
@@ -1596,7 +1595,7 @@ struct ToolKeys {
     describe: Option<RegistryKey>,
 }
 
-type PluginMap = Rc<RefCell<HashMap<Arc<str>, HashMap<Arc<str>, ToolKeys>>>>;
+type PluginMap = Rc<RefCell<HashMap<Arc<str>, HashMap<Arc<str>, Arc<ToolKeys>>>>>;
 
 struct LuaRuntime {
     /// Held for its Drop (joins the poker thread). Field order matters:
@@ -1729,7 +1728,12 @@ impl LuaRuntime {
             store.clear_plugin(name);
         }
         if let Some(keys) = self.plugins.borrow_mut().remove(name) {
+            // Aliases share one Arc<ToolKeys>, so drop each handler once.
+            let mut dropped: HashSet<*const ToolKeys> = HashSet::new();
             for (_, tk) in keys {
+                if !dropped.insert(Arc::as_ptr(&tk)) {
+                    continue;
+                }
                 if let Err(e) = self.lua.remove_registry_value(tk.handler) {
                     tracing::warn!(plugin = name, error = %e, "failed to drop lua handler key");
                 }
@@ -2166,9 +2170,9 @@ impl LuaRuntime {
             });
         }
 
-        let mut keys: HashMap<Arc<str>, ToolKeys> = HashMap::new();
+        let mut keys: HashMap<Arc<str>, Arc<ToolKeys>> = HashMap::new();
         for t in pending {
-            let key = ToolKeys {
+            let key = Arc::new(ToolKeys {
                 handler: t.handler_key,
                 header: t.header_key,
                 restore: t.restore_key,
@@ -2178,10 +2182,10 @@ impl LuaRuntime {
                     _ => None,
                 },
                 describe: t.describe_key,
-            };
-            keys.insert(Arc::clone(&t.name), key.clone());
+            });
+            keys.insert(Arc::clone(&t.name), Arc::clone(&key));
             for alias in &t.aliases {
-                keys.insert(Arc::clone(alias), key.clone());
+                keys.insert(Arc::clone(alias), Arc::clone(&key));
             }
         }
         self.plugins.borrow_mut().insert(name, keys);
