@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_callback_can_be_cancelled() {
+    fn cancelling_a_timer_still_delivers_its_exit_event() {
         let lua = Lua::new();
         let callback = lua
             .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
@@ -836,9 +836,18 @@ mod tests {
         let mut store = make_store();
         let owner = task_owner(OWNER_TASK_ID);
         let id = store
-            .defer(owner.clone(), Duration::ZERO, callback)
+            .defer(owner.clone(), Duration::from_secs(60), callback)
             .unwrap();
+
+        // Cancelling a pending timer must notify the waiting callback, the same
+        // way killing a process job still reports its exit.
         store.kill(&lua, id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+
+        let mut events = Vec::new();
+        store.drain_events(&owner, &mut events);
+        assert!(matches!(events.as_slice(), [(event_id, JobEvent::Exit(0))] if *event_id == id));
+
+        store.finish(&lua, id);
         assert!(store.is_empty(&owner));
     }
 
