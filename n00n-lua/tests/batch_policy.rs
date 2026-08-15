@@ -539,6 +539,33 @@ fn restore_accepts_tool_uses_alias_without_state() {
 }
 
 #[test]
+fn restore_preserves_oversized_historical_batch_cards() {
+    let (_reg, host) = load_batch_host();
+    let calls = (0..=MAX_BATCH_SIZE)
+        .map(|i| json!({ "tool": "hdrtool", "parameters": { "x": i.to_string() } }))
+        .collect::<Vec<_>>();
+    let children = (0..=MAX_BATCH_SIZE)
+        .map(|i| {
+            json!({
+                "tool": "hdrtool",
+                "status": "success",
+                "output": format!("output {i}"),
+                "annotation": null
+            })
+        })
+        .collect::<Vec<_>>();
+    let lines = restore_snapshot_lines(
+        &host,
+        json!({ "tool_calls": calls }),
+        "irrelevant",
+        Some(json!({ "children": children })),
+    );
+    let text = lines_text(&lines);
+    assert!(text.contains("H:0"), "first child card missing: {text}");
+    assert!(text.contains("H:4"), "last child card missing: {text}");
+}
+
+#[test]
 fn restore_falls_back_for_malformed_tool_uses() {
     let (_reg, host) = load_batch_host();
     let lines = restore_snapshot_lines(

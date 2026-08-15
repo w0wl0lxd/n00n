@@ -2186,8 +2186,12 @@ impl<'t> EventLoop<'t> {
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
+                let discovered = self.ctx.available_models.load_full();
                 if loaded.model_spec != self.ctx.model_slot.load().model.spec()
-                    && let Ok(mut new_model) = ModelResolver::current().resolve(&loaded.model_spec)
+                    && let Ok(mut new_model) = resolve_model_selection(
+                        &loaded.model_spec,
+                        discovered.as_deref().map(Vec::as_slice),
+                    )
                     && let Ok(new_provider) = from_model_with_openai_options(
                         &mut new_model,
                         self.ctx.timeouts,

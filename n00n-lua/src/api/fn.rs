@@ -229,7 +229,15 @@ impl JobStore {
         Ok(id)
     }
 
-    pub fn defer(&mut self, owner: JobOwner, delay: Duration, on_exit: RegistryKey) -> u32 {
+    pub fn defer(
+        &mut self,
+        owner: JobOwner,
+        delay: Duration,
+        on_exit: RegistryKey,
+    ) -> Result<u32, &'static str> {
+        let deadline = Instant::now()
+            .checked_add(delay)
+            .ok_or("defer delay is out of range")?;
         let id = self.next_id;
         self.next_id += 1;
         self.jobs.insert(
@@ -237,14 +245,14 @@ impl JobStore {
             JobMeta {
                 owner,
                 pid: None,
-                deadline: Some(Instant::now() + delay),
+                deadline: Some(deadline),
                 on_stdout: None,
                 on_stderr: None,
                 on_exit: Some(on_exit),
                 event_rx: None,
             },
         );
-        id
+        Ok(id)
     }
 
     pub fn is_empty(&self, owner: &JobOwner) -> bool {
@@ -279,21 +287,22 @@ impl JobStore {
         }
     }
 
-    pub fn drain_events(&self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
+    pub fn drain_events(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
         self.drain_matching(buf, |job| job.owner == *owner);
     }
 
-    pub fn drain_plugin_events(&self, buf: &mut Vec<(u32, JobEvent)>) {
+    pub fn drain_plugin_events(&mut self, buf: &mut Vec<(u32, JobEvent)>) {
         self.drain_matching(buf, |job| matches!(job.owner, JobOwner::Plugin(_)));
     }
 
-    fn drain_matching(&self, buf: &mut Vec<(u32, JobEvent)>, keep: impl Fn(&JobMeta) -> bool) {
+    fn drain_matching(&mut self, buf: &mut Vec<(u32, JobEvent)>, keep: impl Fn(&JobMeta) -> bool) {
         buf.clear();
-        for (&id, job) in self.jobs.iter().filter(|(_, job)| keep(job)) {
+        for (&id, job) in self.jobs.iter_mut().filter(|(_, job)| keep(job)) {
             if job
                 .deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)
             {
+                job.deadline = None;
                 buf.push((id, JobEvent::Exit(0)));
             } else if let Some(ref rx) = job.event_rx {
                 while let Ok(event) = rx.try_recv() {
@@ -303,10 +312,17 @@ impl JobStore {
         }
     }
 
-    pub fn kill(&mut self, job_id: u32, task_id: Option<u64>, plugin: &str) {
-        if let Some(job) = self.jobs.get_mut(&job_id)
-            && job.can_access(task_id, plugin)
-        {
+    pub fn kill(&mut self, lua: &Lua, job_id: u32, task_id: Option<u64>, plugin: &str) {
+        let can_access = self
+            .jobs
+            .get(&job_id)
+            .is_some_and(|job| job.can_access(task_id, plugin));
+        if !can_access {
+            return;
+        }
+        if self.jobs.get(&job_id).is_some_and(|job| job.pid.is_none()) {
+            self.remove(lua, job_id, false);
+        } else if let Some(job) = self.jobs.get_mut(&job_id) {
             kill_job(job);
         }
     }
@@ -513,8 +529,9 @@ fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<()> {
         .ok_or_else(|| mlua::Error::runtime("defer: no active task"))?;
     let callback = lua.create_registry_value(callback)?;
     with_jobs(lua, |store| {
-        store.defer(owner, Duration::from_millis(delay_ms), callback);
-    });
+        store.defer(owner, Duration::from_millis(delay_ms), callback)
+    })
+    .map_err(mlua::Error::runtime)?;
     Ok(())
 }
 
@@ -528,7 +545,7 @@ fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<()> {
 #[lua_fn(guard = Run)]
 fn jobstop(lua: &Lua, #[ctx] plugin: Arc<str>, job_id: u32) -> LuaResult<()> {
     let task_id = active_task_id(lua);
-    with_jobs(lua, |store| store.kill(job_id, task_id, &plugin));
+    with_jobs(lua, |store| store.kill(lua, job_id, task_id, &plugin));
     Ok(())
 }
 
@@ -778,21 +795,52 @@ mod tests {
             .unwrap();
         let mut store = make_store();
         let owner = task_owner(OWNER_TASK_ID);
-        let id = store.defer(owner.clone(), Duration::ZERO, callback);
+        let id = store
+            .defer(owner.clone(), Duration::ZERO, callback)
+            .unwrap();
         assert!(store.jobs[&id].pid.is_none());
 
         let mut events = Vec::new();
         store.drain_events(&owner, &mut events);
         assert!(matches!(events.as_slice(), [(event_id, JobEvent::Exit(0))] if *event_id == id));
+        store.drain_events(&owner, &mut events);
+        assert!(events.is_empty(), "a due timer must only emit once");
 
         store.finish(&lua, id);
         assert!(store.is_empty(&owner));
     }
 
     #[test]
-    fn unknown_job_operations_are_noops() {
+    fn deferred_callback_rejects_an_unrepresentable_deadline() {
+        let lua = Lua::new();
+        let callback = lua
+            .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
         let mut store = make_store();
-        store.kill(UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        let result = store.defer(task_owner(OWNER_TASK_ID), Duration::MAX, callback);
+        assert_eq!(result.unwrap_err(), "defer delay is out of range");
+    }
+
+    #[test]
+    fn deferred_callback_can_be_cancelled() {
+        let lua = Lua::new();
+        let callback = lua
+            .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
+        let mut store = make_store();
+        let owner = task_owner(OWNER_TASK_ID);
+        let id = store
+            .defer(owner.clone(), Duration::ZERO, callback)
+            .unwrap();
+        store.kill(&lua, id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        assert!(store.is_empty(&owner));
+    }
+
+    #[test]
+    fn unknown_job_operations_are_noops() {
+        let lua = Lua::new();
+        let mut store = make_store();
+        store.kill(&lua, UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN);
         assert!(
             store
                 .take_receiver(UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN)
@@ -867,10 +915,10 @@ mod tests {
         let id = start_shell(&mut store, task_owner(OWNER_TASK_ID), SLEEP_CMD);
         let pid = store.jobs[&id].pid.expect("process job pid");
 
-        store.kill(id, Some(FOREIGN_TASK_ID), TEST_PLUGIN);
+        store.kill(&lua, id, Some(FOREIGN_TASK_ID), TEST_PLUGIN);
         assert!(group_alive(pid), "a foreign task must not kill the job");
 
-        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        store.kill(&lua, id, Some(OWNER_TASK_ID), TEST_PLUGIN);
         assert!(wait_for_group_exit(pid));
         store.finish(&lua, id);
     }
@@ -918,11 +966,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kill_job_terminates_long_running_child() {
+        let lua = Lua::new();
         let mut store = make_store();
         let id = start_shell(&mut store, task_owner(OWNER_TASK_ID), "sleep 60");
 
         std::thread::sleep(Duration::from_millis(100));
-        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        store.kill(&lua, id, Some(OWNER_TASK_ID), TEST_PLUGIN);
 
         let rx = store
             .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
