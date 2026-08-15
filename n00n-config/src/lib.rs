@@ -74,6 +74,8 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "edit",
     "explore",
     "fusion",
+    "git",
+    "github",
     "glob",
     "grep",
     "index",
