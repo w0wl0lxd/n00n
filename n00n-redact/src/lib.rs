@@ -594,7 +594,7 @@ mod tests {
             "user": "bob",
             "note": jwt,
             "nested": { "data": format!("sk-{}", "a".repeat(48)) },
-            "list": [format!("AKIA0123456789ABCDEF")],
+            "list": ["AKIA0123456789ABCDEF".to_string()],
         });
         let redacted = redact_json_value_for_log(&value);
         assert_eq!(redacted["user"], "bob");
