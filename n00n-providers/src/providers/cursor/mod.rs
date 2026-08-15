@@ -265,7 +265,7 @@ impl Cursor {
         }
 
         let text = if result.text.is_empty() {
-            result.result.map_or(String::new(), |t| t)
+            result.result.unwrap_or_else(String::new)
         } else {
             result.text
         };
