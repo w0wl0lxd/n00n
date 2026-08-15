@@ -1,0 +1,1 @@
+Fixed MCP servers being silently disabled when their name matched a built-in tool (e.g. a server named `codegraph`); published tool names are already namespaced per server, so the collision was never real.
