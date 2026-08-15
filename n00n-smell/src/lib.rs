@@ -242,6 +242,9 @@ impl SmellIndex {
             path: temp_path.clone(),
             source,
         })?;
+        let index =
+            Index::open_in_dir(&index_path).map_err(|source| SmellError::Tantivy(source))?;
+        *self = Self::from_parts(self.path.clone(), index, &schema)?;
         self.write_metadata(smells.len())?;
 
         progress(Progress {
