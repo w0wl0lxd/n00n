@@ -528,7 +528,9 @@ pub(crate) async fn do_stream(
             BufReader::new(response.into_body()),
             event_tx,
             stream_timeout,
-            opts.idempotency_key.clone(),
+            opts.idempotency_supported
+                .then(|| opts.idempotency_key.clone())
+                .flatten(),
         )
         .await
     } else {

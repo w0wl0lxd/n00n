@@ -1313,6 +1313,7 @@ mod tests {
                     &event_tx,
                     Duration::from_secs(2),
                     Duration::from_millis(10),
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1358,6 +1359,7 @@ mod tests {
                     &event_tx,
                     Duration::from_millis(40),
                     Duration::from_millis(10),
+                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1410,6 +1412,7 @@ mod tests {
                     &event_tx,
                     Duration::from_millis(100),
                     Duration::from_secs(1),
+                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1469,6 +1472,7 @@ mod tests {
                     &event_tx,
                     Duration::from_millis(20),
                     Duration::from_secs(1),
+                    None,
                 )
                 .await
                 .unwrap_err();

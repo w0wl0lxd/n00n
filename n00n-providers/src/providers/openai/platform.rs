@@ -1316,7 +1316,7 @@ impl OpenAi {
         let socket_credential_hash = credential_hash(auth);
         // Without server-side response storage, a WebSocket reconnection must be able to replay
         // full history instead of relying on a continuation chain.
-        let mut opts = opts.with_idempotency_key();
+        let mut opts = opts.with_idempotency_key().with_idempotency_supported();
         opts.allow_history_replay = true;
         // The OpenAI Coding Plan endpoint rejects `prompt_cache_options`, so
         // disable message-cache breakpoints for Codex requests.
@@ -1473,7 +1473,9 @@ impl OpenAi {
                     &socket_credential_hash,
                     stream_timeout,
                     attempt_nonce,
-                    opts.idempotency_key.clone(),
+                    opts.idempotency_supported
+                        .then(|| opts.idempotency_key.clone())
+                        .flatten(),
                 )
                 .await;
             match websocket_result {

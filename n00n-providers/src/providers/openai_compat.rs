@@ -785,7 +785,10 @@ pub async fn parse_sse(
     let mut emitted_event = false;
     let mut deadline = Instant::now() + stream_timeout;
 
-    let idempotency_key = opts.idempotency_key.clone();
+    let idempotency_key = opts
+        .idempotency_supported
+        .then(|| opts.idempotency_key.clone())
+        .flatten();
     let delivery_metadata = |emitted_event| {
         let mut metadata =
             RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
@@ -1342,6 +1345,47 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
                     assert_eq!(message, "Server overloaded");
                 }
                 other => panic!("expected Api error, got: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn parse_sse_attaches_idempotency_key_only_for_supported_providers() {
+        smol::block_on(async {
+            let sse = "\
+data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n\
+data: {\"error\":{\"message\":\"boom\",\"type\":\"server_error\"}}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let opts = RequestOptions {
+                idempotency_key: Some("n00n-gated".into()),
+                ..RequestOptions::default()
+            };
+            let err = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT, &opts)
+                .await
+                .unwrap_err();
+            match err {
+                AgentError::RequestSent {
+                    metadata: Some(meta),
+                    ..
+                } => assert_eq!(meta.idempotency_key, None),
+                other => panic!("expected RequestSent, got: {other:?}"),
+            }
+
+            let opts = RequestOptions {
+                idempotency_key: Some("n00n-gated".into()),
+                idempotency_supported: true,
+                ..RequestOptions::default()
+            };
+            let err = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT, &opts)
+                .await
+                .unwrap_err();
+            match err {
+                AgentError::RequestSent {
+                    metadata: Some(meta),
+                    ..
+                } => assert_eq!(meta.idempotency_key.as_deref(), Some("n00n-gated")),
+                other => panic!("expected RequestSent, got: {other:?}"),
             }
         });
     }

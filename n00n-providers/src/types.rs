@@ -1239,6 +1239,10 @@ pub struct RequestOptions {
     /// the request has left the client because the server can deduplicate
     /// repeated requests with the same key.
     pub idempotency_key: Option<String>,
+    /// Whether the provider is confirmed to honor the `Idempotency-Key`
+    /// header. Retries after send are only marked safe when both the key is
+    /// present and this flag is set.
+    pub idempotency_supported: bool,
 }
 
 impl Default for RequestOptions {
@@ -1252,6 +1256,7 @@ impl Default for RequestOptions {
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
+            idempotency_supported: false,
         }
     }
 }
@@ -1265,6 +1270,14 @@ impl RequestOptions {
         if self.idempotency_key.is_none() {
             self.idempotency_key = Some(n00n_storage::id::n00nId::generate().to_string());
         }
+        self
+    }
+
+    /// Marks this request as retryable after send: the provider is confirmed
+    /// to honor the idempotency key it is about to receive.
+    #[must_use]
+    pub fn with_idempotency_supported(mut self) -> Self {
+        self.idempotency_supported = true;
         self
     }
 
@@ -1286,6 +1299,7 @@ impl RequestOptions {
             safety_identifier: self.safety_identifier,
             moderation: self.moderation,
             idempotency_key: self.idempotency_key,
+            idempotency_supported: self.idempotency_supported,
         }
     }
 }
@@ -1799,6 +1813,7 @@ mod tests {
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
+            idempotency_supported: false,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1815,6 +1830,7 @@ mod tests {
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
+            idempotency_supported: false,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -1942,6 +1958,7 @@ mod tests {
             safety_identifier: Some("test-id".to_string()),
             moderation: true,
             idempotency_key: None,
+            idempotency_supported: false,
         };
         let clamped = opts.clamped(&model);
         assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));

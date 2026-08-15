@@ -46,6 +46,7 @@ impl RequestDeliveryMetadata {
             phase,
             response_id: None,
             idempotency_key: None,
+            idempotency_supported: false,
             close_code: None,
             close_reason: None,
             emitted_event: false,
@@ -157,16 +158,11 @@ impl AgentError {
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
             | Self::HistoryReplayRequired { .. } => false,
-            Self::RequestSent { metadata, .. } => metadata.as_ref().is_some_and(|m| {
-                m.idempotency_key.is_some()
-                    && m.phase == RequestDeliveryPhase::SentAwaitingAcceptance
-                    && !m.emitted_event
-            }),
+            Self::RequestSent { metadata, .. } => request_sent_is_retryable(metadata.as_ref()),
         }
     }
 
-    /// Converts failures that may have occurred after the provider accepted the
-    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
+    /// Converts failures that may have occurred after the provider accepted the    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
     /// failures are treated as request-sent once the request has left the client.
     /// API/server errors are only suppressed when output has already been emitted
     /// or the request was accepted, preserving retryability when no output has been
@@ -324,12 +320,13 @@ impl AgentError {
             Self::Storage => "local storage error, try again".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
-            Self::RequestSent { metadata, .. } => match metadata.as_ref() {
-                Some(m) if m.idempotency_key.is_some() => {
+            Self::RequestSent { metadata, .. } => {
+                if request_sent_is_retryable(metadata.as_ref()) {
                     "connection failed after the request was sent; retrying with idempotency key".into()
+                } else {
+                    "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
                 }
-                _ => "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into(),
-            },
+            }
         }
     }
 
@@ -359,6 +356,14 @@ impl AgentError {
             _ => self.to_string(),
         }
     }
+}
+
+fn request_sent_is_retryable(metadata: Option<&RequestDeliveryMetadata>) -> bool {
+    metadata.is_some_and(|m| {
+        m.idempotency_key.is_some()
+            && m.phase == RequestDeliveryPhase::SentAwaitingAcceptance
+            && !m.emitted_event
+    })
 }
 
 impl<T> From<flume::SendError<T>> for AgentError {
@@ -494,6 +499,40 @@ mod tests {
             metadata: Some(metadata),
         };
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn request_sent_user_message_matches_retryability() {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = Some("n00n-test".into());
+        let retryable = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(retryable.is_retryable());
+        assert!(
+            retryable
+                .user_message()
+                .contains("retrying with idempotency key"),
+            "message: {}",
+            retryable.user_message()
+        );
+
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = Some("n00n-test".into());
+        metadata.emitted_event = true;
+        let suppressed = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(!suppressed.is_retryable());
+        assert!(
+            suppressed.user_message().contains("not retrying"),
+            "message: {}",
+            suppressed.user_message()
+        );
     }
 
     // llama.cpp: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-context.cpp
