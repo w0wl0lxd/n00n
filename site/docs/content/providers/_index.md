@@ -221,18 +221,6 @@ enable_free_models = true
 
 The default is `false`.
 
-#### Opencode Go
-
-OpenCode Go is a separate flat-subscription tier from Zen, with its own curated
-model set and its own [models.dev](https://models.dev/providers/opencode-go/)
-catalog entry (`opencode-go`), reached through the same `OPENCODE_API_KEY`:
-
-- **API**: `https://opencode.ai/zen/go/v1`
-
-Reach it with a two-level model ID: `opencode/opencode-go/<model_id>`, for
-example `opencode/opencode-go/deepseek-v4-flash`. Some Go models are not part
-of the Zen catalog and are only reachable this way.
-
 ### Devin
 
 - **Authentication**: `DEVIN_API_KEY`, `WINDSURF_API_KEY`, or `~/.local/share/devin/credentials.toml`
