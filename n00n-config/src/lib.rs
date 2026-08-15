@@ -1165,6 +1165,21 @@ impl ToolOutputLines {
 
     #[must_use]
     pub fn get(&self, name: &str) -> usize {
+        // Tool names arrive in canonical form from the runtime, so map them
+        // back to the legacy buckets this structure keys on.
+        let name = match canonical_tool_name(name) {
+            "run_shell" => "bash",
+            "run_python" => "code_execution",
+            "run_task" => "task",
+            "run_workflow" => "workflow",
+            "index_file" => "index",
+            "search_code" | "search_files" => "grep",
+            "map_codegraph" | "explore_code" => "explore",
+            "read_file" => "read",
+            "use_memory" => "memory",
+            "fetch_url" | "search_web" => "web",
+            other => other,
+        };
         match name {
             "bash" => self.bash,
             "code_execution" => self.code_execution,

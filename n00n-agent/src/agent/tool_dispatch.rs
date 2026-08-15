@@ -15,7 +15,7 @@ use crate::task_set::TaskSet;
 use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolAdmissionClass, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
-use n00n_config::ToolKey;
+use n00n_config::{ToolKey, canonical_tool_name};
 use n00n_redact::redact_json_value_for_log;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
@@ -279,8 +279,8 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
 }
 
 fn is_skill_tool_call(name: &str) -> bool {
-    name.strip_prefix("functions.").map_or(name, |value| value)
-        == crate::skill_policy::SKILL_TOOL_NAME
+    let bare = name.strip_prefix("functions.").map_or(name, |value| value);
+    canonical_tool_name(bare) == crate::skill_policy::SKILL_TOOL_NAME
 }
 
 fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {

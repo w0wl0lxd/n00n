@@ -1,6 +1,6 @@
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource};
-use n00n_config::{PluginFileConfig, PluginsConfig};
+use n00n_config::{PluginFileConfig, PluginsConfig, canonical_tool_name};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -503,18 +503,26 @@ mod tests {
             .map(n00n_agent::tools::RegisteredTool::name)
             .collect();
 
-        let mut sectioned: HashSet<&str> = HashSet::new();
+        let mut sectioned: HashSet<String> = HashSet::new();
         for (_, names) in SECTIONS {
             for &n in *names {
+                let canonical = canonical_tool_name(n);
                 assert!(
-                    registered.contains(n),
+                    registered.contains(canonical),
                     "SECTIONS references \"{n}\" which isn't a registered tool"
                 );
-                assert!(sectioned.insert(n), "\"{n}\" appears in multiple sections");
+                assert!(
+                    sectioned.insert(canonical.to_owned()),
+                    "\"{n}\" appears in multiple sections"
+                );
             }
         }
 
-        let unsectioned: Vec<&str> = registered.difference(&sectioned).copied().collect();
+        let unsectioned: Vec<&str> = registered
+            .iter()
+            .filter(|n| !sectioned.contains(**n))
+            .copied()
+            .collect();
         assert!(
             unsectioned.is_empty(),
             "registered tools missing from SECTIONS: {unsectioned:?}"
