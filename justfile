@@ -92,3 +92,31 @@ explore-health PROJECT=".":
 
 # Full CI check
 ci: fmt-check lint pylint test gen-docs-check machete secrets
+
+# Local verification without any caching wrapper. Both kache and sccache
+# key on the rustc invocation, and content read during proc-macro expansion
+# (include_dir!, config macros) is invisible to both (see
+# kunobi-ninja/kache#760); an empty RUSTC_WRAPPER disables the config's
+# rustc-wrapper and a fresh target dir forces real compilation. Use this
+# when a local result must be trusted over CI.
+verify-clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target_dir="$(mktemp -d /tmp/n00n-verify-XXXXXX)"
+    trap 'rm -rf "$target_dir"' EXIT
+    RUSTC_WRAPPER= CARGO_TARGET_DIR="$target_dir" cargo check --workspace --all-targets
+
+# Bump the pinned nightly toolchain (rust-toolchain.toml + CI/benchmarks/docs
+# toolchain pins). Do this on a cadence, not eagerly: newer nightlies bring
+# new clippy lints that must be fixed in the same change.
+bump-nightly DATE:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    date="{{DATE}}"
+    case "$date" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+      *) echo "bump-nightly: expected DATE in YYYY-MM-DD form, got '$date'" >&2; exit 1 ;;
+    esac
+    perl -pi -e "s/nightly-\d{4}-\d{2}-\d{2}/nightly-$date/g" rust-toolchain.toml .github/workflows/benchmarks.yml .github/workflows/docs.yml .github/workflows/release.yml .github/workflows/rust.yml
+    grep -q "nightly-$date" rust-toolchain.toml || { echo "bump-nightly: no pin matched; nothing was changed" >&2; exit 1; }
+    echo "toolchain bumped to nightly-$date; run cargo check --workspace and fix any new clippy lints"
