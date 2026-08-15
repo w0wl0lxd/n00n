@@ -515,13 +515,14 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
 /// Run a callback after a delay without spawning a process.
 ///
 /// The timer belongs to the current tool call and is cancelled when that call
-/// ends.
+/// ends. Use this from tool handlers; a timer scheduled by a plugin-owned
+/// callback does not outlive that callback's task scope.
 ///
 /// @param delay_ms integer Delay in milliseconds.
-/// @param callback function Called after the delay.
+/// @param callback function Called with the timer id and exit code `0` after the delay.
 /// @return
 /// @example
-/// n00n.fn.defer(1000, function() refresh() end)
+/// n00n.fn.defer(1000, function(timer_id, code) refresh() end)
 #[lua_fn(guard = Run)]
 fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<()> {
     let owner = active_task_id(lua)

@@ -455,11 +455,16 @@ end
 
 --- Tool entry points --------------------------------------------------------
 
+local function tool_calls_of(input)
+  return input.tool_calls or input.tool_uses or {}
+end
+
 local function handler(input, ctx)
-  if type(input.tool_calls) == "table" and #input.tool_calls > MAX_BATCH_SIZE then
+  local tool_calls = tool_calls_of(input)
+  if #tool_calls > MAX_BATCH_SIZE then
     return { llm_output = DISCARDED_ERROR, is_error = true }
   end
-  local children, err = prepare_children(input.tool_calls)
+  local children, err = prepare_children(tool_calls)
   if not children then
     return { llm_output = err, is_error = true }
   end
@@ -497,10 +502,6 @@ end
 
 -- Restore/header see persisted raw model JSON; accept the schema alias
 -- `tool_uses` the same way live `parse`/`validate` remaps it.
-local function tool_calls_of(input)
-  return input.tool_calls or input.tool_uses or {}
-end
-
 local function restore(input, output, _is_error, rctx)
   local tol = rctx:tool_output_lines()
   local children = prepare_children(tool_calls_of(input))

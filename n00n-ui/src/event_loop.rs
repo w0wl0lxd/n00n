@@ -35,7 +35,7 @@ use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_with_openai_options, unconfigured_provider,
 };
 use n00n_providers::{
-    ContentBlock, Message, Model, ModelCatalogError, ModelResolver, OpenAiOptions,
+    ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, OpenAiOptions,
 };
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
@@ -621,13 +621,7 @@ fn resolve_model_selection(
     spec: &str,
     discovered: Option<&[String]>,
 ) -> Result<Model, ModelCatalogError> {
-    ModelResolver::current().resolve(spec).or_else(|error| {
-        if discovered.is_some_and(|models| models.iter().any(|candidate| candidate == spec)) {
-            Model::from_spec(spec).map_err(|_| ModelCatalogError::InvalidModel)
-        } else {
-            Err(error)
-        }
-    })
+    ModelCatalog::current_with_specs(discovered.into_iter().flatten().cloned()).resolve(spec)
 }
 
 fn startup_login_completed(initial_slot: &Arc<ModelSlot>, current_slot: &Arc<ModelSlot>) -> bool {
@@ -2505,7 +2499,8 @@ mod tests {
     use arc_swap::ArcSwap;
     use n00n_agent::AgentConfig;
     use n00n_providers::{
-        AgentError, ContentBlock, Message, Model, Role, provider::unconfigured_provider,
+        AgentError, ContentBlock, Message, Model, ModelCatalogError, Role,
+        provider::{provider_available, unconfigured_provider},
     };
     use n00n_storage::{
         id::{SessionRef, n00nId},
@@ -2521,11 +2516,14 @@ mod tests {
     use std::{cell::Cell as Counter, io, sync::Arc};
     use test_case::test_case;
 
-    #[test]
-    fn discovered_nested_model_spec_resolves_for_selection() {
-        let spec = "opencode/opencode-go/deepseek-v4-flash";
-        let model = resolve_model_selection(spec, Some(&[spec.to_string()])).unwrap();
-        assert_eq!(model.spec(), spec);
+    #[test_case("opencode/opencode-go/deepseek-v4-flash"; "discovered_nested_model_spec")]
+    fn discovered_nested_model_spec_resolves_for_selection(spec: &str) {
+        let result = resolve_model_selection(spec, Some(&[spec.to_string()]));
+        if provider_available("opencode") {
+            assert_eq!(result.unwrap().spec(), spec);
+        } else {
+            assert!(matches!(result, Err(ModelCatalogError::Unavailable(_))));
+        }
     }
 
     #[test]

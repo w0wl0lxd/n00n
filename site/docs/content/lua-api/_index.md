@@ -1455,17 +1455,18 @@ n00n.fn.defer({delay_ms}, {callback})
 Run a callback after a delay without spawning a process.
 
 The timer belongs to the current tool call and is cancelled when that call
-ends.
+ends. Use this from tool handlers; a timer scheduled by a plugin-owned
+callback does not outlive that callback's task scope.
 
 **Parameters:**
 
 - `{delay_ms}` (`integer`) Delay in milliseconds.
-- `{callback}` (`function`) Called after the delay.
+- `{callback}` (`function`) Called with the timer id and exit code `0` after the delay.
 
 **Example:**
 
 ```lua
-n00n.fn.defer(1000, function() refresh() end)
+n00n.fn.defer(1000, function(timer_id, code) refresh() end)
 ```
 
 ---
