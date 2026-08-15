@@ -149,6 +149,7 @@ impl ModelPicker {
         if unchanged && !self.dirty {
             return;
         }
+        drop(guard);
         self.dirty = false;
         let (entries, idx) = self.load_entries();
         self.picker.replace_items(entries);

@@ -812,6 +812,7 @@ n00n.api.register_tool({
     local has_output = false
     local finished = false
     local flush_scheduled = false
+    local flush_fallback_warned = false
     local published_line_count = 0
 
     local function finish(exit_code)
@@ -856,7 +857,7 @@ n00n.api.register_tool({
       if flush_scheduled then
         return
       end
-      local scheduled = pcall(n00n.fn.defer, LIVE_OUTPUT_FLUSH_MS, function()
+      local scheduled, err = pcall(n00n.fn.defer, LIVE_OUTPUT_FLUSH_MS, function()
         flush_scheduled = false
         if not finished and collector.line_count > published_line_count then
           flush_view()
@@ -865,6 +866,10 @@ n00n.api.register_tool({
       if scheduled then
         flush_scheduled = true
       else
+        if not flush_fallback_warned then
+          flush_fallback_warned = true
+          n00n.log.warn("bash live output debounce unavailable: " .. tostring(err))
+        end
         flush_view()
       end
     end
