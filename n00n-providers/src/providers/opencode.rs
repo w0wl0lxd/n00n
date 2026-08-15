@@ -1888,7 +1888,7 @@ mod tests {
     // These hit the real OpenCode Zen / Go endpoints and are skipped (not
     // failed) when `OPENCODE_API_KEY` is absent, so CI and contributors
     // without a key still get a green run. Run explicitly with:
-    //   OPENCODE_API_KEY=... cargo nextest run -p n00n-providers live_opencode
+    //   OPENCODE_API_KEY=... cargo nextest run -p n00n-providers --run-ignored only live_opencode
 
     /// Returns `None` (meaning "skip this test") unless a non-blank
     /// `OPENCODE_API_KEY` is present in the environment.
