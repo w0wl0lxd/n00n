@@ -822,7 +822,7 @@ impl OpenAi {
         })
     }
 
-    #[allow(clippy::large_futures, clippy::result_large_err)]
+    #[allow(clippy::large_futures)]
     async fn connect_current_websocket(
         &self,
         attempt_nonce: u64,
@@ -875,7 +875,7 @@ impl OpenAi {
         result
     }
 
-    #[allow(clippy::large_futures, clippy::result_large_err)]
+    #[allow(clippy::large_futures)]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
     async fn stream_websocket<F>(
