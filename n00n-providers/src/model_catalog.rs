@@ -127,7 +127,7 @@ impl ModelCatalog {
 
     /// Whether the spec resolves in the catalog or is a model the provider
     /// accepts through live discovery even though it is not in the static
-    /// tables (OpenRouter, Ollama, and other flexible providers).
+    /// tables (`OpenRouter`, `Ollama`, and other flexible providers).
     #[must_use]
     pub fn allows_live(&self, input: &str) -> bool {
         self.allows(input) || is_discoverable_spec(input)
