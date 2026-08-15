@@ -15,7 +15,7 @@ local ToolView = require("n00n.tool_view")
 local canonical_tool_name = require("n00n.policy").canonical_tool_name
 
 local BATCH_TOOL_NAME = "run_batch"
-local MAX_BATCH_SIZE = 25
+local MAX_BATCH_SIZE = 4
 local SEPARATOR = "──────────────────"
 local BODY_INDENT = "  "
 local ANNOTATION_SEP = " · "

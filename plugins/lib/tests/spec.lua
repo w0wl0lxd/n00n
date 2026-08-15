@@ -294,6 +294,22 @@ case("tool_view_replace_text_publishes_once_and_bounds_large_output", function()
   eq(line_text(buf.lines[21]), "980 lines omitted")
 end)
 
+case("tool_view_buffered_append_coalesces_publications", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 5, keep = "tail" })
+
+  for i = 1, 1000 do
+    view:append_buffered("line" .. i)
+  end
+
+  eq(buf.call_count, 0, "buffered appends must not publish per line")
+  view:flush()
+  eq(buf.call_count, 1, "flush must publish the buffered snapshot")
+  eq(#buf.lines, 6, "five result rows plus the expansion notice")
+  eq(buf.lines[2], "line996")
+  eq(buf.lines[6], "line1000")
+end)
+
 case("explore_result_live_update_keeps_expansion", function()
   with_mock_ui_buf(function()
     local card = ExploreResult.new()

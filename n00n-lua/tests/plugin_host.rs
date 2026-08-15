@@ -4082,13 +4082,13 @@ fn bash_handler_passes_through_unrewritable_compound_segment() {
     let output = exec_tool(
         &reg,
         "bash",
-        serde_json::json!({ "command": "git status && npm outdated" }),
+        serde_json::json!({ "command": "git status && printf 'N00N_PASS_THROUGH_MARKER\\n'" }),
     )
     .expect("compound command with an unrewritable segment was rejected");
 
     assert!(
-        !output.contains("rtk is enabled"),
-        "compound command was rejected instead of partially rewritten: {output}"
+        output.contains("N00N_PASS_THROUGH_MARKER"),
+        "unrewritable segment was dropped instead of passed through: {output}"
     );
 }
 

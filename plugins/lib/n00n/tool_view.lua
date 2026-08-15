@@ -241,6 +241,10 @@ function ToolView:append(line)
   append_line(self, line, true)
 end
 
+function ToolView:append_buffered(line)
+  append_line(self, line, false)
+end
+
 function ToolView:append_text(text)
   for _, line in ipairs(n00n.split(text, "\n")) do
     append_line(self, line, true)

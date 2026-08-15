@@ -22,11 +22,11 @@ use serde_json::{Value, json};
 const BATCH_PLUGIN_SRC: &str = include_str!("../../plugins/batch/init.lua");
 
 // Mirrors of the plugin's format contracts.
-const MAX_BATCH_SIZE: usize = 25;
+const MAX_BATCH_SIZE: usize = 4;
 const ERROR_PREFIX: &str = "[ERROR] ";
 const EMPTY_ERROR: &str = "provide at least one tool call";
 const NESTED_ERROR: &str = "cannot nest batch inside batch";
-const DISCARDED_ERROR: &str = "maximum of 25 tools per batch";
+const DISCARDED_ERROR: &str = "maximum of 4 tools per batch";
 const INSUFFICIENT_TIME_ERROR: &str = "insufficient time remaining in shared deadline";
 const SUMMARY_ALL_OK_FMT: &str = "All {} tools executed successfully.";
 const SUMMARY_MIXED_FMT: &str = "Executed {}/{} successfully. {} failed.";

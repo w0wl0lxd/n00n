@@ -188,6 +188,7 @@ pub struct Agent<'h> {
     num_turns: u32,
     recent_calls: RecentCalls,
     auto_compact: bool,
+    compaction_hooks: Option<compaction::CompactionHooks>,
     loaded_instructions: LoadedInstructions,
     pre_dispatch_rollback_len: Option<usize>,
     rollback_len: Option<usize>,
@@ -258,6 +259,7 @@ impl<'h> Agent<'h> {
             num_turns: 0,
             recent_calls: RecentCalls::new(),
             auto_compact: compaction::auto_compact_enabled(),
+            compaction_hooks: Some(compaction::CompactionHooks),
             loaded_instructions: LoadedInstructions::new(),
             pre_dispatch_rollback_len: None,
             rollback_len: None,
@@ -1162,6 +1164,7 @@ impl<'h> Agent<'h> {
             self.identity.as_ref().map(SessionIdentity::session_id),
             &cwd,
             None,
+            self.compaction_hooks,
         )
         .await?;
         // Charge compaction to the pre-route lane before any Fusion switch.
@@ -2088,7 +2091,7 @@ mod tests {
             },
             false,
         );
-        let agent = Agent::new(
+        let mut agent = Agent::new(
             AgentParams {
                 provider: Arc::new(provider),
                 model: default_model(),
@@ -2120,6 +2123,7 @@ mod tests {
                 tool_filter: filter,
             },
         );
+        agent.compaction_hooks = None;
         (agent, event_rx)
     }
 

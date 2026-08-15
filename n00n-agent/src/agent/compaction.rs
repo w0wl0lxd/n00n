@@ -72,6 +72,9 @@ impl CompactionTier {
 
 const IMAGE_PLACEHOLDER: &str = "[image]";
 
+#[derive(Clone, Copy)]
+pub(super) struct CompactionHooks;
+
 pub(super) async fn compact_history(
     provider: &dyn n00n_providers::provider::Provider,
     model: &Model,
@@ -82,8 +85,11 @@ pub(super) async fn compact_history(
     session_id: Option<&n00n_storage::id::SessionRef>,
     cwd: &std::path::Path,
     transcript_path: Option<&std::path::Path>,
+    hooks: Option<CompactionHooks>,
 ) -> Result<(TokenUsage, String), AgentError> {
-    run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
+    if hooks.is_some() {
+        run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
+    }
 
     let compact_start = Instant::now();
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
@@ -162,7 +168,9 @@ pub(super) async fn compact_history(
         .first_text_content()
         .map_or_else(String::new, std::string::ToString::to_string);
 
-    run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
+    if hooks.is_some() {
+        run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
+    }
 
     let usage = finish_compact(response, history, compact_start, model);
     Ok((usage, summary))
@@ -206,6 +214,16 @@ pub async fn compact(
     history: &mut History,
     event_tx: &EventSender,
 ) -> Result<(), AgentError> {
+    compact_with_hooks(provider, model, history, event_tx, Some(CompactionHooks)).await
+}
+
+async fn compact_with_hooks(
+    provider: &dyn n00n_providers::provider::Provider,
+    model: &Model,
+    history: &mut History,
+    event_tx: &EventSender,
+    hooks: Option<CompactionHooks>,
+) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
     let (usage, summary) = compact_history(
@@ -218,6 +236,7 @@ pub async fn compact(
         None,
         &cwd,
         None,
+        hooks,
     )
     .await?;
     let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
@@ -419,11 +438,12 @@ mod tests {
             let (event_tx, event_rx) = flume::unbounded();
             let mut history = History::new(vec![Message::user("before".into())]);
 
-            compact(
+            compact_with_hooks(
                 &*provider,
                 &model,
                 &mut history,
                 &EventSender::new(event_tx, 0),
+                None,
             )
             .await
             .expect("compact should succeed");
@@ -548,11 +568,12 @@ mod tests {
             let (event_tx, event_rx) = flume::unbounded();
             let mut history = History::new(vec![Message::user("before".into())]);
 
-            compact(
+            compact_with_hooks(
                 &*provider,
                 &compact_model,
                 &mut history,
                 &EventSender::new(event_tx, 0),
+                None,
             )
             .await
             .expect("compact should succeed");
@@ -589,11 +610,12 @@ mod tests {
                 },
             ]);
 
-            compact(
+            compact_with_hooks(
                 &*provider,
                 &model,
                 &mut history,
                 &EventSender::new(raw_tx, 0),
+                None,
             )
             .await
             .unwrap();
@@ -885,11 +907,12 @@ mod tests {
                 },
             ]);
 
-            compact(
+            compact_with_hooks(
                 &*provider,
                 &model,
                 &mut history,
                 &EventSender::new(raw_tx, 0),
+                None,
             )
             .await
             .unwrap();
@@ -1275,6 +1298,7 @@ mod tests {
                 None,
                 &std::env::current_dir().unwrap(),
                 None,
+                None,
             )
             .await;
 
@@ -1326,6 +1350,7 @@ mod tests {
                 CompactionTrigger::Manual,
                 None,
                 &std::env::current_dir().unwrap(),
+                None,
                 None,
             )
             .await;

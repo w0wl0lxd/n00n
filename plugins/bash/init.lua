@@ -409,6 +409,8 @@ rtk_rewrite = function(command, ctx)
 end
 
 local DEFAULT_MAX_LINE_BYTES = 400
+local LIVE_OUTPUT_FLUSH_LINES = 32
+local LIVE_OUTPUT_FLUSH_SECS = 1
 
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
@@ -831,6 +833,8 @@ n00n.api.register_tool({
 
       if is_error then
         view:append({ { "Exit code: " .. exit_code, "dim" } })
+      elseif has_output then
+        view:flush()
       end
       view:finish()
 
@@ -838,6 +842,23 @@ n00n.api.register_tool({
     end
 
     view:append({ { "Waiting for output...", "dim" } })
+
+    local last_view_flush = os.time()
+    local function append_output(line)
+      if not has_output then
+        has_output = true
+        view:clear()
+      end
+      output_collector.append_line(collector, line, max_lines, max_bytes)
+      view:append_buffered(line)
+      local now = os.time()
+      if
+        output_collector.should_flush(collector, last_view_flush, now, LIVE_OUTPUT_FLUSH_LINES, LIVE_OUTPUT_FLUSH_SECS)
+      then
+        view:flush()
+        last_view_flush = now
+      end
+    end
 
     n00n.fn.jobstart(command, {
       cwd = workdir,
@@ -847,20 +868,10 @@ n00n.api.register_tool({
         GIT_EXEC_PATH = "",
       },
       on_stdout = function(_, line)
-        if not has_output then
-          has_output = true
-          view:clear()
-        end
-        output_collector.append_line(collector, line, max_lines, max_bytes)
-        view:append(line)
+        append_output(line)
       end,
       on_stderr = function(_, line)
-        if not has_output then
-          has_output = true
-          view:clear()
-        end
-        output_collector.append_line(collector, line, max_lines, max_bytes)
-        view:append(line)
+        append_output(line)
       end,
       on_exit = function(_, code)
         finish(code)
