@@ -313,7 +313,7 @@ impl JobStore {
         }
     }
 
-    pub fn kill(&mut self, _lua: &Lua, job_id: u32, task_id: Option<u64>, plugin: &str) {
+    pub fn kill(&mut self, job_id: u32, task_id: Option<u64>, plugin: &str) {
         let can_access = self
             .jobs
             .get(&job_id)
@@ -323,10 +323,10 @@ impl JobStore {
         }
         if let Some(job) = self.jobs.get_mut(&job_id) {
             if job.pid.is_none() {
-                // A timer has no process to signal; make it immediately due so
-                // its `on_exit` still fires, matching how a killed process job
-                // reports its exit through the wait thread.
-                job.deadline = Some(Instant::now());
+                job.deadline = None;
+                let (event_tx, event_rx) = flume::bounded(1);
+                let _ = event_tx.send(JobEvent::Exit(-1));
+                job.event_rx = Some(event_rx);
             } else {
                 kill_job(job);
             }
@@ -525,7 +525,7 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
 /// callback does not outlive that callback's task scope.
 ///
 /// @param delay_ms integer Delay in milliseconds.
-/// @param callback function Called with the timer id and exit code `0` after the delay or cancellation by `jobstop`.
+/// @param callback function Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
 /// @return (integer) Timer job id accepted by `jobstop`.
 /// @example
 /// n00n.fn.defer(1000, function(timer_id, code) refresh() end)
@@ -543,7 +543,7 @@ fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<u32> {
 
 /// Kill a running process immediately (SIGKILL on Unix) or cancel a deferred
 /// timer. Safe to call on jobs that already exited or on unknown ids. A
-/// cancelled timer's callback runs with exit code `0`.
+/// cancelled timer's callback runs with exit code `-1`.
 ///
 /// @param job_id integer Job id returned by `jobstart` or `defer`.
 /// @return
@@ -552,7 +552,7 @@ fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<u32> {
 #[lua_fn(guard = Run)]
 fn jobstop(lua: &Lua, #[ctx] plugin: Arc<str>, job_id: u32) -> LuaResult<()> {
     let task_id = active_task_id(lua);
-    with_jobs(lua, |store| store.kill(lua, job_id, task_id, &plugin));
+    with_jobs(lua, |store| store.kill(job_id, task_id, &plugin));
     Ok(())
 }
 
@@ -842,20 +842,19 @@ mod tests {
 
         // Cancelling a pending timer must notify the waiting callback, the same
         // way killing a process job still reports its exit.
-        store.kill(&lua, id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
 
         let mut events = Vec::new();
         store.drain_events(&owner, &mut events);
-        assert!(matches!(events.as_slice(), [(event_id, JobEvent::Exit(0))] if *event_id == id));
+        assert!(matches!(events.as_slice(), [(event_id, JobEvent::Exit(-1))] if *event_id == id));
         store.finish(&lua, id);
         assert!(store.is_empty(&owner));
     }
 
     #[test]
     fn unknown_job_operations_are_noops() {
-        let lua = Lua::new();
         let mut store = make_store();
-        store.kill(&lua, UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        store.kill(UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN);
         assert!(
             store
                 .take_receiver(UNKNOWN_JOB_ID, Some(OWNER_TASK_ID), TEST_PLUGIN)
@@ -930,10 +929,10 @@ mod tests {
         let id = start_shell(&mut store, task_owner(OWNER_TASK_ID), SLEEP_CMD);
         let pid = store.jobs[&id].pid.expect("process job pid");
 
-        store.kill(&lua, id, Some(FOREIGN_TASK_ID), TEST_PLUGIN);
+        store.kill(id, Some(FOREIGN_TASK_ID), TEST_PLUGIN);
         assert!(group_alive(pid), "a foreign task must not kill the job");
 
-        store.kill(&lua, id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
         assert!(wait_for_group_exit(pid));
         store.finish(&lua, id);
     }
@@ -981,12 +980,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kill_job_terminates_long_running_child() {
-        let lua = Lua::new();
         let mut store = make_store();
         let id = start_shell(&mut store, task_owner(OWNER_TASK_ID), "sleep 60");
 
         std::thread::sleep(Duration::from_millis(100));
-        store.kill(&lua, id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
 
         let rx = store
             .take_receiver(id, Some(OWNER_TASK_ID), TEST_PLUGIN)
