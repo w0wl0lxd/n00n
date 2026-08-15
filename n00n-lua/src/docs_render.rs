@@ -55,7 +55,7 @@ Read that file yourself after the user reloads and reproduces.
 
 ## A complete real example
 
-The bundled `glob` tool, verbatim: options registration, schema, header and
+The bundled `search_files` tool, verbatim: options registration, schema, header and
 restore hooks, error handling, LLM output truncation, collapsible UI view:
 
 ```lua
