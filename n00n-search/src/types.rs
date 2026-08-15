@@ -5,6 +5,7 @@ use crate::error::Error;
 pub const MAX_QUERY_BYTES: usize = 8_192;
 pub const MAX_SEARCH_RESULTS: usize = 100;
 pub const MAX_EXTRACT_URLS: usize = 20;
+pub const MAX_CHUNKS_PER_SOURCE: usize = 100;
 pub const MAX_SOURCE_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -164,7 +165,10 @@ impl ExtractRequest {
     /// Returns a validation error when a count or budget is outside its allowed range.
     pub fn validate(&self) -> Result<(), Error> {
         if self.urls.is_empty() || self.urls.len() > MAX_EXTRACT_URLS {
-            return Err(Error::validation("urls", "must contain 1 to 20 URLs"));
+            return Err(Error::validation(
+                "urls",
+                &format!("must contain 1 to {MAX_EXTRACT_URLS} URLs"),
+            ));
         }
         if self.max_bytes_per_source == 0 || self.max_bytes_per_source > MAX_SOURCE_BYTES {
             return Err(Error::validation(
@@ -172,7 +176,7 @@ impl ExtractRequest {
                 "is outside the allowed range",
             ));
         }
-        if self.chunks_per_source > MAX_SEARCH_RESULTS {
+        if self.chunks_per_source > MAX_CHUNKS_PER_SOURCE {
             return Err(Error::validation(
                 "chunks_per_source",
                 "exceeds the allowed maximum",
@@ -206,9 +210,6 @@ pub struct ExtractResponse {
 
 // Type aliases for public API
 pub type ExtractionResult = Result<ExtractResponse, Error>;
-
-// Re-export transport types for public API
-pub use crate::transport::FetchResponse as FetchedContent;
 
 #[cfg(test)]
 mod tests {
