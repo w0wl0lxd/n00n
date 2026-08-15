@@ -90,6 +90,7 @@ a string belongs.
 | [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
 | [`n00n.github`](#n00n-github) | GitHub REST API client using reqwest. |
 | [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
+| [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -5454,6 +5455,62 @@ Estimate token savings from using a hybrid/semantic embedder. Requires the sembl
 - `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
 
 **Returns:** (`string?`, `string?`) savings summary and optional error message.
+
+
+## n00n.smell {#n00n-smell}
+
+Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.
+
+---
+
+### `n00n.smell.has_index()` {#n00n-smell-has_index}
+
+```lua
+n00n.smell.has_index({project})
+```
+
+Returns true when `.n00n/smells/metadata.json` exists in the project root.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when a smell index is present.
+
+---
+
+### `n00n.smell.index()` {#n00n-smell-index}
+
+```lua
+n00n.smell.index({project})
+```
+
+Build or rebuild the smell index for a repository by invoking n00n-smell.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`, `string|nil`) true on success, or false and the error message.
+
+---
+
+### `n00n.smell.search()` {#n00n-smell-search}
+
+```lua
+n00n.smell.search({project}, {query}, {kind?}, {top_k?})
+```
+
+Search the smell index by keyword and optional kind.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{query}` (`string`) Keyword or phrase.
+- `{kind}` (`string`) Optional kind filter: todo, fixme, hack, placeholder.
+- `{top_k}` (`integer`) Maximum number of results (default 5).
+
+**Returns:** (`string|nil`, `string|nil`) Ranked smell output, or nil and the error message.
 
 
 ## n00n.workflow {#n00n-workflow}

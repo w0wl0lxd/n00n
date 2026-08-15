@@ -70,6 +70,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
     ),
     bundled(
+        "smell",
+        include_dir!("$CARGO_MANIFEST_DIR/../plugins/smell"),
+    ),
+    bundled(
         "index",
         include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
     ),
