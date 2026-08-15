@@ -521,7 +521,7 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
 ///
 /// @param delay_ms integer Delay in milliseconds.
 /// @param callback function Called with the timer id and exit code `0` after the delay.
-/// @return integer Timer job id accepted by `jobstop`.
+/// @return (integer) Timer job id accepted by `jobstop`.
 /// @example
 /// n00n.fn.defer(1000, function(timer_id, code) refresh() end)
 #[lua_fn(guard = Run)]
