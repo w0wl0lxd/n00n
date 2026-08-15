@@ -365,12 +365,12 @@ fn usage_cost(
                 try_pair!(breakdown.get::<Option<u32>>("cache_read_tokens").map_err(
                     |error| format!("invalid breakdown field 'cache_read_tokens': {error}")
                 ))
-                .map_or(0, |tokens| tokens);
+                .unwrap_or_else(|| 0);
             let cache_write =
                 try_pair!(breakdown.get::<Option<u32>>("cache_write_tokens").map_err(
                     |error| format!("invalid breakdown field 'cache_write_tokens': {error}")
                 ))
-                .map_or(0, |tokens| tokens);
+                .unwrap_or_else(|| 0);
             let fast = try_pair!(
                 breakdown
                     .get::<Option<bool>>("fast")
@@ -482,8 +482,12 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     let only: Option<Vec<String>> = opts.get("only")?;
     let except: Option<Vec<String>> = opts.get("except")?;
     let tool_exclusions = except.clone();
-    let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.map_or(true, |v| v);
-    let workflow: bool = opts.get::<Option<bool>>("workflow")?.map_or(false, |v| v);
+    let include_mcp: bool = opts
+        .get::<Option<bool>>("include_mcp")?
+        .unwrap_or_else(|| true);
+    let workflow: bool = opts
+        .get::<Option<bool>>("workflow")?
+        .unwrap_or_else(|| false);
     let spec_str: Option<String> = opts.get("spec")?;
 
     let parsed = spec_str
@@ -668,7 +672,7 @@ async fn session(
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
     let include_mcp = opts
         .get::<Option<bool>>("include_mcp")?
-        .map_or(true, |value| value);
+        .unwrap_or_else(|| true);
     let excluded_tools = merged_tool_exclusions(
         tools_val.as_ref(),
         opts.get::<Option<Vec<String>>>("except")?,
@@ -692,7 +696,7 @@ async fn session(
     };
     let requested_fast: bool = opts
         .get::<Option<bool>>("fast")?
-        .map_or(agent_ctx.opts.fast, |v| v);
+        .unwrap_or_else(|| agent_ctx.opts.fast);
 
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {

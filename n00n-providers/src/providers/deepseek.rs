@@ -54,6 +54,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.14,
@@ -70,6 +71,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Generic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.435,
@@ -204,7 +206,7 @@ impl Provider for DeepSeek {
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }

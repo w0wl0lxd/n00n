@@ -607,8 +607,7 @@ impl Theme {
 
         let style = |key: &str| -> Style {
             ui.get(key)
-                .map(|d| resolve_style(d, &palette))
-                .map_or(Style::default(), |s| s)
+                .map_or_else(Style::default, |d| resolve_style(d, &palette))
         };
 
         let derived_color = |ui_key: &str, scopes: &[&str]| -> Color {
@@ -858,7 +857,7 @@ impl Theme {
         let s = style(primary);
         if s == Style::default() {
             style(fallback_base)
-                .fg(style(accent).fg.map_or(Color::default(), |c| c))
+                .fg(style(accent).fg.unwrap_or_else(Color::default))
                 .add_modifier(Modifier::BOLD)
         } else {
             s

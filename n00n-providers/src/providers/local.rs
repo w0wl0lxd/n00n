@@ -202,6 +202,7 @@ impl Provider for LocalEndpoint {
                     event_tx,
                     &auth,
                     self.compat.stream_timeout(),
+                    &opts,
                 )
                 .await
                 .map(|(_, response)| response);
@@ -225,7 +226,7 @@ impl Provider for LocalEndpoint {
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
 
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }
@@ -373,6 +374,7 @@ impl LocalEndpoint {
                     pricing: Some(crate::model::ModelPricing::ZERO),
                     supports_thinking: None,
                     supports_vision,
+                    supports_files: None,
                     tier: None,
                     is_free: None,
                     is_promo: None,
@@ -485,6 +487,7 @@ impl LocalEndpoint {
                 pricing: Some(crate::model::ModelPricing::ZERO),
                 supports_thinking: None,
                 supports_vision: None,
+                supports_files: None,
                 tier: None,
                 is_free: None,
                 is_promo: None,

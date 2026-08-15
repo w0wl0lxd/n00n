@@ -183,6 +183,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 1.25,
@@ -199,6 +200,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.15,
@@ -215,6 +217,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Gemini,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.075,

@@ -1050,6 +1050,9 @@ pub enum AgentEvent {
         fusion: Option<crate::fusion::FusionUsageStats>,
     },
     AutoCompacting,
+    AutoCompactFailed {
+        error: String,
+    },
     CompactionDone,
     #[serde(rename = "FusionPhaseChanged")]
     FusionPhase {

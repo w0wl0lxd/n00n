@@ -20,7 +20,7 @@ use crate::api::util::convert::json_to_lua;
 use crate::api::util::state_convert::{
     json_to_lua as state_json_to_lua, lua_to_json as state_lua_to_json,
 };
-use crate::runtime::{active_task, lock_cell};
+use crate::runtime::{active_task, lock_cell, task_deadline};
 use crate::state::{PluginStateIdentity, PluginStateScope, PluginStateStore};
 
 const CONTEXT_INACTIVE_MSG: &str = "state context is no longer active";
@@ -173,6 +173,22 @@ impl LuaCtx {
         }
     }
 
+    pub(crate) fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(cancel: CancelToken) -> Self {
+        Self {
+            caps: Caps::Restore { state: None },
+            cancel,
+            tool_output_lines: ToolOutputLines::default(),
+            finish_tx: None,
+            active: Arc::new(AtomicBool::new(true)),
+            plugin_state: None,
+        }
+    }
+
     /// Dispatch capability: only handler ctxs can call `n00n.agent.*`.
     pub(crate) fn agent(&self) -> Option<&AgentContext> {
         match &self.caps {
@@ -258,7 +274,7 @@ impl LuaCtx {
         Arc::clone(&self.active)
     }
 
-    fn ensure_active(&self) -> Result<(), String> {
+    pub(crate) fn ensure_active(&self) -> Result<(), String> {
         if self.active.load(Ordering::Acquire) {
             Ok(())
         } else {
@@ -498,6 +514,19 @@ impl UserData for LuaCtx {
             cell.deadline_secs.set(Some(secs));
             cell.deadline.set(Some(deadline));
             Ok((LuaValue::Nil, None))
+        });
+
+        methods.add_method("deadline_remaining", |lua, this, ()| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
+            let handle = active_task(lua);
+            let remaining_secs = task_deadline(&handle)
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs());
+            let value = remaining_secs.map_or(LuaValue::Nil, |secs| {
+                LuaValue::Integer(i64::try_from(secs).unwrap_or_else(|_| i64::MAX))
+            });
+            Ok((value, None))
         });
 
         methods.add_method("record_read", |_, this, path: String| {

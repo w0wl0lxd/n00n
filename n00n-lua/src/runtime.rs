@@ -22,7 +22,7 @@ use n00n_agent::tools::{
 use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
 use serde_json::Value;
 
-use n00n_config::RawConfig;
+use n00n_config::{RawConfig, SearchConfig};
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
@@ -208,6 +208,10 @@ pub enum Request {
     },
     DropStateOwner {
         owner: n00nId,
+        reply: flume::Sender<()>,
+    },
+    SetSearchConfig {
+        config: Arc<SearchConfig>,
         reply: flume::Sender<()>,
     },
     Shutdown,
@@ -452,7 +456,7 @@ fn awaited_parent_deadline(parent: Option<&TaskHandle>) -> Option<Instant> {
     cell.deadline.get().or(cell.interrupted_deadline.get())
 }
 
-fn task_deadline(handle: &TaskHandle) -> Option<Instant> {
+pub(crate) fn task_deadline(handle: &TaskHandle) -> Option<Instant> {
     let (deadline, parent) = {
         let cell = lock_cell(handle);
         (cell.deadline.get(), cell.async_parent.clone())
@@ -1608,12 +1612,14 @@ struct LuaRuntime {
     shutdown: Arc<AtomicBool>,
     bundled_dirs: &'static [&'static Dir<'static>],
     ui_action_tx: Option<flume::Sender<UiAction>>,
+    search_config: Arc<SearchConfig>,
 }
 
 impl LuaRuntime {
     #[allow(clippy::too_many_arguments)]
     fn new(
         registry: Arc<ToolRegistry>,
+        search_config: Arc<SearchConfig>,
         tx: flume::Sender<Request>,
         shutdown: Arc<AtomicBool>,
         bundled_dirs: &'static [&'static Dir<'static>],
@@ -1665,6 +1671,7 @@ impl LuaRuntime {
         lua.set_app_data(HintStore::new());
         lua.set_app_data(hint_writer);
         lua.set_app_data(Arc::clone(&registry));
+        lua.set_app_data(Arc::clone(&search_config));
 
         register_builtin_tools(&registry)?;
 
@@ -1702,6 +1709,7 @@ impl LuaRuntime {
             shutdown,
             bundled_dirs,
             ui_action_tx,
+            search_config,
         })
     }
 
@@ -2078,6 +2086,7 @@ impl LuaRuntime {
             permissions,
             Arc::clone(&opts),
             bundled_capability,
+            Arc::clone(&self.search_config),
         )
         .map_err(&map_err)?;
 
@@ -2134,6 +2143,7 @@ impl LuaRuntime {
                     has_describe_fn: t.describe_key.is_some(),
                     defer_loading: t.defer_loading,
                     namespace: t.namespace.clone(),
+                    deadline_grace: t.deadline_grace,
                 });
                 (
                     tool,
@@ -2972,6 +2982,7 @@ pub(crate) struct LuaThread {
 #[allow(clippy::too_many_lines)]
 pub fn spawn(
     registry: Arc<ToolRegistry>,
+    search_config: Arc<SearchConfig>,
     bundled_dirs: &'static [&'static Dir<'static>],
     jit: bool,
 ) -> Result<LuaThread, PluginError> {
@@ -2992,6 +3003,7 @@ pub fn spawn(
         .spawn(move || {
             let mut rt = match LuaRuntime::new(
                 registry,
+                search_config,
                 tx_clone,
                 shutdown_thread,
                 bundled_dirs,
@@ -3291,6 +3303,11 @@ pub fn spawn(
                                 break;
                             }
                             rt.state.drop_owner(owner);
+                            let _ = reply.send(());
+                        }
+                        Request::SetSearchConfig { config, reply } => {
+                            rt.lua.set_app_data(Arc::clone(&config));
+                            rt.search_config = config;
                             let _ = reply.send(());
                         }
                         Request::RestoreToolAsync { item, event_tx } => {

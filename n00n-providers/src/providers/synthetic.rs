@@ -32,6 +32,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Synthetic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.45,
@@ -48,6 +49,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Synthetic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.56,
@@ -64,6 +66,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Synthetic,
             vision: false,
+            files: false,
             default: true,
             pricing: ModelPricing {
                 input: 0.10,
@@ -149,7 +152,7 @@ impl Provider for Synthetic {
             );
             super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }

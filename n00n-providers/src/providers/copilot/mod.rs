@@ -50,6 +50,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing::ZERO,
             max_output_tokens: 100_000,
@@ -60,6 +61,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing::ZERO,
             max_output_tokens: 100_000,
@@ -75,6 +77,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: true,
             pricing: ModelPricing::ZERO,
             max_output_tokens: 100_000,
@@ -85,6 +88,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             tier: ModelTier::Strong,
             family: ModelFamily::Generic,
             vision: true,
+            files: false,
             default: false,
             pricing: ModelPricing::ZERO,
             max_output_tokens: 64_000,
@@ -237,6 +241,7 @@ impl Copilot {
         system: &str,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
+        opts: &crate::RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
         let system_text = system.to_string();
@@ -252,19 +257,23 @@ impl Copilot {
             body["tools"] = wire_tools;
         }
 
-        let request = Self::build_post(
+        let mut request = Self::build_post(
             &auth,
             CHAT_COMPLETIONS_PATH,
             Some("conversation-agent"),
             &body,
-        )?
-        .body(serde_json::to_vec(&body)?)?;
+        )?;
+        if let Some(key) = opts.idempotency_key.as_deref() {
+            request = request.header("Idempotency-Key", key);
+        }
+        let request = request.body(serde_json::to_vec(&body)?)?;
         let response = self.client.send_async(request).await?;
         if response.status().is_success() {
             openai_compat::parse_sse(
                 BufReader::new(response.into_body()),
                 event_tx,
                 self.stream_timeout,
+                opts,
             )
             .await
         } else {
@@ -296,17 +305,13 @@ impl Copilot {
         system: &str,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
-        thinking: ThinkingConfig,
+        opts: &crate::RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
         let system = System::from(system);
-        let opts = crate::RequestOptions {
-            thinking,
-            message_cache_breakpoints: 0,
-            ..Default::default()
-        };
+        let thinking = opts.thinking;
         let mut body = responses::build_body(
-            model, messages, &system, tools, None, None, false, &opts, true,
+            model, messages, &system, tools, None, None, false, opts, true,
         );
         if let Some(info) = self.reasoning_info_for(model) {
             apply_responses_reasoning(&mut body, thinking, model, &effort_dialect(&info));
@@ -322,6 +327,7 @@ impl Copilot {
             event_tx,
             &resolved,
             self.stream_timeout,
+            opts,
         )
         .await
         .map(|(_, response)| response)
@@ -334,8 +340,9 @@ impl Copilot {
         system: &str,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
-        thinking: ThinkingConfig,
+        opts: &crate::RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
+        let thinking = opts.thinking;
         let auth = self.auth().await?;
         let system_text = system.to_string();
         let mut body = json!({
@@ -437,6 +444,7 @@ impl CopilotModel {
                     || supports.min_thinking_budget.is_some(),
             ),
             supports_vision: Some(supports.vision),
+            supports_files: None,
             tier: self.model_picker_category.map(CopilotModelCategory::tier),
             is_free: None,
             is_promo: None,
@@ -740,15 +748,15 @@ impl Provider for Copilot {
             debug!(model = %model.id, ?endpoint, "running Copilot request");
             match endpoint {
                 Endpoint::ChatCompletions => {
-                    self.stream_chat_completions(model, messages, system, tools, event_tx)
+                    self.stream_chat_completions(model, messages, system, tools, event_tx, &opts)
                         .await
                 }
                 Endpoint::Responses => {
-                    self.stream_responses(model, messages, system, tools, event_tx, opts.thinking)
+                    self.stream_responses(model, messages, system, tools, event_tx, &opts)
                         .await
                 }
                 Endpoint::Messages => {
-                    self.stream_messages(model, messages, system, tools, event_tx, opts.thinking)
+                    self.stream_messages(model, messages, system, tools, event_tx, &opts)
                         .await
                 }
             }

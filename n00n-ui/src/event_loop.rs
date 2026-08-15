@@ -434,7 +434,7 @@ impl SpawnCtx {
         let identity = session_identity(&session)
             .map_err(|error| eyre!("invalid session identity: {error}"))?;
         if let Some(handle) = &self.lua_event_handle {
-            let root_id = session.meta.root_session_id.map_or(session.id, |root| root);
+            let root_id = session.meta.root_session_id.unwrap_or_else(|| session.id);
             if !self.hydrated_roots.borrow().contains(&root_id) {
                 let root_snapshot = if root_id == session.id {
                     session.meta.state_snapshot.clone()
@@ -1165,6 +1165,7 @@ impl<'t> EventLoop<'t> {
             n00n_agent::AgentEvent::Done { .. }
                 | n00n_agent::AgentEvent::Error { .. }
                 | n00n_agent::AgentEvent::CompactionDone
+                | n00n_agent::AgentEvent::AutoCompactFailed { .. }
         );
         if capture && let Err(error) = self.capture_plugin_state(idx) {
             warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state");
@@ -1206,7 +1207,7 @@ impl<'t> EventLoop<'t> {
             .session
             .meta
             .root_session_id
-            .map_or(self.sessions[idx].id(), |root| root);
+            .unwrap_or_else(|| self.sessions[idx].id());
         capture_session_plugin_state(&handle, &mut self.sessions[idx].app.state.session)?;
         if root_id == self.sessions[idx].id() {
             return Ok(());
