@@ -27,7 +27,6 @@ for asset in \
   doom.mp4 \
   doom-av1.mp4 \
   ../install.sh \
-  ../install.ps1 \
   favicon.ico \
   favicon-16x16.png \
   favicon-32x32.png \
