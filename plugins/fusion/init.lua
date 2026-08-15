@@ -110,13 +110,13 @@ local function handler(input, ctx)
     audience = "general_sub",
     include_mcp = false,
     except_tools = {
-      "fusion_delegate",
-      "task",
-      "team",
-      "workflow",
-      "agent_control",
+      "delegate_fusion",
+      "run_task",
+      "run_team",
+      "run_workflow",
+      "control_agent",
       "sessions",
-      "blackboard",
+      "use_blackboard",
     },
     system_append = SIDEKICK_SYSTEM,
   })
@@ -150,7 +150,8 @@ local function header(input)
 end
 
 n00n.api.register_tool({
-  name = "fusion_delegate",
+  name = "delegate_fusion",
+  aliases = { "fusion_delegate" },
   description = description,
   schema = schema,
   handler = handler,

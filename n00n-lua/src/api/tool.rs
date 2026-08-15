@@ -146,6 +146,7 @@ impl PermissionScopeSpec {
 
 pub(crate) struct PendingTool {
     pub(crate) name: Arc<str>,
+    pub(crate) aliases: Vec<Arc<str>>,
     pub(crate) description: String,
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
@@ -170,6 +171,7 @@ pub(crate) type PendingTools = Arc<Mutex<Vec<PendingTool>>>;
 
 pub(crate) struct LuaTool {
     pub(crate) name: Arc<str>,
+    pub(crate) aliases: Vec<Arc<str>>,
     pub(crate) description: String,
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
@@ -196,6 +198,10 @@ pub(crate) struct LuaTool {
 impl Tool for LuaTool {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn aliases(&self) -> Vec<&str> {
+        self.aliases.iter().map(AsRef::as_ref).collect()
     }
 
     fn description(&self, ctx: &DescriptionContext) -> Cow<'_, str> {
@@ -1189,6 +1195,37 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             "register_tool: invalid name '{name}'"
         )));
     }
+    let aliases = match spec.get::<LuaValue>("aliases")? {
+        LuaValue::Nil => Vec::new(),
+        LuaValue::Table(table) => {
+            let mut collected = Vec::new();
+            for entry in table.sequence_values::<String>() {
+                let alias = entry?;
+                if !is_valid_tool_name(&alias) {
+                    return Err(mlua::Error::runtime(format!(
+                        "register_tool: invalid alias '{alias}'"
+                    )));
+                }
+                if alias == name {
+                    return Err(mlua::Error::runtime(format!(
+                        "register_tool: alias '{alias}' duplicates the tool name"
+                    )));
+                }
+                collected.push(Arc::from(alias.as_str()));
+            }
+            if table.raw_len() != collected.len() {
+                return Err(mlua::Error::runtime(
+                    "register_tool: 'aliases' must be a dense sequence of strings",
+                ));
+            }
+            collected
+        }
+        _ => {
+            return Err(mlua::Error::runtime(
+                "register_tool: 'aliases' must be a list of strings",
+            ));
+        }
+    };
     let description: String = spec.get("description").unwrap_or_else(|_| String::new());
     if description.trim().is_empty() {
         return Err(mlua::Error::runtime(
@@ -1289,6 +1326,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(PendingTool {
             name,
+            aliases,
             description,
             schema: param_schema,
             audience,
@@ -1799,6 +1837,7 @@ mod tests {
         let (tx, _rx) = flume::unbounded();
         LuaTool {
             name: Arc::from("test_tool"),
+            aliases: Vec::new(),
             description: "test".into(),
             schema,
             audience: ToolAudience::default(),

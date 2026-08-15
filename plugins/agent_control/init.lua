@@ -177,7 +177,8 @@ end
 ---------------------------------------------------------------------------
 
 n00n.api.register_tool({
-  name = "agent_list",
+  name = "list_agents",
+  aliases = { "agent_list" },
   description = "List live background agents (task/team/workflow sessions).",
   kind = "execute",
   audiences = { "main" },
@@ -228,7 +229,8 @@ n00n.api.register_tool({
 ---------------------------------------------------------------------------
 
 n00n.api.register_tool({
-  name = "agent_status",
+  name = "get_agent",
+  aliases = { "agent_status" },
   description = "Show status for one live background agent.",
   kind = "execute",
   audiences = { "main" },
@@ -492,7 +494,8 @@ local function control_handler(input)
 end
 
 n00n.api.register_tool({
-  name = "agent_control",
+  name = "control_agent",
+  aliases = { "agent_control" },
   description = "Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.",
   kind = "execute",
   audiences = { "main" },

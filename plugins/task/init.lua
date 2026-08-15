@@ -352,7 +352,8 @@ local function restore(_input, output, is_error, ctx)
 end
 
 n00n.api.register_tool({
-  name = "task",
+  name = "run_task",
+  aliases = { "task" },
   description = description,
   kind = "execute",
   workload = "orchestrator",

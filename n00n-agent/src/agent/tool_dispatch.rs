@@ -15,7 +15,7 @@ use crate::task_set::TaskSet;
 use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolAdmissionClass, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
-use n00n_config::ToolKey;
+use n00n_config::{ToolKey, canonical_tool_name};
 use n00n_redact::redact_json_value_for_log;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
@@ -35,7 +35,7 @@ const DOOM_LOOP_THRESHOLD: usize = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 const MCP_MUTATION_BLOCKED_IN_PLAN: &str =
     "MCP tool is not explicitly marked read-only and cannot run in plan mode";
-const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in plan mode";
+const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "run_python is not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
@@ -46,7 +46,7 @@ const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &[
     "model_tier",
     "subagent_type",
 ];
-const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
+const BASH_BLOCKED_IN_PLAN: &str = "run_shell command is not provably read-only in plan mode";
 
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,7 +279,8 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
 }
 
 fn is_skill_tool_call(name: &str) -> bool {
-    name.strip_prefix("functions.").unwrap_or_else(|| name) == crate::skill_policy::SKILL_TOOL_NAME
+    let bare = name.strip_prefix("functions.").map_or(name, |value| value);
+    canonical_tool_name(bare) == crate::skill_policy::SKILL_TOOL_NAME
 }
 
 fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
@@ -369,14 +370,18 @@ async fn run_authorized(
     if !ctx.tool_filter.matches(name) {
         return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
     }
-    if name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
+    if canonical_tool_name(name) == crate::fusion::FUSION_DELEGATE_TOOL
+        && !fusion_delegate_authorized
+    {
         return tool_done_error(
             id,
             Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
             crate::fusion::FUSION_DELEGATE_BLOCKED.into(),
         );
     }
-    if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+    if ctx.mode.plan_path().is_some()
+        && canonical_tool_name(name) == crate::tools::CODE_EXECUTION_TOOL_NAME
+    {
         return tool_done_error(
             id,
             Arc::from(crate::tools::CODE_EXECUTION_TOOL_NAME),
@@ -384,7 +389,7 @@ async fn run_authorized(
         );
     }
     if ctx.mode.plan_path().is_some()
-        && name == crate::tools::BASH_TOOL_NAME
+        && canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME
         && !plan_bash_is_read_only(input)
     {
         return tool_done_error(
@@ -426,7 +431,7 @@ async fn run_authorized(
     let started = Instant::now();
 
     if ctx.mode.plan_path().is_some()
-        && name != crate::tools::BASH_TOOL_NAME
+        && canonical_tool_name(name) != crate::tools::BASH_TOOL_NAME
         && entry
             .as_ref()
             .is_some_and(|entry| entry.tool.tool_kind() == Some("execute"))
@@ -575,7 +580,7 @@ async fn run_authorized(
                 }
             }
         }
-    } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
+    } else if let Some(mcp) = mcp.filter(|_| canonical_tool_name(name) == TOOL_SEARCH_TOOL_NAME) {
         let _admission = match ctx
             .registry
             .admission()
@@ -958,7 +963,8 @@ pub(super) async fn process_tool_calls(
         let normalized_name = name
             .strip_prefix("functions.")
             .map_or(name.as_str(), |value| value);
-        let is_fusion_delegate = normalized_name == crate::fusion::FUSION_DELEGATE_TOOL;
+        let is_fusion_delegate =
+            canonical_tool_name(normalized_name) == crate::fusion::FUSION_DELEGATE_TOOL;
         if is_fusion_delegate
             && ctx.config.fusion.enabled
             && let Value::Object(arguments) = &mut input
