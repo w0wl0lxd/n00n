@@ -313,7 +313,7 @@ impl JobStore {
         }
     }
 
-    pub fn kill(&mut self, lua: &Lua, job_id: u32, task_id: Option<u64>, plugin: &str) {
+    pub fn kill(&mut self, _lua: &Lua, job_id: u32, task_id: Option<u64>, plugin: &str) {
         let can_access = self
             .jobs
             .get(&job_id)
@@ -321,10 +321,15 @@ impl JobStore {
         if !can_access {
             return;
         }
-        if self.jobs.get(&job_id).is_some_and(|job| job.pid.is_none()) {
-            self.remove(lua, job_id, false);
-        } else if let Some(job) = self.jobs.get_mut(&job_id) {
-            kill_job(job);
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.pid.is_none() {
+                // A timer has no process to signal; make it immediately due so
+                // its `on_exit` still fires, matching how a killed process job
+                // reports its exit through the wait thread.
+                job.deadline = Some(Instant::now());
+            } else {
+                kill_job(job);
+            }
         }
     }
 

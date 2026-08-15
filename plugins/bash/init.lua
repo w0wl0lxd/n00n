@@ -856,13 +856,13 @@ n00n.api.register_tool({
       if flush_scheduled then
         return
       end
-      flush_scheduled = true
       n00n.fn.defer(LIVE_OUTPUT_FLUSH_MS, function()
         flush_scheduled = false
         if not finished and collector.line_count > published_line_count then
           flush_view()
         end
       end)
+      flush_scheduled = true
     end
 
     local function append_output(line)
