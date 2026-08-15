@@ -312,6 +312,7 @@ impl ResponsesWebSocket {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     pub(crate) async fn stream_message(
         &mut self,
         body: &Value,
@@ -330,6 +331,7 @@ impl ResponsesWebSocket {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::result_large_err)]
     async fn stream_message_with_keepalive(
         &mut self,
         body: &Value,

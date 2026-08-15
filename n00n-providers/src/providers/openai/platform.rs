@@ -172,6 +172,7 @@ impl CodexAttempt {
 }
 
 #[derive(Debug)]
+#[allow(clippy::result_large_err)]
 struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
@@ -822,7 +823,7 @@ impl OpenAi {
         })
     }
 
-    #[allow(clippy::large_futures)]
+    #[allow(clippy::large_futures, clippy::result_large_err)]
     async fn connect_current_websocket(
         &self,
         attempt_nonce: u64,

@@ -106,7 +106,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup target add --toolchain nightly-2026-08-14 ${{ matrix.target }}
+        run: rustup toolchain install nightly-2026-08-14 --profile minimal --target ${{ matrix.target }}
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
