@@ -431,6 +431,7 @@ impl<'h> Agent<'h> {
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
+            idempotency_supported: false,
         };
 
         info!(
