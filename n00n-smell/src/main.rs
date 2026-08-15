@@ -45,7 +45,7 @@ fn resolve_repo(repo: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    color_eyre::install().ok();
+    color_eyre::install().map_err(|err| format!("failed to install color-eyre: {err}"))?;
 
     let cli = Cli::parse();
 
