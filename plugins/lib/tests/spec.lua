@@ -4,6 +4,7 @@ local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local structured_output = require("n00n.structured_output")
 local guard = require("n00n.guard")
+local secret_check = require("n00n.secret_check")
 
 local failures = {}
 
@@ -1842,6 +1843,75 @@ case("checkpoint_latest_breaks_legacy_timestamp_ties_deterministically", functio
   n00n.fs.read = old_read
   eq(latest_first, "legacy_b", "legacy ties must use checkpoint id")
   eq(latest_reversed, "legacy_b", "legacy selection must ignore directory order")
+end)
+
+case("secret_check_flags_generic_key_assignment", function()
+  local ok = secret_check.check("STRIPE_KEY=sk_test_abcdefghijklmnopqrstuvwxyz")
+  eq(ok, false)
+end)
+
+case("secret_check_flags_generic_credential_assignment", function()
+  local ok = secret_check.check("DB_CREDENTIAL=abcdefghijklmnopqrstuvwxyz123456")
+  eq(ok, false)
+end)
+
+case("secret_check_ignores_key_as_prose", function()
+  local ok = secret_check.check("the primary key is used for lookups")
+  eq(ok, true)
+end)
+
+case("secret_check_ignores_short_generic_assignment", function()
+  local ok = secret_check.check("cache key=abc")
+  eq(ok, true)
+end)
+
+case("secret_check_flags_email_address", function()
+  local ok, reason = secret_check.check("contact jane.doe@example.com for access")
+  eq(ok, false)
+  eq(reason, "content may contain PII (email address)")
+end)
+
+case("secret_check_flags_dashed_phone_number", function()
+  local ok, reason = secret_check.check("call me at 555-123-4567")
+  eq(ok, false)
+  eq(reason, "content may contain PII (phone number)")
+end)
+
+case("secret_check_flags_parenthesized_phone_number", function()
+  local ok = secret_check.check("call me at (555) 123-4567")
+  eq(ok, false)
+end)
+
+case("secret_check_ignores_unrelated_digit_runs", function()
+  local ok = secret_check.check("build artifact size is 5551234567 bytes")
+  eq(ok, true)
+end)
+
+case("secret_check_flags_ssn", function()
+  local ok, reason = secret_check.check("ssn: 123-45-6789")
+  eq(ok, false)
+  eq(reason, "content may contain PII (SSN-like pattern)")
+end)
+
+case("secret_check_ignores_version_like_dashed_numbers", function()
+  local ok = secret_check.check("version 12.34.56 release")
+  eq(ok, true)
+end)
+
+case("secret_check_flags_pem_private_key", function()
+  local ok, reason = secret_check.check("-----BEGIN PRIVATE KEY-----\nbase64blob\n-----END PRIVATE KEY-----")
+  eq(ok, false)
+  eq(reason, "content contains a private key block")
+end)
+
+case("secret_check_flags_openssh_private_key", function()
+  local ok = secret_check.check("-----BEGIN OPENSSH PRIVATE KEY-----")
+  eq(ok, false)
+end)
+
+case("secret_check_flags_rsa_private_key", function()
+  local ok = secret_check.check("-----BEGIN RSA PRIVATE KEY-----")
+  eq(ok, false)
 end)
 
 if #failures > 0 then

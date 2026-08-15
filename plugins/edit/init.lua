@@ -1,4 +1,5 @@
 local shorten_path = require("n00n.shorten_path")
+local secret_check = require("n00n.secret_check")
 local ToolView = require("n00n.tool_view")
 local fuzzy_replace = require("n00n.fuzzy_replace")
 local replace_lines = require("edit_helpers").replace_lines
@@ -183,7 +184,19 @@ local function diff_restore(blocks_from)
   end
 end
 
-local function apply_edit(path, ctx, transform)
+local function introduced_secret_reason(before, after, justification)
+  if justification and justification:match("%S") then
+    return nil
+  end
+  local before_ok = secret_check.check(before)
+  local after_ok, reason = secret_check.check(after)
+  if before_ok and not after_ok then
+    return reason
+  end
+  return nil
+end
+
+local function apply_edit(path, ctx, transform, validate_after)
   path = n00n.fs.abspath(path)
 
   local ok, err = ctx:check_before_edit(path)
@@ -199,6 +212,13 @@ local function apply_edit(path, ctx, transform)
   local after, transform_err = transform(before)
   if transform_err then
     return nil, transform_err
+  end
+
+  if validate_after then
+    local valid, reason = validate_after(before, after)
+    if not valid then
+      return nil, reason
+    end
   end
 
   local _, write_err = n00n.fs.write(path, after)
@@ -268,6 +288,10 @@ n00n.api.register_tool({
       replace_all = {
         type = "boolean",
       },
+      justification = {
+        type = "string",
+        description = "Required when new_string may contain secrets/PII. Explain why this replacement is safe.",
+      },
     },
   },
 
@@ -277,8 +301,28 @@ n00n.api.register_tool({
   end),
 
   handler = function(input, ctx)
+    local secret_reason = secret_check.reason(input.new_string)
+    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit", is_error = true }
+    end
+
+    -- Also check unescaped version for secret patterns
+    local unescaped = fuzzy_replace.unescape(input.new_string)
+    if unescaped ~= input.new_string then
+      local unescaped_reason = secret_check.reason(unescaped)
+      if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return { llm_output = "error: " .. unescaped_reason .. "; provide justification to edit", is_error = true }
+      end
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return fuzzy_replace.replace(content, input.old_string, input.new_string, input.replace_all or false)
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to edit"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }
@@ -328,6 +372,10 @@ register_tool_if(opts.multiedit, {
           },
         },
       },
+      justification = {
+        type = "string",
+        description = "Required when any new_string may contain secrets/PII. Explain why these replacements are safe.",
+      },
     },
   },
 
@@ -346,6 +394,32 @@ register_tool_if(opts.multiedit, {
       return { llm_output = "provide at least one edit", is_error = true }
     end
 
+    for i, edit in ipairs(edits) do
+      local secret_reason = secret_check.reason(edit.new_string)
+      if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return {
+          llm_output = "error: edits[" .. (i - 1) .. "] " .. secret_reason .. "; provide justification to multiedit",
+          is_error = true,
+        }
+      end
+
+      -- Also check unescaped version for secret patterns
+      local unescaped = fuzzy_replace.unescape(edit.new_string)
+      if unescaped ~= edit.new_string then
+        local unescaped_reason = secret_check.reason(unescaped)
+        if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+          return {
+            llm_output = "error: edits["
+              .. (i - 1)
+              .. "] "
+              .. unescaped_reason
+              .. "; provide justification to multiedit",
+            is_error = true,
+          }
+        end
+      end
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       for i, edit in ipairs(edits) do
         local replaced, replace_err =
@@ -361,6 +435,12 @@ register_tool_if(opts.multiedit, {
         content = replaced
       end
       return content
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to multiedit"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }
@@ -401,6 +481,10 @@ register_tool_if(opts.edit_lines, {
         type = "string",
         required = true,
       },
+      justification = {
+        type = "string",
+        description = "Required when new_string may contain secrets/PII. Explain why this replacement is safe.",
+      },
     },
   },
 
@@ -410,8 +494,28 @@ register_tool_if(opts.edit_lines, {
   end),
 
   handler = function(input, ctx)
+    local secret_reason = secret_check.reason(input.new_string)
+    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit_lines", is_error = true }
+    end
+
+    -- Also check unescaped version for secret patterns
+    local unescaped = fuzzy_replace.unescape(input.new_string)
+    if unescaped ~= input.new_string then
+      local unescaped_reason = secret_check.reason(unescaped)
+      if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return { llm_output = "error: " .. unescaped_reason .. "; provide justification to edit_lines", is_error = true }
+      end
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return replace_lines(content, input.start, input["end"], input.new_string)
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to edit_lines"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }
@@ -448,6 +552,10 @@ register_tool_if(opts.insert_lines, {
         type = "string",
         required = true,
       },
+      justification = {
+        type = "string",
+        description = "Required when new_string may contain secrets/PII. Explain why this insertion is safe.",
+      },
     },
   },
 
@@ -457,8 +565,31 @@ register_tool_if(opts.insert_lines, {
   end),
 
   handler = function(input, ctx)
+    local secret_reason = secret_check.reason(input.new_string)
+    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+      return { llm_output = "error: " .. secret_reason .. "; provide justification to insert_lines", is_error = true }
+    end
+
+    -- Also check unescaped version for secret patterns
+    local unescaped = fuzzy_replace.unescape(input.new_string)
+    if unescaped ~= input.new_string then
+      local unescaped_reason = secret_check.reason(unescaped)
+      if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return {
+          llm_output = "error: " .. unescaped_reason .. "; provide justification to insert_lines",
+          is_error = true,
+        }
+      end
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return replace_lines(content, input.line, nil, input.new_string)
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to insert_lines"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }

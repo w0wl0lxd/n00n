@@ -156,13 +156,12 @@ impl AgentError {
             | Self::ResponseChainBusy { .. }
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
-            | Self::HistoryReplayRequired { .. }
-            | Self::RequestSent { .. } => false,
+            | Self::HistoryReplayRequired { .. } => false,
+            Self::RequestSent { metadata, .. } => request_sent_is_retryable(metadata.as_ref()),
         }
     }
 
-    /// Converts failures that may have occurred after the provider accepted the
-    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
+    /// Converts failures that may have occurred after the provider accepted the    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
     /// failures are treated as request-sent once the request has left the client.
     /// API/server errors are only suppressed when output has already been emitted
     /// or the request was accepted, preserving retryability when no output has been
@@ -320,8 +319,12 @@ impl AgentError {
             Self::Storage => "local storage error, try again".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
-            Self::RequestSent { .. } => {
-                "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
+            Self::RequestSent { metadata, .. } => {
+                if request_sent_is_retryable(metadata.as_ref()) {
+                    "connection failed after the request was sent; retrying with idempotency key".into()
+                } else {
+                    "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
+                }
             }
         }
     }
@@ -352,6 +355,14 @@ impl AgentError {
             _ => self.to_string(),
         }
     }
+}
+
+fn request_sent_is_retryable(metadata: Option<&RequestDeliveryMetadata>) -> bool {
+    metadata.is_some_and(|m| {
+        m.idempotency_key.is_some()
+            && m.phase == RequestDeliveryPhase::SentAwaitingAcceptance
+            && !m.emitted_event
+    })
 }
 
 impl<T> From<flume::SendError<T>> for AgentError {
@@ -449,6 +460,78 @@ mod tests {
         assert!(!matches!(error, AgentError::Api { .. }));
         assert!(!error.to_string().contains(private_ref));
         assert!(!error.user_message().contains(private_ref));
+    }
+
+    #[test_case(RequestDeliveryPhase::NotSent, false  ; "not_sent")]
+    #[test_case(RequestDeliveryPhase::SentAwaitingAcceptance, true  ; "sent_awaiting")]
+    #[test_case(RequestDeliveryPhase::Accepted, false ; "accepted")]
+    fn request_sent_with_idempotency_key_is_retryable(phase: RequestDeliveryPhase, expected: bool) {
+        let mut metadata = RequestDeliveryMetadata::new(phase);
+        metadata.idempotency_key = Some("n00n-test".into());
+        let error = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert_eq!(error.is_retryable(), expected);
+    }
+
+    #[test]
+    fn request_sent_without_idempotency_key_is_not_retryable() {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = None;
+        let error = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn request_sent_after_emitted_event_is_not_retryable() {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = Some("n00n-test".into());
+        metadata.emitted_event = true;
+        let error = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn request_sent_user_message_matches_retryability() {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = Some("n00n-test".into());
+        let retryable = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(retryable.is_retryable());
+        assert!(
+            retryable
+                .user_message()
+                .contains("retrying with idempotency key"),
+            "message: {}",
+            retryable.user_message()
+        );
+
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.idempotency_key = Some("n00n-test".into());
+        metadata.emitted_event = true;
+        let suppressed = AgentError::RequestSent {
+            message: String::new(),
+            metadata: Some(metadata),
+        };
+        assert!(!suppressed.is_retryable());
+        assert!(
+            suppressed.user_message().contains("not retrying"),
+            "message: {}",
+            suppressed.user_message()
+        );
     }
 
     // llama.cpp: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-context.cpp
