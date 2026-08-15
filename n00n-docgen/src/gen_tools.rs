@@ -1,6 +1,6 @@
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource};
-use n00n_config::{PluginFileConfig, PluginsConfig, canonical_tool_name};
+use n00n_config::{PluginFileConfig, PluginsConfig};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -54,7 +54,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "delegate_fusion",
         ],
     ),
-    ("Web", &["fetch_url", "search_web", "web_search_exa"]),
+    ("Web", &["fetch_url", "search_web"]),
     ("Repository", &["git", "github"]),
 ];
 
@@ -397,6 +397,7 @@ static DATE_RE: std::sync::LazyLock<Regex> =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use n00n_config::canonical_tool_name;
     use test_case::test_case;
 
     #[test_case("2026-07-05", "YYYY-MM-DD"; "simple date")]
