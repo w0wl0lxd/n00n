@@ -7,6 +7,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::tools::ToolAudience;
+use n00n_config::canonical_tool_name;
 
 pub(crate) const FUSION_DELEGATE_TOOL: &str = "delegate_fusion";
 pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "delegate_fusion is unavailable for this request";
@@ -267,7 +268,7 @@ impl FusionState {
 
     pub fn observe_tool_results(&mut self, results: &[crate::ToolDoneEvent]) {
         for done in results {
-            if done.tool.as_ref() == FUSION_DELEGATE_TOOL {
+            if canonical_tool_name(done.tool.as_ref()) == FUSION_DELEGATE_TOOL {
                 // Dispatch denials never launched a sidekick; ignore them so
                 // blocked retries do not inflate failure/delegation counters.
                 if done.is_error && done.output.as_text() == FUSION_DELEGATE_BLOCKED {

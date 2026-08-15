@@ -900,7 +900,7 @@ impl<'h> Agent<'h> {
 
     fn handle_fusion_results(&mut self, results: &[ToolDoneEvent]) -> Result<(), AgentError> {
         let Some(result) = results.iter().find(|result| {
-            &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL
+            canonical_tool_name(&result.tool) == crate::fusion::FUSION_DELEGATE_TOOL
                 && result.output.as_text() != crate::fusion::FUSION_DELEGATE_BLOCKED
         }) else {
             return Ok(());
