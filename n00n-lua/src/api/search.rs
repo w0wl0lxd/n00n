@@ -100,9 +100,24 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
 mod tests {
     use mlua::{Function, LuaSerdeExt};
     use n00n_agent::cancel::CancelToken;
+    use n00n_config::{RawConfig, SearchFileConfig};
     use n00n_search::{ExtractFormat, ExtractRequest};
 
     use super::*;
+
+    fn enabled_search_config() -> Arc<SearchConfig> {
+        Arc::new(
+            RawConfig {
+                search: SearchFileConfig {
+                    enabled: Some(true),
+                },
+                ..RawConfig::default()
+            }
+            .into_config(false)
+            .unwrap()
+            .search,
+        )
+    }
 
     fn request() -> ExtractRequest {
         ExtractRequest {
@@ -118,7 +133,9 @@ mod tests {
     fn bridge_observes_context_cancellation_before_network_dispatch() {
         smol::block_on(async {
             let lua = Lua::new();
-            let table = create_search_table(&lua).unwrap();
+            let table =
+                create_search_table(&lua, &PluginPermissions::trusted(), enabled_search_config())
+                    .unwrap();
             let function: Function = table.get("extract").unwrap();
             let (trigger, token) = CancelToken::new();
             trigger.cancel();
@@ -134,7 +151,9 @@ mod tests {
     fn bridge_returns_validation_errors_as_lua_pairs() {
         smol::block_on(async {
             let lua = Lua::new();
-            let table = create_search_table(&lua).unwrap();
+            let table =
+                create_search_table(&lua, &PluginPermissions::trusted(), enabled_search_config())
+                    .unwrap();
             let function: Function = table.get("extract").unwrap();
             let ctx = lua
                 .create_userdata(LuaCtx::for_test(CancelToken::none()))
