@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786794926834,
+  "lastUpdate": 1786798346434,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -19755,6 +19755,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 125363,
             "range": "± 7943",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54e544c6f94e8b71850834ac6e78e22f185132c3",
+          "message": "fix(tools,agent): reconcile canonical tool aliases and resolve UX stack conflicts (#375)\n\n* feat(tools): add canonical tool aliases\n\n* fix(models): enforce configured model catalog\n\n* feat(ui): improve interaction guidance and onboarding\n\n* docs: add UX naming migration guide\n\n* feat(ux): complete normalization integration\n\n* fix(ux): harden canonical migration rollout\n\n* fix(agent): enable deferred MCP tools in interactive runs\n\n* fix(cli): address UX rollout review regressions\n\n* fix(tools): normalize aliases across policy boundaries\n\n* fix(ux): complete normalization rollout\n\n* fix(ui): improve command palette grouping\n\n* docs(ux): clarify canonical tool guidance\n\n* feat(cli): add destructive command safety controls\n\n* feat(ui): improve accessibility motion and guidance\n\n* feat(ui): enrich activity and picker status views\n\n* docs(config): document reduced motion\n\n* test(ux): refresh tool prompt token baseline\n\n* fix(ux): resolve permission and provider review findings\n\n* fix(ux): align docs and compatibility behavior\n\n* fix(ui): address picker and prompt review findings\n\n* fix(ui): harden activity and motion behavior\n\n* fix(cli): return failure when destructive actions are cancelled\n\n* fix(providers): satisfy strict availability lint\n\n* fix(ui): satisfy strict review lint gates\n\n* fix(ui): make picker fallback explicit\n\n* fix(cli): order error rendering constants\n\n* test(config): expect canonical permission names\n\n* fix: harden UX integration review changes\n\n* feat(tools): add canonical tool aliases\n\n* fix(models): enforce configured model catalog\n\n* fix(tools): normalize aliases across policy boundaries\n\n* fix(ux): resolve permission and provider review findings\n\n* fix(providers): satisfy strict availability lint\n\n* test(config): expect canonical permission names\n\n* chore: add changelog fragment for UX overhaul stack PR1\n\n* fix(ux-stack): adapt to main's API changes\n\n- Add SessionIdentity struct to tools/mod.rs (main's location)\n- Add FusionFailure enum to fusion/mod.rs (main's API)\n- Add FUSION_DELEGATE_BLOCKED constant to fusion/mod.rs\n- Add set_lane method to FusionState (main's API)\n- Add identity and admission_scope fields to ToolContext\n- Add thinking_dialect, thinking_fields, body_override to Model initialization\n- Add admission module to tools/mod.rs with ToolAdmission exports\n- Add admission_class method to Tool trait\n- Add admission field to ToolRegistry with admission() method and with_admission constructor\n- Update interpreter_ctx to include identity and admission_scope\n- Update tool_dispatch.rs to use crate::fusion::FUSION_DELEGATE_BLOCKED\n- Add FusionDispatchAuth struct to tool_dispatch.rs\n- Update imports across agent/run.rs, headless.rs, tools/mod.rs, fusion/mod.rs\n\nPartial progress - remaining errors in test support ToolContext initialization.\n\n* fix(ux-stack): adapt to main's API changes (part 2)\n\n- Remove canonical_tool_name function (main doesn't have it)\n- Use n00n_config::canonical_tool_name directly in permissions.rs\n- Remove canonical_tool_name call from skill_policy.rs (main's normalize_tool_name is sufficient)\n- Simplify ToolFilter methods to use direct string comparison (main's approach)\n- Remove same_tool helper function (main doesn't use it)\n- Update excluding/intersect methods to match main's implementation\n- Add admission module import to tools/registry.rs\n- Add admission_class method to Tool trait\n- Add admission field to ToolRegistry with admission() method and with_admission constructor\n- Update ToolContext to include identity and admission_scope fields\n- Update Model initialization to include thinking_dialect, thinking_fields, body_override\n- Update interpreter_ctx to include identity and admission_scope\n- Add FusionDispatchAuth struct to tool_dispatch.rs\n- Add FUSION_DELEGATE_BLOCKED constant to fusion/mod.rs\n- Add FusionFailure enum to fusion/mod.rs\n- Add set_lane method to FusionState\n- Add SessionIdentity struct to tools/mod.rs\n\nProgress: compilation blocked by cargo locks, but all API adaptations completed.\n\n* fix(ux-stack): finish adapting to main's API changes (part 3)\n\nAligns Lua API bindings, ACP server, TUI, sdk_mode, and setup with\nFusionState's transition-based API and the ModelCatalog-backed model\nresolution introduced earlier in this branch. Fixes a spelling typo\nflagged by the spell checker.\n\n* fix(providers): restore Model fields and admission module for main compatibility\n\n* fix(storage): restore Effort, BodyOverride, ThinkingFieldConfig, ToggleEntry, EffortDialectId for main compatibility\n\n* fix(agent): add missing Model fields to fallback_model\n\n* fix(providers): box Model in TierLookup to satisfy clippy::large_enum_variant\n\n* fix(agent): box ModelChangeRequest in InteractiveMessage to satisfy clippy::large_enum_variant\n\n* fix(providers): add missing Model fields to test models\n\n* docs(changelog): trim ux-stack fragment to the user-facing summary\n\nDrops internal revival-process notes (supersession/conflict-resolution\nbookkeeping) that don't belong in a changelog entry.\n\n* fix(ui): add missing Model fields to test_model\n\n* fix(ux-stack): complete the canonical tool rename across all surfaces\n\nThe rename left several surfaces on the deprecated names:\n\n- `LoadNamespace` still registered as `load_namespace` while\n  `TOOL_ALIASES` and `plugins/lib/n00n/policy.lua` already mapped it to\n  `load_toolset`, so docgen's `sections_partition_registered_tools`\n  assertion could not pass. Rename it and keep the old name as an alias.\n- `TOOL_NAME_MAP` in SDK mode was keyed on the deprecated names, so\n  clients received `run_shell` where the wire protocol expects `Bash`.\n  Key it on canonical names and normalize aliases at lookup.\n- Plan-mode rejection messages, the four system prompts, and the\n  model-facing plugin descriptions still named the deprecated tools.\n\nAlso fixes `FILE_WRITE_TOOLS` naming a nonexistent `edit_files` tool, and\nadds `aliases` support to Lua tool registration so plugins can declare\ntheir deprecated spellings.\n\n* fix(docs): add tool aliases to SECTIONS for gen-docs test\n\n* fix(n00n-lua): update JobStore kill test to new start/kill signatures\n\n* fix(run): use canonical fusion_delegate tool name in tests\n\n* fix(agent): canonicalize tool names in the plan-mode filter\n\n* fix(agent,ui,config): canonicalize tool names in dispatch, docs, and output limits\n\n- is_skill_tool_call and the plan-mode filter resolve aliases to their\n  canonical names so renamed tools keep working under legacy names.\n- SECTIONS test canonicalizes before checking the registry.\n- Session restore falls back to the static model tables when the provider\n  is unconfigured, preserving fast/thinking across restarts.\n- ToolOutputLines::get maps canonical tool names back to their output\n  buckets, and the chat plan-write render canonicalizes the tool name.\n\n* fix(lua): resolve tool aliases in the plugin restore/click maps\n\nThe per-plugin tool map was keyed only by canonical name, so restore and\nclick requests arriving under a legacy alias (batch, edit, grep, ...)\nfound no handler and silently produced no lines.\n\n* fix(lua): share plugin tool keys across aliases via Arc and dedupe drops\n\n* fix(lua): route alias lookups through a per-plugin alias map\n\n* fix(lua): route remaining plugin tool lookups through the alias map\n\n* fix(lua): iterate the canonical keys map when dropping plugin keys\n\n* ci: trigger workflow evaluation\n\n* fix(docgen): drop phantom section entry and cover alias-registered tools\n\n* fix(lua): use auto-deref for the remaining tool lookup\n\n* fix(lua): borrow the Arc when looking up the tool alias map\n\n* fix(docgen): cover only registered tools in sections and scope the import\n\n* fix(agent,lua,ui): address Devin review findings\n\n- Canonicalize orchestration tool lists (subagent, fusion, batch nesting),\n  is_tool_enabled, and ToolFilter::intersect so legacy names keep working.\n- Update system/general prompts to the canonical tool names.\n- Allow live-discovered models from arbitrary-model providers in the UI\n  model merge (allows_live).\n- Canonicalize the MCP tool-search collision check; drop the arbor ghost\n  alias from both alias tables.\n- Guard alias collisions in ToolsSnapshot::from_tools and name the\n  offending alias in duplicate-alias errors.\n\n* docs(changelog): state session-restore fallback semantics\n\n* fix: canonicalize tool names in plan-mode checks, fusion dispatch, CLI validation, and model catalog\n\n- Fusion: FUSION_DELEGATE_TOOL now refers to the canonical delegate_fusion\n  name the plugin registers (fusion_delegate is the alias), so the\n  dispatch-blocked checks match again.\n- Plan mode: canonicalize the requested tool name before comparing against\n  BASH_TOOL_NAME / CODE_EXECUTION_TOOL_NAME so the deprecated bash /\n  run_python aliases cannot bypass the read-only checks.\n- CLI: is_builtin_tool accepts canonical tool names (the canonical side of\n  TOOL_ALIASES), so --allowed-tools run_shell works instead of bailing.\n- Model catalog: providers that accept arbitrary models but also ship a\n  nonempty static manifest (google, copilot, openrouter) no longer drop\n  their live-discovered models from the merged catalog.\n- runtime: use auto-deref for plugin tool lookups (drop stray derefs).\n\n* docs(catalog): backtick provider names in doc comment\n\n* docs: regenerate Lua API reference\n\n* fix(lua): drop needless borrow in local tool handle lookup\n\n* fix(fusion): canonicalize the delegate tool name when recognizing failures\n\nModel tool calls may use either the canonical delegate_fusion name or the\nfusion_delegate alias; the failure-recognition paths compared the raw\nrequested name against the canonical constant, so alias-named calls were\nnot recognized as delegate failures and no lead fallback was issued.\n\n* test(prompt): raise the system prompt size baseline for canonical tool names\n\n* fix(agent,lua,ui): address the second review round\n\n- Canonicalize the fusion delegation gate, plan-mode shell guards, MCP\n  tool-search dispatch, admission class lists, builtin-tool detection, and\n  the builtin re-registration tolerance.\n- merge_batch accepts well-formed provider/model specs instead of dropping\n  live-discovered models for providers without arbitrary-model manifests;\n  is_discoverable_spec now also requires provider availability.\n- Reject non-sequence alias tables; register the multi_edit alias; name\n  the nested-batch guard constant.\n- Update research.md prompts to canonical tool names; fix the MD022\n  heading blank line in system.md.\n\n* fix(agent): restore canonical_tool_name import lost in merge\n\n* fix(cli,ui): align the MultiEdit test with the registered alias; drop the unused catalog binding\n\n- normalize_tool_name(\"MultiEdit\") now yields the multi_edit alias\n  registered on edit_file_bulk instead of erroring.\n- merge_batch no longer holds the now-unused ModelCatalog binding after\n  the well-formed-spec acceptance change.",
+          "timestamp": "2026-08-15T08:38:11-04:00",
+          "tree_id": "0934503417fc2590610a07f30f95292d4f4515a9",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/54e544c6f94e8b71850834ac6e78e22f185132c3"
+        },
+        "date": 1786798344623,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6686031,
+            "range": "± 86617",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2225406,
+            "range": "± 8899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2222012,
+            "range": "± 63965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8089208,
+            "range": "± 23269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4323147,
+            "range": "± 27097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4275232,
+            "range": "± 13822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582790,
+            "range": "± 985",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192213,
+            "range": "± 369",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191497,
+            "range": "± 397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1035477,
+            "range": "± 7556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 584995,
+            "range": "± 1489",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584797,
+            "range": "± 3823",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79287,
+            "range": "± 6124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 193197,
+            "range": "± 13013",
             "unit": "ns/iter"
           }
         ]
