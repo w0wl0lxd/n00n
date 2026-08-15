@@ -34,7 +34,7 @@ use n00n_providers::Timeouts;
 use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_with_openai_options, unconfigured_provider,
 };
-use n00n_providers::{ContentBlock, Message, Model, OpenAiOptions};
+use n00n_providers::{ContentBlock, Message, Model, ModelResolver, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
@@ -605,7 +605,10 @@ fn merge_batch(
         .cloned()
         .unwrap_or_else(Vec::new);
     for spec in &batch.models {
-        if !merged.contains(spec) {
+        let well_formed = spec
+            .split_once('/')
+            .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty());
+        if well_formed && !merged.contains(spec) {
             merged.push(spec.clone());
         }
     }
@@ -2169,7 +2172,7 @@ impl<'t> EventLoop<'t> {
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
                 if loaded.model_spec != self.ctx.model_slot.load().model.spec()
-                    && let Ok(mut new_model) = Model::from_spec(&loaded.model_spec)
+                    && let Ok(mut new_model) = ModelResolver::current().resolve(&loaded.model_spec)
                     && let Ok(new_provider) = from_model_with_openai_options(
                         &mut new_model,
                         self.ctx.timeouts,
@@ -2264,7 +2267,7 @@ impl<'t> EventLoop<'t> {
     }
 
     fn change_model(&mut self, spec: &str) {
-        match Model::from_spec(spec) {
+        match ModelResolver::current().resolve(spec) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,
@@ -2273,7 +2276,7 @@ impl<'t> EventLoop<'t> {
                 Ok(new_provider) => {
                     let app = self.focused_app();
                     app.update_model(&new_model);
-                    app.record_recent_model(spec);
+                    app.record_recent_model(&new_model.spec());
                     app.usage_slot.store(None);
                     self.ctx.model_slot.store(Arc::new(ModelSlot {
                         model: new_model,

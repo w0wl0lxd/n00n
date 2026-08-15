@@ -17,7 +17,8 @@ local function resolve_repo(input)
 end
 
 n00n.api.register_tool({
-  name = "semblem",
+  name = "search_text",
+  aliases = { "semblem" },
   kind = "read",
   description = [[Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
 

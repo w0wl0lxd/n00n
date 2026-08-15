@@ -44,9 +44,9 @@ pub(crate) struct ResponsesWebSocket {
 
 #[derive(Debug)]
 pub(crate) struct WebSocketAttemptError {
-    pub(crate) error: AgentError,
+    pub(crate) error: Box<AgentError>,
     pub(crate) transport_failure: bool,
-    pub(crate) delivery: RequestDeliveryMetadata,
+    pub(crate) delivery: Box<RequestDeliveryMetadata>,
 }
 
 impl WebSocketAttemptError {
@@ -57,9 +57,9 @@ impl WebSocketAttemptError {
     ) -> Self {
         delivery.emitted_event = emitted_event;
         Self {
-            error,
+            error: Box::new(error),
             transport_failure: true,
-            delivery,
+            delivery: Box::new(delivery),
         }
     }
 
@@ -70,9 +70,9 @@ impl WebSocketAttemptError {
     ) -> Self {
         delivery.emitted_event = emitted_event;
         Self {
-            error,
+            error: Box::new(error),
             transport_failure: false,
-            delivery,
+            delivery: Box::new(delivery),
         }
     }
 
@@ -87,7 +87,7 @@ impl WebSocketAttemptError {
         !self.transport_failure
             || self.delivery.phase == RequestDeliveryPhase::NotSent
                 && matches!(
-                    self.error,
+                    self.error.as_ref(),
                     AgentError::Api { .. } | AgentError::CodingPlanAdmission { .. }
                 )
     }
@@ -95,18 +95,18 @@ impl WebSocketAttemptError {
     pub(crate) fn into_agent_error(self) -> AgentError {
         if self.delivery.phase == RequestDeliveryPhase::NotSent
             && !self.delivery.emitted_event
-            && matches!(self.error, AgentError::Api { .. })
+            && matches!(self.error.as_ref(), AgentError::Api { .. })
             && self.error.is_retryable()
         {
-            return self.error;
+            return *self.error;
         }
         if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
             AgentError::RequestSent {
                 message: self.error.to_string(),
-                metadata: Some(self.delivery),
+                metadata: Some(*self.delivery),
             }
         } else {
-            self.error
+            *self.error
         }
     }
 }
@@ -1154,7 +1154,10 @@ mod tests {
                 RequestDeliveryPhase::SentAwaitingAcceptance
             );
             assert!(error.transport_failure);
-            assert!(!matches!(error.error, AgentError::Api { status: 422, .. }));
+            assert!(!matches!(
+                error.error.as_ref(),
+                AgentError::Api { status: 422, .. }
+            ));
         });
     }
 
@@ -1365,7 +1368,7 @@ mod tests {
                 .unwrap_err();
             server.await;
 
-            assert!(matches!(error.error, AgentError::Timeout { .. }));
+            assert!(matches!(error.error.as_ref(), AgentError::Timeout { .. }));
             assert_eq!(
                 error.delivery.phase,
                 crate::RequestDeliveryPhase::SentAwaitingAcceptance
@@ -1418,7 +1421,7 @@ mod tests {
                 .unwrap_err();
             server.await;
 
-            assert!(matches!(error.error, AgentError::Timeout { .. }));
+            assert!(matches!(error.error.as_ref(), AgentError::Timeout { .. }));
             assert_eq!(
                 error.delivery.phase,
                 crate::RequestDeliveryPhase::SentAwaitingAcceptance
@@ -1478,7 +1481,7 @@ mod tests {
                 .unwrap_err();
             server.await;
 
-            assert!(matches!(error.error, AgentError::Timeout { .. }));
+            assert!(matches!(error.error.as_ref(), AgentError::Timeout { .. }));
             assert!(started.elapsed() < Duration::from_secs(2));
             assert_eq!(error.delivery.response_id.as_deref(), Some("resp_progress"));
         });

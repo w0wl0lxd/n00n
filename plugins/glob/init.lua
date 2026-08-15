@@ -15,7 +15,8 @@ local function glob_view_opts(ctx)
 end
 
 n00n.api.register_tool({
-  name = "glob",
+  name = "search_files",
+  aliases = { "glob" },
   kind = "search",
   workload = "cheap",
   modes = { "default", "research", "build", "compact" },

@@ -279,7 +279,8 @@ local function restore(input, output, is_error, ctx)
 end
 
 n00n.api.register_tool({
-  name = "code_execution",
+  name = "run_python",
+  aliases = { "code_execution" },
   description = description,
   describe = describe,
   schema = schema,

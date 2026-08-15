@@ -38,7 +38,7 @@ use crate::cancel::{CancelMap, CancelToken};
 use crate::mcp::McpSession;
 use crate::permissions::PermissionManager;
 use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
-use n00n_config::ToolOutputLines;
+use n00n_config::{ToolOutputLines, canonical_tool_name};
 use n00n_providers::RequestOptions;
 use n00n_providers::provider::Provider;
 use n00n_providers::{Model, ModelFamily, ModelPricing, ModelTier, OpenAiOptions};
@@ -61,10 +61,11 @@ pub enum ToolFilter {
 impl ToolFilter {
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
+        let name = canonical_tool_name(name);
         match self {
             Self::All => true,
-            Self::Only(allowed) => allowed.iter().any(|n| n == name),
-            Self::AllExcept(blocked) => !blocked.iter().any(|n| n == name),
+            Self::Only(allowed) => allowed.iter().any(|n| canonical_tool_name(n) == name),
+            Self::AllExcept(blocked) => !blocked.iter().any(|n| canonical_tool_name(n) == name),
         }
     }
 
@@ -73,7 +74,10 @@ impl ToolFilter {
         match self {
             Self::Only(mut allowed) => {
                 for name in names {
-                    if !allowed.contains(&name) {
+                    if !allowed
+                        .iter()
+                        .any(|held| canonical_tool_name(held) == canonical_tool_name(&name))
+                    {
                         allowed.push(name);
                     }
                 }
@@ -93,12 +97,19 @@ impl ToolFilter {
             Self::Only(allowed) => Self::Only(
                 allowed
                     .into_iter()
-                    .filter(|n| !names.iter().any(|x| *x == n))
+                    .filter(|n| {
+                        !names
+                            .iter()
+                            .any(|x| canonical_tool_name(x) == canonical_tool_name(n))
+                    })
                     .collect(),
             ),
             Self::AllExcept(mut blocked) => {
                 for &n in names {
-                    if !blocked.iter().any(|b| b == n) {
+                    if !blocked
+                        .iter()
+                        .any(|b| canonical_tool_name(b) == canonical_tool_name(n))
+                    {
                         blocked.push(n.to_owned());
                     }
                 }
@@ -115,7 +126,12 @@ impl ToolFilter {
             (Self::Only(current_allowed), Self::Only(other_allowed)) => {
                 let intersection: Vec<String> = current_allowed
                     .into_iter()
-                    .filter(|n| other_allowed.iter().any(|o| o == n.as_str()))
+                    .filter(|n| {
+                        let canonical = canonical_tool_name(n);
+                        other_allowed
+                            .iter()
+                            .any(|o| canonical_tool_name(o) == canonical)
+                    })
                     .collect();
                 if intersection.is_empty() {
                     Self::Only(vec![]) // No tools allowed
@@ -135,13 +151,19 @@ impl ToolFilter {
             (Self::Only(allowed), Self::AllExcept(blocked)) => Self::Only(
                 allowed
                     .into_iter()
-                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .filter(|n| {
+                        let canonical = canonical_tool_name(n);
+                        !blocked.iter().any(|b| canonical_tool_name(b) == canonical)
+                    })
                     .collect(),
             ),
             (Self::AllExcept(blocked), Self::Only(allowed)) => Self::Only(
                 allowed
                     .iter()
-                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .filter(|n| {
+                        let canonical = canonical_tool_name(n);
+                        !blocked.iter().any(|b| canonical_tool_name(b) == canonical)
+                    })
                     .cloned()
                     .collect(),
             ),
@@ -189,9 +211,12 @@ pub fn filter_definitions(definitions: &mut Value, filter: &ToolFilter) {
 #[must_use]
 pub fn has_definition(definitions: &Value, name: &str) -> bool {
     definitions.as_array().is_some_and(|definitions| {
-        definitions
-            .iter()
-            .any(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
+        definitions.iter().any(|definition| {
+            definition
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate == name)
+        })
     })
 }
 
@@ -221,23 +246,28 @@ pub fn default_active_tools() -> ActiveTools {
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
 pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
-    !disabled_tools.iter().any(|s| s == name)
+    let canonical = canonical_tool_name(name);
+    !disabled_tools
+        .iter()
+        .any(|disabled| canonical_tool_name(disabled) == canonical)
 }
 
-pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
-pub const BATCH_TOOL_NAME: &str = "batch";
-pub const BASH_TOOL_NAME: &str = "bash";
-pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
-pub const EDIT_TOOL_NAME: &str = "edit";
-pub const GLOB_TOOL_NAME: &str = "glob";
-pub const GREP_TOOL_NAME: &str = "grep";
-pub const MULTIEDIT_TOOL_NAME: &str = "multiedit";
-pub const QUESTION_TOOL_NAME: &str = "question";
-pub const READ_TOOL_NAME: &str = "read";
-pub const TASK_TOOL_NAME: &str = "task";
-pub const TODOWRITE_TOOL_NAME: &str = "todo_write";
+pub const AGENT_CONTROL_TOOL_NAME: &str = "control_agent";
+pub const BATCH_TOOL_NAME: &str = "run_batch";
+pub const BASH_TOOL_NAME: &str = "run_shell";
+pub const CODE_EXECUTION_TOOL_NAME: &str = "run_python";
+pub const EDIT_TOOL_NAME: &str = "edit_file";
+pub const GLOB_TOOL_NAME: &str = "search_files";
+pub const GREP_TOOL_NAME: &str = "search_code";
+pub const MULTIEDIT_TOOL_NAME: &str = "edit_file_bulk";
+pub const QUESTION_TOOL_NAME: &str = "ask_user";
+pub const READ_TOOL_NAME: &str = "read_file";
+pub const TASK_TOOL_NAME: &str = "run_task";
+pub const TODOWRITE_TOOL_NAME: &str = "update_todo";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
-pub const WRITE_TOOL_NAME: &str = "write";
+pub const WRITE_TOOL_NAME: &str = "write_file";
+
+pub use n00n_config::TOOL_ALIASES;
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 pub(crate) const DEADLINE_EXCEEDED: &str = "timeout exceeded";
@@ -589,16 +619,28 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
 
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
-    n00n_config::DEFAULT_BUILTINS.contains(&name) || n00n_config::EDIT_SUB_TOOLS.contains(&name)
+    let canonical = canonical_tool_name(name);
+    n00n_config::DEFAULT_BUILTINS
+        .iter()
+        .any(|builtin| canonical_tool_name(builtin) == canonical)
+        || n00n_config::EDIT_SUB_TOOLS
+            .iter()
+            .any(|builtin| canonical_tool_name(builtin) == canonical)
+        || n00n_config::TOOL_ALIASES
+            .iter()
+            .any(|(_, alias_canonical)| *alias_canonical == canonical)
 }
 
 #[must_use]
 pub fn all_builtin_tool_names() -> Vec<&'static str> {
-    n00n_config::DEFAULT_BUILTINS
+    let mut names: Vec<&'static str> = n00n_config::DEFAULT_BUILTINS
         .iter()
         .chain(n00n_config::EDIT_SUB_TOOLS.iter())
-        .copied()
-        .collect()
+        .map(|builtin| canonical_tool_name(builtin))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 use n00n_providers::{Message, ProviderEvent, StreamResponse, System};

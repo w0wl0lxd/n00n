@@ -2,11 +2,11 @@
 //! path, no parallel lists that can drift.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::task::{Context, Poll};
 
 use arc_swap::ArcSwap;
@@ -231,6 +231,9 @@ pub trait ToolInvocation: Send + Sync {
 
 pub trait Tool: Send + Sync + 'static {
     fn name(&self) -> &str;
+    fn aliases(&self) -> Vec<&str> {
+        Vec::new()
+    }
     fn description(&self, ctx: &DescriptionContext) -> Cow<'_, str>;
     fn schema(&self) -> Value;
     fn examples(&self) -> Option<Value> {
@@ -299,6 +302,18 @@ impl ToolsSnapshot {
         let mut by_name = HashMap::new();
         for (i, tool) in tools.iter().enumerate() {
             by_name.insert(tool.name().to_owned(), i);
+            for alias in tool.tool.aliases() {
+                if let Some(existing) = by_name.get(alias) {
+                    tracing::warn!(
+                        alias,
+                        canonical = tool.name(),
+                        collides_with = tools[*existing].name(),
+                        "dropping a tool alias that collides with another tool"
+                    );
+                    continue;
+                }
+                by_name.insert(alias.to_owned(), i);
+            }
         }
         Self { tools, by_name }
     }
@@ -341,6 +356,7 @@ impl<'a> IntoIterator for &'a ToolsSnapshot {
 pub struct ToolRegistry {
     tools: ArcSwap<ToolsSnapshot>,
     admission: Arc<ToolAdmission>,
+    warned_aliases: Mutex<HashSet<String>>,
 }
 
 impl Default for ToolRegistry {
@@ -366,6 +382,7 @@ impl ToolRegistry {
         Self {
             tools: ArcSwap::from_pointee(ToolsSnapshot::empty()),
             admission,
+            warned_aliases: Mutex::new(HashSet::new()),
         }
     }
 
@@ -389,7 +406,24 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<RegisteredTool> {
-        self.tools.load().get(name)
+        let entry = self.tools.load().get(name)?;
+        if name != entry.name() && entry.tool.aliases().contains(&name) {
+            let mut warned = match self.warned_aliases.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    tracing::warn!("tool alias warning state lock was poisoned; recovering");
+                    poisoned.into_inner()
+                }
+            };
+            if warned.insert(name.to_owned()) {
+                tracing::warn!(
+                    alias = name,
+                    canonical = entry.name(),
+                    "deprecated tool alias used"
+                );
+            }
+        }
+        Some(entry)
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -407,9 +441,20 @@ impl ToolRegistry {
         let mut conflict = None;
         self.tools.rcu(|current| {
             conflict = None;
-            if let Some(existing) = current.get(&name) {
-                conflict = Some(existing.source.as_log_field().into_owned());
-                return Arc::clone(current);
+            let mut names = vec![name.clone()];
+            names.extend(tool.aliases().into_iter().map(ToOwned::to_owned));
+            let mut seen = HashSet::new();
+            for candidate in names {
+                if !seen.insert(candidate.clone()) {
+                    conflict = Some(format!(
+                        "same tool alias: {candidate} is both the name and an alias"
+                    ));
+                    return Arc::clone(current);
+                }
+                if let Some(existing) = current.get(&candidate) {
+                    conflict = Some(existing.source.as_log_field().into_owned());
+                    return Arc::clone(current);
+                }
             }
             let mut next_tools = current.tools.clone();
             next_tools.push(RegisteredTool {
@@ -443,22 +488,35 @@ impl ToolRegistry {
             let mut new_sources: HashMap<String, ToolSource> =
                 HashMap::with_capacity(entries.len());
             for (tool, source) in &entries {
-                let name = tool.name().to_owned();
-                if let Some(existing_source) = new_sources.get(&name) {
-                    conflict = Some(RegistryError::NameConflict {
-                        name,
-                        existing: existing_source.as_log_field().into_owned(),
-                    });
-                    return Arc::clone(current);
+                let mut names = vec![tool.name().to_owned()];
+                names.extend(tool.aliases().into_iter().map(ToOwned::to_owned));
+                let mut seen = HashSet::new();
+                for name in names {
+                    if !seen.insert(name.clone()) {
+                        conflict = Some(RegistryError::NameConflict {
+                            name: name.clone(),
+                            existing: format!(
+                                "same tool alias: {name} is both the name and an alias"
+                            ),
+                        });
+                        return Arc::clone(current);
+                    }
+                    if let Some(existing_source) = new_sources.get(&name) {
+                        conflict = Some(RegistryError::NameConflict {
+                            name,
+                            existing: existing_source.as_log_field().into_owned(),
+                        });
+                        return Arc::clone(current);
+                    }
+                    if let Some(existing) = current.get(&name) {
+                        conflict = Some(RegistryError::NameConflict {
+                            name,
+                            existing: existing.source.as_log_field().into_owned(),
+                        });
+                        return Arc::clone(current);
+                    }
+                    new_sources.insert(name, source.clone());
                 }
-                if let Some(existing) = current.get(&name) {
-                    conflict = Some(RegistryError::NameConflict {
-                        name,
-                        existing: existing.source.as_log_field().into_owned(),
-                    });
-                    return Arc::clone(current);
-                }
-                new_sources.insert(name, source.clone());
                 next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
@@ -509,22 +567,38 @@ impl ToolRegistry {
             let mut new_sources: HashMap<String, ToolSource> =
                 HashMap::with_capacity(new_entries.len());
             for (tool, source) in new_entries {
-                let name = tool.name().to_owned();
-                if let Some(existing_source) = new_sources.get(&name) {
-                    conflict = Some(RegistryError::NameConflict {
-                        name,
-                        existing: existing_source.as_log_field().into_owned(),
-                    });
-                    return Arc::clone(current);
+                let mut names = vec![tool.name().to_owned()];
+                names.extend(tool.aliases().into_iter().map(ToOwned::to_owned));
+                let mut seen = HashSet::new();
+                for name in names {
+                    if !seen.insert(name.clone()) {
+                        conflict = Some(RegistryError::NameConflict {
+                            name: name.clone(),
+                            existing: format!(
+                                "same tool alias: {name} is both the name and an alias"
+                            ),
+                        });
+                        return Arc::clone(current);
+                    }
+                    if let Some(existing_source) = new_sources.get(&name) {
+                        conflict = Some(RegistryError::NameConflict {
+                            name,
+                            existing: existing_source.as_log_field().into_owned(),
+                        });
+                        return Arc::clone(current);
+                    }
+                    if let Some(existing) = next_tools
+                        .iter()
+                        .find(|t| t.name() == name || t.tool.aliases().contains(&name.as_str()))
+                    {
+                        conflict = Some(RegistryError::NameConflict {
+                            name,
+                            existing: existing.source.as_log_field().into_owned(),
+                        });
+                        return Arc::clone(current);
+                    }
+                    new_sources.insert(name, source.clone());
                 }
-                if let Some(existing) = next_tools.iter().find(|t| t.name() == name) {
-                    conflict = Some(RegistryError::NameConflict {
-                        name,
-                        existing: existing.source.as_log_field().into_owned(),
-                    });
-                    return Arc::clone(current);
-                }
-                new_sources.insert(name, source.clone());
                 next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
@@ -788,6 +862,7 @@ mod tests {
 
     struct MockTool {
         name: String,
+        aliases: Vec<String>,
         audience: ToolAudience,
         defer_loading: bool,
         namespace: Option<String>,
@@ -807,6 +882,9 @@ mod tests {
     impl Tool for MockTool {
         fn name(&self) -> &str {
             &self.name
+        }
+        fn aliases(&self) -> Vec<&str> {
+            self.aliases.iter().map(String::as_str).collect()
         }
         fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
             "mock tool".into()
@@ -835,6 +913,7 @@ mod tests {
     fn mock_scoped(name: &str, audience: ToolAudience) -> Arc<dyn Tool> {
         Arc::new(MockTool {
             name: name.to_owned(),
+            aliases: Vec::new(),
             audience,
             defer_loading: false,
             namespace: None,
@@ -845,6 +924,55 @@ mod tests {
         ToolSource::Lua {
             plugin: plugin.into(),
         }
+    }
+
+    #[test]
+    fn alias_resolves_but_definitions_stay_canonical() {
+        let reg = ToolRegistry::new();
+        let tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "read_file".into(),
+            aliases: vec!["read".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        reg.register(&tool, &lua_source("p")).unwrap();
+        assert_eq!(reg.get("read").expect("alias lookup").name(), "read_file");
+        let filter = crate::tools::ToolFilter::All;
+        let defs = reg.definitions(
+            &Vars::new(),
+            &DescriptionContext {
+                filter: &filter,
+                audience: ToolAudience::MAIN,
+                workflow: false,
+            },
+            false,
+        );
+        assert_eq!(defs[0]["name"], "read_file");
+    }
+
+    #[test]
+    fn alias_collisions_are_rejected_deterministically() {
+        let reg = ToolRegistry::new();
+        let first: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "read_file".into(),
+            aliases: vec!["read".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let second: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "write_file".into(),
+            aliases: vec!["read".into()],
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let err = reg
+            .register_many([(first, lua_source("a")), (second, lua_source("b"))])
+            .expect_err("alias collision must reject the whole batch");
+        assert!(matches!(err, RegistryError::NameConflict { name, .. } if name == "read"));
+        assert!(reg.snapshot().is_empty());
     }
 
     #[test]
@@ -1081,6 +1209,7 @@ mod tests {
             audience: ToolAudience::all(),
             defer_loading: true,
             namespace: None,
+            aliases: Vec::new(),
         });
         reg.register(&deferred, &lua_source("p")).unwrap();
         reg.register(&mock("active_tool"), &lua_source("p"))
@@ -1109,6 +1238,7 @@ mod tests {
             audience: ToolAudience::all(),
             defer_loading: true,
             namespace: None,
+            aliases: Vec::new(),
         });
         reg.register(&deferred, &lua_source("p")).unwrap();
         reg.register(&mock("active_tool"), &lua_source("p"))
@@ -1145,6 +1275,7 @@ mod tests {
             audience: ToolAudience::all(),
             defer_loading: true,
             namespace: Some("test_ns".to_string()),
+            aliases: Vec::new(),
         });
         reg.register(&deferred, &ToolSource::Lua { plugin: "p".into() })
             .unwrap();
