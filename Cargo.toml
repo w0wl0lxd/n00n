@@ -284,7 +284,8 @@ tree-sitter-typescript = "0.23"
 tree-sitter-zig = "1.1"
 tree-sitter-dart = "0.2.0"
 tree-sitter-yaml = "0.7.2"
-monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.18", package = "monty" }
+monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.21", package = "monty" }
+monty-types = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.21", package = "monty-types" }
 notify = { version = "9.0.0-rc.2", default-features = false, features = [
   "flume",
   "macos_fsevent",
@@ -311,6 +312,7 @@ fs2 = "0.4.3"
 inventory = "0.3"
 quanta = { version = "0.12.6", default-features = false }
 walkdir = "2"
+
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::time::Duration;
 
-use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun,
-    NameLookupResult, PrintWriter, PrintWriterCallback, ResolveFutures, ResourceLimits,
-    RunProgress,
+use monty::{MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker,
 };
 use serde_json::Value;
 use tracing::debug;
@@ -170,10 +170,15 @@ fn run_inner<S: BuildHasher>(
     limits: ResourceLimits,
     print_writer: &mut PrintWriter<'_>,
 ) -> Result<Option<Value>, InterpreterError> {
-    let runner = MontyRun::new(code.to_owned(), SCRIPT_NAME, vec![])
-        .map_err(|e| InterpreterError::Parse(e.to_string()))?;
+    let runner = MontyRun::new(
+        code.to_owned(),
+        SCRIPT_NAME,
+        vec![],
+        CompileOptions::default(),
+    )
+    .map_err(|e| InterpreterError::Parse(e.to_string()))?;
 
-    let tracker = LimitedTracker::new(limits);
+    let tracker = ResourceTracker::new(limits);
 
     let mut progress = runner
         .start(vec![], tracker, print_writer.reborrow())
@@ -280,7 +285,6 @@ fn run_inner<S: BuildHasher>(
                     .collect();
 
                 let resolved_batch = resolver(batch)?;
-                let state = reset_clock(state)?;
 
                 let results: Vec<(u32, ExtFunctionResult)> = resolved_batch
                     .into_iter()
@@ -304,31 +308,12 @@ fn run_inner<S: BuildHasher>(
     }
 }
 
-/// A script blocked on a tool call (a subagent can run for minutes) must not
-/// burn its own time budget, so every await refreshes it. Monty gives no way
-/// to touch the tracker clock on `ResolveFutures`, but loading a dumped run
-/// starts a fresh clock, so a dump/load round-trip resets it. The copy is
-/// cheap next to any real tool call.
-fn reset_clock(
-    state: ResolveFutures<LimitedTracker>,
-) -> Result<ResolveFutures<LimitedTracker>, InterpreterError> {
-    let bytes = RunProgress::ResolveFutures(state)
-        .dump()
-        .map_err(|e| InterpreterError::Runtime(e.to_string()))?;
-    match RunProgress::load(&bytes).map_err(|e| InterpreterError::Runtime(e.to_string()))? {
-        RunProgress::ResolveFutures(s) => Ok(s),
-        _ => Err(InterpreterError::Runtime(
-            "clock reset produced unexpected state".into(),
-        )),
-    }
-}
-
 #[must_use]
 pub fn limits(timeout: Duration, max_memory: usize) -> ResourceLimits {
-    ResourceLimits::new()
+    ResourceLimits::default()
         .max_duration(timeout)
         .max_memory(max_memory)
-        .max_recursion_depth(Some(DEFAULT_MAX_RECURSION))
+        .max_recursion_depth(DEFAULT_MAX_RECURSION)
 }
 
 #[cfg(test)]
