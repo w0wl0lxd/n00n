@@ -3,7 +3,7 @@ use crate::{
     transport::{FetchLimits, FetchResponse, Fetcher, Transport},
     types::{
         ContentTrust, ExtractFormat, ExtractRequest, ExtractResponse, ExtractedContent,
-        PartialFailure,
+        MAX_TOTAL_RENDERED_BYTES, PartialFailure,
     },
     url_policy::UrlPolicy,
 };
@@ -32,12 +32,21 @@ impl<T: Transport> Extractor<T> {
         let mut results = Vec::with_capacity(request.urls.len());
         let mut failures = Vec::new();
         let mut first_error = None;
+        let mut total_rendered = 0;
         for url in &request.urls {
             match self
                 .extract_one_bounded(url, &request.format, request.max_bytes_per_source)
                 .await
             {
-                Ok(content) => results.push(content),
+                Ok(content) => {
+                    total_rendered += content.content.len();
+                    if total_rendered > MAX_TOTAL_RENDERED_BYTES {
+                        return Err(Error::TotalTooLarge {
+                            limit: MAX_TOTAL_RENDERED_BYTES,
+                        });
+                    }
+                    results.push(content);
+                }
                 Err(error) => {
                     let kind = error_kind(&error).into();
                     if first_error.is_none() {
@@ -163,6 +172,7 @@ fn error_kind(error: &Error) -> &'static str {
         Error::UnsupportedCapability { .. } => "unsupported_capability",
         Error::Quota => "quota",
         Error::ResponseTooLarge { .. } => "response_too_large",
+        Error::TotalTooLarge { .. } => "total_too_large",
         Error::UnsupportedContentType { .. } => "unsupported_content_type",
         _ => "other",
     }
@@ -173,6 +183,7 @@ mod tests {
     use std::sync::Mutex;
 
     use futures_lite::io::Cursor;
+    use test_case::test_case;
 
     use super::Extractor;
     use crate::{
@@ -243,12 +254,15 @@ mod tests {
         });
     }
 
-    #[test]
-    fn undeclared_content_type_is_rejected() {
-        smol::block_on(async {
+    #[test_case(vec![] ; "no_content_type_header")]
+    fn undeclared_content_type_is_rejected(headers: Vec<(&str, &str)>) {
+        smol::block_on(async move {
             let response = TransportResponse {
                 status: 200,
-                headers: vec![],
+                headers: headers
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                    .collect(),
                 body: Box::pin(Cursor::new(b"opaque bytes".to_vec())),
             };
             let extractor = Extractor::new(

@@ -31,6 +31,8 @@ pub enum Error {
     Quota,
     #[error("response exceeds the {limit}-byte limit")]
     ResponseTooLarge { limit: usize },
+    #[error("aggregate extraction exceeds the {limit}-byte limit")]
+    TotalTooLarge { limit: usize },
     #[error("unsupported content type: {content_type}")]
     UnsupportedContentType { content_type: String },
     #[error("search index error: {message}")]

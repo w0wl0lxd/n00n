@@ -229,7 +229,7 @@ fn ipv4_compatible(address: Ipv6Addr) -> Option<Ipv4Addr> {
 fn nat64_embedded_v4(address: Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = address.segments();
     let prefix =
-        segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..5].iter().all(|&s| s == 0);
+        segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6].iter().all(|&s| s == 0);
     prefix.then(|| Ipv4Addr::from(((segments[6] as u32) << 16) | segments[7] as u32))
 }
 
@@ -282,15 +282,20 @@ mod tests {
         assert!(url.validate_resolved_ip(IpAddr::V6(address)).is_err());
     }
 
-    #[test]
-    fn untrusted_page_allows_public_ipv4_compatible_form() {
+    #[test_case(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0x0808, 0x0808) ; "public_ipv4_compatible_form")]
+    fn untrusted_page_allows_public_ipv4_compatible_form(address: Ipv6Addr) {
         let url = UrlPolicy::untrusted_page()
             .validate("https://example.com/")
             .unwrap();
-        assert!(
-            url.validate_resolved_ip(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0x0808, 0x0808)))
-                .is_ok()
-        );
+        assert!(url.validate_resolved_ip(IpAddr::V6(address)).is_ok());
+    }
+
+    #[test_case(Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 1, 0x0a00, 0x1) ; "nat64_like_outside_prefix")]
+    fn untrusted_page_allows_addresses_outside_nat64_prefix(address: Ipv6Addr) {
+        let url = UrlPolicy::untrusted_page()
+            .validate("https://example.com/")
+            .unwrap();
+        assert!(url.validate_resolved_ip(IpAddr::V6(address)).is_ok());
     }
 
     #[test]

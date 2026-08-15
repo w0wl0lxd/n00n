@@ -307,6 +307,7 @@ mod tests {
     use std::{collections::VecDeque, sync::Mutex};
 
     use futures_lite::io::Cursor;
+    use test_case::test_case;
 
     use super::{
         FetchLimits, Fetcher, Transport, TransportFuture, TransportRequest, TransportResponse,
@@ -396,14 +397,12 @@ mod tests {
         });
     }
 
-    #[test]
-    fn redirect_scheme_downgrade_is_rejected() {
-        smol::block_on(async {
-            let transport = FakeTransport::new(vec![response(
-                302,
-                &[("Location", "http://example.com/page")],
-                &[],
-            )]);
+    #[test_case(302, "http://example.com/page" ; "temporary_redirect_downgrades_scheme")]
+    #[test_case(301, "http://example.com/page" ; "permanent_redirect_downgrades_scheme")]
+    fn redirect_scheme_downgrade_is_rejected(status: u16, location: &str) {
+        smol::block_on(async move {
+            let transport =
+                FakeTransport::new(vec![response(status, &[("Location", location)], &[])]);
             let fetcher = Fetcher::new(
                 transport,
                 UrlPolicy::untrusted_page(),
