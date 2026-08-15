@@ -184,7 +184,11 @@ mod tests {
         let (value, err) = call_extract(&lua, &n00n).unwrap();
         assert!(value.is_nil());
         assert!(
-            err.as_str().unwrap().contains("disabled"),
+            err.as_string()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("disabled"),
             "unexpected error: {err:?}"
         );
     }
@@ -219,17 +223,20 @@ mod tests {
         let (value, err) = call_extract(&lua, &n00n).unwrap();
         assert!(value.is_nil());
         assert!(
-            err.as_str().unwrap().contains("net permission"),
+            err.as_string()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("net permission"),
             "unexpected error: {err:?}"
         );
     }
 
     fn call_extract(lua: &Lua, n00n: &Table) -> LuaResult<(mlua::Value, mlua::Value)> {
         let extract: mlua::Function = n00n.get::<Table>("search").unwrap().get("extract").unwrap();
-        lua.globals()
-            .set("_ctx", LuaCtx::for_test(CancelToken::none()))
+        let ctx = lua
+            .create_userdata(LuaCtx::for_test(CancelToken::none()))
             .unwrap();
-        let ctx: mlua::UserDataRef<LuaCtx> = lua.globals().get("_ctx").unwrap();
-        extract.call((ctx, mlua::Value::Nil))
+        smol::block_on(extract.call_async((ctx, mlua::Value::Nil)))
     }
 }
