@@ -607,8 +607,7 @@ impl Theme {
 
         let style = |key: &str| -> Style {
             ui.get(key)
-                .map(|d| resolve_style(d, &palette))
-                .unwrap_or_else(Style::default)
+                .map_or_else(Style::default, |d| resolve_style(d, &palette))
         };
 
         let derived_color = |ui_key: &str, scopes: &[&str]| -> Color {

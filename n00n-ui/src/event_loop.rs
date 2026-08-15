@@ -1207,7 +1207,7 @@ impl<'t> EventLoop<'t> {
             .session
             .meta
             .root_session_id
-            .map_or(self.sessions[idx].id(), |root| root);
+            .unwrap_or_else(|| self.sessions[idx].id());
         capture_session_plugin_state(&handle, &mut self.sessions[idx].app.state.session)?;
         if root_id == self.sessions[idx].id() {
             return Ok(());
