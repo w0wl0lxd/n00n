@@ -198,7 +198,6 @@ pub struct ExtractedContent {
     pub final_url: String,
     pub content_type: String,
     pub content: String,
-    pub truncated: bool,
     pub trust: ContentTrust,
 }
 
