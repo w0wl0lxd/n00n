@@ -184,7 +184,19 @@ local function diff_restore(blocks_from)
   end
 end
 
-local function apply_edit(path, ctx, transform)
+local function introduced_secret_reason(before, after, justification)
+  if justification and justification:match("%S") then
+    return nil
+  end
+  local before_ok = secret_check.check(before)
+  local after_ok, reason = secret_check.check(after)
+  if before_ok and not after_ok then
+    return reason
+  end
+  return nil
+end
+
+local function apply_edit(path, ctx, transform, validate_after)
   path = n00n.fs.abspath(path)
 
   local ok, err = ctx:check_before_edit(path)
@@ -200,6 +212,13 @@ local function apply_edit(path, ctx, transform)
   local after, transform_err = transform(before)
   if transform_err then
     return nil, transform_err
+  end
+
+  if validate_after then
+    local valid, reason = validate_after(before, after)
+    if not valid then
+      return nil, reason
+    end
   end
 
   local _, write_err = n00n.fs.write(path, after)
@@ -297,6 +316,12 @@ n00n.api.register_tool({
 
     local result, err = apply_edit(input.path, ctx, function(content)
       return fuzzy_replace.replace(content, input.old_string, input.new_string, input.replace_all or false)
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to edit"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }
@@ -408,6 +433,12 @@ register_tool_if(opts.multiedit, {
         content = replaced
       end
       return content
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to multiedit"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }
@@ -476,6 +507,12 @@ register_tool_if(opts.edit_lines, {
 
     local result, err = apply_edit(input.path, ctx, function(content)
       return replace_lines(content, input.start, input["end"], input.new_string)
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to edit_lines"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }
@@ -543,6 +580,12 @@ register_tool_if(opts.insert_lines, {
 
     local result, err = apply_edit(input.path, ctx, function(content)
       return replace_lines(content, input.line, nil, input.new_string)
+    end, function(before, after)
+      local reason = introduced_secret_reason(before, after, input.justification)
+      if reason then
+        return nil, "edit would introduce " .. reason .. "; provide justification to insert_lines"
+      end
+      return true
     end)
     if not result then
       return { llm_output = err, is_error = true }
