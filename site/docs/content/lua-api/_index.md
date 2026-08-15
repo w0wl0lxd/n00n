@@ -2688,7 +2688,7 @@ Native, keyless extraction of bounded public web content.
 n00n.search.extract(ctx, request)
 ```
 
-Extract public URLs with manual redirect validation, DNS pinning, byte limits, and tool cancellation.
+Extract public URLs with manual redirect validation, DNS pinning, byte limits, and tool cancellation. Requires [search].enabled = true and the plugin's net permission.
 
 **Parameters:**
 
