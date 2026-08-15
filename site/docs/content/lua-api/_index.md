@@ -5621,6 +5621,9 @@ M.EMPTY_OLD_STRING = "old_string must not be empty"
 -- whitespace and indentation drift. Returns the new content, or nil plus
 -- one of the error constants above.
 function M.replace(content, old_string, new_string, replace_all)
+
+-- Expose unescape for validation in edit tools
+M.unescape = unescape
 ```
 
 ### `require("n00n.guard")`
@@ -5722,6 +5725,28 @@ function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 -- @param prompt string Subtask description.
 -- @return "weak" | "medium" | "strong"
 function M.route_tier(prompt)
+```
+
+### `require("n00n.secret_check")`
+
+```lua
+-- Heuristic secret/PII pattern detection for tool content validation.
+--
+-- Example:
+--
+--     local secret_check = require("n00n.secret_check")
+--     local reason = secret_check.reason("api_key=sk_test_abcdefghijklmnopqrstuvwxyz")
+--     if reason then error(reason) end
+--
+-- This is intentionally conservative: it flags common secret-bearing keywords and
+-- patterns so tools can surface a warning or require a justification. It does not
+-- attempt to be exhaustive, and it may false-positive on example keys in docs.
+
+-- Returns (ok, reason). If ok is false, reason explains what triggered.
+function M.check(text)
+
+-- Convenience: returns a warning string if triggered, nil otherwise.
+function M.reason(text)
 ```
 
 ### `require("n00n.shorten_path")`
