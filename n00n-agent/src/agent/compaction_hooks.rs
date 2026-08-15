@@ -7,6 +7,9 @@ use tracing::{debug, warn};
 
 use crate::AgentError;
 
+const HOOK_NOT_FOUND_PREFIX: &str = "compaction hook command not found:";
+const HOOK_TIMEOUT_PREFIX: &str = "hook command timed out after";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionTrigger {
     Auto,
@@ -308,7 +311,7 @@ async fn run_command_hook(
         .spawn()
         .map_err(|e| AgentError::Config {
             message: if e.kind() == std::io::ErrorKind::NotFound {
-                format!("compaction hook command not found: {expanded_cmd}")
+                format!("{HOOK_NOT_FOUND_PREFIX} {expanded_cmd}")
             } else {
                 format!("failed to spawn hook command: {e}")
             },
@@ -364,7 +367,7 @@ async fn run_command_hook(
     if !completed {
         let _ = child.kill();
         return Err(AgentError::Config {
-            message: format!("hook command timed out after {timeout_secs}s: {expanded_cmd}"),
+            message: format!("{HOOK_TIMEOUT_PREFIX} {timeout_secs}s: {expanded_cmd}"),
         });
     }
 
@@ -452,9 +455,9 @@ pub async fn run_precompact_hooks(
                     }
                 }
                 Err(e) => {
-                    if e.to_string().contains("compaction hook command not found:") {
+                    if e.to_string().contains(HOOK_NOT_FOUND_PREFIX) {
                         debug!(hook = %handler.command, "PreCompact hook command not found; skipping");
-                    } else if e.to_string().contains("hook command timed out after") {
+                    } else if e.to_string().contains(HOOK_TIMEOUT_PREFIX) {
                         warn!(
                             hook = %handler.command,
                             timeout = handler.timeout,
@@ -523,8 +526,15 @@ pub async fn run_postcompact_hooks(
                     }
                 }
                 Err(e) => {
-                    if e.to_string().contains("compaction hook command not found:") {
+                    if e.to_string().contains(HOOK_NOT_FOUND_PREFIX) {
                         debug!(hook = %handler.command, "PostCompact hook command not found; skipping");
+                    } else if e.to_string().contains(HOOK_TIMEOUT_PREFIX) {
+                        warn!(
+                            hook = %handler.command,
+                            timeout = handler.timeout,
+                            error = %e,
+                            "PostCompact hook timed out. Set a larger `timeout` in the hooks settings if this is expected."
+                        );
                     } else {
                         warn!(hook = %handler.command, error = %e, "PostCompact hook failed");
                     }
@@ -687,6 +697,39 @@ mod tests {
     #[test]
     fn default_timeout_is_60_seconds() {
         assert_eq!(default_timeout(), 60);
+    }
+
+    #[test]
+    fn run_command_hook_missing_binary_reports_not_found_prefix() {
+        smol::block_on(async {
+            let input = serde_json::json!({});
+            let err = run_command_hook(
+                Path::new("/tmp"),
+                "n00n-test-definitely-missing-binary",
+                &[],
+                default_timeout(),
+                &input,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains(HOOK_NOT_FOUND_PREFIX),
+                "expected {HOOK_NOT_FOUND_PREFIX:?} in: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn hook_error_prefixes_are_distinct_and_match_run_command_hook_output() {
+        // The PreCompact/PostCompact handlers classify `run_command_hook`
+        // failures by matching these prefixes against the error's `Display`
+        // text; a typo here would silently fall through to the generic
+        // "hook failed" branch and swallow the actionable message.
+        assert_ne!(HOOK_NOT_FOUND_PREFIX, HOOK_TIMEOUT_PREFIX);
+        let not_found = format!("{HOOK_NOT_FOUND_PREFIX} some-command");
+        let timed_out = format!("{HOOK_TIMEOUT_PREFIX} 5s: some-command");
+        assert!(not_found.contains(HOOK_NOT_FOUND_PREFIX));
+        assert!(timed_out.contains(HOOK_TIMEOUT_PREFIX));
     }
 
     #[test]

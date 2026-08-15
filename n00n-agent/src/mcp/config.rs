@@ -7,7 +7,6 @@ use serde::Deserialize;
 use toml_edit::DocumentMut;
 
 use super::error::McpError;
-use crate::tools::is_builtin_tool;
 use n00n_config::{global_config_dir, is_valid_server_name};
 
 const MCP_CONFIG_FILE: &str = "mcp.toml";
@@ -232,17 +231,17 @@ impl McpConfig {
 
 /// Parses a raw server configuration into a validated server config.
 ///
+/// A server name may match a built-in tool's name: every tool a server
+/// publishes is wire-qualified as `server__tool`, so the two never collide.
+///
 /// # Errors
-/// Returns an error if the server name is invalid, conflicts with built-in tools,
-/// has an invalid timeout, or has an invalid transport configuration.
+/// Returns an error if the server name is invalid, has an invalid timeout,
+/// or has an invalid transport configuration.
 pub fn parse_server(name: String, server: RawServerConfig) -> Result<ServerConfig, McpError> {
     if !is_valid_server_name(&name) {
         return Err(McpError::Config(format!(
             "server name '{name}' must be ASCII alphanumeric + hyphens"
         )));
-    }
-    if is_builtin_tool(&name) {
-        return Err(McpError::BuiltInConflict { server: name });
     }
     if server.timeout == 0 || server.timeout > MAX_TIMEOUT_MS {
         return Err(McpError::Config(format!(
@@ -426,12 +425,18 @@ mod tests {
     }
 
     #[test_case("srv",       stdio_raw(&[]),            "empty command"        ; "empty_command")]
-    #[test_case("bash",      stdio_raw(&["echo"]),      "conflicts with built-in" ; "builtin_name_collision")]
     #[test_case("bad name!", stdio_raw(&["echo"]),      "ASCII alphanumeric"   ; "invalid_server_name")]
     #[test_case("srv",       http_raw("ftp://bad.com"), "http://"              ; "invalid_http_url")]
     fn parse_server_rejects(name: &str, cfg: RawServerConfig, expected_msg: &str) {
         let err = parse_server(name.into(), cfg).unwrap_err();
         assert!(err.to_string().contains(expected_msg), "got: {err}");
+    }
+
+    #[test_case("bash"      ; "matches_a_builtin_tool_name")]
+    #[test_case("codegraph" ; "matches_a_builtin_plugin_name")]
+    fn parse_server_allows_builtin_name_collision(name: &str) {
+        let server = parse_server(name.into(), stdio_raw(&["echo"])).unwrap();
+        assert_eq!(server.name, name);
     }
 
     #[test_case(0               ; "zero")]

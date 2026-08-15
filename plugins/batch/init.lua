@@ -22,6 +22,10 @@ local EMPTY_ERROR = "provide at least one tool call"
 local NESTED_ERROR = "cannot nest batch inside batch"
 local CANCELLED_ERROR = "cancelled"
 local DISCARDED_ERROR = string.format("maximum of %d tools per batch", MAX_BATCH_SIZE)
+-- Below this many seconds left on a shared caller deadline, starting more
+-- concurrent children is a bet against the watchdog interrupt, not real work.
+local MIN_BATCH_DEADLINE_SECS = 5
+local INSUFFICIENT_TIME_ERROR = "insufficient time remaining in shared deadline"
 local SECTION_FMT = "## %s\n"
 local SECTION_PAT = "^## (.+)$"
 
@@ -417,8 +421,20 @@ function Batch:run_child(c, ctx)
 end
 
 -- gather returns early when the user cancels, so sweep whatever is
--- still non-terminal into an error; no child is left dangling.
+-- still non-terminal into an error; no child is left dangling. A
+-- near-exhausted shared deadline gets the same treatment up front, before
+-- the watchdog interrupt can kill the batch mid-flight.
 function Batch:run(ctx)
+  local remaining = ctx:deadline_remaining()
+  if remaining and remaining < MIN_BATCH_DEADLINE_SECS then
+    for _, c in ipairs(self.children) do
+      if c.status == STATUS.PENDING then
+        self:settle(c, STATUS.ERROR, INSUFFICIENT_TIME_ERROR)
+      end
+    end
+    return
+  end
+
   local funs = {}
   for _, c in ipairs(self.children) do
     if c.status == STATUS.PENDING then
@@ -509,6 +525,10 @@ n00n.api.register_tool({
   workload = "orchestrator",
   audiences = { "main", "research_sub", "general_sub" },
   defer_loading = true,
+  -- An already-exhausted shared deadline must still reach Batch:run so it
+  -- can settle pending children with INSUFFICIENT_TIME_ERROR instead of the
+  -- caller seeing a bare dispatch-layer timeout.
+  deadline_grace = true,
   schema = schema,
   header = function(input)
     return #tool_calls_of(input) .. " tools"

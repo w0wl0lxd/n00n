@@ -24,6 +24,7 @@ pub use registry::{
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -481,6 +482,38 @@ pub fn walk_builder_opts(
             .git_exclude(false);
     }
     Ok(wb)
+}
+
+/// Expected during a directory walk: an unreadable path or a file that
+/// vanished mid-walk. Anything else is a genuine I/O failure.
+#[must_use]
+pub fn is_expected_walk_io_error(kind: ErrorKind) -> bool {
+    matches!(kind, ErrorKind::PermissionDenied | ErrorKind::NotFound)
+}
+
+/// Shared classifier for every caller that iterates an
+/// `ignore::Walk`/`WalkParallel` (grep, glob, Lua `fs` helpers). Expected
+/// conditions should log at `debug!`; everything else stays at `warn!`.
+///
+/// `ignore::Error::Loop` carries no `io::Error`, so it needs its own arm rather
+/// than falling through to [`is_expected_walk_io_error`].
+#[must_use]
+pub fn is_expected_walk_error(err: &ignore::Error) -> bool {
+    match err {
+        ignore::Error::Loop { .. } => true,
+        ignore::Error::Io(e) => is_expected_walk_io_error(e.kind()),
+        ignore::Error::WithLineNumber { err, .. }
+        | ignore::Error::WithPath { err, .. }
+        | ignore::Error::WithDepth { err, .. } => is_expected_walk_error(err),
+        // An aggregate is only expected when every part of it is: one unexpected
+        // member downgraded to `debug!` would hide a genuine I/O failure. This
+        // also widens classification for a `Partial` of two-or-more expected
+        // kinds together (e.g. `[PermissionDenied, NotFound]`) to `debug!`,
+        // where `err.io_error()` previously returned `None` for len() != 1 and
+        // left the whole aggregate at `warn!`.
+        ignore::Error::Partial(errs) => !errs.is_empty() && errs.iter().all(is_expected_walk_error),
+        _ => false,
+    }
 }
 
 #[must_use]
@@ -1031,6 +1064,17 @@ mod tests {
         assert!(err.contains(grep::INVALID_REGEX), "got: {err}");
     }
 
+    #[test_case("(?!foo)",   "look-around" ; "negative_lookahead")]
+    #[test_case("(?<!foo)",  "look-around" ; "negative_lookbehind")]
+    #[test_case("(a)\\1",    "backreference" ; "backreference")]
+    fn grep_search_unsupported_pcre_construct_names_it(pattern: &str, expected: &str) {
+        let dir = TempDir::new().unwrap();
+        let mut params = grep::GrepParams::new(pattern.into());
+        params.path = Some(dir.path().to_string_lossy().into());
+        let err = grep::grep_search(&params).unwrap_err();
+        assert!(err.contains(expected), "got: {err}");
+    }
+
     #[test]
     fn grep_search_multiline_groups_spanning_lines() {
         let dir = TempDir::new().unwrap();
@@ -1275,6 +1319,102 @@ mod tests {
             err.contains("invalid glob pattern"),
             "expected 'invalid glob pattern', got: {err}"
         );
+    }
+
+    #[test_case(ErrorKind::PermissionDenied, true  ; "permission_denied_is_expected")]
+    #[test_case(ErrorKind::NotFound,         true  ; "not_found_is_expected")]
+    #[test_case(ErrorKind::Other,            false ; "other_io_error_is_unexpected")]
+    #[test_case(ErrorKind::TimedOut,         false ; "timed_out_is_unexpected")]
+    fn expected_walk_io_error_cases(kind: ErrorKind, expected: bool) {
+        assert_eq!(is_expected_walk_io_error(kind), expected);
+    }
+
+    #[test]
+    fn expected_walk_error_classifies_permission_denied_io() {
+        let err = ignore::Error::Io(std::io::Error::from(ErrorKind::PermissionDenied));
+        assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_classifies_not_found_io() {
+        let err = ignore::Error::Io(std::io::Error::from(ErrorKind::NotFound));
+        assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_rejects_unexpected_io_kind() {
+        let err = ignore::Error::Io(std::io::Error::from(ErrorKind::Other));
+        assert!(!is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_classifies_symlink_loop() {
+        let err = ignore::Error::Loop {
+            ancestor: PathBuf::from("/a"),
+            child: PathBuf::from("/a/b/a"),
+        };
+        assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_classifies_loop_wrapped_with_depth() {
+        let err = ignore::Error::WithDepth {
+            depth: 3,
+            err: Box::new(ignore::Error::Loop {
+                ancestor: PathBuf::from("/a"),
+                child: PathBuf::from("/a/b/a"),
+            }),
+        };
+        assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_classifies_permission_denied_wrapped_with_path() {
+        let err = ignore::Error::WithPath {
+            path: PathBuf::from("/secret"),
+            err: Box::new(ignore::Error::Io(std::io::Error::from(
+                ErrorKind::PermissionDenied,
+            ))),
+        };
+        assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_classifies_a_wholly_expected_partial() {
+        let err = ignore::Error::Partial(vec![
+            ignore::Error::Loop {
+                ancestor: PathBuf::from("/a"),
+                child: PathBuf::from("/a/b/a"),
+            },
+            ignore::Error::Io(std::io::Error::from(ErrorKind::PermissionDenied)),
+        ]);
+        assert!(is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_rejects_a_partial_hiding_an_unexpected_member() {
+        let err = ignore::Error::Partial(vec![
+            ignore::Error::Loop {
+                ancestor: PathBuf::from("/a"),
+                child: PathBuf::from("/a/b/a"),
+            },
+            ignore::Error::Io(std::io::Error::from(ErrorKind::TimedOut)),
+        ]);
+        assert!(!is_expected_walk_error(&err));
+    }
+
+    #[test]
+    fn expected_walk_error_rejects_an_empty_partial() {
+        assert!(!is_expected_walk_error(&ignore::Error::Partial(vec![])));
+    }
+
+    #[test]
+    fn expected_walk_error_rejects_glob_error() {
+        let err = ignore::Error::Glob {
+            glob: None,
+            err: "bad glob".into(),
+        };
+        assert!(!is_expected_walk_error(&err));
     }
 
     #[test]
