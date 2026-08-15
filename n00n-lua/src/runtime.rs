@@ -2725,7 +2725,7 @@ fn run_describe(
 ) -> Option<String> {
     let func: Function = {
         let plugins_ref = plugins.borrow();
-        let key = plugins_ref.get(plugin)?.get(tool)?.describe.as_ref()?;
+        let key = plugins_ref.get(plugin)?.lookup(tool)?.describe.as_ref()?;
         lua.registry_value(key).ok()?
     };
     let arg = match json_to_lua(lua, dctx) {
@@ -2854,7 +2854,7 @@ async fn run_tool_call(
         let Some(keys) = plugins_ref.get(&*plugin) else {
             return ToolCallReply::err(format!("plugin not loaded: {plugin}"));
         };
-        let Some(tool_keys) = keys.get(&*tool) else {
+        let Some(tool_keys) = keys.lookup(&*tool) else {
             return ToolCallReply::err(format!("tool not found: {tool}"));
         };
         match lua.registry_value(&tool_keys.handler) {
