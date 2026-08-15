@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786768173531,
+  "lastUpdate": 1786771090067,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -19431,6 +19431,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 185543,
             "range": "± 15290",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f59c29ee6ebb9bac20aea8a2e6408b7220de1cf8",
+          "message": "Merge pull request #356 from w0wl0lxd/revive/n00n-smell\n\nfeat(n00n-smell): persistent code smell scanner",
+          "timestamp": "2026-08-15T01:11:15-04:00",
+          "tree_id": "ab6568b847c6a16f74ce978faa192b30ddb71d6b",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f59c29ee6ebb9bac20aea8a2e6408b7220de1cf8"
+        },
+        "date": 1786771087849,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 8032717,
+            "range": "± 181588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1839003,
+            "range": "± 22864",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1839950,
+            "range": "± 51369",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 10242522,
+            "range": "± 28415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3673589,
+            "range": "± 80481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3662559,
+            "range": "± 40137",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 814887,
+            "range": "± 2618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 108572,
+            "range": "± 195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 108512,
+            "range": "± 256",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1166715,
+            "range": "± 11516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 530526,
+            "range": "± 2417",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 529974,
+            "range": "± 1910",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58830,
+            "range": "± 3660",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 131704,
+            "range": "± 13305",
             "unit": "ns/iter"
           }
         ]
