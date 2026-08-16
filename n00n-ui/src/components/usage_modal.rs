@@ -26,6 +26,10 @@ const NUM_COL: usize = 7;
 const HIT_COL: usize = 6;
 const COL_GAP: usize = 2;
 const NO_USAGE_ENDPOINT: &str = "no usage endpoint for this provider";
+const PRICE_HEADING: &str = "Prices per 1M tokens";
+const FAST_PRICE_HEADING: &str = "Prices per 1M tokens (fast mode when available)";
+const PRICE_DISCLAIMER: &str = "Estimates use current reported rates and selected mode; models without reported rates are excluded. Fast mode uses premium rates where the provider reports them. Coding-plan values are API-equivalent, not subscription charges.";
+const MIN_DISPLAY_PRICE: f64 = 0.0001;
 const HOUR: i64 = 3600;
 const DAY: i64 = 24 * HOUR;
 const WEEK: i64 = 7 * DAY;
@@ -147,23 +151,23 @@ pub(crate) fn attributed_costs(
     if by_model.is_empty() {
         return None;
     }
-    let (cost, savings, any_priced) = by_model.iter().try_fold(
+    let (cost, savings, any_priced) = by_model.iter().fold(
         (0.0, 0.0, false),
         |(cost, savings, any_priced), (id, usage)| {
-            let pricing = pricing_for(id, current)?;
-            // A zero-priced model contributes nothing, but it must not discard
-            // the estimate for the priced models in the same session.
-            if pricing.is_zero() {
-                return Some((cost, savings, any_priced));
+            let Some(pricing) = pricing_for(id, current) else {
+                return (cost, savings, any_priced);
+            };
+            if pricing.effective(fast).is_zero() {
+                return (cost, savings, any_priced);
             }
             let usage = TokenUsage::from(*usage);
-            Some((
+            (
                 cost + usage.cost(&pricing, fast),
                 savings + usage.savings_cost(&pricing, fast),
                 true,
-            ))
+            )
         },
-    )?;
+    );
     any_priced.then_some((cost, savings))
 }
 
@@ -224,7 +228,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         let pricing = pricing_for(id, ctx.model);
         let token_usage = TokenUsage::from(*usage);
         let (cost, savings) = pricing.as_ref().map_or((None, None), |p| {
-            if p.is_zero() {
+            if p.effective(ctx.fast).is_zero() {
                 (None, None)
             } else {
                 (
@@ -248,23 +252,23 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
 }
 fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
     let mut rates = if ctx.by_model.is_empty() {
-        vec![(ctx.model.id.clone(), ctx.model.pricing)]
+        vec![(ctx.model.spec(), ctx.model.pricing)]
     } else {
         ctx.by_model
             .keys()
             .filter_map(|id| pricing_for(id, ctx.model).map(|pricing| (id.clone(), pricing)))
             .collect::<Vec<_>>()
     };
-    rates.retain(|(_, pricing)| !pricing.is_zero());
+    rates.retain(|(_, pricing)| !pricing.effective(ctx.fast).is_zero());
     if rates.is_empty() {
         return Vec::new();
     }
     rates.sort_by(|(left, _), (right, _)| left.cmp(right));
 
     let price_heading = if ctx.fast {
-        "Prices per 1M tokens (fast mode when available)"
+        FAST_PRICE_HEADING
     } else {
-        "Prices per 1M tokens"
+        PRICE_HEADING
     };
     let mut lines = vec![
         Line::default(),
@@ -291,15 +295,16 @@ fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Li
         ]));
     }
     lines.push(Line::from(Span::styled(
-        format!(
-            "{PREFIX}Estimates use current reported rates and selected mode; fast mode uses premium rates where the provider reports them. Coding-plan values are API-equivalent, not subscription charges."
-        ),
+        format!("{PREFIX}{PRICE_DISCLAIMER}"),
         theme.status_dim,
     )));
     lines
 }
 
 fn format_price(price: f64) -> String {
+    if price > 0.0 && price < MIN_DISPLAY_PRICE {
+        return format!("<{MIN_DISPLAY_PRICE:.4}");
+    }
     let formatted = format!("{price:.4}");
     let trimmed = formatted.trim_end_matches('0');
     let decimals = trimmed
@@ -696,7 +701,7 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
 
-        assert!(text.contains("Prices per 1M tokens"));
+        assert!(text.contains(PRICE_HEADING));
         assert!(text.contains("input $5.00"));
         assert!(text.contains("output $30.00"));
         assert!(text.contains("cache read $0.50"));
@@ -729,7 +734,7 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
 
-        assert!(!text.contains("Prices per 1M tokens"));
+        assert!(!text.contains(PRICE_HEADING));
         assert!(text.contains("in 100"));
     }
 
@@ -781,11 +786,9 @@ mod tests {
             .expect("a priced model in the session still yields an estimate");
         let token_usage = TokenUsage::from(usage);
 
-        // Only the priced model contributes; the free model is skipped.
         assert!((cost - token_usage.cost(&current.pricing, false)).abs() < f64::EPSILON);
         assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
 
-        // A session with no priced model at all still reports no estimate.
         let only_free = HashMap::from([(free.id, usage)]);
         assert!(attributed_costs(&only_free, &current, false).is_none());
     }
@@ -808,6 +811,34 @@ mod tests {
         assert!((cost - token_usage.cost(&pricing, false)).abs() < f64::EPSILON);
         assert!((savings - token_usage.savings_cost(&pricing, false)).abs() < f64::EPSILON);
         assert!((cost - token_usage.cost(&current.pricing, false)).abs() > f64::EPSILON);
+    }
+
+    #[test]
+    fn attributed_costs_skip_unknown_models_without_dropping_known_estimates() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        let by_model = HashMap::from([
+            (current.id.clone(), usage),
+            ("unknown-provider/unknown-model".into(), usage),
+        ]);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
+        let token_usage = TokenUsage::from(usage);
+
+        assert!((cost - token_usage.cost(&current.pricing, false)).abs() < f64::EPSILON);
+        assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
+    }
+
+    #[test_case(0.00001, "<0.0001" ; "tiny_nonzero")]
+    #[test_case(0.0, "0.00" ; "zero")]
+    #[test_case(1.25, "1.25" ; "regular")]
+    fn price_format_preserves_nonzero_rates(price: f64, expected: &str) {
+        assert_eq!(format_price(price), expected);
     }
 
     #[test]
