@@ -152,6 +152,34 @@ n00n.split("x*y*z", "*", { plain = true }) -- { "x", "y", "z" }
 n00n.split("\nhello\nworld\n", "\n", { trimempty = true }) -- { "hello", "world" }
 ```
 
+---
+
+### `n00n.defer_fn()` {#n00n-defer_fn}
+
+```lua
+n00n.defer_fn({callback}, {delay_ms})
+```
+
+Run {callback} after {delay_ms} without spawning a process.
+Mirrors Neovim's `vim.defer_fn(fn, timeout)`.
+
+The timer belongs to the current tool call and is cancelled when that call
+ends. Use this from tool handlers; a timer scheduled by a plugin-owned
+callback does not outlive that callback's task scope.
+
+**Parameters:**
+
+- `{callback}` (`function`) Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
+- `{delay_ms}` (`integer`) Delay in milliseconds.
+
+**Returns:** (`integer`) Timer job id accepted by `n00n.fn.jobstop`.
+
+**Example:**
+
+```lua
+n00n.defer_fn(function(timer_id, code) refresh() end, 1000)
+```
+
 
 ## n00n.api {#n00n-api}
 
@@ -1398,12 +1426,13 @@ local watcher = n00n.fn.jobstart("tail -F app.log", { owner = "plugin" })
 n00n.fn.jobstop({job_id})
 ```
 
-Kill a running job immediately (SIGKILL on Unix). Safe to call on
-jobs that already exited or on unknown ids.
+Kill a running process immediately (SIGKILL on Unix) or cancel a deferred
+timer. Safe to call on jobs that already exited or on unknown ids. A
+cancelled timer's callback runs with exit code `-1`.
 
 **Parameters:**
 
-- `{job_id}` (`integer`) Job id returned by `jobstart`.
+- `{job_id}` (`integer`) Job id returned by `jobstart` or `defer`.
 
 **Example:**
 
@@ -1442,6 +1471,31 @@ local result = n00n.fn.jobwait(id, 5000)
 if result then
   print(result.stdout)
 end
+```
+
+---
+
+### `n00n.fn.defer()` {#n00n-fn-defer}
+
+```lua
+n00n.fn.defer({callback}, {delay_ms})
+```
+
+Run {callback} after {delay_ms} without spawning a process.
+Prefer `n00n.defer_fn(callback, delay_ms)`, which mirrors Neovim. This
+compatibility helper also accepts the previous `(delay_ms, callback)` order.
+
+**Parameters:**
+
+- `{callback}` (`function`) Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
+- `{delay_ms}` (`integer`) Delay in milliseconds.
+
+**Returns:** (`integer`) Timer job id accepted by `jobstop`.
+
+**Example:**
+
+```lua
+n00n.fn.defer(function(timer_id, code) refresh() end, 1000)
 ```
 
 ---
@@ -6039,6 +6093,9 @@ function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
 function ToolView:append(line)
+
+-- Append without publishing; call flush to render buffered content.
+function ToolView:append_buffered(line)
 function ToolView:append_text(text)
 
 -- Replace the logical result in one publication. Expansion is view state,

@@ -409,6 +409,9 @@ rtk_rewrite = function(command, ctx)
 end
 
 local DEFAULT_MAX_LINE_BYTES = 400
+local LIVE_OUTPUT_EAGER_LINES = 2
+local LIVE_OUTPUT_FLUSH_LINES = 32
+local LIVE_OUTPUT_FLUSH_MS = 1000
 
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
@@ -808,8 +811,15 @@ n00n.api.register_tool({
 
     local collector = output_collector.new()
     local has_output = false
+    local finished = false
+    local flush_scheduled = false
+    local flush_timer_id = nil
+    local flush_fallback_warned = false
+    local published_line_count = 0
+    local flush_view
 
     local function finish(exit_code)
+      finished = true
       local output = output_collector.collected_output(collector, max_lines, max_bytes)
 
       local is_error = exit_code ~= 0
@@ -831,13 +841,75 @@ n00n.api.register_tool({
 
       if is_error then
         view:append({ { "Exit code: " .. exit_code, "dim" } })
+      elseif has_output then
+        flush_view()
       end
       view:finish()
+      published_line_count = collector.line_count
 
       ctx:finish({ llm_output = llm_output, is_error = is_error, body = buf })
     end
 
     view:append({ { "Waiting for output...", "dim" } })
+
+    flush_view = function()
+      view:flush()
+      published_line_count = collector.line_count
+      flush_scheduled = false
+      if flush_timer_id then
+        n00n.fn.jobstop(flush_timer_id)
+        flush_timer_id = nil
+      end
+    end
+
+    ctx:on_cleanup(function()
+      if collector.line_count > published_line_count then
+        flush_view()
+      end
+    end)
+
+    local function schedule_view_flush()
+      if flush_scheduled then
+        return
+      end
+      local timer_id
+      local scheduled, err = pcall(function()
+        timer_id = n00n.defer_fn(function()
+          if flush_timer_id ~= timer_id then
+            return
+          end
+          flush_scheduled = false
+          flush_timer_id = nil
+          if not finished and collector.line_count > published_line_count then
+            flush_view()
+          end
+        end, LIVE_OUTPUT_FLUSH_MS)
+      end)
+      if scheduled then
+        flush_scheduled = true
+        flush_timer_id = timer_id
+      else
+        if not flush_fallback_warned then
+          flush_fallback_warned = true
+          n00n.log.warn("bash live output debounce unavailable: " .. tostring(err))
+        end
+        flush_view()
+      end
+    end
+
+    local function append_output(line)
+      if not has_output then
+        has_output = true
+        view:clear()
+      end
+      output_collector.append_line(collector, line, max_lines, max_bytes)
+      view:append_buffered(line)
+      if collector.line_count <= LIVE_OUTPUT_EAGER_LINES or collector.line_count % LIVE_OUTPUT_FLUSH_LINES == 0 then
+        flush_view()
+      else
+        schedule_view_flush()
+      end
+    end
 
     n00n.fn.jobstart(command, {
       cwd = workdir,
@@ -847,20 +919,10 @@ n00n.api.register_tool({
         GIT_EXEC_PATH = "",
       },
       on_stdout = function(_, line)
-        if not has_output then
-          has_output = true
-          view:clear()
-        end
-        output_collector.append_line(collector, line, max_lines, max_bytes)
-        view:append(line)
+        append_output(line)
       end,
       on_stderr = function(_, line)
-        if not has_output then
-          has_output = true
-          view:clear()
-        end
-        output_collector.append_line(collector, line, max_lines, max_bytes)
-        view:append(line)
+        append_output(line)
       end,
       on_exit = function(_, code)
         finish(code)

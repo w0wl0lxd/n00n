@@ -6,7 +6,7 @@ re-encoding of tool-call data, and [ALMAS](https://arxiv.org/abs/2510.03463) age
 ## Quick start
 
 ```sh
-cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n
+cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n n00n-git n00n-smell
 
 cd your-project && n00n
 ```

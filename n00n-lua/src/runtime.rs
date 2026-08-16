@@ -105,6 +105,7 @@ const OPT_LEVEL_JIT: u8 = 2;
 const OPT_LEVEL_DEBUGGABLE: u8 = 1;
 const DEBUG_INFO_FULL: u8 = 2;
 const ASYNC_RUN_MIN_DEADLINE: Duration = Duration::from_mins(1);
+const MAX_CLEANUP_CALLBACK_DRAIN: usize = 64;
 /// Async tasks spawned during restore may spawn further tasks; cap the rounds.
 const RESTORE_SPAWN_ROUNDS: usize = 8;
 /// Keeps a buggy plugin's restore task from freezing the lua loop.
@@ -340,6 +341,7 @@ pub(crate) struct TaskCell {
     deadline_interrupted: Cell<bool>,
     interrupted_deadline: Cell<Option<Instant>>,
     interrupt_after: Cell<Option<Instant>>,
+    cleanup_callback_deadline: Cell<Option<Instant>>,
     async_cleanup_cutoff: Cell<Option<Instant>>,
     async_parent: Option<TaskHandle>,
     is_async_run: bool,
@@ -365,6 +367,7 @@ pub(crate) struct TaskCell {
     /// completed yet. Keeps nil-returning handlers alive for callbacks and
     /// lets cancellation/deadline paths wait for bounded cleanup.
     pub(crate) async_tasks: Cell<usize>,
+    pub(crate) cleanup_callbacks: Vec<RegistryKey>,
 }
 
 impl TaskCell {
@@ -382,6 +385,7 @@ impl TaskCell {
             deadline_interrupted: Cell::new(false),
             interrupted_deadline: Cell::new(None),
             interrupt_after: Cell::new(None),
+            cleanup_callback_deadline: Cell::new(None),
             async_cleanup_cutoff: Cell::new(None),
             async_parent: None,
             is_async_run: false,
@@ -395,6 +399,7 @@ impl TaskCell {
             inline_spawn: None,
             bufs_claim: Weak::new(),
             async_tasks: Cell::new(0),
+            cleanup_callbacks: Vec::new(),
         }
     }
 }
@@ -417,6 +422,44 @@ pub(crate) fn lock_cell(handle: &TaskHandle) -> std::sync::MutexGuard<'_, TaskCe
     handle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
+    if lock_cell(handle).cleanup_callbacks.is_empty() {
+        return;
+    }
+    let cleanup_deadline = checked_deadline_after(Instant::now(), CANCEL_INTERRUPT_GRACE);
+    {
+        let cell = lock_cell(handle);
+        cell.cleanup_callback_deadline.set(Some(cleanup_deadline));
+        cell.deadline_interrupted.set(false);
+        cell.interrupted_deadline.set(None);
+        cell.interrupt_after.set(None);
+    }
+    for _ in 0..MAX_CLEANUP_CALLBACK_DRAIN {
+        let callbacks = std::mem::take(&mut lock_cell(handle).cleanup_callbacks);
+        if callbacks.is_empty() {
+            break;
+        }
+        for key in callbacks {
+            if let Err(error) = lua
+                .registry_value::<Function>(&key)
+                .and_then(|callback| callback.call::<()>(()))
+            {
+                tracing::warn!(%error, "tool cleanup callback failed");
+            }
+            if let Err(error) = lua.remove_registry_value(key) {
+                tracing::warn!(%error, "failed to drop tool cleanup callback key");
+            }
+        }
+    }
+    for key in std::mem::take(&mut lock_cell(handle).cleanup_callbacks) {
+        tracing::warn!("tool cleanup callback drain limit reached; dropping callback");
+        if let Err(error) = lua.remove_registry_value(key) {
+            tracing::warn!(%error, "failed to drop tool cleanup callback key");
+        }
+    }
+    lock_cell(handle).cleanup_callback_deadline.set(None);
 }
 
 fn checked_deadline_after(base: Instant, duration: Duration) -> Instant {
@@ -458,10 +501,17 @@ fn awaited_parent_deadline(parent: Option<&TaskHandle>) -> Option<Instant> {
 }
 
 pub(crate) fn task_deadline(handle: &TaskHandle) -> Option<Instant> {
-    let (deadline, parent) = {
+    let (deadline, cleanup_callback_deadline, parent) = {
         let cell = lock_cell(handle);
-        (cell.deadline.get(), cell.async_parent.clone())
+        (
+            cell.deadline.get(),
+            cell.cleanup_callback_deadline.get(),
+            cell.async_parent.clone(),
+        )
     };
+    if cleanup_callback_deadline.is_some() {
+        return cleanup_callback_deadline;
+    }
     earliest_deadline(deadline, awaited_parent_deadline(parent.as_ref()))
 }
 
@@ -795,10 +845,22 @@ impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
 }
 
 pub(crate) fn active_task(lua: &Lua) -> TaskHandle {
-    lua.app_data_ref::<TaskHandle>().map_or_else(
-        || unreachable!("task accessor called outside a task scope"),
-        |r| Arc::clone(&*r),
-    )
+    match lua.app_data_ref::<TaskHandle>() {
+        Some(handle) => handle.clone(),
+        None => unreachable!("missing active task"),
+    }
+}
+
+pub(crate) fn register_task_cleanup_callback(lua: &Lua, key: RegistryKey) {
+    let mut owner = active_task(lua);
+    loop {
+        let parent = lock_cell(&owner).async_parent.clone();
+        match parent {
+            Some(parent) => owner = parent,
+            None => break,
+        }
+    }
+    lock_cell(&owner).cleanup_callbacks.push(key);
 }
 
 pub(crate) fn active_session_identity(lua: &Lua) -> Option<SessionIdentity> {
@@ -2601,17 +2663,16 @@ async fn dispatch_async(
 
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
         for (job_id, event) in event_buf.drain(..) {
-            let callback_result = deliver_job_event(lua, job_id, &event);
-            match finish_rx.try_recv() {
-                Ok(reply) => return reply,
-                Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
-                Err(flume::TryRecvError::Empty) => {}
-            }
-            if let Err(error) = callback_result {
+            if let Err(error) = deliver_job_event(lua, job_id, &event) {
                 return ToolCallReply::err(format!(
                     "job callback error: {}",
                     strip_traceback(&error)
                 ));
+            }
+            match finish_rx.try_recv() {
+                Ok(reply) => return reply,
+                Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
+                Err(flume::TryRecvError::Empty) => {}
             }
         }
 
@@ -2689,6 +2750,45 @@ fn strip_traceback(err: &mlua::Error) -> String {
 
 /// The error message format is load-bearing: the bash plugin's `restore`
 /// parses it to re-render the timeout sentinel on session reload.
+fn append_timeout_marker(buf: &SharedBuf, marker: String) {
+    let already_present = buf
+        .read()
+        .iter()
+        .any(|line| line.spans.iter().any(|span| span.text == marker));
+    if already_present {
+        return;
+    }
+    buf.append(SnapshotLine {
+        spans: vec![SnapshotSpan {
+            text: marker,
+            style: SpanStyle::Named("dim".into()),
+        }],
+    });
+}
+
+fn restore_timeout_marker(reply: &ToolCallReply) {
+    let Err(error) = &reply.result else {
+        return;
+    };
+    let Some(rest) = error.strip_prefix("tool ") else {
+        return;
+    };
+    let Some((_, suffix)) = rest.split_once(" timed out") else {
+        return;
+    };
+    let valid_suffix = suffix.is_empty()
+        || suffix
+            .strip_prefix(" after ")
+            .and_then(|secs| secs.strip_suffix('s'))
+            .is_some_and(|secs| !secs.is_empty() && secs.chars().all(|ch| ch.is_ascii_digit()));
+    if !valid_suffix {
+        return;
+    }
+    if let Some(buf) = reply.live_buf.as_ref() {
+        append_timeout_marker(buf, format!("Timed out{suffix}"));
+    }
+}
+
 fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply {
     let secs = {
         let cell = lock_cell(handle);
@@ -2704,12 +2804,7 @@ fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply
     };
 
     if let Some(ref buf) = live_buf {
-        buf.append(SnapshotLine {
-            spans: vec![SnapshotSpan {
-                text: format!("Timed out{duration_suffix}"),
-                style: SpanStyle::Named("dim".into()),
-            }],
-        });
+        append_timeout_marker(buf, format!("Timed out{duration_suffix}"));
     }
 
     let mut reply = ToolCallReply::err(format!("tool {qualified} timed out{duration_suffix}"));
@@ -2944,6 +3039,9 @@ async fn run_tool_call(
                 dispatch_async(&lua, Arc::clone(&handle), &plugin, &tool, finish_rx).await
             }
             Ok(val) => {
+                if let Ok(reply) = finish_rx.try_recv() {
+                    return reply;
+                }
                 if let Some(buf) = crate::api::ui::buf::buf_from_reply(&val) {
                     lock_cell(&handle).root_buf = Some(buf);
                 }
@@ -2969,6 +3067,12 @@ async fn run_tool_call(
         lock_cell(&handle).awaiting_async.set(true);
         wait_for_async_tasks(&handle).await;
     }
+    scope
+        .scope_future(async {
+            run_task_cleanup_callbacks(&lua, &handle);
+            restore_timeout_marker(&reply);
+        })
+        .await;
     if let Some(id) = &live_id {
         live_tasks.borrow_mut().remove(id);
         // Best-effort cache: any tool with a root buf can serve clicks.
@@ -3554,6 +3658,121 @@ mod tests {
         assert!(lock_cell(&handle).bufs.live_buf().is_none());
     }
 
+    #[test]
+    fn async_cleanup_callback_registers_on_root_task() {
+        let lua = Lua::new();
+        let root = Arc::new(Mutex::new(task_cell(None)));
+        let mut child_cell = task_cell(None);
+        child_cell.async_parent = Some(Arc::clone(&root));
+        let child = Arc::new(Mutex::new(child_cell));
+        lua.set_app_data(Arc::clone(&child));
+        let callback = lua.create_function(|_, ()| Ok(())).unwrap();
+
+        register_task_cleanup_callback(&lua, lua.create_registry_value(callback).unwrap());
+
+        assert!(lock_cell(&child).cleanup_callbacks.is_empty());
+        assert_eq!(lock_cell(&root).cleanup_callbacks.len(), 1);
+    }
+
+    #[test]
+    fn task_cleanup_callbacks_run_once() {
+        let lua = Lua::new();
+        let calls = Arc::new(AtomicU64::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let callback = lua
+            .create_function(move |_, ()| {
+                callback_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+        let handle = Arc::new(Mutex::new(task_cell(None)));
+        lock_cell(&handle)
+            .cleanup_callbacks
+            .push(lua.create_registry_value(callback).unwrap());
+
+        run_task_cleanup_callbacks(&lua, &handle);
+        run_task_cleanup_callbacks(&lua, &handle);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cleanup_callbacks_clear_temporary_deadline_without_replacing_parent_deadline() {
+        let lua = Lua::new();
+        let parent_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(30));
+        let interrupted_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(20));
+        let async_cutoff = checked_deadline_after(Instant::now(), Duration::from_secs(40));
+        let parent = Arc::new(Mutex::new(task_cell(None)));
+        let callback = lua.create_function(|_, ()| Ok(())).unwrap();
+        {
+            let mut cell = lock_cell(&parent);
+            cell.deadline.set(Some(parent_deadline));
+            cell.awaiting_async.set(true);
+            cell.interrupted_deadline.set(Some(interrupted_deadline));
+            cell.async_cleanup_cutoff.set(Some(async_cutoff));
+            cell.cleanup_callbacks
+                .push(lua.create_registry_value(callback).unwrap());
+        }
+        let mut child_cell = task_cell(None);
+        child_cell.async_parent = Some(Arc::clone(&parent));
+        let child = Arc::new(Mutex::new(child_cell));
+
+        run_task_cleanup_callbacks(&lua, &parent);
+
+        let cell = lock_cell(&parent);
+        assert_eq!(cell.deadline.get(), Some(parent_deadline));
+        assert_eq!(cell.interrupted_deadline.get(), None);
+        assert_eq!(cell.async_cleanup_cutoff.get(), Some(async_cutoff));
+        assert_eq!(cell.cleanup_callback_deadline.get(), None);
+        drop(cell);
+        assert_eq!(task_deadline(&child), Some(parent_deadline));
+    }
+
+    #[test]
+    fn cleanup_callbacks_registered_during_cleanup_are_drained() {
+        let lua = Lua::new();
+        let handle = Arc::new(Mutex::new(task_cell(None)));
+        lua.set_app_data(Arc::clone(&handle));
+        let calls = Arc::new(AtomicU64::new(0));
+        let first_calls = Arc::clone(&calls);
+        let second_calls = Arc::clone(&calls);
+        let first = lua
+            .create_function(move |lua, ()| {
+                first_calls.fetch_add(1, Ordering::Relaxed);
+                let second_calls = Arc::clone(&second_calls);
+                let second = lua.create_function(move |_, ()| {
+                    second_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                })?;
+                register_task_cleanup_callback(lua, lua.create_registry_value(second)?);
+                Ok(())
+            })
+            .unwrap();
+        lock_cell(&handle)
+            .cleanup_callbacks
+            .push(lua.create_registry_value(first).unwrap());
+
+        run_task_cleanup_callbacks(&lua, &handle);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert!(lock_cell(&handle).cleanup_callbacks.is_empty());
+    }
+
+    #[test]
+    fn restore_timeout_marker_requires_timeout_error_shape() {
+        let buf = Arc::new(SharedBuf::new());
+        let mut reply = ToolCallReply::err("job callback error: operation timed out elsewhere");
+        reply.live_buf = Some(Arc::clone(&buf));
+        restore_timeout_marker(&reply);
+        assert!(buf.read().is_empty());
+
+        let mut reply = ToolCallReply::err("tool bash timed out after 3s");
+        reply.live_buf = Some(Arc::clone(&buf));
+        restore_timeout_marker(&reply);
+        let lines = buf.read();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].text, "Timed out after 3s");
+    }
     #[test]
     fn task_scope_drop_clears_only_its_own_jobs() {
         const PUMP_PLUGIN: &str = "test-plugin";

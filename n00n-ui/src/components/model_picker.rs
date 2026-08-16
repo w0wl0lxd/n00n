@@ -103,7 +103,12 @@ pub struct ModelPicker {
     models: Arc<ArcSwapOption<Vec<String>>>,
     recents: Vec<String>,
     current_spec: String,
-    last_spec_count: usize,
+    // The specs list the open picker was last built from. A model refresh swaps
+    // in a fresh `Arc`, so comparing identity (not just the length) catches
+    // same-size replacements that only change which models are present. Holding
+    // a strong clone keeps the pointer comparison sound by preventing the old
+    // allocation from being freed and reused at the same address.
+    last_specs: Option<Arc<Vec<String>>>,
     dirty: bool,
 }
 
@@ -114,7 +119,7 @@ impl ModelPicker {
             models,
             recents: Vec::new(),
             current_spec: String::new(),
-            last_spec_count: 0,
+            last_specs: None,
             dirty: false,
         }
     }
@@ -136,8 +141,12 @@ impl ModelPicker {
             return;
         }
         let guard = self.models.load();
-        let spec_count = guard.as_deref().map_or(0, Vec::len);
-        if spec_count == self.last_spec_count && !self.dirty {
+        let unchanged = match (guard.as_ref(), self.last_specs.as_ref()) {
+            (Some(current), Some(last)) => Arc::ptr_eq(current, last),
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged && !self.dirty {
             return;
         }
         drop(guard);
@@ -149,8 +158,8 @@ impl ModelPicker {
 
     fn load_entries(&mut self) -> (Vec<ModelEntry>, usize) {
         let guard = self.models.load();
+        self.last_specs = guard.as_ref().map(Arc::clone);
         let specs = guard.as_deref();
-        self.last_spec_count = specs.map_or(0, Vec::len);
         let mut entries: Vec<ModelEntry> = Vec::new();
         let recent_specs = self.recents.clone();
         for spec in &recent_specs {
@@ -320,6 +329,31 @@ mod tests {
         assert!(
             matches!(action, ModelPickerAction::Select(ref s) if s.contains("opus")),
             "after refresh, 'op' filter should match opus"
+        );
+    }
+
+    #[test]
+    fn refresh_detects_same_size_replacement() {
+        let models = Arc::new(ArcSwapOption::empty());
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+        ])));
+        let mut p = ModelPicker::new(Arc::clone(&models));
+        p.open("");
+
+        // A refresh that yields the same number of specs but a different model
+        // must still rebuild the open picker.
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-opus-4-6-20260101".into(),
+        ])));
+        p.try_refresh();
+
+        p.handle_key(key(KeyCode::Char('o')));
+        p.handle_key(key(KeyCode::Char('p')));
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s.contains("opus")),
+            "same-size refresh should surface the newly present model"
         );
     }
 

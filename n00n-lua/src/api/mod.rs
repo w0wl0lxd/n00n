@@ -98,6 +98,7 @@ pub(crate) fn create_n00n_global(
         r#fn::create_fn_table(lua, Arc::clone(&plugin), permissions)?,
     )?;
     split::split__register(&n00n, lua)?;
+    r#fn::defer_fn__register(&n00n, lua, permissions)?;
     n00n.set("async", r#async::create_async_table(lua)?)?;
     n00n.set(
         "interpreter",

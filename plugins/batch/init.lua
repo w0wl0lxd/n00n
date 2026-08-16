@@ -15,7 +15,7 @@ local ToolView = require("n00n.tool_view")
 local canonical_tool_name = require("n00n.policy").canonical_tool_name
 
 local BATCH_TOOL_NAME = "run_batch"
-local MAX_BATCH_SIZE = 25
+local MAX_BATCH_SIZE = 4
 local SEPARATOR = "──────────────────"
 local BODY_INDENT = "  "
 local ANNOTATION_SEP = " · "
@@ -23,7 +23,11 @@ local ERROR_PREFIX = "[ERROR] "
 local EMPTY_ERROR = "provide at least one tool call"
 local NESTED_ERROR = "cannot nest batch inside batch"
 local CANCELLED_ERROR = "cancelled"
-local DISCARDED_ERROR = string.format("maximum of %d tools per batch", MAX_BATCH_SIZE)
+local DISCARDED_ERROR = string.format(
+  "maximum of %d tools per batch; split the work into batches of at most %d calls",
+  MAX_BATCH_SIZE,
+  MAX_BATCH_SIZE
+)
 -- Below this many seconds left on a shared caller deadline, starting more
 -- concurrent children is a bet against the watchdog interrupt, not real work.
 local MIN_BATCH_DEADLINE_SECS = 5
@@ -138,10 +142,8 @@ local function child_body_buf(c, tol)
   return buf or ToolView.restore(output, { max_lines = tol[c.tool] or tol.other, keep = "head" })
 end
 
--- Parsing plus per-entry policy: entries past MAX_BATCH_SIZE and nested
--- batches are born terminal (error), so they render but never run. Only
--- a malformed entry fails the batch as a whole, and that happens before
--- anything runs.
+-- Parsing plus per-entry policy. Malformed batches fail before entry
+-- preparation; nested batches render but never run.
 local function prepare_children(tool_calls)
   if type(tool_calls) ~= "table" then
     return nil, "tool_calls must be an array"
@@ -153,9 +155,7 @@ local function prepare_children(tool_calls)
       return nil, err
     end
     c.status = STATUS.PENDING
-    if i > MAX_BATCH_SIZE then
-      c.status, c.output = STATUS.ERROR, DISCARDED_ERROR
-    elseif canonical_tool_name(c.tool) == BATCH_TOOL_NAME then
+    if canonical_tool_name(c.tool) == BATCH_TOOL_NAME then
       c.status, c.output = STATUS.ERROR, NESTED_ERROR
     end
     c.header = header_spans(c.tool, c.params)
@@ -455,8 +455,16 @@ end
 
 --- Tool entry points --------------------------------------------------------
 
+local function tool_calls_of(input, fallback)
+  return input.tool_calls or input.tool_uses or fallback
+end
+
 local function handler(input, ctx)
-  local children, err = prepare_children(input.tool_calls)
+  local tool_calls = tool_calls_of(input)
+  if type(tool_calls) == "table" and #tool_calls > MAX_BATCH_SIZE then
+    return { llm_output = DISCARDED_ERROR, is_error = true }
+  end
+  local children, err = prepare_children(tool_calls)
   if not children then
     return { llm_output = err, is_error = true }
   end
@@ -494,13 +502,9 @@ end
 
 -- Restore/header see persisted raw model JSON; accept the schema alias
 -- `tool_uses` the same way live `parse`/`validate` remaps it.
-local function tool_calls_of(input)
-  return input.tool_calls or input.tool_uses or {}
-end
-
 local function restore(input, output, _is_error, rctx)
   local tol = rctx:tool_output_lines()
-  local children = prepare_children(tool_calls_of(input))
+  local children = prepare_children(tool_calls_of(input, {}))
   if not children then
     return ToolView.restore(output, { max_lines = tol.other, keep = "head" })
   end
@@ -534,7 +538,7 @@ n00n.api.register_tool({
   deadline_grace = true,
   schema = schema,
   header = function(input)
-    return #tool_calls_of(input) .. " tools"
+    return #tool_calls_of(input, {}) .. " tools"
   end,
   handler = handler,
   restore = restore,
