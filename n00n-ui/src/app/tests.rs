@@ -962,8 +962,10 @@ fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
             entries: vec![TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
                 generated_summary: None,
+                state_revision: None,
             }],
             generated_summary: Some(summary.clone()),
+            state_revision: None,
         },
         TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
         TranscriptEntry::GeneratedMessage(summary),
@@ -997,6 +999,7 @@ fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
             }],
             ..Default::default()
         },
+        None,
     );
     app.shared_history = Some(message_mirror);
     app.shared_transcript = Some(transcript_mirror);
@@ -1143,6 +1146,7 @@ fn live_compaction_notice_becomes_typed_card() {
         TranscriptEntry::Compaction {
             entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
             generated_summary: None,
+            state_revision: None,
         },
     ])));
 
@@ -3123,8 +3127,10 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
             entries: vec![TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
                 generated_summary: None,
+                state_revision: None,
             }],
             generated_summary: Some(summary.clone()),
+            state_revision: None,
         },
         TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
         TranscriptEntry::GeneratedMessage(summary),
@@ -3155,6 +3161,7 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
     restored.compact_boundary(
         Message::user("summary prompt".into()),
         assistant("new summary"),
+        None,
     );
     let TranscriptEntry::Compaction { entries, .. } = &restored.transcript()[0] else {
         panic!("expected recursive compaction");
