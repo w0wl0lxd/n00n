@@ -6686,6 +6686,50 @@ fn bundled_todo_ctrl_t_keybind_dispatches() {
 }
 
 #[test]
+fn bundled_question_consumes_window_input_while_tool_is_running() {
+    let (registry, host) = builtins_host();
+    let ui_rx = host.ui_action_rx().unwrap();
+    let (done_tx, done_rx) = flume::bounded(1);
+    let registry_for_tool = Arc::clone(&registry);
+    std::thread::spawn(move || {
+        let result = exec_tool_output(
+            &registry_for_tool,
+            "ask_user",
+            serde_json::json!({
+                "questions": [{
+                    "header": "Confirm",
+                    "question": "Continue?",
+                    "options": [{"label": "Yes"}, {"label": "No"}]
+                }]
+            }),
+        );
+        let _ = done_tx.send(result);
+    });
+
+    let action = ui_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("question did not open its window");
+    let n00n_lua::UiAction::OpenWin { event_tx, .. } = action else {
+        panic!("expected question window");
+    };
+    assert_eq!(registry.admission().process_active(), 0);
+    event_tx
+        .send(n00n_lua::WinEvent::Key {
+            key: "enter".into(),
+        })
+        .unwrap();
+
+    let output = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("question did not consume window input")
+        .expect("question failed");
+    let n00n_agent::ToolOutput::Markdown(output) = output else {
+        panic!("expected markdown question output");
+    };
+    assert!(output.text.contains("Yes"), "question output: {output:?}");
+}
+
+#[test]
 fn team_launcher_uses_native_model_picker_and_amp_labels() {
     let (_reg, host) = builtins_host();
     let rx = host.ui_action_rx().unwrap();

@@ -1,0 +1,1 @@
+Question prompts no longer compete with running tools for execution capacity, and busy agent scopes no longer reserve slots needed by other sessions. Lua subprocesses now use bounded output buffering, lower CPU priority, process-group cancellation, and Linux memory limits to keep the interface responsive under load.

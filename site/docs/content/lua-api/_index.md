@@ -1388,6 +1388,11 @@ For commands that don't need shell features (pipes, redirection, globs),
 pass an array to run the program directly with preserved argument quoting:
 `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
 
+Unix jobs run in a separate process group at nice level 10. On Linux, the
+process group's combined RSS is limited to one quarter of system memory,
+clamped between 512 MiB and 8 GiB. Set `N00N_TOOL_MAX_RSS_MB` to a positive
+whole number of MiB to override the memory limit.
+
 **Parameters:**
 
 - `{cmd}` (`string|table`) Shell command string, or array of program + args.
