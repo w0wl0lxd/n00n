@@ -540,7 +540,7 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
 }
 
 fn is_expected_provider_absence(error: &AgentError) -> bool {
-    matches!(error, AgentError::Config { .. })
+    matches!(error, AgentError::Config { .. }) || error.is_setup_required()
 }
 
 /// Fetches all available models from all providers asynchronously.
@@ -557,7 +557,11 @@ pub async fn fetch_all_models(
         let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
             Ok(provider) => provider,
             Err(error) if is_expected_provider_absence(&error) => {
-                debug!(provider = slug, %error, "provider not configured, skipping");
+                if error.is_setup_required() {
+                    info!(provider = slug, %error, "provider setup required, skipping");
+                } else {
+                    debug!(provider = slug, %error, "provider not configured, skipping");
+                }
                 continue;
             }
             Err(error) => {
@@ -686,15 +690,19 @@ mod tests {
     use crate::AgentError;
 
     #[test]
-    fn only_configuration_errors_are_expected_provider_absence() {
+    fn configuration_and_setup_errors_are_expected_provider_absence() {
         let not_configured = AgentError::Config {
             message: "API key not configured".into(),
+        };
+        let setup_required = AgentError::SetupRequired {
+            message: "authentication required".into(),
         };
         let io_error = AgentError::Io(io::Error::other("credential store unavailable"));
         let lock_error = AgentError::CredentialLockTimeout { millis: 100 };
         let storage_error = AgentError::Storage;
 
         assert!(is_expected_provider_absence(&not_configured));
+        assert!(is_expected_provider_absence(&setup_required));
         assert!(!is_expected_provider_absence(&io_error));
         assert!(!is_expected_provider_absence(&lock_error));
         assert!(!is_expected_provider_absence(&storage_error));
