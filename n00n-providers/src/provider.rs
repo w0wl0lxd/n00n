@@ -557,7 +557,11 @@ pub async fn fetch_all_models(
         let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
             Ok(provider) => provider,
             Err(error) if is_expected_provider_absence(&error) => {
-                debug!(provider = slug, %error, "provider not configured, skipping");
+                if error.is_setup_required() {
+                    info!(provider = slug, %error, "provider setup required, skipping");
+                } else {
+                    debug!(provider = slug, %error, "provider not configured, skipping");
+                }
                 continue;
             }
             Err(error) => {

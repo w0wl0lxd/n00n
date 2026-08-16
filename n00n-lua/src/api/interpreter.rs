@@ -17,6 +17,7 @@ use n00n_interpreter::runner::{self, ToolFn};
 use n00n_interpreter::{AsyncResolver, PendingCall};
 use n00n_lua_macro::{lua_fn, lua_table};
 use serde_json::Value;
+use tracing::debug;
 
 use crate::api::util::convert::{json_to_lua, lua_tool_result};
 use crate::plugin_permissions::PluginPermissions;
@@ -28,6 +29,11 @@ type CallResults = Vec<(u32, Result<Value, String>)>;
 
 fn unstreamed_stdout(stdout: &str, streamed_bytes: usize) -> Option<&str> {
     if streamed_bytes > stdout.len() {
+        debug!(
+            streamed_bytes,
+            stdout_bytes = stdout.len(),
+            "skipping already-streamed truncated interpreter stdout"
+        );
         return None;
     }
     if let Some(remaining) = stdout.get(streamed_bytes..) {
@@ -275,9 +281,14 @@ mod tests {
 
     #[test]
     fn streamed_output_past_retained_stdout_is_not_sliced() {
-        let stdout = "é".repeat(8_192);
-        assert_eq!(stdout.len(), 16_384);
-        assert_eq!(unstreamed_stdout(&stdout, 16_395), None);
+        const MAX_STDOUT_BYTES: usize = 16 * 1024;
+        const TRUNCATED_MARKER: &str = "[truncated]";
+        let stdout = "é".repeat(MAX_STDOUT_BYTES / "é".len());
+        assert_eq!(stdout.len(), MAX_STDOUT_BYTES);
+        assert_eq!(
+            unstreamed_stdout(&stdout, MAX_STDOUT_BYTES + TRUNCATED_MARKER.len()),
+            None
+        );
     }
 
     #[test]
