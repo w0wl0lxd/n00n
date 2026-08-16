@@ -1,4 +1,5 @@
-local git_bin = (n00n.uv.os_getenv and n00n.uv.os_getenv("N00N_GIT_BIN")) or "n00n-git"
+local git_override = n00n.uv.os_getenv and n00n.uv.os_getenv("N00N_GIT_BIN")
+local git_bin = git_override or (n00n.uv.current_exe and n00n.uv.current_exe()) or "n00n"
 local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
@@ -14,7 +15,7 @@ local function dispatch(input)
   local path = input.path or "."
 
   local function binary_missing_message()
-    return "n00n-git binary not found. Set N00N_GIT_BIN to an absolute path or install n00n-git on PATH."
+    return "n00n executable not found. Set N00N_GIT_BIN to a compatible executable path."
   end
 
   local function run_git_subcommand(args)
@@ -22,29 +23,34 @@ local function dispatch(input)
       return nil, binary_missing_message()
     end
 
-    local cmd = { git_bin, command, path }
+    local cmd = { git_bin }
+    if not git_override then
+      table.insert(cmd, "git")
+    end
+    table.insert(cmd, command)
+    table.insert(cmd, path)
     for _, arg in ipairs(args) do
       table.insert(cmd, arg)
     end
 
     local job_id, job_err = n00n.fn.jobstart(cmd)
     if not job_id then
-      return nil, "failed to spawn n00n-git: " .. tostring(job_err or "unknown error")
+      return nil, "failed to spawn n00n git: " .. tostring(job_err or "unknown error")
     end
 
     local result = n00n.fn.jobwait(job_id, 30000)
     if not result then
       n00n.fn.jobstop(job_id)
-      return nil, "n00n-git timed out"
+      return nil, "n00n git timed out"
     end
 
     if result.exit_code ~= 0 then
-      return nil, "n00n-git exited with code " .. result.exit_code .. ": " .. (result.stderr or "")
+      return nil, "n00n git exited with code " .. result.exit_code .. ": " .. (result.stderr or "")
     end
 
     local ok, data = pcall(n00n.json.decode, result.stdout)
     if not ok then
-      return nil, "failed to parse n00n-git JSON output: " .. tostring(data)
+      return nil, "failed to parse n00n git JSON output: " .. tostring(data)
     end
 
     if data.error then
@@ -195,7 +201,7 @@ n00n.api.register_tool({
   name = "git",
   kind = "read",
   description = [[
-Local git operations via n00n-git.
+Local git operations built into n00n.
 ]],
   schema = {
     type = "object",

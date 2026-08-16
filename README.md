@@ -6,10 +6,12 @@ re-encoding of tool-call data, and [ALMAS](https://arxiv.org/abs/2510.03463) age
 ## Quick start
 
 ```sh
-cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n n00n-git n00n-smell
+cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n --bin n00n
 
 cd your-project && n00n
 ```
+
+Git and smell tooling is built into the `n00n` executable.
 
 With Nix: `nix run github:w0wl0lxd/n00n`  
 Or grab a binary from [releases](https://github.com/w0wl0lxd/n00n/releases/latest).

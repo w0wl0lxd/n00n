@@ -5,46 +5,34 @@ use mlua::{Lua, Result as LuaResult, Table};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 
-fn smell_binary_path() -> Result<PathBuf, mlua::Error> {
+fn smell_binary() -> Result<(PathBuf, bool), mlua::Error> {
     if let Ok(path) = std::env::var("N00N_SMELL") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
-            return Ok(candidate);
+            return Ok((candidate, false));
         }
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        let same = exe.with_file_name("n00n-smell");
-        if same.is_file() {
-            return Ok(same);
-        }
-        if let Some(parent) = exe.parent() {
-            let sibling = parent.join("n00n-smell");
-            if sibling.is_file() {
-                return Ok(sibling);
-            }
-            if let Some(grandparent) = parent.parent() {
-                let cousin = grandparent.join("n00n-smell");
-                if cousin.is_file() {
-                    return Ok(cousin);
-                }
-            }
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && exe.file_stem().is_some_and(|name| name == "n00n")
+    {
+        return Ok((exe, true));
     }
 
-    if let Some(path) = which("n00n-smell") {
-        return Ok(path);
+    if let Some(path) = which("n00n") {
+        return Ok((path, true));
     }
 
     Err(mlua::Error::external(
-        "n00n-smell binary not found; set N00N_SMELL or build the workspace",
+        "n00n executable not found; set N00N_SMELL to a compatible executable path",
     ))
 }
 
 fn which(name: &str) -> Option<PathBuf> {
+    let executable = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
-            .map(|dir| dir.join(name))
+            .map(|dir| dir.join(&executable))
             .find(|candidate| candidate.is_file())
     })
 }
@@ -61,18 +49,22 @@ fn resolve_project(project: &str) -> Result<PathBuf, mlua::Error> {
 }
 
 fn run_smell(args: &[&str]) -> Result<String, mlua::Error> {
-    let binary = smell_binary_path()?;
-    let output = Command::new(binary)
+    let (binary, bundled) = smell_binary()?;
+    let mut command = Command::new(binary);
+    if bundled {
+        command.arg("smell");
+    }
+    let output = command
         .args(args)
         .output()
-        .map_err(|err| mlua::Error::external(format!("failed to run n00n-smell: {err}")))?;
+        .map_err(|err| mlua::Error::external(format!("failed to run n00n smell: {err}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if output.status.success() {
         Ok(stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         Err(mlua::Error::external(format!(
-            "n00n-smell failed: {stderr}{stdout}",
+            "n00n smell failed: {stderr}{stdout}",
         )))
     }
 }
@@ -134,7 +126,7 @@ pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
 pub(crate) const DOCS: ModuleDoc = ModuleDoc {
     name: "n00n.smell",
     kind: DocKind::Table,
-    desc: "Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.",
+    desc: "Persistent code-smell and comment index built into n00n. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index.",
     fns: &[
         FnDoc {
             name: "has_index",
@@ -151,7 +143,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         FnDoc {
             name: "index",
             args: "{project}",
-            desc: "Build or rebuild the smell index for a repository by invoking n00n-smell.",
+            desc: "Build or rebuild the smell index for a repository.",
             params: &[ParamDoc {
                 name: "{project}",
                 ty: "string",

@@ -33,6 +33,8 @@ n00n-providers = { workspace = true }
 n00n-storage = { workspace = true }
 n00n-lua = { workspace = true }
 n00n-daemon = { workspace = true }
+n00n-git = { workspace = true }
+n00n-smell = { workspace = true }
 clap = { workspace = true }
 color-eyre = { workspace = true }
 serde = { workspace = true }
