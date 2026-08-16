@@ -18,6 +18,7 @@ const READER_BUF_SIZE: usize = 8 * 1024;
 const OWNER_TASK: &str = "task";
 const OWNER_PLUGIN: &str = "plugin";
 const DEFER_DELAY_RANGE_ERR: &str = "defer delay is out of range";
+const JOBWAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub(crate) enum JobSpec {
@@ -67,6 +68,11 @@ pub(crate) struct JobStore {
 /// Holds a receiver borrowed out of the store for the duration of a
 /// `jobwait`, and hands it back on drop so a timed-out or cancelled wait
 /// does not strand the job's remaining events.
+enum JobWaitWake {
+    Event(Option<JobEvent>),
+    Poll,
+}
+
 struct CheckedOutReceiver {
     lua: Lua,
     job_id: u32,
@@ -323,7 +329,9 @@ impl JobStore {
         }
         if let Some(job) = self.jobs.get_mut(&job_id) {
             if job.pid.is_none() {
-                job.deadline = None;
+                if job.deadline.take().is_none() {
+                    return;
+                }
                 let (event_tx, event_rx) = flume::bounded(1);
                 let _ = event_tx.send(JobEvent::Exit(-1));
                 job.event_rx = Some(event_rx);
@@ -556,6 +564,43 @@ fn jobstop(lua: &Lua, #[ctx] plugin: Arc<str>, job_id: u32) -> LuaResult<()> {
     Ok(())
 }
 
+fn next_jobwait_poll(timeout_at: Instant) -> LuaResult<Instant> {
+    Instant::now()
+        .checked_add(JOBWAIT_POLL_INTERVAL)
+        .map(|poll_at| poll_at.min(timeout_at))
+        .ok_or_else(|| mlua::Error::runtime("jobwait poll deadline is out of range"))
+}
+
+pub(crate) fn deliver_task_job_events(
+    lua: &Lua,
+    task_events: &mut Vec<(u32, JobEvent)>,
+) -> LuaResult<()> {
+    let mut first_error = None;
+    for (event_job_id, event) in task_events.drain(..) {
+        if let Err(error) = deliver_job_event(lua, event_job_id, &event)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn drain_task_job_events(
+    lua: &Lua,
+    owner: Option<&JobOwner>,
+    task_events: &mut Vec<(u32, JobEvent)>,
+) -> LuaResult<()> {
+    if let Some(owner) = owner {
+        with_jobs(lua, |store| store.drain_events(owner, task_events));
+        deliver_task_job_events(lua, task_events)?;
+    }
+    Ok(())
+}
+
 /// Wait for a job to finish and collect its output. Returns a result
 /// table with `stdout`, `stderr`, and `exit_code`. Returns `nil` if the
 /// job does not finish before the timeout.
@@ -586,27 +631,48 @@ async fn jobwait(
     let rx = CheckedOutReceiver::new(&lua, job_id, receiver);
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or_else(|| 30_000));
-    let deadline = smol::Timer::after(timeout);
-    futures_lite::pin!(deadline);
-
+    let timeout_at = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| mlua::Error::runtime("jobwait timeout is out of range"))?;
+    let owner = task_id.map(JobOwner::Task);
+    let mut task_events = Vec::new();
     let mut stdout_lines = Vec::new();
     let mut stderr_lines = Vec::new();
+    let mut poll_at = next_jobwait_poll(timeout_at)?;
 
     let exit_code = loop {
-        let event = futures_lite::future::or(async { rx.get().recv_async().await.ok() }, async {
-            (&mut deadline).await;
-            None
-        })
+        let now = Instant::now();
+        if now >= timeout_at {
+            return Ok(mlua::Value::Nil);
+        }
+        if now >= poll_at {
+            drain_task_job_events(&lua, owner.as_ref(), &mut task_events)?;
+            poll_at = next_jobwait_poll(timeout_at)?;
+            continue;
+        }
+        let wake = futures_lite::future::or(
+            async { JobWaitWake::Event(rx.get().recv_async().await.ok()) },
+            async {
+                smol::Timer::at(poll_at).await;
+                JobWaitWake::Poll
+            },
+        )
         .await;
 
-        let Some(event) = event else {
-            return Ok(mlua::Value::Nil);
-        };
-        deliver_job_event(&lua, job_id, &event)?;
-        match event {
-            JobEvent::Stdout(line) => stdout_lines.push(line),
-            JobEvent::Stderr(line) => stderr_lines.push(line),
-            JobEvent::Exit(code) => break code,
+        match wake {
+            JobWaitWake::Event(Some(event)) => {
+                deliver_job_event(&lua, job_id, &event)?;
+                match event {
+                    JobEvent::Stdout(line) => stdout_lines.push(line),
+                    JobEvent::Stderr(line) => stderr_lines.push(line),
+                    JobEvent::Exit(code) => {
+                        drain_task_job_events(&lua, owner.as_ref(), &mut task_events)?;
+                        break code;
+                    }
+                }
+            }
+            JobWaitWake::Event(None) => return Ok(mlua::Value::Nil),
+            JobWaitWake::Poll => {}
         }
     };
 
@@ -688,6 +754,8 @@ lua_table! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::{TaskCell, TaskScope, lock_cell};
+    use n00n_agent::cancel::CancelToken;
 
     const TEST_PLUGIN: &str = "test-plugin";
     const OTHER_PLUGIN: &str = "other-plugin";
@@ -840,15 +908,136 @@ mod tests {
             .defer(owner.clone(), Duration::from_mins(1), callback)
             .unwrap();
 
-        // Cancelling a pending timer must notify the waiting callback, the same
-        // way killing a process job still reports its exit.
-        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
-
         let mut events = Vec::new();
+        store.kill(id, Some(FOREIGN_TASK_ID), TEST_PLUGIN);
+        store.drain_events(&owner, &mut events);
+        assert!(events.is_empty());
+
+        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
+        store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
         store.drain_events(&owner, &mut events);
         assert!(matches!(events.as_slice(), [(event_id, JobEvent::Exit(-1))] if *event_id == id));
         store.finish(&lua, id);
         assert!(store.is_empty(&owner));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobwait_pumps_deferred_callbacks() {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let owner = task_owner(lock_cell(scope.handle()).id);
+        let callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, ()| lua.globals().set("timer_fired", true))
+                    .unwrap(),
+            )
+            .unwrap();
+        let (process_id, _) = with_jobs(&lua, |store| {
+            let process_id = start_shell(store, owner.clone(), "sleep 0.15");
+            let timer_id = store.defer(owner, Duration::ZERO, callback).unwrap();
+            (process_id, timer_id)
+        });
+
+        smol::block_on(scope.scope_future(jobwait(
+            lua.clone(),
+            Arc::from(TEST_PLUGIN),
+            process_id,
+            Some(1_000),
+        )))
+        .unwrap();
+
+        assert!(lua.globals().get::<bool>("timer_fired").unwrap());
+    }
+
+    #[test]
+    fn failing_task_callback_does_not_drop_later_events() {
+        let lua = Lua::new();
+        lua.globals().set("later_callback_fired", false).unwrap();
+        let owner = task_owner(OWNER_TASK_ID);
+        let (failing_id, later_id) = with_jobs(&lua, |store| {
+            let failing = lua
+                .create_registry_value(
+                    lua.create_function(|_, ()| Err::<(), _>(mlua::Error::runtime("boom")))
+                        .unwrap(),
+                )
+                .unwrap();
+            let later = lua
+                .create_registry_value(
+                    lua.create_function(|lua, ()| lua.globals().set("later_callback_fired", true))
+                        .unwrap(),
+                )
+                .unwrap();
+            let delay = Duration::from_mins(1);
+            (
+                store.defer(owner.clone(), delay, failing).unwrap(),
+                store.defer(owner.clone(), delay, later).unwrap(),
+            )
+        });
+        let mut events = vec![
+            (failing_id, JobEvent::Exit(0)),
+            (later_id, JobEvent::Exit(0)),
+        ];
+
+        assert!(deliver_task_job_events(&lua, &mut events).is_err());
+        assert!(events.is_empty());
+        assert!(lua.globals().get::<bool>("later_callback_fired").unwrap());
+        assert!(with_jobs(&lua, |store| store.is_empty(&owner)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobwait_pumps_deferred_callbacks_during_continuous_output() {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let owner = task_owner(lock_cell(scope.handle()).id);
+        lua.globals().set("timer_fired", false).unwrap();
+        let timer_callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, ()| lua.globals().set("timer_fired", true))
+                    .unwrap(),
+            )
+            .unwrap();
+        let exit_callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, (_job_id, _code): (u32, i32)| {
+                    let fired = lua.globals().get::<bool>("timer_fired")?;
+                    lua.globals().set("timer_fired_before_exit", fired)
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let process_id = with_jobs(&lua, |store| {
+            let process_id = store
+                .start(
+                    owner.clone(),
+                    JobSpec::Shell(
+                        "i=0; while [ $i -lt 100000 ]; do echo x; i=$((i+1)); done".into(),
+                    ),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(exit_callback),
+                )
+                .unwrap();
+            store.defer(owner, Duration::ZERO, timer_callback).unwrap();
+            process_id
+        });
+
+        smol::block_on(scope.scope_future(jobwait(
+            lua.clone(),
+            Arc::from(TEST_PLUGIN),
+            process_id,
+            Some(5_000),
+        )))
+        .unwrap();
+
+        assert!(
+            lua.globals()
+                .get::<bool>("timer_fired_before_exit")
+                .unwrap()
+        );
     }
 
     #[test]

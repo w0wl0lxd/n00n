@@ -3135,6 +3135,81 @@ fn timeout_rendering_runs_change_callback_outside_expired_deadline() {
 }
 
 #[test]
+fn timeout_cleanup_publishes_buffered_tail() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "cleanup_tail",
+            description = "publishes buffered output during cleanup",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                local buf = n00n.ui.buf()
+                buf:set_lines({{ "waiting" }})
+                ctx:live_buf(buf)
+                ctx:on_cleanup(function() buf:set_lines({{ "final tail" }}) end)
+                n00n.fn.jobstart("sleep 30")
+                return nil
+            end
+        }})"#,
+    );
+    host.load_source("cleanup_tail", &src).unwrap();
+
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        Some("cleanup-tail"),
+    );
+    let invocation = reg
+        .get("cleanup_tail")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({}))
+        .unwrap();
+
+    let result = smol::block_on(invocation.execute(&ctx));
+    assert!(result.output.unwrap_err().contains(TIMED_OUT_SUBSTR));
+    let body = recv_live_buf(&event_rx, "cleanup-tail").unwrap();
+    assert_eq!(body.read()[0].spans[0].text, "final tail");
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
+    let (reg, _host) = builtins_host();
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        Some("bash-cleanup-tail"),
+    );
+    let invocation = reg
+        .get("bash")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({
+            "command": "printf 'one\\ntwo\\n'; sleep 0.3; printf 'pending-tail\\n'; sleep 30",
+            "timeout": 1
+        }))
+        .unwrap();
+
+    let result = smol::block_on(invocation.execute(&ctx));
+
+    assert!(result.output.unwrap_err().contains(TIMED_OUT_SUBSTR));
+    let body = recv_live_buf(&event_rx, "bash-cleanup-tail").unwrap();
+    let rendered = body
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
+    assert!(rendered.contains("pending-tail"), "rendered: {rendered}");
+}
+#[test]
 fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
     let (reg, _host) = builtins_host();
     let entry = reg.get("workflow").unwrap();

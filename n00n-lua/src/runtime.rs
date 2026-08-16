@@ -27,7 +27,7 @@ use n00n_config::{RawConfig, SearchConfig, canonical_tool_name};
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
 use crate::api::firecrawl::BundledCapability;
-use crate::api::r#fn::{JobOwner, JobStore, deliver_job_event};
+use crate::api::r#fn::{JobOwner, JobStore, deliver_job_event, deliver_task_job_events};
 use crate::api::keymap::KeymapReader;
 use crate::api::keymap::{KeymapStore, KeymapWriter};
 use crate::api::options::{PluginOptionSpecs, PluginOpts, collect_plugin_options};
@@ -365,6 +365,7 @@ pub(crate) struct TaskCell {
     /// completed yet. Keeps nil-returning handlers alive for callbacks and
     /// lets cancellation/deadline paths wait for bounded cleanup.
     pub(crate) async_tasks: Cell<usize>,
+    pub(crate) cleanup_callbacks: Vec<RegistryKey>,
 }
 
 impl TaskCell {
@@ -395,6 +396,7 @@ impl TaskCell {
             inline_spawn: None,
             bufs_claim: Weak::new(),
             async_tasks: Cell::new(0),
+            cleanup_callbacks: Vec::new(),
         }
     }
 }
@@ -417,6 +419,33 @@ pub(crate) fn lock_cell(handle: &TaskHandle) -> std::sync::MutexGuard<'_, TaskCe
     handle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
+    let callbacks = std::mem::take(&mut lock_cell(handle).cleanup_callbacks);
+    if callbacks.is_empty() {
+        return;
+    }
+    let cleanup_deadline = checked_deadline_after(Instant::now(), CANCEL_INTERRUPT_GRACE);
+    {
+        let cell = lock_cell(handle);
+        cell.deadline.set(Some(cleanup_deadline));
+        cell.deadline_interrupted.set(false);
+        cell.interrupted_deadline.set(None);
+        cell.interrupt_after.set(None);
+        cell.async_cleanup_cutoff.set(None);
+    }
+    for key in callbacks {
+        if let Err(error) = lua
+            .registry_value::<Function>(&key)
+            .and_then(|callback| callback.call::<()>(()))
+        {
+            tracing::warn!(%error, "tool cleanup callback failed");
+        }
+        if let Err(error) = lua.remove_registry_value(key) {
+            tracing::warn!(%error, "failed to drop tool cleanup callback key");
+        }
+    }
 }
 
 fn checked_deadline_after(base: Instant, duration: Duration) -> Instant {
@@ -795,10 +824,22 @@ impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
 }
 
 pub(crate) fn active_task(lua: &Lua) -> TaskHandle {
-    lua.app_data_ref::<TaskHandle>().map_or_else(
-        || unreachable!("task accessor called outside a task scope"),
-        |r| Arc::clone(&*r),
-    )
+    match lua.app_data_ref::<TaskHandle>() {
+        Some(handle) => handle.clone(),
+        None => unreachable!("missing active task"),
+    }
+}
+
+pub(crate) fn register_task_cleanup_callback(lua: &Lua, key: RegistryKey) {
+    let mut owner = active_task(lua);
+    loop {
+        let parent = lock_cell(&owner).async_parent.clone();
+        match parent {
+            Some(parent) => owner = parent,
+            None => break,
+        }
+    }
+    lock_cell(&owner).cleanup_callbacks.push(key);
 }
 
 pub(crate) fn active_session_identity(lua: &Lua) -> Option<SessionIdentity> {
@@ -2600,19 +2641,14 @@ async fn dispatch_async(
         }
 
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
-        for (job_id, event) in event_buf.drain(..) {
-            let callback_result = deliver_job_event(lua, job_id, &event);
-            match finish_rx.try_recv() {
-                Ok(reply) => return reply,
-                Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
-                Err(flume::TryRecvError::Empty) => {}
-            }
-            if let Err(error) = callback_result {
-                return ToolCallReply::err(format!(
-                    "job callback error: {}",
-                    strip_traceback(&error)
-                ));
-            }
+        let callback_result = deliver_task_job_events(lua, &mut event_buf);
+        match finish_rx.try_recv() {
+            Ok(reply) => return reply,
+            Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
+            Err(flume::TryRecvError::Empty) => {}
+        }
+        if let Err(error) = callback_result {
+            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
         }
 
         let has_jobs = !with_jobs(lua, |store| store.is_empty(&owner));
@@ -2969,6 +3005,9 @@ async fn run_tool_call(
         lock_cell(&handle).awaiting_async.set(true);
         wait_for_async_tasks(&handle).await;
     }
+    scope
+        .scope_future(async { run_task_cleanup_callbacks(&lua, &handle) })
+        .await;
     if let Some(id) = &live_id {
         live_tasks.borrow_mut().remove(id);
         // Best-effort cache: any tool with a root buf can serve clicks.
@@ -3554,6 +3593,43 @@ mod tests {
         assert!(lock_cell(&handle).bufs.live_buf().is_none());
     }
 
+    #[test]
+    fn async_cleanup_callback_registers_on_root_task() {
+        let lua = Lua::new();
+        let root = Arc::new(Mutex::new(task_cell(None)));
+        let mut child_cell = task_cell(None);
+        child_cell.async_parent = Some(Arc::clone(&root));
+        let child = Arc::new(Mutex::new(child_cell));
+        lua.set_app_data(Arc::clone(&child));
+        let callback = lua.create_function(|_, ()| Ok(())).unwrap();
+
+        register_task_cleanup_callback(&lua, lua.create_registry_value(callback).unwrap());
+
+        assert!(lock_cell(&child).cleanup_callbacks.is_empty());
+        assert_eq!(lock_cell(&root).cleanup_callbacks.len(), 1);
+    }
+
+    #[test]
+    fn task_cleanup_callbacks_run_once() {
+        let lua = Lua::new();
+        let calls = Arc::new(AtomicU64::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let callback = lua
+            .create_function(move |_, ()| {
+                callback_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+        let handle = Arc::new(Mutex::new(task_cell(None)));
+        lock_cell(&handle)
+            .cleanup_callbacks
+            .push(lua.create_registry_value(callback).unwrap());
+
+        run_task_cleanup_callbacks(&lua, &handle);
+        run_task_cleanup_callbacks(&lua, &handle);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
     #[test]
     fn task_scope_drop_clears_only_its_own_jobs() {
         const PUMP_PLUGIN: &str = "test-plugin";

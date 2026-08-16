@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue};
+use mlua::{Function, LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue};
 use n00n_agent::agent::LoadedInstructions;
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::{
@@ -20,7 +20,7 @@ use crate::api::util::convert::json_to_lua;
 use crate::api::util::state_convert::{
     json_to_lua as state_json_to_lua, lua_to_json as state_lua_to_json,
 };
-use crate::runtime::{active_task, lock_cell, task_deadline};
+use crate::runtime::{active_task, lock_cell, register_task_cleanup_callback, task_deadline};
 use crate::state::{PluginStateIdentity, PluginStateScope, PluginStateStore};
 
 const CONTEXT_INACTIVE_MSG: &str = "state context is no longer active";
@@ -585,6 +585,18 @@ impl UserData for LuaCtx {
 
         methods.add_method("is_instruction_file", |_, _, name: String| {
             Ok(n00n_agent::is_instruction_file(&name))
+        });
+
+        methods.add_method("on_cleanup", |lua, this, callback: Function| {
+            if let Some(error) = this.inactive_pair() {
+                return Ok(error);
+            }
+            if !matches!(this.caps, Caps::Handler { .. }) {
+                return Ok(this.cap_err_pair("on_cleanup"));
+            }
+            let key = lua.create_registry_value(callback)?;
+            register_task_cleanup_callback(lua, key);
+            Ok((LuaValue::Nil, None))
         });
 
         methods.add_method_mut("finish", |lua, this, val: LuaValue| {

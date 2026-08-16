@@ -853,6 +853,12 @@ n00n.api.register_tool({
       published_line_count = collector.line_count
     end
 
+    ctx:on_cleanup(function()
+      if collector.line_count > published_line_count then
+        flush_view()
+      end
+    end)
+
     local function schedule_view_flush()
       if flush_scheduled then
         return
