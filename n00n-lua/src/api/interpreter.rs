@@ -17,6 +17,7 @@ use n00n_interpreter::runner::{self, ToolFn};
 use n00n_interpreter::{AsyncResolver, PendingCall};
 use n00n_lua_macro::{lua_fn, lua_table};
 use serde_json::Value;
+use tracing::debug;
 
 use crate::api::util::convert::{json_to_lua, lua_tool_result};
 use crate::plugin_permissions::PluginPermissions;
@@ -25,6 +26,23 @@ use crate::runtime::{TaskHandle, lock_cell};
 const BRIDGE_CLOSED: &str = "tool bridge closed (cancelled)";
 
 type CallResults = Vec<(u32, Result<Value, String>)>;
+
+fn unstreamed_stdout(stdout: &str, streamed_bytes: usize) -> Option<&str> {
+    if streamed_bytes > stdout.len() {
+        debug!(
+            streamed_bytes,
+            stdout_bytes = stdout.len(),
+            "skipping already-streamed truncated interpreter stdout"
+        );
+        return None;
+    }
+    if let Some(remaining) = stdout.get(streamed_bytes..) {
+        return (!remaining.is_empty()).then_some(remaining);
+    }
+    stdout
+        .get(stdout.ceil_char_boundary(streamed_bytes)..)
+        .filter(|remaining| !remaining.is_empty())
+}
 
 fn run_ruff(args: &[&str], code: &str) -> Option<String> {
     let mut child = Command::new("ruff")
@@ -197,12 +215,22 @@ async fn interpreter_run(
             Box::new(move |pending| forward_calls(&tx, pending))
         };
 
-        runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |chunk| {
+        let mut flushed = 0usize;
+        let result = runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |chunk| {
+            flushed += chunk.len();
             for line in chunk.lines() {
                 let _ = tx.send(BridgeMsg::Line(line.to_owned()));
             }
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+        if let Ok(ir) = &result
+            && let Some(remaining) = unstreamed_stdout(&ir.stdout, flushed)
+        {
+            for line in remaining.lines() {
+                let _ = tx.send(BridgeMsg::Line(line.to_owned()));
+            }
+        }
+        result
     });
 
     let recv_loop = async {
@@ -245,7 +273,27 @@ async fn interpreter_run(
 
 #[cfg(test)]
 mod tests {
-    use super::ruff_fix;
+    use super::{ruff_fix, unstreamed_stdout};
+    use n00n_interpreter::runner;
+
+    #[test]
+    fn streamed_output_past_retained_stdout_is_not_sliced() {
+        let stdout = "é".repeat(runner::MAX_STDOUT_BYTES / "é".len());
+        assert_eq!(stdout.len(), runner::MAX_STDOUT_BYTES);
+        assert_eq!(
+            unstreamed_stdout(
+                &stdout,
+                runner::MAX_STDOUT_BYTES + runner::TRUNCATED_STDOUT_MARKER.len()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn streamed_output_offset_recovers_to_next_utf8_boundary() {
+        assert_eq!(unstreamed_stdout("é-rest", 1), Some("-rest"));
+        assert_eq!(unstreamed_stdout("é-rest", 2), Some("-rest"));
+    }
 
     #[test]
     fn ruff_fix_removes_unused_import_and_formats() {

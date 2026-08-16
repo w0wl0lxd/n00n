@@ -20,7 +20,8 @@ use crate::convert::{json_to_monty, monty_to_json};
 use crate::error::InterpreterError;
 
 const DEFAULT_MAX_RECURSION: usize = 100;
-const MAX_STDOUT_BYTES: usize = 16 * 1024;
+pub const MAX_STDOUT_BYTES: usize = 16 * 1024;
+pub const TRUNCATED_STDOUT_MARKER: &str = "[truncated]";
 const MAX_RESULT_BYTES: usize = 16 * 1024;
 const SCRIPT_NAME: &str = "agent.py";
 
@@ -98,11 +99,10 @@ impl StreamingWriter<'_> {
             self.flushed_pos = self.buffer.len();
         }
         if self.truncated {
-            const MARKER: &str = "[truncated]";
-            let keep = MAX_STDOUT_BYTES.saturating_sub(MARKER.len());
+            let keep = MAX_STDOUT_BYTES.saturating_sub(TRUNCATED_STDOUT_MARKER.len());
             self.buffer.truncate(self.buffer.floor_char_boundary(keep));
-            self.buffer.push_str(MARKER);
-            (self.on_line)(MARKER);
+            self.buffer.push_str(TRUNCATED_STDOUT_MARKER);
+            (self.on_line)(TRUNCATED_STDOUT_MARKER);
         }
     }
 }
