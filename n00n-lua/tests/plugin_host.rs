@@ -3208,6 +3208,10 @@ fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
         .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
         .collect::<String>();
     assert!(rendered.contains("pending-tail"), "rendered: {rendered}");
+    assert!(
+        rendered.contains("Timed out after 1s"),
+        "rendered: {rendered}"
+    );
 }
 #[test]
 fn workflow_per_run_timeout_schema_matches_runtime_bounds() {

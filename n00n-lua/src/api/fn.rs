@@ -596,7 +596,9 @@ fn drain_task_job_events(
 ) -> LuaResult<()> {
     if let Some(owner) = owner {
         with_jobs(lua, |store| store.drain_events(owner, task_events));
-        deliver_task_job_events(lua, task_events)?;
+        if let Err(error) = deliver_task_job_events(lua, task_events) {
+            tracing::warn!(%error, "jobwait sibling job callback failed");
+        }
     }
     Ok(())
 }

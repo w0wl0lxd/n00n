@@ -2642,13 +2642,13 @@ async fn dispatch_async(
 
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
         let callback_result = deliver_task_job_events(lua, &mut event_buf);
+        if let Err(error) = callback_result {
+            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
+        }
         match finish_rx.try_recv() {
             Ok(reply) => return reply,
             Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
             Err(flume::TryRecvError::Empty) => {}
-        }
-        if let Err(error) = callback_result {
-            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
         }
 
         let has_jobs = !with_jobs(lua, |store| store.is_empty(&owner));
@@ -2725,6 +2725,34 @@ fn strip_traceback(err: &mlua::Error) -> String {
 
 /// The error message format is load-bearing: the bash plugin's `restore`
 /// parses it to re-render the timeout sentinel on session reload.
+fn append_timeout_marker(buf: &SharedBuf, marker: String) {
+    let already_present = buf
+        .read()
+        .iter()
+        .any(|line| line.spans.iter().any(|span| span.text == marker));
+    if already_present {
+        return;
+    }
+    buf.append(SnapshotLine {
+        spans: vec![SnapshotSpan {
+            text: marker,
+            style: SpanStyle::Named("dim".into()),
+        }],
+    });
+}
+
+fn restore_timeout_marker(reply: &ToolCallReply) {
+    let Err(error) = &reply.result else {
+        return;
+    };
+    let Some((_, suffix)) = error.split_once(" timed out") else {
+        return;
+    };
+    if let Some(buf) = reply.live_buf.as_ref() {
+        append_timeout_marker(buf, format!("Timed out{suffix}"));
+    }
+}
+
 fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply {
     let secs = {
         let cell = lock_cell(handle);
@@ -2740,12 +2768,7 @@ fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply
     };
 
     if let Some(ref buf) = live_buf {
-        buf.append(SnapshotLine {
-            spans: vec![SnapshotSpan {
-                text: format!("Timed out{duration_suffix}"),
-                style: SpanStyle::Named("dim".into()),
-            }],
-        });
+        append_timeout_marker(buf, format!("Timed out{duration_suffix}"));
     }
 
     let mut reply = ToolCallReply::err(format!("tool {qualified} timed out{duration_suffix}"));
@@ -3008,6 +3031,7 @@ async fn run_tool_call(
     scope
         .scope_future(async { run_task_cleanup_callbacks(&lua, &handle) })
         .await;
+    restore_timeout_marker(&reply);
     if let Some(id) = &live_id {
         live_tasks.borrow_mut().remove(id);
         // Best-effort cache: any tool with a root buf can serve clicks.
