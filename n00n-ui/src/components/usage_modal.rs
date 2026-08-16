@@ -786,7 +786,7 @@ mod tests {
         assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
 
         // A session with no priced model at all still reports no estimate.
-        let only_free = HashMap::from([(free.id.clone(), usage)]);
+        let only_free = HashMap::from([(free.id, usage)]);
         assert!(attributed_costs(&only_free, &current, false).is_none());
     }
 
