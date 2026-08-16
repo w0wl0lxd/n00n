@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786853385156,
+  "lastUpdate": 1786917903143,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20187,6 +20187,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 197504,
             "range": "± 5916",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "691fed397e95c846f2a2e25273118facdacae72f",
+          "message": "fix: harden tool execution under load (#388)\n\n* fix: harden tool execution under load\n\n* fix: address load hardening review\n\n* fix: resolve load hardening review\n\n* fix: keep output and model selection responsive\n\n* fix: address deferred timer review\n\n* fix: preserve provider validation\n\n* feat: return deferred timer ids\n\n* fix: stabilize model refresh validation\n\n* docs: normalize defer return type\n\n* fix: deliver exit event when a scheduled timer is cancelled\n\n* test: cancelled timer delivers exit event\n\n* fix: harden deferred output and model refresh\n\n* fix: distinguish cancelled deferred timers\n\n* fix: address final load review notes\n\n* fix(runtime): flush deferred output on cleanup\n\n* fix(runtime): preserve timeout markers after cleanup\n\n* fix(runtime): harden cleanup and async finish handling\n\n* fix(lint): gate unix-only jobwait test imports\n\n* fix(runtime): preserve sibling jobwait output\n\n* fix(lint): avoid redundant lua clone\n\n* fix(runtime): keep bash flush timer ownership\n\n* style(bash): format flush callback\n\n* fix(lint): gate owner access process test\n\n* test(runtime): reduce timeout cleanup race\n\n* fix(runtime): restore timeout marker inside task scope\n\n* test(lua): make owner event drain test deterministic\n\n* fix(runtime): isolate cleanup callback deadline\n\n* fix(runtime): preserve callback errors during cleanup\n\n* fix(runtime): preserve per-event finish precedence\n\n* docs(lua): attach jobwait receiver comment\n\n* fix(runtime): clear cleanup callback deadline\n\n* refactor(lua): reuse timer event draining\n\n* fix(lua): mirror defer_fn api\n\n* fix(lua): keep defer compatibility\n\n* fix(lint): merge defer argument arms\n\n* fix(lua): align defer delay parsing\n\n---------\n\nCo-authored-by: devin-ai-integration[bot] <158243242+devin-ai-integration[bot]@users.noreply.github.com>",
+          "timestamp": "2026-08-16T17:51:02-04:00",
+          "tree_id": "d0f43beab6119a26650e5e51f7854649ffa437b3",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/691fed397e95c846f2a2e25273118facdacae72f"
+        },
+        "date": 1786917902219,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6701811,
+            "range": "± 35999",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2224119,
+            "range": "± 7964",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2224757,
+            "range": "± 35783",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8044330,
+            "range": "± 279594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4276374,
+            "range": "± 47848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4307278,
+            "range": "± 13919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583948,
+            "range": "± 1500",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191598,
+            "range": "± 379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191424,
+            "range": "± 574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1074818,
+            "range": "± 8303",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 584134,
+            "range": "± 14691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584099,
+            "range": "± 1057",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 64280,
+            "range": "± 6088",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 192819,
+            "range": "± 8009",
             "unit": "ns/iter"
           }
         ]
