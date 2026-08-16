@@ -181,7 +181,8 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     )));
 
     let total_cost = if ctx.by_model.is_empty() {
-        (!ctx.model.pricing.is_zero()).then(|| ctx.total.cost(&ctx.model.pricing, ctx.fast))
+        (!ctx.model.pricing.effective(ctx.fast).is_zero())
+            .then(|| ctx.total.cost(&ctx.model.pricing, ctx.fast))
     } else {
         attributed_costs(ctx.by_model, ctx.model, ctx.fast).map(|(cost, _)| cost)
     };
@@ -284,11 +285,11 @@ fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Li
             Span::styled(format!("{id}: "), Style::new().fg(theme.foreground)),
             Span::styled(
                 format!(
-                    "input ${}  output ${}  cache read ${}  cache write ${}",
-                    format_price(pricing.input),
-                    format_price(pricing.output),
-                    format_price(pricing.cache_read),
-                    format_price(pricing.cache_write),
+                    "input {}  output {}  cache read {}  cache write {}",
+                    format_currency(pricing.input),
+                    format_currency(pricing.output),
+                    format_currency(pricing.cache_read),
+                    format_currency(pricing.cache_write),
                 ),
                 theme.status_dim,
             ),
@@ -301,9 +302,9 @@ fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Li
     lines
 }
 
-fn format_price(price: f64) -> String {
+fn format_currency(price: f64) -> String {
     if price > 0.0 && price < MIN_DISPLAY_PRICE {
-        return format!("<{MIN_DISPLAY_PRICE:.4}");
+        return format!("<${MIN_DISPLAY_PRICE:.4}");
     }
     let formatted = format!("{price:.4}");
     let trimmed = formatted.trim_end_matches('0');
@@ -311,9 +312,9 @@ fn format_price(price: f64) -> String {
         .split_once('.')
         .map_or(0, |(_, fraction)| fraction.len());
     if decimals >= 2 {
-        trimmed.to_owned()
+        format!("${trimmed}")
     } else {
-        format!("{price:.2}")
+        format!("${price:.2}")
     }
 }
 
@@ -834,11 +835,11 @@ mod tests {
         assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
     }
 
-    #[test_case(0.00001, "<0.0001" ; "tiny_nonzero")]
-    #[test_case(0.0, "0.00" ; "zero")]
-    #[test_case(1.25, "1.25" ; "regular")]
-    fn price_format_preserves_nonzero_rates(price: f64, expected: &str) {
-        assert_eq!(format_price(price), expected);
+    #[test_case(0.00001, "<$0.0001" ; "tiny_nonzero")]
+    #[test_case(0.0, "$0.00" ; "zero")]
+    #[test_case(1.25, "$1.25" ; "regular")]
+    fn currency_format_preserves_nonzero_rates(price: f64, expected: &str) {
+        assert_eq!(format_currency(price), expected);
     }
 
     #[test]
