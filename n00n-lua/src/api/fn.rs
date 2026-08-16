@@ -300,14 +300,21 @@ impl JobStore {
 
     pub fn drain_timers(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
         buf.clear();
-        for (&id, job) in self.jobs.iter_mut().filter(|(_, job)| job.owner == *owner) {
-            if job.event_rx.is_none()
-                && job
-                    .deadline
-                    .is_some_and(|deadline| Instant::now() >= deadline)
+        for (&id, job) in self
+            .jobs
+            .iter_mut()
+            .filter(|(_, job)| job.owner == *owner && job.pid.is_none())
+        {
+            if job
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
             {
                 job.deadline = None;
                 buf.push((id, JobEvent::Exit(0)));
+            } else if let Some(ref rx) = job.event_rx {
+                while let Ok(event) = rx.try_recv() {
+                    buf.push((id, event));
+                }
             }
         }
     }
@@ -879,8 +886,8 @@ mod tests {
         assert!(store.is_empty(&owner));
     }
 
-    #[test]
-    fn deferred_callback_becomes_due_without_a_process() {
+    #[test_case::test_case(())]
+    fn deferred_callback_becomes_due_without_a_process(_: ()) {
         let lua = Lua::new();
         let callback = lua
             .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
@@ -902,8 +909,8 @@ mod tests {
         assert!(store.is_empty(&owner));
     }
 
-    #[test]
-    fn deferred_callback_rejects_an_unrepresentable_deadline() {
+    #[test_case::test_case(())]
+    fn deferred_callback_rejects_an_unrepresentable_deadline(_: ()) {
         let lua = Lua::new();
         let callback = lua
             .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
@@ -913,8 +920,8 @@ mod tests {
         assert_eq!(result.unwrap_err(), DEFER_DELAY_RANGE_ERR);
     }
 
-    #[test]
-    fn cancelling_a_timer_still_delivers_its_exit_event() {
+    #[test_case::test_case(())]
+    fn cancelling_a_timer_still_delivers_its_exit_event(_: ()) {
         let lua = Lua::new();
         let callback = lua
             .create_registry_value(lua.create_function(|_, ()| Ok(())).unwrap())
@@ -1168,6 +1175,40 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[cfg(unix)]
+    #[test_case::test_case(())]
+    fn jobwait_pumps_cancelled_sibling_timer(_: ()) {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let owner = task_owner(lock_cell(scope.handle()).id);
+        lua.globals().set("timer_cancelled", false).unwrap();
+        let callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, (_job_id, code): (u32, i32)| {
+                    lua.globals().set("timer_cancelled", code == -1)
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let process_id = with_jobs(&lua, |store| {
+            let process_id = start_shell(store, owner.clone(), "sleep 0.15");
+            let timer_id = store
+                .defer(owner, Duration::from_mins(1), callback)
+                .unwrap();
+            store.kill(timer_id, Some(lock_cell(scope.handle()).id), TEST_PLUGIN);
+            process_id
+        });
+
+        smol::block_on(scope.scope_future(jobwait(
+            lua.clone(),
+            Arc::from(TEST_PLUGIN),
+            process_id,
+            Some(1_000),
+        )))
+        .unwrap();
+
+        assert!(lua.globals().get::<bool>("timer_cancelled").unwrap());
+    }
     #[test]
     fn kill_requires_owner_access() {
         let lua = Lua::new();

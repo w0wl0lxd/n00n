@@ -409,6 +409,7 @@ rtk_rewrite = function(command, ctx)
 end
 
 local DEFAULT_MAX_LINE_BYTES = 400
+local LIVE_OUTPUT_EAGER_LINES = 2
 local LIVE_OUTPUT_FLUSH_LINES = 32
 local LIVE_OUTPUT_FLUSH_MS = 1000
 
@@ -840,7 +841,7 @@ n00n.api.register_tool({
       if is_error then
         view:append({ { "Exit code: " .. exit_code, "dim" } })
       elseif has_output then
-        view:flush()
+        flush_view()
       end
       view:finish()
       published_line_count = collector.line_count
@@ -870,12 +871,18 @@ n00n.api.register_tool({
       if flush_scheduled then
         return
       end
-      local scheduled, timer_id = pcall(n00n.fn.defer, LIVE_OUTPUT_FLUSH_MS, function()
-        flush_scheduled = false
-        flush_timer_id = nil
-        if not finished and collector.line_count > published_line_count then
-          flush_view()
-        end
+      local timer_id
+      local scheduled, err = pcall(function()
+        timer_id = n00n.fn.defer(LIVE_OUTPUT_FLUSH_MS, function()
+          if flush_timer_id ~= timer_id then
+            return
+          end
+          flush_scheduled = false
+          flush_timer_id = nil
+          if not finished and collector.line_count > published_line_count then
+            flush_view()
+          end
+        end)
       end)
       if scheduled then
         flush_scheduled = true
@@ -883,7 +890,7 @@ n00n.api.register_tool({
       else
         if not flush_fallback_warned then
           flush_fallback_warned = true
-          n00n.log.warn("bash live output debounce unavailable: " .. tostring(timer_id))
+          n00n.log.warn("bash live output debounce unavailable: " .. tostring(err))
         end
         flush_view()
       end
@@ -896,7 +903,7 @@ n00n.api.register_tool({
       end
       output_collector.append_line(collector, line, max_lines, max_bytes)
       view:append_buffered(line)
-      if collector.line_count <= 2 or collector.line_count % LIVE_OUTPUT_FLUSH_LINES == 0 then
+      if collector.line_count <= LIVE_OUTPUT_EAGER_LINES or collector.line_count % LIVE_OUTPUT_FLUSH_LINES == 0 then
         flush_view()
       else
         schedule_view_flush()
