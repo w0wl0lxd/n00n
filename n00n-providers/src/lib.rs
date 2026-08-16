@@ -35,8 +35,8 @@ pub use providers::opencode::{
 pub use types::{
     BodyOverride, CacheControl, CacheHealth, CacheKind, ContentBlock, Effort, EffortDialect,
     EffortDialectId, FILE_OMITTED_NOTE, FileSource, IMAGE_OMITTED_NOTE, ImageDetail,
-    ImageMediaType, ImageSource, Message, ProviderEvent, ProviderUsage, ReasoningContext,
-    ReasoningMode, RequestOptions, Role, StopReason, StreamResponse, System, SystemBlock,
-    ThinkingConfig, ThinkingExtras, ThinkingFieldConfig, ToggleEntry, UsageLimit,
+    ImageMediaType, ImageSource, Message, OpenAiPromptCacheMode, ProviderEvent, ProviderUsage,
+    ReasoningContext, ReasoningMode, RequestOptions, Role, StopReason, StreamResponse, System,
+    SystemBlock, ThinkingConfig, ThinkingExtras, ThinkingFieldConfig, ToggleEntry, UsageLimit,
     adapt_files_for_model, adapt_images_for_model, dialect, effort_dialect_for,
 };
