@@ -551,8 +551,9 @@ fn defer_delay_ms(value: Value) -> LuaResult<u64> {
 
 fn defer_args(first: Value, second: Value) -> LuaResult<(Function, u64)> {
     match (first, second) {
-        (Value::Function(callback), delay) => Ok((callback, defer_delay_ms(delay)?)),
-        (delay, Value::Function(callback)) => Ok((callback, defer_delay_ms(delay)?)),
+        (Value::Function(callback), delay) | (delay, Value::Function(callback)) => {
+            Ok((callback, defer_delay_ms(delay)?))
+        }
         _ => Err(mlua::Error::runtime(
             "defer expects (callback, delay_ms) or (delay_ms, callback)",
         )),
