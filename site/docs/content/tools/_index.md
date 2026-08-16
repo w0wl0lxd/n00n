@@ -449,7 +449,7 @@ Search the web for real-time information using Firecrawl or Exa.
 
 ### `git` *(lua plugin)*
 
-Local git operations via n00n-git.
+Local git operations built into n00n.
 
 
 | Parameter | Type | Required | Description |

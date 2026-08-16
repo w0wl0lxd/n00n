@@ -90,7 +90,7 @@ a string belongs.
 | [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
 | [`n00n.github`](#n00n-github) | GitHub REST API client using reqwest. |
 | [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
-| [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index. |
+| [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index built into n00n. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -5033,6 +5033,24 @@ local home = n00n.uv.os_homedir() -- e.g. "/home/user"
 
 ---
 
+### `n00n.uv.current_exe()` {#n00n-uv-current_exe}
+
+```lua
+n00n.uv.current_exe()
+```
+
+Return the path of the running n00n executable.
+
+**Returns:** (`string?`) Executable path, or nil if it cannot be determined.
+
+**Example:**
+
+```lua
+local n00n_bin = n00n.uv.current_exe()
+```
+
+---
+
 ### `n00n.uv.os_getenv()` {#n00n-uv-os_getenv}
 
 ```lua
@@ -5513,7 +5531,7 @@ Estimate token savings from using a hybrid/semantic embedder. Requires the sembl
 
 ## n00n.smell {#n00n-smell}
 
-Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.
+Persistent code-smell and comment index built into n00n. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index.
 
 ---
 
@@ -5539,7 +5557,7 @@ Returns true when `.n00n/smells/metadata.json` exists in the project root.
 n00n.smell.index({project})
 ```
 
-Build or rebuild the smell index for a repository by invoking n00n-smell.
+Build or rebuild the smell index for a repository.
 
 **Parameters:**
 
