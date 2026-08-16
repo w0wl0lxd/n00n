@@ -105,6 +105,7 @@ const OPT_LEVEL_JIT: u8 = 2;
 const OPT_LEVEL_DEBUGGABLE: u8 = 1;
 const DEBUG_INFO_FULL: u8 = 2;
 const ASYNC_RUN_MIN_DEADLINE: Duration = Duration::from_mins(1);
+const MAX_CLEANUP_CALLBACK_DRAIN: usize = 64;
 /// Async tasks spawned during restore may spawn further tasks; cap the rounds.
 const RESTORE_SPAWN_ROUNDS: usize = 8;
 /// Keeps a buggy plugin's restore task from freezing the lua loop.
@@ -422,8 +423,7 @@ pub(crate) fn lock_cell(handle: &TaskHandle) -> std::sync::MutexGuard<'_, TaskCe
 }
 
 fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
-    let callbacks = std::mem::take(&mut lock_cell(handle).cleanup_callbacks);
-    if callbacks.is_empty() {
+    if lock_cell(handle).cleanup_callbacks.is_empty() {
         return;
     }
     let cleanup_deadline = checked_deadline_after(Instant::now(), CANCEL_INTERRUPT_GRACE);
@@ -435,13 +435,25 @@ fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
         cell.interrupt_after.set(None);
         cell.async_cleanup_cutoff.set(None);
     }
-    for key in callbacks {
-        if let Err(error) = lua
-            .registry_value::<Function>(&key)
-            .and_then(|callback| callback.call::<()>(()))
-        {
-            tracing::warn!(%error, "tool cleanup callback failed");
+    for _ in 0..MAX_CLEANUP_CALLBACK_DRAIN {
+        let callbacks = std::mem::take(&mut lock_cell(handle).cleanup_callbacks);
+        if callbacks.is_empty() {
+            return;
         }
+        for key in callbacks {
+            if let Err(error) = lua
+                .registry_value::<Function>(&key)
+                .and_then(|callback| callback.call::<()>(()))
+            {
+                tracing::warn!(%error, "tool cleanup callback failed");
+            }
+            if let Err(error) = lua.remove_registry_value(key) {
+                tracing::warn!(%error, "failed to drop tool cleanup callback key");
+            }
+        }
+    }
+    for key in std::mem::take(&mut lock_cell(handle).cleanup_callbacks) {
+        tracing::warn!("tool cleanup callback drain limit reached; dropping callback");
         if let Err(error) = lua.remove_registry_value(key) {
             tracing::warn!(%error, "failed to drop tool cleanup callback key");
         }
@@ -2642,13 +2654,13 @@ async fn dispatch_async(
 
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
         let callback_result = deliver_task_job_events(lua, &mut event_buf);
-        if let Err(error) = callback_result {
-            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
-        }
         match finish_rx.try_recv() {
             Ok(reply) => return reply,
             Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
             Err(flume::TryRecvError::Empty) => {}
+        }
+        if let Err(error) = callback_result {
+            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
         }
 
         let has_jobs = !with_jobs(lua, |store| store.is_empty(&owner));
@@ -2745,9 +2757,20 @@ fn restore_timeout_marker(reply: &ToolCallReply) {
     let Err(error) = &reply.result else {
         return;
     };
-    let Some((_, suffix)) = error.split_once(" timed out") else {
+    let Some(rest) = error.strip_prefix("tool ") else {
         return;
     };
+    let Some((_, suffix)) = rest.split_once(" timed out") else {
+        return;
+    };
+    let valid_suffix = suffix.is_empty()
+        || suffix
+            .strip_prefix(" after ")
+            .and_then(|secs| secs.strip_suffix('s'))
+            .is_some_and(|secs| !secs.is_empty() && secs.chars().all(|ch| ch.is_ascii_digit()));
+    if !valid_suffix {
+        return;
+    }
     if let Some(buf) = reply.live_buf.as_ref() {
         append_timeout_marker(buf, format!("Timed out{suffix}"));
     }
@@ -3003,6 +3026,9 @@ async fn run_tool_call(
                 dispatch_async(&lua, Arc::clone(&handle), &plugin, &tool, finish_rx).await
             }
             Ok(val) => {
+                if let Ok(reply) = finish_rx.try_recv() {
+                    return reply;
+                }
                 if let Some(buf) = crate::api::ui::buf::buf_from_reply(&val) {
                     lock_cell(&handle).root_buf = Some(buf);
                 }
@@ -3653,6 +3679,52 @@ mod tests {
         run_task_cleanup_callbacks(&lua, &handle);
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cleanup_callbacks_registered_during_cleanup_are_drained() {
+        let lua = Lua::new();
+        let handle = Arc::new(Mutex::new(task_cell(None)));
+        lua.set_app_data(Arc::clone(&handle));
+        let calls = Arc::new(AtomicU64::new(0));
+        let first_calls = Arc::clone(&calls);
+        let second_calls = Arc::clone(&calls);
+        let first = lua
+            .create_function(move |lua, ()| {
+                first_calls.fetch_add(1, Ordering::Relaxed);
+                let second_calls = Arc::clone(&second_calls);
+                let second = lua.create_function(move |_, ()| {
+                    second_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                })?;
+                register_task_cleanup_callback(lua, lua.create_registry_value(second)?);
+                Ok(())
+            })
+            .unwrap();
+        lock_cell(&handle)
+            .cleanup_callbacks
+            .push(lua.create_registry_value(first).unwrap());
+
+        run_task_cleanup_callbacks(&lua, &handle);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert!(lock_cell(&handle).cleanup_callbacks.is_empty());
+    }
+
+    #[test]
+    fn restore_timeout_marker_requires_timeout_error_shape() {
+        let buf = Arc::new(SharedBuf::new());
+        let mut reply = ToolCallReply::err("job callback error: operation timed out elsewhere");
+        reply.live_buf = Some(Arc::clone(&buf));
+        restore_timeout_marker(&reply);
+        assert!(buf.read().is_empty());
+
+        let mut reply = ToolCallReply::err("tool bash timed out after 3s");
+        reply.live_buf = Some(Arc::clone(&buf));
+        restore_timeout_marker(&reply);
+        let lines = buf.read();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].text, "Timed out after 3s");
     }
     #[test]
     fn task_scope_drop_clears_only_its_own_jobs() {

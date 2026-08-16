@@ -2565,8 +2565,8 @@ mod tests {
     use arc_swap::{ArcSwap, ArcSwapOption};
     use n00n_agent::AgentConfig;
     use n00n_providers::{
-        AgentError, ContentBlock, Message, Model, ModelCatalogError, Role,
-        provider::{ModelBatch, provider_available, unconfigured_provider},
+        AgentError, ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, Role,
+        provider::{ModelBatch, unconfigured_provider},
     };
     use n00n_storage::{
         id::{SessionRef, n00nId},
@@ -2633,14 +2633,13 @@ mod tests {
         );
         assert!(warn_rx.try_recv().is_err());
     }
-    #[test_case("opencode/opencode-go/deepseek-v4-flash"; "discovered_nested_model_spec")]
+    #[test_case("unconfigured-nested/vendor/deepseek-v4-flash"; "discovered_nested_model_spec")]
     fn discovered_nested_model_spec_resolves_for_selection(spec: &str) {
+        ModelCatalog::from_specs([spec.to_string()])
+            .with_alias("nested", spec)
+            .unwrap();
         let result = resolve_model_selection(spec, Some(&[spec.to_string()]));
-        if provider_available("opencode") {
-            assert_eq!(result.unwrap().spec(), spec);
-        } else {
-            assert!(matches!(result, Err(ModelCatalogError::Unavailable(_))));
-        }
+        assert!(matches!(result, Err(ModelCatalogError::Unavailable(_))));
     }
 
     #[test]

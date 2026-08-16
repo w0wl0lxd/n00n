@@ -842,6 +842,7 @@ n00n.api.register_tool({
         view:flush()
       end
       view:finish()
+      published_line_count = collector.line_count
 
       ctx:finish({ llm_output = llm_output, is_error = is_error, body = buf })
     end
@@ -851,6 +852,7 @@ n00n.api.register_tool({
     local function flush_view()
       view:flush()
       published_line_count = collector.line_count
+      flush_scheduled = false
     end
 
     ctx:on_cleanup(function()
