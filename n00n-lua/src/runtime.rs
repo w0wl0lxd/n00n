@@ -341,6 +341,7 @@ pub(crate) struct TaskCell {
     deadline_interrupted: Cell<bool>,
     interrupted_deadline: Cell<Option<Instant>>,
     interrupt_after: Cell<Option<Instant>>,
+    cleanup_callback_deadline: Cell<Option<Instant>>,
     async_cleanup_cutoff: Cell<Option<Instant>>,
     async_parent: Option<TaskHandle>,
     is_async_run: bool,
@@ -384,6 +385,7 @@ impl TaskCell {
             deadline_interrupted: Cell::new(false),
             interrupted_deadline: Cell::new(None),
             interrupt_after: Cell::new(None),
+            cleanup_callback_deadline: Cell::new(None),
             async_cleanup_cutoff: Cell::new(None),
             async_parent: None,
             is_async_run: false,
@@ -429,11 +431,9 @@ fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
     let cleanup_deadline = checked_deadline_after(Instant::now(), CANCEL_INTERRUPT_GRACE);
     {
         let cell = lock_cell(handle);
-        cell.deadline.set(Some(cleanup_deadline));
+        cell.cleanup_callback_deadline.set(Some(cleanup_deadline));
         cell.deadline_interrupted.set(false);
-        cell.interrupted_deadline.set(None);
         cell.interrupt_after.set(None);
-        cell.async_cleanup_cutoff.set(None);
     }
     for _ in 0..MAX_CLEANUP_CALLBACK_DRAIN {
         let callbacks = std::mem::take(&mut lock_cell(handle).cleanup_callbacks);
@@ -499,10 +499,17 @@ fn awaited_parent_deadline(parent: Option<&TaskHandle>) -> Option<Instant> {
 }
 
 pub(crate) fn task_deadline(handle: &TaskHandle) -> Option<Instant> {
-    let (deadline, parent) = {
+    let (deadline, cleanup_callback_deadline, parent) = {
         let cell = lock_cell(handle);
-        (cell.deadline.get(), cell.async_parent.clone())
+        (
+            cell.deadline.get(),
+            cell.cleanup_callback_deadline.get(),
+            cell.async_parent.clone(),
+        )
     };
+    if cleanup_callback_deadline.is_some() {
+        return cleanup_callback_deadline;
+    }
     earliest_deadline(deadline, awaited_parent_deadline(parent.as_ref()))
 }
 
@@ -3681,6 +3688,38 @@ mod tests {
         run_task_cleanup_callbacks(&lua, &handle);
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cleanup_callbacks_do_not_replace_async_parent_deadline() {
+        let lua = Lua::new();
+        let parent_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(30));
+        let interrupted_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(20));
+        let async_cutoff = checked_deadline_after(Instant::now(), Duration::from_secs(40));
+        let parent = Arc::new(Mutex::new(task_cell(None)));
+        let callback = lua.create_function(|_, ()| Ok(())).unwrap();
+        {
+            let mut cell = lock_cell(&parent);
+            cell.deadline.set(Some(parent_deadline));
+            cell.awaiting_async.set(true);
+            cell.interrupted_deadline.set(Some(interrupted_deadline));
+            cell.async_cleanup_cutoff.set(Some(async_cutoff));
+            cell.cleanup_callbacks
+                .push(lua.create_registry_value(callback).unwrap());
+        }
+        let mut child_cell = task_cell(None);
+        child_cell.async_parent = Some(Arc::clone(&parent));
+        let child = Arc::new(Mutex::new(child_cell));
+
+        run_task_cleanup_callbacks(&lua, &parent);
+
+        let cell = lock_cell(&parent);
+        assert_eq!(cell.deadline.get(), Some(parent_deadline));
+        assert_eq!(cell.interrupted_deadline.get(), Some(interrupted_deadline));
+        assert_eq!(cell.async_cleanup_cutoff.get(), Some(async_cutoff));
+        assert!(cell.cleanup_callback_deadline.get().is_some());
+        drop(cell);
+        assert_eq!(task_deadline(&child), Some(parent_deadline));
     }
 
     #[test]
