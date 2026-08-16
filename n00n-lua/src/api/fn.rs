@@ -65,14 +65,14 @@ pub(crate) struct JobStore {
     next_id: u32,
 }
 
-/// Holds a receiver borrowed out of the store for the duration of a
-/// `jobwait`, and hands it back on drop so a timed-out or cancelled wait
-/// does not strand the job's remaining events.
 enum JobWaitWake {
     Event(Option<JobEvent>),
     Poll,
 }
 
+/// Holds a receiver borrowed out of the store for the duration of a
+/// `jobwait`, and hands it back on drop so a timed-out or cancelled wait
+/// does not strand the job's remaining events.
 struct CheckedOutReceiver {
     lua: Lua,
     job_id: u32,
