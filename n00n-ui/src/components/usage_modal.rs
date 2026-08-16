@@ -147,19 +147,24 @@ pub(crate) fn attributed_costs(
     if by_model.is_empty() {
         return None;
     }
-    by_model
-        .iter()
-        .try_fold((0.0, 0.0), |(cost, savings), (id, usage)| {
+    let (cost, savings, any_priced) = by_model.iter().try_fold(
+        (0.0, 0.0, false),
+        |(cost, savings, any_priced), (id, usage)| {
             let pricing = pricing_for(id, current)?;
+            // A zero-priced model contributes nothing, but it must not discard
+            // the estimate for the priced models in the same session.
             if pricing.is_zero() {
-                return None;
+                return Some((cost, savings, any_priced));
             }
             let usage = TokenUsage::from(*usage);
             Some((
                 cost + usage.cost(&pricing, fast),
                 savings + usage.savings_cost(&pricing, fast),
+                true,
             ))
-        })
+        },
+    )?;
+    any_priced.then_some((cost, savings))
 }
 
 fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
@@ -756,6 +761,33 @@ mod tests {
             (savings - token_usage.savings_cost(&current.pricing, false) * 2.0).abs()
                 > f64::EPSILON
         );
+    }
+
+    #[test]
+    fn attributed_costs_skip_zero_priced_models_without_dropping_the_estimate() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        let free = Model::from_spec("zai/glm-4.7-flash").unwrap();
+        assert!(free.pricing.is_zero(), "test needs a zero-priced model");
+
+        let by_model = HashMap::from([(current.id.clone(), usage), (free.id.clone(), usage)]);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false)
+            .expect("a priced model in the session still yields an estimate");
+        let token_usage = TokenUsage::from(usage);
+
+        // Only the priced model contributes; the free model is skipped.
+        assert!((cost - token_usage.cost(&current.pricing, false)).abs() < f64::EPSILON);
+        assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
+
+        // A session with no priced model at all still reports no estimate.
+        let only_free = HashMap::from([(free.id.clone(), usage)]);
+        assert!(attributed_costs(&only_free, &current, false).is_none());
     }
 
     #[test]
