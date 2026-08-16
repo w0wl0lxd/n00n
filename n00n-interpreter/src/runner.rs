@@ -58,6 +58,7 @@ impl PrintWriterCallback for StreamingWriter<'_> {
         let remaining = MAX_STDOUT_BYTES.saturating_sub(self.buffer.len());
         let boundary = output.floor_char_boundary(remaining);
         self.buffer.push_str(&output[..boundary]);
+        self.flush_complete_lines();
         if boundary < output.len() {
             self.truncated = true;
         }
@@ -76,14 +77,22 @@ impl PrintWriterCallback for StreamingWriter<'_> {
         }
         self.buffer.push(ch);
         if ch == '\n' {
-            (self.on_line)(&self.buffer[self.flushed_pos..]);
-            self.flushed_pos = self.buffer.len();
+            self.flush_complete_lines();
         }
         Ok(())
     }
 }
 
 impl StreamingWriter<'_> {
+    fn flush_complete_lines(&mut self) {
+        let pending = &self.buffer[self.flushed_pos..];
+        if let Some(pos) = pending.rfind('\n') {
+            let end = self.flushed_pos + pos + 1;
+            (self.on_line)(&self.buffer[self.flushed_pos..end]);
+            self.flushed_pos = end;
+        }
+    }
+
     fn finish(&mut self) {
         if self.flushed_pos < self.buffer.len() {
             (self.on_line)(&self.buffer[self.flushed_pos..]);
@@ -437,6 +446,23 @@ mod tests {
         .unwrap();
         assert_eq!(result.stdout.trim(), "hello\nworld");
         assert!(called);
+    }
+
+    #[test]
+    fn streaming_flushes_complete_lines_from_bulk_writes() {
+        let mut chunks = Vec::new();
+        {
+            let mut on_line = |chunk: &str| chunks.push(chunk.to_owned());
+            let mut writer = StreamingWriter {
+                buffer: String::new(),
+                flushed_pos: 0,
+                truncated: false,
+                on_line: &mut on_line,
+            };
+            writer.stdout_write(Cow::Borrowed("a\nb\ntail")).unwrap();
+            writer.finish();
+        }
+        assert_eq!(chunks, vec!["a\nb\n", "tail"]);
     }
 
     #[test]
