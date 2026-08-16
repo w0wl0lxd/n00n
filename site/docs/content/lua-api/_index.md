@@ -152,6 +152,34 @@ n00n.split("x*y*z", "*", { plain = true }) -- { "x", "y", "z" }
 n00n.split("\nhello\nworld\n", "\n", { trimempty = true }) -- { "hello", "world" }
 ```
 
+---
+
+### `n00n.defer_fn()` {#n00n-defer_fn}
+
+```lua
+n00n.defer_fn({callback}, {delay_ms})
+```
+
+Run {callback} after {delay_ms} without spawning a process.
+Mirrors Neovim's `vim.defer_fn(fn, timeout)`.
+
+The timer belongs to the current tool call and is cancelled when that call
+ends. Use this from tool handlers; a timer scheduled by a plugin-owned
+callback does not outlive that callback's task scope.
+
+**Parameters:**
+
+- `{callback}` (`function`) Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
+- `{delay_ms}` (`integer`) Delay in milliseconds.
+
+**Returns:** (`integer`) Timer job id accepted by `n00n.fn.jobstop`.
+
+**Example:**
+
+```lua
+n00n.defer_fn(function(timer_id, code) refresh() end, 1000)
+```
+
 
 ## n00n.api {#n00n-api}
 
@@ -1450,26 +1478,23 @@ end
 ### `n00n.fn.defer()` {#n00n-fn-defer}
 
 ```lua
-n00n.fn.defer({delay_ms}, {callback})
+n00n.fn.defer({callback}, {delay_ms})
 ```
 
-Run a callback after a delay without spawning a process.
-
-The timer belongs to the current tool call and is cancelled when that call
-ends. Use this from tool handlers; a timer scheduled by a plugin-owned
-callback does not outlive that callback's task scope.
+Run {callback} after {delay_ms} without spawning a process.
+Prefer `n00n.defer_fn(callback, delay_ms)`, which mirrors Neovim.
 
 **Parameters:**
 
-- `{delay_ms}` (`integer`) Delay in milliseconds.
 - `{callback}` (`function`) Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
+- `{delay_ms}` (`integer`) Delay in milliseconds.
 
 **Returns:** (`integer`) Timer job id accepted by `jobstop`.
 
 **Example:**
 
 ```lua
-n00n.fn.defer(1000, function(timer_id, code) refresh() end)
+n00n.fn.defer(function(timer_id, code) refresh() end, 1000)
 ```
 
 ---

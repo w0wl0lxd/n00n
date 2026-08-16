@@ -530,27 +530,45 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
     .map_err(mlua::Error::runtime)
 }
 
-/// Run a callback after a delay without spawning a process.
-///
-/// The timer belongs to the current tool call and is cancelled when that call
-/// ends. Use this from tool handlers; a timer scheduled by a plugin-owned
-/// callback does not outlive that callback's task scope.
-///
-/// @param delay_ms integer Delay in milliseconds.
-/// @param callback function Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
-/// @return (integer) Timer job id accepted by `jobstop`.
-/// @example
-/// n00n.fn.defer(1000, function(timer_id, code) refresh() end)
-#[lua_fn(guard = Run)]
-fn defer(lua: &Lua, delay_ms: u64, callback: Function) -> LuaResult<u32> {
+fn defer_timer(lua: &Lua, callback: Function, delay_ms: u64) -> LuaResult<u32> {
     let owner = active_task_id(lua)
         .map(JobOwner::Task)
-        .ok_or_else(|| mlua::Error::runtime("defer: no active task"))?;
+        .ok_or_else(|| mlua::Error::runtime("defer_fn: no active task"))?;
     let callback = lua.create_registry_value(callback)?;
     with_jobs(lua, |store| {
         store.defer(owner, Duration::from_millis(delay_ms), callback)
     })
     .map_err(mlua::Error::runtime)
+}
+
+/// Run {callback} after {delay_ms} without spawning a process.
+/// Mirrors Neovim's `vim.defer_fn(fn, timeout)`.
+///
+/// The timer belongs to the current tool call and is cancelled when that call
+/// ends. Use this from tool handlers; a timer scheduled by a plugin-owned
+/// callback does not outlive that callback's task scope.
+///
+/// @param callback function Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
+/// @param delay_ms integer Delay in milliseconds.
+/// @return (integer) Timer job id accepted by `n00n.fn.jobstop`.
+/// @example
+/// n00n.defer_fn(function(timer_id, code) refresh() end, 1000)
+#[lua_fn(guard = Run)]
+fn defer_fn(lua: &Lua, callback: Function, delay_ms: u64) -> LuaResult<u32> {
+    defer_timer(lua, callback, delay_ms)
+}
+
+/// Run {callback} after {delay_ms} without spawning a process.
+/// Prefer `n00n.defer_fn(callback, delay_ms)`, which mirrors Neovim.
+///
+/// @param callback function Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
+/// @param delay_ms integer Delay in milliseconds.
+/// @return (integer) Timer job id accepted by `jobstop`.
+/// @example
+/// n00n.fn.defer(function(timer_id, code) refresh() end, 1000)
+#[lua_fn(guard = Run)]
+fn defer(lua: &Lua, callback: Function, delay_ms: u64) -> LuaResult<u32> {
+    defer_timer(lua, callback, delay_ms)
 }
 
 /// Kill a running process immediately (SIGKILL on Unix) or cancel a deferred

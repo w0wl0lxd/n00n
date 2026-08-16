@@ -874,7 +874,7 @@ n00n.api.register_tool({
       end
       local timer_id
       local scheduled, err = pcall(function()
-        timer_id = n00n.fn.defer(LIVE_OUTPUT_FLUSH_MS, function()
+        timer_id = n00n.defer_fn(function()
           if flush_timer_id ~= timer_id then
             return
           end
@@ -883,7 +883,7 @@ n00n.api.register_tool({
           if not finished and collector.line_count > published_line_count then
             flush_view()
           end
-        end)
+        end, LIVE_OUTPUT_FLUSH_MS)
       end)
       if scheduled then
         flush_scheduled = true
