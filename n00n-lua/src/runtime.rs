@@ -27,7 +27,7 @@ use n00n_config::{RawConfig, SearchConfig, canonical_tool_name};
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
 use crate::api::firecrawl::BundledCapability;
-use crate::api::r#fn::{JobOwner, JobStore, deliver_job_event, deliver_task_job_events};
+use crate::api::r#fn::{JobOwner, JobStore, deliver_job_event};
 use crate::api::keymap::KeymapReader;
 use crate::api::keymap::{KeymapStore, KeymapWriter};
 use crate::api::options::{PluginOptionSpecs, PluginOpts, collect_plugin_options};
@@ -2661,14 +2661,18 @@ async fn dispatch_async(
         }
 
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
-        let callback_result = deliver_task_job_events(lua, &mut event_buf);
-        if let Err(error) = callback_result {
-            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
-        }
-        match finish_rx.try_recv() {
-            Ok(reply) => return reply,
-            Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
-            Err(flume::TryRecvError::Empty) => {}
+        for (job_id, event) in event_buf.drain(..) {
+            if let Err(error) = deliver_job_event(lua, job_id, &event) {
+                return ToolCallReply::err(format!(
+                    "job callback error: {}",
+                    strip_traceback(&error)
+                ));
+            }
+            match finish_rx.try_recv() {
+                Ok(reply) => return reply,
+                Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
+                Err(flume::TryRecvError::Empty) => {}
+            }
         }
 
         let has_jobs = !with_jobs(lua, |store| store.is_empty(&owner));
