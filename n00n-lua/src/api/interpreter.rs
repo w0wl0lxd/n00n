@@ -197,20 +197,12 @@ async fn interpreter_run(
             Box::new(move |pending| forward_calls(&tx, pending))
         };
 
-        let mut flushed = 0usize;
-        let result = runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |chunk| {
-            flushed += chunk.len();
+        runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |chunk| {
             for line in chunk.lines() {
                 let _ = tx.send(BridgeMsg::Line(line.to_owned()));
             }
         })
-        .map_err(|e| e.to_string());
-        if let Ok(ir) = &result {
-            for line in ir.stdout[flushed..].lines() {
-                let _ = tx.send(BridgeMsg::Line(line.to_owned()));
-            }
-        }
-        result
+        .map_err(|e| e.to_string())
     });
 
     let recv_loop = async {
