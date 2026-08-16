@@ -39,12 +39,8 @@ fn unstreamed_stdout(stdout: &str, streamed_bytes: usize) -> Option<&str> {
     if let Some(remaining) = stdout.get(streamed_bytes..) {
         return (!remaining.is_empty()).then_some(remaining);
     }
-    let mut boundary = streamed_bytes + 1;
-    while boundary <= stdout.len() && !stdout.is_char_boundary(boundary) {
-        boundary += 1;
-    }
     stdout
-        .get(boundary..)
+        .get(stdout.ceil_char_boundary(streamed_bytes)..)
         .filter(|remaining| !remaining.is_empty())
 }
 
@@ -278,15 +274,17 @@ async fn interpreter_run(
 #[cfg(test)]
 mod tests {
     use super::{ruff_fix, unstreamed_stdout};
+    use n00n_interpreter::runner;
 
     #[test]
     fn streamed_output_past_retained_stdout_is_not_sliced() {
-        const MAX_STDOUT_BYTES: usize = 16 * 1024;
-        const TRUNCATED_MARKER: &str = "[truncated]";
-        let stdout = "é".repeat(MAX_STDOUT_BYTES / "é".len());
-        assert_eq!(stdout.len(), MAX_STDOUT_BYTES);
+        let stdout = "é".repeat(runner::MAX_STDOUT_BYTES / "é".len());
+        assert_eq!(stdout.len(), runner::MAX_STDOUT_BYTES);
         assert_eq!(
-            unstreamed_stdout(&stdout, MAX_STDOUT_BYTES + TRUNCATED_MARKER.len()),
+            unstreamed_stdout(
+                &stdout,
+                runner::MAX_STDOUT_BYTES + runner::TRUNCATED_STDOUT_MARKER.len()
+            ),
             None
         );
     }
