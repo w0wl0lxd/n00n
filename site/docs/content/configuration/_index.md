@@ -136,6 +136,11 @@ Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, o
 | `low_speed_timeout_secs` | u64 | `120` | 1 | Low speed timeout (seconds with less than 1 byte received) |
 | `stream_timeout_secs` | u64 | `300` | 10 | Streaming response timeout (seconds) |
 | `openai_coding_plan_slots` | u64 | `8` | 1 | Maximum concurrent OpenAI Coding Plan streams per account (1-8) |
+| `openai_codex_accepts_prompt_cache_options_implicit` | bool | `false` | - | Allow Codex to send documented implicit prompt_cache_options after a successful manual capability probe |
+| `openai_codex_accepts_prompt_cache_options_explicit` | bool | `false` | - | Allow Codex to send documented explicit prompt_cache_options after a successful manual capability probe |
+| `openai_codex_accepts_prompt_cache_breakpoints` | bool | `false` | - | Allow Codex explicit cache-control breakpoints after a successful manual capability probe |
+| `openai_codex_accepts_store_true` | bool | `false` | - | Record that Codex accepts store=true; runtime does not enable server-side storage by default |
+| `openai_codex_accepts_conversation` | bool | `false` | - | Record that Codex accepts conversation state; runtime does not enable conversations by default |
 
 ### `storage`
 
