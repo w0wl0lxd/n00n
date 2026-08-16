@@ -2634,7 +2634,7 @@ mod tests {
         assert!(warn_rx.try_recv().is_err());
     }
     #[test_case("unconfigured-nested/vendor/deepseek-v4-flash"; "discovered_nested_model_spec")]
-    fn discovered_nested_model_spec_resolves_for_selection(spec: &str) {
+    fn discovered_nested_model_spec_is_catalogued_for_selection(spec: &str) {
         ModelCatalog::from_specs([spec.to_string()])
             .with_alias("nested", spec)
             .unwrap();

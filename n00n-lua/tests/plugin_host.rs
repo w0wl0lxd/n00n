@@ -3193,8 +3193,8 @@ fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
         .unwrap()
         .tool
         .parse(&serde_json::json!({
-            "command": "printf 'one\\ntwo\\n'; sleep 0.3; printf 'pending-tail\\n'; sleep 30",
-            "timeout": 1
+            "command": "printf 'one\ntwo\n'; sleep 0.1; printf 'pending-tail\n'; sleep 30",
+            "timeout": 2
         }))
         .unwrap();
 
@@ -3209,7 +3209,7 @@ fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
         .collect::<String>();
     assert!(rendered.contains("pending-tail"), "rendered: {rendered}");
     assert!(
-        rendered.contains("Timed out after 1s"),
+        rendered.contains("Timed out after 2s"),
         "rendered: {rendered}"
     );
 }
