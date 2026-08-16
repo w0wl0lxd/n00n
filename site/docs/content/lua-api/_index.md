@@ -1482,7 +1482,8 @@ n00n.fn.defer({callback}, {delay_ms})
 ```
 
 Run {callback} after {delay_ms} without spawning a process.
-Prefer `n00n.defer_fn(callback, delay_ms)`, which mirrors Neovim.
+Prefer `n00n.defer_fn(callback, delay_ms)`, which mirrors Neovim. This
+compatibility helper also accepts the previous `(delay_ms, callback)` order.
 
 **Parameters:**
 

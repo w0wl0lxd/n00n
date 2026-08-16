@@ -541,6 +541,24 @@ fn defer_timer(lua: &Lua, callback: Function, delay_ms: u64) -> LuaResult<u32> {
     .map_err(mlua::Error::runtime)
 }
 
+fn defer_delay_ms(value: Value) -> LuaResult<u64> {
+    match value {
+        Value::Integer(delay_ms) => u64::try_from(delay_ms)
+            .map_err(|_| mlua::Error::runtime("defer delay must be non-negative")),
+        _ => Err(mlua::Error::runtime("defer delay must be an integer")),
+    }
+}
+
+fn defer_args(first: Value, second: Value) -> LuaResult<(Function, u64)> {
+    match (first, second) {
+        (Value::Function(callback), delay) => Ok((callback, defer_delay_ms(delay)?)),
+        (delay, Value::Function(callback)) => Ok((callback, defer_delay_ms(delay)?)),
+        _ => Err(mlua::Error::runtime(
+            "defer expects (callback, delay_ms) or (delay_ms, callback)",
+        )),
+    }
+}
+
 /// Run {callback} after {delay_ms} without spawning a process.
 /// Mirrors Neovim's `vim.defer_fn(fn, timeout)`.
 ///
@@ -559,7 +577,8 @@ fn defer_fn(lua: &Lua, callback: Function, delay_ms: u64) -> LuaResult<u32> {
 }
 
 /// Run {callback} after {delay_ms} without spawning a process.
-/// Prefer `n00n.defer_fn(callback, delay_ms)`, which mirrors Neovim.
+/// Prefer `n00n.defer_fn(callback, delay_ms)`, which mirrors Neovim. This
+/// compatibility helper also accepts the previous `(delay_ms, callback)` order.
 ///
 /// @param callback function Called with the timer id and exit code `0` after the delay, or `-1` when cancelled by `jobstop`.
 /// @param delay_ms integer Delay in milliseconds.
@@ -567,7 +586,8 @@ fn defer_fn(lua: &Lua, callback: Function, delay_ms: u64) -> LuaResult<u32> {
 /// @example
 /// n00n.fn.defer(function(timer_id, code) refresh() end, 1000)
 #[lua_fn(guard = Run)]
-fn defer(lua: &Lua, callback: Function, delay_ms: u64) -> LuaResult<u32> {
+fn defer(lua: &Lua, callback: Value, delay_ms: Value) -> LuaResult<u32> {
+    let (callback, delay_ms) = defer_args(callback, delay_ms)?;
     defer_timer(lua, callback, delay_ms)
 }
 
