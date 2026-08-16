@@ -433,6 +433,7 @@ fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
         let cell = lock_cell(handle);
         cell.cleanup_callback_deadline.set(Some(cleanup_deadline));
         cell.deadline_interrupted.set(false);
+        cell.interrupted_deadline.set(None);
         cell.interrupt_after.set(None);
     }
     for _ in 0..MAX_CLEANUP_CALLBACK_DRAIN {
@@ -2661,13 +2662,13 @@ async fn dispatch_async(
 
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
         let callback_result = deliver_task_job_events(lua, &mut event_buf);
+        if let Err(error) = callback_result {
+            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
+        }
         match finish_rx.try_recv() {
             Ok(reply) => return reply,
             Err(flume::TryRecvError::Disconnected) => finish_disconnected = true,
             Err(flume::TryRecvError::Empty) => {}
-        }
-        if let Err(error) = callback_result {
-            return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&error)));
         }
 
         let has_jobs = !with_jobs(lua, |store| store.is_empty(&owner));
@@ -3691,7 +3692,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_callbacks_do_not_replace_async_parent_deadline() {
+    fn cleanup_callbacks_clear_stale_interrupted_deadline_without_replacing_parent_deadline() {
         let lua = Lua::new();
         let parent_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(30));
         let interrupted_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(20));
@@ -3715,7 +3716,7 @@ mod tests {
 
         let cell = lock_cell(&parent);
         assert_eq!(cell.deadline.get(), Some(parent_deadline));
-        assert_eq!(cell.interrupted_deadline.get(), Some(interrupted_deadline));
+        assert_eq!(cell.interrupted_deadline.get(), None);
         assert_eq!(cell.async_cleanup_cutoff.get(), Some(async_cutoff));
         assert!(cell.cleanup_callback_deadline.get().is_some());
         drop(cell);

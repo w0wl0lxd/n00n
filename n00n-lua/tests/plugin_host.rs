@@ -1570,6 +1570,35 @@ fn accepted_finish_precedes_later_drained_job_callback_error() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn drained_job_callback_error_precedes_later_finish() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "callback_error_before_finish",
+        description = "fails before a later finish",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function(_, ctx)
+            n00n.fn.jobstart("printf 'ready\\n'", {
+                on_stdout = function()
+                    error("early callback exploded")
+                end,
+                on_exit = function()
+                    ctx:finish("accepted")
+                end,
+            })
+            return nil
+        end
+    })"#;
+    host.load_source("callback_error_before_finish", src)
+        .unwrap();
+
+    let err = exec_tool(&reg, "callback_error_before_finish", serde_json::json!({})).unwrap_err();
+    assert!(err.contains("early callback exploded"), "got: {err}");
+}
+
 /// Runs `tool`, whose handler parks on `jobstart("sleep 30")` until a
 /// click lands, while this thread keeps re-sending clicks until it
 /// finishes. Clicks are fire-and-forget, so the loop self-corrects: only a
@@ -3193,8 +3222,8 @@ fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
         .unwrap()
         .tool
         .parse(&serde_json::json!({
-            "command": "printf 'one\ntwo\n'; sleep 0.1; printf 'pending-tail\n'; sleep 30",
-            "timeout": 2
+            "command": "printf 'one\ntwo\n'; sleep 3.4; printf 'pending-tail\n'; sleep 30",
+            "timeout": 4
         }))
         .unwrap();
 
@@ -3209,7 +3238,7 @@ fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
         .collect::<String>();
     assert!(rendered.contains("pending-tail"), "rendered: {rendered}");
     assert!(
-        rendered.contains("Timed out after 2s"),
+        rendered.contains("Timed out after 4s"),
         "rendered: {rendered}"
     );
 }
