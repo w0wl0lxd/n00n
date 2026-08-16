@@ -1648,8 +1648,9 @@ impl App {
             if chat_idx == 0 {
                 self.state.context_size = ctx_size;
             }
-            let formatted =
-                format_turn_usage(&tc.usage, &self.state.model.pricing, self.state.fast);
+            let pricing =
+                Model::from_spec(&tc.model).map_or(self.state.model.pricing, |model| model.pricing);
+            let formatted = format_turn_usage(&tc.usage, &pricing, self.state.fast);
             self.chats[chat_idx].set_pending_turn_usage(formatted);
         }
 

@@ -256,10 +256,15 @@ fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Li
     }
     rates.sort_by(|(left, _), (right, _)| left.cmp(right));
 
+    let price_heading = if ctx.fast {
+        "Prices per 1M tokens (fast mode when available)"
+    } else {
+        "Prices per 1M tokens"
+    };
     let mut lines = vec![
         Line::default(),
         Line::from(Span::styled(
-            format!("{PREFIX}Prices per 1M tokens"),
+            format!("{PREFIX}{price_heading}"),
             theme.keybind_section,
         )),
     ];
@@ -282,7 +287,7 @@ fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Li
     }
     lines.push(Line::from(Span::styled(
         format!(
-            "{PREFIX}Estimates use current reported rates and selected mode. Coding-plan values are API-equivalent, not subscription charges."
+            "{PREFIX}Estimates use current reported rates and selected mode; fast mode uses premium rates where the provider reports them. Coding-plan values are API-equivalent, not subscription charges."
         ),
         theme.status_dim,
     )));
