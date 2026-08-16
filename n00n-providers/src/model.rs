@@ -771,10 +771,10 @@ mod tests {
 
         let effective = pricing.effective(true);
 
-        assert_eq!(effective.input, 10.0);
-        assert_eq!(effective.output, 50.0);
-        assert_eq!(effective.cache_write, 12.5);
-        assert_eq!(effective.cache_read, 1.0);
+        assert!((effective.input - 10.0).abs() < f64::EPSILON);
+        assert!((effective.output - 50.0).abs() < f64::EPSILON);
+        assert!((effective.cache_write - 12.5).abs() < f64::EPSILON);
+        assert!((effective.cache_read - 1.0).abs() < f64::EPSILON);
         assert!(effective.fast.is_none());
     }
 
