@@ -299,24 +299,7 @@ impl JobStore {
     }
 
     pub fn drain_timers(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
-        buf.clear();
-        for (&id, job) in self
-            .jobs
-            .iter_mut()
-            .filter(|(_, job)| job.owner == *owner && job.pid.is_none())
-        {
-            if job
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                job.deadline = None;
-                buf.push((id, JobEvent::Exit(0)));
-            } else if let Some(ref rx) = job.event_rx {
-                while let Ok(event) = rx.try_recv() {
-                    buf.push((id, event));
-                }
-            }
-        }
+        self.drain_matching(buf, |job| job.owner == *owner && job.pid.is_none());
     }
 
     pub fn drain_plugin_events(&mut self, buf: &mut Vec<(u32, JobEvent)>) {
