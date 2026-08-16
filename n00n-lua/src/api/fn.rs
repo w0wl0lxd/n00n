@@ -1209,6 +1209,7 @@ mod tests {
 
         assert!(lua.globals().get::<bool>("timer_cancelled").unwrap());
     }
+    #[cfg(unix)]
     #[test]
     fn kill_requires_owner_access() {
         let lua = Lua::new();
