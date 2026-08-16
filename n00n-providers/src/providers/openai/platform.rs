@@ -70,8 +70,6 @@ pub struct CodexCacheCapabilities {
     pub accepts_prompt_cache_options_implicit: bool,
     pub accepts_prompt_cache_options_explicit: bool,
     pub accepts_prompt_cache_breakpoints: bool,
-    pub accepts_store_true: bool,
-    pub accepts_conversation: bool,
 }
 
 impl CodexCacheCapabilities {
@@ -87,7 +85,11 @@ impl CodexCacheCapabilities {
 
         if self.accepts_prompt_cache_options_implicit {
             opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Implicit);
-        } else if self.accepts_prompt_cache_options_explicit {
+        } else if self.accepts_prompt_cache_options_explicit
+            && self.accepts_prompt_cache_breakpoints
+            && requested_breakpoints > 0
+        {
+            opts.message_cache_breakpoints = requested_breakpoints;
             opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Explicit);
         }
 
@@ -132,91 +134,6 @@ fn log_response_chain_reset(reason: ResponseChainResetReason, durable_chain: Opt
             chain_reset_reason = reason.as_str(),
             "resetting OpenAI response chain"
         );
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OpenAiRequestEfficiency {
-    transport: &'static str,
-    chain_hit: bool,
-    full_history_fallback: bool,
-    history_message_count: usize,
-    sent_message_count: usize,
-    request_bytes: usize,
-    input_tokens: u32,
-    cache_read: u32,
-    cache_creation: u32,
-    output_tokens: u32,
-    reset_reason: Option<ResponseChainResetReason>,
-}
-
-impl OpenAiRequestEfficiency {
-    fn from_body(
-        transport: &'static str,
-        body: &Value,
-        history_message_count: usize,
-        sent_message_count: usize,
-        chain_hit: bool,
-        full_history_fallback: bool,
-    ) -> Self {
-        Self {
-            transport,
-            chain_hit,
-            full_history_fallback,
-            history_message_count,
-            sent_message_count,
-            request_bytes: super::responses::request_diagnostics(body).request_bytes,
-            input_tokens: 0,
-            cache_read: 0,
-            cache_creation: 0,
-            output_tokens: 0,
-            reset_reason: None,
-        }
-    }
-
-    #[cfg(test)]
-    const fn with_usage(mut self, usage: crate::TokenUsage) -> Self {
-        self.input_tokens = usage.input;
-        self.cache_read = usage.cache_read;
-        self.cache_creation = usage.cache_creation;
-        self.output_tokens = usage.output;
-        self
-    }
-
-    #[cfg(test)]
-    const fn with_reset_reason(mut self, reason: ResponseChainResetReason) -> Self {
-        self.reset_reason = Some(reason);
-        self
-    }
-
-    #[cfg(test)]
-    fn native_prompt_cache_read_ratio(self) -> Option<f64> {
-        let total = self
-            .input_tokens
-            .saturating_add(self.cache_read)
-            .saturating_add(self.cache_creation);
-        if total == 0 {
-            return None;
-        }
-        Some(f64::from(self.cache_read) / f64::from(total))
-    }
-
-    #[cfg(test)]
-    fn client_send_byte_savings_against(self, full_history_request_bytes: usize) -> Option<f64> {
-        if full_history_request_bytes == 0 {
-            return None;
-        }
-        let sent = bounded_usize_to_f64(self.request_bytes);
-        let full = bounded_usize_to_f64(full_history_request_bytes);
-        Some(1.0 - sent / full)
-    }
-}
-
-#[cfg(test)]
-fn bounded_usize_to_f64(value: usize) -> f64 {
-    match u32::try_from(value) {
-        Ok(value) => f64::from(value),
-        Err(_) => f64::from(u32::MAX),
     }
 }
 
@@ -274,8 +191,6 @@ impl From<&n00n_config::ProviderConfig> for OpenAiOptions {
                     .openai_codex_accepts_prompt_cache_options_explicit,
                 accepts_prompt_cache_breakpoints: config
                     .openai_codex_accepts_prompt_cache_breakpoints,
-                accepts_store_true: config.openai_codex_accepts_store_true,
-                accepts_conversation: config.openai_codex_accepts_conversation,
             },
         )
     }
@@ -503,9 +418,9 @@ fn log_responses_request(
     sent_message_count: usize,
     chain_hit: bool,
     full_history_fallback: bool,
-) -> OpenAiRequestEfficiency {
-    let diagnostics = super::responses::request_diagnostics(body);
+) {
     if tracing::enabled!(tracing::Level::DEBUG) {
+        let diagnostics = super::responses::request_diagnostics(body);
         debug!(
             transport,
             request_kind = if chain_hit {
@@ -530,14 +445,6 @@ fn log_responses_request(
             "sending OpenAI Responses request"
         );
     }
-    OpenAiRequestEfficiency::from_body(
-        transport,
-        body,
-        history_message_count,
-        sent_message_count,
-        chain_hit,
-        full_history_fallback,
-    )
 }
 
 fn process_instance_nonce() -> u64 {
@@ -2640,8 +2547,6 @@ mod tests {
             openai_codex_accepts_prompt_cache_options_implicit: true,
             openai_codex_accepts_prompt_cache_options_explicit: true,
             openai_codex_accepts_prompt_cache_breakpoints: true,
-            openai_codex_accepts_store_true: true,
-            openai_codex_accepts_conversation: true,
             ..Default::default()
         };
         let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
@@ -2658,8 +2563,6 @@ mod tests {
                 accepts_prompt_cache_options_implicit: true,
                 accepts_prompt_cache_options_explicit: true,
                 accepts_prompt_cache_breakpoints: true,
-                accepts_store_true: true,
-                accepts_conversation: true,
             }
         );
     }
@@ -2796,6 +2699,21 @@ mod tests {
     }
 
     #[test]
+    fn codex_cache_capabilities_reject_explicit_mode_without_breakpoints() {
+        let opts = CodexCacheCapabilities {
+            accepts_prompt_cache_options_explicit: true,
+            ..Default::default()
+        }
+        .apply_to_request_options(RequestOptions {
+            message_cache_breakpoints: 3,
+            ..Default::default()
+        });
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
+        assert_eq!(opts.openai_prompt_cache_mode, None);
+    }
+
+    #[test]
     fn codex_cache_capabilities_gate_explicit_breakpoints() {
         let opts = CodexCacheCapabilities {
             accepts_prompt_cache_options_explicit: true,
@@ -2811,39 +2729,6 @@ mod tests {
         assert_eq!(opts.openai_prompt_cache_mode, None);
     }
 
-    #[test]
-    fn request_efficiency_reports_split_cache_metrics() {
-        let body = serde_json::json!({"input": [{"type":"message"}], "store": false});
-        let metrics = OpenAiRequestEfficiency::from_body("websocket", &body, 4, 1, true, false)
-            .with_usage(TokenUsage {
-                input: 10,
-                cache_read: 85,
-                cache_creation: 5,
-                output: 7,
-            })
-            .with_reset_reason(ResponseChainResetReason::PreviousResponseNotFound);
-
-        assert_eq!(metrics.transport, "websocket");
-        assert!(metrics.chain_hit);
-        assert_eq!(metrics.native_prompt_cache_read_ratio(), Some(0.85));
-        assert_eq!(
-            metrics.reset_reason.map(ResponseChainResetReason::as_str),
-            Some("previous_response_not_found")
-        );
-        let savings = metrics
-            .client_send_byte_savings_against(metrics.request_bytes.saturating_mul(2))
-            .unwrap();
-        assert!((savings - 0.5).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn request_efficiency_handles_absent_usage_and_zero_full_history_bytes() {
-        let body = serde_json::json!({"input": [], "store": false});
-        let metrics = OpenAiRequestEfficiency::from_body("http_sse", &body, 0, 0, false, true);
-
-        assert_eq!(metrics.native_prompt_cache_read_ratio(), None);
-        assert_eq!(metrics.client_send_byte_savings_against(0), None);
-    }
     #[test]
     fn incremental_request_resets_when_tools_change() {
         let mut state = OpenAiSessionState::default();

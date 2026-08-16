@@ -139,8 +139,6 @@ Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, o
 | `openai_codex_accepts_prompt_cache_options_implicit` | bool | `false` | - | Allow Codex to send documented implicit prompt_cache_options after a successful manual capability probe |
 | `openai_codex_accepts_prompt_cache_options_explicit` | bool | `false` | - | Allow Codex to send documented explicit prompt_cache_options after a successful manual capability probe |
 | `openai_codex_accepts_prompt_cache_breakpoints` | bool | `false` | - | Allow Codex explicit cache-control breakpoints after a successful manual capability probe |
-| `openai_codex_accepts_store_true` | bool | `false` | - | Record that Codex accepts store=true; runtime does not enable server-side storage by default |
-| `openai_codex_accepts_conversation` | bool | `false` | - | Record that Codex accepts conversation state; runtime does not enable conversations by default |
 
 ### `storage`
 
