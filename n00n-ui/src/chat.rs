@@ -676,6 +676,7 @@ fn transcript_to_display_at<S: std::hash::BuildHasher>(
             TranscriptEntry::Compaction {
                 entries: children,
                 generated_summary,
+                ..
             } => {
                 let id = if parent_id == "compaction" {
                     format!("{parent_id}:{compaction_index}")
@@ -1161,6 +1162,7 @@ mod tests {
                             }],
                             ..Default::default()
                         }),
+                        state_revision: None,
                     },
                     TranscriptEntry::GeneratedMessage(Message::user(
                         "What did we do so far?".into(),
@@ -1180,6 +1182,7 @@ mod tests {
                     }],
                     ..Default::default()
                 }),
+                state_revision: None,
             },
             TranscriptEntry::GeneratedMessage(Message::user("What did we do so far?".into())),
             TranscriptEntry::GeneratedMessage(Message {
@@ -1218,6 +1221,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
                 generated_summary: None,
+                state_revision: None,
             },
             TranscriptEntry::Message(Message::user("legitimate follow-up".into())),
             TranscriptEntry::Message(Message {
@@ -1251,6 +1255,7 @@ mod tests {
                     }],
                     ..Default::default()
                 }),
+                state_revision: None,
             },
             TranscriptEntry::Message(Message::user("ordinary follow-up".into())),
             TranscriptEntry::Message(Message {
