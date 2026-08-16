@@ -1117,7 +1117,7 @@ mod tests {
         )))
         .unwrap();
         let second = smol::block_on(scope.scope_future(jobwait(
-            lua.clone(),
+            lua,
             Arc::from(TEST_PLUGIN),
             second_id,
             Some(1_000),
