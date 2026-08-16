@@ -545,7 +545,14 @@ fn defer_delay_ms(value: Value) -> LuaResult<u64> {
     match value {
         Value::Integer(delay_ms) => u64::try_from(delay_ms)
             .map_err(|_| mlua::Error::runtime("defer delay must be non-negative")),
-        _ => Err(mlua::Error::runtime("defer delay must be an integer")),
+        Value::Number(delay_ms) if delay_ms >= 0.0 && delay_ms.is_finite() =>
+        {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(delay_ms as u64)
+        }
+        _ => Err(mlua::Error::runtime(
+            "defer delay must be a non-negative number",
+        )),
     }
 }
 
