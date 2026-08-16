@@ -1187,7 +1187,7 @@ impl<'h> Agent<'h> {
             .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
                 message: Message::assistant(summary),
                 usage,
-                model: self.model.spec(),
+                model: compact_model.spec(),
                 context_size: Some(self.context_size),
             })))?;
         self.event_tx.send(AgentEvent::CompactionDone)?;
