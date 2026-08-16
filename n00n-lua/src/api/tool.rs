@@ -1275,7 +1275,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
     let workload = match spec.get::<Option<String>>("workload")? {
         Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
             mlua::Error::runtime(
-                "register_tool: workload must be cheap, standard, expensive, or orchestrator",
+                "register_tool: workload must be cheap, standard, expensive, interactive, or orchestrator",
             )
         })?),
         None => None,

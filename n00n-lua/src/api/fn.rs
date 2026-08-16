@@ -4,6 +4,8 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,6 +17,18 @@ use crate::plugin_permissions::PluginPermissions;
 use crate::runtime::{active_task_id, with_jobs};
 
 const READER_BUF_SIZE: usize = 8 * 1024;
+const MAX_JOB_LINE_BYTES: usize = 64 * 1024;
+const JOB_EVENT_CAPACITY: usize = 256;
+#[cfg(target_os = "linux")]
+const JOB_RSS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(target_os = "linux")]
+const JOB_RSS_LIMIT_ENV: &str = "N00N_TOOL_MAX_RSS_MB";
+#[cfg(target_os = "linux")]
+const DEFAULT_JOB_RSS_LIMIT_MIN: u64 = 512 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const DEFAULT_JOB_RSS_LIMIT_MAX: u64 = 8 * 1024 * 1024 * 1024;
+#[cfg(unix)]
+const JOB_NICE_ADJUSTMENT: i32 = 10;
 const OWNER_TASK: &str = "task";
 const OWNER_PLUGIN: &str = "plugin";
 const DEFER_DELAY_RANGE_ERR: &str = "defer delay is out of range";
@@ -58,6 +72,216 @@ impl JobMeta {
             JobOwner::Plugin(owner_plugin) => owner_plugin.as_ref() == plugin,
         }
     }
+}
+
+fn pump_job_output<R: BufRead>(
+    mut reader: R,
+    event_tx: &flume::Sender<JobEvent>,
+    event: fn(String) -> JobEvent,
+) {
+    let mut line = Vec::with_capacity(READER_BUF_SIZE);
+    loop {
+        let available = match reader.fill_buf() {
+            Ok([]) => break,
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::debug!(%error, "job output read failed");
+                break;
+            }
+        };
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let available_end = newline.map_or(available.len(), |position| position + 1);
+        let remaining = MAX_JOB_LINE_BYTES.saturating_sub(line.len());
+        let consumed = available_end.min(remaining);
+        line.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+
+        let complete = newline.is_some_and(|position| consumed > position);
+        if line.len() == MAX_JOB_LINE_BYTES || complete {
+            while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+            }
+            let text = String::from_utf8_lossy(&line).into_owned();
+            if event_tx.send(event(text)).is_err() {
+                break;
+            }
+            line.clear();
+        }
+    }
+    if !line.is_empty() {
+        let text = String::from_utf8_lossy(&line).into_owned();
+        let _ = event_tx.send(event(text));
+    }
+}
+
+fn job_command(spec: JobSpec) -> Result<Command, String> {
+    match spec {
+        JobSpec::Shell(script) => n00n_config::bash_command(&script),
+        JobSpec::Program { program, args } => {
+            let mut command = Command::new(program);
+            command.args(args);
+            Ok(command)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_group_pid(pid: u32) -> Result<rustix::process::Pid, String> {
+    let raw = i32::try_from(pid).map_err(|error| error.to_string())?;
+    rustix::process::Pid::from_raw(raw).ok_or_else(|| "child process id cannot be zero".into())
+}
+
+#[cfg(unix)]
+fn lower_job_priority(pid: u32) -> Result<(), String> {
+    let process_group = process_group_pid(pid)?;
+    rustix::process::setpriority_pgrp(Some(process_group), JOB_NICE_ADJUSTMENT)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    use rustix::process::{Signal, kill_process_group};
+
+    let Ok(process_group) = process_group_pid(pid) else {
+        tracing::warn!(pid, "invalid job process group id");
+        return;
+    };
+    let Some(signal) = Signal::from_named_raw(libc::SIGKILL) else {
+        tracing::error!("SIGKILL is unavailable on this platform");
+        return;
+    };
+    if let Err(error) = kill_process_group(process_group, signal) {
+        tracing::debug!(pid, %error, "job process group kill failed");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_memory_bytes() -> Result<u64, String> {
+    let contents = std::fs::read_to_string("/proc/meminfo").map_err(|error| error.to_string())?;
+    let value = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or_else(|| "MemTotal is missing from /proc/meminfo".to_string())?;
+    let kilobytes = value.parse::<u64>().map_err(|error| error.to_string())?;
+    kilobytes
+        .checked_mul(1024)
+        .ok_or_else(|| "system memory size overflowed u64".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn default_job_rss_limit() -> u64 {
+    let total = match system_memory_bytes() {
+        Ok(bytes) => bytes / 4,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read system memory; using maximum default job RSS limit");
+            DEFAULT_JOB_RSS_LIMIT_MAX
+        }
+    };
+    total.clamp(DEFAULT_JOB_RSS_LIMIT_MIN, DEFAULT_JOB_RSS_LIMIT_MAX)
+}
+
+#[cfg(target_os = "linux")]
+fn job_rss_limit() -> u64 {
+    let Ok(value) = env::var(JOB_RSS_LIMIT_ENV) else {
+        return default_job_rss_limit();
+    };
+    match value.parse::<u64>() {
+        Ok(megabytes) if megabytes > 0 => {
+            let Some(bytes) = megabytes.checked_mul(1024 * 1024) else {
+                tracing::warn!(value, "tool RSS limit overflowed; using default");
+                return default_job_rss_limit();
+            };
+            bytes
+        }
+        Ok(_) | Err(_) => {
+            tracing::warn!(value, "invalid tool RSS limit; using default");
+            default_job_rss_limit()
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_group_rss(pid: u32) -> Result<u64, String> {
+    let entries = std::fs::read_dir("/proc").map_err(|error| error.to_string())?;
+    let mut total = 0_u64;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let process_name = entry.file_name();
+        let Some(process_name) = process_name.to_str() else {
+            continue;
+        };
+        let Ok(process_id) = process_name.parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{process_id}/stat")) else {
+            continue;
+        };
+        let Some(process_group) = stat
+            .rsplit_once(") ")
+            .and_then(|(_, fields)| fields.split_whitespace().nth(2))
+        else {
+            continue;
+        };
+        if process_group.parse::<u32>() != Ok(pid) {
+            continue;
+        }
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{process_id}/status")) else {
+            continue;
+        };
+        let Some(kilobytes) = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmRSS:"))
+            .and_then(|line| line.split_whitespace().next())
+        else {
+            continue;
+        };
+        let Ok(kilobytes) = kilobytes.parse::<u64>() else {
+            continue;
+        };
+        let Some(bytes) = kilobytes.checked_mul(1024) else {
+            return Err("process RSS overflowed u64".into());
+        };
+        total = total
+            .checked_add(bytes)
+            .ok_or_else(|| "process group RSS overflowed u64".to_string())?;
+    }
+    Ok(total)
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_resource_monitor(
+    pid: u32,
+    done: Arc<AtomicBool>,
+    limit: u64,
+) -> Result<thread::JoinHandle<()>, String> {
+    thread::Builder::new()
+        .name("job-resource".into())
+        .spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                match process_group_rss(pid) {
+                    Ok(rss) if rss > limit => {
+                        tracing::warn!(
+                            pid,
+                            rss,
+                            limit,
+                            "job exceeded RSS limit; killing process group"
+                        );
+                        kill_process_group(pid);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(pid, %error, "job RSS monitor stopped");
+                        return;
+                    }
+                }
+                thread::sleep(JOB_RSS_POLL_INTERVAL);
+            }
+        })
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) struct JobStore {
@@ -121,14 +345,7 @@ impl JobStore {
         on_stderr: Option<RegistryKey>,
         on_exit: Option<RegistryKey>,
     ) -> Result<u32, String> {
-        let mut command = match spec {
-            JobSpec::Shell(cmd) => n00n_config::bash_command(&cmd)?,
-            JobSpec::Program { program, args } => {
-                let mut c = Command::new(&program);
-                c.args(&args);
-                c
-            }
-        };
+        let mut command = job_command(spec)?;
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -154,12 +371,33 @@ impl JobStore {
 
         let mut child = command.spawn().map_err(|e| e.to_string())?;
         let pid = child.id();
+        #[cfg(unix)]
+        if let Err(error) = lower_job_priority(pid) {
+            tracing::warn!(pid, %error, "failed to lower job process priority");
+        }
         let id = self.next_id;
         self.next_id += 1;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let (event_tx, event_rx) = flume::unbounded();
+        let (event_tx, event_rx) = flume::bounded(JOB_EVENT_CAPACITY);
+        #[cfg(target_os = "linux")]
+        let resource_done = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "linux")]
+        let resource_monitor = match spawn_resource_monitor(
+            pid,
+            Arc::clone(&resource_done),
+            job_rss_limit(),
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                kill_process_group(pid);
+                if let Err(wait_error) = child.wait() {
+                    tracing::debug!(pid, %wait_error, "failed to reap job after monitor startup failure");
+                }
+                return Err(error);
+            }
+        };
 
         macro_rules! spawn_reader {
             ($stream:expr, $name:expr, $variant:ident) => {
@@ -169,26 +407,8 @@ impl JobStore {
                         thread::Builder::new()
                             .name($name.into())
                             .spawn(move || {
-                                let mut reader = BufReader::with_capacity(READER_BUF_SIZE, stream);
-                                let mut line = String::new();
-                                loop {
-                                    line.clear();
-                                    match reader.read_line(&mut line) {
-                                        Ok(0) => break,
-                                        Ok(_) => {
-                                            if line.ends_with('\n') {
-                                                line.pop();
-                                                if line.ends_with('\r') {
-                                                    line.pop();
-                                                }
-                                            }
-                                            if tx.send(JobEvent::$variant(line.clone())).is_err() {
-                                                break;
-                                            }
-                                        }
-                                        Err(_) => break,
-                                    }
-                                }
+                                let reader = BufReader::with_capacity(READER_BUF_SIZE, stream);
+                                pump_job_output(reader, &tx, JobEvent::$variant);
                             })
                             .map_err(|e| e.to_string())?,
                     )
@@ -210,6 +430,11 @@ impl JobStore {
                         -1
                     }
                 };
+                #[cfg(target_os = "linux")]
+                {
+                    resource_done.store(true, Ordering::Release);
+                    let _ = resource_monitor.join();
+                }
                 if let Some(h) = stdout_handle {
                     let _ = h.join();
                 }
@@ -393,18 +618,7 @@ fn kill_job(meta: &mut JobMeta) {
         return;
     };
     #[cfg(unix)]
-    {
-        use rustix::process::{Pid, Signal, kill_process_group};
-        let Ok(raw) = i32::try_from(pid) else {
-            return;
-        };
-        if let Some(pid) = Pid::from_raw(raw) {
-            let Some(sig) = Signal::from_named_raw(libc::SIGKILL) else {
-                return;
-            };
-            let _ = kill_process_group(pid, sig);
-        }
-    }
+    kill_process_group(pid);
     #[cfg(windows)]
     {
         let _ = Command::new("taskkill")
@@ -420,6 +634,11 @@ fn kill_job(meta: &mut JobMeta) {
 /// For commands that don't need shell features (pipes, redirection, globs),
 /// pass an array to run the program directly with preserved argument quoting:
 /// `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
+///
+/// Unix jobs run in a separate process group at nice level 10. On Linux, the
+/// process group's combined RSS is limited to one quarter of system memory,
+/// clamped between 512 MiB and 8 GiB. Set `N00N_TOOL_MAX_RSS_MB` to a positive
+/// whole number of MiB to override the memory limit.
 ///
 /// @param cmd string|table Shell command string, or array of program + args.
 /// @param opts table? Optional settings:
@@ -891,6 +1110,72 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
             !group_alive(pid)
         })
+    }
+
+    #[test]
+    fn output_pump_splits_oversized_lines_without_unbounded_allocation() {
+        let mut input = vec![b'x'; MAX_JOB_LINE_BYTES + 7];
+        input.push(b'\n');
+        let (tx, rx) = flume::bounded(4);
+        pump_job_output(std::io::Cursor::new(input), &tx, JobEvent::Stdout);
+        drop(tx);
+        let chunks = rx
+            .into_iter()
+            .map(|event| match event {
+                JobEvent::Stdout(line) => line,
+                _ => panic!("unexpected event"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
+        assert_eq!(chunks[1].len(), 7);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobs_run_at_reduced_priority() {
+        use std::os::unix::process::CommandExt;
+
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("priority probe process");
+        let pid = child.id();
+        lower_job_priority(pid).expect("lower job priority");
+        let process_group = process_group_pid(pid).expect("priority probe process group");
+        let priority = rustix::process::getpriority_pgrp(Some(process_group))
+            .expect("read job process priority");
+        kill_process_group(pid);
+        child.wait().expect("priority probe status");
+        assert_eq!(priority, JOB_NICE_ADJUSTMENT);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resource_monitor_kills_oversized_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("bash");
+        command
+            .args([
+                "-c",
+                "v=$(head -c 33554432 /dev/zero | tr '\\0' x); sleep 2; printf %s \"$v\" >/dev/null",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut child = command.spawn().expect("memory probe process");
+        let pid = child.id();
+        let done = Arc::new(AtomicBool::new(false));
+        let monitor = spawn_resource_monitor(pid, Arc::clone(&done), 8 * 1024 * 1024)
+            .expect("resource monitor");
+        let status = child.wait().expect("memory probe status");
+        done.store(true, Ordering::Release);
+        monitor.join().expect("resource monitor join");
+        assert!(!status.success(), "oversized process group was not killed");
     }
 
     #[cfg(unix)]
