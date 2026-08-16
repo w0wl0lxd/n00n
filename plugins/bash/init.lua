@@ -812,6 +812,7 @@ n00n.api.register_tool({
     local has_output = false
     local finished = false
     local flush_scheduled = false
+    local flush_timer_id = nil
     local flush_fallback_warned = false
     local published_line_count = 0
 
@@ -853,6 +854,10 @@ n00n.api.register_tool({
       view:flush()
       published_line_count = collector.line_count
       flush_scheduled = false
+      if flush_timer_id then
+        n00n.fn.jobstop(flush_timer_id)
+        flush_timer_id = nil
+      end
     end
 
     ctx:on_cleanup(function()
@@ -865,18 +870,20 @@ n00n.api.register_tool({
       if flush_scheduled then
         return
       end
-      local scheduled, err = pcall(n00n.fn.defer, LIVE_OUTPUT_FLUSH_MS, function()
+      local scheduled, timer_id = pcall(n00n.fn.defer, LIVE_OUTPUT_FLUSH_MS, function()
         flush_scheduled = false
+        flush_timer_id = nil
         if not finished and collector.line_count > published_line_count then
           flush_view()
         end
       end)
       if scheduled then
         flush_scheduled = true
+        flush_timer_id = timer_id
       else
         if not flush_fallback_warned then
           flush_fallback_warned = true
-          n00n.log.warn("bash live output debounce unavailable: " .. tostring(err))
+          n00n.log.warn("bash live output debounce unavailable: " .. tostring(timer_id))
         end
         flush_view()
       end

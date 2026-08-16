@@ -298,6 +298,20 @@ impl JobStore {
         self.drain_matching(buf, |job| job.owner == *owner);
     }
 
+    pub fn drain_timers(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
+        buf.clear();
+        for (&id, job) in self.jobs.iter_mut().filter(|(_, job)| job.owner == *owner) {
+            if job.event_rx.is_none()
+                && job
+                    .deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                job.deadline = None;
+                buf.push((id, JobEvent::Exit(0)));
+            }
+        }
+    }
+
     pub fn drain_plugin_events(&mut self, buf: &mut Vec<(u32, JobEvent)>) {
         self.drain_matching(buf, |job| matches!(job.owner, JobOwner::Plugin(_)));
     }
@@ -593,14 +607,13 @@ fn drain_task_job_events(
     lua: &Lua,
     owner: Option<&JobOwner>,
     task_events: &mut Vec<(u32, JobEvent)>,
-) -> LuaResult<()> {
+) {
     if let Some(owner) = owner {
-        with_jobs(lua, |store| store.drain_events(owner, task_events));
+        with_jobs(lua, |store| store.drain_timers(owner, task_events));
         if let Err(error) = deliver_task_job_events(lua, task_events) {
-            tracing::warn!(%error, "jobwait sibling job callback failed");
+            tracing::warn!(%error, "jobwait sibling timer callback failed");
         }
     }
-    Ok(())
 }
 
 /// Wait for a job to finish and collect its output. Returns a result
@@ -648,7 +661,7 @@ async fn jobwait(
             return Ok(mlua::Value::Nil);
         }
         if now >= poll_at {
-            drain_task_job_events(&lua, owner.as_ref(), &mut task_events)?;
+            drain_task_job_events(&lua, owner.as_ref(), &mut task_events);
             poll_at = next_jobwait_poll(timeout_at)?;
             continue;
         }
@@ -668,7 +681,7 @@ async fn jobwait(
                     JobEvent::Stdout(line) => stdout_lines.push(line),
                     JobEvent::Stderr(line) => stderr_lines.push(line),
                     JobEvent::Exit(code) => {
-                        drain_task_job_events(&lua, owner.as_ref(), &mut task_events)?;
+                        drain_task_job_events(&lua, owner.as_ref(), &mut task_events);
                         break code;
                     }
                 }
@@ -1016,7 +1029,8 @@ mod tests {
                 .start(
                     owner.clone(),
                     JobSpec::Shell(
-                        "i=0; while [ $i -lt 100000 ]; do echo x; i=$((i+1)); done".into(),
+                        "i=0; while [ $i -lt 100 ]; do echo x; sleep 0.005; i=$((i+1)); done"
+                            .into(),
                     ),
                     None,
                     None,
@@ -1081,6 +1095,45 @@ mod tests {
                 .is_none(),
             "second take should fail (receiver already moved)"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobwait_preserves_unwaited_sibling_output() {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let owner = task_owner(lock_cell(scope.handle()).id);
+        let (first_id, second_id) = with_jobs(&lua, |store| {
+            let first_id = start_shell(store, owner.clone(), "printf first");
+            let second_id = start_shell(store, owner, "printf second");
+            (first_id, second_id)
+        });
+
+        let first = smol::block_on(scope.scope_future(jobwait(
+            lua.clone(),
+            Arc::from(TEST_PLUGIN),
+            first_id,
+            Some(1_000),
+        )))
+        .unwrap();
+        let second = smol::block_on(scope.scope_future(jobwait(
+            lua.clone(),
+            Arc::from(TEST_PLUGIN),
+            second_id,
+            Some(1_000),
+        )))
+        .unwrap();
+
+        let first = match first {
+            Value::Table(table) => table,
+            other => panic!("unexpected first result: {other:?}"),
+        };
+        let second = match second {
+            Value::Table(table) => table,
+            other => panic!("unexpected second result: {other:?}"),
+        };
+        assert_eq!(first.get::<String>("stdout").unwrap(), "first");
+        assert_eq!(second.get::<String>("stdout").unwrap(), "second");
     }
 
     #[test]
