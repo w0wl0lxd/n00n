@@ -756,7 +756,9 @@ lua_table! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::runtime::{TaskCell, TaskScope, lock_cell};
+    #[cfg(unix)]
     use n00n_agent::cancel::CancelToken;
 
     const TEST_PLUGIN: &str = "test-plugin";
