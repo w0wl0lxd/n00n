@@ -201,7 +201,7 @@ Code-smell index. index, search.
 
 ### `run_batch` *(lua plugin)*
 
-Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
+Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-4 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

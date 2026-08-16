@@ -22,11 +22,12 @@ use serde_json::{Value, json};
 const BATCH_PLUGIN_SRC: &str = include_str!("../../plugins/batch/init.lua");
 
 // Mirrors of the plugin's format contracts.
-const MAX_BATCH_SIZE: usize = 25;
+const MAX_BATCH_SIZE: usize = 4;
 const ERROR_PREFIX: &str = "[ERROR] ";
 const EMPTY_ERROR: &str = "provide at least one tool call";
 const NESTED_ERROR: &str = "cannot nest batch inside batch";
-const DISCARDED_ERROR: &str = "maximum of 25 tools per batch";
+const DISCARDED_ERROR: &str =
+    "maximum of 4 tools per batch; split the work into batches of at most 4 calls";
 const INSUFFICIENT_TIME_ERROR: &str = "insufficient time remaining in shared deadline";
 const SUMMARY_ALL_OK_FMT: &str = "All {} tools executed successfully.";
 const SUMMARY_MIXED_FMT: &str = "Executed {}/{} successfully. {} failed.";
@@ -367,24 +368,16 @@ fn nested_batch_rejected_without_dispatch() {
 }
 
 #[test]
-fn overflow_entries_discarded_with_section() {
+fn overflow_batch_rejected_before_dispatch() {
     let (reg, _host) = load_batch_host();
     let entries: Vec<Value> = (0..=MAX_BATCH_SIZE)
         .map(|i| json!({ "tool": "ok", "parameters": { "tag": i.to_string() } }))
         .collect();
-    let out = run_batch(&reg, json!(entries)).expect("batch failed");
+    let error = run_batch(&reg, json!(entries)).expect_err("oversized batch succeeded");
+    assert_eq!(error, DISCARDED_ERROR);
     assert!(
-        out.contains(&format!("{ERROR_PREFIX}{DISCARDED_ERROR}")),
-        "got: {out}"
-    );
-    assert!(
-        out.ends_with(&summary_mixed(MAX_BATCH_SIZE, MAX_BATCH_SIZE + 1, 1)),
-        "got: {out}"
-    );
-    assert_eq!(
-        recorded_calls(&reg).len(),
-        MAX_BATCH_SIZE,
-        "only the first {MAX_BATCH_SIZE} entries may dispatch"
+        recorded_calls(&reg).is_empty(),
+        "oversized batches must not dispatch"
     );
 }
 
@@ -543,6 +536,33 @@ fn restore_accepts_tool_uses_alias_without_state() {
         text.contains("line one"),
         "body rebuilt from llm output: {text}"
     );
+}
+
+#[test]
+fn restore_preserves_oversized_historical_batch_cards() {
+    let (_reg, host) = load_batch_host();
+    let calls = (0..=MAX_BATCH_SIZE)
+        .map(|i| json!({ "tool": "hdrtool", "parameters": { "x": i.to_string() } }))
+        .collect::<Vec<_>>();
+    let children = (0..=MAX_BATCH_SIZE)
+        .map(|i| {
+            json!({
+                "tool": "hdrtool",
+                "status": "success",
+                "output": format!("output {i}"),
+                "annotation": null
+            })
+        })
+        .collect::<Vec<_>>();
+    let lines = restore_snapshot_lines(
+        &host,
+        json!({ "tool_calls": calls }),
+        "irrelevant",
+        Some(json!({ "children": children })),
+    );
+    let text = lines_text(&lines);
+    assert!(text.contains("H:0"), "first child card missing: {text}");
+    assert!(text.contains("H:4"), "last child card missing: {text}");
 }
 
 #[test]

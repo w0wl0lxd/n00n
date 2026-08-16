@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -34,7 +34,9 @@ use n00n_providers::Timeouts;
 use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_with_openai_options, unconfigured_provider,
 };
-use n00n_providers::{ContentBlock, Message, Model, ModelResolver, OpenAiOptions};
+use n00n_providers::{
+    ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, OpenAiOptions,
+};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
@@ -525,6 +527,7 @@ pub(crate) struct EventLoop<'t> {
     post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     startup_login_slot: Option<Arc<ModelSlot>>,
+    model_refresh_generation: Arc<Mutex<u64>>,
     _model_fetch_task: smol::Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
     /// gated on this (or active animation) so we don't re-diff the whole
@@ -585,11 +588,12 @@ struct BackgroundModels {
     available: Arc<ArcSwapOption<Vec<String>>>,
     warn_rx: flume::Receiver<String>,
     warn_tx: flume::Sender<String>,
+    generation: Arc<Mutex<u64>>,
     task: smol::Task<()>,
 }
 
 fn merge_batch(
-    available: &Arc<ArcSwapOption<Vec<String>>>,
+    available: &ArcSwapOption<Vec<String>>,
     batch: n00n_providers::provider::ModelBatch,
     warn_tx: &flume::Sender<String>,
 ) {
@@ -613,6 +617,46 @@ fn merge_batch(
         }
     }
     available.store(Some(Arc::new(merged)));
+}
+
+fn merge_model_batch(
+    available: &ArcSwapOption<Vec<String>>,
+    batch: n00n_providers::provider::ModelBatch,
+    warn_tx: &flume::Sender<String>,
+    generation: u64,
+    current_generation: &Mutex<u64>,
+) -> bool {
+    let current = current_generation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *current != generation {
+        return false;
+    }
+    merge_batch(available, batch, warn_tx);
+    true
+}
+
+fn resolve_model_selection(
+    spec: &str,
+    discovered: Option<&[String]>,
+) -> Result<Model, ModelCatalogError> {
+    ModelCatalog::current_with_specs(discovered.into_iter().flatten().cloned()).resolve(spec)
+}
+
+fn publish_model_refresh(
+    available: &ArcSwapOption<Vec<String>>,
+    refreshed: Option<Arc<Vec<String>>>,
+    generation: u64,
+    current_generation: &Mutex<u64>,
+) -> bool {
+    let current = current_generation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *current != generation {
+        return false;
+    }
+    available.store(refreshed);
+    true
 }
 
 fn startup_login_completed(initial_slot: &Arc<ModelSlot>, current_slot: &Arc<ModelSlot>) -> bool {
@@ -667,6 +711,8 @@ fn spawn_model_fetch(
     let warn_tx_bg = warn_tx.clone();
     let model_slot = Arc::clone(model_slot);
     let initial_slot = model_slot.load_full();
+    let generation = Arc::new(Mutex::new(0));
+    let fetch_generation = Arc::clone(&generation);
     let task = smol::spawn(async move {
         let warn_tx = warn_tx_bg;
         let done = Box::new(move || {
@@ -674,12 +720,19 @@ fn spawn_model_fetch(
                 from_model_with_openai_options(model, timeouts, openai_options)
             });
         });
-        fetch_all_models(|batch| merge_batch(&bg, batch, &warn_tx), Some(done)).await;
+        fetch_all_models(
+            |batch| {
+                merge_model_batch(&bg, batch, &warn_tx, 0, &fetch_generation);
+            },
+            Some(done),
+        )
+        .await;
     });
     BackgroundModels {
         available,
         warn_rx,
         warn_tx,
+        generation,
         task,
     }
 }
@@ -894,6 +947,7 @@ impl<'t> EventLoop<'t> {
             post_draw_submissions: Vec::new(),
             last_save: Instant::now(),
             startup_login_slot,
+            model_refresh_generation: bg.generation,
             _model_fetch_task: bg.task,
             dirty: true,
         })
@@ -2171,8 +2225,12 @@ impl<'t> EventLoop<'t> {
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
+                let discovered = self.ctx.available_models.load_full();
                 if loaded.model_spec != self.ctx.model_slot.load().model.spec()
-                    && let Ok(mut new_model) = ModelResolver::current().resolve(&loaded.model_spec)
+                    && let Ok(mut new_model) = resolve_model_selection(
+                        &loaded.model_spec,
+                        discovered.as_deref().map(Vec::as_slice),
+                    )
                     && let Ok(new_provider) = from_model_with_openai_options(
                         &mut new_model,
                         self.ctx.timeouts,
@@ -2267,7 +2325,8 @@ impl<'t> EventLoop<'t> {
     }
 
     fn change_model(&mut self, spec: &str) {
-        match ModelResolver::current().resolve(spec) {
+        let discovered = self.ctx.available_models.load_full();
+        match resolve_model_selection(spec, discovered.as_deref().map(Vec::as_slice)) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,
@@ -2303,10 +2362,30 @@ impl<'t> EventLoop<'t> {
 
     fn refresh_models(&self) {
         let available = Arc::clone(&self.ctx.available_models);
+        let refreshed = Arc::new(ArcSwapOption::empty());
         let warn_tx = self.warn_tx.clone();
-        available.store(None);
+        let current_generation = Arc::clone(&self.model_refresh_generation);
+        let generation = {
+            let mut current = current_generation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *current = current.saturating_add(1);
+            *current
+        };
         smol::spawn(async move {
-            fetch_all_models(|batch| merge_batch(&available, batch, &warn_tx), None).await;
+            fetch_all_models(
+                |batch| {
+                    merge_model_batch(&refreshed, batch, &warn_tx, generation, &current_generation);
+                },
+                None,
+            )
+            .await;
+            publish_model_refresh(
+                &available,
+                refreshed.load_full(),
+                generation,
+                &current_generation,
+            );
         })
         .detach();
     }
@@ -2477,15 +2556,17 @@ mod tests {
         DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
         PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, authorize_ui_delete, bounded_direct_output,
         cancel_stored_session, complete_model_fetch_with, direct_paused_team_payload,
-        draw_then_post_terminal, paused_team_payload, paused_team_run, should_save_periodically,
+        draw_then_post_terminal, merge_model_batch, paused_team_payload, paused_team_run,
+        publish_model_refresh, resolve_model_selection, should_save_periodically,
         startup_login_completed, startup_provider_with, take_painted_submissions,
         validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
-    use arc_swap::ArcSwap;
+    use arc_swap::{ArcSwap, ArcSwapOption};
     use n00n_agent::AgentConfig;
     use n00n_providers::{
-        AgentError, ContentBlock, Message, Model, Role, provider::unconfigured_provider,
+        AgentError, ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, Role,
+        provider::{ModelBatch, unconfigured_provider},
     };
     use n00n_storage::{
         id::{SessionRef, n00nId},
@@ -2498,8 +2579,68 @@ mod tests {
         layout::{Position, Size},
         widgets::Paragraph,
     };
-    use std::{cell::Cell as Counter, io, sync::Arc};
+    use std::{
+        cell::Cell as Counter,
+        io,
+        sync::{Arc, Mutex},
+    };
     use test_case::test_case;
+    #[test]
+    fn older_model_refresh_cannot_overwrite_newer_catalog() {
+        let available = ArcSwapOption::from(Some(Arc::new(vec!["initial/model".into()])));
+        let current_generation = Mutex::new(2);
+        let newer = Some(Arc::new(vec!["newer/model".into()]));
+        let older = Some(Arc::new(vec!["older/model".into()]));
+
+        assert!(publish_model_refresh(
+            &available,
+            newer,
+            2,
+            &current_generation
+        ));
+        assert!(!publish_model_refresh(
+            &available,
+            older,
+            1,
+            &current_generation
+        ));
+        assert_eq!(
+            available.load().as_deref().unwrap().as_slice(),
+            ["newer/model"]
+        );
+    }
+
+    #[test]
+    fn startup_model_batch_cannot_merge_after_manual_refresh() {
+        let available = ArcSwapOption::from(Some(Arc::new(vec!["manual/model".into()])));
+        let generation = Mutex::new(1);
+        let (warn_tx, warn_rx) = flume::unbounded();
+        let batch = ModelBatch {
+            models: vec!["startup/model".into()],
+            warnings: vec!["stale warning".into()],
+        };
+
+        assert!(!merge_model_batch(
+            &available,
+            batch,
+            &warn_tx,
+            0,
+            &generation
+        ));
+        assert_eq!(
+            available.load().as_deref().unwrap().as_slice(),
+            ["manual/model"]
+        );
+        assert!(warn_rx.try_recv().is_err());
+    }
+    #[test_case("unconfigured-nested/vendor/deepseek-v4-flash"; "discovered_nested_model_spec")]
+    fn discovered_nested_model_spec_is_catalogued_for_selection(spec: &str) {
+        ModelCatalog::from_specs([spec.to_string()])
+            .with_alias("nested", spec)
+            .unwrap();
+        let result = resolve_model_selection(spec, Some(&[spec.to_string()]));
+        assert!(matches!(result, Err(ModelCatalogError::Unavailable(_))));
+    }
 
     #[test]
     fn startup_provider_failure_preserves_model_and_requests_login_once() {

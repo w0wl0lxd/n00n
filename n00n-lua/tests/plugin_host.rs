@@ -1415,6 +1415,29 @@ fn async_job_on_exit_receives_exit_code() {
     assert_eq!(out, "code=42");
 }
 
+#[test]
+fn deferred_callback_finishes_without_spawning_a_job() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "defer_finish",
+            description = "finishes after a timer",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local scheduled_id
+                scheduled_id = n00n.fn.defer(1, function(timer_id, code)
+                    ctx:finish("code=" .. tostring(code) .. ",id=" .. tostring(timer_id == scheduled_id))
+                end)
+            end
+        }})"#,
+    );
+    host.load_source("defer_finish", &src).unwrap();
+    let out = exec_tool(&reg, "defer_finish", serde_json::json!({})).unwrap();
+    assert_eq!(out, "code=0,id=true");
+}
+
 #[cfg(unix)]
 #[test]
 fn jobwait_fires_callbacks_while_waiting() {
@@ -1545,6 +1568,35 @@ fn accepted_finish_precedes_later_drained_job_callback_error() {
         exec_tool(&reg, "finish_before_callback_error", serde_json::json!({})).unwrap(),
         "accepted"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn drained_job_callback_error_precedes_later_finish() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "callback_error_before_finish",
+        description = "fails before a later finish",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function(_, ctx)
+            n00n.fn.jobstart("printf 'ready\\n'", {
+                on_stdout = function()
+                    error("early callback exploded")
+                end,
+                on_exit = function()
+                    ctx:finish("accepted")
+                end,
+            })
+            return nil
+        end
+    })"#;
+    host.load_source("callback_error_before_finish", src)
+        .unwrap();
+
+    let err = exec_tool(&reg, "callback_error_before_finish", serde_json::json!({})).unwrap_err();
+    assert!(err.contains("early callback exploded"), "got: {err}");
 }
 
 /// Runs `tool`, whose handler parks on `jobstart("sleep 30")` until a
@@ -3112,6 +3164,85 @@ fn timeout_rendering_runs_change_callback_outside_expired_deadline() {
 }
 
 #[test]
+fn timeout_cleanup_publishes_buffered_tail() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "cleanup_tail",
+            description = "publishes buffered output during cleanup",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                local buf = n00n.ui.buf()
+                buf:set_lines({{ "waiting" }})
+                ctx:live_buf(buf)
+                ctx:on_cleanup(function() buf:set_lines({{ "final tail" }}) end)
+                n00n.fn.jobstart("sleep 30")
+                return nil
+            end
+        }})"#,
+    );
+    host.load_source("cleanup_tail", &src).unwrap();
+
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        Some("cleanup-tail"),
+    );
+    let invocation = reg
+        .get("cleanup_tail")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({}))
+        .unwrap();
+
+    let result = smol::block_on(invocation.execute(&ctx));
+    assert!(result.output.unwrap_err().contains(TIMED_OUT_SUBSTR));
+    let body = recv_live_buf(&event_rx, "cleanup-tail").unwrap();
+    assert_eq!(body.read()[0].spans[0].text, "final tail");
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
+    let (reg, _host) = builtins_host();
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        Some("bash-cleanup-tail"),
+    );
+    let invocation = reg
+        .get("bash")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({
+            "command": "printf 'one\ntwo\n'; sleep 3.4; printf 'pending-tail\n'; sleep 30",
+            "timeout": 4
+        }))
+        .unwrap();
+
+    let result = smol::block_on(invocation.execute(&ctx));
+
+    assert!(result.output.unwrap_err().contains(TIMED_OUT_SUBSTR));
+    let body = recv_live_buf(&event_rx, "bash-cleanup-tail").unwrap();
+    let rendered = body
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
+    assert!(rendered.contains("pending-tail"), "rendered: {rendered}");
+    assert!(
+        rendered.contains("Timed out after 4s"),
+        "rendered: {rendered}"
+    );
+}
+#[test]
 fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
     let (reg, _host) = builtins_host();
     let entry = reg.get("workflow").unwrap();
@@ -4082,13 +4213,13 @@ fn bash_handler_passes_through_unrewritable_compound_segment() {
     let output = exec_tool(
         &reg,
         "bash",
-        serde_json::json!({ "command": "git status && npm outdated" }),
+        serde_json::json!({ "command": "git status && printf 'N00N_PASS_THROUGH_MARKER\\n'" }),
     )
     .expect("compound command with an unrewritable segment was rejected");
 
     assert!(
-        !output.contains("rtk is enabled"),
-        "compound command was rejected instead of partially rewritten: {output}"
+        output.contains("N00N_PASS_THROUGH_MARKER"),
+        "unrewritable segment was dropped instead of passed through: {output}"
     );
 }
 
