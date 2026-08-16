@@ -820,6 +820,33 @@ mod tests {
         start_shell(store, task_owner(OWNER_TASK_ID), "echo hello")
     }
 
+    fn enqueue_job_events(
+        store: &mut JobStore,
+        owner: JobOwner,
+        events: impl IntoIterator<Item = JobEvent>,
+    ) -> u32 {
+        let id = store.next_id;
+        store.next_id += 1;
+        let (tx, rx) = flume::unbounded();
+        for event in events {
+            tx.send(event).unwrap();
+        }
+        drop(tx);
+        store.jobs.insert(
+            id,
+            JobMeta {
+                owner,
+                pid: None,
+                deadline: None,
+                on_stdout: None,
+                on_stderr: None,
+                on_exit: None,
+                event_rx: Some(rx),
+            },
+        );
+        id
+    }
+
     #[cfg(unix)]
     fn group_alive(pid: u32) -> bool {
         use rustix::process::{Pid, test_kill_process_group};
@@ -1318,42 +1345,32 @@ mod tests {
     #[test]
     fn drain_events_filters_by_owner() {
         let mut store = make_store();
-        let task_job = start_echo(&mut store);
-        let plugin_job = start_shell(&mut store, plugin_owner(), "echo plugin");
+        let task_job = enqueue_job_events(
+            &mut store,
+            task_owner(OWNER_TASK_ID),
+            [JobEvent::Stdout("task".into()), JobEvent::Exit(0)],
+        );
+        let plugin_job = enqueue_job_events(
+            &mut store,
+            plugin_owner(),
+            [JobEvent::Stdout("plugin".into()), JobEvent::Exit(0)],
+        );
 
         let mut buf = Vec::new();
-        let deadline = std::time::Instant::now() + EVENT_DEADLINE;
-        loop {
-            store.drain_events(&task_owner(OWNER_TASK_ID), &mut buf);
-            if buf
-                .iter()
-                .any(|(jid, e)| *jid == task_job && matches!(e, JobEvent::Exit(_)))
-            {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() <= deadline,
-                "should receive exit event for completed job"
-            );
-            thread::sleep(Duration::from_millis(50));
-        }
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut buf);
+        assert!(
+            buf.iter()
+                .any(|(jid, e)| *jid == task_job && matches!(e, JobEvent::Exit(0))),
+            "should receive exit event for completed job"
+        );
         assert!(buf.iter().all(|(job_id, _)| *job_id != plugin_job));
 
-        let deadline = std::time::Instant::now() + EVENT_DEADLINE;
-        loop {
-            store.drain_plugin_events(&mut buf);
-            if buf
-                .iter()
-                .any(|(jid, e)| *jid == plugin_job && matches!(e, JobEvent::Exit(_)))
-            {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() <= deadline,
-                "should receive exit event for the plugin-owned job"
-            );
-            thread::sleep(Duration::from_millis(50));
-        }
+        store.drain_plugin_events(&mut buf);
+        assert!(
+            buf.iter()
+                .any(|(jid, e)| *jid == plugin_job && matches!(e, JobEvent::Exit(0))),
+            "should receive exit event for the plugin-owned job"
+        );
         assert!(buf.iter().all(|(job_id, _)| *job_id != task_job));
     }
 
