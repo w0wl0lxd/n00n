@@ -816,6 +816,7 @@ n00n.api.register_tool({
     local flush_timer_id = nil
     local flush_fallback_warned = false
     local published_line_count = 0
+    local flush_view
 
     local function finish(exit_code)
       finished = true
@@ -851,7 +852,7 @@ n00n.api.register_tool({
 
     view:append({ { "Waiting for output...", "dim" } })
 
-    local function flush_view()
+    flush_view = function()
       view:flush()
       published_line_count = collector.line_count
       flush_scheduled = false
