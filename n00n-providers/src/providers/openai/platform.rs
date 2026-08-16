@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -406,12 +407,68 @@ fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, s
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn system_hash(system: &System) -> String {
-    let text = system.to_string();
+fn stable_text_hash(text: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(text.len().to_le_bytes());
     digest.update(text.as_bytes());
     format!("{:x}", digest.finalize())
+}
+
+fn short_hash(hash: &str) -> &str {
+    match hash.get(..12) {
+        Some(short) => short,
+        None => hash,
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct CachePrefixFingerprint {
+    model_id: String,
+    prefix_hash: String,
+    system_hash: String,
+    tools_hash: String,
+}
+
+impl CachePrefixFingerprint {
+    fn new(model_id: &str, system: &System, tools_hash: &str) -> Self {
+        let system_text = system.to_string();
+        let mut digest = Sha256::new();
+        digest.update(model_id.len().to_le_bytes());
+        digest.update(model_id.as_bytes());
+        digest.update(system_text.len().to_le_bytes());
+        digest.update(system_text.as_bytes());
+        digest.update(tools_hash.as_bytes());
+        Self {
+            model_id: model_id.to_owned(),
+            prefix_hash: format!("{:x}", digest.finalize()),
+            system_hash: stable_text_hash(&system_text),
+            tools_hash: tools_hash.to_owned(),
+        }
+    }
+
+    fn prefix_hash(&self) -> &str {
+        &self.prefix_hash
+    }
+
+    fn prompt_cache_key(&self, session_id: Option<&SessionRef>) -> String {
+        let prefix_hash = self.prefix_hash();
+        let shard = session_id.map_or(0, |session_id| {
+            Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
+                % PROMPT_CACHE_SHARDS
+        });
+        format!("n00n-{prefix_hash}-s{shard}")
+    }
+}
+
+impl fmt::Debug for CachePrefixFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachePrefixFingerprint")
+            .field("model_id", &self.model_id)
+            .field("prefix_hash", &short_hash(self.prefix_hash()))
+            .field("system_hash", &short_hash(&self.system_hash))
+            .field("tools_hash", &short_hash(&self.tools_hash))
+            .finish()
+    }
 }
 
 fn credential_hash(auth: &ResolvedAuth) -> String {
@@ -488,24 +545,10 @@ fn canonical_session_key(session_id: &SessionRef) -> n00nId {
 }
 
 fn prompt_cache_key(
-    model_id: &str,
-    system: &System,
-    tools_hash: &str,
+    fingerprint: &CachePrefixFingerprint,
     session_id: Option<&SessionRef>,
 ) -> String {
-    let system_text = system.to_string();
-    let mut digest = Sha256::new();
-    digest.update(model_id.len().to_le_bytes());
-    digest.update(model_id.as_bytes());
-    digest.update(system_text.len().to_le_bytes());
-    digest.update(system_text.as_bytes());
-    digest.update(tools_hash.as_bytes());
-    let prefix_hash = digest.finalize();
-    let shard = session_id.map_or(0, |session_id| {
-        Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
-            % PROMPT_CACHE_SHARDS
-    });
-    format!("n00n-{prefix_hash:x}-s{shard}")
+    fingerprint.prompt_cache_key(session_id)
 }
 
 fn log_responses_request(
@@ -584,13 +627,12 @@ fn auth_expiry_bucket(tokens: &n00n_storage::auth::OAuthTokens) -> &'static str 
 
 fn incremental_for_state<'a>(
     state: &mut OpenAiSessionState,
-    system_hash: &str,
-    tools_hash: &str,
+    fingerprint: &CachePrefixFingerprint,
     auth_scope_hash: &str,
     messages: &'a [Message],
 ) -> Result<(Option<String>, &'a [Message]), serde_json::Error> {
-    if state.system_hash.as_deref() != Some(system_hash)
-        || state.tools_hash.as_deref() != Some(tools_hash)
+    if state.system_hash.as_deref() != Some(fingerprint.system_hash.as_str())
+        || state.tools_hash.as_deref() != Some(fingerprint.tools_hash.as_str())
         || state.auth_scope_hash.as_deref() != Some(auth_scope_hash)
         || messages.len() < state.last_message_count
     {
@@ -598,8 +640,8 @@ fn incremental_for_state<'a>(
             log_response_chain_reset(ResponseChainResetReason::RequestPrefixScopeChanged, None);
         }
         *state = OpenAiSessionState {
-            system_hash: Some(system_hash.to_owned()),
-            tools_hash: Some(tools_hash.to_owned()),
+            system_hash: Some(fingerprint.system_hash.clone()),
+            tools_hash: Some(fingerprint.tools_hash.clone()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             ..Default::default()
         };
@@ -610,8 +652,8 @@ fn incremental_for_state<'a>(
         if state.messages_hash.as_deref() != Some(current_hash.as_str()) {
             log_response_chain_reset(ResponseChainResetReason::MessagePrefixChanged, None);
             *state = OpenAiSessionState {
-                system_hash: Some(system_hash.to_owned()),
-                tools_hash: Some(tools_hash.to_owned()),
+                system_hash: Some(fingerprint.system_hash.clone()),
+                tools_hash: Some(fingerprint.tools_hash.clone()),
                 messages_hash: Some(current_hash),
                 auth_scope_hash: Some(auth_scope_hash.to_owned()),
                 ..Default::default()
@@ -628,8 +670,8 @@ fn incremental_for_state<'a>(
         }
         log_response_chain_reset(ResponseChainResetReason::NoNewInputAfterResponse, None);
         *state = OpenAiSessionState {
-            system_hash: Some(system_hash.to_owned()),
-            tools_hash: Some(tools_hash.to_owned()),
+            system_hash: Some(fingerprint.system_hash.clone()),
+            tools_hash: Some(fingerprint.tools_hash.clone()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             ..Default::default()
         };
@@ -641,8 +683,7 @@ fn incremental_for_state<'a>(
 fn record_in_state(
     state: &mut OpenAiSessionState,
     response_id: Option<String>,
-    system_hash: &str,
-    tools_hash: &str,
+    fingerprint: &CachePrefixFingerprint,
     auth_scope_hash: &str,
     messages: &[Message],
 ) -> Result<(), serde_json::Error> {
@@ -650,8 +691,8 @@ fn record_in_state(
         *state = OpenAiSessionState {
             last_response_id: Some(response_id),
             last_message_count: messages.len(),
-            system_hash: Some(system_hash.to_owned()),
-            tools_hash: Some(tools_hash.to_owned()),
+            system_hash: Some(fingerprint.system_hash.clone()),
+            tools_hash: Some(fingerprint.tools_hash.clone()),
             messages_hash: Some(stable_json_hash(messages)?),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
@@ -1235,8 +1276,7 @@ impl OpenAi {
     async fn prepare_request<'a>(
         &self,
         session_id: Option<&SessionRef>,
-        system_hash: &str,
-        tools_hash: &str,
+        fingerprint: &CachePrefixFingerprint,
         auth_scope_hash: &str,
         messages: &'a [Message],
         response_chain_lock: Option<&OpenAiResponseChainLock>,
@@ -1309,7 +1349,7 @@ impl OpenAi {
         let now = Instant::now();
         let state = states.entry(session_id).or_default();
         state.last_used = now;
-        incremental_for_state(state, system_hash, tools_hash, auth_scope_hash, messages)
+        incremental_for_state(state, fingerprint, auth_scope_hash, messages)
             .map_err(AgentError::Json)
     }
 
@@ -1317,8 +1357,7 @@ impl OpenAi {
         &self,
         session_id: Option<&SessionRef>,
         response_id: Option<String>,
-        system_hash: &str,
-        tools_hash: &str,
+        fingerprint: &CachePrefixFingerprint,
         auth_scope_hash: &str,
         messages: &[Message],
         persist: bool,
@@ -1335,14 +1374,9 @@ impl OpenAi {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let state = states.entry(session_id).or_default();
             state.last_used = Instant::now();
-            if let Err(error) = record_in_state(
-                state,
-                response_id,
-                system_hash,
-                tools_hash,
-                auth_scope_hash,
-                messages,
-            ) {
+            if let Err(error) =
+                record_in_state(state, response_id, fingerprint, auth_scope_hash, messages)
+            {
                 warn!(error = %error, "failed to hash OpenAI response chain; clearing continuation state");
                 *state = OpenAiSessionState::default();
             }
@@ -1586,12 +1620,11 @@ impl OpenAi {
             self.clear_response_chain(session_id, response_chain_lock.as_ref())
                 .await;
         }
-        let request_system_hash = system_hash(system);
+        let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
         let (previous_response_id, incremental_messages) = match self
             .prepare_request(
                 session_id,
-                &request_system_hash,
-                tools_hash,
+                &fingerprint,
                 &state_scope_hash,
                 messages,
                 response_chain_lock.as_ref(),
@@ -1627,7 +1660,7 @@ impl OpenAi {
         }
         self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
             .await;
-        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
+        let prompt_cache_key = prompt_cache_key(&fingerprint, session_id);
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -1857,8 +1890,7 @@ impl OpenAi {
         self.record_response(
             session_id,
             chainable.then_some(response_id).flatten(),
-            &request_system_hash,
-            tools_hash,
+            &fingerprint,
             &state_scope_hash,
             messages,
             persist_response_chain,
@@ -1971,7 +2003,8 @@ impl OpenAi {
     ) -> Result<StreamResponse, AgentError> {
         // API-key Responses requests are intentionally stateless. This HTTP path cannot
         // reuse a store=false response ID safely, so every turn sends full history.
-        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
+        let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
+        let prompt_cache_key = prompt_cache_key(&fingerprint, session_id);
         let body = super::responses::build_body(
             model,
             messages,
@@ -2367,8 +2400,9 @@ impl Provider for OpenAi {
             }
 
             // Fallback to Chat Completions
-            let prompt_cache_key =
-                prompt_cache_key(&model.id, &prefixed_system_obj, &tools_hash, session_id);
+            let fingerprint =
+                CachePrefixFingerprint::new(&model.id, &prefixed_system_obj, &tools_hash);
+            let prompt_cache_key = prompt_cache_key(&fingerprint, session_id);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -2594,8 +2628,18 @@ mod tests {
     const TEST_CREDENTIAL_HASH: &str = "test-credential";
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
+    fn test_fingerprint(system_hash: &str, tools_hash: &str) -> CachePrefixFingerprint {
+        CachePrefixFingerprint {
+            model_id: "gpt-5.6".into(),
+            prefix_hash: stable_text_hash(&format!("{system_hash}:{tools_hash}")),
+            system_hash: system_hash.into(),
+            tools_hash: tools_hash.into(),
+        }
+    }
+
     async fn read_http_request(stream: &mut smol::net::TcpStream) -> (String, Value) {
         let mut request = Vec::new();
+
         let mut chunk = [0_u8; 2048];
         loop {
             let read = stream.read(&mut chunk).await.unwrap();
@@ -2730,8 +2774,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            "[]",
+            &test_fingerprint(SYSTEM_HASH, "[]"),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2742,8 +2785,13 @@ mod tests {
             Message::user("again".into()),
         ];
 
-        let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, SYSTEM_HASH, "[]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (previous_response_id, incremental_messages) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, "[]"),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
         assert_eq!(incremental_messages.len(), 1);
@@ -2760,8 +2808,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            "[]",
+            &test_fingerprint(SYSTEM_HASH, "[]"),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2788,8 +2835,13 @@ mod tests {
             },
         ];
 
-        let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, SYSTEM_HASH, "[]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (previous_response_id, incremental_messages) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, "[]"),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
         assert_eq!(incremental_messages.len(), 1);
@@ -2883,8 +2935,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            "[]",
+            &test_fingerprint(SYSTEM_HASH, "[]"),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2897,8 +2948,7 @@ mod tests {
 
         let (previous_response_id, incremental_messages) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            "[\"new\"]",
+            &test_fingerprint(SYSTEM_HASH, "[\"new\"]"),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -2994,8 +3044,7 @@ mod tests {
         let messages = vec![Message::user("hello".into())];
         let (prev, inc) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &messages,
         )
@@ -3010,16 +3059,19 @@ mod tests {
     fn incremental_second_turn_skips_assistant_message() {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("hello".into())];
-        let (prev, _inc) =
-            incremental_for_state(&mut state, SYSTEM_HASH, TOOLS_HASH, AUTH_SCOPE_HASH, &first)
-                .unwrap();
+        let (prev, _inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
         assert!(prev.is_none());
 
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -3032,8 +3084,7 @@ mod tests {
         ];
         let (prev, inc) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -3052,15 +3103,18 @@ mod tests {
     fn incremental_tool_loop_skips_assistant_tool_calls() {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("run".into())];
-        let (prev, _inc) =
-            incremental_for_state(&mut state, SYSTEM_HASH, TOOLS_HASH, AUTH_SCOPE_HASH, &first)
-                .unwrap();
+        let (prev, _inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
         assert!(prev.is_none());
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -3074,8 +3128,7 @@ mod tests {
         ];
         let (prev, inc) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -3098,8 +3151,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -3112,8 +3164,7 @@ mod tests {
         ];
         let (prev, inc) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            "[\"new\"]",
+            &test_fingerprint(SYSTEM_HASH, "[\"new\"]"),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -3131,8 +3182,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            "old-system",
-            TOOLS_HASH,
+            &test_fingerprint("old-system", TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -3145,8 +3195,7 @@ mod tests {
         ];
         let (prev, inc) = incremental_for_state(
             &mut state,
-            "new-system",
-            TOOLS_HASH,
+            &test_fingerprint("new-system", TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -3176,8 +3225,7 @@ mod tests {
 
         let (prev, inc) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &messages,
         )
@@ -3195,8 +3243,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -3205,8 +3252,7 @@ mod tests {
         let second = vec![Message::user("a".into())];
         let (prev, inc) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -3223,8 +3269,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -3237,8 +3282,7 @@ mod tests {
         ];
         let (prev, inc) = incremental_for_state(
             &mut state,
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -3255,8 +3299,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -3266,8 +3309,7 @@ mod tests {
         record_in_state(
             &mut state,
             None,
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &second,
         )
@@ -3482,8 +3524,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_1".into()),
-                    SYSTEM_HASH,
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &first,
                     true,
@@ -3506,8 +3547,7 @@ mod tests {
             let (previous_response_id, incremental) = restored
                 .prepare_request(
                     Some(&session_id),
-                    SYSTEM_HASH,
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &second,
                     restored_lock.as_ref(),
@@ -3557,8 +3597,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_first".into()),
-                    SYSTEM_HASH,
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &first,
                     true,
@@ -3575,8 +3614,7 @@ mod tests {
             let (previous, incremental) = second_provider
                 .prepare_request(
                     Some(&session_id),
-                    SYSTEM_HASH,
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &second,
                     lock.as_ref(),
@@ -3589,8 +3627,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_second".into()),
-                    SYSTEM_HASH,
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &second,
                     true,
@@ -3607,8 +3644,7 @@ mod tests {
             let (previous, incremental) = first_provider
                 .prepare_request(
                     Some(&session_id),
-                    SYSTEM_HASH,
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &third,
                     lock.as_ref(),
@@ -3877,8 +3913,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            SYSTEM_HASH,
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             "account-1",
             &first,
         )
@@ -3889,9 +3924,13 @@ mod tests {
             Message::user("again".into()),
         ];
 
-        let (previous_response_id, incremental) =
-            incremental_for_state(&mut state, SYSTEM_HASH, TOOLS_HASH, "account-2", &second)
-                .unwrap();
+        let (previous_response_id, incremental) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            "account-2",
+            &second,
+        )
+        .unwrap();
 
         assert!(previous_response_id.is_none());
         assert_eq!(incremental.len(), second.len());
@@ -3929,24 +3968,55 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_key_groups_matching_stable_prefixes() {
+    fn cache_prefix_fingerprint_groups_matching_stable_prefixes() {
         let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
         let system = System::from("stable instructions");
-        let key = prompt_cache_key("gpt-5.6", &system, &tools_hash, None);
+        let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash);
+        let key = prompt_cache_key(&fingerprint, None);
+        let system_text = system.to_string();
+        let mut legacy_digest = Sha256::new();
+        legacy_digest.update("gpt-5.6".len().to_le_bytes());
+        legacy_digest.update(b"gpt-5.6");
+        legacy_digest.update(system_text.len().to_le_bytes());
+        legacy_digest.update(system_text.as_bytes());
+        legacy_digest.update(tools_hash.as_bytes());
+        let legacy_prefix_hash = format!("{:x}", legacy_digest.finalize());
 
-        assert_eq!(key, prompt_cache_key("gpt-5.6", &system, &tools_hash, None));
+        assert_eq!(fingerprint.prefix_hash(), legacy_prefix_hash);
+
+        assert_eq!(
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash)
+        );
+        assert_eq!(key, prompt_cache_key(&fingerprint, None));
         assert_ne!(
-            key,
-            prompt_cache_key("gpt-5.6", &System::from("changed"), &tools_hash, None)
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6", &System::from("changed"), &tools_hash)
         );
         assert_ne!(
-            key,
-            prompt_cache_key("gpt-5.6-sol", &system, &tools_hash, None)
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6-sol", &system, &tools_hash)
         );
         assert_ne!(
-            key,
-            prompt_cache_key("gpt-5.6", &system, "changed-tools", None)
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6", &system, "changed-tools")
         );
+    }
+
+    #[test]
+    fn cache_prefix_fingerprint_debug_is_sanitized() {
+        let system_text = "private system instructions";
+        let tools_text = "private tool schema";
+        let tools_hash = stable_text_hash(tools_text);
+        let fingerprint =
+            CachePrefixFingerprint::new("gpt-5.6", &System::from(system_text), &tools_hash);
+        let debug = format!("{fingerprint:?}");
+
+        assert!(!debug.contains(system_text));
+        assert!(!debug.contains(tools_text));
+        assert!(!debug.contains(&fingerprint.system_hash));
+        assert!(!debug.contains(&fingerprint.tools_hash));
+        assert!(debug.contains(short_hash(fingerprint.prefix_hash())));
     }
 
     #[test]
@@ -3955,16 +4025,12 @@ mod tests {
         let provider = provider_with_response_storage(temp_dir.path());
         let legacy: SessionRef = LEGACY_SESSION_ID.parse().unwrap();
         let canonical = SessionRef::from_id(legacy.id());
+        let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &System::from("system"), "tools");
 
         assert_ne!(legacy.as_str(), canonical.as_str());
         assert_eq!(
-            prompt_cache_key("gpt-5.6", &System::from("system"), "tools", Some(&legacy)),
-            prompt_cache_key(
-                "gpt-5.6",
-                &System::from("system"),
-                "tools",
-                Some(&canonical)
-            )
+            prompt_cache_key(&fingerprint, Some(&legacy)),
+            prompt_cache_key(&fingerprint, Some(&canonical))
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
