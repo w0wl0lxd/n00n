@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786842799137,
+  "lastUpdate": 1786853385156,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20079,6 +20079,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 196914,
             "range": "± 2552",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5cfa8b0710ca3459feb233ae5d58dec631430935",
+          "message": "fix: stream interpreter stdout once (#391)\n\n* fix: stream interpreter stdout once\n\n* fix: reconcile stdout streaming with main\n\n* fix: restore main tree on stdout streaming branch\n\n* docs: add interpreter streaming changelog",
+          "timestamp": "2026-08-16T03:55:45Z",
+          "tree_id": "a11bd3ad9f528a0c8ed7e24b748bd101f81fc75a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5cfa8b0710ca3459feb233ae5d58dec631430935"
+        },
+        "date": 1786853383662,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6707726,
+            "range": "± 83618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221382,
+            "range": "± 11947",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2222207,
+            "range": "± 61733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8587714,
+            "range": "± 84701",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4334411,
+            "range": "± 25751",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4291570,
+            "range": "± 13989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584004,
+            "range": "± 10201",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192089,
+            "range": "± 342",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191871,
+            "range": "± 2518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1038181,
+            "range": "± 11196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 585591,
+            "range": "± 3888",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584619,
+            "range": "± 2938",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 55026,
+            "range": "± 3645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 197504,
+            "range": "± 5916",
             "unit": "ns/iter"
           }
         ]
