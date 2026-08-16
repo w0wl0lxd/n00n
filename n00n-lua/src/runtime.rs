@@ -439,7 +439,7 @@ fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
     for _ in 0..MAX_CLEANUP_CALLBACK_DRAIN {
         let callbacks = std::mem::take(&mut lock_cell(handle).cleanup_callbacks);
         if callbacks.is_empty() {
-            return;
+            break;
         }
         for key in callbacks {
             if let Err(error) = lua
@@ -459,6 +459,7 @@ fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
             tracing::warn!(%error, "failed to drop tool cleanup callback key");
         }
     }
+    lock_cell(handle).cleanup_callback_deadline.set(None);
 }
 
 fn checked_deadline_after(base: Instant, duration: Duration) -> Instant {
@@ -3696,7 +3697,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_callbacks_clear_stale_interrupted_deadline_without_replacing_parent_deadline() {
+    fn cleanup_callbacks_clear_temporary_deadline_without_replacing_parent_deadline() {
         let lua = Lua::new();
         let parent_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(30));
         let interrupted_deadline = checked_deadline_after(Instant::now(), Duration::from_secs(20));
@@ -3722,7 +3723,7 @@ mod tests {
         assert_eq!(cell.deadline.get(), Some(parent_deadline));
         assert_eq!(cell.interrupted_deadline.get(), None);
         assert_eq!(cell.async_cleanup_cutoff.get(), Some(async_cutoff));
-        assert!(cell.cleanup_callback_deadline.get().is_some());
+        assert_eq!(cell.cleanup_callback_deadline.get(), None);
         drop(cell);
         assert_eq!(task_deadline(&child), Some(parent_deadline));
     }
