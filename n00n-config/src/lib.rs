@@ -40,8 +40,6 @@ pub const MAX_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
 pub const DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_IMPLICIT: bool = false;
 pub const DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT: bool = false;
 pub const DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS: bool = false;
-pub const DEFAULT_OPENAI_CODEX_ACCEPTS_STORE_TRUE: bool = false;
-pub const DEFAULT_OPENAI_CODEX_ACCEPTS_CONVERSATION: bool = false;
 pub const DEFAULT_FUSION_LEAD_MODEL: &str = "codex/gpt-5.6-sol";
 pub const DEFAULT_FUSION_SIDEKICK_MODEL: &str = "codex/gpt-5.6-luna";
 pub const DEFAULT_FUSION_SIDEKICK_THINKING: &str = "max";
@@ -615,8 +613,6 @@ pub struct ProviderFileConfig {
     pub openai_codex_accepts_prompt_cache_options_implicit: Option<bool>,
     pub openai_codex_accepts_prompt_cache_options_explicit: Option<bool>,
     pub openai_codex_accepts_prompt_cache_breakpoints: Option<bool>,
-    pub openai_codex_accepts_store_true: Option<bool>,
-    pub openai_codex_accepts_conversation: Option<bool>,
 }
 
 impl ProviderFileConfig {
@@ -631,9 +627,7 @@ impl ProviderFileConfig {
             openai_coding_plan_slots,
             openai_codex_accepts_prompt_cache_options_implicit,
             openai_codex_accepts_prompt_cache_options_explicit,
-            openai_codex_accepts_prompt_cache_breakpoints,
-            openai_codex_accepts_store_true,
-            openai_codex_accepts_conversation
+            openai_codex_accepts_prompt_cache_breakpoints
         );
     }
 }
@@ -1430,14 +1424,6 @@ pub struct ProviderConfig {
     #[config(key = "openai_codex_accepts_prompt_cache_breakpoints", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS,
              desc = "Allow Codex explicit cache-control breakpoints after a successful manual capability probe")]
     pub openai_codex_accepts_prompt_cache_breakpoints: bool,
-
-    #[config(key = "openai_codex_accepts_store_true", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_STORE_TRUE,
-             desc = "Record that Codex accepts store=true; runtime does not enable server-side storage by default")]
-    pub openai_codex_accepts_store_true: bool,
-
-    #[config(key = "openai_codex_accepts_conversation", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_CONVERSATION,
-             desc = "Record that Codex accepts conversation state; runtime does not enable conversations by default")]
-    pub openai_codex_accepts_conversation: bool,
 }
 
 impl Default for ProviderConfig {
@@ -1454,8 +1440,6 @@ impl Default for ProviderConfig {
                 DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT,
             openai_codex_accepts_prompt_cache_breakpoints:
                 DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS,
-            openai_codex_accepts_store_true: DEFAULT_OPENAI_CODEX_ACCEPTS_STORE_TRUE,
-            openai_codex_accepts_conversation: DEFAULT_OPENAI_CODEX_ACCEPTS_CONVERSATION,
         }
     }
 }
@@ -1488,12 +1472,6 @@ impl ProviderConfig {
             openai_codex_accepts_prompt_cache_breakpoints: f
                 .openai_codex_accepts_prompt_cache_breakpoints
                 .unwrap_or_else(|| DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS),
-            openai_codex_accepts_store_true: f
-                .openai_codex_accepts_store_true
-                .unwrap_or_else(|| DEFAULT_OPENAI_CODEX_ACCEPTS_STORE_TRUE),
-            openai_codex_accepts_conversation: f
-                .openai_codex_accepts_conversation
-                .unwrap_or_else(|| DEFAULT_OPENAI_CODEX_ACCEPTS_CONVERSATION),
         }
     }
 
@@ -2469,16 +2447,11 @@ mod tests {
                 .provider
                 .openai_codex_accepts_prompt_cache_breakpoints
         );
-        assert!(!default.provider.openai_codex_accepts_store_true);
-        assert!(!default.provider.openai_codex_accepts_conversation);
-
         let config = RawConfig {
             provider: ProviderFileConfig {
                 openai_codex_accepts_prompt_cache_options_implicit: Some(true),
                 openai_codex_accepts_prompt_cache_options_explicit: Some(true),
                 openai_codex_accepts_prompt_cache_breakpoints: Some(true),
-                openai_codex_accepts_store_true: Some(true),
-                openai_codex_accepts_conversation: Some(true),
                 ..Default::default()
             },
             ..Default::default()
@@ -2501,8 +2474,6 @@ mod tests {
                 .provider
                 .openai_codex_accepts_prompt_cache_breakpoints
         );
-        assert!(config.provider.openai_codex_accepts_store_true);
-        assert!(config.provider.openai_codex_accepts_conversation);
     }
     #[test_case("12000", CompactionBuffer::Tokens(12_000) ; "tokens_number")]
     #[test_case("\"20%\"", CompactionBuffer::Percent(20) ; "percent_string")]
