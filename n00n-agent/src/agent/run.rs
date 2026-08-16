@@ -428,6 +428,7 @@ impl<'h> Agent<'h> {
             thinking: input.thinking,
             fast: input.fast,
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
+            openai_prompt_cache_mode: None,
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
             safety_identifier: None,

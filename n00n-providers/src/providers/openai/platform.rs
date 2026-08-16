@@ -266,7 +266,18 @@ impl Default for OpenAiOptions {
 
 impl From<&n00n_config::ProviderConfig> for OpenAiOptions {
     fn from(config: &n00n_config::ProviderConfig) -> Self {
-        Self::with_coding_plan_slots(config.openai_coding_plan_slots)
+        Self::with_coding_plan_slots(config.openai_coding_plan_slots).with_codex_cache_capabilities(
+            CodexCacheCapabilities {
+                accepts_prompt_cache_options_implicit: config
+                    .openai_codex_accepts_prompt_cache_options_implicit,
+                accepts_prompt_cache_options_explicit: config
+                    .openai_codex_accepts_prompt_cache_options_explicit,
+                accepts_prompt_cache_breakpoints: config
+                    .openai_codex_accepts_prompt_cache_breakpoints,
+                accepts_store_true: config.openai_codex_accepts_store_true,
+                accepts_conversation: config.openai_codex_accepts_conversation,
+            },
+        )
     }
 }
 
@@ -2623,6 +2634,35 @@ mod tests {
         assert_eq!(provider.coding_plan_slots, u8::try_from(slots).unwrap());
     }
 
+    #[test]
+    fn provider_config_codex_cache_capabilities_reach_openai_provider() {
+        let config = n00n_config::ProviderConfig {
+            openai_codex_accepts_prompt_cache_options_implicit: true,
+            openai_codex_accepts_prompt_cache_options_explicit: true,
+            openai_codex_accepts_prompt_cache_breakpoints: true,
+            openai_codex_accepts_store_true: true,
+            openai_codex_accepts_conversation: true,
+            ..Default::default()
+        };
+        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
+        let provider = OpenAi::with_auth_options(
+            auth,
+            crate::providers::Timeouts::default(),
+            OpenAiOptions::from(&config),
+        )
+        .unwrap();
+
+        assert_eq!(
+            provider.codex_cache_capabilities,
+            CodexCacheCapabilities {
+                accepts_prompt_cache_options_implicit: true,
+                accepts_prompt_cache_options_explicit: true,
+                accepts_prompt_cache_breakpoints: true,
+                accepts_store_true: true,
+                accepts_conversation: true,
+            }
+        );
+    }
     fn provider_with_response_storage(path: &Path) -> OpenAi {
         let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
         let mut provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
