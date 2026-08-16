@@ -27,8 +27,18 @@ const BRIDGE_CLOSED: &str = "tool bridge closed (cancelled)";
 type CallResults = Vec<(u32, Result<Value, String>)>;
 
 fn unstreamed_stdout(stdout: &str, streamed_bytes: usize) -> Option<&str> {
+    if streamed_bytes > stdout.len() {
+        return None;
+    }
+    if let Some(remaining) = stdout.get(streamed_bytes..) {
+        return (!remaining.is_empty()).then_some(remaining);
+    }
+    let mut boundary = streamed_bytes + 1;
+    while boundary <= stdout.len() && !stdout.is_char_boundary(boundary) {
+        boundary += 1;
+    }
     stdout
-        .get(streamed_bytes..)
+        .get(boundary..)
         .filter(|remaining| !remaining.is_empty())
 }
 
@@ -271,8 +281,8 @@ mod tests {
     }
 
     #[test]
-    fn streamed_output_offset_must_be_utf8_boundary() {
-        assert_eq!(unstreamed_stdout("é-rest", 1), None);
+    fn streamed_output_offset_recovers_to_next_utf8_boundary() {
+        assert_eq!(unstreamed_stdout("é-rest", 1), Some("-rest"));
         assert_eq!(unstreamed_stdout("é-rest", 2), Some("-rest"));
     }
 

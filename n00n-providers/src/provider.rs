@@ -540,10 +540,7 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
 }
 
 fn is_expected_provider_absence(error: &AgentError) -> bool {
-    matches!(
-        error,
-        AgentError::Config { .. } | AgentError::SetupRequired { .. }
-    )
+    matches!(error, AgentError::Config { .. }) || error.is_setup_required()
 }
 
 /// Fetches all available models from all providers asynchronously.
@@ -689,7 +686,7 @@ mod tests {
     use crate::AgentError;
 
     #[test]
-    fn only_configuration_errors_are_expected_provider_absence() {
+    fn configuration_and_setup_errors_are_expected_provider_absence() {
         let not_configured = AgentError::Config {
             message: "API key not configured".into(),
         };
