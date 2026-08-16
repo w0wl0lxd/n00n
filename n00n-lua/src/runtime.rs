@@ -3055,9 +3055,11 @@ async fn run_tool_call(
         wait_for_async_tasks(&handle).await;
     }
     scope
-        .scope_future(async { run_task_cleanup_callbacks(&lua, &handle) })
+        .scope_future(async {
+            run_task_cleanup_callbacks(&lua, &handle);
+            restore_timeout_marker(&reply);
+        })
         .await;
-    restore_timeout_marker(&reply);
     if let Some(id) = &live_id {
         live_tasks.borrow_mut().remove(id);
         // Best-effort cache: any tool with a root buf can serve clicks.
