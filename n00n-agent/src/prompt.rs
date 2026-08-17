@@ -344,8 +344,8 @@ mod tests {
         let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
         for name in ["explore_code", "index_file", "map_codegraph", "search_text"] {
             assert!(out.contains(name), "missing primary tool {name}");
+            assert!(at(&out, name) < at(&out, "read_file"));
         }
-        assert!(at(&out, "explore_code") < at(&out, "read_file"));
     }
 
     /// One test to pin the whole System layout: every slot shows up, in order,
