@@ -2980,8 +2980,16 @@ async fn wait_for_task_deadline_after_initial_read(
 ) -> Result<LuaValue, mlua::Error> {
     let mut after_initial_read = Some(after_initial_read);
     loop {
-        if lock_cell(handle).deadline_interrupted.get() {
-            return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
+        if let Some(cutoff) = absolute_deadline_cutoff(handle) {
+            let wake_at = cutoff.min(checked_deadline_after(
+                Instant::now(),
+                DISPATCH_POLL_INTERVAL,
+            ));
+            smol::Timer::at(wake_at).await;
+            if Instant::now() >= cutoff {
+                return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
+            }
+            continue;
         }
         let deadline = task_deadline(handle);
         if let Some(after_initial_read) = after_initial_read.take() {
@@ -2990,9 +2998,20 @@ async fn wait_for_task_deadline_after_initial_read(
         let poll_cutoff = checked_deadline_after(Instant::now(), DISPATCH_POLL_INTERVAL);
         let wake_at = deadline.map_or(poll_cutoff, |deadline| deadline.min(poll_cutoff));
         smol::Timer::at(wake_at).await;
-        if task_deadline(handle).is_some_and(|deadline| Instant::now() >= deadline) {
-            mark_deadline_interrupted(handle);
-            return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
+        if let Some(deadline) = task_deadline(handle)
+            && Instant::now() >= deadline
+        {
+            smol::Timer::at(checked_deadline_after(
+                deadline,
+                LUA_EXECUTION_SLICE + WATCHDOG_POLL_INTERVAL,
+            ))
+            .await;
+            if !lock_cell(handle).deadline_interrupted.get()
+                && task_deadline(handle).is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                mark_deadline_interrupted(handle);
+                return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
+            }
         }
     }
 }
