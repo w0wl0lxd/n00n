@@ -298,8 +298,7 @@ mod tests {
 
     fn respond_live(rx: flume::Receiver<UiAction>, body: Value) {
         thread::spawn(move || {
-            if let Ok(UiAction::Session { req, reply_tx }) = rx.recv_timeout(Duration::from_secs(2))
-            {
+            if let Ok(UiAction::Session { req, reply_tx }) = rx.recv() {
                 match req {
                     SessionRequest::Live => {
                         let _ = reply_tx.send(Ok(body) as SessionReply);
