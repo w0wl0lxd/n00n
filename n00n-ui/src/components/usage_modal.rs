@@ -132,15 +132,21 @@ impl UsageModal {
     }
 }
 
-fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
-    if id == current.id {
-        return Some(current.pricing);
+fn model_for(id: &str, current: &Model) -> Option<Model> {
+    if id == current.id || id == current.spec() {
+        return Some(current.clone());
     }
-    Model::from_spec(id).ok().map(|m| m.pricing).or_else(|| {
-        Model::from_spec(&format!("{}/{}", current.provider, id))
-            .ok()
-            .map(|m| m.pricing)
-    })
+    Model::from_spec(id)
+        .ok()
+        .or_else(|| Model::from_spec(&format!("{}/{}", current.provider, id)).ok())
+}
+
+fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
+    model_for(id, current).map(|model| model.pricing)
+}
+
+fn display_model_id(id: &str) -> String {
+    Model::from_spec(id).map_or_else(|_| id.to_owned(), |model| model.id)
 }
 
 pub(crate) fn attributed_costs(
@@ -213,7 +219,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
 
     let model_w = entries
         .iter()
-        .map(|(id, _)| id.chars().count())
+        .map(|(id, _)| display_model_id(id).chars().count())
         .max()
         .unwrap_or_else(|| 0)
         .max(MODEL_COL_MIN);
@@ -252,19 +258,19 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     lines
 }
 fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
-    let mut rates = if ctx.by_model.is_empty() {
-        vec![(ctx.model.spec(), ctx.model.pricing)]
-    } else {
-        ctx.by_model
-            .keys()
-            .filter_map(|id| pricing_for(id, ctx.model).map(|pricing| (id.clone(), pricing)))
-            .collect::<Vec<_>>()
-    };
+    let mut rates = ctx
+        .by_model
+        .keys()
+        .filter_map(|id| model_for(id, ctx.model))
+        .map(|model| (model.spec(), model.pricing))
+        .collect::<Vec<_>>();
+    rates.push((ctx.model.spec(), ctx.model.pricing));
     rates.retain(|(_, pricing)| !pricing.effective(ctx.fast).is_zero());
     if rates.is_empty() {
         return Vec::new();
     }
     rates.sort_by(|(left, _), (right, _)| left.cmp(right));
+    rates.dedup_by(|(left, _), (right, _)| left == right);
 
     let price_heading = if ctx.fast {
         FAST_PRICE_HEADING
@@ -402,7 +408,7 @@ fn model_row(
     };
     vec![
         Span::raw(PREFIX),
-        Span::styled(format!("{id:<model_w$}"), fg),
+        Span::styled(format!("{:<model_w$}", display_model_id(id)), fg),
         gap(),
         num(usage.input),
         gap(),
@@ -708,6 +714,53 @@ mod tests {
         assert!(text.contains("cache read $0.50"));
         assert!(text.contains("cache write $6.25"));
         assert!(text.contains("API-equivalent"));
+    }
+
+    #[test]
+    fn pricing_includes_current_model_after_switching_models() {
+        let theme = crate::theme::current();
+        let model = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let by_model = HashMap::from([(
+            "anthropic/claude-haiku-4-5".into(),
+            StoredTokenUsage::default(),
+        )]);
+
+        let text = pricing_lines(
+            &UsageModalContext {
+                total: &TokenUsage::default(),
+                by_model: &by_model,
+                model: &model,
+                fast: false,
+                quota: None,
+            },
+            &theme,
+        )
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+        assert!(text.contains(&model.spec()));
+        assert!(text.contains("anthropic/claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn model_rows_hide_provider_prefixes() {
+        let row = model_row(
+            "anthropic/claude-haiku-4-5",
+            &StoredTokenUsage::default(),
+            None,
+            None,
+            18,
+            Style::new(),
+            Style::new(),
+        )
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+        assert!(row.contains("claude-haiku-4-5"));
+        assert!(!row.contains("anthropic/"));
     }
 
     #[test]
