@@ -88,6 +88,7 @@ a string belongs.
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
+| [`n00n.git`](#n00n-git) | In-process access to the git operations linked into n00n. |
 | [`n00n.github`](#n00n-github) | GitHub REST API client using reqwest. |
 | [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
 | [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index built into n00n. |
@@ -5292,6 +5293,29 @@ Show project file structure from the index using native SQLite when available, o
 - `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
 
 **Returns:** (`string?`, `string?`) output and optional error message.
+
+
+## n00n.git {#n00n-git}
+
+In-process access to the git operations linked into n00n.
+
+---
+
+### `n00n.git.run()` {#n00n-git-run}
+
+```lua
+n00n.git.run({command}, {repo}, {options?})
+```
+
+Run a bundled git operation and return its JSON result.
+
+**Parameters:**
+
+- `{command}` (`string`) Operation name.
+- `{repo}` (`string`) Path to the repository.
+- `{options}` (`table`) Operation-specific arguments.
+
+**Returns:** (`string|nil`, `string|nil`) JSON result, or nil and the error message.
 
 
 ## n00n.github {#n00n-github}
