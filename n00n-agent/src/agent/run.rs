@@ -627,7 +627,8 @@ impl<'h> Agent<'h> {
                         AgentError::RequestSent { metadata, .. } => metadata.as_ref(),
                         _ => None,
                     };
-                    if !self.approve_ambiguous_request_replay(metadata).await? {
+                    let output_emitted = metadata.is_none_or(|metadata| metadata.emitted_event);
+                    if output_emitted && !self.approve_ambiguous_request_replay(metadata).await? {
                         break Err(error);
                     }
                     self.event_tx.send(AgentEvent::Retry {
@@ -638,8 +639,9 @@ impl<'h> Agent<'h> {
                     warn!(
                         delivery_phase = ?metadata.map(|metadata| metadata.phase),
                         response_id_present = metadata.is_some_and(|metadata| metadata.response_id.is_some()),
-                        output_emitted = metadata.is_some_and(|metadata| metadata.emitted_event),
-                        "replaying ambiguous provider request after approval"
+                        output_emitted,
+                        approval_required = output_emitted,
+                        "replaying ambiguous provider request"
                     );
                     approved_ambiguous_replay = true;
                 }
@@ -1726,6 +1728,7 @@ mod tests {
             let provider = AmbiguousProvider {
                 calls: Arc::clone(&calls),
                 failures: 1,
+                emits_output: true,
             };
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent_with_registry(
@@ -1782,12 +1785,41 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_request_without_output_replays_without_approval() {
+        smol::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let provider = AmbiguousProvider {
+                calls: Arc::clone(&calls),
+                failures: 1,
+                emits_output: false,
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(ToolRegistry::new()),
+            );
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            assert!(drain_events(&event_rx).iter().all(|event| !matches!(
+                event.event,
+                AgentEvent::PermissionRequest { ref tool, .. }
+                    if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+            )));
+        });
+    }
+
+    #[test]
     fn ambiguous_request_is_not_replayed_twice() {
         smol::block_on(async {
             let calls = Arc::new(AtomicUsize::new(0));
             let provider = AmbiguousProvider {
                 calls: Arc::clone(&calls),
                 failures: 2,
+                emits_output: true,
             };
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent_with_registry(
@@ -1873,6 +1905,7 @@ mod tests {
     struct AmbiguousProvider {
         calls: Arc<AtomicUsize>,
         failures: usize,
+        emits_output: bool,
     }
 
     impl Provider for AmbiguousProvider {
@@ -1889,11 +1922,13 @@ mod tests {
             Box::pin(async {
                 let call = self.calls.fetch_add(1, Ordering::Relaxed);
                 if call < self.failures {
-                    event_tx
-                        .send(ProviderEvent::TextDelta {
-                            text: "stale".into(),
-                        })
-                        .unwrap();
+                    if self.emits_output {
+                        event_tx
+                            .send(ProviderEvent::TextDelta {
+                                text: "stale".into(),
+                            })
+                            .unwrap();
+                    }
                     return Err(AgentError::RequestSent {
                         message: "WebSocket connection reset".into(),
                         metadata: Some(RequestDeliveryMetadata {
@@ -1902,7 +1937,7 @@ mod tests {
                             idempotency_key: None,
                             close_code: None,
                             close_reason: None,
-                            emitted_event: true,
+                            emitted_event: self.emits_output,
                         }),
                     });
                 }
