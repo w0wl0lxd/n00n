@@ -90,13 +90,13 @@ The workspace lint configuration is the law. It lives in the root `Cargo.toml` `
 
 Every tool result spends context tokens. Prefer structural, pre-indexed tools over broad searches and unfiltered file reads.
 
-- **Explore first:** use `explore` for codebase questions; it routes to `index` (single-file skeleton, priority for file paths), `codegraph` (callers/callees, impact, cross-file structure), or `semblem` (keyword/semantic search). The router auto-detects intent from query patterns.
-- **Cross-file structure:** use `codegraph` for end-to-end system questions, caller/callee relationships, call paths, and blast-radius impact checks (requires a `.codegraph/` index).
-- **Single-file structure next:** use `index` to get a compact skeleton and exact line ranges before reading any source file.
-- **Then targeted reads:** use `read` with `offset`/`limit` for the specific section you need.
-- **Use `grep` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
-- **Parallelize:** use `batch` for independent calls.
-- **Filter and pipeline with `code_execution`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
+- **Explore first:** use `explore_code` for codebase questions; it routes to `index_file` (single-file skeleton, priority for file paths), `map_codegraph` (callers/callees, impact, cross-file structure), or `search_text` (keyword/semantic search). The router auto-detects intent from query patterns.
+- **Cross-file structure:** use `map_codegraph` for end-to-end system questions, caller/callee relationships, call paths, and blast-radius impact checks (requires a `.codegraph/` index).
+- **Single-file structure next:** use `index_file` to get a compact skeleton and exact line ranges before reading any source file.
+- **Then targeted reads:** use `read_file` with `offset`/`limit` for the specific section you need.
+- **Use `search_code` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
+- **Parallelize:** use `run_batch` for independent calls.
+- **Filter and pipeline with `run_python`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
 - **AST-aware search (`ast-grep`):** if you configure the `ast-grep` MCP server, use it for AST-pattern structural search and safe refactoring. It is more precise than `grep` and safer than `sed` for code changes. Example `.n00n/mcp.toml`:
 
   ```toml

@@ -142,7 +142,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use the **index** tool first on individual files to get their skeleton, then use the **read** tool with offset/limit for the specific section you need.",
+  content = "- Use **index_file** first on individual files to get their skeleton, then use **read_file** with offset/limit for the specific section you need.",
 })
 
 n00n.api.register_tool({
