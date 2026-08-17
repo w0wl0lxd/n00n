@@ -1026,7 +1026,8 @@ n00n.async.run({fn}, {on_finish?})
 
 Fire off a function as a new async task. It runs in the background and
 you do not wait for it. If you need the result, pass an {on_finish}
-callback.
+callback. At most 256 `async.run` tasks may be queued or running at once;
+excess fanout returns an error instead of consuming memory without bound.
 
 **Parameters:**
 

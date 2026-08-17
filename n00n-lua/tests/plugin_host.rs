@@ -1005,6 +1005,34 @@ fn handler_nil_waits_for_owned_async_run() {
     assert_eq!(second.join().unwrap().unwrap(), "finished");
 }
 
+#[test]
+fn async_run_excess_fanout_is_rejected_promptly() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "async_fanout",
+        description = "tries excessive async fanout",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function()
+            for _ = 1, 257 do
+                n00n.async.run(function() end)
+            end
+            return "unexpected"
+        end
+    })"#;
+    host.load_source("async_fanout", src).unwrap();
+
+    let started = std::time::Instant::now();
+    let error = exec_tool(&reg, "async_fanout", serde_json::json!({})).unwrap_err();
+
+    assert!(
+        error.contains("async.run capacity exhausted (maximum 256 outstanding tasks)"),
+        "got: {error}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
 #[cfg(unix)]
 #[test]
 fn accepted_finish_does_not_wait_for_unrelated_async_run() {
