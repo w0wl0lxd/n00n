@@ -78,19 +78,14 @@ impl CodexCacheCapabilities {
         opts.message_cache_breakpoints = 0;
         opts.openai_prompt_cache_mode = None;
 
-        if self.accepts_prompt_cache_breakpoints && self.accepts_prompt_cache_options_explicit {
-            opts.message_cache_breakpoints = requested_breakpoints;
-            return opts;
-        }
-
-        if self.accepts_prompt_cache_options_implicit {
-            opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Implicit);
-        } else if self.accepts_prompt_cache_options_explicit
+        if self.accepts_prompt_cache_options_explicit
             && self.accepts_prompt_cache_breakpoints
             && requested_breakpoints > 0
         {
             opts.message_cache_breakpoints = requested_breakpoints;
             opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Explicit);
+        } else if self.accepts_prompt_cache_options_implicit {
+            opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Implicit);
         }
 
         opts
@@ -2726,7 +2721,29 @@ mod tests {
         });
 
         assert_eq!(opts.message_cache_breakpoints, 3);
-        assert_eq!(opts.openai_prompt_cache_mode, None);
+        assert_eq!(
+            opts.openai_prompt_cache_mode,
+            Some(OpenAiPromptCacheMode::Explicit)
+        );
+    }
+
+    #[test]
+    fn codex_cache_capabilities_fall_back_to_implicit_without_breakpoints() {
+        let opts = CodexCacheCapabilities {
+            accepts_prompt_cache_options_implicit: true,
+            accepts_prompt_cache_options_explicit: true,
+            accepts_prompt_cache_breakpoints: true,
+        }
+        .apply_to_request_options(RequestOptions {
+            message_cache_breakpoints: 0,
+            ..Default::default()
+        });
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
+        assert_eq!(
+            opts.openai_prompt_cache_mode,
+            Some(OpenAiPromptCacheMode::Implicit)
+        );
     }
 
     #[test]

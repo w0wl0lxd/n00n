@@ -1414,15 +1414,15 @@ pub struct ProviderConfig {
     pub openai_coding_plan_slots: u64,
 
     #[config(key = "openai_codex_accepts_prompt_cache_options_implicit", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_IMPLICIT,
-             desc = "Allow Codex to send documented implicit prompt_cache_options after a successful manual capability probe")]
+             desc = "Experimental: allow Codex implicit prompt_cache_options only after independently verifying endpoint support")]
     pub openai_codex_accepts_prompt_cache_options_implicit: bool,
 
     #[config(key = "openai_codex_accepts_prompt_cache_options_explicit", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT,
-             desc = "Allow Codex to send documented explicit prompt_cache_options after a successful manual capability probe")]
+             desc = "Experimental: allow Codex explicit prompt_cache_options only after independently verifying endpoint support")]
     pub openai_codex_accepts_prompt_cache_options_explicit: bool,
 
     #[config(key = "openai_codex_accepts_prompt_cache_breakpoints", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS,
-             desc = "Allow Codex explicit cache-control breakpoints after a successful manual capability probe")]
+             desc = "Experimental: allow Codex cache breakpoints only after independently verifying endpoint support")]
     pub openai_codex_accepts_prompt_cache_breakpoints: bool,
 }
 
