@@ -11,7 +11,7 @@ local session_cache = {}
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **explore** first for codebase questions; it routes to index (single-file skeleton) or codegraph (callers/callees, impact, cross-file structure).",
+  content = "- Use **explore_code** first; it routes codebase questions efficiently.",
 })
 
 local FALLBACK_BACKEND = "semblem"
@@ -85,16 +85,12 @@ n00n.api.register_tool({
   name = "explore_code",
   aliases = { "explore" },
   kind = "read",
-  description = [[Unified codebase exploration router. Picks the best backend for the question:
-- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** intent: caller/callee maps via `codegraph`
-- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
-- **search** intent: keyword or natural-language search via `semblem`
-- **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `codegraph impact`
+  description = [[PRIMARY CODEBASE TOOL. Use first. Routes by intent:
+- **file** or **skeleton**: `index_file`
+- **relations**, **cross_file**, **symbol**, or **impact**: `map_codegraph`
+- **search**: `search_text`
 
-Set `intent` explicitly when you know the backend. Otherwise the router infers from the query.
-Use `command` and `symbol` for precise relations routing.]],
+Set `intent` when known; otherwise the router infers it.]],
 
   schema = {
     type = "object",

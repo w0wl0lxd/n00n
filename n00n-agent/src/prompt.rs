@@ -31,15 +31,7 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 - Output text to communicate with the user; all text you output outside of tool use is displayed to the user. Only use tools to complete tasks. NEVER use bash echo or other command-line tools to communicate thoughts, explanations, diagrams, or instructions to the user. Output all communication directly in your response text instead.
 - NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files.";
 
-const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
-    "explore",
-    "batch",
-    "code_execution",
-    "codegraph",
-    "index",
-    "semblem",
-    "task",
-];
+const NATIVE_EFFICIENT_TOOLS: &[&str] = &["explore_code"];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 
 /// Singleton: alphabetically last plugin wins, discarding all prior content
@@ -309,8 +301,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str =
-        "Most efficient tools: explore, batch, code_execution, codegraph, index, semblem, task";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: explore_code";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();
@@ -341,6 +332,20 @@ mod tests {
             "unfilled marker left in output:\n{out}"
         );
         assert!(out.contains(&format!("{NATIVE_EFFICIENT_LINE}.")));
+    }
+
+    #[test]
+    fn efficient_tools_use_schema_visible_names() {
+        assert_eq!(NATIVE_EFFICIENT_TOOLS, ["explore_code"]);
+    }
+
+    #[test]
+    fn system_routes_codebase_questions_through_primary_tools() {
+        let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
+        for name in ["explore_code", "index_file", "map_codegraph", "search_text"] {
+            assert!(out.contains(name), "missing primary tool {name}");
+        }
+        assert!(at(&out, "explore_code") < at(&out, "read_file"));
     }
 
     /// One test to pin the whole System layout: every slot shows up, in order,

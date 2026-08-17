@@ -150,7 +150,7 @@ n00n.api.register_tool({
   aliases = { "index" },
   kind = "read",
   modes = { "default", "research", "build", "compact" },
-  description = [[Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.]],
+  description = [[PRIMARY SINGLE-FILE TOOL. Use before read_file. Returns a compact overview of imports, types, function signatures, and structure with line numbers in []. Typically 70-90% smaller than reading the full file. Supports source files and Markdown.]],
 
   schema = {
     type = "object",

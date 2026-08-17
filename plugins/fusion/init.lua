@@ -85,7 +85,7 @@ local function build_prompt(input)
     parts[#parts + 1] = "\n"
   end
   parts[#parts + 1] =
-    "\nExecute efficiently. Prefer index/codegraph before broad reads. Return concise file:line evidence, test/lint results, and a short summary — not full file dumps."
+    "\nExecute efficiently. Prefer index_file/map_codegraph before broad read_file calls. Return concise file:line evidence, test/lint results, and a short summary — not full file dumps."
   return table.concat(parts)
 end
 
