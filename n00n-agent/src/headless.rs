@@ -321,7 +321,7 @@ impl SessionStore {
         let mut candidate = self.session.clone();
         candidate.messages = messages.to_vec();
         candidate.transcript = transcript.to_vec();
-        candidate.model = model_spec.to_owned();
+        model_spec.clone_into(&mut candidate.model);
         candidate.update_title_if_default();
         if let Some(snapshot) = self.compaction_snapshot(&candidate, revision)? {
             candidate
