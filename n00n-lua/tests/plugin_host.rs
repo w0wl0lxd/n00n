@@ -167,6 +167,25 @@ fn exec_output_in(
     smol::block_on(async { inv.execute(&ctx).await }).output
 }
 
+#[test]
+fn bundled_git_tool_executes_status_through_native_api() {
+    let (registry, _host) = builtins_host();
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output = exec_tool(
+        &registry,
+        "git",
+        serde_json::json!({ "command": "status", "path": repo }),
+    )
+    .expect("bundled git status failed");
+
+    assert!(
+        output.contains("On branch")
+            || output.contains("Working tree clean")
+            || output.contains(':'),
+        "unexpected git status output: {output}"
+    );
+}
+
 const ECHO_PLUGIN: &str = r#"
 n00n.api.register_tool({
     name = "echo_",
