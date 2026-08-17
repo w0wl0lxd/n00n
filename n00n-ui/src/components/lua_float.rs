@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use crossterm::event::KeyEvent;
 use n00n_agent::{SharedBuf, SnapshotLine, SpanStyle};
@@ -17,6 +21,9 @@ use crate::components::{
     tool_display::{SPINNER_STYLE_NAME, SPINNER_STYLE_PREFIX, resolve_span_style},
 };
 use crate::theme;
+
+const MAX_WINDOW_COMMANDS_PER_TICK: usize = 64;
+const COMMAND_RELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A top band, a bottom band, and the scrollable middle. When the window is too
 /// short for both bands the bottom wins, so footers like keybind hints survive
@@ -70,6 +77,8 @@ struct FloatWindow {
     visible: bool,
     event_tx: flume::Sender<WinEvent>,
     cmd_rx: flume::Receiver<WinCommand>,
+    close_requested: Arc<AtomicBool>,
+    command_relay_active: bool,
 }
 
 impl FloatWindow {
@@ -161,6 +170,48 @@ pub(crate) struct FloatManager {
     next_id: u32,
 }
 
+fn relay_window_commands(
+    source: flume::Receiver<WinCommand>,
+    close_requested: Arc<AtomicBool>,
+) -> Option<flume::Receiver<WinCommand>> {
+    let (command_tx, command_rx) = flume::bounded(MAX_WINDOW_COMMANDS_PER_TICK);
+    match std::thread::Builder::new()
+        .name("window-command-relay".into())
+        .spawn(move || {
+            run_window_command_relay(&source, &command_tx, &close_requested);
+        }) {
+        Ok(_) => Some(command_rx),
+        Err(error) => {
+            tracing::error!(%error, "failed to start window command relay");
+            None
+        }
+    }
+}
+
+fn run_window_command_relay(
+    source: &flume::Receiver<WinCommand>,
+    command_tx: &flume::Sender<WinCommand>,
+    close_requested: &Arc<AtomicBool>,
+) {
+    loop {
+        if command_tx.is_disconnected() {
+            return;
+        }
+        match source.recv_timeout(COMMAND_RELAY_POLL_INTERVAL) {
+            Ok(WinCommand::Close) | Err(flume::RecvTimeoutError::Disconnected) => {
+                close_requested.store(true, Ordering::Release);
+                return;
+            }
+            Ok(command) => {
+                if command_tx.send(command).is_err() {
+                    return;
+                }
+            }
+            Err(flume::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
 impl FloatManager {
     pub fn new() -> Self {
         Self {
@@ -205,6 +256,7 @@ impl FloatManager {
         }
     }
 
+    #[cfg(test)]
     pub fn open(
         &mut self,
         buf: Arc<SharedBuf>,
@@ -212,6 +264,25 @@ impl FloatManager {
         focus: bool,
         event_tx: flume::Sender<WinEvent>,
         cmd_rx: flume::Receiver<WinCommand>,
+    ) {
+        self.open_with_close_flag(
+            buf,
+            config,
+            focus,
+            event_tx,
+            cmd_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+    }
+
+    pub fn open_with_close_flag(
+        &mut self,
+        buf: Arc<SharedBuf>,
+        config: FloatConfig,
+        focus: bool,
+        event_tx: flume::Sender<WinEvent>,
+        cmd_rx: flume::Receiver<WinCommand>,
+        close_requested: Arc<AtomicBool>,
     ) {
         let cached_lines = buf.read_if_dirty().unwrap_or_else(Default::default);
         let id = self.next_id;
@@ -238,6 +309,8 @@ impl FloatManager {
             visible,
             event_tx,
             cmd_rx,
+            close_requested,
+            command_relay_active: false,
         };
 
         self.windows.push(win);
@@ -252,12 +325,25 @@ impl FloatManager {
         let mut closed_ids = Vec::new();
 
         for win in &mut self.windows {
+            if win.close_requested.load(Ordering::Acquire) {
+                closed_ids.push(win.id);
+                continue;
+            }
             if let Some(lines) = win.buf.read_if_dirty() {
                 win.cached_lines = lines;
                 win.bring_cursor_into_view();
             }
 
-            loop {
+            if !win.command_relay_active
+                && win.cmd_rx.len() > MAX_WINDOW_COMMANDS_PER_TICK
+                && let Some(relayed) =
+                    relay_window_commands(win.cmd_rx.clone(), Arc::clone(&win.close_requested))
+            {
+                win.cmd_rx = relayed;
+                win.command_relay_active = true;
+            }
+
+            for _ in 0..MAX_WINDOW_COMMANDS_PER_TICK {
                 match win.cmd_rx.try_recv() {
                     Ok(WinCommand::SetConfig(patch)) => {
                         win.config.apply_patch(patch);
@@ -274,6 +360,9 @@ impl FloatManager {
                     }
                     Err(flume::TryRecvError::Empty) => break,
                 }
+            }
+            if win.close_requested.load(Ordering::Acquire) {
+                closed_ids.push(win.id);
             }
         }
 
@@ -1061,6 +1150,56 @@ mod tests {
     }
 
     #[test]
+    fn shared_close_flag_bypasses_command_backlog() {
+        let mut mgr = FloatManager::new();
+        let (event_tx, _event_rx) = flume::unbounded();
+        let (command_tx, command_rx) = flume::unbounded();
+        let close_requested = Arc::new(AtomicBool::new(false));
+        mgr.open_with_close_flag(
+            make_buf(&["a"]),
+            make_config(),
+            true,
+            event_tx,
+            command_rx,
+            Arc::clone(&close_requested),
+        );
+        for visible in (0..MAX_WINDOW_COMMANDS_PER_TICK * 4).map(|index| index % 2 == 0) {
+            command_tx.send(WinCommand::SetVisible(visible)).unwrap();
+        }
+
+        close_requested.store(true, Ordering::Release);
+        mgr.tick();
+
+        assert!(!mgr.is_open(), "{EXPECT_CLOSED}");
+    }
+
+    #[test]
+    fn command_relay_preserves_updates_before_close() {
+        let (source_tx, source_rx) = flume::unbounded();
+        for visible in (0..MAX_WINDOW_COMMANDS_PER_TICK * 4).map(|index| index % 2 == 0) {
+            source_tx.send(WinCommand::SetVisible(visible)).unwrap();
+        }
+        source_tx.send(WinCommand::Close).unwrap();
+        let close_requested = Arc::new(AtomicBool::new(false));
+        let (command_tx, command_rx) = flume::bounded(MAX_WINDOW_COMMANDS_PER_TICK);
+
+        let relay = std::thread::spawn({
+            let close_requested = Arc::clone(&close_requested);
+            move || run_window_command_relay(&source_rx, &command_tx, &close_requested)
+        });
+        for _ in 0..MAX_WINDOW_COMMANDS_PER_TICK * 4 {
+            assert!(matches!(
+                command_rx.recv_timeout(COMMAND_RELAY_POLL_INTERVAL),
+                Ok(WinCommand::SetVisible(_))
+            ));
+        }
+        relay.join().unwrap();
+
+        assert!(close_requested.load(Ordering::Acquire));
+        assert!(command_rx.is_empty());
+    }
+
+    #[test]
     fn key_forwarded_to_lua() {
         let mut mgr = FloatManager::new();
         let (event_rx, _cmd_tx) = open_with_lines(&mut mgr, &["line1"]);
@@ -1570,6 +1709,8 @@ mod tests {
             visible: true,
             event_tx,
             cmd_rx,
+            close_requested: Arc::new(AtomicBool::new(false)),
+            command_relay_active: false,
         }
     }
 

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use humantime::format_duration;
@@ -455,6 +456,7 @@ fn open_win(
     // in practice.
     let (event_tx, event_rx) = flume::unbounded::<WinEvent>();
     let (cmd_tx, cmd_rx) = flume::unbounded::<WinCommand>();
+    let close_requested = Arc::new(AtomicBool::new(false));
 
     let _ = tx.try_send(UiAction::OpenWin {
         buf: Arc::clone(&buf_handle.buf),
@@ -462,9 +464,17 @@ fn open_win(
         focus,
         event_tx,
         cmd_rx,
+        close_requested: Arc::clone(&close_requested),
     });
 
-    Ok(WinHandle::new(event_rx, cmd_tx, est_w, est_h, visible))
+    Ok(WinHandle::new_with_close_flag(
+        event_rx,
+        cmd_tx,
+        close_requested,
+        est_w,
+        est_h,
+        visible,
+    ))
 }
 
 #[allow(non_upper_case_globals)]

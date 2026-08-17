@@ -19,6 +19,10 @@ use crate::runtime::{active_task_id, with_jobs};
 const READER_BUF_SIZE: usize = 8 * 1024;
 const MAX_JOB_LINE_BYTES: usize = 64 * 1024;
 const JOB_EVENT_CAPACITY: usize = 256;
+const MAX_JOB_EVENTS_PER_TURN: usize = 64;
+const MAX_JOBWAIT_RETAINED_LINES: usize = 10_000;
+const MAX_JOBWAIT_RETAINED_BYTES: usize = 1024 * 1024;
+const JOBWAIT_TRUNCATION_MARKER: &str = "[... job output truncated ...]";
 #[cfg(target_os = "linux")]
 const JOB_RSS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(target_os = "linux")]
@@ -287,6 +291,60 @@ fn spawn_resource_monitor(
 pub(crate) struct JobStore {
     jobs: HashMap<u32, JobMeta>,
     next_id: u32,
+    drain_cursor: Option<u32>,
+}
+
+struct RetainedJobOutput {
+    output: String,
+    retained_lines: usize,
+    max_lines: usize,
+    max_bytes: usize,
+    truncated: bool,
+}
+
+impl RetainedJobOutput {
+    fn new(max_lines: usize, max_bytes: usize) -> Self {
+        Self {
+            output: String::new(),
+            retained_lines: 0,
+            max_lines,
+            max_bytes,
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, line: String) {
+        if self.truncated {
+            return;
+        }
+        let separator_bytes = usize::from(!self.output.is_empty());
+        let next_bytes = self
+            .output
+            .len()
+            .checked_add(separator_bytes)
+            .and_then(|bytes| bytes.checked_add(line.len()));
+        if self.retained_lines >= self.max_lines
+            || next_bytes.is_none_or(|bytes| bytes > self.max_bytes)
+        {
+            self.truncated = true;
+            return;
+        }
+        if separator_bytes != 0 {
+            self.output.push('\n');
+        }
+        self.output.push_str(&line);
+        self.retained_lines += 1;
+    }
+
+    fn finish(mut self) -> String {
+        if self.truncated {
+            if !self.output.is_empty() {
+                self.output.push('\n');
+            }
+            self.output.push_str(JOBWAIT_TRUNCATION_MARKER);
+        }
+        self.output
+    }
 }
 
 enum JobWaitWake {
@@ -331,6 +389,7 @@ impl JobStore {
         Self {
             jobs: HashMap::new(),
             next_id: 1,
+            drain_cursor: None,
         }
     }
 
@@ -533,17 +592,58 @@ impl JobStore {
 
     fn drain_matching(&mut self, buf: &mut Vec<(u32, JobEvent)>, keep: impl Fn(&JobMeta) -> bool) {
         buf.clear();
-        for (&id, job) in self.jobs.iter_mut().filter(|(_, job)| keep(job)) {
-            if job
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                job.deadline = None;
-                buf.push((id, JobEvent::Exit(0)));
-            } else if let Some(ref rx) = job.event_rx {
-                while let Ok(event) = rx.try_recv() {
-                    buf.push((id, event));
+        let mut job_ids = self
+            .jobs
+            .iter()
+            .filter_map(|(&job_id, job)| keep(job).then_some(job_id))
+            .collect::<Vec<_>>();
+        job_ids.sort_unstable();
+        if job_ids.is_empty() {
+            return;
+        }
+
+        let start = self.drain_cursor.map_or(0, |cursor| {
+            let after_cursor = job_ids.partition_point(|job_id| *job_id <= cursor);
+            if after_cursor == job_ids.len() {
+                0
+            } else {
+                after_cursor
+            }
+        });
+        let now = Instant::now();
+        while buf.len() < MAX_JOB_EVENTS_PER_TURN {
+            let mut made_progress = false;
+            for offset in 0..job_ids.len() {
+                let job_id = job_ids[(start + offset) % job_ids.len()];
+                let Some(job) = self.jobs.get_mut(&job_id) else {
+                    continue;
+                };
+                let event = if job.deadline.is_some_and(|deadline| now >= deadline) {
+                    job.deadline = None;
+                    Some(JobEvent::Exit(0))
+                } else {
+                    job.event_rx.as_ref().and_then(|receiver| {
+                        receiver.try_recv().map_or_else(
+                            |error| match error {
+                                flume::TryRecvError::Empty | flume::TryRecvError::Disconnected => {
+                                    None
+                                }
+                            },
+                            Some,
+                        )
+                    })
+                };
+                if let Some(event) = event {
+                    buf.push((job_id, event));
+                    self.drain_cursor = Some(job_id);
+                    made_progress = true;
+                    if buf.len() == MAX_JOB_EVENTS_PER_TURN {
+                        break;
+                    }
                 }
+            }
+            if !made_progress {
+                break;
             }
         }
     }
@@ -906,8 +1006,8 @@ async fn jobwait(
         .ok_or_else(|| mlua::Error::runtime("jobwait timeout is out of range"))?;
     let owner = task_id.map(JobOwner::Task);
     let mut task_events = Vec::new();
-    let mut stdout_lines = Vec::new();
-    let mut stderr_lines = Vec::new();
+    let mut stdout = RetainedJobOutput::new(MAX_JOBWAIT_RETAINED_LINES, MAX_JOBWAIT_RETAINED_BYTES);
+    let mut stderr = RetainedJobOutput::new(MAX_JOBWAIT_RETAINED_LINES, MAX_JOBWAIT_RETAINED_BYTES);
     let mut poll_at = next_jobwait_poll(timeout_at)?;
 
     let exit_code = loop {
@@ -933,8 +1033,8 @@ async fn jobwait(
             JobWaitWake::Event(Some(event)) => {
                 deliver_job_event(&lua, job_id, &event)?;
                 match event {
-                    JobEvent::Stdout(line) => stdout_lines.push(line),
-                    JobEvent::Stderr(line) => stderr_lines.push(line),
+                    JobEvent::Stdout(line) => stdout.push(line),
+                    JobEvent::Stderr(line) => stderr.push(line),
                     JobEvent::Exit(code) => {
                         drain_task_job_events(&lua, owner.as_ref(), &mut task_events);
                         break code;
@@ -947,8 +1047,8 @@ async fn jobwait(
     };
 
     let result = lua.create_table()?;
-    result.set("stdout", stdout_lines.join("\n"))?;
-    result.set("stderr", stderr_lines.join("\n"))?;
+    result.set("stdout", stdout.finish())?;
+    result.set("stderr", stderr.finish())?;
     result.set("exit_code", exit_code)?;
     Ok(mlua::Value::Table(result))
 }
@@ -1406,6 +1506,70 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn jobwait_truncates_retained_output_without_dropping_stream_callbacks() {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let owner = task_owner(lock_cell(scope.handle()).id);
+        lua.globals().set("streamed_chunks", 0_u32).unwrap();
+        let stdout_callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, (_job_id, _line): (u32, String)| {
+                    let streamed = lua.globals().get::<u32>("streamed_chunks")?;
+                    lua.globals().set("streamed_chunks", streamed + 1)
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let exit_callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, (_job_id, _code): (u32, i32)| {
+                    let streamed = lua.globals().get::<u32>("streamed_chunks")?;
+                    lua.globals().set("streamed_chunks_before_exit", streamed)
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let output_bytes = MAX_JOBWAIT_RETAINED_BYTES + MAX_JOB_LINE_BYTES;
+        let process_id = with_jobs(&lua, |store| {
+            store
+                .start(
+                    owner,
+                    JobSpec::Shell(format!("head -c {output_bytes} /dev/zero | tr '\\0' x")),
+                    None,
+                    None,
+                    Some(stdout_callback),
+                    None,
+                    Some(exit_callback),
+                )
+                .unwrap()
+        });
+
+        let result = smol::block_on(scope.scope_future(jobwait(
+            lua.clone(),
+            Arc::from(TEST_PLUGIN),
+            process_id,
+            Some(5_000),
+        )))
+        .unwrap();
+        let result = match result {
+            Value::Table(table) => table,
+            other => panic!("unexpected result: {other:?}"),
+        };
+        let stdout = result.get::<String>("stdout").unwrap();
+        let streamed_chunks = lua.globals().get::<u32>("streamed_chunks").unwrap();
+
+        assert!(stdout.ends_with(JOBWAIT_TRUNCATION_MARKER));
+        assert!(streamed_chunks > 1);
+        assert_eq!(
+            lua.globals()
+                .get::<u32>("streamed_chunks_before_exit")
+                .unwrap(),
+            streamed_chunks
+        );
+    }
+
     #[test]
     fn unknown_job_operations_are_noops() {
         let mut store = make_store();
@@ -1654,6 +1818,79 @@ mod tests {
             }
         }
         assert!(got_exit, "should receive exit event for completed job");
+    }
+
+    #[test]
+    fn drain_events_are_bounded_and_fair_per_turn() {
+        let mut store = make_store();
+        let noisy_events =
+            (0..=MAX_JOB_EVENTS_PER_TURN).map(|index| JobEvent::Stdout(index.to_string()));
+        let noisy_id = enqueue_job_events(&mut store, task_owner(OWNER_TASK_ID), noisy_events);
+        let quiet_id = enqueue_job_events(
+            &mut store,
+            task_owner(OWNER_TASK_ID),
+            [JobEvent::Stdout("quiet".into())],
+        );
+
+        let mut events = Vec::new();
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut events);
+
+        assert_eq!(events.len(), MAX_JOB_EVENTS_PER_TURN);
+        assert!(events.iter().any(|(job_id, _)| *job_id == noisy_id));
+        assert!(events.iter().any(|(job_id, _)| *job_id == quiet_id));
+    }
+
+    #[test]
+    fn drain_events_rotates_between_turns() {
+        let mut store = make_store();
+        let job_ids = (0..=MAX_JOB_EVENTS_PER_TURN)
+            .map(|index| {
+                enqueue_job_events(
+                    &mut store,
+                    task_owner(OWNER_TASK_ID),
+                    [JobEvent::Stdout(index.to_string())],
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut first_turn = Vec::new();
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut first_turn);
+        let mut second_turn = Vec::new();
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut second_turn);
+
+        assert_eq!(first_turn.len(), MAX_JOB_EVENTS_PER_TURN);
+        assert_eq!(second_turn.len(), 1);
+        assert!(
+            !first_turn
+                .iter()
+                .any(|(job_id, _)| *job_id == second_turn[0].0)
+        );
+        assert!(job_ids.iter().all(|job_id| {
+            first_turn.iter().any(|(seen_id, _)| seen_id == job_id)
+                || second_turn.iter().any(|(seen_id, _)| seen_id == job_id)
+        }));
+    }
+
+    #[test]
+    fn retained_job_output_marks_line_limit_truncation() {
+        let mut output = RetainedJobOutput::new(2, usize::MAX);
+        output.push("first".into());
+        output.push("second".into());
+        output.push("third".into());
+
+        assert_eq!(
+            output.finish(),
+            format!("first\nsecond\n{JOBWAIT_TRUNCATION_MARKER}")
+        );
+    }
+
+    #[test]
+    fn retained_job_output_marks_byte_limit_truncation() {
+        let mut output = RetainedJobOutput::new(usize::MAX, 5);
+        output.push("abc".into());
+        output.push("de".into());
+
+        assert_eq!(output.finish(), format!("abc\n{JOBWAIT_TRUNCATION_MARKER}"));
     }
 
     #[test]

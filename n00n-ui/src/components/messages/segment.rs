@@ -1,4 +1,4 @@
-use crate::render_worker::RenderWorker;
+use crate::render_worker::{RenderIdentity, RenderWorker};
 use crate::terminal_image::TerminalImage;
 use crate::theme;
 
@@ -81,6 +81,21 @@ pub(super) enum Surface {
 }
 
 #[derive(Default)]
+struct SegmentRenderIdentity(RenderIdentity);
+
+impl SegmentRenderIdentity {
+    fn cancel(&self) {
+        self.0.cancel();
+    }
+}
+
+impl Drop for SegmentRenderIdentity {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+#[derive(Default)]
 pub(super) struct Segment {
     lines: Vec<Line<'static>>,
     pub search_text: String,
@@ -98,6 +113,7 @@ pub(super) struct Segment {
     pub truncation: SectionFlags,
     cached_height: Cell<Option<CachedHeight>>,
     pending_highlight: Option<u64>,
+    highlight_identity: SegmentRenderIdentity,
     highlight_range: Option<(usize, usize)>,
     highlight_key: HighlightKey,
     pub spinner_lines: Vec<(usize, usize)>,
@@ -374,7 +390,19 @@ impl Segment {
     }
 
     pub fn apply_highlight(&mut self, tl: ToolLines, worker: &RenderWorker) {
-        self.pending_highlight = tl.send_highlight(worker);
+        self.pending_highlight = if let Some(request) = &tl.highlight {
+            worker.send_latest(
+                &self.highlight_identity.0,
+                request.input.clone(),
+                request.output.clone(),
+                request.limits,
+            )
+        } else {
+            self.highlight_identity.cancel();
+            let pending = tl.send_highlight(worker);
+            debug_assert!(pending.is_none());
+            pending
+        };
         self.highlight_range = tl.highlight.as_ref().map(|h| h.range);
         self.highlight_key = HighlightKey::from_request(tl.highlight.as_ref());
         self.spinner_lines = tl.spinner_lines;
@@ -396,6 +424,7 @@ impl Segment {
         });
         self.truncation = tl.truncation;
         if let Some((s, e)) = reused {
+            self.highlight_identity.cancel();
             self.set_lines(tl.lines);
             self.highlight_range = Some((s, e));
             self.pending_highlight = None;

@@ -84,7 +84,7 @@ async fn run_btw(
             else {
                 continue;
             };
-            if btw_tx.send(BtwEvent::TextDelta(delta)).is_err() {
+            if btw_tx.send_async(BtwEvent::TextDelta(delta)).await.is_err() {
                 return;
             }
         }
@@ -94,10 +94,10 @@ async fn run_btw(
 
     match result {
         Ok(_) => {
-            let _ = btw_tx.send(BtwEvent::Done);
+            let _ = btw_tx.send_async(BtwEvent::Done).await;
         }
         Err(e) => {
-            let _ = btw_tx.send(BtwEvent::Error(e.to_string()));
+            let _ = btw_tx.send_async(BtwEvent::Error(e.to_string())).await;
         }
     }
 }

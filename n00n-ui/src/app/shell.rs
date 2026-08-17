@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::process::Command as StdCommand;
 use std::time::{Duration, Instant};
 
@@ -5,8 +6,7 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use async_process::{Command, Stdio};
-use futures_lite::StreamExt;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
+use futures_lite::io::AsyncReadExt;
 use n00n_agent::{
     AgentConfig, CancelToken, CancelTrigger, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
@@ -17,6 +17,13 @@ use super::App;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const SHELL_TIMEOUT: Duration = Duration::from_mins(5);
+const OUTPUT_QUEUE_CAPACITY: usize = 64;
+const OUTPUT_READ_CHUNK_SIZE: usize = 8 * 1024;
+
+struct OutputLimits {
+    lines: usize,
+    bytes: usize,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShellPrefix {
@@ -227,18 +234,20 @@ async fn run_command(
 
     let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
 
-    let (line_tx, line_rx) = flume::unbounded::<String>();
+    let (output_tx, output_rx) = flume::bounded::<Vec<u8>>(OUTPUT_QUEUE_CAPACITY);
     if let Some(stdout) = child.stdout.take() {
-        spawn_line_reader(BufReader::new(stdout), line_tx.clone());
+        spawn_output_reader(stdout, output_tx.clone());
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_line_reader(BufReader::new(stderr), line_tx.clone());
+        spawn_output_reader(stderr, output_tx.clone());
     }
     let mut guard = n00n_agent::ChildGuard::new(child);
-    drop(line_tx);
+    drop(output_tx);
 
-    let mut output = String::new();
-    let mut line_count: usize = 0;
+    let mut output = Vec::new();
+    let mut line_count = 0;
+    let mut line_start = true;
+    let mut pending_newline = false;
     let mut truncated = false;
     let mut last_flush = Instant::now();
     let deadline = Instant::now() + SHELL_TIMEOUT;
@@ -263,18 +272,21 @@ async fn run_command(
     }
 
     loop {
-        let line = race_deadline!(async { Ok(line_rx.recv_async().await.ok()) });
-        match line {
-            Ok(Some(line)) => {
+        let chunk = race_deadline!(async { Ok(output_rx.recv_async().await.ok()) });
+        match chunk {
+            Ok(Some(chunk)) => {
                 if !truncated {
-                    if !output.is_empty() {
-                        output.push('\n');
-                    }
-                    output.push_str(&line);
-                    line_count += 1;
-                    if output.len() > max_output_bytes || line_count >= max_output_lines {
-                        truncated = true;
-                    }
+                    truncated = append_output(
+                        &mut output,
+                        &chunk,
+                        &mut line_count,
+                        &mut line_start,
+                        &mut pending_newline,
+                        &OutputLimits {
+                            lines: max_output_lines,
+                            bytes: max_output_bytes,
+                        },
+                    );
                 }
             }
             Ok(None) => break,
@@ -285,7 +297,7 @@ async fn run_command(
         }
 
         if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && !output.is_empty() {
-            flush_output(tx, id, &output);
+            flush_output(tx, id, &output_text(&output));
             last_flush = Instant::now();
         }
     }
@@ -294,6 +306,7 @@ async fn run_command(
         race_deadline!(async { guard.status().await.map_err(|e| format!("wait error: {e}")) });
     match status {
         Ok(status) => {
+            let mut output = output_text(&output);
             flush_output(tx, id, &output);
             if truncated {
                 output.push_str("\n[truncated]");
@@ -323,26 +336,88 @@ fn flush_output(tx: &flume::Sender<ShellEvent>, id: &str, output: &str) {
     });
 }
 
-fn spawn_line_reader<R: futures_lite::io::AsyncRead + Unpin + Send + 'static>(
-    reader: BufReader<R>,
-    tx: flume::Sender<String>,
+fn append_output(
+    output: &mut Vec<u8>,
+    chunk: &[u8],
+    line_count: &mut usize,
+    line_start: &mut bool,
+    pending_newline: &mut bool,
+    limits: &OutputLimits,
+) -> bool {
+    for &byte in chunk {
+        if *line_start {
+            if *line_count >= limits.lines {
+                return true;
+            }
+            if *pending_newline {
+                if output.len() >= limits.bytes {
+                    return true;
+                }
+                output.push(b'\n');
+                *pending_newline = false;
+            }
+            *line_count += 1;
+            *line_start = false;
+        }
+
+        if byte == b'\n' {
+            *line_start = true;
+            *pending_newline = true;
+        } else {
+            if output.len() >= limits.bytes {
+                return true;
+            }
+            output.push(byte);
+        }
+    }
+    false
+}
+
+fn output_text(output: &[u8]) -> String {
+    match String::from_utf8_lossy(output) {
+        Cow::Borrowed(text) => text.to_string(),
+        Cow::Owned(mut text) => {
+            while text.len() > output.len() {
+                text.pop();
+            }
+            text
+        }
+    }
+}
+
+fn spawn_output_reader<R: futures_lite::io::AsyncRead + Unpin + Send + 'static>(
+    reader: R,
+    tx: flume::Sender<Vec<u8>>,
 ) {
-    smol::spawn(async move {
-        let mut lines = reader.lines();
-        while let Some(line) = lines.next().await {
-            let Ok(line) = line else { break };
-            if tx.send(line).is_err() {
-                break;
+    smol::spawn(read_output(reader, tx)).detach();
+}
+
+async fn read_output<R: futures_lite::io::AsyncRead + Unpin>(
+    mut reader: R,
+    tx: flume::Sender<Vec<u8>>,
+) {
+    let mut buffer = [0; OUTPUT_READ_CHUNK_SIZE];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                if tx.send_async(buffer[..read].to_vec()).await.is_err() {
+                    break;
+                }
             }
         }
-    })
-    .detach();
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::pin::pin;
+
+    use futures_lite::future::poll_once;
+    use futures_lite::io::Cursor;
     use test_case::test_case;
+
+    use super::*;
 
     #[test_case("! ls",                     Some(&ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "simple_visible")]
     #[test_case("!! ls",                    Some(&ShellPrefix { prefix_len: 3, command: "ls".into(), visible: false })          ; "simple_anonymous")]
@@ -359,5 +434,75 @@ mod tests {
     #[test_case("!  ls",                    Some(&ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "extra_spaces_trimmed")]
     fn parse_shell_prefix_cases(input: &str, expected: Option<&ShellPrefix>) {
         assert_eq!(parse_shell_prefix(input).as_ref(), expected);
+    }
+
+    #[test]
+    fn output_staging_applies_async_backpressure() {
+        smol::block_on(async {
+            let input = vec![b'x'; OUTPUT_READ_CHUNK_SIZE * (OUTPUT_QUEUE_CAPACITY + 1)];
+            let reader = Cursor::new(input);
+            let (tx, rx) = flume::bounded(OUTPUT_QUEUE_CAPACITY);
+            let mut read = pin!(read_output(reader, tx));
+
+            assert!(poll_once(read.as_mut()).await.is_none());
+            assert_eq!(rx.len(), OUTPUT_QUEUE_CAPACITY);
+            assert_eq!(rx.recv_async().await.unwrap().len(), OUTPUT_READ_CHUNK_SIZE);
+
+            assert!(poll_once(read.as_mut()).await.is_some());
+            while let Ok(chunk) = rx.try_recv() {
+                assert_eq!(chunk.len(), OUTPUT_READ_CHUNK_SIZE);
+            }
+        });
+    }
+
+    #[test]
+    fn byte_limit_does_not_overshoot_or_split_utf8() {
+        let mut output = Vec::new();
+        let mut line_count = 0;
+        let mut line_start = true;
+        let mut pending_newline = false;
+
+        let truncated = append_output(
+            &mut output,
+            "aéz".as_bytes(),
+            &mut line_count,
+            &mut line_start,
+            &mut pending_newline,
+            &OutputLimits {
+                lines: usize::MAX,
+                bytes: 2,
+            },
+        );
+
+        assert!(truncated);
+        assert!(output.len() <= 2);
+        assert_eq!(output_text(&output), "a");
+    }
+
+    #[test]
+    fn command_output_is_flushed_before_truncated_result() {
+        smol::block_on(async {
+            let (_trigger, cancel) = CancelToken::new();
+            let (tx, rx) = flume::unbounded();
+            let result = run_command(
+                "printf 'one\\ntwo\\nthree\\n'",
+                "test-shell",
+                &tx,
+                &cancel,
+                2,
+                usize::MAX,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result, "one\ntwo\n[truncated]");
+            match rx.recv_async().await.unwrap() {
+                ShellEvent::Output { id, content } => {
+                    assert_eq!(id, "test-shell");
+                    assert_eq!(content, "one\ntwo");
+                }
+                _ => panic!("expected output before completion"),
+            }
+        });
     }
 }

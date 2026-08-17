@@ -20,6 +20,23 @@ fn test_panel_with_config(ui_config: UiConfig) -> MessagesPanel {
     MessagesPanel::new(ui_config, Arc::new(Picker::halfblocks()))
 }
 
+#[test]
+fn highlight_result_drain_is_limited_per_frame() {
+    let mut panel = test_panel();
+    for id in 0..=MAX_HIGHLIGHT_RESULTS_PER_FRAME as u64 {
+        panel
+            .hl_worker
+            .enqueue_result_for_test(crate::render_worker::RenderResult {
+                id,
+                lines: Vec::new(),
+            });
+    }
+
+    panel.drain_highlights();
+
+    assert_eq!(panel.hl_worker.pending_results_for_test(), 1);
+}
+
 fn snap_line(text: &str) -> SnapshotLine {
     SnapshotLine {
         spans: vec![SnapshotSpan {
