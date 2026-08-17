@@ -1912,7 +1912,7 @@ data: [DONE]\n";
 
         assert!(open_router_model.supports_prompt_cache_breakpoint());
         assert!(future_model.supports_prompt_cache_breakpoint());
-        assert!(!codex_model.supports_prompt_cache_breakpoint());
+        assert!(codex_model.supports_prompt_cache_breakpoint());
     }
 
     #[test]
