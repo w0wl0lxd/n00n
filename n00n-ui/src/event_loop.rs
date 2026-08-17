@@ -1154,12 +1154,10 @@ impl<'t> EventLoop<'t> {
         if self.last_save.elapsed() < PERIODIC_SAVE_INTERVAL {
             return;
         }
-        for idx in 0..self.sessions.len() {
-            if should_save_periodically(&self.sessions[idx].app.status) {
-                if let Err(error) = self.capture_plugin_state(idx) {
-                    warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state");
-                }
-                self.sessions[idx].app.save_session();
+        // Lua state capture is a drain barrier. Active tools are captured by their terminal event.
+        for rt in &mut self.sessions {
+            if should_save_periodically(&rt.app.status) {
+                rt.app.save_session();
             }
         }
         self.last_save = Instant::now();
@@ -2428,11 +2426,7 @@ impl<'t> EventLoop<'t> {
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
-        for idx in 0..self.sessions.len() {
-            if let Err(error) = self.capture_plugin_state(idx) {
-                warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state during shutdown");
-            }
-        }
+        // Cancellation settles asynchronously, so shutdown must not wait on Lua's drain barrier.
         let mut tabs = Vec::with_capacity(self.sessions.len());
         let mut agent_tasks = Vec::with_capacity(self.sessions.len());
         for rt in self.sessions.drain(..) {
@@ -2444,13 +2438,6 @@ impl<'t> EventLoop<'t> {
             // channels the agent loop waits on, so `join_all` can finish.
             tabs.push(app.state.session);
             agent_tasks.push(handles.into_task());
-        }
-        if let Some(handle) = &self.ctx.lua_event_handle {
-            for session in &tabs {
-                if let Err(error) = handle.drop_state_owner(session.id) {
-                    warn!(session_id = %session.id, error = %error, "failed to drop plugin session state owner");
-                }
-            }
         }
         if let Some(ref h) = self.ctx.mcp_handle {
             smol::block_on(h.shutdown());
@@ -3046,7 +3033,7 @@ mod tests {
     }
 
     #[test]
-    fn periodic_save_skips_unchanged_idle_sessions() {
+    fn periodic_save_only_checkpoints_active_sessions() {
         assert!(!should_save_periodically(&Status::Idle));
         assert!(!should_save_periodically(&Status::error("failed".into())));
         assert!(should_save_periodically(&Status::Streaming));
