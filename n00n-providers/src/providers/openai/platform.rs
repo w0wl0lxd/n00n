@@ -352,6 +352,7 @@ impl CodexAttempt {
 struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
+    model_id: Option<String>,
     system_hash: Option<String>,
     tools_hash: Option<String>,
     messages_hash: Option<String>,
@@ -365,6 +366,7 @@ impl Default for OpenAiSessionState {
         Self {
             last_response_id: None,
             last_message_count: 0,
+            model_id: None,
             system_hash: None,
             tools_hash: None,
             messages_hash: None,
@@ -380,6 +382,7 @@ impl OpenAiSessionState {
         Self {
             last_response_id: Some(stored.response_id),
             last_message_count: stored.message_count,
+            model_id: stored.model_id,
             system_hash: stored.system_hash,
             tools_hash: Some(stored.tools_hash),
             messages_hash: Some(stored.messages_hash),
@@ -393,6 +396,7 @@ impl OpenAiSessionState {
         Some(StoredOpenAiResponseChain {
             response_id: self.last_response_id.clone()?,
             message_count: self.last_message_count,
+            model_id: self.model_id.clone(),
             system_hash: self.system_hash.clone(),
             tools_hash: self.tools_hash.clone()?,
             messages_hash: self.messages_hash.clone()?,
@@ -631,7 +635,8 @@ fn incremental_for_state<'a>(
     auth_scope_hash: &str,
     messages: &'a [Message],
 ) -> Result<(Option<String>, &'a [Message]), serde_json::Error> {
-    if state.system_hash.as_deref() != Some(fingerprint.system_hash.as_str())
+    if state.model_id.as_deref() != Some(fingerprint.model_id.as_str())
+        || state.system_hash.as_deref() != Some(fingerprint.system_hash.as_str())
         || state.tools_hash.as_deref() != Some(fingerprint.tools_hash.as_str())
         || state.auth_scope_hash.as_deref() != Some(auth_scope_hash)
         || messages.len() < state.last_message_count
@@ -640,6 +645,7 @@ fn incremental_for_state<'a>(
             log_response_chain_reset(ResponseChainResetReason::RequestPrefixScopeChanged, None);
         }
         *state = OpenAiSessionState {
+            model_id: Some(fingerprint.model_id.clone()),
             system_hash: Some(fingerprint.system_hash.clone()),
             tools_hash: Some(fingerprint.tools_hash.clone()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
@@ -652,6 +658,7 @@ fn incremental_for_state<'a>(
         if state.messages_hash.as_deref() != Some(current_hash.as_str()) {
             log_response_chain_reset(ResponseChainResetReason::MessagePrefixChanged, None);
             *state = OpenAiSessionState {
+                model_id: Some(fingerprint.model_id.clone()),
                 system_hash: Some(fingerprint.system_hash.clone()),
                 tools_hash: Some(fingerprint.tools_hash.clone()),
                 messages_hash: Some(current_hash),
@@ -670,6 +677,7 @@ fn incremental_for_state<'a>(
         }
         log_response_chain_reset(ResponseChainResetReason::NoNewInputAfterResponse, None);
         *state = OpenAiSessionState {
+            model_id: Some(fingerprint.model_id.clone()),
             system_hash: Some(fingerprint.system_hash.clone()),
             tools_hash: Some(fingerprint.tools_hash.clone()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
@@ -691,6 +699,7 @@ fn record_in_state(
         *state = OpenAiSessionState {
             last_response_id: Some(response_id),
             last_message_count: messages.len(),
+            model_id: Some(fingerprint.model_id.clone()),
             system_hash: Some(fingerprint.system_hash.clone()),
             tools_hash: Some(fingerprint.tools_hash.clone()),
             messages_hash: Some(stable_json_hash(messages)?),
@@ -3207,10 +3216,39 @@ mod tests {
     }
 
     #[test]
+    fn incremental_model_change_resets_state() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+        let mut changed = test_fingerprint(SYSTEM_HASH, TOOLS_HASH);
+        changed.model_id = "gpt-5.6-luna".into();
+        changed.prefix_hash = stable_text_hash("changed-model");
+
+        let (previous, incremental) =
+            incremental_for_state(&mut state, &changed, AUTH_SCOPE_HASH, &second).unwrap();
+
+        assert!(previous.is_none());
+        assert_eq!(incremental.len(), second.len());
+    }
+
+    #[test]
     fn legacy_chain_without_system_hash_resets_state() {
         let mut state = OpenAiSessionState::from_stored(StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 1,
+            model_id: None,
             system_hash: None,
             tools_hash: TOOLS_HASH.into(),
             messages_hash: stable_json_hash(&[Message::user("hello".into())]).unwrap(),
