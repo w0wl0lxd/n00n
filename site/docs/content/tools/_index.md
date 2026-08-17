@@ -91,13 +91,10 @@ Insert lines before `line` number. Existing lines shift down.
 
 ### `explore_code` *(lua plugin)*
 
-Unified codebase exploration router. Picks the best backend for the question:
-- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** intent: caller/callee maps via `codegraph`
-- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
-- **search** intent: keyword or natural-language search via `semblem`
-- **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `codegraph impact`
+PRIMARY CODEBASE TOOL. Use first. Routes by intent:
+- **file** or **skeleton**: `index_file`
+- **relations**, **cross_file**, **symbol**, or **impact**: `map_codegraph`
+- **search**: `search_text`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -134,7 +131,7 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 ### `index_file` *(lua plugin)*
 
-Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.
+PRIMARY SINGLE-FILE TOOL. Use before read_file. Returns a compact overview of imports, types, function signatures, and structure with line numbers in []. Typically 70-90% smaller than reading the full file. Supports source files and Markdown.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -156,7 +153,7 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_
 
 ### `map_codegraph` *(lua plugin)*
 
-Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+PRIMARY CROSS-FILE TOOL. Query a pre-indexed graph for structure, call paths, impact, focused source, and test coverage. Use before broad search_code or read_file calls; use index_file for one file. Requires a .codegraph/ index.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -172,7 +169,7 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 
 ### `search_text` *(lua plugin)*
 
-Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+PRIMARY RANKED CODE SEARCH. Use when the exact symbol or literal is unknown. Builds a `.n00n/search/` index on first use.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

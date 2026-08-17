@@ -7,7 +7,7 @@ local cwd = n00n.uv.cwd() or "."
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **semblem** for BM25 code search across the repo; use **explore** for structural graph questions.",
+  content = "- Use **search_text** when exact code terms are unknown.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))
@@ -20,7 +20,7 @@ n00n.api.register_tool({
   name = "search_text",
   aliases = { "semblem" },
   kind = "read",
-  description = [[Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+  description = [[PRIMARY RANKED CODE SEARCH. Use when the exact symbol or literal is unknown. Builds a `.n00n/search/` index on first use.
 
 Commands:
 - `search`: ranked snippets for a natural-language or keyword query
