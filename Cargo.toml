@@ -308,6 +308,7 @@ gix = { version = "0.84", default-features = false, features = [
   "status",
   "blob-diff",
   "blame",
+  "tree-editor",
 ] }
 tantivy = "0.26.1"
 fs2 = "0.4.3"

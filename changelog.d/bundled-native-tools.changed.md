@@ -1,1 +1,1 @@
-Bundle git and smell commands into the n00n executable, route built-in agent tools through their in-process libraries, and ship installations and release archives with one binary.
+Bundle git and smell commands into the n00n executable, route built-in agent tools through their in-process libraries, and ship installations and release archives with one binary. Git add and ordinary commits now use gix in process; checkout retains the system Git compatibility path for safe porcelain semantics.
