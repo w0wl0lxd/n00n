@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use jiff::Timestamp;
@@ -136,9 +136,24 @@ fn model_for(id: &str, current: &Model) -> Option<Model> {
     if id == current.id || id == current.spec() {
         return Some(current.clone());
     }
-    Model::from_spec(id)
-        .ok()
-        .or_else(|| Model::from_spec(&format!("{}/{}", current.provider, id)).ok())
+    match Model::from_spec(id) {
+        Ok(model) => Some(model),
+        Err(direct_error) => {
+            let fallback_spec = format!("{}/{id}", current.provider);
+            match Model::from_spec(&fallback_spec) {
+                Ok(model) => Some(model),
+                Err(fallback_error) => {
+                    tracing::warn!(
+                        model_id = id,
+                        %direct_error,
+                        %fallback_error,
+                        "unable to resolve usage model"
+                    );
+                    None
+                }
+            }
+        }
+    }
 }
 
 fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
@@ -146,7 +161,25 @@ fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
 }
 
 fn display_model_id(id: &str) -> String {
-    Model::from_spec(id).map_or_else(|_| id.to_owned(), |model| model.id)
+    id.split_once('/')
+        .map_or_else(|| id.to_owned(), |(_, model_id)| model_id.to_owned())
+}
+
+fn colliding_model_labels<'a>(ids: impl IntoIterator<Item = &'a str>) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    ids.into_iter()
+        .map(display_model_id)
+        .filter(|label| !seen.insert(label.clone()))
+        .collect()
+}
+
+fn model_label(id: &str, collisions: &HashSet<String>) -> String {
+    let display_id = display_model_id(id);
+    if collisions.contains(&display_id) {
+        id.to_owned()
+    } else {
+        display_id
+    }
 }
 
 pub(crate) fn attributed_costs(
@@ -217,9 +250,10 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     let mut entries: Vec<(&String, &StoredTokenUsage)> = ctx.by_model.iter().collect();
     entries.sort_by_key(|(_, u)| Reverse(u.total()));
 
+    let label_collisions = colliding_model_labels(entries.iter().map(|(id, _)| id.as_str()));
     let model_w = entries
         .iter()
-        .map(|(id, _)| display_model_id(id).chars().count())
+        .map(|(id, _)| model_label(id, &label_collisions).chars().count())
         .max()
         .unwrap_or_else(|| 0)
         .max(MODEL_COL_MIN);
@@ -245,7 +279,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
             }
         });
         lines.push(Line::from(model_row(
-            id,
+            &model_label(id, &label_collisions),
             usage,
             cost,
             savings,
@@ -408,7 +442,7 @@ fn model_row(
     };
     vec![
         Span::raw(PREFIX),
-        Span::styled(format!("{:<model_w$}", display_model_id(id)), fg),
+        Span::styled(format!("{id:<model_w$}"), fg),
         gap(),
         num(usage.input),
         gap(),
@@ -746,8 +780,9 @@ mod tests {
 
     #[test]
     fn model_rows_hide_provider_prefixes() {
+        let label = model_label("anthropic/claude-haiku-4-5", &HashSet::new());
         let row = model_row(
-            "anthropic/claude-haiku-4-5",
+            &label,
             &StoredTokenUsage::default(),
             None,
             None,
@@ -761,6 +796,15 @@ mod tests {
 
         assert!(row.contains("claude-haiku-4-5"));
         assert!(!row.contains("anthropic/"));
+    }
+
+    #[test]
+    fn model_rows_keep_provider_prefixes_for_colliding_ids() {
+        let ids = ["copilot/gpt-5.2", "cursor/gpt-5.2"];
+        let collisions = colliding_model_labels(ids);
+
+        assert_eq!(model_label(ids[0], &collisions), ids[0]);
+        assert_eq!(model_label(ids[1], &collisions), ids[1]);
     }
 
     #[test]
