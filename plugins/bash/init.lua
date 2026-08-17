@@ -39,21 +39,67 @@ local RTK_REWRITE_REQUIRED = "error: rtk is enabled, but this managed command co
 -- compound segment falls back to running unchanged.
 local RTK_REWRITE_REASON_UNAVAILABLE = "unavailable"
 local RTK_MANAGED_COMMANDS = {
+  aws = true,
   cargo = true,
   cat = true,
+  curl = true,
   docker = true,
+  diff = true,
+  dotnet = true,
+  du = true,
+  ecs = true,
   find = true,
   gh = true,
   git = true,
+  glab = true,
+  go = true,
+  ["golangci-lint"] = true,
+  gradle = true,
+  gradlew = true,
   grep = true,
+  head = true,
+  jest = true,
+  kubectl = true,
+  lint = true,
   ls = true,
+  make = true,
+  mvn = true,
+  mypy = true,
+  next = true,
   npm = true,
+  npx = true,
+  oc = true,
+  paratest = true,
+  pest = true,
+  php = true,
+  phpstan = true,
+  phpunit = true,
+  pint = true,
   pip = true,
   pip3 = true,
+  playwright = true,
+  pnpm = true,
   podman = true,
+  prettier = true,
+  prisma = true,
+  psql = true,
+  pytest = true,
   python = true,
   python3 = true,
+  rake = true,
   rg = true,
+  rspec = true,
+  rubocop = true,
+  ruff = true,
+  sbt = true,
+  swift = true,
+  tail = true,
+  tree = true,
+  tsc = true,
+  uv = true,
+  vitest = true,
+  wc = true,
+  wget = true,
 }
 local RTK_STRING_COMMAND_WRAPPERS = {
   bash = true,
@@ -84,6 +130,7 @@ local rtk_enforcement_required
 local rtk_rewrite
 local rtk_rewrite_compound
 local rtk_single_command
+local rtk_proxy_fallback
 
 local function shell_quote(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -365,6 +412,10 @@ rtk_rewrite = function(command, ctx)
       return "rtk " .. cmd
     end
     if rtk_enforcement_required(command) then
+      local fallback = rtk_proxy_fallback(command)
+      if fallback then
+        return fallback
+      end
       return nil, RTK_REWRITE_REQUIRED .. ": rtk rewrite rejected it", RTK_REWRITE_REASON_UNAVAILABLE
     end
     return nil
@@ -388,6 +439,10 @@ rtk_rewrite = function(command, ctx)
       return "rtk " .. cmd
     end
     if rtk_enforcement_required(command) then
+      local fallback = rtk_proxy_fallback(command)
+      if fallback then
+        return fallback
+      end
       return nil, RTK_REWRITE_REQUIRED .. ": rtk returned no rewrite", RTK_REWRITE_REASON_UNAVAILABLE
     end
     return nil
@@ -595,6 +650,31 @@ rtk_single_command = function(command)
   return not root:has_error() and not is_complex(root) and #collect_commands(root, command) == 1
 end
 
+rtk_proxy_fallback = function(command)
+  if not rtk_single_command(command) then
+    return nil
+  end
+  local normalized = trim(command)
+  if strip_leading_assignments(normalized) ~= normalized then
+    return nil
+  end
+  local words = split_shell_words(normalized)
+  local raw_executable = normalized:match("^(%S+)")
+  if
+    raw_executable ~= words[1]
+    or raw_executable:find("'", 1, true)
+    or raw_executable:find('"', 1, true)
+    or raw_executable:find("\\", 1, true)
+  then
+    return nil
+  end
+  local executable = words[1] and normalized_executable(words[1])
+  if not executable or not RTK_MANAGED_COMMANDS[executable] then
+    return nil
+  end
+  return "rtk proxy " .. command
+end
+
 rtk_enforcement_required = function(command)
   local parser = n00n.treesitter.get_parser(command, "bash")
   if not parser then
@@ -675,13 +755,13 @@ local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
-- When rtk is installed, managed commands are rewritten through it or rejected; there is no per-call bypass.
+- When rtk is installed, managed commands use a specialized rewrite or a tracked proxy fallback; unsafe bypasses are rejected.
 - Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
 - Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`; the tool fails without it.
 - Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `run_shell` for system CLI. When `rtk` is installed, managed commands are rewritten through it or rejected with no per-call bypass. Do NOT use `run_shell` for file modifications.",
+  content = "- Reserve `run_shell` for system CLI. When `rtk` is installed, managed commands use a specialized rewrite or tracked proxy fallback; unsafe bypasses are rejected. Do NOT use `run_shell` for file modifications.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({

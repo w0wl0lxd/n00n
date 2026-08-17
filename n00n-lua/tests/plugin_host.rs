@@ -3816,7 +3816,6 @@ fn bash_schema_exposes_no_agent_controlled_rtk_override() {
     assert!(properties.get("rtk").is_none());
 }
 
-#[test_case::test_case("python -c 'print(123)'" ; "managed_command")]
 #[test_case::test_case("bash -c 'git status'" ; "nested_managed_command")]
 #[test_case::test_case("g''it status" ; "concatenated_quote_command")]
 #[test_case::test_case("exec git status" ; "exec_wrapper")]
@@ -3837,6 +3836,27 @@ fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
         "unexpected error: {error}"
     );
 }
+#[test_case::test_case("python -c 'print(123)'", "123" ; "python")]
+#[test_case::test_case("git --version", "git version" ; "git")]
+#[test_case::test_case("gh --version", "gh version" ; "gh")]
+fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
+    command: &str,
+    expected: &str,
+) {
+    if skip_without_rtk("bash_handler_proxies_managed_commands_without_a_specialized_rewrite") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+        .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+
+    assert!(
+        output.contains(expected),
+        "unexpected output for {command}: {output}"
+    );
+}
+
 #[test]
 fn bash_permission_scopes_marks_broad_commands_for_prompt() {
     let (reg, _host) = builtins_host();
