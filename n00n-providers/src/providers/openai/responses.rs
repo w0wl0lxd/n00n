@@ -47,7 +47,13 @@ pub(crate) fn build_body(
     opts: &RequestOptions,
     parallel_tool_calls: bool,
 ) -> Value {
-    let input = convert_input(messages, system, opts.message_cache_breakpoints, model);
+    let input = convert_input_with_breakpoint_support(
+        messages,
+        system,
+        opts.message_cache_breakpoints,
+        model.supports_prompt_cache_breakpoint()
+            || opts.openai_prompt_cache_mode == Some(crate::OpenAiPromptCacheMode::Explicit),
+    );
     let has_prompt_cache_breakpoint = contains_prompt_cache_breakpoint(&input);
     let wire_tools = convert_tools(tools, model);
 
@@ -157,14 +163,28 @@ fn contains_prompt_cache_breakpoint(value: &Value) -> bool {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn convert_input(
     messages: &[Message],
-    _system: &System,
+    system: &System,
     message_cache_breakpoints: usize,
     model: &crate::model::Model,
 ) -> Value {
+    convert_input_with_breakpoint_support(
+        messages,
+        system,
+        message_cache_breakpoints,
+        model.supports_prompt_cache_breakpoint(),
+    )
+}
+
+fn convert_input_with_breakpoint_support(
+    messages: &[Message],
+    _system: &System,
+    message_cache_breakpoints: usize,
+    supports_breakpoint: bool,
+) -> Value {
     let mut input = Vec::new();
-    let supports_breakpoint = model.supports_prompt_cache_breakpoint();
 
     let breakpoint_indices: HashSet<usize> = messages
         .iter()
@@ -2188,6 +2208,46 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         );
 
         assert_eq!(body["prompt_cache_options"]["mode"], "explicit");
+    }
+
+    #[test]
+    fn build_body_gates_codex_breakpoints_on_explicit_request_mode() {
+        let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+        let messages = [Message::user("cache me".into())];
+        let default_body = build_body(
+            &model,
+            &messages,
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            false,
+            &RequestOptions {
+                message_cache_breakpoints: 1,
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(!contains_prompt_cache_breakpoint(&default_body["input"]));
+        assert!(default_body.get("prompt_cache_options").is_none());
+
+        let explicit_body = build_body(
+            &model,
+            &messages,
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            false,
+            &RequestOptions {
+                message_cache_breakpoints: 1,
+                openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Explicit),
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(contains_prompt_cache_breakpoint(&explicit_body["input"]));
+        assert_eq!(explicit_body["prompt_cache_options"]["mode"], "explicit");
     }
 
     #[test_case(64, true ; "unicode_boundary")]
