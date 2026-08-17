@@ -8,7 +8,7 @@
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -69,6 +69,10 @@ const IDLE_POLL_INTERVAL_MS: u64 = 100;
 const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 /// Max events handled per frame so a flood cannot starve rendering.
 const DRAIN_BUDGET: usize = 256;
+/// Max queued matching mouse events coalesced per event-loop turn.
+const COALESCE_BUDGET: usize = 64;
+/// Max input events handled per wake before yielding to rendering and other channels.
+const HANDLE_INPUT_BUDGET: usize = 64;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -519,6 +523,7 @@ pub(crate) struct EventLoop<'t> {
     lineage: SessionLineageGuard,
     ctx: SpawnCtx,
     input: InputReader,
+    pending_input: RefCell<VecDeque<Event>>,
     warn_rx: flume::Receiver<String>,
     warn_tx: flume::Sender<String>,
     ui_action_rx: Option<flume::Receiver<UiAction>>,
@@ -939,6 +944,7 @@ impl<'t> EventLoop<'t> {
             lineage,
             ctx,
             input: InputReader::spawn()?,
+            pending_input: RefCell::new(VecDeque::new()),
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,
@@ -1052,7 +1058,11 @@ impl<'t> EventLoop<'t> {
     }
 
     fn try_input_wake(&self) -> Option<Wake> {
-        self.input.receiver().try_recv().ok().map(Wake::Input)
+        self.pending_input
+            .borrow_mut()
+            .pop_front()
+            .or_else(|| self.input.receiver().try_recv().ok())
+            .map(Wake::Input)
     }
 
     fn select_wake(&self, timeout: Duration) -> Option<Wake> {
@@ -1354,9 +1364,17 @@ impl<'t> EventLoop<'t> {
                 focus,
                 event_tx,
                 cmd_rx,
+                close_requested,
             } => {
                 let app = self.focused_app();
-                app.float_mgr.open(buf, config, focus, event_tx, cmd_rx);
+                app.float_mgr.open_with_close_flag(
+                    buf,
+                    config,
+                    focus,
+                    event_tx,
+                    cmd_rx,
+                    close_requested,
+                );
                 if focus {
                     app.transition_plan(&crate::app::mode::PlanTrigger::InteractivePrompt);
                 }
@@ -1914,17 +1932,19 @@ impl<'t> EventLoop<'t> {
         Ok(())
     }
 
-    /// Handles one input event plus any leftover produced while coalescing
-    /// bursts of scroll/drag events.
+    /// Handles a bounded number of coalescer leftovers, retaining excess ahead
+    /// of input that is still queued in the reader.
     fn handle_input(&mut self, raw: Event) {
-        let mut pending = Some(raw);
-        while let Some(ev) = pending.take() {
-            let (msg, leftover) = self.translate(ev);
+        let leftover = handle_input_bounded(raw, |event| {
+            let (msg, leftover) = self.translate(event);
             if let Some(msg) = msg {
                 let actions = self.sessions[self.focused].app.update(msg);
                 self.dispatch(self.focused, actions);
             }
-            pending = leftover;
+            leftover
+        });
+        if let Some(event) = leftover {
+            self.pending_input.borrow_mut().push_front(event);
         }
     }
 
@@ -1959,50 +1979,15 @@ impl<'t> EventLoop<'t> {
     /// Sums queued scroll events into one delta; the first non-scroll event
     /// drained along the way is returned so it isn't lost.
     fn aggregate_scroll(&self, first: CtMouseEvent, scroll_lines: u32) -> (Msg, Option<Event>) {
-        let mut delta = scroll_delta(first.kind, scroll_lines);
-        let mut leftover = None;
-        while let Ok(next) = self.input.receiver().try_recv() {
-            match next {
-                Event::Mouse(m)
-                    if matches!(
-                        m.kind,
-                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                    ) =>
-                {
-                    delta += scroll_delta(m.kind, scroll_lines);
-                }
-                other => {
-                    leftover = Some(other);
-                    break;
-                }
-            }
-        }
-        (
-            Msg::Scroll {
-                column: first.column,
-                row: first.row,
-                delta,
-            },
-            leftover,
-        )
+        aggregate_scroll(first, scroll_lines, || {
+            try_recv_input(self.input.receiver())
+        })
     }
 
     /// Keeps only the newest queued drag position; the first non-drag event
     /// drained along the way is returned so it isn't lost.
-    fn coalesce_drag(&self, mut latest: CtMouseEvent) -> (CtMouseEvent, Option<Event>) {
-        let mut leftover = None;
-        while let Ok(next) = self.input.receiver().try_recv() {
-            match next {
-                Event::Mouse(m) if matches!(m.kind, MouseEventKind::Drag(MouseButton::Left)) => {
-                    latest = m;
-                }
-                other => {
-                    leftover = Some(other);
-                    break;
-                }
-            }
-        }
-        (latest, leftover)
+    fn coalesce_drag(&self, latest: CtMouseEvent) -> (CtMouseEvent, Option<Event>) {
+        coalesce_drag(latest, || try_recv_input(self.input.receiver()))
     }
 
     fn dispatch(&mut self, idx: usize, actions: Vec<Action>) {
@@ -2540,6 +2525,89 @@ fn startup_provider_with(
     }
 }
 
+#[allow(clippy::manual_ok_err)]
+fn try_recv_input(rx: &flume::Receiver<Event>) -> Option<Event> {
+    match rx.try_recv() {
+        Ok(event) => Some(event),
+        Err(flume::TryRecvError::Empty | flume::TryRecvError::Disconnected) => None,
+    }
+}
+
+fn handle_input_bounded(
+    first: Event,
+    mut handle: impl FnMut(Event) -> Option<Event>,
+) -> Option<Event> {
+    let mut pending = Some(first);
+    for _ in 0..HANDLE_INPUT_BUDGET {
+        let Some(event) = pending.take() else {
+            break;
+        };
+        pending = handle(event);
+    }
+    pending
+}
+
+fn aggregate_scroll(
+    first: CtMouseEvent,
+    scroll_lines: u32,
+    mut next_event: impl FnMut() -> Option<Event>,
+) -> (Msg, Option<Event>) {
+    let mut delta = scroll_delta(first.kind, scroll_lines);
+    for _ in 0..COALESCE_BUDGET {
+        let Some(next) = next_event() else {
+            break;
+        };
+        match next {
+            Event::Mouse(mouse)
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) =>
+            {
+                delta += scroll_delta(mouse.kind, scroll_lines);
+            }
+            other => {
+                return (
+                    Msg::Scroll {
+                        column: first.column,
+                        row: first.row,
+                        delta,
+                    },
+                    Some(other),
+                );
+            }
+        }
+    }
+    (
+        Msg::Scroll {
+            column: first.column,
+            row: first.row,
+            delta,
+        },
+        None,
+    )
+}
+
+fn coalesce_drag(
+    mut latest: CtMouseEvent,
+    mut next_event: impl FnMut() -> Option<Event>,
+) -> (CtMouseEvent, Option<Event>) {
+    for _ in 0..COALESCE_BUDGET {
+        let Some(next) = next_event() else {
+            break;
+        };
+        match next {
+            Event::Mouse(mouse)
+                if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) =>
+            {
+                latest = mouse;
+            }
+            other => return (latest, Some(other)),
+        }
+    }
+    (latest, None)
+}
+
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     let lines = crate::cast::u32_to_isize(lines);
     let n = i32::try_from(lines).unwrap_or_else(|_| i32::MAX);
@@ -2553,16 +2621,20 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
-        PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, authorize_ui_delete, bounded_direct_output,
-        cancel_stored_session, complete_model_fetch_with, direct_paused_team_payload,
-        draw_then_post_terminal, merge_model_batch, paused_team_payload, paused_team_run,
+        COALESCE_BUDGET, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
+        HANDLE_INPUT_BUDGET, Msg, PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, aggregate_scroll,
+        authorize_ui_delete, bounded_direct_output, cancel_stored_session, coalesce_drag,
+        complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
+        handle_input_bounded, merge_model_batch, paused_team_payload, paused_team_run,
         publish_model_refresh, resolve_model_selection, should_save_periodically,
-        startup_login_completed, startup_provider_with, take_painted_submissions,
+        startup_login_completed, startup_provider_with, take_painted_submissions, try_recv_input,
         validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::{ArcSwap, ArcSwapOption};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use n00n_agent::AgentConfig;
     use n00n_providers::{
         AgentError, ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, Role,
@@ -3036,6 +3108,184 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!post_draw_ran.get());
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn scroll_coalescing_is_bounded_under_continuous_input() {
+        let first = mouse_event(MouseEventKind::ScrollUp, 1, 1);
+        let mut consumed = 0;
+
+        let (message, leftover) = aggregate_scroll(first, 1, || {
+            consumed += 1;
+            Some(Event::Mouse(mouse_event(MouseEventKind::ScrollUp, 1, 1)))
+        });
+
+        assert_eq!(consumed, COALESCE_BUDGET);
+        let Msg::Scroll { column, row, delta } = message else {
+            panic!("scroll events must produce a scroll message");
+        };
+        assert_eq!((column, row), (1, 1));
+        assert_eq!(
+            delta,
+            i32::try_from(COALESCE_BUDGET + 1).expect("budget fits in i32")
+        );
+        assert!(leftover.is_none());
+    }
+
+    #[test]
+    fn drag_coalescing_is_bounded_under_continuous_input() {
+        let mut row = 0;
+
+        let (latest, leftover) = coalesce_drag(
+            mouse_event(MouseEventKind::Drag(MouseButton::Left), 1, 0),
+            || {
+                row += 1;
+                Some(Event::Mouse(mouse_event(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    1,
+                    row,
+                )))
+            },
+        );
+
+        assert_eq!(
+            row,
+            u16::try_from(COALESCE_BUDGET).expect("budget fits in u16")
+        );
+        assert_eq!(latest.row, row);
+        assert!(leftover.is_none());
+    }
+
+    #[test]
+    fn drag_coalescing_leaves_excess_events_queued() {
+        let (tx, rx) = flume::unbounded();
+        for row in 1..=u16::try_from(COALESCE_BUDGET + 1).expect("budget fits in u16") {
+            tx.send(Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                1,
+                row,
+            )))
+            .expect("receiver remains connected");
+        }
+
+        let (latest, leftover) = coalesce_drag(
+            mouse_event(MouseEventKind::Drag(MouseButton::Left), 1, 0),
+            || try_recv_input(&rx),
+        );
+
+        assert_eq!(
+            latest.row,
+            u16::try_from(COALESCE_BUDGET).expect("budget fits in u16")
+        );
+        assert!(leftover.is_none());
+        assert_eq!(rx.len(), 1);
+        assert_eq!(
+            rx.try_recv().expect("excess drag remains queued"),
+            Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                1,
+                u16::try_from(COALESCE_BUDGET + 1).expect("budget fits in u16"),
+            ))
+        );
+    }
+
+    #[test]
+    fn coalescers_return_first_nonmatching_event_without_reordering() {
+        let (scroll_tx, scroll_rx) = flume::unbounded();
+        let key = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        let trailing_scroll = Event::Mouse(mouse_event(MouseEventKind::ScrollDown, 2, 2));
+        scroll_tx
+            .send(Event::Mouse(mouse_event(MouseEventKind::ScrollUp, 1, 1)))
+            .expect("receiver remains connected");
+        scroll_tx
+            .send(key.clone())
+            .expect("receiver remains connected");
+        scroll_tx
+            .send(trailing_scroll.clone())
+            .expect("receiver remains connected");
+
+        let (scroll, leftover) =
+            aggregate_scroll(mouse_event(MouseEventKind::ScrollUp, 0, 0), 1, || {
+                try_recv_input(&scroll_rx)
+            });
+
+        let Msg::Scroll { column, row, delta } = scroll else {
+            panic!("scroll events must produce a scroll message");
+        };
+        assert_eq!((column, row, delta), (0, 0, 2));
+        assert_eq!(leftover, Some(key));
+        assert_eq!(
+            scroll_rx
+                .try_recv()
+                .expect("trailing scroll remains queued"),
+            trailing_scroll
+        );
+    }
+    #[test]
+    fn alternating_coalescer_leftovers_are_bounded_and_ordered() {
+        let (tx, rx) = flume::unbounded();
+        for row in 1..=u16::try_from(HANDLE_INPUT_BUDGET + 1).expect("budget fits in u16") {
+            let kind = if row % 2 == 0 {
+                MouseEventKind::ScrollUp
+            } else {
+                MouseEventKind::Drag(MouseButton::Left)
+            };
+            tx.send(Event::Mouse(mouse_event(kind, 0, row)))
+                .expect("receiver remains connected");
+        }
+        let mut handled_rows = Vec::new();
+
+        let retained = handle_input_bounded(
+            Event::Mouse(mouse_event(MouseEventKind::ScrollUp, 0, 0)),
+            |event| {
+                let Event::Mouse(mouse) = event else {
+                    panic!("test input must be mouse events");
+                };
+                handled_rows.push(mouse.row);
+                match mouse.kind {
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                        aggregate_scroll(mouse, 1, || try_recv_input(&rx)).1
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        coalesce_drag(mouse, || try_recv_input(&rx)).1
+                    }
+                    _ => panic!("test input must alternate scroll and drag events"),
+                }
+            },
+        )
+        .expect("the bounded handler retains its excess event");
+
+        assert_eq!(handled_rows.len(), HANDLE_INPUT_BUDGET);
+        assert_eq!(handled_rows.first(), Some(&0));
+        assert_eq!(
+            handled_rows.last(),
+            Some(&u16::try_from(HANDLE_INPUT_BUDGET - 1).expect("budget fits in u16"))
+        );
+        assert_eq!(
+            retained,
+            Event::Mouse(mouse_event(
+                MouseEventKind::ScrollUp,
+                0,
+                u16::try_from(HANDLE_INPUT_BUDGET).expect("budget fits in u16")
+            ))
+        );
+        assert_eq!(
+            rx.try_recv().expect("later input remains queued"),
+            Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                0,
+                u16::try_from(HANDLE_INPUT_BUDGET + 1).expect("budget fits in u16")
+            ))
+        );
     }
 
     #[test]

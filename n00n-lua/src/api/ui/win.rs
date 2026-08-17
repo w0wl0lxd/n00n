@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -17,13 +18,14 @@ use crate::docs::{FnDoc, ParamDoc};
 pub(crate) struct WinHandle {
     event_rx: flume::Receiver<WinEvent>,
     cmd_tx: flume::Sender<WinCommand>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
     visible: AtomicBool,
     init_width: u16,
     init_height: u16,
 }
 
 impl WinHandle {
+    #[cfg(test)]
     pub fn new(
         event_rx: flume::Receiver<WinEvent>,
         cmd_tx: flume::Sender<WinCommand>,
@@ -31,10 +33,28 @@ impl WinHandle {
         init_height: u16,
         visible: bool,
     ) -> Self {
+        Self::new_with_close_flag(
+            event_rx,
+            cmd_tx,
+            Arc::new(AtomicBool::new(false)),
+            init_width,
+            init_height,
+            visible,
+        )
+    }
+
+    pub(crate) fn new_with_close_flag(
+        event_rx: flume::Receiver<WinEvent>,
+        cmd_tx: flume::Sender<WinCommand>,
+        closed: Arc<AtomicBool>,
+        init_width: u16,
+        init_height: u16,
+        visible: bool,
+    ) -> Self {
         Self {
             event_rx,
             cmd_tx,
-            closed: AtomicBool::new(false),
+            closed,
             visible: AtomicBool::new(visible),
             init_width,
             init_height,
@@ -42,7 +62,7 @@ impl WinHandle {
     }
 
     fn close(&self) {
-        if self.closed.swap(true, Ordering::Relaxed) {
+        if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
         let _ = self.cmd_tx.try_send(WinCommand::Close);
@@ -50,7 +70,7 @@ impl WinHandle {
 
     fn send(&self, cmd: WinCommand) {
         if let Err(flume::TrySendError::Disconnected(_)) = self.cmd_tx.try_send(cmd) {
-            self.closed.store(true, Ordering::Relaxed);
+            self.closed.store(true, Ordering::Release);
         }
     }
 }
