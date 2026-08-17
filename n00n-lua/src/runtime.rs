@@ -2754,6 +2754,23 @@ async fn dispatch_async(
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
         for (job_id, event) in event_buf.drain(..) {
             if let Err(error) = deliver_job_event(lua, job_id, &event) {
+                let (cancelled, deadline_expired) = {
+                    let cell = lock_cell(&handle);
+                    (
+                        cell.cancel.is_cancelled(),
+                        cell.deadline_interrupted.get()
+                            || cell
+                                .deadline
+                                .get()
+                                .is_some_and(|deadline| Instant::now() >= deadline),
+                    )
+                };
+                if cancelled {
+                    return ToolCallReply::err(CANCELLED_MSG);
+                }
+                if deadline_expired {
+                    return timeout_reply(&handle, plugin, tool);
+                }
                 return ToolCallReply::err(format!(
                     "job callback error: {}",
                     strip_traceback(&error)
