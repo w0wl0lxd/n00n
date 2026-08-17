@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -90,6 +90,8 @@ const NIL_WITHOUT_FINISH_MSG: &str =
     "handler returned nil without calling ctx:finish() or starting jobs";
 pub(crate) const CANCELLED_MSG: &str = "cancelled";
 const MAX_INFLIGHT_TOOLS: usize = 64;
+const SPAWN_QUEUE_CAPACITY: usize = 256;
+const SPAWN_QUEUE_FULL_MSG: &str = "async.run capacity exhausted (maximum 256 outstanding tasks)";
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 /// Finished tools kept clickable without a restore round-trip. Purely a
 /// cache: a click that misses it falls back to the restore item carried
@@ -922,6 +924,10 @@ pub(crate) fn enqueue_async_task(
         None => (CancelToken::none(), None, None, None),
     };
 
+    let queue = lua
+        .app_data_ref::<SpawnQueue>()
+        .ok_or_else(|| mlua::Error::runtime("spawn queue not initialized"))?;
+    let claim = queue.try_claim()?;
     let deadline =
         parent_deadline.map(|deadline| deadline.max(Instant::now() + ASYNC_RUN_MIN_DEADLINE));
     let parent = handle.as_ref().map(|h| Arc::clone(h));
@@ -934,6 +940,7 @@ pub(crate) fn enqueue_async_task(
         identity,
         owner: None,
         parent: None,
+        _claim: claim,
     };
 
     if let Some(h) = &handle {
@@ -948,11 +955,14 @@ pub(crate) fn enqueue_async_task(
         task.parent.clone_from(&parent);
     }
 
-    let queue = lua
-        .app_data_ref::<SpawnQueue>()
-        .ok_or_else(|| mlua::Error::runtime("spawn queue not initialized"))?;
-    if queue.tx.send(task).is_err() {
-        return Err(mlua::Error::runtime("spawn queue closed"));
+    match queue.tx.try_send(task) {
+        Ok(()) => {}
+        Err(flume::TrySendError::Full(_)) => {
+            return Err(mlua::Error::runtime(SPAWN_QUEUE_FULL_MSG));
+        }
+        Err(flume::TrySendError::Disconnected(_)) => {
+            return Err(mlua::Error::runtime("spawn queue closed"));
+        }
     }
 
     if let Some(h) = &parent {
@@ -1141,6 +1151,16 @@ pub(crate) struct PendingAsyncTask {
     /// Parent task that spawned this `noon.async.run` task, if any.
     /// Used to decrement the parent's `async_tasks` counter on completion.
     pub parent: Option<TaskHandle>,
+    _claim: OutstandingAsyncClaim,
+}
+
+struct OutstandingAsyncClaim(Arc<AtomicUsize>);
+
+impl Drop for OutstandingAsyncClaim {
+    fn drop(&mut self) {
+        let previous = self.0.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "async.run claim underflow");
+    }
 }
 
 /// Shared ownership of a task's `bufs`: the scope holds one clone, each
@@ -1168,12 +1188,26 @@ impl Drop for BufsClaim {
 pub(crate) struct SpawnQueue {
     tx: flume::Sender<PendingAsyncTask>,
     rx: flume::Receiver<PendingAsyncTask>,
+    outstanding: Arc<AtomicUsize>,
 }
 
 impl SpawnQueue {
     fn new() -> Self {
-        let (tx, rx) = flume::unbounded();
-        Self { tx, rx }
+        let (tx, rx) = flume::bounded(SPAWN_QUEUE_CAPACITY);
+        Self {
+            tx,
+            rx,
+            outstanding: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn try_claim(&self) -> Result<OutstandingAsyncClaim, mlua::Error> {
+        self.outstanding
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < SPAWN_QUEUE_CAPACITY).then_some(count + 1)
+            })
+            .map_err(|_| mlua::Error::runtime(SPAWN_QUEUE_FULL_MSG))?;
+        Ok(OutstandingAsyncClaim(Arc::clone(&self.outstanding)))
     }
 }
 
@@ -3960,6 +3994,7 @@ mod tests {
     }
 
     const SPAWN_QUEUE_NOT_INIT: &str = "spawn queue not initialized";
+    const EXPECTED_SPAWN_QUEUE_CAPACITY: usize = 256;
 
     fn enqueue_test_lua() -> Lua {
         let lua = Lua::new();
@@ -4164,6 +4199,65 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_async_task_rejects_excess_fanout() {
+        let lua = enqueue_test_lua();
+        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        for _ in 0..EXPECTED_SPAWN_QUEUE_CAPACITY {
+            enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+        }
+
+        let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
+
+        assert!(error.to_string().contains(SPAWN_QUEUE_FULL_MSG));
+        assert_eq!(
+            lock_cell(scope.handle()).async_tasks.get(),
+            EXPECTED_SPAWN_QUEUE_CAPACITY
+        );
+    }
+
+    #[test]
+    fn draining_spawn_queue_does_not_release_fanout_capacity() {
+        let lua = enqueue_test_lua();
+        let _scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        for _ in 0..EXPECTED_SPAWN_QUEUE_CAPACITY {
+            enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+        }
+        let queued: Vec<_> = lua
+            .app_data_ref::<SpawnQueue>()
+            .unwrap()
+            .rx
+            .drain()
+            .collect();
+
+        let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
+
+        assert!(error.to_string().contains(SPAWN_QUEUE_FULL_MSG));
+        drop(queued);
+        enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+    }
+
+    #[test]
+    fn inline_async_task_rejects_excess_fanout() {
+        let lua = enqueue_test_lua();
+        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        lock_cell(scope.handle()).inline_spawn = Some(Vec::new());
+        for _ in 0..EXPECTED_SPAWN_QUEUE_CAPACITY {
+            enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+        }
+
+        let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
+
+        assert!(error.to_string().contains(SPAWN_QUEUE_FULL_MSG));
+        assert_eq!(
+            lock_cell(scope.handle())
+                .inline_spawn
+                .as_ref()
+                .map(Vec::len),
+            Some(EXPECTED_SPAWN_QUEUE_CAPACITY)
+        );
+    }
+
+    #[test]
     fn enqueue_async_task_inherits_cancel_token() {
         let lua = enqueue_test_lua();
         let (trigger, token) = CancelToken::new();
@@ -4291,6 +4385,11 @@ mod tests {
             identity: None,
             owner: None,
             parent: None,
+            _claim: lua
+                .app_data_ref::<SpawnQueue>()
+                .unwrap()
+                .try_claim()
+                .unwrap(),
         }
     }
 
@@ -4328,6 +4427,11 @@ mod tests {
                 identity: None,
                 owner: None,
                 parent: None,
+                _claim: lua
+                    .app_data_ref::<SpawnQueue>()
+                    .unwrap()
+                    .try_claim()
+                    .unwrap(),
             };
             let g = Rc::new(gate());
             spawn_async_task(&lua, &ex, &g, task);
