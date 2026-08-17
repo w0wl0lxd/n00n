@@ -29,7 +29,7 @@ use n00n_providers::model::Model;
 use n00n_providers::{ImageSource, Message, OpenAiOptions, StopReason, Timeouts, TokenUsage};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::Session;
+use n00n_storage::sessions::{Session, TranscriptEntry};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::warn;
@@ -484,7 +484,7 @@ pub fn run(params: SdkParams) -> Result<()> {
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let working_dir = cwd.to_string_lossy().into_owned();
-    let (session_id, initial_history) = resolve_session(&cli, &working_dir)?;
+    let (session_id, initial_history, initial_transcript) = resolve_session(&cli, &working_dir)?;
 
     let (mcp_handle, mcp_config_errors) =
         smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
@@ -506,6 +506,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         initial_wd: cwd.clone(),
         session_id,
         initial_history,
+        initial_transcript,
         yolo: permission_mode == PermissionMode::BypassPermissions,
         system_prompt_override: cli.system_prompt.clone().filter(|s| !s.is_empty()),
         append_system_prompt: cli.append_system_prompt.clone().filter(|s| !s.is_empty()),
@@ -788,8 +789,15 @@ fn handle_control_cancel(
 
 type StoredSession = Session<Message, TokenUsage, ToolOutput>;
 
-fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Message>)> {
-    let (resumed_id, history) = if let Some(id) = &cli.session {
+fn resolve_session(
+    cli: &Cli,
+    cwd: &str,
+) -> Result<(
+    Option<SessionRef>,
+    Vec<Message>,
+    Vec<TranscriptEntry<Message>>,
+)> {
+    let (resumed_id, history, transcript) = if let Some(id) = &cli.session {
         let storage = StateDir::resolve().context("resolve state dir")?;
         let session_ref: SessionRef = id
             .parse()
@@ -797,15 +805,19 @@ fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Mess
         let session = StoredSession::load(session_ref.id(), &storage)
             .map_err(|e| eyre!("load session {id}: {e}"))?;
         let resumed = (!cli.session_flags.fork_session).then_some(session_ref);
-        (resumed, session.messages)
+        (resumed, session.messages, session.transcript)
     } else if cli.session_flags.continue_session {
         let storage = StateDir::resolve().context("resolve state dir")?;
         match StoredSession::latest(cwd, &storage) {
-            Ok(Some(session)) => (Some(SessionRef::from(session.id)), session.messages),
-            _ => (None, Vec::new()),
+            Ok(Some(session)) => (
+                Some(SessionRef::from(session.id)),
+                session.messages,
+                session.transcript,
+            ),
+            _ => (None, Vec::new(), Vec::new()),
         }
     } else {
-        (None, Vec::new())
+        (None, Vec::new(), Vec::new())
     };
 
     let cli_session_id = cli
@@ -817,7 +829,7 @@ fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Mess
         })
         .transpose()?;
 
-    Ok((cli_session_id.or(resumed_id), history))
+    Ok((cli_session_id.or(resumed_id), history, transcript))
 }
 
 fn parse_or_warn<T: serde::de::DeserializeOwned>(payload: Value, what: &str) -> Option<T> {
