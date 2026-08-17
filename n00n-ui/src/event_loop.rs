@@ -405,7 +405,10 @@ fn merge_compaction_metadata(
     if state_revision_or_initial(target.meta.state_snapshot.as_ref())
         <= state_revision_or_initial(checkpoint.meta.state_snapshot.as_ref())
     {
-        target.meta.state_snapshot = checkpoint.meta.state_snapshot.clone();
+        target
+            .meta
+            .state_snapshot
+            .clone_from(&checkpoint.meta.state_snapshot);
     }
     target.meta.revision = target.meta.revision.max(checkpoint.meta.revision);
     target.updated_at = target.updated_at.max(checkpoint.updated_at);
@@ -604,12 +607,12 @@ impl SpawnCtx {
         }
         .map_err(|error| eyre!("failed to select root plugin state: {error}"))?;
         let initial_state_revision = initial_state_revision(&session, root.as_ref());
-        let revision_allocator = self
-            .revision_allocators
-            .borrow_mut()
-            .entry(root_id)
-            .or_insert_with(|| Arc::new(RevisionAllocator::new(initial_state_revision)))
-            .clone();
+        let revision_allocator = Arc::clone(
+            self.revision_allocators
+                .borrow_mut()
+                .entry(root_id)
+                .or_insert_with(|| Arc::new(RevisionAllocator::new(initial_state_revision))),
+        );
         revision_allocator.observe(initial_state_revision);
 
         if let Some(handle) = &self.lua_event_handle {
