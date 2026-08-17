@@ -104,19 +104,20 @@ pub(crate) fn create_git_table(lua: &Lua, permissions: &PluginPermissions) -> Lu
         lua.create_function(
             move |lua, (command, repo, options): (String, String, Option<Table>)| {
                 let writes = matches!(command.as_str(), "add" | "commit" | "checkout");
+                let requires_run = matches!(command.as_str(), "add" | "checkout");
                 let permission = if writes {
                     Permission::FsWrite
                 } else {
                     Permission::FsRead
                 };
                 if !permissions.is_allowed(permission)
-                    || (writes && !permissions.is_allowed(Permission::Run))
+                    || (requires_run && !permissions.is_allowed(Permission::Run))
                 {
                     return Ok((
                         None,
                         Some(format!(
                             "permission denied: git {command} requires {permission}{}",
-                            if writes { " and run" } else { "" }
+                            if requires_run { " and run" } else { "" }
                         )),
                     ));
                 }
@@ -169,6 +170,25 @@ mod tests {
     use mlua::Function;
 
     use super::*;
+
+    #[test]
+    fn native_commit_does_not_require_run_permission() {
+        let lua = Lua::new();
+        let mut permissions = PluginPermissions::denied();
+        permissions.set(Permission::FsWrite, true);
+        let table = create_git_table(&lua, &permissions).unwrap();
+        let run: Function = table.get("run").unwrap();
+
+        let (_, commit_error): (Option<String>, Option<String>) =
+            run.call(("commit", "/missing", None::<Table>)).unwrap();
+        assert!(!commit_error.unwrap().contains("permission denied"));
+
+        for command in ["add", "checkout"] {
+            let (_, error): (Option<String>, Option<String>) =
+                run.call((command, "/missing", None::<Table>)).unwrap();
+            assert!(error.unwrap().contains("permission denied"));
+        }
+    }
 
     #[test]
     fn status_runs_in_process() {
