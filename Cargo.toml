@@ -302,7 +302,7 @@ rusqlite = { version = "0.40.1", default-features = false, features = [
   "bundled",
   "modern_sqlite",
 ] }
-gix = { version = "0.84", default-features = false, features = [
+gix = { version = "0.86", default-features = false, features = [
   "sha1",
   "revision",
   "status",

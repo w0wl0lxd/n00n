@@ -218,8 +218,12 @@ Local git operations built into n00n.
       files = {
         type = "array",
         items = { type = "string" },
+        description = "Explicit repository-relative file paths. Directories, pathspecs, conflicted indexes, sparse indexes, and split indexes are unsupported.",
       },
-      message = { type = "string" },
+      message = {
+        type = "string",
+        description = "Commit message. Signed commits, active commit hooks, and in-progress merge or rebase states are rejected.",
+      },
       target = { type = "string" },
       output = { type = "string" },
     },
