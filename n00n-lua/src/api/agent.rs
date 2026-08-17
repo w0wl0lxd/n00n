@@ -877,6 +877,7 @@ async fn session(
             subagent_cancels: Arc::new(CancelMap::new()),
             registry: Arc::clone(&agent_ctx.registry),
             audience,
+            state_revision: Some(0),
         },
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
@@ -1496,6 +1497,7 @@ async fn prompt(
         let result = agent.run(input).await;
         s.usage += agent.total_usage();
         s.cost += agent.total_cost();
+        s.params.state_revision = agent.state_revision();
         drop(agent);
         if result.is_err()
             && let Err(barrier_error) = s.sub_event_tx.send(AgentEvent::Done {

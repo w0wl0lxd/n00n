@@ -15,7 +15,8 @@ use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
-pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue with next steps, ask if unsure, restore todos with todo_write, and persist durable notes via memory.";
+pub(super) const CONTINUE_AFTER_COMPACT: &str =
+    "Continue with next steps, ask if unsure, and persist durable notes via memory.";
 
 const COMPACTION_INPUT_SAFETY_MARGIN: u32 = 4096;
 const MINIMAL_CONTEXT_RATIO: f64 = 0.2;
@@ -83,6 +84,7 @@ pub(super) async fn compact_history(
     cwd: &std::path::Path,
     transcript_path: Option<&std::path::Path>,
     run_hooks: bool,
+    state_revision: Option<u64>,
 ) -> Result<(TokenUsage, String), AgentError> {
     if run_hooks {
         run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
@@ -169,7 +171,7 @@ pub(super) async fn compact_history(
         run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
     }
 
-    let usage = finish_compact(response, history, compact_start, model);
+    let usage = finish_compact(response, history, compact_start, model, state_revision);
     Ok((usage, summary))
 }
 
@@ -178,6 +180,7 @@ fn finish_compact(
     history: &mut History,
     compact_start: Instant,
     model: &Model,
+    state_revision: Option<u64>,
 ) -> TokenUsage {
     let StreamResponse {
         message: summary,
@@ -189,7 +192,11 @@ fn finish_compact(
     // so the UI meter reflects the compacted conversation, not just the
     // summary output tokens. Callers pass continue-prompt/tool-definition
     // tokens that are part of the agent's full post-compact context.
-    history.compact_boundary(Message::user("What did we do so far?".into()), summary);
+    history.compact_boundary(
+        Message::user("What did we do so far?".into()),
+        summary,
+        state_revision,
+    );
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(
@@ -234,6 +241,7 @@ async fn compact_inner(
         &cwd,
         None,
         run_hooks,
+        None,
     )
     .await?;
     let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
@@ -426,6 +434,12 @@ mod tests {
     use crate::AgentConfig;
 
     #[test]
+    fn continue_prompt_does_not_delegate_state_restoration_to_model() {
+        assert!(!CONTINUE_AFTER_COMPACT.contains("todo_write"));
+        assert!(!CONTINUE_AFTER_COMPACT.contains("restore todos"));
+    }
+
+    #[test]
     fn compaction_summary_is_an_assistant_message() {
         smol::block_on(async {
             let model = default_model();
@@ -455,6 +469,16 @@ mod tests {
             assert!(matches!(turn_complete.message.role, Role::Assistant));
             assert_eq!(turn_complete.message.first_text_content(), Some("response"));
             assert!(turn_complete.context_size.is_some());
+            assert!(matches!(
+                history.transcript(),
+                [
+                    n00n_storage::sessions::TranscriptEntry::Compaction {
+                        state_revision: None,
+                        ..
+                    },
+                    ..
+                ]
+            ));
         });
     }
 
@@ -1296,6 +1320,7 @@ mod tests {
                 &std::env::current_dir().unwrap(),
                 None,
                 false,
+                None,
             )
             .await;
 
@@ -1349,6 +1374,7 @@ mod tests {
                 &std::env::current_dir().unwrap(),
                 None,
                 false,
+                None,
             )
             .await;
 
