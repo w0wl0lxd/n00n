@@ -54,6 +54,7 @@ pub struct UsageModalContext<'a> {
 pub struct UsageModal {
     open: bool,
     scroll: ModalScroll,
+    checked_model_specs: HashSet<String>,
 }
 
 impl UsageModal {
@@ -61,6 +62,7 @@ impl UsageModal {
         Self {
             open: false,
             scroll: ModalScroll::new_top(),
+            checked_model_specs: HashSet::new(),
         }
     }
 
@@ -94,6 +96,7 @@ impl UsageModal {
             return Rect::default();
         }
 
+        self.warn_unresolved_models(ctx);
         let theme = theme::current();
         let lines = build_lines(ctx, &theme);
 
@@ -130,30 +133,29 @@ impl UsageModal {
 
         popup
     }
+
+    fn warn_unresolved_models(&mut self, ctx: &UsageModalContext) {
+        for id in ctx.by_model.keys() {
+            let key = format!("{}/{id}", ctx.model.provider);
+            if self.checked_model_specs.insert(key) && model_for(id, ctx.model).is_none() {
+                tracing::warn!(model_id = id, "unable to resolve usage model");
+            }
+        }
+    }
 }
 
 fn model_for(id: &str, current: &Model) -> Option<Model> {
     if id == current.id || id == current.spec() {
         return Some(current.clone());
     }
-    match Model::from_spec(id) {
-        Ok(model) => Some(model),
-        Err(direct_error) => {
-            let fallback_spec = format!("{}/{id}", current.provider);
-            match Model::from_spec(&fallback_spec) {
-                Ok(model) => Some(model),
-                Err(fallback_error) => {
-                    tracing::warn!(
-                        model_id = id,
-                        %direct_error,
-                        %fallback_error,
-                        "unable to resolve usage model"
-                    );
-                    None
-                }
-            }
-        }
+    if let Ok(model) = Model::from_spec(id) {
+        return Some(model);
     }
+    let fallback_spec = format!("{}/{id}", current.provider);
+    let Ok(model) = Model::from_spec(&fallback_spec) else {
+        return None;
+    };
+    Some(model)
 }
 
 fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
@@ -417,7 +419,7 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
         gap(),
         h("saved $"),
         gap(),
-        Span::styled(format!("{:>6}", "est $"), theme.status_dim),
+        h("est $"),
     ]
 }
 
@@ -459,8 +461,8 @@ fn model_row(
         money(savings),
         gap(),
         match cost {
-            Some(c) => Span::styled(format!("{c:>6.3}"), fg),
-            None => Span::styled(format!("{:>6}", "—"), dim),
+            Some(c) => Span::styled(format!("{c:>NUM_COL$.3}"), fg),
+            None => Span::styled(format!("{:>NUM_COL$}", "—"), dim),
         },
     ]
 }
@@ -596,6 +598,25 @@ mod tests {
         assert!(modal.is_open());
     }
 
+    #[test]
+    fn unresolved_model_is_checked_once_per_provider() {
+        let current_model = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let total = TokenUsage::default();
+        let by_model = HashMap::from([("unknown-model".into(), StoredTokenUsage::default())]);
+        let ctx = UsageModalContext {
+            total: &total,
+            by_model: &by_model,
+            model: &current_model,
+            fast: false,
+            quota: None,
+        };
+        let mut usage_modal = UsageModal::new();
+
+        usage_modal.warn_unresolved_models(&ctx);
+        usage_modal.warn_unresolved_models(&ctx);
+
+        assert_eq!(usage_modal.checked_model_specs.len(), 1);
+    }
     #[test]
     fn quota_ready_lines_include_labels_and_percentages() {
         let theme = crate::theme::current();
