@@ -1,0 +1,103 @@
+{
+  "date": "2026-08-17",
+  "repository_commit": "523fe41b",
+  "baseline": {
+    "tag": "v0.5.1",
+    "commit": "5b919d3df",
+    "binary": "/home/w0w/dev/.targets/n00n-v051/debug/n00n"
+  },
+  "candidate": {
+    "branch": "fix/token-efficiency-060",
+    "commit": "523fe41b",
+    "binary": "/home/w0w/dev/.targets/n00n-fixed060/debug/n00n"
+  },
+  "model": "codex/gpt-5.6-sol",
+  "invocation": "--print --output-format json --max-turns 8 --yolo --no-commands",
+  "method": {
+    "working_directory": "/home/w0w/dev/n00n-token-efficiency",
+    "isolation": "Unique XDG_STATE_HOME and XDG_CACHE_HOME per task/version; shared provider auth and repository",
+    "tool_normalization": {
+      "explore": "explore_code",
+      "index": "index_file",
+      "codegraph": "map_codegraph",
+      "semblem": "search_text",
+      "read": "read_file",
+      "grep": "search_code",
+      "bash": "run_shell"
+    },
+    "notes": [
+      "Batch child calls are counted instead of the batch wrapper.",
+      "One v0.5.1 task05 delivery failure was discarded and rerun.",
+      "Earlier task01 warmups were excluded.",
+      "Provider cache state cannot be fully isolated and task outputs are stochastic."
+    ]
+  },
+  "aggregate": {
+    "v0.5.1": {
+      "tasks": 10,
+      "successful": 10,
+      "turns": 69,
+      "duration_ms": 632942,
+      "cost_usd": 3.635794,
+      "fresh_input_tokens": 412758,
+      "output_tokens": 20878,
+      "cache_read_tokens": 1891328,
+      "normalized_tool_calls": 197,
+      "tool_result_characters": 990213
+    },
+    "fixed_0.6": {
+      "tasks": 10,
+      "successful": 10,
+      "turns": 77,
+      "duration_ms": 598057,
+      "cost_usd": 3.681791,
+      "fresh_input_tokens": 426645,
+      "output_tokens": 19525,
+      "cache_read_tokens": 1925632,
+      "normalized_tool_calls": 154,
+      "tool_result_characters": 988590
+    },
+    "fixed_delta_percent": {
+      "turns": 11.59,
+      "duration_ms": -5.51,
+      "cost_usd": 1.27,
+      "fresh_input_tokens": 3.36,
+      "output_tokens": -6.48,
+      "cache_read_tokens": 1.81,
+      "normalized_tool_calls": -21.83,
+      "tool_result_characters": -0.16
+    }
+  },
+  "normalized_tool_totals": {
+    "v0.5.1": {
+      "explore_code": 8,
+      "index_file": 23,
+      "search_text": 4,
+      "read_file": 114,
+      "search_code": 44,
+      "arbor": 3,
+      "other": 1
+    },
+    "fixed_0.6": {
+      "explore_code": 14,
+      "index_file": 24,
+      "search_text": 2,
+      "read_file": 80,
+      "search_code": 28,
+      "codegraph__codegraph_explore": 3,
+      "other": 3
+    }
+  },
+  "tasks": [
+    {"id":"task01","category":"cross_file_flow","v051":{"session_id":"Ce8xZk271YrvyB8fD2kpP","turns":8,"duration_ms":78479,"cost_usd":0.483651,"fresh_input":57973,"output":2611,"cache_read":230912},"fixed":{"session_id":"Ce8xgKyvr44P6bsQpxbjc","turns":8,"duration_ms":69813,"cost_usd":0.464399,"fresh_input":55777,"output":2523,"cache_read":219648}},
+    {"id":"task02","category":"symbol_lookup","v051":{"session_id":"Ce8xqFYHqYfmLEAuTMNPS","turns":3,"duration_ms":21204,"cost_usd":0.102288,"fresh_input":15654,"output":391,"cache_read":24576},"fixed":{"session_id":"Ce8xqFqtXaVyz3boYfeEP","turns":4,"duration_ms":16416,"cost_usd":0.120395,"fresh_input":17479,"output":460,"cache_read":38400}},
+    {"id":"task03","category":"file_structure","v051":{"session_id":"Ce8xsd5dxuQeCjNfBKAP2","turns":4,"duration_ms":21227,"cost_usd":0.178025,"fresh_input":28461,"output":764,"cache_read":25600},"fixed":{"session_id":"Ce8xsdQEPuy1dVtFdHFwe","turns":4,"duration_ms":21615,"cost_usd":0.1212,"fresh_input":16026,"output":729,"cache_read":38400}},
+    {"id":"task04","category":"exact_text_search","v051":{"session_id":"Ce8xv4wCWnaB4jPrNa4oo","turns":5,"duration_ms":36155,"cost_usd":0.216826,"fresh_input":29974,"output":986,"cache_read":74752},"fixed":{"session_id":"Ce8xv5DKdeTonGfSTvV7N","turns":8,"duration_ms":45825,"cost_usd":0.214391,"fresh_input":20643,"output":1180,"cache_read":151552}},
+    {"id":"task05","category":"call_path","v051":{"session_id":"Ce8y7MiK3UHk5PuNYu3VE","turns":7,"duration_ms":78584,"cost_usd":0.309583,"fresh_input":29669,"output":2533,"cache_read":170496},"fixed":{"session_id":"Ce8xzEUnzXSZdmheVJ47j","turns":11,"duration_ms":81943,"cost_usd":0.493656,"fresh_input":52392,"output":2808,"cache_read":294912}},
+    {"id":"task06","category":"impact_analysis","v051":{"session_id":"Ce8yDv1Ra6x9rXpXyzLJk","turns":7,"duration_ms":66936,"cost_usd":0.406462,"fresh_input":41830,"output":2848,"cache_read":223744},"fixed":{"session_id":"Ce8yDvQV8m78izE426jgv","turns":9,"duration_ms":80306,"cost_usd":0.564886,"fresh_input":66294,"output":3292,"cache_read":269312}},
+    {"id":"task07","category":"semantic_discovery","v051":{"session_id":"Ce8yLrxpm4y9e5J9srUtC","turns":10,"duration_ms":99023,"cost_usd":0.814955,"fresh_input":88417,"output":3213,"cache_read":552960},"fixed":{"session_id":"Ce8yLsNshWuZCZuFbjXHV","turns":11,"duration_ms":100880,"cost_usd":0.702829,"fresh_input":78549,"output":2878,"cache_read":447488}},
+    {"id":"task08","category":"focused_config","v051":{"session_id":"Ce8yV8k4fj9sfwVp4ArjJ","turns":10,"duration_ms":74685,"cost_usd":0.415144,"fresh_input":44750,"output":2463,"cache_read":235008},"fixed":{"session_id":"Ce8yV94B47aVyut8ekXwz","turns":8,"duration_ms":55499,"cost_usd":0.34366,"fresh_input":41096,"output":1662,"cache_read":176640}},
+    {"id":"task09","category":"storage_flow","v051":{"session_id":"Ce8ybWujLA5Rckk5rKUhW","turns":10,"duration_ms":99636,"cost_usd":0.477513,"fresh_input":49285,"output":2984,"cache_read":283136},"fixed":{"session_id":"Ce8ybXDaqcUQzX3hBUgSv","turns":8,"duration_ms":75941,"cost_usd":0.343011,"fresh_input":37293,"output":2095,"cache_read":187392}},
+    {"id":"task10","category":"cross_file_comparison","v051":{"session_id":"Ce8yjgRhMax4SjZHCkwvK","turns":5,"duration_ms":57013,"cost_usd":0.231347,"fresh_input":26745,"output":2085,"cache_read":70144},"fixed":{"session_id":"Ce8yjgGX3tMLYgTYvusHK","turns":6,"duration_ms":49819,"cost_usd":0.313364,"fresh_input":41096,"output":1898,"cache_read":101888}}
+  ]
+}
