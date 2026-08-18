@@ -93,10 +93,10 @@ impl RenderWorker {
         tool_input: Option<Arc<ToolInput>>,
         tool_output: Option<Arc<ToolOutput>>,
         limits: RenderLimits,
-    ) -> u64 {
+    ) -> Option<u64> {
         let identity = RenderIdentity::default();
-        let (id, _) = self.enqueue(&identity, tool_input, tool_output, limits);
-        id
+        let (id, queued) = self.enqueue(&identity, tool_input, tool_output, limits);
+        queued.then_some(id)
     }
 
     pub fn send_latest(
@@ -320,6 +320,7 @@ mod tests {
 
         let rejected = RenderIdentity::default();
         assert!(worker.send_latest(&rejected, None, None, limits).is_none());
+        assert!(worker.send(None, None, limits).is_none());
         assert_eq!(worker.inner.job_rx.len(), JOB_QUEUE_CAPACITY);
         while let Ok(job) = worker.inner.job_rx.try_recv() {
             assert!(job.identity.is_latest(job.id));
