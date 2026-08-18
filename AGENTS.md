@@ -126,7 +126,7 @@ Do **not** use `bash` for file writes, moves, deletes, or broad destructive oper
 
 ## Research and Verification
 
-- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `explore`/`codegraph`/`index` for codebase evidence, and `thoughtbox` to synthesize findings.
+- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `explore_code`/`map_codegraph`/`index_file` for codebase evidence, and `thoughtbox` to synthesize findings.
 - Report real command results and separate unrelated red-baseline failures from touched-surface regressions.
 
 ## Architecture

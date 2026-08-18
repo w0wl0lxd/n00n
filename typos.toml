@@ -7,6 +7,7 @@ extend-exclude = [
   "*.png",
   "*.ico",
   "flake.lock",
+  "token-routing-benchmark-v051-fixed060.json",
 ]
 
 [default]
