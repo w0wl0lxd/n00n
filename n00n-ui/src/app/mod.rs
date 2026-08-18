@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
+use crate::agent::RevisionAllocator;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
@@ -295,6 +296,7 @@ pub struct App {
     pub(crate) permissions: Arc<PermissionManager>,
     pub(crate) picker: Arc<Picker>,
     pub(crate) lua_event_handle: Option<EventHandle>,
+    pub(crate) revision_allocator: Option<Arc<RevisionAllocator>>,
     pub(super) keymap_reader: KeymapReader,
     pub(super) hint_reader: HintReader,
     pub(crate) restore_event_tx: Option<n00n_agent::EventSender>,
@@ -411,6 +413,7 @@ impl App {
             ui_config,
             permissions,
             lua_event_handle: None,
+            revision_allocator: None,
             keymap_reader,
             hint_reader,
             restore_event_tx: None,

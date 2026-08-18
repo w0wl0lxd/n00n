@@ -1210,6 +1210,9 @@ impl<'h> Agent<'h> {
                 })
                 .transpose()?
         };
+        let previous_messages = self.history.as_slice().to_vec();
+        let previous_transcript = self.history.transcript().to_vec();
+        let previous_state_revision = self.state_revision;
         let (usage, summary) = compaction::compact_history(
             &*compact_provider,
             &compact_model,
@@ -1225,6 +1228,16 @@ impl<'h> Agent<'h> {
         )
         .await?;
         self.state_revision = next_state_revision;
+        if let (Some(revision), Some(checkpoint)) =
+            (next_state_revision, self.compaction_checkpoint.as_mut())
+            && let Err(message) = checkpoint(self.history, revision)
+        {
+            self.history.restore(previous_messages, previous_transcript);
+            self.state_revision = previous_state_revision;
+            return Err(AgentError::Config {
+                message: format!("failed to persist compaction checkpoint: {message}"),
+            });
+        }
         // Charge compaction to the pre-route lane before any Fusion switch.
         let cost = usage.cost(&compact_model.pricing, false);
         self.record_usage(usage, cost);
@@ -1244,13 +1257,6 @@ impl<'h> Agent<'h> {
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
-        if let (Some(revision), Some(checkpoint)) =
-            (next_state_revision, self.compaction_checkpoint.as_mut())
-        {
-            checkpoint(self.history, revision).map_err(|message| AgentError::Config {
-                message: format!("failed to persist compaction checkpoint: {message}"),
-            })?;
-        }
         self.event_tx
             .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
                 message: Message::assistant(summary),
@@ -2268,6 +2274,8 @@ mod tests {
             let error = agent.do_compact().await.unwrap_err();
 
             assert!(error.to_string().contains("disk full"));
+            assert_eq!(agent.history.latest_state_revision(), None);
+            assert_eq!(agent.history.len(), 1);
             assert!(
                 !event_rx
                     .try_iter()

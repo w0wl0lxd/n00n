@@ -141,6 +141,7 @@ impl AgentHandles {
         app.shared_transcript = Some(Arc::clone(&self.transcript));
         app.btw_system = Some(Arc::clone(&self.btw_system));
         app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
+        app.revision_allocator = Some(Arc::clone(&self.revision_allocator));
         app.queue.set_shared(self.queue.clone());
         let restore_tx =
             n00n_agent::EventSender::new(self.agent_tx.clone(), crate::app::RESTORE_RUN_ID);

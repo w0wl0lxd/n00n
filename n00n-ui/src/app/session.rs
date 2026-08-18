@@ -255,16 +255,30 @@ impl App {
         };
         let session_id = self.state.session.id;
         let identity = plugin_state_identity(&self.state.session);
-        let persisted_revision =
-            state_revision_or_initial(self.state.session.meta.state_snapshot.as_ref());
-        let revision = self
-            .state
-            .session
-            .meta
-            .revision
-            .max(persisted_revision.saturating_add(1));
+        let revision = if let Some(allocator) = &self.revision_allocator {
+            match allocator.allocate() {
+                Ok(revision) => revision,
+                Err(error) => {
+                    tracing::warn!(%session_id, %error, "failed to allocate plugin state revision");
+                    return;
+                }
+            }
+        } else {
+            let persisted_revision =
+                state_revision_or_initial(self.state.session.meta.state_snapshot.as_ref());
+            self.state
+                .session
+                .meta
+                .revision
+                .max(persisted_revision.saturating_add(1))
+        };
         match handle.capture_state(&identity, revision) {
-            Ok(snapshot) => self.state.session.meta.state_snapshot = Some(snapshot),
+            Ok(snapshot) => {
+                if let Some(allocator) = &self.revision_allocator {
+                    allocator.observe(state_revision_or_initial(Some(&snapshot)));
+                }
+                self.state.session.meta.state_snapshot = Some(snapshot);
+            }
             Err(error) => {
                 tracing::warn!(%session_id, %error, "failed to capture plugin session state");
             }

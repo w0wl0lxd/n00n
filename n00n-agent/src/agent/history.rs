@@ -157,6 +157,16 @@ impl History {
         self.publish();
     }
 
+    pub(super) fn restore(
+        &mut self,
+        messages: Vec<Message>,
+        transcript: Vec<TranscriptEntry<Message>>,
+    ) {
+        self.messages = messages;
+        self.transcript = transcript;
+        self.publish();
+    }
+
     pub fn truncate(&mut self, len: usize) {
         self.messages.truncate(len);
         rebuild_transcript(&mut self.transcript, &self.messages);

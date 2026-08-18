@@ -96,17 +96,29 @@ fn hydration_snapshot(
     let Some(revision) = outer_compaction_revision(&session.transcript) else {
         return Ok(session.meta.state_snapshot.clone());
     };
-    session
-        .meta
-        .compaction_state_at(revision)
-        .cloned()
-        .map(Some)
-        .map_err(|error| {
-            format!(
-                "cannot restore compaction state revision {revision} for session {}: {error}",
-                session.id
-            )
-        })
+    let latest = session.meta.state_snapshot.clone();
+    if state_revision_or_initial(latest.as_ref()) >= revision {
+        return Ok(latest);
+    }
+    match session.meta.compaction_state_at(revision) {
+        Ok(snapshot) => Ok(Some(snapshot.clone())),
+        Err(
+            error @ (CompactionStateError::MissingRevision { .. }
+            | CompactionStateError::FutureRevision { .. }),
+        ) => {
+            warn!(
+                session_id = %session.id,
+                checkpoint_revision = revision,
+                %error,
+                "compaction state checkpoint unavailable; using latest plugin state"
+            );
+            Ok(latest)
+        }
+        Err(error) => Err(format!(
+            "cannot restore compaction state revision {revision} for session {}: {error}",
+            session.id
+        )),
+    }
 }
 
 fn update_turn_metadata(
@@ -237,6 +249,7 @@ impl SessionStore {
             .session
             .meta
             .revision
+            .max(self.state_revision.saturating_add(1))
             .max(persisted_revision.saturating_add(1));
         match state_persistence.capture(&self.identity, revision) {
             Ok(snapshot) => {
@@ -328,12 +341,14 @@ impl SessionStore {
                 .meta
                 .checkpoint_compaction_state(snapshot.clone())
                 .map_err(|error| error.to_string())?;
-            candidate.meta.state_snapshot = Some(snapshot);
+            if state_revision_or_initial(candidate.meta.state_snapshot.as_ref()) <= revision {
+                candidate.meta.state_snapshot = Some(snapshot);
+            }
         }
         candidate
             .save(&self.dir)
             .map_err(|error| error.to_string())?;
-        self.state_revision = revision;
+        self.state_revision = self.state_revision.max(revision);
         self.session = candidate;
         Ok(())
     }
@@ -360,17 +375,16 @@ impl SessionStore {
                 .meta
                 .checkpoint_compaction_state(snapshot.clone())
                 .map_err(|error| error.to_string())?;
-            candidate.meta.state_snapshot = Some(snapshot);
-            candidate
-                .save(&self.dir)
-                .map_err(|error| error.to_string())?;
-            self.state_revision = revision;
-            self.session = candidate;
-        } else {
-            self.session = candidate;
-            self.save();
+            if state_revision_or_initial(candidate.meta.state_snapshot.as_ref()) <= revision {
+                candidate.meta.state_snapshot = Some(snapshot);
+            }
+            self.state_revision = self.state_revision.max(revision);
         }
-        Ok(())
+        self.session = candidate;
+        self.capture_plugin_state();
+        self.session
+            .save(&self.dir)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -1279,7 +1293,7 @@ mod tests {
     }
 
     #[test]
-    fn reopening_hydrates_exact_outer_compaction_checkpoint() {
+    fn reopening_hydrates_latest_snapshot_after_outer_compaction() {
         let tmp = TempDir::new().unwrap();
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
@@ -1316,8 +1330,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(9)]);
-        assert_eq!(store.state_revision(), 9);
+        assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(12)]);
+        assert_eq!(store.state_revision(), 12);
     }
 
     #[test]
@@ -1353,7 +1367,7 @@ mod tests {
             .record_turn(&[], &transcript, MODEL_SPEC.into(), &AgentMode::Build, None)
             .unwrap();
 
-        assert_eq!(*probe.captured_revisions.lock().unwrap(), vec![7, 8]);
+        assert_eq!(*probe.captured_revisions.lock().unwrap(), vec![7, 8, 9]);
         let loaded = StoredSession::load(session_id(), &dir).unwrap();
         assert_eq!(
             loaded.meta.compaction_state_at(7).unwrap().state_revision(),
@@ -1365,8 +1379,38 @@ mod tests {
                 .state_snapshot
                 .as_ref()
                 .and_then(StoredSessionStateSnapshot::state_revision),
-            Some(8)
+            Some(9)
         );
+    }
+
+    #[test]
+    fn missing_compaction_checkpoint_falls_back_to_latest_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: Some(7),
+        }];
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(6));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let store = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+
+        assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(6)]);
+        assert_eq!(store.state_revision(), 6);
     }
 
     #[test]
@@ -1483,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    fn referenced_future_checkpoint_fails_closed_on_open() {
+    fn newer_latest_snapshot_ignores_stale_checkpoint_set() {
         let tmp = TempDir::new().unwrap();
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
@@ -1500,7 +1544,7 @@ mod tests {
         persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(12));
         persisted.save(&dir).unwrap();
 
-        let error = SessionStore::open_in_with_state(
+        let store = SessionStore::open_in_with_state(
             dir,
             session_id(),
             CWD,
@@ -1508,11 +1552,9 @@ mod tests {
             &AgentMode::Build,
             None,
         )
-        .err()
         .unwrap();
 
-        assert!(error.contains("revision 9"));
-        assert!(error.contains("newer than latest checkpoint 3"));
+        assert_eq!(store.state_revision(), 12);
     }
 
     #[test]
