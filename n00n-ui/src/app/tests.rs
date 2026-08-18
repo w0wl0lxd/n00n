@@ -2664,6 +2664,38 @@ fn save_session_captures_plugin_state_snapshot() {
 }
 
 #[test]
+fn save_session_does_not_overtake_pending_compaction_revision() {
+    let (_tmp, _dir, writer, mut app) = tempdir_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    app.lua_event_handle = host.event_handle();
+    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(3));
+    app.hydrate_plugin_state();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::AutoCompacting));
+    let revision_before_save = app
+        .state
+        .session
+        .meta
+        .state_snapshot
+        .as_ref()
+        .and_then(StoredSessionStateSnapshot::state_revision);
+
+    app.save_session();
+
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        revision_before_save
+    );
+    drain_writer(app, writer);
+}
+
+#[test]
 fn apply_loaded_session_hydrates_plugin_state_snapshot() {
     let mut app = test_app();
     let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();

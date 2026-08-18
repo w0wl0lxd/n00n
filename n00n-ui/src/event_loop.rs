@@ -1748,6 +1748,9 @@ impl<'t> EventLoop<'t> {
     }
 
     fn capture_plugin_state(&mut self, idx: usize) -> std::result::Result<(), String> {
+        if self.sessions[idx].app.main_chat().has_pending_compaction() {
+            return Ok(());
+        }
         let Some(handle) = self.ctx.lua_event_handle.clone() else {
             return Ok(());
         };

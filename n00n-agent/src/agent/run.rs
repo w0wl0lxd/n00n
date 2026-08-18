@@ -1139,7 +1139,6 @@ impl<'h> Agent<'h> {
             return Ok(false);
         }
         info!(context_size = self.context_size, "auto-compacting");
-        self.event_tx.send(AgentEvent::AutoCompacting)?;
         if let Err(e) = self.do_compact().await {
             if matches!(e, AgentError::Cancelled) {
                 return Err(e);
@@ -1188,6 +1187,7 @@ impl<'h> Agent<'h> {
         if !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
+        self.event_tx.send(AgentEvent::AutoCompacting)?;
         let (compact_provider, compact_model) = resolve_compaction_model(
             &self.provider,
             &self.model,
@@ -1199,8 +1199,8 @@ impl<'h> Agent<'h> {
         let run_hooks = matches!(self.test_compaction_hooks, TestCompactionHooks::Enabled);
         #[cfg(not(test))]
         let run_hooks = true;
-        let next_state_revision = if let Some(allocator) = &self.state_revision_allocator {
-            Some(allocator().map_err(|message| AgentError::Config { message })?)
+        let next_state_revision = if self.state_revision_allocator.is_some() {
+            None
         } else {
             self.state_revision
                 .map(|revision| {
@@ -1229,6 +1229,26 @@ impl<'h> Agent<'h> {
         .await?;
         let cost = usage.cost(&compact_model.pricing, false);
         self.record_usage(usage, cost);
+        let next_state_revision = if let Some(allocator) = &self.state_revision_allocator {
+            match allocator() {
+                Ok(revision) => {
+                    if let Err(message) = self.history.set_outer_compaction_state_revision(revision)
+                    {
+                        self.history.restore(previous_messages, previous_transcript);
+                        return Err(AgentError::Config {
+                            message: message.into(),
+                        });
+                    }
+                    Some(revision)
+                }
+                Err(message) => {
+                    self.history.restore(previous_messages, previous_transcript);
+                    return Err(AgentError::Config { message });
+                }
+            }
+        } else {
+            next_state_revision
+        };
         self.state_revision = next_state_revision;
         if let (Some(revision), Some(checkpoint)) =
             (next_state_revision, self.compaction_checkpoint.as_mut())
@@ -2226,6 +2246,35 @@ mod tests {
                 }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)]
                     if matches!(entries.as_slice(), [TranscriptEntry::Compaction { state_revision: Some(1), .. }, ..])
             ));
+        });
+    }
+
+    #[test]
+    fn shared_compaction_revision_is_allocated_after_provider_response() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let (provider, requests) =
+                MockProvider::recording(vec![text_response(StopReason::EndTurn)]);
+            let requests_at_allocation = Arc::clone(&requests);
+            let (agent, event_rx) = make_agent(provider, &mut history);
+            let mut agent = agent.with_state_revision_allocator(Arc::new(move || {
+                assert_eq!(requests_at_allocation.lock().unwrap().len(), 1);
+                Ok(7)
+            }));
+
+            agent.do_compact().await.unwrap();
+
+            assert_eq!(agent.history.latest_state_revision(), Some(7));
+            let events = drain_events(&event_rx);
+            let compacting = events
+                .iter()
+                .position(|envelope| matches!(envelope.event, AgentEvent::AutoCompacting))
+                .unwrap();
+            let done = events
+                .iter()
+                .position(|envelope| matches!(envelope.event, AgentEvent::CompactionDone { .. }))
+                .unwrap();
+            assert!(compacting < done);
         });
     }
 

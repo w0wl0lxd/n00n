@@ -298,6 +298,9 @@ impl App {
     }
 
     fn capture_plugin_state(&mut self) {
+        if self.main_chat().has_pending_compaction() {
+            return;
+        }
         let Some(handle) = &self.lua_event_handle else {
             return;
         };
