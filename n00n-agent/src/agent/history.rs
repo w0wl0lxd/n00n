@@ -81,6 +81,7 @@ impl History {
         &self.transcript
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn latest_state_revision(&self) -> Option<u64> {
         fn latest(entries: &[TranscriptEntry<Message>]) -> Option<u64> {
@@ -98,6 +99,19 @@ impl History {
         }
 
         latest(&self.transcript)
+    }
+
+    pub(crate) fn set_outer_compaction_state_revision(
+        &mut self,
+        revision: u64,
+    ) -> Result<(), &'static str> {
+        let Some(TranscriptEntry::Compaction { state_revision, .. }) = self.transcript.first_mut()
+        else {
+            return Err("compaction transcript boundary is missing");
+        };
+        *state_revision = Some(revision);
+        self.publish();
+        Ok(())
     }
 
     pub fn compact_boundary(
