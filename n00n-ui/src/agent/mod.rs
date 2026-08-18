@@ -356,6 +356,9 @@ fn spawn_agent_internal(
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
+
+    use super::*;
+
     #[test]
     fn revision_allocator_observes_captures_and_allocates_unique_revisions() {
         let allocator = RevisionAllocator::new(4);
@@ -373,8 +376,6 @@ mod tests {
         assert!(allocator.allocate().is_err());
         assert_eq!(allocator.current(), u64::MAX);
     }
-
-    use super::*;
 
     const LONG_TIMEOUT: Duration = Duration::from_mins(1);
     const SHORT_TIMEOUT: Duration = Duration::from_millis(50);

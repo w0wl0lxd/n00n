@@ -1053,7 +1053,9 @@ pub enum AgentEvent {
     AutoCompactFailed {
         error: String,
     },
-    CompactionDone,
+    CompactionDone {
+        state_revision: Option<u64>,
+    },
     #[serde(rename = "FusionPhaseChanged")]
     FusionPhase {
         phase: crate::fusion::FusionPhase,

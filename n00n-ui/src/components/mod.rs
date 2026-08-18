@@ -178,6 +178,7 @@ pub struct LoadedSession {
     pub transcript: Vec<TranscriptEntry<Message>>,
     pub tool_outputs: HashMap<String, ToolOutput>,
     pub model_spec: String,
+    pub plugin_state_hydrated: bool,
 }
 
 use std::path::PathBuf;
