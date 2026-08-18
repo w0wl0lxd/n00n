@@ -8,7 +8,7 @@ local CG_TIMEOUT_SECS = 30
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **map_codegraph** across files and **index_file** for one file.",
+  content = "- Use **map_codegraph** for cross-file structure, call paths, and impact; use **index_file** for one file.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))

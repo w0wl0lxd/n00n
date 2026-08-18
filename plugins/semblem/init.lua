@@ -7,7 +7,7 @@ local cwd = n00n.uv.cwd() or "."
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **search_text** when exact code terms are unknown.",
+  content = "- Use **search_text** for ranked BM25 search when terms are unknown; use **explore_code** for structural questions.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))
