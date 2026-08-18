@@ -177,7 +177,7 @@ impl Chat {
             AgentEvent::AutoCompactFailed { error } => {
                 self.messages_panel.fail_pending_compaction(&error);
             }
-            AgentEvent::CompactionDone => {
+            AgentEvent::CompactionDone { .. } => {
                 if !self.messages_panel.complete_pending_compaction() {
                     self.messages_panel.flush();
                 }
@@ -1656,7 +1656,12 @@ mod tests {
         assert!(!chat.streaming_text_is_empty());
         assert!(!chat.streaming_thinking_is_empty());
 
-        chat.handle_event(AgentEvent::CompactionDone, None);
+        chat.handle_event(
+            AgentEvent::CompactionDone {
+                state_revision: Some(1),
+            },
+            None,
+        );
         assert!(chat.streaming_text_is_empty());
         assert!(chat.streaming_thinking_is_empty());
         assert_eq!(chat.message_count(), 1);

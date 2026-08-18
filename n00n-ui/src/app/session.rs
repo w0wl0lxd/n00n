@@ -9,12 +9,12 @@ use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use n00n_agent::tools::SessionIdentity;
 use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
-use n00n_providers::{Model, TokenUsage};
+use n00n_providers::{Message, Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
     SessionError, StoredDelivery, StoredDirectTool, StoredImageMediaType, StoredImageSource,
     StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
-    StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
+    StoredSessionStateSnapshot, StoredSubagent, StoredThinking, TranscriptEntry,
 };
 
 use crate::AppSession;
@@ -47,6 +47,35 @@ fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u
 }
 
 /// The single content predicate: `App::save_session` persists a session
+fn outer_compaction_revision(transcript: &[TranscriptEntry<Message>]) -> Option<u64> {
+    match transcript.first() {
+        Some(TranscriptEntry::Compaction { state_revision, .. }) => *state_revision,
+        _ => None,
+    }
+}
+
+fn selected_plugin_snapshot(session: &AppSession) -> Option<StoredSessionStateSnapshot> {
+    let latest = session.meta.state_snapshot.clone();
+    let Some(revision) = outer_compaction_revision(&session.transcript) else {
+        return latest;
+    };
+    if state_revision_or_initial(latest.as_ref()) >= revision {
+        return latest;
+    }
+    match session.meta.compaction_state_at(revision) {
+        Ok(snapshot) => Some(snapshot.clone()),
+        Err(error) => {
+            tracing::warn!(
+                session_id = %session.id,
+                checkpoint_revision = revision,
+                %error,
+                "compaction checkpoint unavailable while loading plugin state; using latest snapshot"
+            );
+            latest
+        }
+    }
+}
+
 /// iff this holds, and the shutdown path reuses it to tell which tabs were
 /// saved, so the report and the disk can never disagree. Sync the session
 /// first (`save_session` does).
@@ -236,16 +265,23 @@ impl App {
         );
     }
 
-    pub(crate) fn hydrate_plugin_state(&mut self) {
+    pub(crate) fn hydrate_plugin_state(&mut self) -> bool {
+        let snapshot = selected_plugin_snapshot(&self.state.session);
+        self.hydrate_plugin_snapshot(snapshot)
+    }
+
+    fn hydrate_plugin_snapshot(&mut self, snapshot: Option<StoredSessionStateSnapshot>) -> bool {
         let Some(handle) = &self.lua_event_handle else {
-            return;
+            return false;
         };
         let session_id = self.state.session.id;
         let identity = plugin_state_identity(&self.state.session);
-        if let Err(error) =
-            handle.hydrate_state(&identity, self.state.session.meta.state_snapshot.clone())
-        {
-            tracing::warn!(%session_id, %error, "failed to restore plugin session state");
+        match handle.hydrate_state(&identity, snapshot) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "failed to restore plugin session state");
+                false
+            }
         }
     }
 
@@ -473,6 +509,7 @@ impl App {
             transcript: self.state.session.transcript.clone(),
             tool_outputs: self.state.session.tool_outputs.clone(),
             model_spec: self.state.session.model.clone(),
+            plugin_state_hydrated: false,
         }
     }
 
@@ -513,6 +550,17 @@ impl App {
             &mut self.state.session.transcript,
             &self.state.session.messages,
         );
+        if let Some(revision) = outer_compaction_revision(&self.state.session.transcript) {
+            match self.state.session.meta.compaction_state_at(revision) {
+                Ok(snapshot) => self.state.session.meta.state_snapshot = Some(snapshot.clone()),
+                Err(error) => tracing::warn!(
+                    session_id = %self.state.session.id,
+                    checkpoint_revision = revision,
+                    %error,
+                    "failed to select rewound plugin session state"
+                ),
+            }
+        }
         self.state
             .session
             .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
@@ -548,7 +596,7 @@ impl App {
         if previous_session_id != self.state.session.id {
             self.drop_plugin_state(previous_session_id);
         }
-        self.hydrate_plugin_state();
+        let plugin_state_hydrated = self.hydrate_plugin_state();
         self.state
             .session
             .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
@@ -560,7 +608,9 @@ impl App {
         self.fire_session_focus_autocmd();
 
         self.enqueue_save();
-        self.loaded_session_snapshot()
+        let mut loaded = self.loaded_session_snapshot();
+        loaded.plugin_state_hydrated = plugin_state_hydrated;
+        loaded
     }
 
     #[allow(dead_code)]

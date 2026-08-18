@@ -1073,7 +1073,7 @@ impl EventPump {
             | AgentEvent::QueueDrained { .. }
             | AgentEvent::AutoCompacting
             | AgentEvent::AutoCompactFailed { .. }
-            | AgentEvent::CompactionDone
+            | AgentEvent::CompactionDone { .. }
             | AgentEvent::FusionPhase { .. }
             | AgentEvent::AuthRequired
             | AgentEvent::SubagentInputRequired { .. }

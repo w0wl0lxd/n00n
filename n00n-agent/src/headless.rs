@@ -211,7 +211,7 @@ impl SessionStore {
             state_lease: None,
             state_revision: INITIAL_STATE_REVISION,
         };
-        store.hydrate_plugin_state()?;
+        store.hydrate_plugin_state();
         if is_new {
             if let Err(error) = store.update_turn_metadata(mode, None) {
                 warn!(error, "session metadata was not persisted");
@@ -226,17 +226,24 @@ impl SessionStore {
         self.state_revision
     }
 
-    fn hydrate_plugin_state(&mut self) -> Result<(), String> {
-        let snapshot = hydration_snapshot(&self.session)?;
+    fn hydrate_plugin_state(&mut self) {
+        let snapshot = match hydration_snapshot(&self.session) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                warn!(session_id = %self.session.id, %error, "failed to select plugin session state; using latest snapshot");
+                self.session.meta.state_snapshot.clone()
+            }
+        };
         self.state_revision = state_revision_or_initial(snapshot.as_ref());
         let Some(state_persistence) = &self.state_persistence else {
-            return Ok(());
+            return;
         };
-        let lease = state_persistence
-            .hydrate(&self.identity, snapshot)
-            .map_err(|error| format!("failed to restore plugin session state: {error}"))?;
-        self.state_lease = Some(lease);
-        Ok(())
+        match state_persistence.hydrate(&self.identity, snapshot) {
+            Ok(lease) => self.state_lease = Some(lease),
+            Err(error) => {
+                warn!(session_id = %self.session.id, %error, "failed to restore plugin session state; continuing without hydrated state");
+            }
+        }
     }
 
     fn capture_plugin_state(&mut self) {
@@ -336,7 +343,14 @@ impl SessionStore {
         candidate.transcript = transcript.to_vec();
         model_spec.clone_into(&mut candidate.model);
         candidate.update_title_if_default();
-        if let Some(snapshot) = self.compaction_snapshot(&candidate, revision)? {
+        let quarantined = matches!(
+            candidate.meta.compaction_state_at(revision),
+            Err(CompactionStateError::UnsupportedSchemaVersion { .. }
+                | CompactionStateError::InvalidEnvelope)
+        );
+        if quarantined {
+            warn!(session_id = %candidate.id, checkpoint_revision = revision, "compaction checkpoint metadata is unusable; compacting without an exact checkpoint");
+        } else if let Some(snapshot) = self.compaction_snapshot(&candidate, revision)? {
             candidate
                 .meta
                 .checkpoint_compaction_state(snapshot.clone())
@@ -368,18 +382,6 @@ impl SessionStore {
         candidate.model = model_spec;
         candidate.update_title_if_default();
 
-        if let Some(revision) = outer_compaction_revision(transcript)
-            && let Some(snapshot) = self.compaction_snapshot(&candidate, revision)?
-        {
-            candidate
-                .meta
-                .checkpoint_compaction_state(snapshot.clone())
-                .map_err(|error| error.to_string())?;
-            if state_revision_or_initial(candidate.meta.state_snapshot.as_ref()) <= revision {
-                candidate.meta.state_snapshot = Some(snapshot);
-            }
-            self.state_revision = self.state_revision.max(revision);
-        }
         self.session = candidate;
         self.capture_plugin_state();
         self.session
@@ -1008,6 +1010,7 @@ mod tests {
         dropped_owners: std::sync::Mutex<Vec<(n00nId, u64)>>,
         next_lease: std::sync::atomic::AtomicU64,
         fail_capture: std::sync::atomic::AtomicBool,
+        fail_hydrate: std::sync::atomic::AtomicBool,
     }
 
     impl SessionStatePersistence for StatePersistenceProbe {
@@ -1016,6 +1019,9 @@ mod tests {
             _identity: &SessionIdentity,
             snapshot: Option<StoredSessionStateSnapshot>,
         ) -> Result<u64, String> {
+            if self.fail_hydrate.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("hydrate failed".into());
+            }
             self.hydrated_revisions.lock().unwrap().push(
                 snapshot
                     .as_ref()
@@ -1335,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_persistence_checkpoints_exact_outer_revision_idempotently() {
+    fn turn_persistence_does_not_backfill_old_compaction_boundary() {
         let tmp = TempDir::new().unwrap();
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
@@ -1367,19 +1373,20 @@ mod tests {
             .record_turn(&[], &transcript, MODEL_SPEC.into(), &AgentMode::Build, None)
             .unwrap();
 
-        assert_eq!(*probe.captured_revisions.lock().unwrap(), vec![7, 8, 9]);
+        assert_eq!(*probe.captured_revisions.lock().unwrap(), vec![5, 6]);
         let loaded = StoredSession::load(session_id(), &dir).unwrap();
-        assert_eq!(
-            loaded.meta.compaction_state_at(7).unwrap().state_revision(),
-            Some(7)
-        );
+        assert!(matches!(
+            loaded.meta.compaction_state_at(7),
+            Err(CompactionStateError::FutureRevision { .. }
+                | CompactionStateError::MissingRevision { .. })
+        ));
         assert_eq!(
             loaded
                 .meta
                 .state_snapshot
                 .as_ref()
                 .and_then(StoredSessionStateSnapshot::state_revision),
-            Some(9)
+            Some(6)
         );
     }
 
@@ -1411,6 +1418,33 @@ mod tests {
 
         assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(6)]);
         assert_eq!(store.state_revision(), 6);
+    }
+    #[test]
+    fn hydration_failure_does_not_abort_session_open() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(6));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        probe
+            .fail_hydrate
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let store = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+
+        assert_eq!(store.state_revision(), 6);
+        assert!(store.state_lease.is_none());
     }
 
     #[test]
@@ -1451,6 +1485,50 @@ mod tests {
                 .state_revision(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn unusable_checkpoint_metadata_does_not_block_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.meta = serde_json::from_value(serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": 2,
+                "opaque": true
+            }
+        }))
+        .unwrap();
+        persisted.save(&dir).unwrap();
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            None,
+        )
+        .unwrap();
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: Some(1),
+        }];
+
+        store
+            .checkpoint_compaction(&[], &transcript, MODEL_SPEC, 1)
+            .unwrap();
+
+        let loaded = StoredSession::load(session_id(), &dir).unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded.transcript).unwrap(),
+            serde_json::to_value(transcript).unwrap()
+        );
+        assert!(matches!(
+            loaded.meta.compaction_state_at(1),
+            Err(CompactionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
     }
 
     #[test]

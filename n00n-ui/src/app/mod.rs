@@ -1543,7 +1543,7 @@ impl App {
             None => 0,
         };
 
-        if matches!(envelope.event, AgentEvent::CompactionDone) && chat_idx == 0 {
+        if matches!(envelope.event, AgentEvent::CompactionDone { .. }) && chat_idx == 0 {
             self.chats[chat_idx].flush();
             if let Some(shared_transcript) = &self.shared_transcript {
                 let transcript = shared_transcript.load();

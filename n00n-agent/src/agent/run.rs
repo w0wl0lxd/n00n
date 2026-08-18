@@ -1264,7 +1264,9 @@ impl<'h> Agent<'h> {
                 model: self.model.id.clone(),
                 context_size: Some(self.context_size),
             })))?;
-        self.event_tx.send(AgentEvent::CompactionDone)?;
+        self.event_tx.send(AgentEvent::CompactionDone {
+            state_revision: next_state_revision,
+        })?;
         Ok(())
     }
 
@@ -2244,7 +2246,7 @@ mod tests {
                 assert_eq!(history.latest_state_revision(), Some(1));
                 assert!(!event_rx_in_hook.try_iter().any(|envelope| matches!(
                     envelope.event,
-                    AgentEvent::TurnComplete(_) | AgentEvent::CompactionDone
+                    AgentEvent::TurnComplete(_) | AgentEvent::CompactionDone { .. }
                 )));
                 checkpointed_in_hook.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
@@ -2253,11 +2255,12 @@ mod tests {
             agent.do_compact().await.unwrap();
 
             assert!(checkpointed.load(std::sync::atomic::Ordering::SeqCst));
-            assert!(
-                event_rx
-                    .try_iter()
-                    .any(|envelope| matches!(envelope.event, AgentEvent::CompactionDone))
-            );
+            assert!(event_rx.try_iter().any(|envelope| matches!(
+                envelope.event,
+                AgentEvent::CompactionDone {
+                    state_revision: Some(1)
+                }
+            )));
         });
     }
 
@@ -2279,7 +2282,7 @@ mod tests {
             assert!(
                 !event_rx
                     .try_iter()
-                    .any(|envelope| matches!(envelope.event, AgentEvent::CompactionDone))
+                    .any(|envelope| matches!(envelope.event, AgentEvent::CompactionDone { .. }))
             );
         });
     }

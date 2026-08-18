@@ -332,6 +332,7 @@ fn resume_state_snapshot(
     }
 }
 
+#[cfg(test)]
 fn outer_compaction_state_revision(
     transcript: &[TranscriptEntry<Message>],
 ) -> std::result::Result<u64, String> {
@@ -385,10 +386,16 @@ fn prepare_compaction_checkpoint(
         .checked_add(1)
         .ok_or_else(|| "session revision exhausted".to_owned())?;
     let snapshot = capture_state_at_revision(handle, session, revision)?;
-    session
-        .meta
-        .checkpoint_compaction_state(snapshot.clone())
-        .map_err(|error| error.to_string())?;
+    match session.meta.checkpoint_compaction_state(snapshot.clone()) {
+        Ok(()) => {}
+        Err(
+            CompactionStateError::UnsupportedSchemaVersion { .. }
+            | CompactionStateError::InvalidEnvelope,
+        ) => {
+            warn!(session_id = %session.id, checkpoint_revision = revision, "compaction checkpoint metadata is unusable; compacting without an exact checkpoint");
+        }
+        Err(error) => return Err(error.to_string()),
+    }
     if state_revision_or_initial(session.meta.state_snapshot.as_ref()) <= revision {
         session.meta.state_snapshot = Some(snapshot);
     }
@@ -544,10 +551,20 @@ struct PreparedCompaction {
     root: Option<AppSession>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompactionPersistStage {
+    Ready,
+    PersistingRoot,
+    RootDurable,
+    PersistingSession,
+}
+
 struct PendingCompaction {
     ack: Box<n00n_agent::Envelope>,
+    revision: u64,
     prepared: Option<PreparedCompaction>,
     attempts: u8,
+    stage: CompactionPersistStage,
 }
 
 impl PendingCompaction {
@@ -729,6 +746,8 @@ pub(crate) struct EventLoop<'t> {
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     submission_persist_tx: flume::Sender<SubmissionPersistence>,
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
+    compaction_persist_tx: flume::Sender<CompactionPersistence>,
+    compaction_persist_rx: flume::Receiver<CompactionPersistence>,
     post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     startup_login_slot: Option<Arc<ModelSlot>>,
@@ -749,6 +768,14 @@ struct SubmissionPersistence {
     result: Result<(), SessionError>,
 }
 
+struct CompactionPersistence {
+    session_id: n00nId,
+    run_id: u64,
+    revision: u64,
+    stage: CompactionPersistStage,
+    result: Result<(), SessionError>,
+}
+
 enum Wake {
     Input(Event),
     InputGone,
@@ -756,6 +783,7 @@ enum Wake {
     Agent(usize, Box<n00n_agent::Envelope>),
     Shell(usize, ShellEvent),
     SubmissionPersisted(SubmissionPersistence),
+    CompactionPersisted(CompactionPersistence),
     Warn(String),
 }
 
@@ -1138,6 +1166,7 @@ impl<'t> EventLoop<'t> {
         app.fire_session_focus_autocmd();
 
         let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
+        let (compaction_persist_tx, compaction_persist_rx) = flume::unbounded();
         Ok(Self {
             terminal,
             sessions: runtimes,
@@ -1150,6 +1179,8 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             submission_persist_tx,
             submission_persist_rx,
+            compaction_persist_tx,
+            compaction_persist_rx,
             post_draw_submissions: Vec::new(),
             last_save: Instant::now(),
             startup_login_slot,
@@ -1277,6 +1308,9 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.submission_persist_rx, |res| {
             res.ok().map(Wake::SubmissionPersisted)
         });
+        sel = sel.recv(&self.compaction_persist_rx, |res| {
+            res.ok().map(Wake::CompactionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -1303,6 +1337,9 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.submission_persist_rx, |res| {
             res.ok().map(Wake::SubmissionPersisted)
         });
+        sel = sel.recv(&self.compaction_persist_rx, |res| {
+            res.ok().map(Wake::CompactionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -1325,6 +1362,7 @@ impl<'t> EventLoop<'t> {
             Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
             Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
             Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
+            Wake::CompactionPersisted(completion) => self.handle_compaction_persisted(completion),
             Wake::Warn(warning) => self.focused_app().flash(warning),
         }
         Ok(())
@@ -1428,7 +1466,11 @@ impl<'t> EventLoop<'t> {
             }
             _ => None,
         };
-        if matches!(&envelope.event, n00n_agent::AgentEvent::CompactionDone)
+        let compaction_revision = match &envelope.event {
+            n00n_agent::AgentEvent::CompactionDone { state_revision } => *state_revision,
+            _ => None,
+        };
+        if let Some(revision) = compaction_revision
             && envelope.run_id == self.sessions[idx].app.run_id
             && envelope.subagent.is_none()
         {
@@ -1436,8 +1478,10 @@ impl<'t> EventLoop<'t> {
                 .pending_compactions
                 .push_back(PendingCompaction {
                     ack: envelope,
+                    revision,
                     prepared: None,
                     attempts: 0,
+                    stage: CompactionPersistStage::Ready,
                 });
             self.retry_compaction_checkpoint(idx);
             return;
@@ -1447,6 +1491,7 @@ impl<'t> EventLoop<'t> {
             n00n_agent::AgentEvent::Done { .. }
                 | n00n_agent::AgentEvent::Error { .. }
                 | n00n_agent::AgentEvent::AutoCompactFailed { .. }
+                | n00n_agent::AgentEvent::CompactionDone { .. }
         );
         if capture
             && self.sessions[idx].pending_compactions.is_empty()
@@ -1485,10 +1530,10 @@ impl<'t> EventLoop<'t> {
     fn prepare_compaction(
         &mut self,
         idx: usize,
+        revision: u64,
     ) -> std::result::Result<PreparedCompaction, String> {
         let handle = self.ctx.lua_event_handle.as_ref();
         let mut session = self.sessions[idx].app.session_snapshot();
-        let revision = outer_compaction_state_revision(&session.transcript)?;
         prepare_compaction_checkpoint(handle, &mut session, revision)?;
 
         let root_id = persisted_root_id(&session);
@@ -1517,27 +1562,6 @@ impl<'t> EventLoop<'t> {
         })
     }
 
-    fn persist_compaction(
-        &mut self,
-        idx: usize,
-        prepared: &PreparedCompaction,
-    ) -> std::result::Result<(), String> {
-        if let Some(root) = &prepared.root {
-            self.ctx
-                .storage_writer
-                .persist_and_wait(Box::new(root.clone()), TERMINAL_CHECKPOINT_TIMEOUT)
-                .map_err(|error| error.to_string())?;
-        }
-        self.ctx
-            .storage_writer
-            .persist_and_wait(
-                Box::new(prepared.session.clone()),
-                TERMINAL_CHECKPOINT_TIMEOUT,
-            )
-            .map_err(|error| error.to_string())?;
-        self.apply_compaction_metadata(idx, prepared)
-    }
-
     fn apply_compaction_metadata(
         &mut self,
         idx: usize,
@@ -1563,47 +1587,129 @@ impl<'t> EventLoop<'t> {
         let Some(mut pending) = self.sessions[idx].pending_compactions.pop_front() else {
             return;
         };
-        let result = if let Some(prepared) = &pending.prepared {
-            self.persist_compaction(idx, prepared)
-        } else {
-            match self.prepare_compaction(idx) {
-                Ok(prepared) => {
-                    let result = self.persist_compaction(idx, &prepared);
-                    pending.prepared = Some(prepared);
-                    result
+        if matches!(
+            pending.stage,
+            CompactionPersistStage::PersistingRoot | CompactionPersistStage::PersistingSession
+        ) {
+            self.sessions[idx].pending_compactions.push_front(pending);
+            return;
+        }
+        if pending.prepared.is_none() {
+            match self.prepare_compaction(idx, pending.revision) {
+                Ok(prepared) => pending.prepared = Some(prepared),
+                Err(error) => {
+                    self.handle_compaction_failure(idx, pending, &error);
+                    return;
                 }
-                Err(error) => Err(error),
-            }
-        };
-        if let Err(error) = result {
-            if pending.should_retry_after_failure() {
-                warn!(
-                    session_id = %self.sessions[idx].id(),
-                    attempt = pending.attempts,
-                    max_attempts = MAX_COMPACTION_CHECKPOINT_ATTEMPTS,
-                    %error,
-                    "failed to persist compaction state checkpoint; retrying"
-                );
-                self.sessions[idx].pending_compactions.push_front(pending);
-                return;
-            }
-            warn!(
-                session_id = %self.sessions[idx].id(),
-                attempts = pending.attempts,
-                %error,
-                "failed to persist compaction state checkpoint; releasing compaction acknowledgement"
-            );
-            if let Some(prepared) = &pending.prepared
-                && let Err(merge_error) = self.apply_compaction_metadata(idx, prepared)
-            {
-                warn!(
-                    session_id = %self.sessions[idx].id(),
-                    error = %merge_error,
-                    "failed to retain compaction checkpoint metadata in memory"
-                );
             }
         }
+        let Some(prepared) = pending.prepared.as_ref() else {
+            return;
+        };
+        let (stage, snapshot) = match pending.stage {
+            CompactionPersistStage::Ready => match &prepared.root {
+                Some(root) => (CompactionPersistStage::PersistingRoot, root.clone()),
+                None => (
+                    CompactionPersistStage::PersistingSession,
+                    prepared.session.clone(),
+                ),
+            },
+            CompactionPersistStage::RootDurable => (
+                CompactionPersistStage::PersistingSession,
+                prepared.session.clone(),
+            ),
+            CompactionPersistStage::PersistingRoot | CompactionPersistStage::PersistingSession => {
+                return;
+            }
+        };
+        let session_id = self.sessions[idx].id();
+        let run_id = pending.ack.run_id;
+        let revision = pending.revision;
+        pending.stage = stage;
+        self.sessions[idx].pending_compactions.push_front(pending);
+        let completion_tx = self.compaction_persist_tx.clone();
+        self.ctx
+            .storage_writer
+            .persist(Box::new(snapshot), move |result| {
+                let _ = completion_tx.send(CompactionPersistence {
+                    session_id,
+                    run_id,
+                    revision,
+                    stage,
+                    result,
+                });
+            });
+    }
 
+    fn handle_compaction_persisted(&mut self, completion: CompactionPersistence) {
+        let Some(idx) = self.position(completion.session_id) else {
+            return;
+        };
+        let Some(mut pending) = self.sessions[idx].pending_compactions.pop_front() else {
+            return;
+        };
+        if pending.ack.run_id != completion.run_id
+            || pending.revision != completion.revision
+            || pending.stage != completion.stage
+        {
+            self.sessions[idx].pending_compactions.push_front(pending);
+            return;
+        }
+        if let Err(error) = completion.result {
+            pending.stage = CompactionPersistStage::Ready;
+            self.handle_compaction_failure(idx, pending, &error.to_string());
+            return;
+        }
+        if completion.stage == CompactionPersistStage::PersistingRoot {
+            pending.stage = CompactionPersistStage::RootDurable;
+            self.sessions[idx].pending_compactions.push_front(pending);
+            self.retry_compaction_checkpoint(idx);
+            return;
+        }
+        if let Some(prepared) = &pending.prepared
+            && let Err(error) = self.apply_compaction_metadata(idx, prepared)
+        {
+            warn!(session_id = %completion.session_id, %error, "failed to apply durable compaction checkpoint metadata");
+        }
+        self.finish_compaction(idx, pending);
+    }
+
+    fn handle_compaction_failure(
+        &mut self,
+        idx: usize,
+        mut pending: PendingCompaction,
+        error: &str,
+    ) {
+        if pending.should_retry_after_failure() {
+            warn!(
+                session_id = %self.sessions[idx].id(),
+                attempt = pending.attempts,
+                max_attempts = MAX_COMPACTION_CHECKPOINT_ATTEMPTS,
+                %error,
+                "failed to persist compaction state checkpoint; retrying"
+            );
+            self.sessions[idx].pending_compactions.push_front(pending);
+            return;
+        }
+        warn!(
+            session_id = %self.sessions[idx].id(),
+            attempts = pending.attempts,
+            %error,
+            "failed to persist compaction state checkpoint; releasing compaction acknowledgement"
+        );
+        if let Some(prepared) = &pending.prepared
+            && let Err(merge_error) = self.apply_compaction_metadata(idx, prepared)
+        {
+            warn!(
+                session_id = %self.sessions[idx].id(),
+                error = %merge_error,
+                "failed to retain compaction checkpoint metadata in memory"
+            );
+        }
+        self.finish_compaction(idx, pending);
+    }
+
+    fn finish_compaction(&mut self, idx: usize, pending: PendingCompaction) {
         let actions = self.sessions[idx].app.update(Msg::Agent(pending.ack));
         self.dispatch(idx, actions);
         if matches!(
@@ -1613,12 +1719,7 @@ impl<'t> EventLoop<'t> {
             if let Err(error) = self.capture_plugin_state(idx) {
                 warn!(session_id = %self.sessions[idx].id(), %error, "failed to capture terminal plugin state after compaction checkpoint");
             }
-            if let Err(error) = self.sessions[idx]
-                .app
-                .checkpoint_session(TERMINAL_CHECKPOINT_TIMEOUT)
-            {
-                warn!(session_id = %self.sessions[idx].id(), %error, "failed to persist terminal session after compaction checkpoint");
-            }
+            self.sessions[idx].app.save_session();
         }
     }
 
@@ -2212,29 +2313,32 @@ impl<'t> EventLoop<'t> {
         self.sessions.iter().position(|rt| rt.id() == id)
     }
 
-    fn current_revision_for(&self, idx: usize) -> std::result::Result<u64, String> {
+    fn current_revision_for(&self, idx: usize) -> u64 {
         let session = &self.sessions[idx].app.state.session;
-        let mut revision = current_state_revision(session);
+        let revision = current_state_revision(session);
         let root_id = persisted_root_id(session);
         if root_id == session.id {
-            return Ok(revision);
+            return revision;
         }
         let root_revision = if let Some(root_idx) = self.position(root_id) {
             current_state_revision(&self.sessions[root_idx].app.state.session)
-        } else if let Some(root) = self
-            .ctx
-            .storage_writer
-            .latest_snapshot(root_id)
-            .map_err(|error| error.to_string())?
-        {
-            current_state_revision(&root)
         } else {
-            let root =
-                AppSession::load(root_id, &self.ctx.storage).map_err(|error| error.to_string())?;
-            current_state_revision(&root)
+            match self.ctx.storage_writer.latest_snapshot(root_id) {
+                Ok(Some(root)) => current_state_revision(&root),
+                Ok(None) => match AppSession::load(root_id, &self.ctx.storage) {
+                    Ok(root) => current_state_revision(&root),
+                    Err(error) => {
+                        warn!(session_id = %session.id, %root_id, %error, "root state revision unavailable; using session revision");
+                        return revision;
+                    }
+                },
+                Err(error) => {
+                    warn!(session_id = %session.id, %root_id, %error, "current root state revision unavailable; using session revision");
+                    return revision;
+                }
+            }
         };
-        revision = revision.max(root_revision);
-        Ok(revision)
+        revision.max(root_revision)
     }
 
     /// The single place that removes a runtime: keeps `focused` pointing at
@@ -2447,14 +2551,7 @@ impl<'t> EventLoop<'t> {
         transcript: Vec<TranscriptEntry<Message>>,
         identity: SessionIdentity,
     ) {
-        let initial_state_revision = match self.current_revision_for(idx) {
-            Ok(revision) => revision,
-            Err(error) => {
-                warn!(session_id = %self.sessions[idx].id(), %error, "failed to determine current plugin state revision");
-                self.sessions[idx].app.status = Status::error(error);
-                return;
-            }
-        };
+        let initial_state_revision = self.current_revision_for(idx);
         let rt = &mut self.sessions[idx];
         let lua_handle = rt.app.lua_event_handle.clone();
         let permissions = Arc::clone(&rt.app.permissions);
@@ -2668,6 +2765,23 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
+                let hydrated =
+                    loaded.plugin_state_hydrated || self.sessions[idx].app.hydrate_plugin_state();
+                if hydrated {
+                    let session = &self.sessions[idx].app.state.session;
+                    let root_id = persisted_root_id(session);
+                    if root_id == session.id {
+                        let revision = session
+                            .meta
+                            .state_snapshot
+                            .as_ref()
+                            .and_then(StoredSessionStateSnapshot::state_revision);
+                        self.ctx
+                            .hydrated_roots
+                            .borrow_mut()
+                            .insert(root_id, revision);
+                    }
+                }
                 self.respawn_agent(idx, loaded.messages, loaded.transcript, identity);
                 *self.sessions[idx]
                     .handles
@@ -2971,15 +3085,16 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
-        MAX_COMPACTION_CHECKPOINT_ATTEMPTS, PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction,
-        TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, authorize_ui_delete, bounded_direct_output,
-        cancel_stored_session, complete_model_fetch_with, direct_paused_team_payload,
-        draw_then_post_terminal, initial_state_revision, merge_compaction_metadata,
-        merge_model_batch, outer_compaction_state_revision, paused_team_payload, paused_team_run,
-        prepare_compaction_checkpoint, publish_model_refresh, resolve_model_selection,
-        resume_state_snapshot, should_save_periodically, startup_login_completed,
-        startup_provider_with, take_painted_submissions, validated_paused_team_payload,
+        CompactionPersistStage, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET,
+        DrainScheduler, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, PAUSED_TEAM_RUN_ID_MAX_BYTES,
+        PendingCompaction, TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, authorize_ui_delete,
+        bounded_direct_output, cancel_stored_session, complete_model_fetch_with,
+        direct_paused_team_payload, draw_then_post_terminal, initial_state_revision,
+        merge_compaction_metadata, merge_model_batch, outer_compaction_state_revision,
+        paused_team_payload, paused_team_run, prepare_compaction_checkpoint, publish_model_refresh,
+        resolve_model_selection, resume_state_snapshot, should_save_periodically,
+        startup_login_completed, startup_provider_with, take_painted_submissions,
+        validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::{ArcSwap, ArcSwapOption};
@@ -3015,12 +3130,16 @@ mod tests {
     fn compaction_checkpoint_retry_budget_is_bounded() {
         let mut pending = PendingCompaction {
             ack: Box::new(Envelope {
-                event: AgentEvent::CompactionDone,
+                event: AgentEvent::CompactionDone {
+                    state_revision: Some(1),
+                },
                 subagent: None,
                 run_id: 1,
             }),
+            revision: 1,
             prepared: None,
             attempts: 0,
+            stage: CompactionPersistStage::Ready,
         };
 
         for _ in 1..MAX_COMPACTION_CHECKPOINT_ATTEMPTS {

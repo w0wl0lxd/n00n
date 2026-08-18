@@ -15,8 +15,7 @@ use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
-pub(super) const CONTINUE_AFTER_COMPACT: &str =
-    "Continue with next steps, ask if unsure, and persist durable notes via memory.";
+pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue with next steps, ask if unsure, restore todos with todo_write, and persist durable notes via memory.";
 
 const COMPACTION_INPUT_SAFETY_MARGIN: u32 = 4096;
 const MINIMAL_CONTEXT_RATIO: f64 = 0.2;
@@ -284,7 +283,7 @@ async fn compact_inner_at_state_revision(
         model: model.id.clone(),
         context_size: Some(context_size),
     })))?;
-    event_tx.send(AgentEvent::CompactionDone)?;
+    event_tx.send(AgentEvent::CompactionDone { state_revision })?;
 
     event_tx.send(AgentEvent::Done {
         usage,
@@ -467,9 +466,9 @@ mod tests {
     use crate::AgentConfig;
 
     #[test]
-    fn continue_prompt_does_not_delegate_state_restoration_to_model() {
-        assert!(!CONTINUE_AFTER_COMPACT.contains("todo_write"));
-        assert!(!CONTINUE_AFTER_COMPACT.contains("restore todos"));
+    fn continue_prompt_restores_persisted_todos_for_the_model() {
+        assert!(CONTINUE_AFTER_COMPACT.contains("todo_write"));
+        assert!(CONTINUE_AFTER_COMPACT.contains("restore todos"));
     }
 
     #[test]
