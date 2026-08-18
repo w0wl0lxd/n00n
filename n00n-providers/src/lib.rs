@@ -26,9 +26,9 @@ pub use model_catalog::{ModelCatalog, ModelCatalogError, ModelResolver};
 pub use providers::Timeouts;
 pub use providers::copilot::auth as copilot_auth;
 pub use providers::dynamic;
-pub use providers::openai::OpenAiOptions;
 pub use providers::openai::auth as openai_auth;
 pub use providers::openai::websocket::ensure_rustls_crypto_provider;
+pub use providers::openai::{CodexCacheCapabilities, OpenAiOptions};
 pub use providers::opencode::{
     ProviderData, catalog_provider, catalog_providers, catalog_providers_if_available,
 };

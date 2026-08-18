@@ -83,6 +83,7 @@ pub(crate) fn build_body(
         Some("explicit")
     } else {
         opts.openai_prompt_cache_mode
+            .filter(|mode| *mode == crate::OpenAiPromptCacheMode::Implicit)
             .map(crate::OpenAiPromptCacheMode::as_wire)
     };
     if let Some(mode) = prompt_cache_mode {
@@ -2185,6 +2186,28 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             body["prompt_cache_options"],
             json!({"mode":"implicit", "ttl": PROMPT_CACHE_TTL})
         );
+    }
+    #[test]
+    fn build_body_omits_requested_explicit_prompt_cache_options_without_breakpoint() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            message_cache_breakpoints: 0,
+            openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Explicit),
+            ..Default::default()
+        };
+        let body = build_body(
+            &model,
+            &[Message::user("cache me".into())],
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            false,
+            &opts,
+            true,
+        );
+
+        assert!(body.get("prompt_cache_options").is_none());
     }
 
     #[test]
