@@ -50,7 +50,7 @@ pub const TOOL_SEARCH_TOOL_NAME: &str = "search_tools";
 /// Below this many deferrable tools, a search round-trip plus its
 /// prompt-cache miss cost more than a handful of upfront definitions.
 /// Overridden by `defer_tools` in mcp.toml.
-const DEFAULT_DEFER_TOOLS: usize = 10;
+pub const DEFAULT_DEFER_TOOLS: usize = 10;
 /// Loads per search are capped so one broad query can't flood the context.
 const MAX_SEARCH_LOADS: usize = 5;
 const NAME_HIT_SCORE: usize = 2;

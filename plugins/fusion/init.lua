@@ -152,6 +152,8 @@ end
 n00n.api.register_tool({
   name = "delegate_fusion",
   aliases = { "fusion_delegate" },
+  defer_loading = true,
+  namespace = "orchestration",
   description = description,
   schema = schema,
   handler = handler,

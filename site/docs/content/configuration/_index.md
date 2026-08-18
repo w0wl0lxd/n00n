@@ -207,7 +207,7 @@ n00n.setup({
 |-------|------|---------|-----|-------------|
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
-| `search_result_limit` | integer | `100` | 10 | Max files returned per search. |
+| `search_result_limit` | integer | `50` | 10 | Max files returned per search. |
 
 ### `plugins.grep`
 
@@ -216,7 +216,7 @@ n00n.setup({
 | `max_line_bytes` | integer | `500` | 80 | Skip lines longer than this many bytes. |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
-| `search_result_limit` | integer | `100` | 10 | Max match groups per search. A call's `limit` param overrides it. |
+| `search_result_limit` | integer | `50` | 10 | Max match groups per search. A call's `limit` param overrides it. |
 
 ### `plugins.index`
 

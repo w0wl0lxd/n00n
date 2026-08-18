@@ -140,11 +140,6 @@ local function render_index(skeleton, path, ctx, ext, line_meta)
   return buf, render_header(path, line_count)
 end
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Use **index_file** first on individual files to get their skeleton, then use **read_file** with offset/limit for the specific section you need.",
-})
-
 n00n.api.register_tool({
   name = "index_file",
   aliases = { "index" },

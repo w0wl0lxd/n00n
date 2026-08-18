@@ -21,9 +21,7 @@ use crate::cancel::{CancelMap, CancelToken};
 use crate::permissions::PermissionManager;
 use crate::prompt::ResolvedSlots;
 use crate::template;
-use crate::tools::{
-    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-};
+use crate::tools::{FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry};
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
     EventSender, ImageSource, McpHandle, McpSession, PermissionsConfig, ToolOutput,
@@ -307,20 +305,7 @@ fn tool_definitions(
     workflow: bool,
     registry: &ToolRegistry,
 ) -> (Value, ToolFilter) {
-    let filter = ToolFilter::from_config(config, model, excluded_tools);
-    let ctx = DescriptionContext {
-        filter: &filter,
-        audience: ToolAudience::MAIN,
-        workflow,
-    };
-    let tools = registry.definitions_active(
-        vars,
-        &ctx,
-        model.supports_tool_examples(),
-        &crate::tools::default_active_tools(),
-    );
-
-    (tools, filter)
+    crate::tools::runtime_tool_definitions(registry, vars, config, model, excluded_tools, workflow)
 }
 
 #[must_use]

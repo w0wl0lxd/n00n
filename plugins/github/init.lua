@@ -1,11 +1,6 @@
 local n00n_github = n00n.github
 local ToolView = require("n00n.tool_view")
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Use **github** for GitHub API operations: list_issues, create_issue, list_prs, get_repo, get_issue, get_pr, create_pr, add_comment.",
-})
-
 local function dispatch(input)
   if not input.command or input.command == "" then
     return { llm_output = "error: command is required", is_error = true }
@@ -142,6 +137,8 @@ end
 
 n00n.api.register_tool({
   name = "github",
+  defer_loading = true,
+  namespace = "repository",
   kind = "edit",
   description = [[
 GitHub REST API (read/write). Tokens: GITHUB_TOKEN or gh CLI.

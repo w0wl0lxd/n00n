@@ -36,7 +36,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 ### `write_file` *(lua plugin)*
 
-Write content to a file. Prefer edit or edit_lines for existing files.
+Write content to a file. Prefer edit_file or edit_file_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -111,10 +111,11 @@ PRIMARY CODEBASE TOOL. Use first. Routes by intent:
 
 Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | yes |  |
-| `path` | string | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `path` | string | no |  |  |
+| `pattern` | string | yes |  |  |
+| `limit` | integer | no | 50, max 1000 | Maximum matching paths. |
 
 ### `search_code` *(lua plugin)*
 
@@ -198,7 +199,7 @@ Code-smell index. index, search.
 
 ### `run_batch` *(lua plugin)*
 
-Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-4 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
+Execute multiple independent tool calls concurrently. ALWAYS use run_batch for multiple independent calls. 1-4 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest run_batch. Use run_python for dependent operations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -206,12 +207,12 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 ### `run_python` *(lua plugin)*
 
-Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
+Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read_file(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `timeout` | integer | no | 30 | Script timeout seconds |
-| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
+| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read_file(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `ask_user` *(lua plugin)*
 
@@ -262,7 +263,7 @@ Show status for one live background agent.
 
 ### `control_agent` *(lua plugin)*
 
-Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
+Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -393,7 +394,7 @@ Load a skill that provides instructions and workflows for specific tasks. Use `l
 
 ### `search_tools` *(lua plugin)*
 
-Search deferred tools by name or description when the needed capability is not already available. Do not use this when a loaded sibling tool already matches the task.
+Search deferred built-in and MCP tools by name or description when the needed capability is absent. Loaded tools become callable on the next turn. Do not use this when a loaded sibling already matches the task.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -425,7 +426,7 @@ Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done â€
 
 ### `fetch_url` *(lua plugin)*
 
-Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside code_execution to avoid context bloat.
+Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside run_python to avoid context bloat.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|

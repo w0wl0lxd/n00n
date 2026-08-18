@@ -5,11 +5,6 @@ local smell = n00n.smell
 
 local cwd = n00n.uv.cwd() or "."
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Use **smell** to search a persistent index of TODO/FIXME/HACK comments and placeholder phrases. Run `index` before searching on a new repo.",
-})
-
 local opts = n00n.api.register_options(output_limits.extend({}))
 
 local function resolve_repo(input)
@@ -18,6 +13,8 @@ end
 
 n00n.api.register_tool({
   name = "smell",
+  defer_loading = true,
+  namespace = "exploration",
   kind = "read",
   description = "Code-smell index. index, search.",
 
@@ -69,7 +66,7 @@ n00n.api.register_tool({
       return { llm_output = "error: command is required", is_error = true }
     end
 
-    local max_lines, max_bytes = output_limits.resolve(opts, ctx)
+    local max_lines, max_bytes = output_limits.resolve_capped(opts, ctx, 12 * 1024)
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish smell results: " .. tostring(live_err), is_error = true }

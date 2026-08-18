@@ -9,8 +9,7 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-    ToolsSnapshot,
+    FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry, ToolsSnapshot,
 };
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -485,20 +484,16 @@ impl AgentLoop {
     }
 
     fn build_tools(&mut self, model: &Model, workflow: bool) -> Value {
-        let examples = model.supports_tool_examples();
-        let filter = ToolFilter::from_config(&self.config, model, &[]);
-        self.tool_filter = filter.clone();
-        let ctx = DescriptionContext {
-            filter: &filter,
-            audience: ToolAudience::MAIN,
-            workflow,
-        };
-        ToolRegistry::global().definitions_active(
+        let (definitions, filter) = n00n_agent::tools::runtime_tool_definitions(
+            ToolRegistry::global(),
             &self.vars,
-            &ctx,
-            examples,
-            &n00n_agent::tools::default_active_tools(),
-        )
+            &self.config,
+            model,
+            &[],
+            workflow,
+        );
+        self.tool_filter = filter;
+        definitions
     }
 
     async fn reload_instructions(&mut self) {

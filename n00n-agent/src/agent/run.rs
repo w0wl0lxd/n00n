@@ -1400,8 +1400,8 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
-    use crate::Envelope;
     use crate::permissions::{PermissionAnswer, PermissionManager};
+    use crate::{Envelope, ToolOutput};
     use serde_json::json;
 
     #[test]
@@ -2164,6 +2164,53 @@ mod tests {
         )
     }
 
+    #[test]
+    fn discovery_results_activate_canonical_tools_and_namespaces() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _events) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let search_result = ToolDoneEvent {
+            id: "search".to_owned(),
+            tool: Arc::from("tool_search"),
+            output: ToolOutput::Plain(
+                r#"[{"name":"fetch_url","namespace":"web","description":"Fetch URL"}]"#.into(),
+            ),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        };
+        let namespace_result = ToolDoneEvent {
+            id: "namespace".to_owned(),
+            tool: Arc::from("load_namespace"),
+            output: ToolOutput::Plain(
+                r#"{"namespace":"knowledge","tools":["load_skill","use_memory"]}"#.into(),
+            ),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        };
+
+        assert!(agent.apply_tool_search_results(&[search_result, namespace_result]));
+        assert!(agent.active_tools.names.contains("fetch_url"));
+        assert!(agent.active_tools.namespaces.contains("knowledge"));
+    }
+
+    #[test]
+    fn malformed_discovery_results_do_not_change_active_tools() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _events) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let malformed = ToolDoneEvent {
+            id: "search".to_owned(),
+            tool: Arc::from("search_tools"),
+            output: ToolOutput::Plain("not json".into()),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        };
+
+        assert!(!agent.apply_tool_search_results(&[malformed]));
+        assert!(agent.active_tools.names.is_empty());
+        assert!(agent.active_tools.namespaces.is_empty());
+    }
     fn default_input() -> AgentInput {
         AgentInput {
             message: "hello".into(),
