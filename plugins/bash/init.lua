@@ -486,10 +486,6 @@ rtk_rewrite = function(command, ctx)
       return "rtk " .. cmd
     end
     if rtk_enforcement_required(command) then
-      local fallback = rtk_proxy_fallback(command)
-      if fallback then
-        return fallback
-      end
       return nil, RTK_REWRITE_REQUIRED .. ": rtk returned no rewrite", RTK_REWRITE_REASON_UNAVAILABLE
     end
     return nil
