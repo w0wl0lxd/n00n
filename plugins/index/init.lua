@@ -175,7 +175,7 @@ n00n.api.register_tool({
     local meta = n00n.fs.metadata(path)
     if meta and meta.is_dir then
       return {
-        llm_output = "Path is a directory. Use index on files or use the read or glob tool to list directories.",
+        llm_output = "Path is a directory. Use index_file on files or use read_file or search_files to list directories.",
         is_error = true,
       }
     end
@@ -186,12 +186,12 @@ n00n.api.register_tool({
     if not lang then
       local ext = path:match("%.([^%.]+)$")
       if not ext then
-        return { llm_output = "Unsupported file type: (no extension). Use the read tool instead.", is_error = true }
+        return { llm_output = "Unsupported file type: (no extension). Use read_file instead.", is_error = true }
       end
 
       lang = indexer.EXT_TO_LANG[ext]
       if not lang then
-        return { llm_output = "Unsupported file type: ." .. ext .. ". Use the read tool instead.", is_error = true }
+        return { llm_output = "Unsupported file type: ." .. ext .. ". Use read_file instead.", is_error = true }
       end
     end
 
@@ -202,7 +202,7 @@ n00n.api.register_tool({
           .. meta.size
           .. " bytes, max "
           .. max_file_size
-          .. "). Use read with offset/limit instead.",
+          .. "). Use read_file with offset/limit instead.",
         is_error = true,
       }
     end
