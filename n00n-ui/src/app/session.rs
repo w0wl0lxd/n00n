@@ -12,8 +12,8 @@ use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Message, Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
-    SessionError, StoredDelivery, StoredDirectTool, StoredImageMediaType, StoredImageSource,
-    StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
+    CompactionStateError, SessionError, StoredDelivery, StoredDirectTool, StoredImageMediaType,
+    StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
     StoredSessionStateSnapshot, StoredSubagent, StoredThinking, TranscriptEntry,
 };
 
@@ -46,7 +46,6 @@ fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u
     revision
 }
 
-/// The single content predicate: `App::save_session` persists a session
 fn outer_compaction_revision(transcript: &[TranscriptEntry<Message>]) -> Option<u64> {
     match transcript.first() {
         Some(TranscriptEntry::Compaction { state_revision, .. }) => *state_revision,
@@ -54,28 +53,35 @@ fn outer_compaction_revision(transcript: &[TranscriptEntry<Message>]) -> Option<
     }
 }
 
-fn selected_plugin_snapshot(session: &AppSession) -> Option<StoredSessionStateSnapshot> {
+fn selected_plugin_snapshot(
+    session: &AppSession,
+) -> Result<Option<StoredSessionStateSnapshot>, CompactionStateError> {
     let latest = session.meta.state_snapshot.clone();
     let Some(revision) = outer_compaction_revision(&session.transcript) else {
-        return latest;
+        return Ok(latest);
     };
     if state_revision_or_initial(latest.as_ref()) >= revision {
-        return latest;
+        return Ok(latest);
     }
     match session.meta.compaction_state_at(revision) {
-        Ok(snapshot) => Some(snapshot.clone()),
-        Err(error) => {
+        Ok(snapshot) => Ok(Some(snapshot.clone())),
+        Err(
+            error @ (CompactionStateError::MissingRevision { .. }
+            | CompactionStateError::FutureRevision { .. }),
+        ) => {
             tracing::warn!(
                 session_id = %session.id,
                 checkpoint_revision = revision,
                 %error,
                 "compaction checkpoint unavailable while loading plugin state; using latest snapshot"
             );
-            latest
+            Ok(latest)
         }
+        Err(error) => Err(error),
     }
 }
 
+/// The single content predicate: `App::save_session` persists a session
 /// iff this holds, and the shutdown path reuses it to tell which tabs were
 /// saved, so the report and the disk can never disagree. Sync the session
 /// first (`save_session` does).
@@ -266,7 +272,13 @@ impl App {
     }
 
     pub(crate) fn hydrate_plugin_state(&mut self) -> bool {
-        let snapshot = selected_plugin_snapshot(&self.state.session);
+        let snapshot = match selected_plugin_snapshot(&self.state.session) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(session_id = %self.state.session.id, %error, "refusing unusable compaction checkpoint while loading plugin state");
+                return false;
+            }
+        };
         self.hydrate_plugin_snapshot(snapshot)
     }
 
