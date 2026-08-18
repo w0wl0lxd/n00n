@@ -197,8 +197,8 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = [[- When using the **read** tool, only read the sections you actually need.
-- Use `wc -l` to check total number of lines before reading to decide a reasonable **read** tool limit unless known already.
+  content = [[- When using **read_file**, only read the sections you actually need.
+- Use `wc -l` to check total number of lines before reading to decide a reasonable **read_file** limit unless known already.
 - Supports absolute, relative, and ~/ paths. No offset = start at 1; no limit = up to 500 lines.
 - Use truncation hints (e.g. "truncated lines X-Y") to continue with the correct offset.]],
 })
