@@ -315,7 +315,14 @@ impl AgentLoop {
             self.timeouts,
             self.openai_options,
         );
-        agent::compact(&*provider, &model, &mut self.history, event_tx).await
+        let revision = self
+            .revision_allocator
+            .allocate()
+            .map_err(|message| AgentError::Config { message })?;
+        agent::compact_at_state_revision(&*provider, &model, &mut self.history, event_tx, revision)
+            .await?;
+        self.state_revision = Some(revision);
+        Ok(())
     }
 
     async fn do_agent_run(
