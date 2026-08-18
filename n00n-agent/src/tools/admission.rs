@@ -12,6 +12,7 @@ use crate::cancel::CancelToken;
 
 pub const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 8;
 pub const DEFAULT_MAX_CONCURRENT_CHEAP_TOOLS: usize = 32;
+pub const DEFAULT_MAX_CONCURRENT_INTERACTIVE_TOOLS: usize = 32;
 pub const DEFAULT_MAX_CONCURRENT_AGENT_TOOLS: usize = 4;
 
 const ORCHESTRATOR_TOOLS: &[&str] = &[
@@ -72,7 +73,7 @@ impl ToolAdmissionClass {
 
     #[must_use]
     pub const fn bypasses_admission(self) -> bool {
-        matches!(self, Self::Interactive | Self::Orchestrator)
+        matches!(self, Self::Orchestrator)
     }
 }
 
@@ -97,10 +98,12 @@ struct AdmissionState {
 pub struct ToolAdmission {
     process: Arc<Semaphore>,
     cheap: Arc<Semaphore>,
+    interactive: Arc<Semaphore>,
     agent_limit: usize,
     state: AdmissionState,
     process_active: AtomicUsize,
     cheap_active: AtomicUsize,
+    interactive_active: AtomicUsize,
 }
 
 impl fmt::Debug for ToolAdmission {
@@ -112,6 +115,10 @@ impl fmt::Debug for ToolAdmission {
                 &self.process_active.load(Ordering::Relaxed),
             )
             .field("cheap_active", &self.cheap_active.load(Ordering::Relaxed))
+            .field(
+                "interactive_active",
+                &self.interactive_active.load(Ordering::Relaxed),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -145,12 +152,14 @@ impl ToolAdmission {
         Self {
             process: Arc::new(Semaphore::new(process_limit.max(1))),
             cheap: Arc::new(Semaphore::new(cheap_limit.max(1))),
+            interactive: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_INTERACTIVE_TOOLS)),
             agent_limit: agent_limit.max(1),
             state: AdmissionState {
                 agents: Mutex::new(HashMap::new()),
             },
             process_active: AtomicUsize::new(0),
             cheap_active: AtomicUsize::new(0),
+            interactive_active: AtomicUsize::new(0),
         }
     }
 
@@ -171,17 +180,25 @@ impl ToolAdmission {
             return Ok(ToolAdmissionGuard::empty());
         }
 
-        if matches!(class, ToolAdmissionClass::Cheap) {
+        if matches!(
+            class,
+            ToolAdmissionClass::Cheap | ToolAdmissionClass::Interactive
+        ) {
+            let (semaphore, active) = if matches!(class, ToolAdmissionClass::Interactive) {
+                (&self.interactive, &self.interactive_active)
+            } else {
+                (&self.cheap, &self.cheap_active)
+            };
             let permit = cancel
-                .race(self.cheap.acquire_arc())
+                .race(semaphore.acquire_arc())
                 .await
                 .map_err(|_| AdmissionError::Cancelled)?;
-            self.cheap_active.fetch_add(1, Ordering::Relaxed);
+            active.fetch_add(1, Ordering::Relaxed);
             return Ok(ToolAdmissionGuard {
                 _process: None,
-                _cheap: Some(ActivePermit {
+                _wide: Some(ActivePermit {
                     guard: permit,
-                    active: &self.cheap_active,
+                    active,
                 }),
                 agent: None,
                 state: None,
@@ -222,7 +239,7 @@ impl ToolAdmission {
                 guard: process_guard,
                 active: &self.process_active,
             }),
-            _cheap: None,
+            _wide: None,
             agent: Some(agent_guard),
             state: Some(&self.state),
             scope: Some(scope),
@@ -254,6 +271,11 @@ impl ToolAdmission {
     pub fn cheap_active(&self) -> usize {
         self.cheap_active.load(Ordering::Relaxed)
     }
+
+    #[must_use]
+    pub fn interactive_active(&self) -> usize {
+        self.interactive_active.load(Ordering::Relaxed)
+    }
 }
 
 struct ActivePermit<'a> {
@@ -270,7 +292,7 @@ impl Drop for ActivePermit<'_> {
 
 pub struct ToolAdmissionGuard<'a> {
     _process: Option<ActivePermit<'a>>,
-    _cheap: Option<ActivePermit<'a>>,
+    _wide: Option<ActivePermit<'a>>,
     agent: Option<SemaphoreGuardArc>,
     state: Option<&'a AdmissionState>,
     scope: Option<String>,
@@ -280,7 +302,7 @@ impl ToolAdmissionGuard<'_> {
     fn empty() -> Self {
         Self {
             _process: None,
-            _cheap: None,
+            _wide: None,
             agent: None,
             state: None,
             scope: None,
@@ -474,17 +496,39 @@ mod tests {
         assert_eq!(admission.process_active(), 0);
     }
 
-    #[test_case::test_case(ToolAdmissionClass::Orchestrator ; "orchestrator")]
-    #[test_case::test_case(ToolAdmissionClass::Interactive ; "interactive")]
-    fn bypass_class_is_a_noop_guard(class: ToolAdmissionClass) {
+    #[test]
+    fn orchestrator_bypasses_admission() {
         smol::block_on(async {
             let admission = ToolAdmission::with_limits(1, 1, 1);
             let permit = admission
-                .acquire("agent", class, &CancelToken::none())
+                .acquire(
+                    "agent",
+                    ToolAdmissionClass::Orchestrator,
+                    &CancelToken::none(),
+                )
                 .await
                 .expect("class bypass");
             assert_eq!(admission.process_active(), 0);
             drop(permit);
+        });
+    }
+
+    #[test]
+    fn interactive_uses_a_separate_bounded_lane() {
+        smol::block_on(async {
+            let admission = ToolAdmission::with_limits(1, 1, 1);
+            let permit = admission
+                .acquire(
+                    "agent",
+                    ToolAdmissionClass::Interactive,
+                    &CancelToken::none(),
+                )
+                .await
+                .expect("interactive lane");
+            assert_eq!(admission.process_active(), 0);
+            assert_eq!(admission.interactive_active(), 1);
+            drop(permit);
+            assert_eq!(admission.interactive_active(), 0);
         });
     }
 }

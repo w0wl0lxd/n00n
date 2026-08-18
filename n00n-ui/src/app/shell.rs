@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::process::Command as StdCommand;
 use std::time::{Duration, Instant};
 
@@ -374,15 +373,17 @@ fn append_output(
 }
 
 fn output_text(output: &[u8]) -> String {
-    match String::from_utf8_lossy(output) {
-        Cow::Borrowed(text) => text.to_string(),
-        Cow::Owned(mut text) => {
-            while text.len() > output.len() {
-                text.pop();
-            }
-            text
-        }
-    }
+    let search_start = output.len().saturating_sub(4);
+    let complete_len = match (search_start..output.len()).find_map(|offset| {
+        std::str::from_utf8(&output[offset..])
+            .err()
+            .filter(|error| error.error_len().is_none())
+            .map(|error| offset + error.valid_up_to())
+    }) {
+        Some(complete_len) => complete_len,
+        None => output.len(),
+    };
+    String::from_utf8_lossy(&output[..complete_len]).into_owned()
 }
 
 fn spawn_output_reader<R: futures_lite::io::AsyncRead + Unpin + Send + 'static>(
@@ -477,6 +478,21 @@ mod tests {
         assert!(truncated);
         assert!(output.len() <= 2);
         assert_eq!(output_text(&output), "a");
+    }
+
+    #[test]
+    fn invalid_utf8_does_not_trim_valid_output_tail() {
+        assert_eq!(output_text(&[0xff, b'a', b'b', b'c']), "�abc");
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_is_removed() {
+        assert_eq!(output_text(&[b'a', 0xc3]), "a");
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_is_removed_after_invalid_bytes() {
+        assert_eq!(output_text(&[0xff, b'a', 0xc3]), "�a");
     }
 
     #[test]

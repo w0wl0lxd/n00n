@@ -1,9 +1,3 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::Duration;
-
 use crossterm::event::KeyEvent;
 use n00n_agent::{SharedBuf, SnapshotLine, SpanStyle};
 use n00n_lua::{Anchor, Axis, Border, FloatConfig, Split, TitlePos, WinCommand, WinEvent};
@@ -11,6 +5,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::animation::{animation_elapsed_ms, spinner_str};
 use crate::components::split_layout::SplitReq;
@@ -23,7 +21,6 @@ use crate::components::{
 use crate::theme;
 
 const MAX_WINDOW_COMMANDS_PER_TICK: usize = 64;
-const COMMAND_RELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A top band, a bottom band, and the scrollable middle. When the window is too
 /// short for both bands the bottom wins, so footers like keybind hints survive
@@ -78,7 +75,7 @@ struct FloatWindow {
     event_tx: flume::Sender<WinEvent>,
     cmd_rx: flume::Receiver<WinCommand>,
     close_requested: Arc<AtomicBool>,
-    command_relay_active: bool,
+    command_relay_stop: Option<flume::Sender<()>>,
 }
 
 impl FloatWindow {
@@ -173,14 +170,15 @@ pub(crate) struct FloatManager {
 fn relay_window_commands(
     source: flume::Receiver<WinCommand>,
     close_requested: Arc<AtomicBool>,
-) -> Option<flume::Receiver<WinCommand>> {
+) -> Option<(flume::Receiver<WinCommand>, flume::Sender<()>)> {
     let (command_tx, command_rx) = flume::bounded(MAX_WINDOW_COMMANDS_PER_TICK);
+    let (stop_tx, stop_rx) = flume::bounded(1);
     match std::thread::Builder::new()
         .name("window-command-relay".into())
         .spawn(move || {
-            run_window_command_relay(&source, &command_tx, &close_requested);
+            run_window_command_relay(&source, &command_tx, &stop_rx, &close_requested);
         }) {
-        Ok(_) => Some(command_rx),
+        Ok(_) => Some((command_rx, stop_tx)),
         Err(error) => {
             tracing::error!(%error, "failed to start window command relay");
             None
@@ -188,26 +186,33 @@ fn relay_window_commands(
     }
 }
 
+enum RelayWake {
+    Command(Result<WinCommand, flume::RecvError>),
+    Stop,
+}
+
 fn run_window_command_relay(
     source: &flume::Receiver<WinCommand>,
     command_tx: &flume::Sender<WinCommand>,
+    stop_rx: &flume::Receiver<()>,
     close_requested: &Arc<AtomicBool>,
 ) {
     loop {
-        if command_tx.is_disconnected() {
-            return;
-        }
-        match source.recv_timeout(COMMAND_RELAY_POLL_INTERVAL) {
-            Ok(WinCommand::Close) | Err(flume::RecvTimeoutError::Disconnected) => {
+        let wake = flume::Selector::new()
+            .recv(source, RelayWake::Command)
+            .recv(stop_rx, |_| RelayWake::Stop)
+            .wait();
+        match wake {
+            RelayWake::Command(Ok(WinCommand::Close) | Err(_)) => {
                 close_requested.store(true, Ordering::Release);
                 return;
             }
-            Ok(command) => {
+            RelayWake::Command(Ok(command)) => {
                 if command_tx.send(command).is_err() {
                     return;
                 }
             }
-            Err(flume::RecvTimeoutError::Timeout) => {}
+            RelayWake::Stop => return,
         }
     }
 }
@@ -310,7 +315,7 @@ impl FloatManager {
             event_tx,
             cmd_rx,
             close_requested,
-            command_relay_active: false,
+            command_relay_stop: None,
         };
 
         self.windows.push(win);
@@ -334,13 +339,13 @@ impl FloatManager {
                 win.bring_cursor_into_view();
             }
 
-            if !win.command_relay_active
+            if win.command_relay_stop.is_none()
                 && win.cmd_rx.len() > MAX_WINDOW_COMMANDS_PER_TICK
-                && let Some(relayed) =
+                && let Some((relayed, stop_tx)) =
                     relay_window_commands(win.cmd_rx.clone(), Arc::clone(&win.close_requested))
             {
                 win.cmd_rx = relayed;
-                win.command_relay_active = true;
+                win.command_relay_stop = Some(stop_tx);
             }
 
             for _ in 0..MAX_WINDOW_COMMANDS_PER_TICK {
@@ -1182,14 +1187,15 @@ mod tests {
         source_tx.send(WinCommand::Close).unwrap();
         let close_requested = Arc::new(AtomicBool::new(false));
         let (command_tx, command_rx) = flume::bounded(MAX_WINDOW_COMMANDS_PER_TICK);
+        let (_stop_tx, stop_rx) = flume::bounded(1);
 
         let relay = std::thread::spawn({
             let close_requested = Arc::clone(&close_requested);
-            move || run_window_command_relay(&source_rx, &command_tx, &close_requested)
+            move || run_window_command_relay(&source_rx, &command_tx, &stop_rx, &close_requested)
         });
         for _ in 0..MAX_WINDOW_COMMANDS_PER_TICK * 4 {
             assert!(matches!(
-                command_rx.recv_timeout(COMMAND_RELAY_POLL_INTERVAL),
+                command_rx.recv_timeout(std::time::Duration::from_secs(1)),
                 Ok(WinCommand::SetVisible(_))
             ));
         }
@@ -1710,7 +1716,7 @@ mod tests {
             event_tx,
             cmd_rx,
             close_requested: Arc::new(AtomicBool::new(false)),
-            command_relay_active: false,
+            command_relay_stop: None,
         }
     }
 
