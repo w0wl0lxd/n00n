@@ -604,9 +604,9 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 let mut guard = checkpoint_store
                     .lock()
                     .map_err(|error| format!("session persistence lock poisoned: {error}"))?;
-                let store = guard
-                    .as_mut()
-                    .ok_or_else(|| "session persistence is unavailable".to_owned())?;
+                let Some(store) = guard.as_mut() else {
+                    return Ok(());
+                };
                 store.checkpoint_compaction(
                     history.as_slice(),
                     history.transcript(),
@@ -913,9 +913,9 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     let mut guard = checkpoint_store
                         .lock()
                         .map_err(|error| format!("session persistence lock poisoned: {error}"))?;
-                    let store = guard
-                        .as_mut()
-                        .ok_or_else(|| "session persistence is unavailable".to_owned())?;
+                    let Some(store) = guard.as_mut() else {
+                        return Ok(());
+                    };
                     store.checkpoint_compaction(
                         history.as_slice(),
                         history.transcript(),

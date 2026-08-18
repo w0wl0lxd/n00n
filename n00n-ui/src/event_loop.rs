@@ -382,7 +382,6 @@ fn prepare_compaction_checkpoint(
     let next_session_revision = session
         .meta
         .revision
-        .max(revision)
         .checked_add(1)
         .ok_or_else(|| "session revision exhausted".to_owned())?;
     let snapshot = capture_state_at_revision(handle, session, revision)?;
@@ -443,7 +442,16 @@ fn capture_session_plugin_state(
     let captured_revision = snapshot
         .state_revision()
         .ok_or_else(|| "captured plugin state has no revision".to_owned())?;
-    session.meta.revision = session.meta.revision.max(captured_revision);
+    if captured_revision != revision {
+        return Err(format!(
+            "captured plugin state revision {captured_revision} does not match requested revision {revision}"
+        ));
+    }
+    session.meta.revision = session
+        .meta
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| "session revision exhausted".to_owned())?;
     session.meta.state_snapshot = Some(snapshot);
     Ok(())
 }
@@ -543,6 +551,7 @@ struct SessionRuntime {
     last_status: SessionStatus,
     direct_bootstrap_active: bool,
     pending_compactions: VecDeque<PendingCompaction>,
+    deferred_agent_events: VecDeque<Box<n00n_agent::Envelope>>,
 }
 
 struct PreparedCompaction {
@@ -730,6 +739,7 @@ impl SpawnCtx {
             last_status,
             direct_bootstrap_active,
             pending_compactions: VecDeque::new(),
+            deferred_agent_events: VecDeque::new(),
         })
     }
 }
@@ -1420,6 +1430,10 @@ impl<'t> EventLoop<'t> {
             self.dispatch(idx, actions);
             return;
         }
+        if !self.sessions[idx].pending_compactions.is_empty() {
+            self.sessions[idx].deferred_agent_events.push_back(envelope);
+            return;
+        }
         if self.sessions[idx].direct_bootstrap_active {
             match &envelope.event {
                 n00n_agent::AgentEvent::ToolDone(done) => {
@@ -1720,6 +1734,16 @@ impl<'t> EventLoop<'t> {
                 warn!(session_id = %self.sessions[idx].id(), %error, "failed to capture terminal plugin state after compaction checkpoint");
             }
             self.sessions[idx].app.save_session();
+        }
+        self.drain_deferred_agent_events(idx);
+    }
+
+    fn drain_deferred_agent_events(&mut self, idx: usize) {
+        while self.sessions[idx].pending_compactions.is_empty() {
+            let Some(envelope) = self.sessions[idx].deferred_agent_events.pop_front() else {
+                break;
+            };
+            self.handle_agent(idx, envelope);
         }
     }
 
@@ -3233,6 +3257,7 @@ mod tests {
             )
             .unwrap();
         session.meta.state_snapshot = Some(previous);
+        session.meta.revision = 2;
 
         let revision = outer_compaction_state_revision(&session.transcript).unwrap();
         prepare_compaction_checkpoint(None, &mut session, revision).unwrap();
@@ -3241,6 +3266,7 @@ mod tests {
             .unwrap();
 
         let durable = AppSession::load(session.id, &dir).unwrap();
+        assert_eq!(durable.meta.revision, 3);
         assert_eq!(
             durable
                 .meta

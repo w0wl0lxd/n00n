@@ -1227,6 +1227,8 @@ impl<'h> Agent<'h> {
             next_state_revision,
         )
         .await?;
+        let cost = usage.cost(&compact_model.pricing, false);
+        self.record_usage(usage, cost);
         self.state_revision = next_state_revision;
         if let (Some(revision), Some(checkpoint)) =
             (next_state_revision, self.compaction_checkpoint.as_mut())
@@ -1238,9 +1240,6 @@ impl<'h> Agent<'h> {
                 message: format!("failed to persist compaction checkpoint: {message}"),
             });
         }
-        // Charge compaction to the pre-route lane before any Fusion switch.
-        let cost = usage.cost(&compact_model.pricing, false);
-        self.record_usage(usage, cost);
         if self.config.fusion.enabled {
             let route = self.fusion_state.as_mut().map(|state| {
                 let recent_errors = state.recent_tool_errors();
@@ -2268,10 +2267,14 @@ mod tests {
     fn failed_compaction_checkpoint_is_not_acknowledged() {
         smol::block_on(async {
             let mut history = History::new(vec![Message::user("one".into())]);
-            let (agent, event_rx) = make_agent(
-                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
-                &mut history,
-            );
+            let charged = TokenUsage {
+                input: 100,
+                output: 50,
+                ..Default::default()
+            };
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = charged;
+            let (agent, event_rx) = make_agent(MockProvider::new(vec![response]), &mut history);
             let mut agent = agent.with_compaction_checkpoint(|_, _| Err("disk full".into()));
 
             let error = agent.do_compact().await.unwrap_err();
@@ -2279,6 +2282,7 @@ mod tests {
             assert!(error.to_string().contains("disk full"));
             assert_eq!(agent.history.latest_state_revision(), None);
             assert_eq!(agent.history.len(), 1);
+            assert_eq!(agent.total_usage(), charged);
             assert!(
                 !event_rx
                     .try_iter()
