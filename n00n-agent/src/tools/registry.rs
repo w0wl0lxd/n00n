@@ -697,41 +697,122 @@ impl ToolRegistry {
     }
 
     #[must_use]
-    pub fn search(&self, query: &str) -> Vec<ToolSearchResult> {
-        let query_lower = query.to_lowercase();
+    pub fn search(
+        &self,
+        query: &str,
+        ctx: &DescriptionContext,
+        limit: usize,
+    ) -> Vec<ToolSearchResult> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let tokens: Vec<&str> = query
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .collect();
         let snapshot = self.tools.load();
         let mut results = Vec::new();
         for entry in snapshot.iter() {
-            if !entry.defer_loading {
+            if !entry.defer_loading
+                || !entry.tool.audience().contains(ctx.audience)
+                || !ctx.filter.matches(entry.name())
+            {
                 continue;
             }
             let name = entry.name();
-            let description = entry.tool.description(&DescriptionContext {
-                filter: &crate::tools::ToolFilter::All,
-                audience: ToolAudience::MAIN,
-                workflow: false,
-            });
-            let name_matches = name.to_lowercase().contains(&query_lower);
-            let desc_matches = description.to_lowercase().contains(&query_lower);
-            if name_matches || desc_matches {
-                let truncated = if description.len() > 120 {
-                    format!(
-                        "{}...",
-                        &description[..description.floor_char_boundary(120)]
-                    )
-                } else {
-                    description.into_owned()
-                };
-                results.push(ToolSearchResult {
+            let name_lower = name.to_lowercase();
+            let aliases = entry.tool.aliases();
+            let aliases_lower: Vec<String> =
+                aliases.iter().map(|alias| alias.to_lowercase()).collect();
+            let namespace_lower = entry.namespace.as_deref().map(str::to_lowercase);
+            let description = entry.tool.description(ctx);
+            let description_lower = description.to_lowercase();
+            let schema_lower = entry.tool.schema().to_string().to_lowercase();
+            let mut score = 0_u32;
+            if name_lower == query {
+                score = score.saturating_add(10_000);
+            } else if aliases_lower.iter().any(|alias| alias == &query) {
+                score = score.saturating_add(9_000);
+            } else if namespace_lower.as_deref() == Some(query.as_str()) {
+                score = score.saturating_add(8_000);
+            }
+            if name_lower.contains(&query) {
+                score = score.saturating_add(1_000);
+            }
+            if aliases_lower.iter().any(|alias| alias.contains(&query)) {
+                score = score.saturating_add(900);
+            }
+            for token in &tokens {
+                if name_lower.contains(token) {
+                    score = score.saturating_add(100);
+                }
+                if aliases_lower.iter().any(|alias| alias.contains(token)) {
+                    score = score.saturating_add(90);
+                }
+                if namespace_lower
+                    .as_deref()
+                    .is_some_and(|namespace| namespace.contains(token))
+                {
+                    score = score.saturating_add(80);
+                }
+                if schema_lower.contains(token) {
+                    score = score.saturating_add(30);
+                }
+                if description_lower.contains(token) {
+                    score = score.saturating_add(10);
+                }
+            }
+            if score == 0 {
+                continue;
+            }
+            let description = if description.len() > 120 {
+                format!(
+                    "{}...",
+                    &description[..description.floor_char_boundary(120)]
+                )
+            } else {
+                description.into_owned()
+            };
+            results.push((
+                score,
+                ToolSearchResult {
                     name: name.to_owned(),
                     namespace: entry.namespace.as_deref().map(String::from),
-                    description: truncated,
-                });
-            }
+                    description,
+                },
+            ));
         }
+        results.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.name.cmp(&right.name))
+        });
         results
+            .into_iter()
+            .take(limit)
+            .map(|(_, result)| result)
+            .collect()
     }
 
+    #[must_use]
+    pub fn deferred_namespace_tools(
+        &self,
+        namespace: &str,
+        ctx: &DescriptionContext,
+    ) -> Vec<String> {
+        let snapshot = self.tools.load();
+        let mut names: Vec<String> = snapshot
+            .iter()
+            .filter(|entry| entry.defer_loading)
+            .filter(|entry| entry.namespace.as_deref() == Some(namespace))
+            .filter(|entry| entry.tool.audience().contains(ctx.audience))
+            .filter(|entry| ctx.filter.matches(entry.name()))
+            .map(|entry| entry.name().to_owned())
+            .collect();
+        names.sort();
+        names
+    }
     #[must_use]
     pub fn definitions_active(
         &self,
@@ -906,6 +987,42 @@ mod tests {
         }
     }
 
+    struct DiscoveryMock {
+        name: &'static str,
+        description: &'static str,
+        property: &'static str,
+    }
+
+    impl Tool for DiscoveryMock {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
+            self.description.into()
+        }
+
+        fn schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { (self.property): { "type": "string" } },
+                "additionalProperties": false
+            })
+        }
+
+        fn defer_loading(&self) -> bool {
+            true
+        }
+
+        fn namespace(&self) -> Option<&str> {
+            Some("discovery")
+        }
+
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(MockInvocation))
+        }
+    }
+
     fn mock(name: &str) -> Arc<dyn Tool> {
         mock_scoped(name, ToolAudience::all())
     }
@@ -917,6 +1034,21 @@ mod tests {
             audience,
             defer_loading: false,
             namespace: None,
+        })
+    }
+
+    fn deferred_mock(
+        name: &str,
+        aliases: &[&str],
+        audience: ToolAudience,
+        namespace: Option<&str>,
+    ) -> Arc<dyn Tool> {
+        Arc::new(MockTool {
+            name: name.to_owned(),
+            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+            audience,
+            defer_loading: true,
+            namespace: namespace.map(str::to_owned),
         })
     }
 
@@ -1215,7 +1347,13 @@ mod tests {
         reg.register(&mock("active_tool"), &lua_source("p"))
             .unwrap();
 
-        let results = reg.search("deferred");
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let results = reg.search("deferred", &ctx, 5);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "deferred_tool");
     }
@@ -1226,8 +1364,127 @@ mod tests {
         reg.register(&mock("active_tool"), &lua_source("p"))
             .unwrap();
 
-        let results = reg.search("active");
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let results = reg.search("active", &ctx, 5);
         assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn search_ranks_exact_alias_and_caps_deterministically() {
+        let reg = ToolRegistry::new();
+        reg.register(
+            &deferred_mock("fetch_url", &["webfetch"], ToolAudience::all(), Some("web")),
+            &lua_source("webfetch"),
+        )
+        .unwrap();
+        for name in [
+            "alpha_web",
+            "beta_web",
+            "delta_web",
+            "epsilon_web",
+            "gamma_web",
+            "zeta_web",
+        ] {
+            reg.register(
+                &deferred_mock(name, &[], ToolAudience::all(), Some("web")),
+                &lua_source("web"),
+            )
+            .unwrap();
+        }
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        let exact = reg.search("webfetch", &ctx, 5);
+        assert_eq!(
+            exact.first().map(|result| result.name.as_str()),
+            Some("fetch_url")
+        );
+        let broad = reg.search("web", &ctx, 5);
+        assert_eq!(broad.len(), 5);
+        assert_eq!(broad[0].name, "alpha_web");
+        assert_eq!(broad[1].name, "beta_web");
+    }
+
+    #[test]
+    fn search_respects_filter_and_audience() {
+        let reg = ToolRegistry::new();
+        for tool in [
+            deferred_mock("visible_tool", &[], ToolAudience::MAIN, Some("test")),
+            deferred_mock("blocked_tool", &[], ToolAudience::MAIN, Some("test")),
+            deferred_mock(
+                "subagent_tool",
+                &[],
+                ToolAudience::RESEARCH_SUB,
+                Some("test"),
+            ),
+        ] {
+            reg.register(&tool, &lua_source("test")).unwrap();
+        }
+        let filter = crate::tools::ToolFilter::AllExcept(vec!["blocked_tool".to_owned()]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        let results = reg.search("tool", &ctx, 5);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["visible_tool"]
+        );
+        assert_eq!(
+            reg.deferred_namespace_tools("test", &ctx),
+            vec!["visible_tool"]
+        );
+    }
+
+    #[test]
+    fn search_rejects_empty_queries_and_zero_limit() {
+        let reg = ToolRegistry::new();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        assert!(reg.search("  ", &ctx, 5).is_empty());
+        assert!(reg.search("tool", &ctx, 0).is_empty());
+    }
+
+    #[test]
+    fn search_matches_descriptions_and_schema_properties() {
+        let reg = ToolRegistry::new();
+        let tool: Arc<dyn Tool> = Arc::new(DiscoveryMock {
+            name: "remote_lookup",
+            description: "Fetch remote documentation",
+            property: "issue_number",
+        });
+        reg.register(&tool, &lua_source("discovery")).unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        assert_eq!(
+            reg.search("documentation", &ctx, 5)[0].name,
+            "remote_lookup"
+        );
+        assert_eq!(reg.search("issue_number", &ctx, 5)[0].name, "remote_lookup");
     }
 
     #[test]

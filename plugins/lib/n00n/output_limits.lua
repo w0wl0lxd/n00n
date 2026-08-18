@@ -26,4 +26,11 @@ function M.resolve(opts, ctx)
     opts.max_output_bytes or ctx:config("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
 end
 
+function M.resolve_capped(opts, ctx, default_max_bytes)
+  local max_lines = opts.max_output_lines or ctx:config("max_output_lines", DEFAULT_MAX_OUTPUT_LINES)
+  local configured_max_bytes = ctx:config("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+  local requested_max_bytes = opts.max_output_bytes or default_max_bytes
+  return max_lines, math.min(requested_max_bytes, configured_max_bytes)
+end
+
 return M

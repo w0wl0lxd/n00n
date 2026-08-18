@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
@@ -6,6 +7,8 @@ use crate::ToolOutput;
 use crate::tools::registry::{HeaderFuture, HeaderResult, ParseError, ToolInvocation};
 use crate::tools::schema::ToolInputErrorKind;
 use crate::tools::{DescriptionContext, ToolContext, ToolExecResult};
+
+const SEARCH_RESULTS_LIMIT: usize = 5;
 
 pub struct ToolSearch;
 
@@ -34,25 +37,57 @@ impl ToolInvocation for ToolSearchInvocation {
 
     fn execute(self: Box<Self>, ctx: &ToolContext) -> crate::tools::ExecFuture<'_> {
         Box::pin(async move {
-            let results = ctx.registry.search(&self.query);
-            let filtered: Vec<_> = if let Some(ns) = &self.namespace {
-                results
-                    .into_iter()
-                    .filter(|r| r.namespace.as_deref() == Some(ns.as_str()))
-                    .collect()
-            } else {
-                results
+            let description_ctx = DescriptionContext {
+                filter: &ctx.tool_filter,
+                audience: ctx.audience,
+                workflow: ctx.workflow,
             };
-            let output = json!(
-                filtered
-                    .iter()
-                    .map(|r| json!({
-                        "name": r.name,
-                        "namespace": r.namespace,
-                        "description": r.description
-                    }))
-                    .collect::<Vec<_>>()
-            );
+            let results = ctx
+                .registry
+                .search(&self.query, &description_ctx, usize::MAX);
+            let filtered: Vec<_> = results
+                .into_iter()
+                .filter(|result| {
+                    self.namespace.as_ref().is_none_or(|namespace| {
+                        result.namespace.as_deref() == Some(namespace.as_str())
+                    })
+                })
+                .take(SEARCH_RESULTS_LIMIT)
+                .collect();
+            let mut output: Vec<Value> = filtered
+                .iter()
+                .map(|result| {
+                    json!({
+                        "name": result.name,
+                        "namespace": result.namespace,
+                        "description": result.description
+                    })
+                })
+                .collect();
+            if self
+                .namespace
+                .as_deref()
+                .is_none_or(|namespace| namespace == "mcp")
+                && let Some(mcp) = &ctx.mcp
+            {
+                let before: BTreeSet<String> = mcp.loaded_tool_names().into_iter().collect();
+                let message = mcp.search_tools(&self.query);
+                if let Ok(description) = message {
+                    output.extend(
+                        mcp.loaded_tool_names()
+                            .into_iter()
+                            .filter(|name| !before.contains(name))
+                            .map(|name| {
+                                json!({
+                                    "name": name,
+                                    "namespace": "mcp",
+                                    "description": description
+                                })
+                            }),
+                    );
+                }
+            }
+            let output = Value::Array(output);
             ToolExecResult::from(Ok(ToolOutput::Plain(output.to_string().into())))
         })
     }
@@ -68,7 +103,7 @@ impl crate::tools::registry::Tool for ToolSearch {
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
-        "Search deferred tools by name or description when the needed capability is not already available. Do not use this when a loaded sibling tool already matches the task.".into()
+        "Search deferred built-in and MCP tools by name or description when the needed capability is absent. Loaded tools become callable on the next turn. Do not use this when a loaded sibling already matches the task.".into()
     }
 
     fn schema(&self) -> Value {
@@ -137,13 +172,14 @@ impl ToolInvocation for LoadNamespaceInvocation {
 
     fn execute(self: Box<Self>, ctx: &ToolContext) -> crate::tools::ExecFuture<'_> {
         Box::pin(async move {
-            let tools: Vec<String> = ctx
+            let description_ctx = DescriptionContext {
+                filter: &ctx.tool_filter,
+                audience: ctx.audience,
+                workflow: ctx.workflow,
+            };
+            let tools = ctx
                 .registry
-                .snapshot()
-                .iter()
-                .filter(|t| t.namespace.as_deref() == Some(self.namespace.as_str()))
-                .map(|t| t.name().to_string())
-                .collect();
+                .deferred_namespace_tools(&self.namespace, &description_ctx);
             let output = json!({
                 "namespace": self.namespace,
                 "tools": tools
@@ -198,6 +234,7 @@ impl crate::tools::registry::Tool for LoadNamespace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::Tool;
     use serde_json::Value as JsonValue;
 
     #[test]
@@ -220,5 +257,31 @@ mod tests {
         assert_eq!(first["name"], "test_tool");
         assert_eq!(first["namespace"], "test_ns");
         assert_eq!(first["description"], description_with_special_chars);
+    }
+
+    #[test]
+    fn built_in_search_loads_matching_mcp_tool_for_next_request() {
+        let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        let mut ctx = crate::tools::test_support::stub_ctx(&crate::AgentMode::Build);
+        ctx.registry = registry;
+        ctx.mcp = Some(mcp.clone());
+        let invocation = ToolSearch::new()
+            .parse(&json!({ "query": "GitHub issue" }))
+            .expect("search input");
+
+        let result = smol::block_on(invocation.execute(&ctx));
+        let output = result.output.expect("search output").as_text();
+        let parsed: Value = serde_json::from_str(&output).expect("search JSON");
+        assert_eq!(parsed[0]["name"], "srv__fetch_issue");
+        assert_eq!(parsed[0]["namespace"], "mcp");
+
+        let mut next_tools = json!([{ "name": "search_tools" }]);
+        mcp.extend_tools(&mut next_tools);
+        assert!(next_tools.as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["name"].as_str() == Some("srv__fetch_issue"))
+        }));
     }
 }

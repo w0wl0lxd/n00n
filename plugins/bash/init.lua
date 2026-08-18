@@ -672,7 +672,7 @@ local function broad_command_reason(command)
 end
 
 local description = [[Execute a bash command.
-Commands run in ]] .. cwd .. [[ by default.
+Commands run in {cwd} by default.
 
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
 - When rtk is installed, managed commands are rewritten through it or rejected; there is no per-call bypass.

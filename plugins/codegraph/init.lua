@@ -6,16 +6,13 @@ local n00n_codegraph = n00n.codegraph
 local cwd = n00n.uv.cwd() or "."
 local CG_TIMEOUT_SECS = 30
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Use **map_codegraph** for cross-file structure, call paths, and impact; use **index_file** for one file.",
-})
-
 local opts = n00n.api.register_options(output_limits.extend({}))
 
 n00n.api.register_tool({
   name = "map_codegraph",
   aliases = { "codegraph" },
+  defer_loading = true,
+  namespace = "exploration",
   kind = "read",
   description = [[PRIMARY CROSS-FILE TOOL. Query a pre-indexed graph for structure, call paths, impact, focused source, and test coverage. Use before broad search_code or read_file calls; use index_file for one file. Requires a .codegraph/ index.]],
 
@@ -94,7 +91,7 @@ n00n.api.register_tool({
       }
     end
 
-    local max_lines, max_bytes = output_limits.resolve(opts, ctx)
+    local max_lines, max_bytes = output_limits.resolve_capped(opts, ctx, 12 * 1024)
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish codegraph results: " .. tostring(live_err), is_error = true }

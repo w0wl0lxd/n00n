@@ -14,8 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SurfaceName::MainToolsSchemas.to_string(),
         SurfaceLimit {
             tool_count_exact: true,
-            max_token_delta: Some(100),
-            max_byte_delta: Some(400),
+            max_token_delta: Some(0),
+            max_byte_delta: Some(0),
             warn_token_delta: None,
         },
     );
@@ -31,25 +31,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     limits.insert(
         SurfaceName::MainToolsPayload.to_string(),
         SurfaceLimit {
-            tool_count_exact: false,
-            max_token_delta: None,
-            max_byte_delta: None,
-            warn_token_delta: Some(200),
+            tool_count_exact: true,
+            max_token_delta: Some(0),
+            max_byte_delta: Some(0),
+            warn_token_delta: None,
         },
     );
     limits.insert(
         SurfaceName::CachePrefix.to_string(),
         SurfaceLimit {
-            tool_count_exact: false,
-            max_token_delta: None,
-            max_byte_delta: None,
-            warn_token_delta: Some(200),
+            tool_count_exact: true,
+            max_token_delta: Some(0),
+            max_byte_delta: Some(0),
+            warn_token_delta: None,
         },
     );
     let baseline = Baseline {
         model_id: report.model_id.clone(),
         mcp_excluded: report.mcp_excluded,
         surfaces,
+        tools: report.tools.clone(),
         limits,
     };
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("baselines/cold_start.json");

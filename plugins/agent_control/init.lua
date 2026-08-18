@@ -496,7 +496,7 @@ end
 n00n.api.register_tool({
   name = "control_agent",
   aliases = { "agent_control" },
-  description = "Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.",
+  description = "Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.",
   kind = "execute",
   audiences = { "main" },
   defer_loading = true,

@@ -1,5 +1,5 @@
 {
-  "date": "2026-08-17",
+  "date": "2026-08-18",
   "repository_commit": "523fe41b",
   "baseline": {
     "tag": "v0.5.1",
@@ -17,7 +17,9 @@
       "Batch child calls are counted instead of the batch wrapper.",
       "One v0.5.1 delivery failure was discarded and rerun.",
       "Earlier task01 warmups were excluded.",
-      "Provider cache state cannot be fully isolated and task outputs are stochastic."
+      "Provider cache state cannot be fully isolated and task outputs are stochastic.",
+      "The refined suite completed all 10 tasks; task 02 hit one provider 500 and its successful rerun is reported.",
+      "Only normalized calls and tool-result characters were retained for the refined run, so unavailable token, cost, turn, and latency totals are not inferred."
     ]
   },
   "aggregate": {
@@ -52,6 +54,20 @@
       "cache_read_tokens": 1.81,
       "normalized_tool_calls": -21.83,
       "tool_result_characters": -0.16
+    },
+    "pre_refinement_control": {
+      "successful": 10,
+      "normalized_tool_calls": 34,
+      "tool_result_characters": 111117
+    },
+    "refined_0.6": {
+      "successful": 10,
+      "normalized_tool_calls": 42,
+      "tool_result_characters": 128765
+    },
+    "refined_delta_vs_control_percent": {
+      "normalized_tool_calls": 23.53,
+      "tool_result_characters": 15.89
     }
   },
   "normalized_tool_totals": {
@@ -72,6 +88,34 @@
       "read_file": 80,
       "search_code": 28,
       "other": 3
+    },
+    "refined_0.6": {
+      "explore_code": 12,
+      "index_file": 5,
+      "read_file": 11,
+      "search_code": 6,
+      "run_batch": 2,
+      "other": 6
     }
+  },
+  "refined_static_profile": {
+    "initial_tools": 22,
+    "initial_payload_bytes": 15531,
+    "initial_payload_tokens": 3882,
+    "full_catalog_tools": 35,
+    "full_catalog_payload_bytes": 31270,
+    "full_catalog_payload_tokens": 7817,
+    "deferred_tools": 16,
+    "deferred_payload_bytes": 18618,
+    "deferred_payload_tokens": 4654,
+    "cache_prefix_bytes": 18909,
+    "cache_prefix_tokens": 4635
+  },
+  "deferred_discovery_smoke": {
+    "web": "search_tools then search_web",
+    "github": "search_tools then github",
+    "memory": "search_tools then use_memory",
+    "maximum_discovery_turns": 1,
+    "fusion_disabled": "not advertised"
   }
 }
