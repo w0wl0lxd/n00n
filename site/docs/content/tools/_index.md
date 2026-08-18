@@ -100,9 +100,9 @@ PRIMARY CODEBASE TOOL. Use first. Routes by intent:
 |-----------|------|----------|-------------|
 | `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
 | `path` | string | no | File path for skeleton queries. A file extension selects the index backend in auto mode. |
-| `symbol` | string | no |  |
+| `symbol` | string | no | Symbol name for callers, callees, or symbol lookup. |
 | `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
-| `command` | string | no |  |
+| `command` | string | no | Precise relation routing; use with `symbol` for callers or callees. |
 | `use_cache` | boolean | no |  |
 | `project` | string | no | Project root for codegraph queries (defaults to cwd). |
 | `intent` | string | no |  |

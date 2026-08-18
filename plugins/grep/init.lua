@@ -218,7 +218,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = '- Use the **grep** tool when searching for specific content across files. Use the `pattern` parameter (not `command`). Rust regex has no PCRE look-around (`(?!...)`, `(?<!...)`) or backreferences (`\\1`, `\\k<name>`) — rewrite the pattern instead. For multiple paths, pass an array: `{"path": ["src", "tests"]}`.',
+  content = '- Use **search_code** when searching for specific content across files. Use the `pattern` parameter (not `command`). Rust regex has no PCRE look-around (`(?!...)`, `(?<!...)`) or backreferences (`\\1`, `\\k<name>`) — rewrite the pattern instead. For multiple paths, pass an array: `{"path": ["src", "tests"]}`.',
 })
 
 n00n.api.register_tool({

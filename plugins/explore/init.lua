@@ -90,7 +90,7 @@ n00n.api.register_tool({
 - **relations**, **cross_file**, **symbol**, or **impact**: `map_codegraph`
 - **search**: `search_text`
 
-Set `intent` when known; otherwise the router infers it.]],
+Set `intent` when known; otherwise the router infers it. Use `command` with `symbol` for precise caller/callee routing.]],
 
   schema = {
     type = "object",
@@ -115,8 +115,9 @@ Set `intent` when known; otherwise the router infers it.]],
       command = {
         type = "string",
         enum = { "callers", "callees", "query" },
+        description = "Precise relation routing; use with `symbol` for callers or callees.",
       },
-      symbol = { type = "string" },
+      symbol = { type = "string", description = "Symbol name for callers, callees, or symbol lookup." },
       use_cache = { type = "boolean", default = false },
       mode = {
         type = "string",
