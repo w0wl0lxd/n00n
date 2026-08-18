@@ -8,7 +8,7 @@
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -535,7 +535,7 @@ struct SessionRuntime {
     shell_rx: flume::Receiver<ShellEvent>,
     last_status: SessionStatus,
     direct_bootstrap_active: bool,
-    pending_compaction: Option<PendingCompaction>,
+    pending_compactions: VecDeque<PendingCompaction>,
 }
 
 struct PreparedCompaction {
@@ -712,7 +712,7 @@ impl SpawnCtx {
             shell_rx,
             last_status,
             direct_bootstrap_active,
-            pending_compaction: None,
+            pending_compactions: VecDeque::new(),
         })
     }
 }
@@ -1354,7 +1354,7 @@ impl<'t> EventLoop<'t> {
             return;
         }
         for idx in 0..self.sessions.len() {
-            if self.sessions[idx].pending_compaction.is_none()
+            if self.sessions[idx].pending_compactions.is_empty()
                 && should_save_periodically(&self.sessions[idx].app.status)
             {
                 if let Err(error) = self.capture_plugin_state(idx) {
@@ -1432,11 +1432,13 @@ impl<'t> EventLoop<'t> {
             && envelope.run_id == self.sessions[idx].app.run_id
             && envelope.subagent.is_none()
         {
-            self.sessions[idx].pending_compaction = Some(PendingCompaction {
-                ack: envelope,
-                prepared: None,
-                attempts: 0,
-            });
+            self.sessions[idx]
+                .pending_compactions
+                .push_back(PendingCompaction {
+                    ack: envelope,
+                    prepared: None,
+                    attempts: 0,
+                });
             self.retry_compaction_checkpoint(idx);
             return;
         }
@@ -1447,7 +1449,7 @@ impl<'t> EventLoop<'t> {
                 | n00n_agent::AgentEvent::AutoCompactFailed { .. }
         );
         if capture
-            && self.sessions[idx].pending_compaction.is_none()
+            && self.sessions[idx].pending_compactions.is_empty()
             && let Err(error) = self.capture_plugin_state(idx)
         {
             warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state");
@@ -1468,7 +1470,7 @@ impl<'t> EventLoop<'t> {
                     .meta
                     .queued_direct_tools
                     .clear();
-                if self.sessions[idx].pending_compaction.is_none()
+                if self.sessions[idx].pending_compactions.is_empty()
                     && let Err(error) = self.sessions[idx]
                         .app
                         .checkpoint_session(TERMINAL_CHECKPOINT_TIMEOUT)
@@ -1558,7 +1560,7 @@ impl<'t> EventLoop<'t> {
     }
 
     fn retry_compaction_checkpoint(&mut self, idx: usize) {
-        let Some(mut pending) = self.sessions[idx].pending_compaction.take() else {
+        let Some(mut pending) = self.sessions[idx].pending_compactions.pop_front() else {
             return;
         };
         let result = if let Some(prepared) = &pending.prepared {
@@ -1582,7 +1584,7 @@ impl<'t> EventLoop<'t> {
                     %error,
                     "failed to persist compaction state checkpoint; retrying"
                 );
-                self.sessions[idx].pending_compaction = Some(pending);
+                self.sessions[idx].pending_compactions.push_front(pending);
                 return;
             }
             warn!(
