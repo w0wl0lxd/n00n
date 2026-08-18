@@ -3819,6 +3819,9 @@ fn bash_schema_exposes_no_agent_controlled_rtk_override() {
 #[test_case::test_case("bash -c 'git status'" ; "nested_managed_command")]
 #[test_case::test_case("g''it status" ; "concatenated_quote_command")]
 #[test_case::test_case("exec git --version" ; "exec_wrapper")]
+#[test_case::test_case("eval git status" ; "eval_wrapper")]
+#[test_case::test_case("rtk proxy bash -c 'git status'" ; "explicit_proxy_string_wrapper")]
+#[test_case::test_case(r"rtk proxy find . -maxdepth 0 -exec printf bypass \\;" ; "explicit_proxy_unsafe_find")]
 #[test_case::test_case("echo $(git status)" ; "command_substitution")]
 #[test_case::test_case(r"find . -maxdepth 0 -exec printf should-not-run \;" ; "unsupported_find_fallback")]
 fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
@@ -3840,7 +3843,10 @@ fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
 #[test_case::test_case("gh --version", "gh version" ; "gh")]
 #[test_case::test_case("rtk proxy git --version", "git version" ; "explicit_rtk_proxy")]
 #[test_case::test_case("env N00N_RTK_TEST=1 git --version", "git version" ; "env_wrapper")]
+#[test_case::test_case("env -u N00N_RTK_TEST git --version", "git version" ; "env_value_option")]
+#[test_case::test_case("nice -n 10 git --version", "git version" ; "nice_value_option")]
 #[test_case::test_case("timeout 5 git --version", "git version" ; "timeout_wrapper")]
+#[test_case::test_case("timeout -s KILL 5 git --version", "git version" ; "timeout_value_option")]
 fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
     command: &str,
     expected: &str,
@@ -3849,13 +3855,35 @@ fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
         return;
     }
     let (reg, _host) = builtins_host();
-
-    let output = exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+    let input = serde_json::json!({ "command": command });
+    let invocation = reg
+        .get("bash")
+        .expect("bash registered")
+        .tool
+        .parse(&input)
+        .expect("parse failed");
+    let (ctx, event_rx) = warm_ctx("rtk-proxy-route");
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
         .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+    let output = match output {
+        n00n_agent::ToolOutput::Plain(output) => output.text,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    let body = recv_live_buf(&event_rx, "rtk-proxy-route").expect("bash live buffer");
+    let rendered = body
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
 
     assert!(
         output.contains(expected),
         "unexpected output for {command}: {output}"
+    );
+    assert!(
+        rendered.contains("rtk proxy"),
+        "managed command did not take the RTK proxy path: {rendered}"
     );
 }
 
