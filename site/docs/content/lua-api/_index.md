@@ -1390,9 +1390,10 @@ pass an array to run the program directly with preserved argument quoting:
 `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
 
 Unix jobs run in a separate process group at nice level 10. On Linux, the
-process group's combined RSS is limited to one quarter of system memory,
-clamped between 512 MiB and 8 GiB. Set `N00N_TOOL_MAX_RSS_MB` to a positive
-whole number of MiB to override the memory limit.
+process tree's summed per-process RSS is limited to one quarter of system
+memory, clamped between 512 MiB and 8 GiB. Shared pages may be counted more
+than once. Set `N00N_TOOL_MAX_RSS_MB` to a positive whole number of MiB to
+override the memory limit.
 
 **Parameters:**
 

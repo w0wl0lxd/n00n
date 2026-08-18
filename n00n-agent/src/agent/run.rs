@@ -627,7 +627,7 @@ impl<'h> Agent<'h> {
                         AgentError::RequestSent { metadata, .. } => metadata.as_ref(),
                         _ => None,
                     };
-                    let output_emitted = metadata.is_none_or(|metadata| metadata.emitted_event);
+                    let output_emitted = metadata.is_some_and(|metadata| metadata.emitted_event);
                     if !self.approve_ambiguous_request_replay(metadata).await? {
                         break Err(error);
                     }

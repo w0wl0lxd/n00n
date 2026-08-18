@@ -132,10 +132,11 @@ impl Default for ToolAdmission {
 impl ToolAdmission {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_limits(
+        Self::with_lane_limits(
             DEFAULT_MAX_CONCURRENT_TOOLS,
             DEFAULT_MAX_CONCURRENT_AGENT_TOOLS,
             DEFAULT_MAX_CONCURRENT_CHEAP_TOOLS,
+            DEFAULT_MAX_CONCURRENT_INTERACTIVE_TOOLS,
         )
     }
 
@@ -149,10 +150,20 @@ impl ToolAdmission {
 
     #[must_use]
     pub fn with_limits(process_limit: usize, agent_limit: usize, cheap_limit: usize) -> Self {
+        Self::with_lane_limits(process_limit, agent_limit, cheap_limit, cheap_limit)
+    }
+
+    #[must_use]
+    pub fn with_lane_limits(
+        process_limit: usize,
+        agent_limit: usize,
+        cheap_limit: usize,
+        interactive_limit: usize,
+    ) -> Self {
         Self {
             process: Arc::new(Semaphore::new(process_limit.max(1))),
             cheap: Arc::new(Semaphore::new(cheap_limit.max(1))),
-            interactive: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_INTERACTIVE_TOOLS)),
+            interactive: Arc::new(Semaphore::new(interactive_limit.max(1))),
             agent_limit: agent_limit.max(1),
             state: AdmissionState {
                 agents: Mutex::new(HashMap::new()),

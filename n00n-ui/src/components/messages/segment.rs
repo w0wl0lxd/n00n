@@ -113,6 +113,7 @@ pub(super) struct Segment {
     pub truncation: SectionFlags,
     cached_height: Cell<Option<CachedHeight>>,
     pending_highlight: Option<u64>,
+    highlight_retry: Option<HighlightRequest>,
     highlight_identity: SegmentRenderIdentity,
     highlight_range: Option<(usize, usize)>,
     highlight_key: HighlightKey,
@@ -376,7 +377,10 @@ impl Segment {
         key: &HighlightKey,
         new_range: (usize, usize),
     ) -> Option<Vec<Line<'static>>> {
-        if self.pending_highlight.is_some() || self.highlight_key != *key {
+        if self.pending_highlight.is_some()
+            || self.highlight_retry.is_some()
+            || self.highlight_key != *key
+        {
             return None;
         }
         let (s, e) = self.highlight_range?;
@@ -391,14 +395,17 @@ impl Segment {
 
     pub fn apply_highlight(&mut self, tl: ToolLines, worker: &RenderWorker) {
         self.pending_highlight = if let Some(request) = &tl.highlight {
-            worker.send_latest(
+            let pending = worker.send_latest(
                 &self.highlight_identity.0,
                 request.input.clone(),
                 request.output.clone(),
                 request.limits,
-            )
+            );
+            self.highlight_retry = pending.is_none().then(|| request.clone());
+            pending
         } else {
             self.highlight_identity.cancel();
+            self.highlight_retry = None;
             let pending = tl.send_highlight(worker);
             debug_assert!(pending.is_none());
             pending
@@ -428,6 +435,7 @@ impl Segment {
             self.set_lines(tl.lines);
             self.highlight_range = Some((s, e));
             self.pending_highlight = None;
+            self.highlight_retry = None;
             self.spinner_lines = tl.spinner_lines;
             self.snapshot_base = tl.snapshot_base;
             self.content_indent = tl.content_indent;
@@ -435,6 +443,23 @@ impl Segment {
         } else {
             self.apply_highlight(tl, worker);
         }
+    }
+
+    pub fn retry_highlight(&mut self, worker: &RenderWorker) -> bool {
+        let Some(request) = self.highlight_retry.as_ref() else {
+            return false;
+        };
+        let Some(id) = worker.send_latest(
+            &self.highlight_identity.0,
+            request.input.clone(),
+            request.output.clone(),
+            request.limits,
+        ) else {
+            return true;
+        };
+        self.pending_highlight = Some(id);
+        self.highlight_retry = None;
+        true
     }
 
     pub fn matches_pending_highlight(&self, id: u64) -> bool {
@@ -461,6 +486,7 @@ impl Segment {
             self.invalidate_height();
         }
         self.pending_highlight = None;
+        self.highlight_retry = None;
     }
 
     /// Keeps recorded line positions (spinners, buffer base) in step when
@@ -676,5 +702,41 @@ mod tests {
             vec![(0, 0), (5usize.saturating_add_signed(delta), 1)],
             "positions before the splice stay, after it shift by the delta"
         );
+    }
+
+    #[test]
+    fn rejected_highlight_is_retried_after_queue_capacity_returns() {
+        let worker = RenderWorker::stalled_for_test();
+        worker.saturate_jobs_for_test();
+        let mut segment = Segment::default();
+        segment.apply_highlight(
+            ToolLines {
+                lines: vec![Line::raw("plain")],
+                search_text: String::new(),
+                highlight: Some(HighlightRequest {
+                    range: (0, 1),
+                    input: None,
+                    output: None,
+                    limits: crate::components::code_view::RenderLimits {
+                        script: 1,
+                        output: 1,
+                        details: 1,
+                    },
+                }),
+                spinner_lines: Vec::new(),
+                snapshot_base: None,
+                content_indent: "",
+                truncation: SectionFlags::default(),
+                truncation_actions: Vec::new(),
+            },
+            &worker,
+        );
+
+        assert!(segment.pending_highlight.is_none());
+        assert!(segment.highlight_retry.is_some());
+        worker.discard_one_job_for_test();
+        assert!(segment.retry_highlight(&worker));
+        assert!(segment.pending_highlight.is_some());
+        assert!(segment.highlight_retry.is_none());
     }
 }

@@ -148,6 +148,7 @@ pub struct ToolLines {
     pub truncation_actions: Vec<TruncationAction>,
 }
 
+#[derive(Clone)]
 pub struct HighlightRequest {
     pub range: (usize, usize),
     pub input: Option<Arc<ToolInput>>,

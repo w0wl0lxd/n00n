@@ -728,7 +728,7 @@ fn interrupt_decision(lua: &Lua) -> Option<InterruptDecision> {
     }
     let cancellation = { cancellation_cutoff(&lock_cell(&handle)) };
     if let Some(interrupt_after) = cancellation {
-        if now >= interrupt_after + INTERRUPT_FORCE_YIELD_GRACE {
+        if now >= checked_deadline_after(interrupt_after, INTERRUPT_FORCE_YIELD_GRACE) {
             return Some(yield_or_raise(lua, INTERRUPT_CANCELLED_MSG));
         }
         return (now >= interrupt_after)
@@ -3353,18 +3353,23 @@ pub fn spawn(
                     // snappy, and queued `n00n.async.run` tasks jump ahead of
                     // plain requests.
                     let msg = if consecutive_priority < MAX_CONSECUTIVE_PRIORITY_EVENTS
+                        && let Some(request) = deferred.pop_front()
+                    {
+                        consecutive_priority += 1;
+                        request
+                    } else if consecutive_priority < MAX_CONSECUTIVE_PRIORITY_EVENTS
                         && let Ok(request) = prio_rx.try_recv()
                     {
                         consecutive_priority += 1;
                         request
-                    } else if let Some(request) = deferred.pop_front() {
-                        consecutive_priority = 0;
-                        request
                     } else if let Ok(request) = rx.try_recv() {
                         consecutive_priority = 0;
                         request
+                    } else if let Some(request) = deferred.pop_front() {
+                        consecutive_priority = consecutive_priority.saturating_add(1);
+                        request
                     } else if let Ok(request) = prio_rx.try_recv() {
-                        consecutive_priority = 1;
+                        consecutive_priority = consecutive_priority.saturating_add(1);
                         request
                     } else {
                         let next = smol::future::or(
