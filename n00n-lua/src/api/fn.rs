@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -84,6 +86,7 @@ fn pump_job_output<R: BufRead>(
     event: fn(String) -> JobEvent,
 ) {
     let mut line = Vec::with_capacity(READER_BUF_SIZE);
+    let mut split_line = false;
     loop {
         let available = match reader.fill_buf() {
             Ok([]) => break,
@@ -105,10 +108,14 @@ fn pump_job_output<R: BufRead>(
             while matches!(line.last(), Some(b'\n' | b'\r')) {
                 line.pop();
             }
-            let text = String::from_utf8_lossy(&line).into_owned();
-            if event_tx.send(event(text)).is_err() {
-                break;
+            let suppress_split_terminator = split_line && line.is_empty() && complete;
+            if !suppress_split_terminator {
+                let text = String::from_utf8_lossy(&line).into_owned();
+                if event_tx.send(event(text)).is_err() {
+                    break;
+                }
             }
+            split_line = !complete;
             line.clear();
         }
     }
@@ -193,13 +200,13 @@ fn job_rss_limit() -> u64 {
     match value.parse::<u64>() {
         Ok(megabytes) if megabytes > 0 => {
             let Some(bytes) = megabytes.checked_mul(1024 * 1024) else {
-                tracing::warn!(value, "tool RSS limit overflowed; using default");
+                tracing::warn!("tool RSS limit overflowed; using default");
                 return default_job_rss_limit();
             };
             bytes
         }
         Ok(_) | Err(_) => {
-            tracing::warn!(value, "invalid tool RSS limit; using default");
+            tracing::warn!("invalid tool RSS limit; using default");
             default_job_rss_limit()
         }
     }
@@ -786,9 +793,10 @@ fn kill_job(meta: &mut JobMeta) {
 /// `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
 ///
 /// Unix jobs run in a separate process group at nice level 10. On Linux, the
-/// process group's combined RSS is limited to one quarter of system memory,
-/// clamped between 512 MiB and 8 GiB. Set `N00N_TOOL_MAX_RSS_MB` to a positive
-/// whole number of MiB to override the memory limit.
+/// process tree's summed per-process RSS is limited to one quarter of system
+/// memory, clamped between 512 MiB and 8 GiB. Shared pages may be counted more
+/// than once. Set `N00N_TOOL_MAX_RSS_MB` to a positive whole number of MiB to
+/// override the memory limit.
 ///
 /// @param cmd string|table Shell command string, or array of program + args.
 /// @param opts table? Optional settings:
@@ -1279,6 +1287,24 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
         assert_eq!(chunks[1].len(), 7);
+    }
+
+    #[test]
+    fn output_pump_does_not_emit_empty_event_after_exact_size_line() {
+        let mut input = vec![b'x'; MAX_JOB_LINE_BYTES];
+        input.push(b'\n');
+        let (tx, rx) = flume::bounded(2);
+        pump_job_output(std::io::Cursor::new(input), &tx, JobEvent::Stdout);
+        drop(tx);
+        let chunks = rx
+            .into_iter()
+            .map(|event| match event {
+                JobEvent::Stdout(line) => line,
+                _ => panic!("unexpected event"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
     }
 
     #[cfg(unix)]

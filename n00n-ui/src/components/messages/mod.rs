@@ -56,6 +56,7 @@ const JUMP_TO_BOTTOM_THRESHOLD: u16 = 1;
 const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 3;
 const JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN: u16 = 1;
 const MAX_HIGHLIGHT_RESULTS_PER_FRAME: usize = 8;
+const MAX_HIGHLIGHT_RETRIES_PER_FRAME: usize = 8;
 pub(super) const COPY_LABEL_WIDTH: u16 = 6;
 
 #[derive(Clone, Copy)]
@@ -1661,6 +1662,13 @@ impl MessagesPanel {
             {
                 seg.apply_highlight_result(result.lines);
             }
+        }
+        let mut attempted = 0;
+        for segment in self.cache.segments_mut() {
+            if attempted >= MAX_HIGHLIGHT_RETRIES_PER_FRAME {
+                break;
+            }
+            attempted += usize::from(segment.retry_highlight(&self.hl_worker));
         }
     }
 

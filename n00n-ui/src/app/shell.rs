@@ -18,6 +18,7 @@ const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const SHELL_TIMEOUT: Duration = Duration::from_mins(5);
 const OUTPUT_QUEUE_CAPACITY: usize = 64;
 const OUTPUT_READ_CHUNK_SIZE: usize = 8 * 1024;
+const MAX_UTF8_SEQUENCE_BYTES: usize = 4;
 
 struct OutputLimits {
     lines: usize,
@@ -373,7 +374,7 @@ fn append_output(
 }
 
 fn output_text(output: &[u8]) -> String {
-    let search_start = output.len().saturating_sub(4);
+    let search_start = output.len().saturating_sub(MAX_UTF8_SEQUENCE_BYTES);
     let complete_len = match (search_start..output.len()).find_map(|offset| {
         std::str::from_utf8(&output[offset..])
             .err()

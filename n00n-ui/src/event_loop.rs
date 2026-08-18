@@ -140,6 +140,10 @@ impl SessionStatus {
             Self::Idle => "idle",
         }
     }
+
+    fn needs_shutdown_settle(self) -> bool {
+        self == Self::Working
+    }
 }
 
 fn parse_session_id(id: &str) -> Result<n00nId, String> {
@@ -2432,7 +2436,7 @@ impl<'t> EventLoop<'t> {
         while self
             .sessions
             .iter()
-            .any(|runtime| SessionStatus::of(&runtime.app) != SessionStatus::Idle)
+            .any(|runtime| SessionStatus::of(&runtime.app).needs_shutdown_settle())
             && Instant::now() < deadline
         {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2634,11 +2638,11 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 mod tests {
     use super::{
         COALESCE_BUDGET, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
-        HANDLE_INPUT_BUDGET, Msg, PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, aggregate_scroll,
-        authorize_ui_delete, bounded_direct_output, cancel_stored_session, coalesce_drag,
-        complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
-        handle_input_bounded, merge_model_batch, paused_team_payload, paused_team_run,
-        publish_model_refresh, resolve_model_selection, should_save_periodically,
+        HANDLE_INPUT_BUDGET, Msg, PAUSED_TEAM_RUN_ID_MAX_BYTES, SessionStatus, TEAM_TOOL_NAME,
+        aggregate_scroll, authorize_ui_delete, bounded_direct_output, cancel_stored_session,
+        coalesce_drag, complete_model_fetch_with, direct_paused_team_payload,
+        draw_then_post_terminal, handle_input_bounded, merge_model_batch, paused_team_payload,
+        paused_team_run, publish_model_refresh, resolve_model_selection, should_save_periodically,
         startup_login_completed, startup_provider_with, take_painted_submissions, try_recv_input,
         validated_paused_team_payload,
     };
@@ -2669,6 +2673,13 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use test_case::test_case;
+
+    #[test]
+    fn shutdown_settle_ignores_sessions_waiting_for_input() {
+        assert!(SessionStatus::Working.needs_shutdown_settle());
+        assert!(!SessionStatus::NeedsInput.needs_shutdown_settle());
+        assert!(!SessionStatus::Idle.needs_shutdown_settle());
+    }
     #[test]
     fn older_model_refresh_cannot_overwrite_newer_catalog() {
         let available = ArcSwapOption::from(Some(Arc::new(vec!["initial/model".into()])));
