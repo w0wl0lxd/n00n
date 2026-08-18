@@ -25,7 +25,7 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
--- Preserve CAE's shell-level wrappers for Rust build commands.
+-- Preserve Rust build serialization injected through shell BASH_ENV hooks.
 local RTK_SKIP_TOOLS = {
   cargo = true,
   nextest = true,
@@ -123,6 +123,43 @@ local RTK_COMMAND_WRAPPERS = {
   watch = true,
   xargs = true,
 }
+local RTK_WRAPPER_VALUE_OPTIONS = {
+  env = { ["-u"] = true, ["--unset"] = true, ["-C"] = true, ["--chdir"] = true, ["-S"] = true },
+  ionice = { ["-c"] = true, ["--class"] = true, ["-n"] = true, ["--classdata"] = true },
+  nice = { ["-n"] = true, ["--adjustment"] = true },
+  stdbuf = { ["-i"] = true, ["--input"] = true, ["-o"] = true, ["--output"] = true, ["-e"] = true, ["--error"] = true },
+  sudo = {
+    ["-u"] = true,
+    ["--user"] = true,
+    ["-g"] = true,
+    ["--group"] = true,
+    ["-h"] = true,
+    ["--host"] = true,
+    ["-p"] = true,
+    ["--prompt"] = true,
+  },
+  timeout = { ["-k"] = true, ["--kill-after"] = true, ["-s"] = true, ["--signal"] = true },
+  watch = { ["-n"] = true, ["--interval"] = true, ["-d"] = true, ["--differences"] = true },
+}
+local RTK_WRAPPER_FLAG_OPTIONS = {
+  command = { ["-p"] = true },
+  env = { ["-i"] = true, ["--ignore-environment"] = true, ["-0"] = true, ["--null"] = true },
+  ionice = { ["-t"] = true, ["--ignore"] = true },
+  nice = {},
+  nohup = {},
+  setsid = { ["-f"] = true, ["--fork"] = true, ["-c"] = true, ["--ctty"] = true, ["-w"] = true, ["--wait"] = true },
+  stdbuf = {},
+  sudo = {
+    ["-E"] = true,
+    ["--preserve-env"] = true,
+    ["-H"] = true,
+    ["--set-home"] = true,
+    ["-n"] = true,
+    ["--non-interactive"] = true,
+  },
+  timeout = { ["--foreground"] = true, ["--preserve-status"] = true, ["-v"] = true, ["--verbose"] = true },
+  watch = { ["-b"] = true, ["--beep"] = true, ["-e"] = true, ["--errexit"] = true, ["-g"] = true, ["--chgexit"] = true },
+}
 
 local rtk_available
 local rtk_probe_error
@@ -131,6 +168,7 @@ local rtk_rewrite
 local rtk_rewrite_compound
 local rtk_single_command
 local rtk_proxy_fallback
+local rtk_explicit_proxy
 
 local function shell_quote(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -392,8 +430,14 @@ rtk_rewrite = function(command, ctx)
   end
 
   if result.exit_code ~= 0 and result.exit_code ~= 3 then
-    -- rtk's rewrite has no equivalent for this command. For a small set of
-    -- read-only `git` subcommands we can still route through `rtk git`, which
+    if result.exit_code ~= 1 then
+      if rtk_enforcement_required(command) then
+        return nil, RTK_REWRITE_REQUIRED .. ": rtk rewrite rejected it"
+      end
+      return nil
+    end
+    -- Exit 1 means rtk has no specialized rewrite for this command. For a
+    -- small set of read-only `git` subcommands we can route through `rtk git`, which
     -- falls back to generic git filtering for unsupported subcommands.
     local git_sub = git_subcommand(cmd)
     if git_sub and RTK_GIT_FALLBACK[git_sub] then
@@ -598,30 +642,66 @@ local function is_assignment_word(word)
   return word:match("^[%a_][%w_]*=") ~= nil
 end
 
+local function rtk_wrapped_command_index(words, executable)
+  if executable == "xargs" or executable == "exec" then
+    return nil, true
+  end
+  local value_options = RTK_WRAPPER_VALUE_OPTIONS[executable] or {}
+  local flag_options = RTK_WRAPPER_FLAG_OPTIONS[executable] or {}
+  local index = 2
+  while index <= #words do
+    local word = words[index]
+    if word == "--" then
+      index = index + 1
+      break
+    end
+    if executable == "env" and is_assignment_word(word) then
+      index = index + 1
+    elseif word:match("^%-") then
+      local option = word:match("^([^=]+)")
+      if value_options[option] then
+        if word:find("=", 1, true) then
+          index = index + 1
+        elseif words[index + 1] then
+          index = index + 2
+        else
+          return nil, true
+        end
+      elseif flag_options[option] then
+        index = index + 1
+      else
+        return nil, true
+      end
+    else
+      break
+    end
+  end
+  if executable == "timeout" then
+    if not words[index] then
+      return nil, true
+    end
+    index = index + 1
+  end
+  return words[index] and index or nil, false
+end
+
 local function rtk_managed_command_index(words)
   local executable = words[1] and normalized_executable(words[1])
   if not executable or executable:find("$", 1, true) then
-    return nil
+    return nil, executable ~= nil
   end
   if RTK_MANAGED_COMMANDS[executable] then
-    return 1
+    return 1, false
   end
   if not RTK_COMMAND_WRAPPERS[executable] or RTK_STRING_COMMAND_WRAPPERS[executable] then
-    return nil
+    return nil, false
   end
-  local skip_timeout_duration = executable == "timeout"
-  for index = 2, #words do
-    local word = words[index]
-    if not word:match("^%-") and not is_assignment_word(word) then
-      if skip_timeout_duration then
-        skip_timeout_duration = false
-      else
-        local candidate = normalized_executable(word)
-        return candidate and RTK_MANAGED_COMMANDS[candidate] and index or nil
-      end
-    end
+  local index, unresolved = rtk_wrapped_command_index(words, executable)
+  if unresolved or not index then
+    return nil, unresolved
   end
-  return nil
+  local candidate = normalized_executable(words[index])
+  return candidate and RTK_MANAGED_COMMANDS[candidate] and index or nil, false
 end
 
 local function rtk_manages_segment(segment, depth)
@@ -635,17 +715,21 @@ local function rtk_manages_segment(segment, depth)
   if not executable or executable:find("$", 1, true) then
     return executable ~= nil
   end
-  if rtk_managed_command_index(words) then
+  local managed_index, unresolved_wrapper = rtk_managed_command_index(words)
+  if managed_index or unresolved_wrapper then
     return true
   end
   if executable == "rtk" then
     return normalized_executable(words[2] or "") == "proxy"
       and rtk_manages_segment(table.concat(words, " ", 3), depth + 1)
   end
-  if RTK_STRING_COMMAND_WRAPPERS[executable] then
+  if executable == "eval" then
+    return rtk_manages_segment(table.concat(words, " ", 2), depth + 1)
+  end
+  if executable == "bash" or executable == "sh" then
     for index = 2, #words do
       local nested = unquote(words[index])
-      if nested ~= words[index] and rtk_manages_segment(nested, depth + 1) then
+      if (words[index - 1] == "-c" or nested ~= words[index]) and rtk_manages_segment(nested, depth + 1) then
         return true
       end
     end
@@ -677,33 +761,46 @@ rtk_single_command = function(command)
   return not root:has_error() and not is_complex(root) and #collect_commands(root, command) == 1
 end
 
-rtk_explicit_proxy = function(command)
-  if not rtk_single_command(command) or not command:match("^rtk%s+proxy%s+") then
+local function rtk_proxy_target_allowed(command, allow_wrappers)
+  if not rtk_single_command(command) then
     return false
   end
-  local words = split_shell_words(command)
-  return #words >= 3
-end
-
-rtk_proxy_fallback = function(command)
-  if not rtk_single_command(command) then
-    return nil
-  end
-  local normalized = trim(command)
+  local normalized = normalize_command(trim(command))
   if strip_leading_assignments(normalized) ~= normalized then
-    return nil
+    return false
   end
   local words = split_shell_words(normalized)
   local raw_executable = normalized:match("^(%S+)")
   local executable = words[1] and normalized_executable(words[1])
+  local managed_index, unresolved_wrapper = rtk_managed_command_index(words)
   if
-    raw_executable ~= words[1]
+    not raw_executable
+    or raw_executable ~= words[1]
     or raw_executable:find("'", 1, true)
     or raw_executable:find('"', 1, true)
     or raw_executable:find("\\", 1, true)
     or executable == "exec"
-    or not rtk_managed_command_index(words)
+    or unresolved_wrapper
+    or not managed_index
+    or (not allow_wrappers and RTK_COMMAND_WRAPPERS[executable])
+    or rtk_find_unsupported("rtk " .. normalized .. " ")
   then
+    return false
+  end
+  return true, normalized
+end
+
+rtk_explicit_proxy = function(command)
+  if not rtk_single_command(command) or not command:match("^rtk%s+proxy%s+") then
+    return false
+  end
+  local target = command:match("^rtk%s+proxy%s+(.+)$")
+  return target and rtk_proxy_target_allowed(target, false) or false
+end
+
+rtk_proxy_fallback = function(command)
+  local allowed, normalized = rtk_proxy_target_allowed(command, true)
+  if not allowed then
     return nil
   end
   return "rtk proxy " .. normalized
