@@ -6,7 +6,7 @@ mod run;
 mod streaming;
 pub mod tool_dispatch;
 
-pub use compaction::compact;
+pub use compaction::{compact, compact_at_state_revision};
 pub use history::{History, SharedMessages, SharedTranscript, rebuild_transcript};
 pub use instructions::{
     Instructions, LoadedInstructions, append_build_plan_prompt, build_system_prompt,

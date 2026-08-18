@@ -1023,6 +1023,41 @@ impl StoredCompactionStateCheckpoints {
         &mut self,
         snapshot: StoredSessionStateSnapshot,
     ) -> Result<(), CompactionStateError> {
+        let Some(candidate) = self.candidate_with(snapshot)? else {
+            return Ok(());
+        };
+        validate_compaction_state_checkpoints(&candidate)?;
+        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
+        Ok(())
+    }
+
+    fn insert_pruning_oldest(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<(), CompactionStateError> {
+        let Some(mut candidate) = self.candidate_with(snapshot)? else {
+            return Ok(());
+        };
+        loop {
+            match validate_compaction_state_checkpoints(&candidate) {
+                Ok(()) => break,
+                Err(
+                    CompactionStateError::TooManyCheckpoints { .. }
+                    | CompactionStateError::CheckpointsTooLarge { .. },
+                ) if candidate.checkpoints.len() > 1 => {
+                    candidate.checkpoints.remove(0);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
+        Ok(())
+    }
+
+    fn candidate_with(
+        &self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<Option<StoredCompactionStateCheckpointsV1>, CompactionStateError> {
         let StoredCompactionStateCheckpointsInner::Supported(checkpoints) = &self.inner else {
             return Err(self.unsupported_schema_error());
         };
@@ -1036,7 +1071,7 @@ impl StoredCompactionStateCheckpoints {
             .find(|existing| existing.state_revision() == Some(revision))
         {
             return if existing == &snapshot {
-                Ok(())
+                Ok(None)
             } else {
                 Err(CompactionStateError::RevisionConflict { revision })
             };
@@ -1054,9 +1089,7 @@ impl StoredCompactionStateCheckpoints {
         }
         let mut candidate = checkpoints.clone();
         candidate.checkpoints.push(snapshot);
-        validate_compaction_state_checkpoints(&candidate)?;
-        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
-        Ok(())
+        Ok(Some(candidate))
     }
 
     /// Retrieves only the checkpoint matching `revision` exactly.
@@ -1300,15 +1333,16 @@ pub struct SessionMeta {
 }
 
 impl SessionMeta {
-    /// Stores a compaction checkpoint without partially mutating metadata on failure.
+    /// Stores a compaction checkpoint and prunes the oldest checkpoints to remain within bounds.
     ///
     /// # Errors
-    /// Returns a typed error when the snapshot or checkpoint collection is invalid or bounded out.
+    /// Returns a typed error when the snapshot or checkpoint collection is invalid.
     pub fn checkpoint_compaction_state(
         &mut self,
         snapshot: StoredSessionStateSnapshot,
     ) -> Result<(), CompactionStateError> {
-        self.compaction_state_checkpoints.insert(snapshot)
+        self.compaction_state_checkpoints
+            .insert_pruning_oldest(snapshot)
     }
 
     /// Retrieves the state snapshot associated with an exact compaction-boundary revision.
@@ -6880,6 +6914,53 @@ mod tests {
                 latest: 5
             })
         ));
+    }
+
+    #[test]
+    fn session_meta_prunes_oldest_compaction_checkpoints_at_count_limit() {
+        let mut meta = super::SessionMeta::default();
+        for revision in 0..=super::MAX_COMPACTION_STATE_CHECKPOINTS {
+            meta.checkpoint_compaction_state(super::StoredSessionStateSnapshot::new(
+                revision as u64,
+            ))
+            .unwrap();
+        }
+
+        assert!(matches!(
+            meta.compaction_state_at(0),
+            Err(super::CompactionStateError::MissingRevision { revision: 0 })
+        ));
+        assert_eq!(
+            meta.compaction_state_at(super::MAX_COMPACTION_STATE_CHECKPOINTS as u64)
+                .unwrap()
+                .state_revision(),
+            Some(super::MAX_COMPACTION_STATE_CHECKPOINTS as u64)
+        );
+    }
+    #[test]
+    fn session_meta_prunes_oldest_compaction_checkpoints_at_size_limit() {
+        let mut meta = super::SessionMeta::default();
+        for revision in 0..20 {
+            let mut snapshot = super::StoredSessionStateSnapshot::new(revision);
+            snapshot
+                .set_plugin_state(
+                    "large",
+                    1,
+                    super::StoredStateScope::Session,
+                    Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES - 2)),
+                )
+                .unwrap();
+            meta.checkpoint_compaction_state(snapshot).unwrap();
+        }
+
+        assert!(matches!(
+            meta.compaction_state_at(0),
+            Err(super::CompactionStateError::MissingRevision { revision: 0 })
+        ));
+        assert_eq!(
+            meta.compaction_state_at(19).unwrap().state_revision(),
+            Some(19)
+        );
     }
 
     #[test]

@@ -221,12 +221,45 @@ pub async fn compact(
     compact_inner(provider, model, history, event_tx, true).await
 }
 
+/// Compacts the conversation history at an allocated plugin-state revision.
+///
+/// # Errors
+/// Returns an error if the provider fails to stream the compaction response.
+pub async fn compact_at_state_revision(
+    provider: &dyn n00n_providers::provider::Provider,
+    model: &Model,
+    history: &mut History,
+    event_tx: &EventSender,
+    state_revision: u64,
+) -> Result<(), AgentError> {
+    compact_inner_at_state_revision(
+        provider,
+        model,
+        history,
+        event_tx,
+        true,
+        Some(state_revision),
+    )
+    .await
+}
+
 async fn compact_inner(
     provider: &dyn n00n_providers::provider::Provider,
     model: &Model,
     history: &mut History,
     event_tx: &EventSender,
     run_hooks: bool,
+) -> Result<(), AgentError> {
+    compact_inner_at_state_revision(provider, model, history, event_tx, run_hooks, None).await
+}
+
+async fn compact_inner_at_state_revision(
+    provider: &dyn n00n_providers::provider::Provider,
+    model: &Model,
+    history: &mut History,
+    event_tx: &EventSender,
+    run_hooks: bool,
+    state_revision: Option<u64>,
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
@@ -241,7 +274,7 @@ async fn compact_inner(
         &cwd,
         None,
         run_hooks,
-        None,
+        state_revision,
     )
     .await?;
     let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
@@ -474,6 +507,40 @@ mod tests {
                 [
                     n00n_storage::sessions::TranscriptEntry::Compaction {
                         state_revision: None,
+                        ..
+                    },
+                    ..
+                ]
+            ));
+        });
+    }
+
+    #[test]
+    fn manual_compaction_records_allocated_state_revision() {
+        smol::block_on(async {
+            let model = default_model();
+            let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(MockProvider::new(
+                vec![Ok(text_response(StopReason::EndTurn))],
+            ));
+            let (event_tx, _event_rx) = flume::unbounded();
+            let mut history = History::new(vec![Message::user("before".into())]);
+
+            compact_inner_at_state_revision(
+                &*provider,
+                &model,
+                &mut history,
+                &EventSender::new(event_tx, 0),
+                false,
+                Some(7),
+            )
+            .await
+            .expect("compact should succeed");
+
+            assert!(matches!(
+                history.transcript(),
+                [
+                    n00n_storage::sessions::TranscriptEntry::Compaction {
+                        state_revision: Some(7),
                         ..
                     },
                     ..

@@ -75,6 +75,7 @@ const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_COMPACTION_CHECKPOINT_ATTEMPTS: u8 = 3;
 const STORAGE_WRITER_REFS_ERR: &str =
     "storage writer has outstanding references, skipping graceful shutdown";
 const DIRECT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
@@ -538,6 +539,14 @@ struct PreparedCompaction {
 struct PendingCompaction {
     ack: Box<n00n_agent::Envelope>,
     prepared: Option<PreparedCompaction>,
+    attempts: u8,
+}
+
+impl PendingCompaction {
+    fn should_retry_after_failure(&mut self) -> bool {
+        self.attempts = self.attempts.saturating_add(1);
+        self.attempts < MAX_COMPACTION_CHECKPOINT_ATTEMPTS
+    }
 }
 
 impl SessionRuntime {
@@ -1409,6 +1418,7 @@ impl<'t> EventLoop<'t> {
             self.sessions[idx].pending_compaction = Some(PendingCompaction {
                 ack: envelope,
                 prepared: None,
+                attempts: 0,
             });
             self.retry_compaction_checkpoint(idx);
             return;
@@ -1504,7 +1514,14 @@ impl<'t> EventLoop<'t> {
                 TERMINAL_CHECKPOINT_TIMEOUT,
             )
             .map_err(|error| error.to_string())?;
+        self.apply_compaction_metadata(idx, prepared)
+    }
 
+    fn apply_compaction_metadata(
+        &mut self,
+        idx: usize,
+        prepared: &PreparedCompaction,
+    ) -> std::result::Result<(), String> {
         if let Some(root) = &prepared.root
             && let Some(root_idx) = self.position(root.id)
         {
@@ -1538,9 +1555,32 @@ impl<'t> EventLoop<'t> {
             }
         };
         if let Err(error) = result {
-            warn!(session_id = %self.sessions[idx].id(), %error, "failed to persist compaction state checkpoint; retrying");
-            self.sessions[idx].pending_compaction = Some(pending);
-            return;
+            if pending.should_retry_after_failure() {
+                warn!(
+                    session_id = %self.sessions[idx].id(),
+                    attempt = pending.attempts,
+                    max_attempts = MAX_COMPACTION_CHECKPOINT_ATTEMPTS,
+                    %error,
+                    "failed to persist compaction state checkpoint; retrying"
+                );
+                self.sessions[idx].pending_compaction = Some(pending);
+                return;
+            }
+            warn!(
+                session_id = %self.sessions[idx].id(),
+                attempts = pending.attempts,
+                %error,
+                "failed to persist compaction state checkpoint; releasing compaction acknowledgement"
+            );
+            if let Some(prepared) = &pending.prepared
+                && let Err(merge_error) = self.apply_compaction_metadata(idx, prepared)
+            {
+                warn!(
+                    session_id = %self.sessions[idx].id(),
+                    error = %merge_error,
+                    "failed to retain compaction checkpoint metadata in memory"
+                );
+            }
         }
 
         let actions = self.sessions[idx].app.update(Msg::Agent(pending.ack));
@@ -2897,18 +2937,18 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 mod tests {
     use super::{
         DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
-        PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT,
-        authorize_ui_delete, bounded_direct_output, cancel_stored_session,
-        complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
-        initial_state_revision, merge_compaction_metadata, merge_model_batch,
-        outer_compaction_state_revision, paused_team_payload, paused_team_run,
+        MAX_COMPACTION_CHECKPOINT_ATTEMPTS, PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction,
+        TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, authorize_ui_delete, bounded_direct_output,
+        cancel_stored_session, complete_model_fetch_with, direct_paused_team_payload,
+        draw_then_post_terminal, initial_state_revision, merge_compaction_metadata,
+        merge_model_batch, outer_compaction_state_revision, paused_team_payload, paused_team_run,
         prepare_compaction_checkpoint, publish_model_refresh, resolve_model_selection,
         resume_state_snapshot, should_save_periodically, startup_login_completed,
         startup_provider_with, take_painted_submissions, validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::{ArcSwap, ArcSwapOption};
-    use n00n_agent::AgentConfig;
+    use n00n_agent::{AgentConfig, AgentEvent, Envelope};
     use n00n_providers::{
         AgentError, ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, Role,
         provider::{ModelBatch, unconfigured_provider},
@@ -2935,6 +2975,25 @@ mod tests {
     };
     use tempfile::TempDir;
     use test_case::test_case;
+
+    #[test]
+    fn compaction_checkpoint_retry_budget_is_bounded() {
+        let mut pending = PendingCompaction {
+            ack: Box::new(Envelope {
+                event: AgentEvent::CompactionDone,
+                subagent: None,
+                run_id: 1,
+            }),
+            prepared: None,
+            attempts: 0,
+        };
+
+        for _ in 1..MAX_COMPACTION_CHECKPOINT_ATTEMPTS {
+            assert!(pending.should_retry_after_failure());
+        }
+        assert!(!pending.should_retry_after_failure());
+    }
+
     #[test]
     fn older_model_refresh_cannot_overwrite_newer_catalog() {
         let available = ArcSwapOption::from(Some(Arc::new(vec!["initial/model".into()])));
