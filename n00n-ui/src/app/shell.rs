@@ -236,10 +236,10 @@ async fn run_command(
 
     let (output_tx, output_rx) = flume::bounded::<Vec<u8>>(OUTPUT_QUEUE_CAPACITY);
     if let Some(stdout) = child.stdout.take() {
-        spawn_output_reader(stdout, output_tx.clone());
+        spawn_output_reader(stdout, output_tx.clone(), max_output_bytes);
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_output_reader(stderr, output_tx.clone());
+        spawn_output_reader(stderr, output_tx.clone(), max_output_bytes);
     }
     let mut guard = n00n_agent::ChildGuard::new(child);
     drop(output_tx);
@@ -390,24 +390,36 @@ fn output_text(output: &[u8]) -> String {
 fn spawn_output_reader<R: futures_lite::io::AsyncRead + Unpin + Send + 'static>(
     reader: R,
     tx: flume::Sender<Vec<u8>>,
+    max_output_bytes: usize,
 ) {
-    smol::spawn(read_output(reader, tx)).detach();
+    smol::spawn(read_output(reader, tx, max_output_bytes)).detach();
 }
 
 async fn read_output<R: futures_lite::io::AsyncRead + Unpin>(
     mut reader: R,
     tx: flume::Sender<Vec<u8>>,
+    max_output_bytes: usize,
 ) {
     let mut buffer = [0; OUTPUT_READ_CHUNK_SIZE];
+    let mut pending = Vec::new();
+    let max_chunk_bytes = max_output_bytes.max(1);
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) | Err(_) => break,
             Ok(read) => {
-                if tx.send_async(buffer[..read].to_vec()).await.is_err() {
-                    break;
+                for &byte in &buffer[..read] {
+                    pending.push(byte);
+                    if (byte == b'\n' || pending.len() >= max_chunk_bytes)
+                        && tx.send_async(std::mem::take(&mut pending)).await.is_err()
+                    {
+                        return;
+                    }
                 }
             }
         }
+    }
+    if !pending.is_empty() {
+        let _ = tx.send_async(pending).await;
     }
 }
 
@@ -444,7 +456,7 @@ mod tests {
             let input = vec![b'x'; OUTPUT_READ_CHUNK_SIZE * (OUTPUT_QUEUE_CAPACITY + 1)];
             let reader = Cursor::new(input);
             let (tx, rx) = flume::bounded(OUTPUT_QUEUE_CAPACITY);
-            let mut read = pin!(read_output(reader, tx));
+            let mut read = pin!(read_output(reader, tx, OUTPUT_READ_CHUNK_SIZE));
 
             assert!(poll_once(read.as_mut()).await.is_none());
             assert_eq!(rx.len(), OUTPUT_QUEUE_CAPACITY);
@@ -454,6 +466,19 @@ mod tests {
             while let Ok(chunk) = rx.try_recv() {
                 assert_eq!(chunk.len(), OUTPUT_READ_CHUNK_SIZE);
             }
+        });
+    }
+
+    #[test]
+    fn output_reader_keeps_partial_lines_in_one_chunk() {
+        smol::block_on(async {
+            let reader = Cursor::new(b"partial line\nnext".to_vec());
+            let (tx, rx) = flume::bounded(2);
+
+            read_output(reader, tx, usize::MAX).await;
+
+            assert_eq!(rx.recv().unwrap(), b"partial line\n");
+            assert_eq!(rx.recv().unwrap(), b"next");
         });
     }
 

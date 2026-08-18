@@ -137,15 +137,15 @@ fn job_command(spec: JobSpec) -> Result<Command, String> {
 }
 
 #[cfg(unix)]
-fn process_group_pid(pid: u32) -> Result<rustix::process::Pid, String> {
+fn process_pid(pid: u32) -> Result<rustix::process::Pid, String> {
     let raw = i32::try_from(pid).map_err(|error| error.to_string())?;
     rustix::process::Pid::from_raw(raw).ok_or_else(|| "child process id cannot be zero".into())
 }
 
 #[cfg(unix)]
 fn lower_job_priority(pid: u32) -> Result<(), String> {
-    let process_group = process_group_pid(pid)?;
-    rustix::process::setpriority_pgrp(Some(process_group), JOB_NICE_ADJUSTMENT)
+    let process = process_pid(pid)?;
+    rustix::process::setpriority_process(Some(process), JOB_NICE_ADJUSTMENT)
         .map_err(|error| error.to_string())
 }
 
@@ -153,7 +153,7 @@ fn lower_job_priority(pid: u32) -> Result<(), String> {
 fn kill_process_group(pid: u32) {
     use rustix::process::{Signal, kill_process_group};
 
-    let Ok(process_group) = process_group_pid(pid) else {
+    let Ok(process_group) = process_pid(pid) else {
         tracing::warn!(pid, "invalid job process group id");
         return;
     };
@@ -213,23 +213,29 @@ fn job_rss_limit() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
+fn status_rss_bytes(status: &str) -> Result<u64, String> {
+    let Some(kilobytes) = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|line| line.split_whitespace().next())
+    else {
+        return Ok(0);
+    };
+    kilobytes
+        .parse::<u64>()
+        .map_err(|error| error.to_string())?
+        .checked_mul(1024)
+        .ok_or_else(|| "process RSS overflowed u64".to_string())
+}
+
+#[cfg(target_os = "linux")]
 fn process_rss(pid: u32) -> Result<Option<u64>, String> {
     let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
         Ok(status) => status,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
-    let kilobytes = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|line| line.split_whitespace().next())
-        .ok_or_else(|| format!("VmRSS is missing for process {pid}"))?
-        .parse::<u64>()
-        .map_err(|error| error.to_string())?;
-    kilobytes
-        .checked_mul(1024)
-        .map(Some)
-        .ok_or_else(|| "process RSS overflowed u64".to_string())
+    status_rss_bytes(&status).map(Some)
 }
 
 #[cfg(target_os = "linux")]
@@ -1307,6 +1313,15 @@ mod tests {
         assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zombie_status_without_rss_counts_as_zero() {
+        assert_eq!(
+            status_rss_bytes("Name:\tzombie\nState:\tZ (zombie)\n").unwrap(),
+            0
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn jobs_run_at_reduced_priority() {
@@ -1321,9 +1336,9 @@ mod tests {
             .expect("priority probe process");
         let pid = child.id();
         lower_job_priority(pid).expect("lower job priority");
-        let process_group = process_group_pid(pid).expect("priority probe process group");
-        let priority = rustix::process::getpriority_pgrp(Some(process_group))
-            .expect("read job process priority");
+        let process = process_pid(pid).expect("priority probe process");
+        let priority =
+            rustix::process::getpriority_process(Some(process)).expect("read job process priority");
         kill_process_group(pid);
         child.wait().expect("priority probe status");
         assert_eq!(priority, JOB_NICE_ADJUSTMENT);
