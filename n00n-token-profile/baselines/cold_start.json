@@ -4,8 +4,8 @@
   "surfaces": {
     "cache_prefix": {
       "name": "cache_prefix",
-      "bytes": 23056,
-      "tokens": 5681
+      "bytes": 23089,
+      "tokens": 5690
     },
     "main_tools_payload": {
       "name": "main_tools_payload",
@@ -21,8 +21,8 @@
     },
     "system_prompt": {
       "name": "system_prompt",
-      "bytes": 2695,
-      "tokens": 591
+      "bytes": 2728,
+      "tokens": 600
     }
   },
   "limits": {
