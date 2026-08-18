@@ -25,7 +25,7 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
--- Preserve shell wrappers such as BASH_ENV hooks for build commands.
+-- Preserve CAE's shell-level wrappers for Rust build commands.
 local RTK_SKIP_TOOLS = {
   cargo = true,
   nextest = true,
@@ -43,8 +43,8 @@ local RTK_MANAGED_COMMANDS = {
   cargo = true,
   cat = true,
   curl = true,
-  docker = true,
   diff = true,
+  docker = true,
   dotnet = true,
   du = true,
   ecs = true,
@@ -355,6 +355,9 @@ rtk_rewrite = function(command, ctx)
   end
 
   local cmd = normalize_command(command:match("^%s*(.-)%s*$"))
+  if rtk_explicit_proxy(cmd) then
+    return cmd
+  end
 
   -- jq and yq must pass through unchanged (FR-018)
   local normalized = strip_leading_assignments(cmd)
@@ -591,6 +594,36 @@ local function normalized_executable(word)
   return unquote(word):gsub("\\(.)", "%1"):gsub("['\"]", ""):match("([^/]+)$")
 end
 
+local function is_assignment_word(word)
+  return word:match("^[%a_][%w_]*=") ~= nil
+end
+
+local function rtk_managed_command_index(words)
+  local executable = words[1] and normalized_executable(words[1])
+  if not executable or executable:find("$", 1, true) then
+    return nil
+  end
+  if RTK_MANAGED_COMMANDS[executable] then
+    return 1
+  end
+  if not RTK_COMMAND_WRAPPERS[executable] or RTK_STRING_COMMAND_WRAPPERS[executable] then
+    return nil
+  end
+  local skip_timeout_duration = executable == "timeout"
+  for index = 2, #words do
+    local word = words[index]
+    if not word:match("^%-") and not is_assignment_word(word) then
+      if skip_timeout_duration then
+        skip_timeout_duration = false
+      else
+        local candidate = normalized_executable(word)
+        return candidate and RTK_MANAGED_COMMANDS[candidate] and index or nil
+      end
+    end
+  end
+  return nil
+end
+
 local function rtk_manages_segment(segment, depth)
   depth = depth or 0
   if depth > 8 then
@@ -602,24 +635,18 @@ local function rtk_manages_segment(segment, depth)
   if not executable or executable:find("$", 1, true) then
     return executable ~= nil
   end
-  if RTK_MANAGED_COMMANDS[executable] then
+  if rtk_managed_command_index(words) then
     return true
   end
   if executable == "rtk" then
     return normalized_executable(words[2] or "") == "proxy"
       and rtk_manages_segment(table.concat(words, " ", 3), depth + 1)
   end
-  if RTK_COMMAND_WRAPPERS[executable] then
+  if RTK_STRING_COMMAND_WRAPPERS[executable] then
     for index = 2, #words do
-      local candidate = normalized_executable(words[index])
-      if candidate and RTK_MANAGED_COMMANDS[candidate] then
+      local nested = unquote(words[index])
+      if nested ~= words[index] and rtk_manages_segment(nested, depth + 1) then
         return true
-      end
-      if RTK_STRING_COMMAND_WRAPPERS[executable] then
-        local nested = unquote(words[index])
-        if nested ~= words[index] and rtk_manages_segment(nested, depth + 1) then
-          return true
-        end
       end
     end
   end
@@ -650,6 +677,14 @@ rtk_single_command = function(command)
   return not root:has_error() and not is_complex(root) and #collect_commands(root, command) == 1
 end
 
+rtk_explicit_proxy = function(command)
+  if not rtk_single_command(command) or not command:match("^rtk%s+proxy%s+") then
+    return false
+  end
+  local words = split_shell_words(command)
+  return #words >= 3
+end
+
 rtk_proxy_fallback = function(command)
   if not rtk_single_command(command) then
     return nil
@@ -660,19 +695,18 @@ rtk_proxy_fallback = function(command)
   end
   local words = split_shell_words(normalized)
   local raw_executable = normalized:match("^(%S+)")
+  local executable = words[1] and normalized_executable(words[1])
   if
     raw_executable ~= words[1]
     or raw_executable:find("'", 1, true)
     or raw_executable:find('"', 1, true)
     or raw_executable:find("\\", 1, true)
+    or executable == "exec"
+    or not rtk_managed_command_index(words)
   then
     return nil
   end
-  local executable = words[1] and normalized_executable(words[1])
-  if not executable or not RTK_MANAGED_COMMANDS[executable] then
-    return nil
-  end
-  return "rtk proxy " .. command
+  return "rtk proxy " .. normalized
 end
 
 rtk_enforcement_required = function(command)

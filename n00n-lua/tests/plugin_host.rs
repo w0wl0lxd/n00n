@@ -3818,9 +3818,8 @@ fn bash_schema_exposes_no_agent_controlled_rtk_override() {
 
 #[test_case::test_case("bash -c 'git status'" ; "nested_managed_command")]
 #[test_case::test_case("g''it status" ; "concatenated_quote_command")]
-#[test_case::test_case("exec git status" ; "exec_wrapper")]
+#[test_case::test_case("exec git --version" ; "exec_wrapper")]
 #[test_case::test_case("echo $(git status)" ; "command_substitution")]
-#[test_case::test_case("rtk proxy git status" ; "rtk_proxy")]
 #[test_case::test_case(r"find . -maxdepth 0 -exec printf should-not-run \;" ; "unsupported_find_fallback")]
 fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
     if skip_without_rtk("bash_handler_rejects_managed_commands_rtk_cannot_rewrite") {
@@ -3839,6 +3838,9 @@ fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
 #[test_case::test_case("python -c 'print(123)'", "123" ; "python")]
 #[test_case::test_case("git --version", "git version" ; "git")]
 #[test_case::test_case("gh --version", "gh version" ; "gh")]
+#[test_case::test_case("rtk proxy git --version", "git version" ; "explicit_rtk_proxy")]
+#[test_case::test_case("env N00N_RTK_TEST=1 git --version", "git version" ; "env_wrapper")]
+#[test_case::test_case("timeout 5 git --version", "git version" ; "timeout_wrapper")]
 fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
     command: &str,
     expected: &str,
@@ -3855,6 +3857,20 @@ fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
         output.contains(expected),
         "unexpected output for {command}: {output}"
     );
+}
+
+#[test_case::test_case("env N00N_RTK_TEST=lint printf go", "go" ; "env_script_argument")]
+#[test_case::test_case("timeout 5 printf lint", "lint" ; "timeout_script_argument")]
+fn bash_handler_routes_wrapper_commands_without_false_positives(command: &str, expected: &str) {
+    if skip_without_rtk("bash_handler_routes_wrapper_commands_without_false_positives") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+        .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+
+    assert!(output.contains(expected), "unexpected output: {output}");
 }
 
 #[test]
