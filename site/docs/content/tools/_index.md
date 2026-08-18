@@ -92,7 +92,7 @@ Insert lines before `line` number. Existing lines shift down.
 ### `explore_code` *(lua plugin)*
 
 PRIMARY CODEBASE TOOL. Use first. Routes by intent:
-- **file** or **skeleton**: `index_file`
+- **file** or **skeleton** intent (or a file path): `index_file`
 - **relations**, **cross_file**, **symbol**, or **impact**: `map_codegraph`
 - **search**: `search_text`
 
