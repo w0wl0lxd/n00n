@@ -1095,6 +1095,10 @@ impl<'t> EventLoop<'t> {
     }
 
     fn next_non_input_wake(&self) -> Option<Wake> {
+        self.select_non_input_wake(Duration::ZERO)
+    }
+
+    fn select_non_input_wake(&self, timeout: Duration) -> Option<Wake> {
         let mut sel = flume::Selector::new();
         if let Some(rx) = self
             .ui_action_rx
@@ -1117,7 +1121,7 @@ impl<'t> EventLoop<'t> {
                 res.ok().map(|ev| Wake::Shell(i, ev))
             });
         }
-        sel.wait_timeout(Duration::ZERO).ok().flatten()
+        sel.wait_timeout(timeout).ok().flatten()
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
@@ -2420,13 +2424,34 @@ impl<'t> EventLoop<'t> {
         }
     }
 
+    fn settle_cancelled_sessions(&mut self) {
+        let Some(deadline) = Instant::now().checked_add(AGENT_SHUTDOWN_TIMEOUT) else {
+            warn!("shutdown cancellation deadline overflowed");
+            return;
+        };
+        while self
+            .sessions
+            .iter()
+            .any(|runtime| SessionStatus::of(&runtime.app) != SessionStatus::Idle)
+            && Instant::now() < deadline
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = remaining.min(Duration::from_millis(IDLE_POLL_INTERVAL_MS));
+            if let Some(wake) = self.select_non_input_wake(timeout)
+                && let Err(error) = self.handle_wake(wake)
+            {
+                warn!(%error, "failed to settle a cancellation event during shutdown");
+            }
+        }
+    }
+
     fn shutdown(mut self) -> Result<ShutdownReport> {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
-        // Cancellation settles asynchronously, so shutdown must not wait on Lua's drain barrier.
+        self.settle_cancelled_sessions();
         let mut tabs = Vec::with_capacity(self.sessions.len());
         let mut agent_tasks = Vec::with_capacity(self.sessions.len());
         for rt in self.sessions.drain(..) {

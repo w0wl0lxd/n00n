@@ -628,7 +628,7 @@ impl<'h> Agent<'h> {
                         _ => None,
                     };
                     let output_emitted = metadata.is_none_or(|metadata| metadata.emitted_event);
-                    if output_emitted && !self.approve_ambiguous_request_replay(metadata).await? {
+                    if !self.approve_ambiguous_request_replay(metadata).await? {
                         break Err(error);
                     }
                     self.event_tx.send(AgentEvent::Retry {
@@ -640,8 +640,7 @@ impl<'h> Agent<'h> {
                         delivery_phase = ?metadata.map(|metadata| metadata.phase),
                         response_id_present = metadata.is_some_and(|metadata| metadata.response_id.is_some()),
                         output_emitted,
-                        approval_required = output_emitted,
-                        "replaying ambiguous provider request"
+                        "replaying ambiguous provider request after approval"
                     );
                     approved_ambiguous_replay = true;
                 }
@@ -1785,7 +1784,7 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_request_without_output_replays_without_approval() {
+    fn ambiguous_request_without_output_still_requires_approval() {
         smol::block_on(async {
             let calls = Arc::new(AtomicUsize::new(0));
             let provider = AmbiguousProvider {
@@ -1801,14 +1800,26 @@ mod tests {
                 Arc::new(ToolRegistry::new()),
             );
 
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
             agent.run(default_input()).await.unwrap();
 
             assert_eq!(calls.load(Ordering::Relaxed), 2);
-            assert!(drain_events(&event_rx).iter().all(|event| !matches!(
-                event.event,
-                AgentEvent::PermissionRequest { ref tool, .. }
-                    if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
-            )));
+            assert_eq!(
+                drain_events(&event_rx)
+                    .iter()
+                    .filter(|event| matches!(
+                        event.event,
+                        AgentEvent::PermissionRequest { ref tool, .. }
+                            if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                    ))
+                    .count(),
+                1
+            );
         });
     }
 

@@ -2,7 +2,7 @@
 //! `IDLE_TIMEOUT` (5 s) of inactivity. Jobs carry monotonic u64 IDs so callers can
 //! discard stale results.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -20,6 +20,7 @@ const RESULT_QUEUE_CAPACITY: usize = 64;
 
 struct RenderJob {
     id: u64,
+    accepted: Arc<AtomicBool>,
     identity: RenderIdentity,
     tool_input: Option<Arc<ToolInput>>,
     tool_output: Option<Arc<ToolOutput>>,
@@ -62,7 +63,6 @@ struct PoolInner {
 
 pub struct RenderWorker {
     job_tx: flume::Sender<RenderJob>,
-    job_publish_lock: Mutex<()>,
     inner: Arc<PoolInner>,
     result_rx: flume::Receiver<RenderResult>,
 }
@@ -77,7 +77,6 @@ impl RenderWorker {
 
         Self {
             job_tx,
-            job_publish_lock: Mutex::new(()),
             inner: Arc::new(PoolInner {
                 job_rx,
                 result_tx,
@@ -119,13 +118,10 @@ impl RenderWorker {
         limits: RenderLimits,
     ) -> (u64, bool) {
         let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
-        identity.set_latest(id);
-        let Ok(_guard) = self.job_publish_lock.lock() else {
-            error!("render job queue lock poisoned");
-            return (id, false);
-        };
+        let accepted = Arc::new(AtomicBool::new(false));
         let queued = match self.job_tx.try_send(RenderJob {
             id,
+            accepted: Arc::clone(&accepted),
             identity: identity.clone(),
             tool_input,
             tool_output,
@@ -139,9 +135,9 @@ impl RenderWorker {
             }
         };
         if queued {
+            identity.set_latest(id);
+            accepted.store(true, Ordering::Release);
             self.maybe_spawn_thread();
-        } else {
-            identity.cancel();
         }
         (id, queued)
     }
@@ -212,6 +208,9 @@ fn worker_loop(inner: &PoolInner) {
 
 fn recv_current_job(inner: &PoolInner) -> Option<RenderJob> {
     while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
+        while !job.accepted.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
         if job.identity.is_latest(job.id) {
             return Some(job);
         }
@@ -238,7 +237,6 @@ mod tests {
         let (result_tx, result_rx) = flume::bounded(RESULT_QUEUE_CAPACITY);
         RenderWorker {
             job_tx,
-            job_publish_lock: Mutex::new(()),
             inner: Arc::new(PoolInner {
                 job_rx,
                 result_tx,
@@ -295,6 +293,30 @@ mod tests {
         while let Ok(job) = worker.inner.job_rx.try_recv() {
             assert!(job.identity.is_latest(job.id));
         }
+    }
+
+    #[test]
+    fn rejected_replacement_preserves_queued_job_identity() {
+        let worker = make_worker(1, 1);
+        let identity = RenderIdentity::default();
+        let limits = RenderLimits {
+            script: 1,
+            output: 1,
+            details: 1,
+        };
+        let queued = worker
+            .send_latest(&identity, None, None, limits)
+            .expect("initial job queued");
+        for _ in 1..JOB_QUEUE_CAPACITY {
+            assert!(
+                worker
+                    .send_latest(&RenderIdentity::default(), None, None, limits)
+                    .is_some()
+            );
+        }
+
+        assert!(worker.send_latest(&identity, None, None, limits).is_none());
+        assert!(identity.is_latest(queued));
     }
 
     #[test]

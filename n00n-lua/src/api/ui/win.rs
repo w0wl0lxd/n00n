@@ -147,7 +147,7 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
         |lua, (ud, timeout_ms): (AnyUserData, Option<u64>)| async move {
             let rx = {
                 let this = ud.borrow::<WinHandle>()?;
-                if this.closed.load(Ordering::Relaxed) {
+                if this.closed.load(Ordering::Acquire) {
                     return Ok(mlua::Value::Nil);
                 }
                 this.event_rx.clone()
@@ -170,13 +170,13 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
                 if matches!(event, WinEvent::Close) {
                     ud.borrow::<WinHandle>()?
                         .closed
-                        .store(true, Ordering::Relaxed);
+                        .store(true, Ordering::Release);
                 }
                 Ok(mlua::Value::Table(event_table(&lua, event)?))
             } else {
                 ud.borrow::<WinHandle>()?
                     .closed
-                    .store(true, Ordering::Relaxed);
+                    .store(true, Ordering::Release);
                 Ok(mlua::Value::Nil)
             }
         },
@@ -204,7 +204,7 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
 /// win:set_config({ title = "Updated!", width = "80%" })
 #[lua_fn]
 fn set_config(_lua: &Lua, this: &WinHandle, opts: Table) -> LuaResult<()> {
-    if this.closed.load(Ordering::Relaxed) {
+    if this.closed.load(Ordering::Acquire) {
         return Ok(());
     }
     let mut patch = FloatConfigPatch::default();
@@ -255,7 +255,7 @@ fn set_config(_lua: &Lua, this: &WinHandle, opts: Table) -> LuaResult<()> {
 /// win:set_cursor(3) -- highlight the third line
 #[lua_fn]
 fn set_cursor(_lua: &Lua, this: &WinHandle, row: usize) -> LuaResult<()> {
-    if this.closed.load(Ordering::Relaxed) {
+    if this.closed.load(Ordering::Acquire) {
         return Ok(());
     }
     this.send(WinCommand::SetCursor(row.saturating_sub(1)));
@@ -285,10 +285,10 @@ fn close(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 /// end
 #[lua_fn]
 fn is_open(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
-    if !this.closed.load(Ordering::Relaxed) && this.cmd_tx.is_disconnected() {
+    if !this.closed.load(Ordering::Acquire) && this.cmd_tx.is_disconnected() {
         this.closed.store(true, Ordering::Relaxed);
     }
-    Ok(!this.closed.load(Ordering::Relaxed))
+    Ok(!this.closed.load(Ordering::Acquire))
 }
 
 /// Makes the window visible again after it was hidden with `hide()`.
@@ -298,7 +298,7 @@ fn is_open(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
 /// win:show()
 #[lua_fn]
 fn show(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
-    if this.closed.load(Ordering::Relaxed) {
+    if this.closed.load(Ordering::Acquire) {
         return Ok(());
     }
     this.visible.store(true, Ordering::Relaxed);
@@ -316,7 +316,7 @@ fn show(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 /// win:show()
 #[lua_fn]
 fn hide(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
-    if this.closed.load(Ordering::Relaxed) {
+    if this.closed.load(Ordering::Acquire) {
         return Ok(());
     }
     this.visible.store(false, Ordering::Relaxed);
@@ -329,10 +329,10 @@ fn hide(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 /// @return (boolean) true if visible.
 #[lua_fn]
 fn is_visible(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
-    if !this.closed.load(Ordering::Relaxed) && this.cmd_tx.is_disconnected() {
+    if !this.closed.load(Ordering::Acquire) && this.cmd_tx.is_disconnected() {
         this.closed.store(true, Ordering::Relaxed);
     }
-    Ok(this.visible.load(Ordering::Relaxed) && !this.closed.load(Ordering::Relaxed))
+    Ok(this.visible.load(Ordering::Relaxed) && !this.closed.load(Ordering::Acquire))
 }
 
 fn win_fields<F: mlua::UserDataFields<WinHandle>>(fields: &mut F) {

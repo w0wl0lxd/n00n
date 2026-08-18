@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -14,7 +14,7 @@ use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::fs::expand_tilde;
 use crate::plugin_permissions::PluginPermissions;
-use crate::runtime::{active_task_id, with_jobs};
+use crate::runtime::{active_task_id, run_non_yieldable, with_jobs};
 
 const READER_BUF_SIZE: usize = 8 * 1024;
 const MAX_JOB_LINE_BYTES: usize = 64 * 1024;
@@ -24,7 +24,7 @@ const MAX_JOBWAIT_RETAINED_LINES: usize = 10_000;
 const MAX_JOBWAIT_RETAINED_BYTES: usize = 1024 * 1024;
 const JOBWAIT_TRUNCATION_MARKER: &str = "[... job output truncated ...]";
 #[cfg(target_os = "linux")]
-const JOB_RSS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const JOB_RSS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_os = "linux")]
 const JOB_RSS_LIMIT_ENV: &str = "N00N_TOOL_MAX_RSS_MB";
 #[cfg(target_os = "linux")]
@@ -53,7 +53,7 @@ pub(crate) enum JobEvent {
 
 /// Lifetime of a job. Task-owned jobs die with the call that started them;
 /// plugin-owned jobs survive until their plugin unloads or reloads.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum JobOwner {
     Task(u64),
     Plugin(Arc<str>),
@@ -206,51 +206,63 @@ fn job_rss_limit() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn process_group_rss(pid: u32) -> Result<u64, String> {
-    let entries = std::fs::read_dir("/proc").map_err(|error| error.to_string())?;
+fn process_rss(pid: u32) -> Result<Option<u64>, String> {
+    let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(status) => status,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let kilobytes = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or_else(|| format!("VmRSS is missing for process {pid}"))?
+        .parse::<u64>()
+        .map_err(|error| error.to_string())?;
+    kilobytes
+        .checked_mul(1024)
+        .map(Some)
+        .ok_or_else(|| "process RSS overflowed u64".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn process_children(pid: u32) -> Result<Vec<u32>, String> {
+    let task_dir = match std::fs::read_dir(format!("/proc/{pid}/task")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut children = Vec::new();
+    for entry in task_dir {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path().join("children");
+        let contents = match std::fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        for child in contents.split_whitespace() {
+            children.push(child.parse::<u32>().map_err(|error| error.to_string())?);
+        }
+    }
+    Ok(children)
+}
+
+#[cfg(target_os = "linux")]
+fn process_tree_rss(pid: u32) -> Result<u64, String> {
+    let mut pending = VecDeque::from([pid]);
+    let mut visited = HashSet::new();
     let mut total = 0_u64;
-    for entry in entries {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let process_name = entry.file_name();
-        let Some(process_name) = process_name.to_str() else {
-            continue;
-        };
-        let Ok(process_id) = process_name.parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{process_id}/stat")) else {
-            continue;
-        };
-        let Some(process_group) = stat
-            .rsplit_once(") ")
-            .and_then(|(_, fields)| fields.split_whitespace().nth(2))
-        else {
-            continue;
-        };
-        if process_group.parse::<u32>() != Ok(pid) {
+    while let Some(process_id) = pending.pop_front() {
+        if !visited.insert(process_id) {
             continue;
         }
-        let Ok(status) = std::fs::read_to_string(format!("/proc/{process_id}/status")) else {
-            continue;
-        };
-        let Some(kilobytes) = status
-            .lines()
-            .find_map(|line| line.strip_prefix("VmRSS:"))
-            .and_then(|line| line.split_whitespace().next())
-        else {
-            continue;
-        };
-        let Ok(kilobytes) = kilobytes.parse::<u64>() else {
-            continue;
-        };
-        let Some(bytes) = kilobytes.checked_mul(1024) else {
-            return Err("process RSS overflowed u64".into());
-        };
-        total = total
-            .checked_add(bytes)
-            .ok_or_else(|| "process group RSS overflowed u64".to_string())?;
+        if let Some(bytes) = process_rss(process_id)? {
+            total = total
+                .checked_add(bytes)
+                .ok_or_else(|| "process tree RSS overflowed u64".to_string())?;
+        }
+        pending.extend(process_children(process_id)?);
     }
     Ok(total)
 }
@@ -265,7 +277,7 @@ fn spawn_resource_monitor(
         .name("job-resource".into())
         .spawn(move || {
             while !done.load(Ordering::Acquire) {
-                match process_group_rss(pid) {
+                match process_tree_rss(pid) {
                     Ok(rss) if rss > limit => {
                         tracing::warn!(
                             pid,
@@ -282,16 +294,29 @@ fn spawn_resource_monitor(
                         return;
                     }
                 }
-                thread::sleep(JOB_RSS_POLL_INTERVAL);
+                thread::park_timeout(JOB_RSS_POLL_INTERVAL);
             }
         })
         .map_err(|error| error.to_string())
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum DrainCursor {
+    Events(JobOwner),
+    Timers(JobOwner),
+    PluginEvents,
+}
+
+impl DrainCursor {
+    fn belongs_to(&self, owner: &JobOwner) -> bool {
+        matches!(self, Self::Events(candidate) | Self::Timers(candidate) if candidate == owner)
+    }
+}
+
 pub(crate) struct JobStore {
     jobs: HashMap<u32, JobMeta>,
     next_id: u32,
-    drain_cursor: Option<u32>,
+    drain_cursors: HashMap<DrainCursor, u32>,
 }
 
 struct RetainedJobOutput {
@@ -389,7 +414,7 @@ impl JobStore {
         Self {
             jobs: HashMap::new(),
             next_id: 1,
-            drain_cursor: None,
+            drain_cursors: HashMap::new(),
         }
     }
 
@@ -492,6 +517,7 @@ impl JobStore {
                 #[cfg(target_os = "linux")]
                 {
                     resource_done.store(true, Ordering::Release);
+                    resource_monitor.thread().unpark();
                     let _ = resource_monitor.join();
                 }
                 if let Some(h) = stdout_handle {
@@ -579,18 +605,29 @@ impl JobStore {
     }
 
     pub fn drain_events(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
-        self.drain_matching(buf, |job| job.owner == *owner);
+        self.drain_matching(DrainCursor::Events(owner.clone()), buf, |job| {
+            job.owner == *owner
+        });
     }
 
     pub fn drain_timers(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
-        self.drain_matching(buf, |job| job.owner == *owner && job.pid.is_none());
+        self.drain_matching(DrainCursor::Timers(owner.clone()), buf, |job| {
+            job.owner == *owner && job.pid.is_none()
+        });
     }
 
     pub fn drain_plugin_events(&mut self, buf: &mut Vec<(u32, JobEvent)>) {
-        self.drain_matching(buf, |job| matches!(job.owner, JobOwner::Plugin(_)));
+        self.drain_matching(DrainCursor::PluginEvents, buf, |job| {
+            matches!(job.owner, JobOwner::Plugin(_))
+        });
     }
 
-    fn drain_matching(&mut self, buf: &mut Vec<(u32, JobEvent)>, keep: impl Fn(&JobMeta) -> bool) {
+    fn drain_matching(
+        &mut self,
+        cursor_key: DrainCursor,
+        buf: &mut Vec<(u32, JobEvent)>,
+        keep: impl Fn(&JobMeta) -> bool,
+    ) {
         buf.clear();
         let mut job_ids = self
             .jobs
@@ -602,15 +639,20 @@ impl JobStore {
             return;
         }
 
-        let start = self.drain_cursor.map_or(0, |cursor| {
-            let after_cursor = job_ids.partition_point(|job_id| *job_id <= cursor);
-            if after_cursor == job_ids.len() {
-                0
-            } else {
-                after_cursor
-            }
-        });
+        let start = self
+            .drain_cursors
+            .get(&cursor_key)
+            .copied()
+            .map_or(0, |cursor| {
+                let after_cursor = job_ids.partition_point(|job_id| *job_id <= cursor);
+                if after_cursor == job_ids.len() {
+                    0
+                } else {
+                    after_cursor
+                }
+            });
         let now = Instant::now();
+        let mut last_drained = None;
         while buf.len() < MAX_JOB_EVENTS_PER_TURN {
             let mut made_progress = false;
             for offset in 0..job_ids.len() {
@@ -635,7 +677,7 @@ impl JobStore {
                 };
                 if let Some(event) = event {
                     buf.push((job_id, event));
-                    self.drain_cursor = Some(job_id);
+                    last_drained = Some(job_id);
                     made_progress = true;
                     if buf.len() == MAX_JOB_EVENTS_PER_TURN {
                         break;
@@ -645,6 +687,9 @@ impl JobStore {
             if !made_progress {
                 break;
             }
+        }
+        if let Some(job_id) = last_drained {
+            self.drain_cursors.insert(cursor_key, job_id);
         }
     }
 
@@ -690,6 +735,7 @@ impl JobStore {
 
     fn remove(&mut self, lua: &Lua, job_id: u32, kill: bool) {
         if let Some(mut job) = self.jobs.remove(&job_id) {
+            let owner = job.owner.clone();
             if kill {
                 kill_job(&mut job);
             }
@@ -700,6 +746,10 @@ impl JobStore {
                 if let Err(error) = lua.remove_registry_value(key) {
                     tracing::warn!(job_id, %error, "failed to drop job callback key");
                 }
+            }
+            if !self.jobs.values().any(|job| job.owner == owner) {
+                self.drain_cursors
+                    .retain(|cursor, _| !cursor.belongs_to(&owner));
             }
         }
     }
@@ -1072,7 +1122,7 @@ pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> Lua
             }
             JobEvent::Exit(code) => Value::Integer(i64::from(*code)),
         };
-        callback.call::<()>((job_id, arg))?;
+        run_non_yieldable(lua, || callback.call::<()>((job_id, arg)))?;
     }
     Ok(())
 }
