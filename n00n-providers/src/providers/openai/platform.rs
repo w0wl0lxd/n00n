@@ -22,9 +22,9 @@ use tracing::{debug, info, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, CacheHealth, CacheKind, HistoryReplayReason, Message, OpenAiPromptCacheMode,
-    ProviderEvent, ProviderUsage, RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions,
-    StreamResponse, System, UsageLimit, dialect,
+    AgentError, CacheControl, CacheHealth, CacheKind, HistoryReplayReason, Message,
+    OpenAiPromptCacheMode, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, StreamResponse, System, UsageLimit, dialect,
 };
 
 use super::auth;
@@ -261,6 +261,7 @@ impl CodexAttempt {
 struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
+    system_hash: Option<String>,
     tools_hash: Option<String>,
     messages_hash: Option<String>,
     auth_scope_hash: Option<String>,
@@ -273,6 +274,7 @@ impl Default for OpenAiSessionState {
         Self {
             last_response_id: None,
             last_message_count: 0,
+            system_hash: None,
             tools_hash: None,
             messages_hash: None,
             auth_scope_hash: None,
@@ -287,6 +289,7 @@ impl OpenAiSessionState {
         Self {
             last_response_id: Some(stored.response_id),
             last_message_count: stored.message_count,
+            system_hash: stored.system_hash,
             tools_hash: Some(stored.tools_hash),
             messages_hash: Some(stored.messages_hash),
             auth_scope_hash: Some(stored.auth_scope_hash),
@@ -299,6 +302,7 @@ impl OpenAiSessionState {
         Some(StoredOpenAiResponseChain {
             response_id: self.last_response_id.clone()?,
             message_count: self.last_message_count,
+            system_hash: Some(self.system_hash.clone()?),
             tools_hash: self.tools_hash.clone()?,
             messages_hash: self.messages_hash.clone()?,
             auth_scope_hash: self.auth_scope_hash.clone()?,
@@ -310,6 +314,20 @@ impl OpenAiSessionState {
 fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, serde_json::Error> {
     let bytes = serde_json::to_vec(value)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn system_hash(system: &System) -> String {
+    let mut digest = Sha256::new();
+    for block in system.blocks() {
+        digest.update(block.text.len().to_le_bytes());
+        digest.update(block.text.as_bytes());
+        digest.update([match block.cache {
+            CacheControl::None => 0,
+            CacheControl::Ephemeral => 1,
+            CacheControl::Dynamic => 2,
+        }]);
+    }
+    format!("{:x}", digest.finalize())
 }
 
 fn credential_hash(auth: &ResolvedAuth) -> String {
@@ -474,11 +492,13 @@ fn auth_expiry_bucket(tokens: &n00n_storage::auth::OAuthTokens) -> &'static str 
 
 fn incremental_for_state<'a>(
     state: &mut OpenAiSessionState,
+    system_hash: &str,
     tools_hash: &str,
     auth_scope_hash: &str,
     messages: &'a [Message],
 ) -> Result<(Option<String>, &'a [Message]), serde_json::Error> {
-    if state.tools_hash.as_deref() != Some(tools_hash)
+    if state.system_hash.as_deref() != Some(system_hash)
+        || state.tools_hash.as_deref() != Some(tools_hash)
         || state.auth_scope_hash.as_deref() != Some(auth_scope_hash)
         || messages.len() < state.last_message_count
     {
@@ -486,6 +506,7 @@ fn incremental_for_state<'a>(
             log_response_chain_reset(ResponseChainResetReason::RequestPrefixScopeChanged, None);
         }
         *state = OpenAiSessionState {
+            system_hash: Some(system_hash.to_owned()),
             tools_hash: Some(tools_hash.to_owned()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             ..Default::default()
@@ -497,6 +518,7 @@ fn incremental_for_state<'a>(
         if state.messages_hash.as_deref() != Some(current_hash.as_str()) {
             log_response_chain_reset(ResponseChainResetReason::MessagePrefixChanged, None);
             *state = OpenAiSessionState {
+                system_hash: Some(system_hash.to_owned()),
                 tools_hash: Some(tools_hash.to_owned()),
                 messages_hash: Some(current_hash),
                 auth_scope_hash: Some(auth_scope_hash.to_owned()),
@@ -514,6 +536,7 @@ fn incremental_for_state<'a>(
         }
         log_response_chain_reset(ResponseChainResetReason::NoNewInputAfterResponse, None);
         *state = OpenAiSessionState {
+            system_hash: Some(system_hash.to_owned()),
             tools_hash: Some(tools_hash.to_owned()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             ..Default::default()
@@ -526,6 +549,7 @@ fn incremental_for_state<'a>(
 fn record_in_state(
     state: &mut OpenAiSessionState,
     response_id: Option<String>,
+    system_hash: &str,
     tools_hash: &str,
     auth_scope_hash: &str,
     messages: &[Message],
@@ -534,6 +558,7 @@ fn record_in_state(
         *state = OpenAiSessionState {
             last_response_id: Some(response_id),
             last_message_count: messages.len(),
+            system_hash: Some(system_hash.to_owned()),
             tools_hash: Some(tools_hash.to_owned()),
             messages_hash: Some(stable_json_hash(messages)?),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
@@ -1118,6 +1143,7 @@ impl OpenAi {
     async fn prepare_request<'a>(
         &self,
         session_id: Option<&SessionRef>,
+        system_hash: &str,
         tools_hash: &str,
         auth_scope_hash: &str,
         messages: &'a [Message],
@@ -1191,7 +1217,7 @@ impl OpenAi {
         let now = Instant::now();
         let state = states.entry(session_id).or_default();
         state.last_used = now;
-        incremental_for_state(state, tools_hash, auth_scope_hash, messages)
+        incremental_for_state(state, system_hash, tools_hash, auth_scope_hash, messages)
             .map_err(AgentError::Json)
     }
 
@@ -1199,6 +1225,7 @@ impl OpenAi {
         &self,
         session_id: Option<&SessionRef>,
         response_id: Option<String>,
+        system_hash: &str,
         tools_hash: &str,
         auth_scope_hash: &str,
         messages: &[Message],
@@ -1216,9 +1243,14 @@ impl OpenAi {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let state = states.entry(session_id).or_default();
             state.last_used = Instant::now();
-            if let Err(error) =
-                record_in_state(state, response_id, tools_hash, auth_scope_hash, messages)
-            {
+            if let Err(error) = record_in_state(
+                state,
+                response_id,
+                system_hash,
+                tools_hash,
+                auth_scope_hash,
+                messages,
+            ) {
                 warn!(error = %error, "failed to hash OpenAI response chain; clearing continuation state");
                 *state = OpenAiSessionState::default();
             }
@@ -1462,9 +1494,11 @@ impl OpenAi {
             self.clear_response_chain(session_id, response_chain_lock.as_ref())
                 .await;
         }
+        let request_system_hash = system_hash(system);
         let (previous_response_id, incremental_messages) = match self
             .prepare_request(
                 session_id,
+                &request_system_hash,
                 tools_hash,
                 &state_scope_hash,
                 messages,
@@ -1731,6 +1765,7 @@ impl OpenAi {
         self.record_response(
             session_id,
             chainable.then_some(response_id).flatten(),
+            &request_system_hash,
             tools_hash,
             &state_scope_hash,
             messages,
@@ -2460,6 +2495,7 @@ mod tests {
     use super::*;
     use crate::{ContentBlock, Role, TokenUsage};
 
+    const SYSTEM_HASH: &str = "system";
     const TOOLS_HASH: &str = "[]";
     const AUTH_SCOPE_HASH: &str = "account";
     const LEGACY_SESSION_ID: &str = "01965087-4c71-7f00-8000-000000000000";
@@ -2598,6 +2634,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             "[]",
             AUTH_SCOPE_HASH,
             &first,
@@ -2610,7 +2647,7 @@ mod tests {
         ];
 
         let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, "[]", AUTH_SCOPE_HASH, &second).unwrap();
+            incremental_for_state(&mut state, SYSTEM_HASH, "[]", AUTH_SCOPE_HASH, &second).unwrap();
 
         assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
         assert_eq!(incremental_messages.len(), 1);
@@ -2627,6 +2664,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             "[]",
             AUTH_SCOPE_HASH,
             &first,
@@ -2655,7 +2693,7 @@ mod tests {
         ];
 
         let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, "[]", AUTH_SCOPE_HASH, &second).unwrap();
+            incremental_for_state(&mut state, SYSTEM_HASH, "[]", AUTH_SCOPE_HASH, &second).unwrap();
 
         assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
         assert_eq!(incremental_messages.len(), 1);
@@ -2753,6 +2791,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             "[]",
             AUTH_SCOPE_HASH,
             &first,
@@ -2764,8 +2803,14 @@ mod tests {
             Message::user("again".into()),
         ];
 
-        let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, "[\"new\"]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (previous_response_id, incremental_messages) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            "[\"new\"]",
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(previous_response_id.is_none());
         assert_eq!(incremental_messages.len(), second.len());
@@ -2855,8 +2900,14 @@ mod tests {
     fn incremental_first_turn_sends_full_messages() {
         let mut state = OpenAiSessionState::default();
         let messages = vec![Message::user("hello".into())];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &messages).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &messages,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 1);
@@ -2868,12 +2919,14 @@ mod tests {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("hello".into())];
         let (prev, _inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &first).unwrap();
+            incremental_for_state(&mut state, SYSTEM_HASH, TOOLS_HASH, AUTH_SCOPE_HASH, &first)
+                .unwrap();
         assert!(prev.is_none());
 
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             TOOLS_HASH,
             AUTH_SCOPE_HASH,
             &first,
@@ -2885,8 +2938,14 @@ mod tests {
             assistant("hi"),
             Message::user("again".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(prev.as_deref(), Some("resp_1"));
         assert_eq!(inc.len(), 1);
@@ -2902,11 +2961,13 @@ mod tests {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("run".into())];
         let (prev, _inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &first).unwrap();
+            incremental_for_state(&mut state, SYSTEM_HASH, TOOLS_HASH, AUTH_SCOPE_HASH, &first)
+                .unwrap();
         assert!(prev.is_none());
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             TOOLS_HASH,
             AUTH_SCOPE_HASH,
             &first,
@@ -2919,8 +2980,14 @@ mod tests {
             tool_result("call_1", "result"),
             Message::user("next".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(prev.as_deref(), Some("resp_1"));
         assert_eq!(inc.len(), 2);
@@ -2939,6 +3006,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             TOOLS_HASH,
             AUTH_SCOPE_HASH,
             &first,
@@ -2950,12 +3018,110 @@ mod tests {
             assistant("hi"),
             Message::user("again".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, "[\"new\"]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            "[\"new\"]",
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 3);
         assert_eq!(state.tools_hash, Some("[\"new\"]".to_string()));
+    }
+
+    #[test]
+    fn incremental_system_change_resets_state() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            "old-system",
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            "new-system",
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), second.len());
+        assert_eq!(state.system_hash.as_deref(), Some("new-system"));
+    }
+
+    #[test]
+    fn system_hash_preserves_block_boundaries() {
+        let combined = System::from("ab");
+        let mut split = System::new();
+        split.push_static("a");
+        split.push_static("b");
+        split.seal();
+
+        assert_eq!(combined.to_string(), split.to_string());
+        assert_ne!(system_hash(&combined), system_hash(&split));
+    }
+
+    #[test]
+    fn state_without_system_hash_is_not_persisted() {
+        let state = OpenAiSessionState {
+            last_response_id: Some("resp_1".into()),
+            last_message_count: 1,
+            system_hash: None,
+            tools_hash: Some(TOOLS_HASH.into()),
+            messages_hash: Some("messages".into()),
+            auth_scope_hash: Some(AUTH_SCOPE_HASH.into()),
+            expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
+            last_used: Instant::now(),
+        };
+
+        assert!(state.to_stored().is_none());
+    }
+
+    #[test]
+    fn legacy_chain_without_system_hash_resets_state() {
+        let mut state = OpenAiSessionState::from_stored(StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 1,
+            system_hash: None,
+            tools_hash: TOOLS_HASH.into(),
+            messages_hash: stable_json_hash(&[Message::user("hello".into())]).unwrap(),
+            auth_scope_hash: AUTH_SCOPE_HASH.into(),
+            expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
+        });
+        let messages = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &messages,
+        )
+        .unwrap();
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), messages.len());
+        assert_eq!(state.system_hash.as_deref(), Some(SYSTEM_HASH));
     }
 
     #[test]
@@ -2965,6 +3131,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             TOOLS_HASH,
             AUTH_SCOPE_HASH,
             &first,
@@ -2972,8 +3139,14 @@ mod tests {
         .unwrap();
 
         let second = vec![Message::user("a".into())];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 1);
@@ -2986,6 +3159,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             TOOLS_HASH,
             AUTH_SCOPE_HASH,
             &first,
@@ -2997,8 +3171,14 @@ mod tests {
             assistant("hi"),
             Message::user("again".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            SYSTEM_HASH,
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 3);
@@ -3011,6 +3191,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             TOOLS_HASH,
             AUTH_SCOPE_HASH,
             &first,
@@ -3018,7 +3199,15 @@ mod tests {
         .unwrap();
 
         let second = vec![Message::user("again".into())];
-        record_in_state(&mut state, None, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        record_in_state(
+            &mut state,
+            None,
+            SYSTEM_HASH,
+            TOOLS_HASH,
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(state.last_response_id.is_none());
         assert_eq!(state.last_message_count, 0);
@@ -3229,6 +3418,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_1".into()),
+                    SYSTEM_HASH,
                     TOOLS_HASH,
                     AUTH_SCOPE_HASH,
                     &first,
@@ -3252,6 +3442,7 @@ mod tests {
             let (previous_response_id, incremental) = restored
                 .prepare_request(
                     Some(&session_id),
+                    SYSTEM_HASH,
                     TOOLS_HASH,
                     AUTH_SCOPE_HASH,
                     &second,
@@ -3302,6 +3493,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_first".into()),
+                    SYSTEM_HASH,
                     TOOLS_HASH,
                     AUTH_SCOPE_HASH,
                     &first,
@@ -3319,6 +3511,7 @@ mod tests {
             let (previous, incremental) = second_provider
                 .prepare_request(
                     Some(&session_id),
+                    SYSTEM_HASH,
                     TOOLS_HASH,
                     AUTH_SCOPE_HASH,
                     &second,
@@ -3332,6 +3525,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_second".into()),
+                    SYSTEM_HASH,
                     TOOLS_HASH,
                     AUTH_SCOPE_HASH,
                     &second,
@@ -3349,6 +3543,7 @@ mod tests {
             let (previous, incremental) = first_provider
                 .prepare_request(
                     Some(&session_id),
+                    SYSTEM_HASH,
                     TOOLS_HASH,
                     AUTH_SCOPE_HASH,
                     &third,
@@ -3618,6 +3813,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
+            SYSTEM_HASH,
             TOOLS_HASH,
             "account-1",
             &first,
@@ -3630,7 +3826,8 @@ mod tests {
         ];
 
         let (previous_response_id, incremental) =
-            incremental_for_state(&mut state, TOOLS_HASH, "account-2", &second).unwrap();
+            incremental_for_state(&mut state, SYSTEM_HASH, TOOLS_HASH, "account-2", &second)
+                .unwrap();
 
         assert!(previous_response_id.is_none());
         assert_eq!(incremental.len(), second.len());
