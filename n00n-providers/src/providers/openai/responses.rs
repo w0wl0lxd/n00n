@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
 use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
@@ -55,7 +55,10 @@ pub(crate) fn build_body(
             || opts.openai_prompt_cache_mode == Some(crate::OpenAiPromptCacheMode::Explicit),
     );
     let has_prompt_cache_breakpoint = contains_prompt_cache_breakpoint(&input);
-    let wire_tools = convert_tools(tools, model);
+    let mut wire_tools = convert_tools(tools, model);
+    if let Some(tool_search) = opts.hosted_tool_search.as_ref() {
+        apply_hosted_tool_search(&mut wire_tools, tool_search);
+    }
 
     let mut body = json!({
         "model": model.id,
@@ -236,6 +239,8 @@ fn convert_input_with_breakpoint_support(
                             }));
                         }
                         ContentBlock::ToolUse { .. }
+                        | ContentBlock::NamespacedToolUse { .. }
+                        | ContentBlock::ProviderItem { .. }
                         | ContentBlock::Thinking { .. }
                         | ContentBlock::RedactedThinking { .. } => {}
                     }
@@ -279,6 +284,23 @@ fn convert_input_with_breakpoint_support(
                                 "arguments": arguments.to_string(),
                             }));
                         }
+                        ContentBlock::NamespacedToolUse {
+                            id,
+                            namespace,
+                            name,
+                            input: arguments,
+                        } => {
+                            input.push(json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "namespace": namespace,
+                                "name": name,
+                                "arguments": arguments.to_string(),
+                            }));
+                        }
+                        ContentBlock::ProviderItem { provider, data } if provider == "openai" => {
+                            input.push(data.clone());
+                        }
                         ContentBlock::RedactedThinking { data } => {
                             if let Ok(item) = serde_json::from_str::<Value>(data)
                                 && item["type"].as_str() == Some("reasoning")
@@ -287,6 +309,7 @@ fn convert_input_with_breakpoint_support(
                             }
                         }
                         ContentBlock::ToolResult { .. }
+                        | ContentBlock::ProviderItem { .. }
                         | ContentBlock::Image { .. }
                         | ContentBlock::Thinking { .. }
                         | ContentBlock::File { .. } => {}
@@ -432,6 +455,72 @@ const BUILTIN_CONFIG_KEYS: &[(&[&str], &[&str])] = &[
         &["environment", "display_width", "display_height"],
     ),
 ];
+const LOCAL_TOOL_SEARCH_NAMES: &[&str] = &["search_tools", "load_toolset"];
+
+fn namespace_description(namespace: &str) -> String {
+    match namespace {
+        "exploration" => "Cross-file analysis and specialized code search tools.".into(),
+        "knowledge" => "Persistent project knowledge and reusable skill instructions.".into(),
+        "orchestration" => "Task delegation, teams, workflows, and agent collaboration.".into(),
+        "repository" => "Remote repository hosting operations.".into(),
+        "terminal" => "Persistent terminal session operations.".into(),
+        "web" => "Current web search and URL retrieval.".into(),
+        _ if namespace.starts_with("mcp_") => "Tools provided by one configured MCP server.".into(),
+        _ => format!("Deferred tools in the {namespace} capability group."),
+    }
+}
+
+fn apply_hosted_tool_search(wire_tools: &mut Value, tool_search: &crate::HostedToolSearch) {
+    let Some(tools) = wire_tools.as_array_mut() else {
+        return;
+    };
+    let mut namespaces: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+    for deferred in &tool_search.tools {
+        let Some(name) = deferred.definition.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(description) = deferred.definition.get("description") else {
+            continue;
+        };
+        let Some(parameters) = deferred.definition.get("input_schema") else {
+            continue;
+        };
+        namespaces
+            .entry(&deferred.namespace)
+            .or_default()
+            .push(json!({
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+                "strict": false,
+                "defer_loading": true,
+            }));
+    }
+    if namespaces.is_empty() {
+        return;
+    }
+    tools.retain(|tool| {
+        tool.get("name")
+            .and_then(Value::as_str)
+            .is_none_or(|name| !LOCAL_TOOL_SEARCH_NAMES.contains(&name))
+    });
+    for (namespace, deferred_tools) in namespaces {
+        tools.push(json!({
+            "type": "namespace",
+            "name": format!("{}{namespace}", crate::HOSTED_NAMESPACE_PREFIX),
+            "description": namespace_description(namespace),
+            "tools": deferred_tools,
+        }));
+    }
+    if tools
+        .iter()
+        .any(|tool| tool["type"].as_str() == Some("namespace"))
+    {
+        tools.push(json!({"type": "tool_search"}));
+    }
+}
+
 pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model) -> Value {
     let Some(tools) = anthropic_tools.as_array() else {
         return json!([]);
@@ -566,6 +655,7 @@ pub(crate) async fn do_stream(
 struct ToolAccumulator {
     output_index: u64,
     call_id: String,
+    namespace: Option<String>,
     name: String,
     arguments: String,
 }
@@ -576,6 +666,7 @@ pub(crate) struct ResponseAccumulator {
     response_id: Option<String>,
     accepted: bool,
     reasoning_items: Vec<(u64, Value)>,
+    provider_items: Vec<(u64, Value)>,
     tool_accumulators: Vec<ToolAccumulator>,
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
@@ -631,6 +722,7 @@ impl ResponseAccumulator {
             response_id: None,
             accepted: false,
             reasoning_items: Vec::new(),
+            provider_items: Vec::new(),
             tool_accumulators: Vec::new(),
             usage: TokenUsage::default(),
             stop_reason: None,
@@ -744,6 +836,7 @@ impl ResponseAccumulator {
                         self.tool_accumulators.push(ToolAccumulator {
                             output_index,
                             call_id,
+                            namespace: item["namespace"].as_str().map(str::to_owned),
                             name,
                             arguments: String::new(),
                         });
@@ -758,7 +851,7 @@ impl ResponseAccumulator {
                     }
                     Some("program") => debug!("OpenAI program item"),
                     Some("program_output") => debug!("OpenAI program_output item"),
-                    Some("reasoning" | "message") => {}
+                    Some("reasoning" | "message" | "tool_search_call" | "tool_search_output") => {}
                     _ => {
                         let item_type = item["type"].as_str().unwrap_or_else(|| "unknown");
                         warn!(item_type, "Unknown OpenAI output item type");
@@ -823,7 +916,9 @@ impl ResponseAccumulator {
                 let item = &data["item"];
                 let previous_text_len = self.text.len();
                 let output_index = data["output_index"].as_u64().unwrap_or_else(|| {
-                    (self.reasoning_items.len() + self.tool_accumulators.len()) as u64
+                    (self.reasoning_items.len()
+                        + self.provider_items.len()
+                        + self.tool_accumulators.len()) as u64
                 });
                 match item["type"].as_str() {
                     Some("reasoning") => {
@@ -875,6 +970,9 @@ impl ResponseAccumulator {
                             if acc.call_id.is_empty() {
                                 acc.call_id.clone_from(&call_id);
                             }
+                            if acc.namespace.is_none() {
+                                acc.namespace = item["namespace"].as_str().map(str::to_owned);
+                            }
                             if acc.name.is_empty() {
                                 acc.name.clone_from(&name);
                             }
@@ -904,6 +1002,7 @@ impl ResponseAccumulator {
                                 output_index: idx
                                     .unwrap_or_else(|| self.tool_accumulators.len() as u64),
                                 call_id,
+                                namespace: item["namespace"].as_str().map(str::to_owned),
                                 name,
                                 arguments,
                             });
@@ -988,14 +1087,8 @@ impl ResponseAccumulator {
                             self.text.push_str(output);
                         }
                     }
-                    Some("tool_search_call") => {
-                        debug!("OpenAI tool_search_call item");
-                        self.text.push_str("[tool_search]");
-                    }
-                    Some("tool_search_output") => {
-                        if let Some(tools) = item.get("tools").and_then(Value::as_array) {
-                            let _ = write!(self.text, "[loaded {} tools]", tools.len());
-                        }
+                    Some("tool_search_call" | "tool_search_output") => {
+                        self.provider_items.push((output_index, item.clone()));
                     }
                     _ => {}
                 }
@@ -1110,13 +1203,24 @@ impl ResponseAccumulator {
     }
 
     pub fn into_stream_response(mut self) -> StreamResponse {
-        let mut ordered_blocks =
-            Vec::with_capacity(self.reasoning_items.len() + self.tool_accumulators.len());
+        let mut ordered_blocks = Vec::with_capacity(
+            self.reasoning_items.len() + self.provider_items.len() + self.tool_accumulators.len(),
+        );
         ordered_blocks.extend(self.reasoning_items.drain(..).map(|(index, item)| {
             (
                 index,
                 ContentBlock::RedactedThinking {
                     data: item.to_string(),
+                },
+            )
+        }));
+
+        ordered_blocks.extend(self.provider_items.drain(..).map(|(index, data)| {
+            (
+                index,
+                ContentBlock::ProviderItem {
+                    provider: "openai".into(),
+                    data,
                 },
             )
         }));
@@ -1141,14 +1245,20 @@ impl ResponseAccumulator {
                     Value::Object(Default::default())
                 }
             };
-            ordered_blocks.push((
-                acc.output_index,
-                ContentBlock::ToolUse {
+            let block = match acc.namespace {
+                Some(namespace) => ContentBlock::NamespacedToolUse {
+                    id: acc.call_id,
+                    namespace,
+                    name: acc.name,
+                    input,
+                },
+                None => ContentBlock::ToolUse {
                     id: acc.call_id,
                     name: acc.name,
                     input,
                 },
-            ));
+            };
+            ordered_blocks.push((acc.output_index, block));
         }
         ordered_blocks.sort_by_key(|(index, _)| *index);
         let mut content_blocks: Vec<ContentBlock> =
@@ -1504,10 +1614,6 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                     "Output: 42",
                 ),
                 (json!({"type":"program_output","output":"done"}), "done"),
-                (
-                    json!({"type":"tool_search_output","tools":[{}, {}]}),
-                    "[loaded 2 tools]",
-                ),
             ];
 
             for (item, expected) in cases {
@@ -2437,6 +2543,114 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
+    fn build_body_groups_deferred_tools_and_replaces_local_discovery() {
+        let tools = json!([
+            {
+                "name": "search_tools",
+                "description": "local search",
+                "input_schema": {"type": "object"}
+            },
+            {
+                "name": "read_file",
+                "description": "read",
+                "input_schema": {"type": "object"}
+            }
+        ]);
+        let fallback_body = build_body(
+            &Model::from_spec("openai/gpt-5.6").unwrap(),
+            &[],
+            &System::default(),
+            &tools,
+            None,
+            None,
+            false,
+            &RequestOptions::default(),
+            false,
+        );
+        assert!(
+            fallback_body["tools"]
+                .as_array()
+                .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "search_tools"))
+        );
+
+        let opts = RequestOptions {
+            hosted_tool_search: Some(crate::HostedToolSearch {
+                tools: vec![
+                    crate::DeferredToolDefinition {
+                        namespace: "web".into(),
+                        definition: json!({
+                            "name": "search_web",
+                            "description": "search",
+                            "input_schema": {"type": "object"}
+                        }),
+                    },
+                    crate::DeferredToolDefinition {
+                        namespace: "knowledge".into(),
+                        definition: json!({
+                            "name": "use_memory",
+                            "description": "memory",
+                            "input_schema": {"type": "object"}
+                        }),
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let body = build_body(
+            &Model::from_spec("openai/gpt-5.6").unwrap(),
+            &[],
+            &System::default(),
+            &tools,
+            None,
+            None,
+            false,
+            &opts,
+            false,
+        );
+        let wire_tools = body["tools"].as_array().unwrap();
+
+        assert_eq!(wire_tools[0]["name"], "read_file");
+        assert_eq!(wire_tools[1]["name"], "n00n_knowledge");
+        assert_eq!(wire_tools[1]["tools"][0]["name"], "use_memory");
+        assert_eq!(wire_tools[1]["tools"][0]["defer_loading"], true);
+        assert_eq!(wire_tools[2]["name"], "n00n_web");
+        assert_eq!(wire_tools[3]["type"], "tool_search");
+        assert!(wire_tools.iter().all(|tool| tool["name"] != "search_tools"));
+    }
+
+    #[test]
+    fn build_body_keeps_local_discovery_when_all_deferred_definitions_are_invalid() {
+        let tools = json!([{
+            "name": "search_tools",
+            "description": "local search",
+            "input_schema": {"type": "object"}
+        }]);
+        let opts = RequestOptions {
+            hosted_tool_search: Some(crate::HostedToolSearch {
+                tools: vec![crate::DeferredToolDefinition {
+                    namespace: "web".into(),
+                    definition: json!({"name": "search_web"}),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let body = build_body(
+            &Model::from_spec("openai/gpt-5.6").unwrap(),
+            &[],
+            &System::default(),
+            &tools,
+            None,
+            None,
+            false,
+            &opts,
+            false,
+        );
+
+        assert_eq!(body["tools"][0]["name"], "search_tools");
+    }
+
+    #[test]
     fn convert_tools_keeps_custom_as_function() {
         let tools = json!([{
             "origin": OPENAI_BUILTIN_ORIGIN,
@@ -2922,18 +3136,40 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
     }
 
     #[test]
-    fn parse_sse_tool_search_items() {
+    fn parse_sse_preserves_tool_search_and_namespace_items() {
         smol::block_on(async {
             let sse = "\
-event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"tool_search_call\"}}\n\
-event: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"tool_search_output\",\"tools\":[{\"name\":\"bash\"},{\"name\":\"read\"}]}}\n\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"tool_search_call\",\"execution\":\"server\",\"arguments\":{\"paths\":[\"knowledge\"]}}}\n\
+event: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"tool_search_output\",\"tools\":[{\"name\":\"use_memory\"}]}}\n\
+event: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"namespace\":\"n00n_knowledge\",\"name\":\"use_memory\",\"arguments\":\"{\\\"query\\\":\\\"cache\\\"}\"}}\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
             let (_, resp) = resp.unwrap();
-            let text = resp.message.first_text_content().unwrap();
-            assert!(text.contains("[tool_search]"));
-            assert!(text.contains("[loaded 2 tools]"));
+            assert!(matches!(
+                &resp.message.content[0],
+                ContentBlock::ProviderItem { data, .. }
+                    if data["type"] == "tool_search_call"
+            ));
+            assert!(matches!(
+                &resp.message.content[1],
+                ContentBlock::ProviderItem { data, .. }
+                    if data["type"] == "tool_search_output"
+            ));
+            assert!(matches!(
+                &resp.message.content[2],
+                ContentBlock::NamespacedToolUse { namespace, name, .. }
+                    if namespace == "n00n_knowledge" && name == "use_memory"
+            ));
+            let replay = convert_input(
+                &[resp.message],
+                &System::default(),
+                0,
+                &Model::from_spec("openai/gpt-5.6").unwrap(),
+            );
+            assert_eq!(replay[0]["type"], "tool_search_call");
+            assert_eq!(replay[1]["type"], "tool_search_output");
+            assert_eq!(replay[2]["namespace"], "n00n_knowledge");
         });
     }
 }

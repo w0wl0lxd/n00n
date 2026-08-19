@@ -85,7 +85,7 @@ local function build_prompt(input)
     parts[#parts + 1] = "\n"
   end
   parts[#parts + 1] =
-    "\nExecute efficiently. Prefer index/codegraph before broad reads. Return concise file:line evidence, test/lint results, and a short summary — not full file dumps."
+    "\nExecute efficiently. Route code exploration through explore_code first so it can select index_file, map_codegraph, or search_text. Return concise file:line evidence, test/lint results, and a short summary, not full file dumps."
   return table.concat(parts)
 end
 
@@ -152,6 +152,8 @@ end
 n00n.api.register_tool({
   name = "delegate_fusion",
   aliases = { "fusion_delegate" },
+  defer_loading = true,
+  namespace = "orchestration",
   description = description,
   schema = schema,
   handler = handler,

@@ -140,17 +140,12 @@ local function render_index(skeleton, path, ctx, ext, line_meta)
   return buf, render_header(path, line_count)
 end
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Use the **index** tool first on individual files to get their skeleton, then use the **read** tool with offset/limit for the specific section you need.",
-})
-
 n00n.api.register_tool({
   name = "index_file",
   aliases = { "index" },
   kind = "read",
   modes = { "default", "research", "build", "compact" },
-  description = [[Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.]],
+  description = [[PRIMARY SINGLE-FILE TOOL. Use before read_file. Returns a compact overview of imports, types, function signatures, and structure with line numbers in []. Typically 70-90% smaller than reading the full file. Supports source files and Markdown.]],
 
   schema = {
     type = "object",
@@ -175,7 +170,7 @@ n00n.api.register_tool({
     local meta = n00n.fs.metadata(path)
     if meta and meta.is_dir then
       return {
-        llm_output = "Path is a directory. Use index on files or use the read or glob tool to list directories.",
+        llm_output = "Path is a directory. Use index_file on files or use read_file or search_files to list directories.",
         is_error = true,
       }
     end
@@ -186,12 +181,12 @@ n00n.api.register_tool({
     if not lang then
       local ext = path:match("%.([^%.]+)$")
       if not ext then
-        return { llm_output = "Unsupported file type: (no extension). Use the read tool instead.", is_error = true }
+        return { llm_output = "Unsupported file type: (no extension). Use read_file instead.", is_error = true }
       end
 
       lang = indexer.EXT_TO_LANG[ext]
       if not lang then
-        return { llm_output = "Unsupported file type: ." .. ext .. ". Use the read tool instead.", is_error = true }
+        return { llm_output = "Unsupported file type: ." .. ext .. ". Use read_file instead.", is_error = true }
       end
     end
 
@@ -202,7 +197,7 @@ n00n.api.register_tool({
           .. meta.size
           .. " bytes, max "
           .. max_file_size
-          .. "). Use read with offset/limit instead.",
+          .. "). Use read_file with offset/limit instead.",
         is_error = true,
       }
     end

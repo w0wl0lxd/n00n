@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ProfileError, RegressionError};
-use crate::metrics::{ProfileReport, SurfaceMetric, SurfaceName};
+use crate::metrics::{ProfileReport, SurfaceMetric, SurfaceName, ToolAttribution};
 
 /// Absolute deltas allowed above a committed baseline for hard-gated surfaces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +23,8 @@ pub struct Baseline {
     pub model_id: String,
     pub mcp_excluded: bool,
     pub surfaces: BTreeMap<String, SurfaceMetric>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolAttribution>,
     pub limits: BTreeMap<String, SurfaceLimit>,
 }
 
@@ -112,6 +114,13 @@ fn parse_surface_name(name: &str) -> Result<SurfaceName, RegressionError> {
     match name {
         "main_tools_schemas" => Ok(SurfaceName::MainToolsSchemas),
         "main_tools_payload" => Ok(SurfaceName::MainToolsPayload),
+        "full_catalog_schemas" => Ok(SurfaceName::FullCatalogSchemas),
+        "full_catalog_payload" => Ok(SurfaceName::FullCatalogPayload),
+        "deferred_catalog_schemas" => Ok(SurfaceName::DeferredCatalogSchemas),
+        "deferred_catalog_payload" => Ok(SurfaceName::DeferredCatalogPayload),
+        "mcp_below_threshold_payload" => Ok(SurfaceName::McpBelowThresholdPayload),
+        "mcp_above_threshold_payload" => Ok(SurfaceName::McpAboveThresholdPayload),
+        "mcp_deferred_catalog_payload" => Ok(SurfaceName::McpDeferredCatalogPayload),
         "system_prompt" => Ok(SurfaceName::SystemPrompt),
         "cache_prefix" => Ok(SurfaceName::CachePrefix),
         other => Err(RegressionError::Breach(format!(

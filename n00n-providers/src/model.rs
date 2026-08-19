@@ -25,6 +25,8 @@ const OPENAI_MODEL_PREFIX: &str = "openai/";
 const GPT_CODEX_MARKER: &str = "-codex";
 const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
 const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
+const MIN_TOOL_SEARCH_MODEL_MAJOR: u16 = 5;
+const MIN_TOOL_SEARCH_MODEL_MINOR: u16 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
@@ -358,6 +360,17 @@ impl Model {
             .then_some(model_id)
     }
 
+    fn openai_model_version(&self) -> Option<(u16, u16)> {
+        let version_and_suffix = self
+            .normalized_openai_model_id()?
+            .strip_prefix(GPT_MODEL_PREFIX)?;
+        let version = version_and_suffix
+            .split_once('-')
+            .map_or(version_and_suffix, |(version, _)| version);
+        let (major, minor) = version.split_once('.').unwrap_or_else(|| (version, "0"));
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    }
+
     #[must_use]
     pub fn supports_files(&self) -> bool {
         if let Some(files) = self.supports_files_override {
@@ -440,29 +453,26 @@ impl Model {
     #[must_use]
     pub fn supports_responses(&self) -> bool {
         self.family == ModelFamily::Gpt
-            && self.normalized_openai_model_id().is_some_and(|model_id| {
-                model_id.starts_with("gpt-5.6") || model_id.starts_with("gpt-5.5")
-            })
+            && self
+                .openai_model_version()
+                .is_some_and(|version| version >= (5, 4))
     }
 
     /// Check if the model supports explicit prompt-cache breakpoints.
     #[must_use]
     pub fn supports_prompt_cache_breakpoint(&self) -> bool {
-        let Some(model_id) = self.normalized_openai_model_id() else {
-            return false;
-        };
-        let Some(version_and_suffix) = model_id.strip_prefix(GPT_MODEL_PREFIX) else {
-            return false;
-        };
-        let version = version_and_suffix
-            .split_once('-')
-            .map_or(version_and_suffix, |(version, _)| version);
-        let (major, minor) = version.split_once('.').unwrap_or_else(|| (version, "0"));
-        let (Ok(major), Ok(minor)) = (major.parse::<u16>(), minor.parse::<u16>()) else {
-            return false;
-        };
-        major > MIN_BREAKPOINT_MODEL_MAJOR
-            || major == MIN_BREAKPOINT_MODEL_MAJOR && minor >= MIN_BREAKPOINT_MODEL_MINOR
+        self.openai_model_version().is_some_and(|(major, minor)| {
+            major > MIN_BREAKPOINT_MODEL_MAJOR
+                || major == MIN_BREAKPOINT_MODEL_MAJOR && minor >= MIN_BREAKPOINT_MODEL_MINOR
+        })
+    }
+
+    #[must_use]
+    pub fn supports_tool_search(&self) -> bool {
+        self.openai_model_version().is_some_and(|(major, minor)| {
+            major > MIN_TOOL_SEARCH_MODEL_MAJOR
+                || major == MIN_TOOL_SEARCH_MODEL_MAJOR && minor >= MIN_TOOL_SEARCH_MODEL_MINOR
+        })
     }
 
     /// Check if the model supports provider-managed Responses tools.
@@ -681,6 +691,14 @@ mod tests {
         );
     }
 
+    #[test_case("openai/gpt-5.3", false ; "before_minimum")]
+    #[test_case("openai/gpt-5.4", true ; "minimum")]
+    #[test_case("openai/gpt-5.6-sol", true ; "suffixed")]
+    #[test_case("anthropic/claude-sonnet-4-6", false ; "non_openai_family")]
+    fn tool_search_support_follows_documented_model_floor(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_tool_search(), expected);
+    }
     #[test]
     fn total_input_includes_cached_tokens() {
         let usage = TokenUsage {
@@ -1201,9 +1219,9 @@ mod tests {
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
     #[test_case("openai/gpt-5.5", true ; "gpt_5_5")]
-    #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
+    #[test_case("openai/gpt-5.4", true ; "gpt_5_4")]
     #[test_case("openai/gpt-4.1", false ; "gpt_4_1")]
-    fn supports_responses_for_gpt_5_6_and_5_5(spec: &str, expected: bool) {
+    fn supports_responses_for_gpt_5_4_and_later(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.supports_responses(), expected);
     }

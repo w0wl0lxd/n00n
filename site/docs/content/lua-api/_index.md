@@ -426,7 +426,8 @@ n00n.api.get_tools({opts?})
 Return a list of all registered tools. Useful for building UI that shows
 available tools or for checking which tools are enabled.
 
-Each entry has the tool's name, schema, audiences, and an `enabled` flag.
+Each entry has the tool's name, schema, audiences, deferred-loading state,
+and an `enabled` flag.
 Describe callbacks are not invoked (the static description is used).
 
 **Parameters:**
@@ -434,7 +435,7 @@ Describe callbacks are not invoked (the static description is used).
 - `{opts?}` (`table?`) Options:
   - `config` (`table`) Optional config table with a `disabled_tools` string[] field used to compute the `enabled` flag on each entry.
 
-**Returns:** (`table[]`) Array of tool entries: { name, schema, audiences, kind?, enabled }.
+**Returns:** (`table[]`) Array of tool entries: { name, schema, audiences, deferred, kind?, enabled }.
 
 **Example:**
 
@@ -462,7 +463,7 @@ throw).
 
 - `{name}` (`string`) Exact tool name.
 
-**Returns:** (`table|nil`) Tool entry with fields { name, schema, audiences, kind?, header?, restore? }, or nil if not found.
+**Returns:** (`table|nil`) Tool entry with fields { name, schema, audiences, deferred, kind?, header?, restore? }, or nil if not found.
 
 **Example:**
 
@@ -5870,33 +5871,12 @@ function M.snapshot(ctx)
 ```lua
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
-
-local DEFAULT_MAX_OUTPUT_LINES = 500
-local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
-local DEFAULT_MAX_LINE_BYTES = 400
-
-local M = {}
-
 M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
-M.specs = {
-  max_output_lines = { type = "integer", desc = "Override `agent.max_output_lines` for this tool." },
-  max_output_bytes = { type = "integer", desc = "Override `agent.max_output_bytes` for this tool." },
-}
-
 function M.extend(spec)
-  for name, s in pairs(M.specs) do
-    spec[name] = s
-  end
-  return spec
-end
 
 --- Returns max_lines, max_bytes: tool override when set, agent-wide otherwise.
 function M.resolve(opts, ctx)
-  return opts.max_output_lines or ctx:config("max_output_lines", DEFAULT_MAX_OUTPUT_LINES),
-    opts.max_output_bytes or ctx:config("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
-end
-
-return M
+function M.resolve_capped(opts, ctx, default_max_bytes)
 ```
 
 ### `require("n00n.policy")`

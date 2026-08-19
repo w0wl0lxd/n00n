@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::ControlFlow;
 
 use flume::Sender;
@@ -154,7 +155,7 @@ pub(crate) struct SystemBlock<'a> {
 #[derive(Serialize)]
 pub(super) struct WireContentBlock<'a> {
     #[serde(flatten)]
-    pub inner: &'a ContentBlock,
+    pub inner: Cow<'a, ContentBlock>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }
@@ -224,13 +225,26 @@ pub(super) fn build_wire_messages(
                 .content
                 .iter()
                 .enumerate()
-                .map(|(block_idx, block)| WireContentBlock {
-                    inner: block,
-                    cache_control: if breakpoints.contains(&(msg_idx, block_idx)) {
-                        Some(EPHEMERAL)
-                    } else {
-                        None
-                    },
+                .filter_map(|(block_idx, block)| {
+                    let inner = match block {
+                        ContentBlock::ProviderItem { .. } => return None,
+                        ContentBlock::NamespacedToolUse {
+                            id, name, input, ..
+                        } => Cow::Owned(ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                        }),
+                        _ => Cow::Borrowed(block),
+                    };
+                    Some(WireContentBlock {
+                        inner,
+                        cache_control: if breakpoints.contains(&(msg_idx, block_idx)) {
+                            Some(EPHEMERAL)
+                        } else {
+                            None
+                        },
+                    })
                 })
                 .collect(),
         })
@@ -859,5 +873,32 @@ mod tests {
         assert!(wire_msg.content[0].cache_control.is_none());
         assert!(wire_msg.content[1].cache_control.is_none());
         assert!(wire_msg.content[2].cache_control.is_some());
+    }
+
+    #[test]
+    fn build_wire_messages_adapts_openai_specific_blocks() {
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ProviderItem {
+                    provider: "openai".into(),
+                    data: json!({"type": "tool_search_call"}),
+                },
+                ContentBlock::NamespacedToolUse {
+                    id: "call-1".into(),
+                    namespace: "n00n_web".into(),
+                    name: "search_web".into(),
+                    input: json!({"query": "Rust"}),
+                },
+            ],
+            display_text: None,
+            control: false,
+        }];
+
+        let wire = serde_json::to_value(build_wire_messages(&messages, 0)).unwrap();
+
+        assert_eq!(wire[0]["content"].as_array().map(Vec::len), Some(1));
+        assert_eq!(wire[0]["content"][0]["type"], "tool_use");
+        assert_eq!(wire[0]["content"][0]["name"], "search_web");
     }
 }

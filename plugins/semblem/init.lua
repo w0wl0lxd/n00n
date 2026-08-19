@@ -5,11 +5,6 @@ local semblem = n00n.semblem
 
 local cwd = n00n.uv.cwd() or "."
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Use **semblem** for BM25 code search across the repo; use **explore** for structural graph questions.",
-})
-
 local opts = n00n.api.register_options(output_limits.extend({}))
 
 local function resolve_repo(input)
@@ -19,8 +14,10 @@ end
 n00n.api.register_tool({
   name = "search_text",
   aliases = { "semblem" },
+  defer_loading = true,
+  namespace = "exploration",
   kind = "read",
-  description = [[Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+  description = [[PRIMARY RANKED CODE SEARCH. Use when the exact symbol or literal is unknown. Builds a `.n00n/search/` index on first use.
 
 Commands:
 - `search`: ranked snippets for a natural-language or keyword query
@@ -76,7 +73,8 @@ Commands:
       return { llm_output = "error: command is required", is_error = true }
     end
 
-    local max_lines, max_bytes = output_limits.resolve(opts, ctx)
+    local max_lines, max_bytes =
+      output_limits.resolve_capped(opts, ctx, output_limits.EXPLORER_DEFAULT_MAX_OUTPUT_BYTES)
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish semblem results: " .. tostring(live_err), is_error = true }

@@ -42,6 +42,22 @@ fn cold_start_stays_within_committed_baseline() {
 }
 
 #[test]
+fn committed_baseline_includes_sorted_tool_attribution() {
+    let baseline = Baseline::load(&baseline_path()).expect("committed baseline must exist");
+    assert!(
+        !baseline.tools.is_empty(),
+        "tool attribution must be recorded"
+    );
+    assert!(
+        baseline
+            .tools
+            .windows(2)
+            .all(|tools| tools[0].name < tools[1].name),
+        "tool attribution must be deterministically sorted"
+    );
+}
+
+#[test]
 fn assert_within_baseline_rejects_token_growth_past_limit() {
     let mut report = profile_cold_start().expect("profile");
     let baseline = Baseline::load(&baseline_path()).expect("baseline");

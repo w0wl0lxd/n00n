@@ -90,14 +90,14 @@ The workspace lint configuration is the law. It lives in the root `Cargo.toml` `
 
 Every tool result spends context tokens. Prefer structural, pre-indexed tools over broad searches and unfiltered file reads.
 
-- **Explore first:** use `explore` for codebase questions; it routes to `index` (single-file skeleton, priority for file paths), `codegraph` (callers/callees, impact, cross-file structure), or `semblem` (keyword/semantic search). The router auto-detects intent from query patterns.
-- **Cross-file structure:** use `codegraph` for end-to-end system questions, caller/callee relationships, call paths, and blast-radius impact checks (requires a `.codegraph/` index).
-- **Single-file structure next:** use `index` to get a compact skeleton and exact line ranges before reading any source file.
-- **Then targeted reads:** use `read` with `offset`/`limit` for the specific section you need.
-- **Use `grep` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
-- **Parallelize:** use `batch` for independent calls.
-- **Filter and pipeline with `code_execution`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
-- **AST-aware search (`ast-grep`):** if you configure the `ast-grep` MCP server, use it for AST-pattern structural search and safe refactoring. It is more precise than `grep` and safer than `sed` for code changes. Example `.n00n/mcp.toml`:
+- **Explore first:** use `explore_code` for codebase questions; it routes to `index_file` (single-file skeleton, priority for file paths), `map_codegraph` (callers/callees, impact, cross-file structure), or `search_text` (keyword/semantic search). The router auto-detects intent from query patterns.
+- **Cross-file structure:** use `map_codegraph` for end-to-end system questions, caller/callee relationships, call paths, and blast-radius impact checks (requires a `.codegraph/` index).
+- **Single-file structure next:** use `index_file` to get a compact skeleton and exact line ranges before reading any source file.
+- **Then targeted reads:** use `read_file` with `offset`/`limit` for the specific section you need.
+- **Use `search_code` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
+- **Parallelize:** use `run_batch` for independent calls.
+- **Filter and pipeline with `run_python`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
+- **AST-aware search (`ast-grep`):** if you configure the `ast-grep` MCP server, use it for AST-pattern structural search and safe refactoring. It is more precise than `search_code` and safer than `sed` for code changes. Example `.n00n/mcp.toml`:
 
   ```toml
   [mcp.ast-grep]
@@ -106,12 +106,12 @@ Every tool result spends context tokens. Prefer structural, pre-indexed tools ov
   ```
 
 - **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
-- **Compress shell output with `rtk`:** the `bash` tool automatically rewrites supported commands through `rtk` when the `rtk` CLI is installed, typically cutting output tokens by 60-90%. Use `bash` (not raw `grep`/`read`/`cat`) for `git`, `cargo`, `rg`, `grep`, `gh`, `podman`, `docker`, `npm`, `pip`, `python`, `find`, `ls`, `cat`, `head`, `tail`, and other system commands. `jq`/`yq` and unsupported flags are run unchanged. Use `rtk proxy <command>` when exact raw shell output is required. Combine with `context-mode` once installed.
+- **Compress shell output with `rtk`:** `run_shell` automatically rewrites supported commands through `rtk` when the `rtk` CLI is installed, typically cutting output tokens by 60-90%. Use `run_shell` (not raw `grep`/`read`/`cat`) for `git`, `cargo`, `rg`, `grep`, `gh`, `podman`, `docker`, `npm`, `pip`, `python`, `find`, `ls`, `cat`, `head`, `tail`, and other system commands. `jq`/`yq` and unsupported flags are run unchanged. Use `rtk proxy <command>` when exact raw shell output is required. Combine with `context-mode` once installed.
 - **Offload reasoning with `thoughtbox`:** use sessions and the knowledge graph for non-trivial reasoning, durable context, and anything that should outlive the session. This keeps the context window focused on the current task.
 
 ### Shell and RTK patterns
 
-These are the modern 2026 defaults for common shell workflows. Run them through `bash`; n00n will rewrite them to `rtk` equivalents when possible.
+These are the modern 2026 defaults for common shell workflows. Run them through `run_shell`; n00n will rewrite them to `rtk` equivalents when possible.
 
 - **Git:** `git status`, `git diff`, `git log --oneline`, `git branch`, `git remote -v`
 - **Search:** `rg 'pattern' src/`, `grep 'pattern' file`, `find . -name '*.rs' -type f`
@@ -119,14 +119,14 @@ These are the modern 2026 defaults for common shell workflows. Run them through 
 - **Build/test:** `cargo test`, `cargo clippy`, `cargo build`, `just test`
 - **GitHub CLI:** `gh pr checks`, `gh pr view`, `gh run list`
 - **Lists:** `ls -la`, `cat file`, `head -n 20 file`, `tail -n 20 file`
-- **Large outputs:** always wrap with `rtk` (`rtk rg`, `rtk cargo test`, `rtk cargo nextest`) or let `bash` auto-rewrite.
+- **Large outputs:** always wrap with `rtk` (`rtk rg`, `rtk cargo test`, `rtk cargo nextest`) or let `run_shell` auto-rewrite.
 - **Exact output:** use `rtk proxy <command>` when the rewrite would drop details you need.
 
-Do **not** use `bash` for file writes, moves, deletes, or broad destructive operations. Use `edit`/`multiedit`/`write` for those.
+Do **not** use `run_shell` for file writes, moves, deletes, or broad destructive operations. Use `edit_file`/`edit_file_bulk`/`write_file` for those.
 
 ## Research and Verification
 
-- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `explore`/`codegraph`/`index` for codebase evidence, and `thoughtbox` to synthesize findings.
+- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `explore_code`/`map_codegraph`/`index_file` for codebase evidence, and `thoughtbox` to synthesize findings.
 - Report real command results and separate unrelated red-baseline failures from touched-surface regressions.
 
 ## Architecture

@@ -6,6 +6,13 @@ use serde::{Deserialize, Serialize};
 pub enum SurfaceName {
     MainToolsSchemas,
     MainToolsPayload,
+    FullCatalogSchemas,
+    FullCatalogPayload,
+    DeferredCatalogSchemas,
+    DeferredCatalogPayload,
+    McpBelowThresholdPayload,
+    McpAboveThresholdPayload,
+    McpDeferredCatalogPayload,
     SystemPrompt,
     CachePrefix,
 }
@@ -15,6 +22,13 @@ impl std::fmt::Display for SurfaceName {
         match self {
             Self::MainToolsSchemas => f.write_str("main_tools_schemas"),
             Self::MainToolsPayload => f.write_str("main_tools_payload"),
+            Self::FullCatalogSchemas => f.write_str("full_catalog_schemas"),
+            Self::FullCatalogPayload => f.write_str("full_catalog_payload"),
+            Self::DeferredCatalogSchemas => f.write_str("deferred_catalog_schemas"),
+            Self::DeferredCatalogPayload => f.write_str("deferred_catalog_payload"),
+            Self::McpBelowThresholdPayload => f.write_str("mcp_below_threshold_payload"),
+            Self::McpAboveThresholdPayload => f.write_str("mcp_above_threshold_payload"),
+            Self::McpDeferredCatalogPayload => f.write_str("mcp_deferred_catalog_payload"),
             Self::SystemPrompt => f.write_str("system_prompt"),
             Self::CachePrefix => f.write_str("cache_prefix"),
         }
@@ -31,11 +45,24 @@ pub struct SurfaceMetric {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolAttribution {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    pub deferred: bool,
+    pub initially_active: bool,
+    pub bytes: u64,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileReport {
     pub model_id: String,
-    /// MCP tools are intentionally excluded from cold-start fixtures.
+    /// Live MCP tools are excluded; deterministic threshold fixtures are reported separately.
     pub mcp_excluded: bool,
     pub surfaces: Vec<SurfaceMetric>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolAttribution>,
 }
 
 impl ProfileReport {

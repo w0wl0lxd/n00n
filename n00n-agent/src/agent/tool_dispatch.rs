@@ -39,6 +39,7 @@ const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "run_python is not available in pla
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
+const TOOL_NAMESPACE_DENIED: &str = "tool namespace does not match the exposed definition";
 const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
 const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &[
     "constraints",
@@ -926,12 +927,18 @@ pub(super) async fn process_tool_calls(
     ctx: &ToolContext,
     fusion: Option<FusionDispatchAuth>,
 ) -> Result<Vec<ToolDoneEvent>, AgentError> {
-    let tool_uses: Vec<(usize, String, String, Value)> = response
+    let tool_uses: Vec<(usize, String, Option<String>, String, Value)> = response
         .message
-        .tool_uses()
+        .tool_uses_with_namespace()
         .enumerate()
-        .map(|(position, (id, name, input))| {
-            (position, id.to_owned(), name.to_owned(), input.clone())
+        .map(|(position, (id, namespace, name, input))| {
+            (
+                position,
+                id.to_owned(),
+                namespace.map(str::to_owned),
+                name.to_owned(),
+                input.clone(),
+            )
         })
         .collect();
 
@@ -952,7 +959,7 @@ pub(super) async fn process_tool_calls(
             && auth.lane == crate::fusion::FusionLane::Lead
     });
 
-    for (position, id, name, mut input) in tool_uses {
+    for (position, id, namespace, name, mut input) in tool_uses {
         debug!(
             tool_index = position,
             has_tool_name = !name.is_empty(),
@@ -990,7 +997,31 @@ pub(super) async fn process_tool_calls(
         } else {
             false
         };
-        if is_fusion_delegate && !fusion_delegate_authorized {
+        let namespace_matches = namespace.as_deref().is_none_or(|wire_namespace| {
+            let registry_matches = ctx.registry.get(&name).is_some_and(|entry| {
+                entry.namespace.as_deref().is_some_and(|namespace| {
+                    wire_namespace
+                        == format!("{}{namespace}", n00n_providers::HOSTED_NAMESPACE_PREFIX)
+                })
+            });
+            let mcp_matches = ctx.mcp.as_ref().is_some_and(|mcp| {
+                crate::mcp::hosted_namespace_for_wire(&name).is_some_and(|namespace| {
+                    wire_namespace
+                        == format!("{}{namespace}", n00n_providers::HOSTED_NAMESPACE_PREFIX)
+                }) && mcp.has_tool(&crate::mcp::internal_tool_name(&name))
+            });
+            registry_matches || mcp_matches
+        });
+        if !namespace_matches {
+            immediate_errors.push((
+                position,
+                tool_done_error(
+                    id.clone(),
+                    Arc::from(name.as_str()),
+                    TOOL_NAMESPACE_DENIED.into(),
+                ),
+            ));
+        } else if is_fusion_delegate && !fusion_delegate_authorized {
             immediate_errors.push((
                 position,
                 tool_done_error(
@@ -2039,6 +2070,46 @@ mod tests {
             .await;
             assert!(!done.is_error);
             assert_eq!(done.output.as_text(), "loaded");
+        });
+    }
+
+    #[test]
+    fn process_tool_calls_rejects_unmatched_namespace() {
+        smol::block_on(async {
+            let ctx = local_ctx("read_file", |_| Ok("unexpected".into()));
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut history = crate::agent::History::new(Vec::new());
+            let response = n00n_providers::StreamResponse {
+                message: n00n_providers::Message {
+                    role: n00n_providers::Role::Assistant,
+                    content: vec![n00n_providers::ContentBlock::NamespacedToolUse {
+                        id: "call-1".into(),
+                        namespace: "knowledge".into(),
+                        name: "read_file".into(),
+                        input: serde_json::json!({}),
+                    }],
+                    ..Default::default()
+                },
+                usage: n00n_providers::TokenUsage::default(),
+                stop_reason: Some(n00n_providers::StopReason::ToolUse),
+            };
+
+            let results = process_tool_calls(
+                response,
+                &mut RecentCalls::new(),
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+                None,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(results.len(), 1);
+            assert!(results[0].is_error);
+            assert_eq!(results[0].output.as_text(), TOOL_NAMESPACE_DENIED);
         });
     }
 

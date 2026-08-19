@@ -50,7 +50,7 @@ pub const TOOL_SEARCH_TOOL_NAME: &str = "search_tools";
 /// Below this many deferrable tools, a search round-trip plus its
 /// prompt-cache miss cost more than a handful of upfront definitions.
 /// Overridden by `defer_tools` in mcp.toml.
-const DEFAULT_DEFER_TOOLS: usize = 10;
+pub const DEFAULT_DEFER_TOOLS: usize = 10;
 /// Loads per search are capped so one broad query can't flood the context.
 const MAX_SEARCH_LOADS: usize = 5;
 const NAME_HIT_SCORE: usize = 2;
@@ -77,6 +77,20 @@ pub fn wire_tool_name(qualified: &str) -> String {
 #[must_use]
 pub fn internal_tool_name(wire: &str) -> String {
     wire.replacen(WIRE_SEPARATOR, SEPARATOR, 1)
+}
+
+#[must_use]
+pub fn hosted_namespace_for_wire(wire_name: &str) -> Option<String> {
+    let (server, tool) = wire_name.split_once(WIRE_SEPARATOR)?;
+    if server.is_empty()
+        || tool.is_empty()
+        || !server
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return None;
+    }
+    Some(format!("mcp_{server}"))
 }
 const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -417,6 +431,42 @@ impl McpSession {
         }
     }
 
+    #[must_use]
+    pub fn deferred_definitions(&self) -> Vec<n00n_providers::DeferredToolDefinition> {
+        let index = self.handle.index.load();
+        let should_defer = index
+            .descriptors
+            .iter()
+            .filter(|descriptor| !descriptor.always_load)
+            .count()
+            > self.handle.defer_tools;
+        if !should_defer {
+            return Vec::new();
+        }
+        let loaded = self.lock_loaded();
+        let mut definitions: Vec<n00n_providers::DeferredToolDefinition> = index
+            .descriptors
+            .iter()
+            .filter(|descriptor| !descriptor.always_load)
+            .filter(|descriptor| !loaded.contains(&*descriptor.qualified_name))
+            .filter(|descriptor| !self.excluded.contains(&descriptor.qualified_name))
+            .filter_map(|descriptor| {
+                Some(n00n_providers::DeferredToolDefinition {
+                    namespace: hosted_namespace_for_wire(descriptor.wire_name())?,
+                    definition: descriptor.definition.clone(),
+                })
+            })
+            .collect();
+        definitions.sort_by(|left, right| {
+            left.namespace.cmp(&right.namespace).then_with(|| {
+                left.definition["name"]
+                    .as_str()
+                    .cmp(&right.definition["name"].as_str())
+            })
+        });
+        definitions
+    }
+
     /// Rank deferred tools against `query` keywords (exact name first,
     /// then name hits over description hits) and mark the top
     /// `MAX_SEARCH_LOADS` loaded; their definitions join the next request.
@@ -531,6 +581,18 @@ impl McpSession {
             .filter(|descriptor| !self.excluded.contains(&descriptor.qualified_name))
             .map(|descriptor| descriptor.wire_name().to_owned())
             .collect()
+    }
+
+    #[must_use]
+    pub fn tool_description(&self, wire_name: &str) -> Option<String> {
+        self.handle
+            .index
+            .load()
+            .descriptors
+            .iter()
+            .find(|descriptor| descriptor.wire_name() == wire_name)
+            .and_then(|descriptor| descriptor.definition["description"].as_str())
+            .map(String::from)
     }
 
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
@@ -1648,6 +1710,23 @@ mod tests {
         let catalog = tools[0]["description"].as_str().unwrap();
         assert!(catalog.contains("srv: tool"), "catalog groups by server");
         assert!(handle.has_tool(TOOL_NAME), "deferred tools stay callable");
+    }
+
+    #[test]
+    fn deferred_definitions_use_stable_mcp_namespaces() {
+        let (_inner, session) = setup(vec![fake_entry("issues", FakeTransport::new())]);
+
+        let definitions = session.deferred_definitions();
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].namespace, "mcp_issues");
+        assert_eq!(definitions[0].definition["name"], "issues__tool");
+        assert_eq!(
+            hosted_namespace_for_wire("issue-server__tool").as_deref(),
+            Some("mcp_issue-server")
+        );
+        assert!(hosted_namespace_for_wire("issue.server__tool").is_none());
+        assert!(hosted_namespace_for_wire("issues__").is_none());
     }
 
     #[test]
