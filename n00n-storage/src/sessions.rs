@@ -1031,6 +1031,8 @@ pub struct StoredOpenAiResponseChain {
     pub response_id: String,
     pub message_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_hash: Option<String>,
     pub tools_hash: String,
     pub messages_hash: String,
@@ -5395,6 +5397,7 @@ mod tests {
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 3,
+            model_id: Some("model".into()),
             system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
@@ -5440,6 +5443,7 @@ mod tests {
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 1,
+            model_id: Some("model".into()),
             system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
@@ -5489,6 +5493,7 @@ mod tests {
         let updated = StoredOpenAiResponseChain {
             response_id: "resp_new".into(),
             message_count: 2,
+            model_id: Some("model".into()),
             system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
@@ -5536,6 +5541,7 @@ mod tests {
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 1,
+            model_id: Some("model".into()),
             system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
