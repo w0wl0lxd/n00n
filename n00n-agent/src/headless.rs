@@ -367,7 +367,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 Arc::from(provider::from_model_fallback_with_openai_options(
                     &mut model,
                     params.timeouts,
-                    params.openai_options,
+                    params.openai_options.clone(),
                 ));
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
@@ -391,7 +391,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     )),
                     identity: Some(SessionIdentity::root(session_ref_clone.clone())),
                     timeouts: params.timeouts,
-                    openai_options: params.openai_options,
+                    openai_options: params.openai_options.clone(),
                     file_tracker: FileReadTracker::fresh(),
                     prompt_slots: Arc::new(params.prompt_slots),
                     subagent_cancels: Arc::new(CancelMap::new()),
@@ -555,7 +555,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 Arc::from(provider::from_model_fallback_with_openai_options(
                     &mut model,
                     params.timeouts,
-                    params.openai_options,
+                    params.openai_options.clone(),
                 ));
 
             let mut store = store;
@@ -585,7 +585,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     provider = Arc::from(provider::from_model_fallback_with_openai_options(
                         &mut new_model,
                         params.timeouts,
-                        params.openai_options,
+                        params.openai_options.clone(),
                     ));
                     let (new_tools, new_filter) = tool_definitions(
                         &vars,
@@ -653,7 +653,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         permissions: Arc::clone(&permissions),
                         identity: Some(SessionIdentity::root(session_ref_clone.clone())),
                         timeouts: params.timeouts,
-                        openai_options: params.openai_options,
+                        openai_options: params.openai_options.clone(),
                         file_tracker: Arc::clone(&file_tracker),
                         prompt_slots: Arc::clone(&params.prompt_slots),
                         subagent_cancels: Arc::new(CancelMap::new()),

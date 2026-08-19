@@ -704,7 +704,7 @@ async fn session(
         let p = provider::from_model_fallback_with_openai_options(
             &mut m,
             agent_ctx.timeouts,
-            agent_ctx.openai_options,
+            agent_ctx.openai_options.clone(),
         );
         (m, Arc::from(p))
     } else {
@@ -871,7 +871,7 @@ async fn session(
                 parent_identity.root_session_id().clone(),
             )),
             timeouts: agent_ctx.timeouts,
-            openai_options: agent_ctx.openai_options,
+            openai_options: agent_ctx.openai_options.clone(),
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),

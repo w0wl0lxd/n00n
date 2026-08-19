@@ -37,6 +37,9 @@ pub const DEFAULT_LOW_SPEED_TIMEOUT_SECS: u64 = 120;
 pub const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 300;
 pub const DEFAULT_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
 pub const MAX_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
+pub const DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_IMPLICIT: bool = false;
+pub const DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT: bool = false;
+pub const DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS: bool = false;
 pub const DEFAULT_FUSION_LEAD_MODEL: &str = "codex/gpt-5.6-sol";
 pub const DEFAULT_FUSION_SIDEKICK_MODEL: &str = "codex/gpt-5.6-luna";
 pub const DEFAULT_FUSION_SIDEKICK_THINKING: &str = "max";
@@ -607,6 +610,9 @@ pub struct ProviderFileConfig {
     pub low_speed_timeout_secs: Option<u64>,
     pub stream_timeout_secs: Option<u64>,
     pub openai_coding_plan_slots: Option<u64>,
+    pub openai_codex_accepts_prompt_cache_options_implicit: Option<bool>,
+    pub openai_codex_accepts_prompt_cache_options_explicit: Option<bool>,
+    pub openai_codex_accepts_prompt_cache_breakpoints: Option<bool>,
 }
 
 impl ProviderFileConfig {
@@ -618,7 +624,10 @@ impl ProviderFileConfig {
             connect_timeout_secs,
             low_speed_timeout_secs,
             stream_timeout_secs,
-            openai_coding_plan_slots
+            openai_coding_plan_slots,
+            openai_codex_accepts_prompt_cache_options_implicit,
+            openai_codex_accepts_prompt_cache_options_explicit,
+            openai_codex_accepts_prompt_cache_breakpoints
         );
     }
 }
@@ -1403,6 +1412,18 @@ pub struct ProviderConfig {
     #[config(key = "openai_coding_plan_slots", ty = "u64", default = DEFAULT_OPENAI_CODING_PLAN_SLOTS,
              min = 1, desc = "Maximum concurrent OpenAI Coding Plan streams per account (1-8)")]
     pub openai_coding_plan_slots: u64,
+
+    #[config(key = "openai_codex_accepts_prompt_cache_options_implicit", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_IMPLICIT,
+             desc = "Experimental: allow Codex implicit prompt_cache_options only after independently verifying endpoint support")]
+    pub openai_codex_accepts_prompt_cache_options_implicit: bool,
+
+    #[config(key = "openai_codex_accepts_prompt_cache_options_explicit", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT,
+             desc = "Experimental: allow Codex explicit prompt_cache_options only after independently verifying endpoint support")]
+    pub openai_codex_accepts_prompt_cache_options_explicit: bool,
+
+    #[config(key = "openai_codex_accepts_prompt_cache_breakpoints", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS,
+             desc = "Experimental: allow Codex cache breakpoints only after independently verifying endpoint support")]
+    pub openai_codex_accepts_prompt_cache_breakpoints: bool,
 }
 
 impl Default for ProviderConfig {
@@ -1413,6 +1434,12 @@ impl Default for ProviderConfig {
             low_speed_timeout: Duration::from_secs(DEFAULT_LOW_SPEED_TIMEOUT_SECS),
             stream_timeout: Duration::from_secs(DEFAULT_STREAM_TIMEOUT_SECS),
             openai_coding_plan_slots: DEFAULT_OPENAI_CODING_PLAN_SLOTS,
+            openai_codex_accepts_prompt_cache_options_implicit:
+                DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_IMPLICIT,
+            openai_codex_accepts_prompt_cache_options_explicit:
+                DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT,
+            openai_codex_accepts_prompt_cache_breakpoints:
+                DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS,
         }
     }
 }
@@ -1436,6 +1463,15 @@ impl ProviderConfig {
             openai_coding_plan_slots: f
                 .openai_coding_plan_slots
                 .unwrap_or_else(|| DEFAULT_OPENAI_CODING_PLAN_SLOTS),
+            openai_codex_accepts_prompt_cache_options_implicit: f
+                .openai_codex_accepts_prompt_cache_options_implicit
+                .unwrap_or_else(|| DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_IMPLICIT),
+            openai_codex_accepts_prompt_cache_options_explicit: f
+                .openai_codex_accepts_prompt_cache_options_explicit
+                .unwrap_or_else(|| DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT),
+            openai_codex_accepts_prompt_cache_breakpoints: f
+                .openai_codex_accepts_prompt_cache_breakpoints
+                .unwrap_or_else(|| DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_BREAKPOINTS),
         }
     }
 
@@ -2393,6 +2429,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn openai_codex_cache_capabilities_default_off_and_parse_from_file() {
+        let default = RawConfig::default().into_config(false).unwrap();
+        assert!(
+            !default
+                .provider
+                .openai_codex_accepts_prompt_cache_options_implicit
+        );
+        assert!(
+            !default
+                .provider
+                .openai_codex_accepts_prompt_cache_options_explicit
+        );
+        assert!(
+            !default
+                .provider
+                .openai_codex_accepts_prompt_cache_breakpoints
+        );
+        let config = RawConfig {
+            provider: ProviderFileConfig {
+                openai_codex_accepts_prompt_cache_options_implicit: Some(true),
+                openai_codex_accepts_prompt_cache_options_explicit: Some(true),
+                openai_codex_accepts_prompt_cache_breakpoints: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .into_config(false)
+        .unwrap();
+
+        assert!(
+            config
+                .provider
+                .openai_codex_accepts_prompt_cache_options_implicit
+        );
+        assert!(
+            config
+                .provider
+                .openai_codex_accepts_prompt_cache_options_explicit
+        );
+        assert!(
+            config
+                .provider
+                .openai_codex_accepts_prompt_cache_breakpoints
+        );
+    }
     #[test_case("12000", CompactionBuffer::Tokens(12_000) ; "tokens_number")]
     #[test_case("\"20%\"", CompactionBuffer::Percent(20) ; "percent_string")]
     #[test_case("\" 5 %\"", CompactionBuffer::Percent(5) ; "percent_with_spaces")]

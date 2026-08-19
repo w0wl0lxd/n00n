@@ -438,6 +438,7 @@ impl<'h> Agent<'h> {
             thinking: input.thinking,
             fast: input.fast,
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
+            openai_prompt_cache_mode: None,
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
             safety_identifier: None,
@@ -997,7 +998,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: self.tool_output_lines,
             permissions: Arc::clone(&self.permissions),
             timeouts: self.timeouts,
-            openai_options: self.openai_options,
+            openai_options: self.openai_options.clone(),
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts.clone(),
@@ -1159,7 +1160,7 @@ impl<'h> Agent<'h> {
             &self.provider,
             &self.model,
             self.timeouts,
-            self.openai_options,
+            self.openai_options.clone(),
         );
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         #[cfg(test)]

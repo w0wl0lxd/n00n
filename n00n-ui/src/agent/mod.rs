@@ -158,7 +158,7 @@ impl AgentHandles {
             self.mcp_config_errors.clone(),
             self.identity.clone(),
             self.timeouts,
-            self.openai_options,
+            self.openai_options.clone(),
             lua_handle,
         );
         let old = mem::replace(self, new);
@@ -276,7 +276,7 @@ fn spawn_agent_internal(
         init_cancel,
         identity: identity.clone(),
         timeouts,
-        openai_options,
+        openai_options: openai_options.clone(),
         lua_handle,
         subagent_cancels,
     });
