@@ -49,12 +49,13 @@ for f in "${FRAGS[@]}"; do
     exit 1
   fi
   # Strip a single leading/trailing blank line, then append each non-empty line as a normalized entry.
+  # Handles both '-' and '*' bullets as already-bulleted; other lines get '- ' prefix.
   while IFS= read -r line || [ -n "$line" ]; do
     # Trim CR from Windows endings so adjacent lines don't glue together.
     line="${line%$'\r'}"
     [ -z "$line" ] && continue
     case "$line" in
-    '-'*) printf '%s\n' "$line" >>"$TMP/$type" ;;
+    '-'* | '*'*) printf '%s\n' "$line" >>"$TMP/$type" ;;
     *) printf '%s\n' "- $line" >>"$TMP/$type" ;;
     esac
   done < <(sed -e '1{/^$/d}' -e '${/^$/d}' "$f")
@@ -68,7 +69,7 @@ for t in "${ORDER[@]}"; do
       line="${line%$'\r'}"
       [ -z "$line" ] && continue
       case "$line" in
-      '-'*) printf '%s\n' "$line" >>"$ENTRY" ;;
+      '-'* | '*'*) printf '%s\n' "$line" >>"$ENTRY" ;;
       *) printf '%s\n' "- $line" >>"$ENTRY" ;;
       esac
     done <"$TMP/$t"
