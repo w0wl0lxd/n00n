@@ -164,21 +164,6 @@ fn contains_prompt_cache_breakpoint(value: &Value) -> bool {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn convert_input(
-    messages: &[Message],
-    system: &System,
-    message_cache_breakpoints: usize,
-    model: &crate::model::Model,
-) -> Value {
-    convert_input_with_breakpoint_support(
-        messages,
-        system,
-        message_cache_breakpoints,
-        model.supports_prompt_cache_breakpoint(),
-    )
-}
-
 fn convert_input_with_breakpoint_support(
     messages: &[Message],
     _system: &System,
@@ -1670,7 +1655,6 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
 
     #[test]
     fn convert_input_structure() {
-        let model = Model::from_spec("openai/gpt-4.1").unwrap();
         let messages = vec![
             Message::user("hello".to_string()),
             Message {
@@ -1698,7 +1682,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
             },
         ];
 
-        let input = convert_input(&messages, &System::default(), 0, &model);
+        let input = convert_input_with_breakpoint_support(&messages, &System::default(), 0, false);
         let items = input.as_array().unwrap();
 
         assert_eq!(items[0]["type"], "message");
@@ -1731,12 +1715,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
             }],
             ..Default::default()
         }];
-        let input = convert_input(
-            &messages,
-            &System::default(),
-            0,
-            &Model::from_spec("openai/gpt-4.1").unwrap(),
-        );
+        let input = convert_input_with_breakpoint_support(&messages, &System::default(), 0, false);
         let output = input[0]["output"].as_str().unwrap();
         assert!(output.starts_with(TOOL_RESULT_ERROR_PREFIX));
         assert!(output.contains("sub-agent error: API 500"));
@@ -2437,12 +2416,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             ],
             ..Default::default()
         }];
-        let input = convert_input(
-            &messages,
-            &System::default(),
-            0,
-            &Model::from_spec("openai/gpt-4.1").unwrap(),
-        );
+        let input = convert_input_with_breakpoint_support(&messages, &System::default(), 0, false);
         assert_eq!(input[0], reasoning_one);
         assert_eq!(input[1]["call_id"], "c1");
         assert_eq!(input[2], reasoning_two);
@@ -2552,12 +2526,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             ],
             ..Default::default()
         }];
-        let input = convert_input(
-            &messages,
-            &System::default(),
-            1,
-            &Model::from_spec("openai/gpt-5.6").unwrap(),
-        );
+        let input = convert_input_with_breakpoint_support(&messages, &System::default(), 1, true);
         assert_eq!(input[0]["type"], "function_call_output");
         assert_eq!(input[1]["type"], "message");
         assert_eq!(input[1]["content"][0]["text"], "continue");
@@ -2585,12 +2554,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             ],
             ..Default::default()
         }];
-        let input = convert_input(
-            &messages,
-            &System::default(),
-            1,
-            &Model::from_spec("openai/gpt-5.6").unwrap(),
-        );
+        let input = convert_input_with_breakpoint_support(&messages, &System::default(), 1, true);
         assert_eq!(input.as_array().map(Vec::len), Some(2));
         assert!(input[0].get("prompt_cache_breakpoint").is_none());
         assert_eq!(

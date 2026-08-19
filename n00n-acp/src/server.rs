@@ -294,7 +294,7 @@ fn spawn_session(
         config: Arc::clone(&params.config),
         permissions_config: params.permissions_config.clone(),
         timeouts: params.timeouts,
-        openai_options: params.openai_options,
+        openai_options: params.openai_options.clone(),
         prompt_slots: Arc::clone(&params.prompt_slots),
         state_persistence: params.state_persistence.clone(),
         excluded_tools: Vec::new(),
