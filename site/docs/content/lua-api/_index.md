@@ -1027,7 +1027,8 @@ n00n.async.run({fn}, {on_finish?})
 
 Fire off a function as a new async task. It runs in the background and
 you do not wait for it. If you need the result, pass an {on_finish}
-callback.
+callback. A bounded number of `async.run` tasks may be queued or running at
+once; excess fanout returns an error instead of consuming memory without bound.
 
 **Parameters:**
 
@@ -1388,6 +1389,12 @@ that you can pass to `jobstop` or `jobwait` to control the process.
 For commands that don't need shell features (pipes, redirection, globs),
 pass an array to run the program directly with preserved argument quoting:
 `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
+
+Unix jobs run in a separate process group at nice level 10. On Linux, the
+process tree's summed per-process RSS is limited to one quarter of system
+memory, clamped between 512 MiB and 8 GiB. Shared pages may be counted more
+than once. Set `N00N_TOOL_MAX_RSS_MB` to a positive whole number of MiB to
+override the memory limit.
 
 **Parameters:**
 

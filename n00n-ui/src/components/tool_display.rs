@@ -148,6 +148,7 @@ pub struct ToolLines {
     pub truncation_actions: Vec<TruncationAction>,
 }
 
+#[derive(Clone)]
 pub struct HighlightRequest {
     pub range: (usize, usize),
     pub input: Option<Arc<ToolInput>>,
@@ -193,7 +194,7 @@ impl HighlightRequest {
 impl ToolLines {
     pub fn send_highlight(&self, worker: &RenderWorker) -> Option<u64> {
         let hl = self.highlight.as_ref()?;
-        Some(worker.send(hl.input.clone(), hl.output.clone(), hl.limits))
+        worker.send(hl.input.clone(), hl.output.clone(), hl.limits)
     }
 }
 

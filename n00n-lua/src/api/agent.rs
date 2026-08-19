@@ -40,6 +40,7 @@ use crate::api::util::ctx::{AgentContext, LuaCtx};
 use crate::state::PluginStateStore;
 
 const SESSION_CLOSED_ERR: &str = "session closed";
+const SUBAGENT_FORWARDER_STALLED_ERR: &str = "subagent event forwarder did not settle";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
 const ACTIVITY_MESSAGE_MAX_CHARS: usize = 80;
@@ -60,6 +61,7 @@ const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
     "write",
 ];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
+const FORWARDER_BARRIER_TIMEOUT: Duration = Duration::from_secs(3);
 const LIVE_EVENT_QUEUE_CAPACITY: usize = 256;
 const SUBAGENT_EVENT_QUEUE_CAPACITY: usize = 1024;
 const STEERING_QUEUE_CAPACITY: usize = 32;
@@ -1146,18 +1148,35 @@ impl Progress {
         let _ = self.barrier_tx.try_send(());
     }
 
-    async fn wait_for_forwarder_barrier(&self, target: u64) {
-        loop {
-            let reached = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .forwarded_barriers
-                >= target;
-            if reached || self.barrier_rx.recv_async().await.is_err() {
-                return;
-            }
-        }
+    async fn wait_for_forwarder_barrier(&self, target: u64) -> bool {
+        self.wait_for_forwarder_barrier_for(target, FORWARDER_BARRIER_TIMEOUT)
+            .await
+    }
+
+    async fn wait_for_forwarder_barrier_for(&self, target: u64, timeout: Duration) -> bool {
+        futures_lite::future::race(
+            async {
+                loop {
+                    let reached = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .forwarded_barriers
+                        >= target;
+                    if reached {
+                        return true;
+                    }
+                    if self.barrier_rx.recv_async().await.is_err() {
+                        return false;
+                    }
+                }
+            },
+            async move {
+                smol::Timer::after(timeout).await;
+                false
+            },
+        )
+        .await
     }
 
     fn record_start(&self, event: &ToolStartEvent) {
@@ -1516,7 +1535,19 @@ async fn prompt(
                 )),
             ));
         }
-        s.progress.wait_for_forwarder_barrier(barrier_target).await;
+        if !s.progress.wait_for_forwarder_barrier(barrier_target).await {
+            s.failed = true;
+            s.progress.set_done(progress_turn);
+            let table = prompt_result_table(
+                &lua,
+                s.start.elapsed().as_millis() as u64,
+                s.usage,
+                s.cost,
+                s.fast,
+                None,
+            )?;
+            return Ok((Some(table), Some(SUBAGENT_FORWARDER_STALLED_ERR.to_owned())));
+        }
         if let Err(e) = result {
             s.failed = true;
             s.progress.set_done(progress_turn);
@@ -1914,7 +1945,7 @@ mod tests {
                 forwarded.record_forwarder_barrier();
             });
 
-            progress.wait_for_forwarder_barrier(target).await;
+            assert!(progress.wait_for_forwarder_barrier(target).await);
             worker.await;
             let state = progress
                 .state
@@ -1922,6 +1953,16 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(state.activities[0].status, ActivityStatus::Success);
         });
+    }
+
+    #[test]
+    fn forwarder_barrier_timeout_does_not_hang() {
+        let progress = Progress::new(Instant::now(), String::new());
+        let target = progress.next_forwarder_barrier();
+        assert!(!smol::block_on(progress.wait_for_forwarder_barrier_for(
+            target,
+            Duration::from_millis(25),
+        )));
     }
 
     #[test]

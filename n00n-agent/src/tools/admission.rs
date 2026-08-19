@@ -12,6 +12,7 @@ use crate::cancel::CancelToken;
 
 pub const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 8;
 pub const DEFAULT_MAX_CONCURRENT_CHEAP_TOOLS: usize = 32;
+pub const DEFAULT_MAX_CONCURRENT_INTERACTIVE_TOOLS: usize = 32;
 pub const DEFAULT_MAX_CONCURRENT_AGENT_TOOLS: usize = 4;
 
 const ORCHESTRATOR_TOOLS: &[&str] = &[
@@ -32,6 +33,8 @@ pub enum ToolAdmissionClass {
     Cheap,
     /// Work that may invoke a process, network request, interpreter, or MCP.
     Standard,
+    /// A user interaction that must not consume process or agent capacity.
+    Interactive,
     /// A wrapper that is expected to acquire admission for its children.
     /// Wrappers themselves do not hold a slot, which avoids parent-child
     /// deadlocks when the process budget is full.
@@ -44,6 +47,7 @@ impl ToolAdmissionClass {
         match value {
             "cheap" => Some(Self::Cheap),
             "standard" | "expensive" => Some(Self::Standard),
+            "interactive" => Some(Self::Interactive),
             "orchestrator" | "fanout" => Some(Self::Orchestrator),
             _ => None,
         }
@@ -68,7 +72,7 @@ impl ToolAdmissionClass {
     }
 
     #[must_use]
-    pub const fn is_orchestrator(self) -> bool {
+    pub const fn bypasses_admission(self) -> bool {
         matches!(self, Self::Orchestrator)
     }
 }
@@ -94,10 +98,12 @@ struct AdmissionState {
 pub struct ToolAdmission {
     process: Arc<Semaphore>,
     cheap: Arc<Semaphore>,
+    interactive: Arc<Semaphore>,
     agent_limit: usize,
     state: AdmissionState,
     process_active: AtomicUsize,
     cheap_active: AtomicUsize,
+    interactive_active: AtomicUsize,
 }
 
 impl fmt::Debug for ToolAdmission {
@@ -109,6 +115,10 @@ impl fmt::Debug for ToolAdmission {
                 &self.process_active.load(Ordering::Relaxed),
             )
             .field("cheap_active", &self.cheap_active.load(Ordering::Relaxed))
+            .field(
+                "interactive_active",
+                &self.interactive_active.load(Ordering::Relaxed),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -122,10 +132,11 @@ impl Default for ToolAdmission {
 impl ToolAdmission {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_limits(
+        Self::with_lane_limits(
             DEFAULT_MAX_CONCURRENT_TOOLS,
             DEFAULT_MAX_CONCURRENT_AGENT_TOOLS,
             DEFAULT_MAX_CONCURRENT_CHEAP_TOOLS,
+            DEFAULT_MAX_CONCURRENT_INTERACTIVE_TOOLS,
         )
     }
 
@@ -139,15 +150,27 @@ impl ToolAdmission {
 
     #[must_use]
     pub fn with_limits(process_limit: usize, agent_limit: usize, cheap_limit: usize) -> Self {
+        Self::with_lane_limits(process_limit, agent_limit, cheap_limit, cheap_limit)
+    }
+
+    #[must_use]
+    pub fn with_lane_limits(
+        process_limit: usize,
+        agent_limit: usize,
+        cheap_limit: usize,
+        interactive_limit: usize,
+    ) -> Self {
         Self {
             process: Arc::new(Semaphore::new(process_limit.max(1))),
             cheap: Arc::new(Semaphore::new(cheap_limit.max(1))),
+            interactive: Arc::new(Semaphore::new(interactive_limit.max(1))),
             agent_limit: agent_limit.max(1),
             state: AdmissionState {
                 agents: Mutex::new(HashMap::new()),
             },
             process_active: AtomicUsize::new(0),
             cheap_active: AtomicUsize::new(0),
+            interactive_active: AtomicUsize::new(0),
         }
     }
 
@@ -164,36 +187,35 @@ impl ToolAdmission {
         class: ToolAdmissionClass,
         cancel: &CancelToken,
     ) -> Result<ToolAdmissionGuard<'_>, AdmissionError> {
-        if class.is_orchestrator() {
+        if class.bypasses_admission() {
             return Ok(ToolAdmissionGuard::empty());
         }
 
-        if matches!(class, ToolAdmissionClass::Cheap) {
+        if matches!(
+            class,
+            ToolAdmissionClass::Cheap | ToolAdmissionClass::Interactive
+        ) {
+            let (semaphore, active) = if matches!(class, ToolAdmissionClass::Interactive) {
+                (&self.interactive, &self.interactive_active)
+            } else {
+                (&self.cheap, &self.cheap_active)
+            };
             let permit = cancel
-                .race(self.cheap.acquire_arc())
+                .race(semaphore.acquire_arc())
                 .await
                 .map_err(|_| AdmissionError::Cancelled)?;
-            self.cheap_active.fetch_add(1, Ordering::Relaxed);
+            active.fetch_add(1, Ordering::Relaxed);
             return Ok(ToolAdmissionGuard {
                 _process: None,
-                _cheap: Some(ActivePermit {
+                _wide: Some(ActivePermit {
                     guard: permit,
-                    active: &self.cheap_active,
+                    active,
                 }),
                 agent: None,
                 state: None,
                 scope: None,
             });
         }
-
-        let process = ActivePermit {
-            guard: cancel
-                .race(self.process.acquire_arc())
-                .await
-                .map_err(|_| AdmissionError::Cancelled)?,
-            active: &self.process_active,
-        };
-        self.process_active.fetch_add(1, Ordering::Relaxed);
 
         let scope = scope.to_owned();
         let agent = {
@@ -212,20 +234,30 @@ impl ToolAdmission {
             slot
         };
 
+        // Standard tools must not dispatch same-scope admitted children while holding this
+        // slot. Fan-out wrappers are Orchestrator-class and bypass both permits.
         let Ok(agent_guard) = cancel.race(agent.semaphore.acquire_arc()).await else {
             self.release_agent(&scope, &agent);
             return Err(AdmissionError::Cancelled);
         };
+        let Ok(process_guard) = cancel.race(self.process.acquire_arc()).await else {
+            drop(agent_guard);
+            self.release_agent(&scope, &agent);
+            return Err(AdmissionError::Cancelled);
+        };
+        self.process_active.fetch_add(1, Ordering::Relaxed);
 
         Ok(ToolAdmissionGuard {
-            _process: Some(process),
-            _cheap: None,
+            _process: Some(ActivePermit {
+                guard: process_guard,
+                active: &self.process_active,
+            }),
+            _wide: None,
             agent: Some(agent_guard),
             state: Some(&self.state),
             scope: Some(scope),
         })
     }
-
     fn release_agent(&self, scope: &str, slot: &Arc<AgentSlot>) {
         let mut agents = self
             .state
@@ -252,6 +284,11 @@ impl ToolAdmission {
     pub fn cheap_active(&self) -> usize {
         self.cheap_active.load(Ordering::Relaxed)
     }
+
+    #[must_use]
+    pub fn interactive_active(&self) -> usize {
+        self.interactive_active.load(Ordering::Relaxed)
+    }
 }
 
 struct ActivePermit<'a> {
@@ -268,7 +305,7 @@ impl Drop for ActivePermit<'_> {
 
 pub struct ToolAdmissionGuard<'a> {
     _process: Option<ActivePermit<'a>>,
-    _cheap: Option<ActivePermit<'a>>,
+    _wide: Option<ActivePermit<'a>>,
     agent: Option<SemaphoreGuardArc>,
     state: Option<&'a AdmissionState>,
     scope: Option<String>,
@@ -278,7 +315,7 @@ impl ToolAdmissionGuard<'_> {
     fn empty() -> Self {
         Self {
             _process: None,
-            _cheap: None,
+            _wide: None,
             agent: None,
             state: None,
             scope: None,
@@ -400,6 +437,46 @@ mod tests {
     }
 
     #[test]
+    fn agent_waiters_do_not_starve_other_scopes() {
+        smol::block_on(async {
+            let admission = Arc::new(ToolAdmission::with_limits(2, 1, 1));
+            let first = admission
+                .acquire("busy", ToolAdmissionClass::Standard, &CancelToken::none())
+                .await
+                .expect("first permit");
+            let admission_for_waiter = Arc::clone(&admission);
+            let (trigger, waiter_cancel) = CancelToken::new();
+            let waiter = smol::spawn(async move {
+                matches!(
+                    admission_for_waiter
+                        .acquire("busy", ToolAdmissionClass::Standard, &waiter_cancel)
+                        .await,
+                    Err(AdmissionError::Cancelled)
+                )
+            });
+            smol::future::yield_now().await;
+
+            let other_admitted = smol::future::or(
+                async {
+                    admission
+                        .acquire("other", ToolAdmissionClass::Standard, &CancelToken::none())
+                        .await
+                        .is_ok()
+                },
+                async {
+                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
+                    false
+                },
+            )
+            .await;
+            assert!(other_admitted, "agent waiter consumed process capacity");
+            trigger.cancel();
+            assert!(waiter.await);
+            drop(first);
+        });
+    }
+
+    #[test]
     fn permit_releases_when_work_returns_error() {
         smol::block_on(async {
             let admission = ToolAdmission::with_limits(1, 1, 1);
@@ -433,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_is_a_noop_guard() {
+    fn orchestrator_bypasses_admission() {
         smol::block_on(async {
             let admission = ToolAdmission::with_limits(1, 1, 1);
             let permit = admission
@@ -443,9 +520,28 @@ mod tests {
                     &CancelToken::none(),
                 )
                 .await
-                .expect("orchestrator bypass");
+                .expect("class bypass");
             assert_eq!(admission.process_active(), 0);
             drop(permit);
+        });
+    }
+
+    #[test]
+    fn interactive_uses_a_separate_bounded_lane() {
+        smol::block_on(async {
+            let admission = ToolAdmission::with_limits(1, 1, 1);
+            let permit = admission
+                .acquire(
+                    "agent",
+                    ToolAdmissionClass::Interactive,
+                    &CancelToken::none(),
+                )
+                .await
+                .expect("interactive lane");
+            assert_eq!(admission.process_active(), 0);
+            assert_eq!(admission.interactive_active(), 1);
+            drop(permit);
+            assert_eq!(admission.interactive_active(), 0);
         });
     }
 }
