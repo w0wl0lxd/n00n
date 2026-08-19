@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use n00n_config_macro::ConfigSection;
 use n00n_storage::paths;
-use n00n_storage::sessions::{StoredThinking, ThinkingParseError};
+use n00n_storage::sessions::{
+    DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES, DEFAULT_MAX_RETAINED_TOOL_OUTPUTS, RetentionBudget,
+    StoredThinking, ThinkingParseError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use thiserror::Error;
@@ -63,6 +66,10 @@ pub const MIN_TOOL_OUTPUT_LINES: usize = 1;
 pub const MIN_MAX_LOG_BYTES_MB: u64 = 1;
 pub const MIN_MAX_LOG_FILES: u32 = 1;
 pub const MIN_INPUT_HISTORY_SIZE: usize = 10;
+/// A session still has to render the turn it is in, so the floor keeps the
+/// outputs and histories of the most recent turns resident.
+pub const MIN_MAX_RETAINED_TOOL_OUTPUTS: usize = 16;
+pub const MIN_MAX_RETAINED_SUBAGENT_HISTORIES: usize = 4;
 pub const MIN_CONNECT_TIMEOUT_SECS: u64 = 1;
 pub const MIN_LOW_SPEED_TIMEOUT_SECS: u64 = 1;
 pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
@@ -177,7 +184,6 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
         description: "Start every session with extended thinking (true/\"adaptive\", \"off\", an effort level (\"minimal\" to \"max\"), or a token budget)",
     },
 ];
-
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("invalid config: {section}.{field} = {value} is below minimum ({min})")]
@@ -372,7 +378,6 @@ pub struct PluginFileConfig {
     #[serde(flatten)]
     pub opts: JsonMap<String, JsonValue>,
 }
-
 #[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiFileConfig {
@@ -544,14 +549,12 @@ pub struct FusionFileConfig {
     pub sidekick_thinking: Option<String>,
     pub sidekick_tier: Option<crate::providers::Tier>,
 }
-
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct DynamicToolFileConfig {
     pub enabled: Option<bool>,
     pub default_mode: Option<String>,
 }
-
 impl AgentFileConfig {
     fn merge(&mut self, overlay: &AgentFileConfig) {
         merge_option!(
@@ -650,6 +653,8 @@ pub struct StorageFileConfig {
     pub max_log_bytes_mb: Option<u64>,
     pub max_log_files: Option<u32>,
     pub input_history_size: Option<usize>,
+    pub max_retained_tool_outputs: Option<usize>,
+    pub max_retained_subagent_histories: Option<usize>,
 }
 
 impl StorageFileConfig {
@@ -659,7 +664,9 @@ impl StorageFileConfig {
             overlay,
             max_log_bytes_mb,
             max_log_files,
-            input_history_size
+            input_history_size,
+            max_retained_tool_outputs,
+            max_retained_subagent_histories
         );
     }
 }
@@ -972,7 +979,6 @@ pub struct PermissionRule {
     pub scope: Option<String>,
     pub effect: Effect,
 }
-
 #[derive(Debug, Clone, Default)]
 pub struct PermissionsConfig {
     pub default: DefaultEffect,
@@ -1155,7 +1161,6 @@ impl ToolOutputLines {
             ("other", self.other),
         ]
     }
-
     /// Validate all tool output line counts are above their minimum.
     ///
     /// # Errors
@@ -1237,7 +1242,6 @@ pub struct AgentConfig {
 
     #[config(default = DEFAULT_COMPACTION_BUFFER, ty = "u32 | string", default_doc = "20%", desc = "Context reserved for compaction: token count or percent of the context window (e.g. \"20%\")")]
     pub compaction_buffer: CompactionBuffer,
-
     #[config(default = DEFAULT_MCP_TOOL_DESC_MAX_CHARS, min = 10, desc = "Max MCP tool description length (characters)")]
     pub mcp_tool_desc_max_chars: usize,
 
@@ -1416,7 +1420,6 @@ pub struct ProviderConfig {
     #[config(key = "openai_codex_accepts_prompt_cache_options_implicit", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_IMPLICIT,
              desc = "Experimental: allow Codex implicit prompt_cache_options only after independently verifying endpoint support")]
     pub openai_codex_accepts_prompt_cache_options_implicit: bool,
-
     #[config(key = "openai_codex_accepts_prompt_cache_options_explicit", ty = "bool", default = DEFAULT_OPENAI_CODEX_ACCEPTS_PROMPT_CACHE_OPTIONS_EXPLICIT,
              desc = "Experimental: allow Codex explicit prompt_cache_options only after independently verifying endpoint support")]
     pub openai_codex_accepts_prompt_cache_options_explicit: bool,
@@ -1521,6 +1524,14 @@ pub struct StorageConfig {
     #[config(default = DEFAULT_INPUT_HISTORY_SIZE, min = MIN_INPUT_HISTORY_SIZE,
              desc = "Number of input history entries to retain")]
     pub input_history_size: usize,
+
+    #[config(default = DEFAULT_MAX_RETAINED_TOOL_OUTPUTS, min = MIN_MAX_RETAINED_TOOL_OUTPUTS,
+             desc = "Tool outputs a live session keeps in memory; older ones are read back from the session log on demand")]
+    pub max_retained_tool_outputs: usize,
+
+    #[config(default = DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES, min = MIN_MAX_RETAINED_SUBAGENT_HISTORIES,
+             desc = "Subagent histories a live session keeps in memory; older ones are read back from the session log on demand")]
+    pub max_retained_subagent_histories: usize,
 }
 
 impl Default for StorageConfig {
@@ -1529,6 +1540,8 @@ impl Default for StorageConfig {
             max_log_bytes: DEFAULT_MAX_LOG_BYTES_MB * 1024 * 1024,
             max_log_files: DEFAULT_MAX_LOG_FILES,
             input_history_size: DEFAULT_INPUT_HISTORY_SIZE,
+            max_retained_tool_outputs: DEFAULT_MAX_RETAINED_TOOL_OUTPUTS,
+            max_retained_subagent_histories: DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES,
         }
     }
 }
@@ -1545,6 +1558,21 @@ impl StorageConfig {
             input_history_size: f
                 .input_history_size
                 .unwrap_or_else(|| DEFAULT_INPUT_HISTORY_SIZE),
+            max_retained_tool_outputs: f
+                .max_retained_tool_outputs
+                .unwrap_or_else(|| DEFAULT_MAX_RETAINED_TOOL_OUTPUTS),
+            max_retained_subagent_histories: f
+                .max_retained_subagent_histories
+                .unwrap_or_else(|| DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES),
+        }
+    }
+
+    /// The in-memory ceiling a live session enforces after each durable write.
+    #[must_use]
+    pub fn retention_budget(&self) -> RetentionBudget {
+        RetentionBudget {
+            tool_outputs: self.max_retained_tool_outputs,
+            subagent_histories: self.max_retained_subagent_histories,
         }
     }
 }
@@ -1798,7 +1826,6 @@ fn push_unique(table: &mut toml_edit::Table, key: &str, value: &str) -> Result<(
     }
     Ok(())
 }
-
 fn parse_mcp_server_table(
     server_name: &str,
     table: &toml::Table,
@@ -1939,7 +1966,6 @@ fn build_permissions(
         yolo: false,
     }
 }
-
 fn global_dir() -> Option<PathBuf> {
     paths::config_dir().ok()
 }
@@ -2157,7 +2183,6 @@ fn migrate_permissions_file(path: &Path) -> Option<String> {
         return Some(content);
     };
     let mut migrated = false;
-
     if let Some(item) = doc.remove("allow_all") {
         migrated = true;
         if item.as_bool() == Some(true) {
@@ -2338,7 +2363,6 @@ fn append_project_permission(
     let mut doc: toml_edit::DocumentMut = content
         .parse()
         .map_err(|e| format!("failed to parse .n00n/{PERMISSIONS_FILE}: {e}"))?;
-
     insert_permission_entry(&mut doc, tool, scope, effect)?;
 
     if let Some(parent) = path.parent() {
@@ -2517,7 +2541,6 @@ mod tests {
             default.provider.openai_coding_plan_slots,
             DEFAULT_OPENAI_CODING_PLAN_SLOTS
         );
-
         let invalid = RawConfig {
             provider: ProviderFileConfig {
                 openai_coding_plan_slots: Some(MAX_OPENAI_CODING_PLAN_SLOTS + 1),
@@ -2778,6 +2801,49 @@ mod tests {
             config.validate(),
             Err(ConfigError::InvalidFusionSidekickTier { .. })
         ));
+    }
+
+    const OVERRIDE_RETAINED_TOOL_OUTPUTS: usize = 64;
+    const OVERRIDE_RETAINED_SUBAGENT_HISTORIES: usize = 8;
+
+    #[test]
+    fn retention_budget_defaults_match_storage() {
+        let budget = StorageConfig::default().retention_budget();
+        assert_eq!(budget, RetentionBudget::default());
+    }
+
+    #[test]
+    fn retention_budget_reads_the_storage_table() {
+        let raw = RawConfig {
+            storage: StorageFileConfig {
+                max_retained_tool_outputs: Some(OVERRIDE_RETAINED_TOOL_OUTPUTS),
+                max_retained_subagent_histories: Some(OVERRIDE_RETAINED_SUBAGENT_HISTORIES),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config = raw.into_config(false).unwrap();
+        assert_eq!(
+            config.storage.retention_budget(),
+            RetentionBudget {
+                tool_outputs: OVERRIDE_RETAINED_TOOL_OUTPUTS,
+                subagent_histories: OVERRIDE_RETAINED_SUBAGENT_HISTORIES,
+            }
+        );
+    }
+
+    #[test_case("max_retained_tool_outputs", 0 ; "zero_retained_tool_outputs")]
+    #[test_case("max_retained_subagent_histories", 0 ; "zero_retained_subagent_histories")]
+    #[test_case("max_retained_tool_outputs", MIN_MAX_RETAINED_TOOL_OUTPUTS - 1 ; "below_min_retained_tool_outputs")]
+    fn validate_rejects_invalid_retention(field: &str, value: usize) {
+        let mut config = StorageConfig::default();
+        match field {
+            "max_retained_tool_outputs" => config.max_retained_tool_outputs = value,
+            "max_retained_subagent_histories" => config.max_retained_subagent_histories = value,
+            _ => unreachable!(),
+        }
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::BelowMinimum { field: f, .. } if f == field));
     }
 
     #[test]
@@ -3628,7 +3694,6 @@ mod tests {
         .unwrap();
 
         let _perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
-
         let content = fs::read_to_string(global.join("permissions.toml")).unwrap();
         assert!(content.contains("[mcp.deepwiki]"), "server table present");
         assert!(content.contains("[mcp.github]"), "server table present");

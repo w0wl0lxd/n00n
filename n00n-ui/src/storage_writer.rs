@@ -7,7 +7,7 @@
 //! tracking retains ordering barriers only while an older reserved command can
 //! still arrive, then collects them after that command or wake is consumed.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::mem;
 use std::path::Path;
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use n00n_storage::id::n00nId;
-use n00n_storage::sessions::{SESSIONS_DIR, SessionError, SessionLog};
+use n00n_storage::sessions::{RetentionEviction, SESSIONS_DIR, SessionError, SessionLog};
 use n00n_storage::{StateDir, StorageError};
 use tracing::warn;
 
@@ -88,6 +88,16 @@ struct RetryState {
     exhausted: HashMap<n00nId, SnapshotVersion>,
 }
 
+/// Per-session record ids the writer has actually put on disk. The UI consults
+/// this before dropping an in-memory copy, so eviction can never outrun the log.
+#[derive(Default)]
+struct DurableRecords {
+    tool_outputs: HashSet<String>,
+    subagent_messages: HashSet<String>,
+}
+
+type DurableLedger = Arc<Mutex<HashMap<n00nId, DurableRecords>>>;
+
 #[derive(Default)]
 struct WriterState {
     pending: HashMap<n00nId, PendingSnapshot>,
@@ -96,6 +106,7 @@ struct WriterState {
     delete_generations: HashMap<n00nId, u64>,
     logs: HashMap<n00nId, SessionLog>,
     durable_versions: HashMap<n00nId, SnapshotVersion>,
+    durable_records: DurableLedger,
     retries: RetryState,
 }
 
@@ -141,6 +152,7 @@ struct WriterStateCounts {
 pub struct StorageWriter {
     tracker: CommandTracker,
     inbox: SnapshotInbox,
+    durable_records: DurableLedger,
     ops: flume::Sender<Op>,
     done_rx: flume::Receiver<Result<(), usize>>,
 }
@@ -151,13 +163,18 @@ impl StorageWriter {
         let writer_inbox = Arc::clone(&inbox);
         let tracker = CommandTracker::default();
         let writer_tracker = Arc::clone(&tracker);
+        let durable_records = DurableLedger::default();
+        let writer_durable_records = Arc::clone(&durable_records);
         let (ops, ops_rx) = flume::unbounded::<Op>();
         let (done_tx, done_rx) = flume::bounded::<Result<(), usize>>(1);
 
         std::thread::Builder::new()
             .name("storage-writer".into())
             .spawn(move || {
-                let mut state = WriterState::default();
+                let mut state = WriterState {
+                    durable_records: writer_durable_records,
+                    ..Default::default()
+                };
                 loop {
                     let op = if state.pending.is_empty() {
                         ops_rx.recv().ok()
@@ -244,9 +261,34 @@ impl StorageWriter {
         Ok(Self {
             tracker,
             inbox,
+            durable_records,
             ops,
             done_rx,
         })
+    }
+
+    pub(crate) fn register_loaded(&self, session: &AppSession) {
+        if session.loaded_from_disk() {
+            record_durable(&self.durable_records, session);
+        }
+    }
+
+    /// Narrows an eviction plan to the records already on disk. Anything the
+    /// writer has not persisted yet stays resident, so a dropped or retried
+    /// snapshot can never take the only copy of a record with it.
+    pub(crate) fn retain_durable(&self, id: n00nId, eviction: &mut RetentionEviction) {
+        let ledger = lock_durable_records(&self.durable_records);
+        let Some(records) = ledger.get(&id) else {
+            eviction.tool_outputs.clear();
+            eviction.subagent_messages.clear();
+            return;
+        };
+        eviction
+            .tool_outputs
+            .retain(|tool_id| records.tool_outputs.contains(tool_id));
+        eviction
+            .subagent_messages
+            .retain(|sub_id| records.subagent_messages.contains(sub_id));
     }
 
     pub fn send(&self, session: Box<AppSession>) {
@@ -539,6 +581,7 @@ impl WriterState {
             &mut self.pending,
             &mut self.logs,
             &mut self.durable_versions,
+            &self.durable_records,
             dir,
             target,
         );
@@ -619,6 +662,7 @@ impl WriterState {
 
         let primary_path = dir.path().join(SESSIONS_DIR).join(format!("{id}.jsonl"));
         self.logs.remove(&id);
+        lock_durable_records(&self.durable_records).remove(&id);
         let delete_result = AppSession::delete(id, dir);
         if !primary_path.exists() {
             self.durable_versions.remove(&id);
@@ -722,10 +766,35 @@ fn unpersisted_snapshot() -> SessionError {
     .into()
 }
 
+fn lock_durable_records(
+    ledger: &DurableLedger,
+) -> std::sync::MutexGuard<'_, HashMap<n00nId, DurableRecords>> {
+    ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Replaces the ledger with the ids this snapshot just made durable. Ids the
+/// session no longer holds are already evicted or pruned, so nothing will ask
+/// about them again and keeping them would make the ledger itself unbounded.
+fn record_durable(ledger: &DurableLedger, session: &AppSession) {
+    let mut ledger = lock_durable_records(ledger);
+    let records = ledger.entry(session.id).or_default();
+    records.tool_outputs.clear();
+    records
+        .tool_outputs
+        .extend(session.tool_outputs.keys().cloned());
+    records.subagent_messages.clear();
+    records
+        .subagent_messages
+        .extend(session.subagent_messages.keys().cloned());
+}
+
 fn flush(
     pending: &mut HashMap<n00nId, PendingSnapshot>,
     logs: &mut HashMap<n00nId, SessionLog>,
     durable_versions: &mut HashMap<n00nId, SnapshotVersion>,
+    durable_records: &DurableLedger,
     dir: &StateDir,
     target: Option<(n00nId, &SnapshotVersion)>,
 ) -> (FailedSnapshots, Vec<(n00nId, SnapshotVersion)>) {
@@ -771,7 +840,12 @@ fn flush(
             &snapshot.version,
             &snapshot.session,
         ) {
-            Ok(()) => persisted.push((id, snapshot.version)),
+            Ok(wrote) => {
+                if wrote {
+                    record_durable(durable_records, &snapshot.session);
+                }
+                persisted.push((id, snapshot.version));
+            }
             Err(error) => {
                 warn!(error = %error, %id, "session write failed");
                 let is_target = target.is_some_and(|(target_id, version)| {
@@ -803,18 +877,20 @@ fn append_or_compact_result(
     }
 }
 
+/// Returns whether this snapshot's records reached the log; a newer revision
+/// already on disk supersedes it and writes nothing.
 fn write_session(
     sessions_dir: &Path,
     logs: &mut HashMap<n00nId, SessionLog>,
     durable_versions: &mut HashMap<n00nId, SnapshotVersion>,
     version: &SnapshotVersion,
     session: &AppSession,
-) -> Result<(), SessionError> {
+) -> Result<bool, SessionError> {
     if durable_versions
         .get(&session.id)
         .is_some_and(|durable| durable.revision > version.revision)
     {
-        return Ok(());
+        return Ok(false);
     }
     if let Some(log) = logs.get_mut(&session.id) {
         if durable_versions
@@ -826,7 +902,7 @@ fn write_session(
             append_or_compact_result(log, sessions_dir, session)?;
         }
         durable_versions.insert(session.id, version.clone());
-        return Ok(());
+        return Ok(true);
     }
     let (mut log, on_disk_revision) = open_or_create_log(sessions_dir, session)?;
     if on_disk_revision > version.revision {
@@ -837,7 +913,7 @@ fn write_session(
                 revision: on_disk_revision,
             },
         );
-        return Ok(());
+        return Ok(false);
     }
     if on_disk_revision == version.revision {
         log.compact(sessions_dir, session)?;
@@ -846,7 +922,7 @@ fn write_session(
     }
     logs.insert(session.id, log);
     durable_versions.insert(session.id, version.clone());
-    Ok(())
+    Ok(true)
 }
 
 fn open_or_create_log(
@@ -856,12 +932,12 @@ fn open_or_create_log(
     let jsonl_path = sessions_dir.join(format!("{}.jsonl", session.id));
     if jsonl_path.exists() {
         let id = session.id;
-        let (loaded, log) = SessionLog::open::<
+        let (revision, log) = SessionLog::open_cursor::<
             n00n_providers::Message,
             n00n_providers::TokenUsage,
             n00n_agent::ToolOutput,
         >(sessions_dir, id)?;
-        Ok((log, loaded.meta.revision))
+        Ok((log, revision))
     } else {
         Ok((
             AppSession::migrate_to_jsonl(sessions_dir, session)?,
@@ -1006,7 +1082,6 @@ mod tests {
             session.meta.input_draft = Some(format!("snapshot {revision}"));
             writer.send(Box::new(session.clone()));
         }
-
         let inbox = lock_inbox(&writer.inbox);
         assert_eq!(inbox.snapshots.len(), 1);
         assert!(inbox.wake_queued);
@@ -1183,7 +1258,6 @@ mod tests {
         let expected = fs::create_dir_all(state_path.join(SESSIONS_DIR)).unwrap_err();
         let writer = StorageWriter::new(StateDir::from_path(state_path)).unwrap();
         let session = AppSession::new("test-model", "/tmp/ensure-subdir-error");
-
         let error = persist_and_wait(&writer, session).unwrap_err();
         let SessionError::Storage(StorageError::Io(error)) = error else {
             panic!("expected storage I/O error");

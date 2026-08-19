@@ -147,6 +147,8 @@ Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, o
 | `max_log_bytes_mb` | u64 | `200` | 1 | Max total log size (MB) |
 | `max_log_files` | u32 | `10` | 1 | Max number of log files to keep |
 | `input_history_size` | usize | `100` | 10 | Number of input history entries to retain |
+| `max_retained_tool_outputs` | usize | `512` | 16 | Tool outputs a live session keeps in memory; older ones are read back from the session log on demand |
+| `max_retained_subagent_histories` | usize | `32` | 4 | Subagent histories a live session keeps in memory; older ones are read back from the session log on demand |
 
 ## Plugins
 
