@@ -1544,7 +1544,11 @@ async fn prompt(
                 s.fast,
                 None,
             )?;
-            return Ok((Some(table), Some(SUBAGENT_FORWARDER_STALLED_ERR.to_owned())));
+            let error = result.err().map_or_else(
+                || SUBAGENT_FORWARDER_STALLED_ERR.to_owned(),
+                |error| error.to_string(),
+            );
+            return Ok((Some(table), Some(error)));
         }
         if let Err(e) = result {
             s.failed = true;
@@ -1677,7 +1681,8 @@ fn call_local_tool(
 ) -> Result<String, String> {
     let lua = weak.try_upgrade().ok_or("Lua runtime shut down")?;
     let arg = json_to_lua(&lua, input).map_err(|e| e.to_string())?;
-    let values = f.call::<mlua::MultiValue>(arg).map_err(|e| e.to_string())?;
+    let values = crate::runtime::run_non_yieldable(&lua, || f.call::<mlua::MultiValue>(arg))
+        .map_err(|e| e.to_string())?;
     lua_tool_result(values)
 }
 

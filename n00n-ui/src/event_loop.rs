@@ -1164,7 +1164,7 @@ impl<'t> EventLoop<'t> {
         }
         // Lua state capture is a drain barrier. Active tools are captured by their terminal event.
         for rt in &mut self.sessions {
-            if should_save_periodically(&rt.app.status) {
+            if should_save_periodically(&rt.app.status, rt.app.awaiting_input()) {
                 rt.app.save_session();
             }
         }
@@ -2521,8 +2521,8 @@ fn take_painted_submissions<T>(
     ready
 }
 
-fn should_save_periodically(status: &Status) -> bool {
-    matches!(status, Status::Streaming)
+fn should_save_periodically(status: &Status, awaiting_input: bool) -> bool {
+    *status == Status::Streaming && !awaiting_input
 }
 
 fn startup_provider_with(
@@ -3071,9 +3071,13 @@ mod tests {
 
     #[test]
     fn periodic_save_only_checkpoints_active_sessions() {
-        assert!(!should_save_periodically(&Status::Idle));
-        assert!(!should_save_periodically(&Status::error("failed".into())));
-        assert!(should_save_periodically(&Status::Streaming));
+        assert!(!should_save_periodically(&Status::Idle, false));
+        assert!(!should_save_periodically(
+            &Status::error("failed".into()),
+            false
+        ));
+        assert!(should_save_periodically(&Status::Streaming, false));
+        assert!(!should_save_periodically(&Status::Streaming, true));
     }
 
     #[test]

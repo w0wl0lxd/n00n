@@ -21,7 +21,7 @@ use crate::runtime::{active_task_id, run_non_yieldable, with_jobs};
 const READER_BUF_SIZE: usize = 8 * 1024;
 const MAX_JOB_LINE_BYTES: usize = 64 * 1024;
 const JOB_EVENT_CAPACITY: usize = 256;
-const MAX_JOB_EVENTS_PER_TURN: usize = 64;
+pub(crate) const MAX_JOB_EVENTS_PER_TURN: usize = 64;
 const MAX_JOBWAIT_RETAINED_LINES: usize = 10_000;
 const MAX_JOBWAIT_RETAINED_BYTES: usize = 1024 * 1024;
 const JOBWAIT_TRUNCATION_MARKER: &str = "[... job output truncated ...]";

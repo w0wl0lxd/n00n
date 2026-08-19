@@ -7,7 +7,9 @@ use n00n_agent::cancel::CancelToken;
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 
 use crate::docs::{FnDoc, ParamDoc};
-use crate::runtime::{TaskHandle, enqueue_async_task, ensure_cancellation_cleanup, lock_cell};
+use crate::runtime::{
+    TaskHandle, enqueue_async_task, ensure_cancellation_cleanup, lock_cell, run_non_yieldable,
+};
 
 const AWAIT_MIN_ARGS: usize = 2;
 const PERMIT_RELEASED_ERR: &str = "permit already released";
@@ -301,7 +303,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
             let insert_pos = (argc - 1).min(args_vec.len());
             args_vec.insert(insert_pos, Value::Function(callback));
 
-            fun.call::<()>(MultiValue::from_iter(args_vec))?;
+            run_non_yieldable(&lua, || fun.call::<()>(MultiValue::from_iter(args_vec)))?;
 
             let result = rx
                 .recv_async()

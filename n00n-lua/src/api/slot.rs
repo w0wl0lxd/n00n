@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex};
 use mlua::{Function, Lua, MultiValue, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
 
-use crate::api::util::dispatch::{DepthGuard, call_isolated};
+use crate::{
+    api::util::dispatch::{DepthGuard, call_isolated},
+    runtime::run_non_yieldable,
+};
 
 #[derive(Clone)]
 pub(crate) struct SlotLayer {
@@ -130,7 +133,7 @@ fn invoke_chain(
     args: MultiValue,
 ) -> LuaResult<MultiValue> {
     let Some(layer) = idx.checked_sub(1).map(|i| &layers[i]) else {
-        return default.call(args);
+        return run_non_yieldable(lua, || default.call(args));
     };
     let state: PrevCell = Arc::new(Mutex::new(PrevState::Armed));
     let prev = make_prev(lua, name, default, layers, idx - 1, &state)?;

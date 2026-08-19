@@ -1,6 +1,8 @@
 use mlua::{Function, Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::lua_fn;
 
+use crate::runtime::run_non_yieldable;
+
 const OPTS_TYPE_MSG: &str = "split: opts must be a table or boolean";
 const INFINITE_LOOP_MSG: &str = "split: separator matched an empty string (infinite loop)";
 
@@ -39,9 +41,9 @@ fn split(
 
     let find: Function = lua.globals().get::<Table>("string")?.get("find")?;
     let mut start = 1i64;
-    while let (Some(i), Some(j)) =
-        find.call::<(Option<i64>, Option<i64>)>((&s, &sep, start, plain))?
-    {
+    while let (Some(i), Some(j)) = run_non_yieldable(lua, || {
+        find.call::<(Option<i64>, Option<i64>)>((&s, &sep, start, plain))
+    })? {
         if j < start {
             return Err(mlua::Error::runtime(INFINITE_LOOP_MSG));
         }
