@@ -962,8 +962,10 @@ fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
             entries: vec![TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
                 generated_summary: None,
+                state_revision: None,
             }],
             generated_summary: Some(summary.clone()),
+            state_revision: None,
         },
         TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
         TranscriptEntry::GeneratedMessage(summary),
@@ -997,6 +999,7 @@ fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
             }],
             ..Default::default()
         },
+        None,
     );
     app.shared_history = Some(message_mirror);
     app.shared_transcript = Some(transcript_mirror);
@@ -1143,13 +1146,16 @@ fn live_compaction_notice_becomes_typed_card() {
         TranscriptEntry::Compaction {
             entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
             generated_summary: None,
+            state_revision: None,
         },
     ])));
 
     app.update(agent_msg(AgentEvent::AutoCompacting));
     assert!(app.main_chat().has_pending_compaction());
 
-    app.update(agent_msg(AgentEvent::CompactionDone));
+    app.update(agent_msg(AgentEvent::CompactionDone {
+        state_revision: Some(1),
+    }));
     assert!(!app.main_chat().has_pending_compaction());
     assert_eq!(app.main_chat().compaction_card_count(), 1);
 }
@@ -1192,7 +1198,9 @@ fn subagent_compaction_completion_uses_live_summary_without_touching_main_transc
         Some("research"),
     ));
     app.update(subagent_msg(
-        AgentEvent::CompactionDone,
+        AgentEvent::CompactionDone {
+            state_revision: Some(1),
+        },
         "task1",
         Some("research"),
     ));
@@ -2656,6 +2664,38 @@ fn save_session_captures_plugin_state_snapshot() {
 }
 
 #[test]
+fn save_session_does_not_overtake_pending_compaction_revision() {
+    let (_tmp, _dir, writer, mut app) = tempdir_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    app.lua_event_handle = host.event_handle();
+    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(3));
+    app.hydrate_plugin_state();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::AutoCompacting));
+    let revision_before_save = app
+        .state
+        .session
+        .meta
+        .state_snapshot
+        .as_ref()
+        .and_then(StoredSessionStateSnapshot::state_revision);
+
+    app.save_session();
+
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        revision_before_save
+    );
+    drain_writer(app, writer);
+}
+
+#[test]
 fn apply_loaded_session_hydrates_plugin_state_snapshot() {
     let mut app = test_app();
     let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
@@ -2685,6 +2725,44 @@ fn apply_loaded_session_hydrates_plugin_state_snapshot() {
             .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
             .unwrap(),
         Some(&serde_json::json!({"todos": [{"content": "resume", "status": "pending"}]}))
+    );
+}
+
+#[test]
+fn apply_loaded_session_uses_boundary_checkpoint_when_latest_snapshot_is_older() {
+    let mut app = test_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    let handle = host.event_handle().unwrap();
+    app.lua_event_handle = Some(handle.clone());
+    let mut loaded = AppSession::new("test-model", "/tmp/test");
+    loaded.transcript = vec![TranscriptEntry::Compaction {
+        entries: Vec::new(),
+        generated_summary: None,
+        state_revision: Some(7),
+    }];
+    let mut checkpoint = StoredSessionStateSnapshot::new(7);
+    checkpoint
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({"todos": [{"content": "boundary", "status": "pending"}]}),
+        )
+        .unwrap();
+    loaded.meta.checkpoint_compaction_state(checkpoint).unwrap();
+    loaded.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(6));
+    let loaded_id = loaded.id;
+    let model = app.state.model.clone();
+
+    app.apply_loaded_session(loaded, &model);
+
+    let identity = SessionIdentity::root(SessionRef::from_id(loaded_id));
+    let captured = handle.capture_state(&identity, 8).unwrap();
+    assert_eq!(
+        captured
+            .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+            .unwrap(),
+        Some(&serde_json::json!({"todos": [{"content": "boundary", "status": "pending"}]}))
     );
 }
 
@@ -3123,8 +3201,10 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
             entries: vec![TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
                 generated_summary: None,
+                state_revision: None,
             }],
             generated_summary: Some(summary.clone()),
+            state_revision: Some(7),
         },
         TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
         TranscriptEntry::GeneratedMessage(summary),
@@ -3133,6 +3213,12 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
         TranscriptEntry::Message(Message::user("remove".into())),
         TranscriptEntry::Message(removed_reply),
     ];
+    app.state
+        .session
+        .meta
+        .checkpoint_compaction_state(StoredSessionStateSnapshot::new(7))
+        .unwrap();
+    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(9));
 
     let actions = app.rewind_to(&crate::components::rewind_picker::RewindEntry {
         turn_index: 4,
@@ -3140,6 +3226,15 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
         prompt_text: "remove".into(),
     });
 
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        Some(7)
+    );
     assert!(matches!(
         app.state.session.transcript.as_slice(),
         [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_), TranscriptEntry::Message(_)]
@@ -3155,6 +3250,7 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
     restored.compact_boundary(
         Message::user("summary prompt".into()),
         assistant("new summary"),
+        None,
     );
     let TranscriptEntry::Compaction { entries, .. } = &restored.transcript()[0] else {
         panic!("expected recursive compaction");

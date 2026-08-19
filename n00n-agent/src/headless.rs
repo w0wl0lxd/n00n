@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as SyncMutex};
 
 use async_lock::Mutex;
 use flume::Receiver;
@@ -12,7 +12,9 @@ use n00n_providers::model::Model;
 use n00n_providers::provider::{self, Provider};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::{Session, StoredMode, StoredSessionStateSnapshot};
+use n00n_storage::sessions::{
+    CompactionStateError, Session, StoredMode, StoredSessionStateSnapshot, TranscriptEntry,
+};
 use serde_json::Value;
 use tracing::{error, warn};
 
@@ -66,12 +68,89 @@ fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u
     revision
 }
 
+fn session_identity(session: &StoredSession) -> Result<SessionIdentity, String> {
+    let session_id = SessionRef::from(session.id);
+    match (session.meta.parent_id, session.meta.root_session_id) {
+        (Some(_), None) => Err(format!(
+            "session {} has parent metadata without a root session",
+            session.id
+        )),
+        (_, Some(root_id)) if root_id != session.id => Ok(SessionIdentity::child(
+            session_id,
+            SessionRef::from(root_id),
+        )),
+        _ => Ok(SessionIdentity::root(session_id)),
+    }
+}
+
+fn outer_compaction_revision(transcript: &[TranscriptEntry<Message>]) -> Option<u64> {
+    match transcript.first() {
+        Some(TranscriptEntry::Compaction { state_revision, .. }) => *state_revision,
+        _ => None,
+    }
+}
+
+fn hydration_snapshot(
+    session: &StoredSession,
+) -> Result<Option<StoredSessionStateSnapshot>, String> {
+    let Some(revision) = outer_compaction_revision(&session.transcript) else {
+        return Ok(session.meta.state_snapshot.clone());
+    };
+    let latest = session.meta.state_snapshot.clone();
+    if state_revision_or_initial(latest.as_ref()) >= revision {
+        return Ok(latest);
+    }
+    match session.meta.compaction_state_at(revision) {
+        Ok(snapshot) => Ok(Some(snapshot.clone())),
+        Err(
+            error @ (CompactionStateError::MissingRevision { .. }
+            | CompactionStateError::FutureRevision { .. }),
+        ) => {
+            warn!(
+                session_id = %session.id,
+                checkpoint_revision = revision,
+                %error,
+                "compaction state checkpoint unavailable; using latest plugin state"
+            );
+            Ok(latest)
+        }
+        Err(error) => Err(format!(
+            "cannot restore compaction state revision {revision} for session {}: {error}",
+            session.id
+        )),
+    }
+}
+
+fn update_turn_metadata(
+    session: &mut StoredSession,
+    mode: &AgentMode,
+    plan_path: Option<&Path>,
+) -> Result<(), &'static str> {
+    let (stored_mode, stored_plan_path) = match mode {
+        AgentMode::Build => (StoredMode::Build, plan_path),
+        AgentMode::Plan(path) => (StoredMode::Plan, Some(path.as_path())),
+        AgentMode::Research => (StoredMode::Research, None),
+    };
+    let stored_plan_path = stored_plan_path
+        .map(|path| {
+            path.to_str()
+                .map(str::to_owned)
+                .ok_or(NON_UTF8_PLAN_PATH_ERR)
+        })
+        .transpose()?;
+    session.meta.mode = Some(stored_mode);
+    session.meta.plan_path = stored_plan_path;
+    session.meta.revision = session.meta.revision.saturating_add(1);
+    Ok(())
+}
+
 struct SessionStore {
     dir: StateDir,
     session: StoredSession,
     state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     identity: SessionIdentity,
     state_lease: Option<u64>,
+    state_revision: u64,
 }
 
 impl SessionStore {
@@ -81,18 +160,17 @@ impl SessionStore {
         model_spec: &str,
         mode: &AgentMode,
         state_persistence: Option<Arc<dyn SessionStatePersistence>>,
-    ) -> Option<Self> {
-        let dir = StateDir::resolve()
-            .map_err(|e| warn!(error = %e, "state dir unavailable; session will not be persisted"))
-            .ok()?;
-        Some(Self::open_in_with_state(
-            dir,
-            session_id,
-            cwd,
-            model_spec,
-            mode,
-            state_persistence,
-        ))
+    ) -> Result<Option<Self>, String> {
+        let Some(dir) = StateDir::resolve()
+            .map_err(|error| {
+                warn!(%error, "state dir unavailable; session will not be persisted");
+            })
+            .ok()
+        else {
+            return Ok(None);
+        };
+        Self::open_in_with_state(dir, session_id, cwd, model_spec, mode, state_persistence)
+            .map(Some)
     }
 
     #[cfg(test)]
@@ -104,6 +182,7 @@ impl SessionStore {
         mode: &AgentMode,
     ) -> Self {
         Self::open_in_with_state(dir, session_id, cwd, model_spec, mode, None)
+            .expect("new test session must open")
     }
 
     fn open_in_with_state(
@@ -113,7 +192,7 @@ impl SessionStore {
         model_spec: &str,
         mode: &AgentMode,
         state_persistence: Option<Arc<dyn SessionStatePersistence>>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let mut is_new = false;
         let session = if let Ok(session) = StoredSession::load(session_id, &dir) {
             session
@@ -123,13 +202,14 @@ impl SessionStore {
             session.id = session_id;
             session
         };
-        let identity = SessionIdentity::root(SessionRef::from(session_id));
+        let identity = session_identity(&session)?;
         let mut store = Self {
             dir,
             session,
             state_persistence,
             identity,
             state_lease: None,
+            state_revision: INITIAL_STATE_REVISION,
         };
         store.hydrate_plugin_state();
         if is_new {
@@ -139,17 +219,29 @@ impl SessionStore {
                 store.save();
             }
         }
-        store
+        Ok(store)
+    }
+
+    fn state_revision(&self) -> u64 {
+        self.state_revision
     }
 
     fn hydrate_plugin_state(&mut self) {
+        let snapshot = match hydration_snapshot(&self.session) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                warn!(session_id = %self.session.id, %error, "failed to select plugin session state; using latest snapshot");
+                self.session.meta.state_snapshot.clone()
+            }
+        };
+        self.state_revision = state_revision_or_initial(snapshot.as_ref());
         let Some(state_persistence) = &self.state_persistence else {
             return;
         };
-        match state_persistence.hydrate(&self.identity, self.session.meta.state_snapshot.clone()) {
+        match state_persistence.hydrate(&self.identity, snapshot) {
             Ok(lease) => self.state_lease = Some(lease),
             Err(error) => {
-                warn!(session_id = %self.session.id, %error, "failed to restore plugin session state");
+                warn!(session_id = %self.session.id, %error, "failed to restore plugin session state; continuing without hydrated state");
             }
         }
     }
@@ -164,9 +256,13 @@ impl SessionStore {
             .session
             .meta
             .revision
+            .max(self.state_revision.saturating_add(1))
             .max(persisted_revision.saturating_add(1));
         match state_persistence.capture(&self.identity, revision) {
-            Ok(snapshot) => self.session.meta.state_snapshot = Some(snapshot),
+            Ok(snapshot) => {
+                self.state_revision = state_revision_or_initial(Some(&snapshot));
+                self.session.meta.state_snapshot = Some(snapshot);
+            }
             Err(error) => {
                 warn!(session_id = %self.session.id, %error, "failed to capture plugin session state");
             }
@@ -180,27 +276,44 @@ impl SessionStore {
         }
     }
 
+    fn compaction_snapshot(
+        &self,
+        session: &StoredSession,
+        revision: u64,
+    ) -> Result<Option<StoredSessionStateSnapshot>, String> {
+        match session.meta.compaction_state_at(revision) {
+            Ok(_) => return Ok(None),
+            Err(
+                CompactionStateError::MissingRevision { .. }
+                | CompactionStateError::FutureRevision { .. },
+            ) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+
+        let snapshot = if let Some(state_persistence) = &self.state_persistence {
+            state_persistence.capture(&self.identity, revision)?
+        } else if let Some(mut snapshot) = session.meta.state_snapshot.clone() {
+            snapshot
+                .set_state_revision(revision)
+                .map_err(|error| error.to_string())?;
+            snapshot
+        } else {
+            StoredSessionStateSnapshot::new(revision)
+        };
+        if snapshot.state_revision() != Some(revision) {
+            return Err(format!(
+                "captured plugin state revision does not match compaction revision {revision}"
+            ));
+        }
+        Ok(Some(snapshot))
+    }
+
     fn update_turn_metadata(
         &mut self,
         mode: &AgentMode,
         plan_path: Option<&Path>,
     ) -> Result<(), &'static str> {
-        let (stored_mode, stored_plan_path) = match mode {
-            AgentMode::Build => (StoredMode::Build, plan_path),
-            AgentMode::Plan(path) => (StoredMode::Plan, Some(path.as_path())),
-            AgentMode::Research => (StoredMode::Research, None),
-        };
-        let stored_plan_path = stored_plan_path
-            .map(|path| {
-                path.to_str()
-                    .map(str::to_owned)
-                    .ok_or(NON_UTF8_PLAN_PATH_ERR)
-            })
-            .transpose()?;
-        self.session.meta.mode = Some(stored_mode);
-        self.session.meta.plan_path = stored_plan_path;
-        self.session.meta.revision = self.session.meta.revision.saturating_add(1);
-        Ok(())
+        update_turn_metadata(&mut self.session, mode, plan_path)
     }
 
     fn record_turn_started(
@@ -213,19 +326,67 @@ impl SessionStore {
         Ok(())
     }
 
+    fn checkpoint_compaction(
+        &mut self,
+        messages: &[Message],
+        transcript: &[TranscriptEntry<Message>],
+        model_spec: &str,
+        revision: u64,
+    ) -> Result<(), String> {
+        if outer_compaction_revision(transcript) != Some(revision) {
+            return Err(format!(
+                "compaction boundary revision does not match checkpoint revision {revision}"
+            ));
+        }
+        let mut candidate = self.session.clone();
+        candidate.messages = messages.to_vec();
+        candidate.transcript = transcript.to_vec();
+        model_spec.clone_into(&mut candidate.model);
+        candidate.update_title_if_default();
+        let quarantined = matches!(
+            candidate.meta.compaction_state_at(revision),
+            Err(CompactionStateError::UnsupportedSchemaVersion { .. }
+                | CompactionStateError::InvalidEnvelope)
+        );
+        if quarantined {
+            warn!(session_id = %candidate.id, checkpoint_revision = revision, "compaction checkpoint metadata is unusable; compacting without an exact checkpoint");
+        } else if let Some(snapshot) = self.compaction_snapshot(&candidate, revision)? {
+            candidate
+                .meta
+                .checkpoint_compaction_state(snapshot.clone())
+                .map_err(|error| error.to_string())?;
+            if state_revision_or_initial(candidate.meta.state_snapshot.as_ref()) <= revision {
+                candidate.meta.state_snapshot = Some(snapshot);
+            }
+        }
+        candidate
+            .save(&self.dir)
+            .map_err(|error| error.to_string())?;
+        self.state_revision = self.state_revision.max(revision);
+        self.session = candidate;
+        Ok(())
+    }
+
     fn record_turn(
         &mut self,
         messages: &[Message],
+        transcript: &[TranscriptEntry<Message>],
         model_spec: String,
         mode: &AgentMode,
         plan_path: Option<&Path>,
-    ) -> Result<(), &'static str> {
-        self.update_turn_metadata(mode, plan_path)?;
-        self.session.messages = messages.to_vec();
-        self.session.model = model_spec;
-        self.session.update_title_if_default();
-        self.save();
-        Ok(())
+    ) -> Result<(), String> {
+        let mut candidate = self.session.clone();
+        update_turn_metadata(&mut candidate, mode, plan_path).map_err(str::to_owned)?;
+        candidate.messages = messages.to_vec();
+        candidate.transcript = transcript.to_vec();
+        candidate.model = model_spec;
+        candidate.update_title_if_default();
+
+        self.session = candidate;
+        self.capture_plugin_state();
+        self.session
+            .save(&self.dir)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -372,43 +533,22 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
             let model_spec = model.spec();
-            let mut session_store = SessionStore::open(
+            let mut session_store = match SessionStore::open(
                 session_ref_clone.id(),
                 &session_cwd,
                 &model_spec,
                 &mode,
                 params.state_persistence,
-            );
-            let mut agent = Agent::new(
-                AgentParams {
-                    provider,
-                    model,
-                    config: params.config,
-                    tool_output_lines: ToolOutputLines::default(),
-                    permissions: Arc::new(PermissionManager::new(
-                        params.permissions_config,
-                        working_dir_path,
-                    )),
-                    identity: Some(SessionIdentity::root(session_ref_clone.clone())),
-                    timeouts: params.timeouts,
-                    openai_options: params.openai_options.clone(),
-                    file_tracker: FileReadTracker::fresh(),
-                    prompt_slots: Arc::new(params.prompt_slots),
-                    subagent_cancels: Arc::new(CancelMap::new()),
-                    registry: Arc::clone(ToolRegistry::global_arc()),
-                    audience: ToolAudience::MAIN,
-                },
-                AgentRunParams {
-                    history: &mut history,
-                    system,
-                    event_tx,
-                    tools,
-                    tool_filter,
-                },
-            )
-            .with_loaded_instructions(instructions.loaded)
-            .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
-
+            ) {
+                Ok(store) => store,
+                Err(message) => {
+                    let _ = error_tx.send(AgentEvent::Error { message });
+                    if let Some(handle) = mcp_shutdown {
+                        handle.shutdown().await;
+                    }
+                    return;
+                }
+            };
             let plan_path = mode.plan_path().map(PathBuf::from);
             if let Some(store) = &mut session_store
                 && let Err(message) = store.record_turn_started(&mode, plan_path.as_deref())
@@ -421,6 +561,61 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 }
                 return;
             }
+            let state_revision = session_store
+                .as_ref()
+                .map_or(INITIAL_STATE_REVISION, SessionStore::state_revision);
+            let identity = session_store.as_ref().map_or_else(
+                || SessionIdentity::root(session_ref_clone.clone()),
+                |store| store.identity.clone(),
+            );
+            let session_store = Arc::new(SyncMutex::new(session_store));
+            let checkpoint_store = Arc::clone(&session_store);
+            let checkpoint_model_spec = model_spec.clone();
+            let mut agent = Agent::new(
+                AgentParams {
+                    provider,
+                    model,
+                    config: params.config,
+                    tool_output_lines: ToolOutputLines::default(),
+                    permissions: Arc::new(PermissionManager::new(
+                        params.permissions_config,
+                        working_dir_path,
+                    )),
+                    identity: Some(identity.clone()),
+                    timeouts: params.timeouts,
+                    openai_options: params.openai_options,
+                    file_tracker: FileReadTracker::fresh(),
+                    prompt_slots: Arc::new(params.prompt_slots),
+                    subagent_cancels: Arc::new(CancelMap::new()),
+                    registry: Arc::clone(ToolRegistry::global_arc()),
+                    audience: ToolAudience::MAIN,
+                    state_revision: Some(state_revision),
+                },
+                AgentRunParams {
+                    history: &mut history,
+                    system,
+                    event_tx,
+                    tools,
+                    tool_filter,
+                },
+            )
+            .with_loaded_instructions(instructions.loaded)
+            .with_compaction_checkpoint(move |history, revision| {
+                let mut guard = checkpoint_store
+                    .lock()
+                    .map_err(|error| format!("session persistence lock poisoned: {error}"))?;
+                let Some(store) = guard.as_mut() else {
+                    return Ok(());
+                };
+                store.checkpoint_compaction(
+                    history.as_slice(),
+                    history.transcript(),
+                    &checkpoint_model_spec,
+                    revision,
+                )
+            })
+            .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
+
             let result = agent
                 .run(AgentInput {
                     message: params.prompt,
@@ -437,11 +632,21 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 .await;
             drop(agent);
 
-            if let Some(store) = &mut session_store
-                && let Err(error) =
-                    store.record_turn(history.as_slice(), model_spec, &mode, plan_path.as_deref())
-            {
-                warn!(error, "session metadata was not persisted");
+            match session_store.lock() {
+                Ok(mut guard) => {
+                    if let Some(store) = guard.as_mut()
+                        && let Err(error) = store.record_turn(
+                            history.as_slice(),
+                            history.transcript(),
+                            model_spec,
+                            &mode,
+                            plan_path.as_deref(),
+                        )
+                    {
+                        warn!(error, "session metadata was not persisted");
+                    }
+                }
+                Err(error) => warn!(%error, "session persistence lock poisoned"),
             }
 
             if let Err(e) = result {
@@ -479,6 +684,7 @@ pub struct InteractiveParams {
     pub initial_wd: PathBuf,
     pub session_id: Option<SessionRef>,
     pub initial_history: Vec<Message>,
+    pub initial_transcript: Vec<TranscriptEntry<Message>>,
     pub yolo: bool,
     pub system_prompt_override: Option<String>,
     pub append_system_prompt: Option<String>,
@@ -558,8 +764,28 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     params.openai_options.clone(),
                 ));
 
-            let mut store = store;
-            let mut history = History::restored(params.initial_history);
+            let store = match store {
+                Ok(store) => store,
+                Err(message) => {
+                    let _ = EventSender::new(raw_tx.clone(), 0).send(AgentEvent::Error { message });
+                    if let Some(handle) = params.mcp_handle.clone() {
+                        handle.shutdown().await;
+                    }
+                    return;
+                }
+            };
+            let identity = store.as_ref().map_or_else(
+                || SessionIdentity::root(session_ref_clone.clone()),
+                |store| store.identity.clone(),
+            );
+            let mut history = History::restored_with_transcript(
+                params.initial_history,
+                params.initial_transcript,
+            );
+            let mut state_revision = store
+                .as_ref()
+                .map_or(INITIAL_STATE_REVISION, SessionStore::state_revision);
+            let store = Arc::new(SyncMutex::new(store));
             let mut run_id: u64 = 0;
             let mut tool_filter = tool_filter.clone();
 
@@ -568,15 +794,26 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 let error_tx = event_tx.clone();
                 let turn_mode = input.mode.clone();
                 let turn_plan_path = input.plan_path.clone();
-                if let Some(store) = &mut store
-                    && let Err(message) =
-                        store.record_turn_started(&turn_mode, turn_plan_path.as_deref())
-                {
-                    let _ = error_tx.send(AgentEvent::Error {
-                        message: message.into(),
+                let turn_start = store
+                    .lock()
+                    .map_err(|error| format!("session persistence lock poisoned: {error}"))
+                    .and_then(|mut guard| {
+                        let Some(store) = guard.as_mut() else {
+                            return Ok(None);
+                        };
+                        store
+                            .record_turn_started(&turn_mode, turn_plan_path.as_deref())
+                            .map_err(str::to_owned)?;
+                        Ok(Some(store.state_revision()))
                     });
-                    run_id += 1;
-                    continue;
+                match turn_start {
+                    Ok(Some(revision)) => state_revision = revision,
+                    Ok(None) => {}
+                    Err(message) => {
+                        let _ = error_tx.send(AgentEvent::Error { message });
+                        run_id += 1;
+                        continue;
+                    }
                 }
 
                 if let Some(mut new_model) = model_rx.try_iter().last()
@@ -644,6 +881,8 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
 
                 while answer_rx.lock().await.try_recv().is_ok() {}
 
+                let checkpoint_model_spec = model.spec();
+                let checkpoint_store = Arc::clone(&store);
                 let mut agent = Agent::new(
                     AgentParams {
                         provider: Arc::clone(&provider),
@@ -651,7 +890,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         config: Arc::clone(&params.config),
                         tool_output_lines: ToolOutputLines::default(),
                         permissions: Arc::clone(&permissions),
-                        identity: Some(SessionIdentity::root(session_ref_clone.clone())),
+                        identity: Some(identity.clone()),
                         timeouts: params.timeouts,
                         openai_options: params.openai_options.clone(),
                         file_tracker: Arc::clone(&file_tracker),
@@ -659,6 +898,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         subagent_cancels: Arc::new(CancelMap::new()),
                         registry: Arc::clone(ToolRegistry::global_arc()),
                         audience: ToolAudience::MAIN,
+                        state_revision: Some(state_revision),
                     },
                     AgentRunParams {
                         history: &mut history,
@@ -669,11 +909,28 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     },
                 )
                 .with_loaded_instructions(instructions.loaded.clone())
+                .with_compaction_checkpoint(move |history, revision| {
+                    let mut guard = checkpoint_store
+                        .lock()
+                        .map_err(|error| format!("session persistence lock poisoned: {error}"))?;
+                    let Some(store) = guard.as_mut() else {
+                        return Ok(());
+                    };
+                    store.checkpoint_compaction(
+                        history.as_slice(),
+                        history.transcript(),
+                        &checkpoint_model_spec,
+                        revision,
+                    )
+                })
                 .with_user_response_rx(Arc::clone(&answer_rx))
                 .with_cancel(cancel)
                 .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
 
                 let result = agent.run(input).await;
+                if let Some(compaction_revision) = agent.state_revision() {
+                    state_revision = compaction_revision;
+                }
                 drop(agent);
                 cancel_task.cancel().await;
 
@@ -684,15 +941,22 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     });
                 }
 
-                if let Some(store) = &mut store
-                    && let Err(error) = store.record_turn(
-                        history.as_slice(),
-                        model.spec(),
-                        &turn_mode,
-                        turn_plan_path.as_deref(),
-                    )
-                {
-                    warn!(error, "session metadata was not persisted");
+                match store.lock() {
+                    Ok(mut guard) => {
+                        if let Some(store) = guard.as_mut() {
+                            if let Err(error) = store.record_turn(
+                                history.as_slice(),
+                                history.transcript(),
+                                model.spec(),
+                                &turn_mode,
+                                turn_plan_path.as_deref(),
+                            ) {
+                                warn!(error, "session metadata was not persisted");
+                            }
+                            state_revision = store.state_revision();
+                        }
+                    }
+                    Err(error) => warn!(%error, "session persistence lock poisoned"),
                 }
                 run_id += 1;
             }
@@ -726,7 +990,7 @@ fn extract_tool_names(tools: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use n00n_storage::sessions::generate_title;
+    use n00n_storage::sessions::{TranscriptEntry, generate_title};
     use tempfile::TempDir;
 
     use super::*;
@@ -740,10 +1004,13 @@ mod tests {
     #[derive(Default)]
     struct StatePersistenceProbe {
         hydrated_revisions: std::sync::Mutex<Vec<Option<u64>>>,
+        hydrated_snapshots: std::sync::Mutex<Vec<Option<StoredSessionStateSnapshot>>>,
         captured_revisions: std::sync::Mutex<Vec<u64>>,
+        captured_identities: std::sync::Mutex<Vec<SessionIdentity>>,
         dropped_owners: std::sync::Mutex<Vec<(n00nId, u64)>>,
         next_lease: std::sync::atomic::AtomicU64,
         fail_capture: std::sync::atomic::AtomicBool,
+        fail_hydrate: std::sync::atomic::AtomicBool,
     }
 
     impl SessionStatePersistence for StatePersistenceProbe {
@@ -752,11 +1019,15 @@ mod tests {
             _identity: &SessionIdentity,
             snapshot: Option<StoredSessionStateSnapshot>,
         ) -> Result<u64, String> {
+            if self.fail_hydrate.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("hydrate failed".into());
+            }
             self.hydrated_revisions.lock().unwrap().push(
                 snapshot
                     .as_ref()
                     .and_then(StoredSessionStateSnapshot::state_revision),
             );
+            self.hydrated_snapshots.lock().unwrap().push(snapshot);
             Ok(self
                 .next_lease
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed))
@@ -764,10 +1035,14 @@ mod tests {
 
         fn capture(
             &self,
-            _identity: &SessionIdentity,
+            identity: &SessionIdentity,
             revision: u64,
         ) -> Result<StoredSessionStateSnapshot, String> {
             self.captured_revisions.lock().unwrap().push(revision);
+            self.captured_identities
+                .lock()
+                .unwrap()
+                .push(identity.clone());
             if self.fail_capture.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err("capture failed".into());
             }
@@ -778,6 +1053,14 @@ mod tests {
                     1,
                     n00n_storage::sessions::StoredStateScope::Root,
                     serde_json::json!({"todos": []}),
+                )
+                .unwrap();
+            snapshot
+                .set_plugin_state(
+                    PLUGIN,
+                    1,
+                    n00n_storage::sessions::StoredStateScope::Session,
+                    serde_json::json!({"draft": "child"}),
                 )
                 .unwrap();
             Ok(snapshot)
@@ -828,6 +1111,7 @@ mod tests {
         store
             .record_turn(
                 &messages,
+                &[],
                 MODEL_SPEC.into(),
                 &AgentMode::Plan(PathBuf::from("plan.md")),
                 None,
@@ -855,6 +1139,7 @@ mod tests {
         store
             .record_turn(
                 &[],
+                &[],
                 MODEL_SPEC.into(),
                 &AgentMode::Research,
                 Some(&build_plan),
@@ -872,6 +1157,7 @@ mod tests {
         store
             .record_turn(
                 &[Message::user("first prompt".into())],
+                &[],
                 MODEL_SPEC.into(),
                 &AgentMode::Plan(PathBuf::from("plan.md")),
                 None,
@@ -889,6 +1175,7 @@ mod tests {
         store
             .record_turn(
                 &messages,
+                &[],
                 "other/model".into(),
                 &AgentMode::Plan(PathBuf::from("plan.md")),
                 None,
@@ -898,6 +1185,46 @@ mod tests {
         let loaded = load(&tmp);
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.model, "other/model");
+    }
+
+    #[test]
+    fn record_turn_persists_recursive_transcript() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = store_in(&tmp);
+        let original = Message::user("original prompt".into());
+        let compact_prompt = Message::user("What did we do so far?".into());
+        let summary = Message::assistant("summary".into());
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Compaction {
+                    entries: vec![TranscriptEntry::Message(original)],
+                    generated_summary: None,
+                    state_revision: Some(3),
+                }],
+                generated_summary: Some(summary.clone()),
+                state_revision: Some(9),
+            },
+            TranscriptEntry::GeneratedMessage(compact_prompt.clone()),
+            TranscriptEntry::GeneratedMessage(summary.clone()),
+        ];
+        let messages = [compact_prompt, summary];
+
+        store
+            .record_turn(
+                &messages,
+                &transcript,
+                MODEL_SPEC.into(),
+                &AgentMode::Build,
+                None,
+            )
+            .unwrap();
+
+        let loaded = load(&tmp);
+        let resumed = History::restored_with_transcript(loaded.messages, loaded.transcript);
+        assert_eq!(
+            serde_json::to_value(resumed.transcript()).unwrap(),
+            serde_json::to_value(transcript).unwrap()
+        );
     }
 
     #[cfg(unix)]
@@ -947,11 +1274,12 @@ mod tests {
             MODEL_SPEC,
             &AgentMode::Build,
             Some(state_persistence),
-        );
+        )
+        .unwrap();
         assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(7)]);
 
         store
-            .record_turn(&[], MODEL_SPEC.into(), &AgentMode::Build, None)
+            .record_turn(&[], &[], MODEL_SPEC.into(), &AgentMode::Build, None)
             .unwrap();
         assert_eq!(*probe.captured_revisions.lock().unwrap(), vec![8]);
         assert_eq!(
@@ -968,6 +1296,343 @@ mod tests {
             *probe.dropped_owners.lock().unwrap(),
             vec![(session_id(), 0)]
         );
+    }
+
+    #[test]
+    fn reopening_hydrates_latest_snapshot_after_outer_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: Vec::new(),
+                generated_summary: None,
+                state_revision: Some(3),
+            }],
+            generated_summary: None,
+            state_revision: Some(9),
+        }];
+        persisted
+            .meta
+            .checkpoint_compaction_state(StoredSessionStateSnapshot::new(3))
+            .unwrap();
+        persisted
+            .meta
+            .checkpoint_compaction_state(StoredSessionStateSnapshot::new(9))
+            .unwrap();
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(12));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let store = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+
+        assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(12)]);
+        assert_eq!(store.state_revision(), 12);
+    }
+
+    #[test]
+    fn turn_persistence_does_not_backfill_old_compaction_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(4));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: Some(7),
+        }];
+
+        store
+            .record_turn(&[], &transcript, MODEL_SPEC.into(), &AgentMode::Build, None)
+            .unwrap();
+        store
+            .record_turn(&[], &transcript, MODEL_SPEC.into(), &AgentMode::Build, None)
+            .unwrap();
+
+        assert_eq!(*probe.captured_revisions.lock().unwrap(), vec![5, 6]);
+        let loaded = StoredSession::load(session_id(), &dir).unwrap();
+        assert!(matches!(
+            loaded.meta.compaction_state_at(7),
+            Err(CompactionStateError::FutureRevision { .. }
+                | CompactionStateError::MissingRevision { .. })
+        ));
+        assert_eq!(
+            loaded
+                .meta
+                .state_snapshot
+                .as_ref()
+                .and_then(StoredSessionStateSnapshot::state_revision),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn missing_compaction_checkpoint_falls_back_to_latest_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: Some(7),
+        }];
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(6));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let store = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+
+        assert_eq!(*probe.hydrated_revisions.lock().unwrap(), vec![Some(6)]);
+        assert_eq!(store.state_revision(), 6);
+    }
+    #[test]
+    fn hydration_failure_does_not_abort_session_open() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(6));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        probe
+            .fail_hydrate
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let store = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+
+        assert_eq!(store.state_revision(), 6);
+        assert!(store.state_lease.is_none());
+    }
+
+    #[test]
+    fn compaction_checkpoint_is_durable_when_checkpoint_call_returns() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Message::user("before".into()))],
+            generated_summary: Some(Message::assistant("summary".into())),
+            state_revision: Some(1),
+        }];
+
+        store
+            .checkpoint_compaction(&[], &transcript, MODEL_SPEC, 1)
+            .unwrap();
+
+        let persisted = StoredSession::load(session_id(), &dir).unwrap();
+        assert_eq!(
+            serde_json::to_value(persisted.transcript).unwrap(),
+            serde_json::to_value(transcript).unwrap()
+        );
+        assert_eq!(
+            persisted
+                .meta
+                .compaction_state_at(1)
+                .unwrap()
+                .state_revision(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn unusable_checkpoint_metadata_does_not_block_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.meta = serde_json::from_value(serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": 2,
+                "opaque": true
+            }
+        }))
+        .unwrap();
+        persisted.save(&dir).unwrap();
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            None,
+        )
+        .unwrap();
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: Some(1),
+        }];
+
+        store
+            .checkpoint_compaction(&[], &transcript, MODEL_SPEC, 1)
+            .unwrap();
+
+        let loaded = StoredSession::load(session_id(), &dir).unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded.transcript).unwrap(),
+            serde_json::to_value(transcript).unwrap()
+        );
+        assert!(matches!(
+            loaded.meta.compaction_state_at(1),
+            Err(CompactionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn resumed_child_hydrates_matching_root_and_child_checkpoint() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let root_id = n00nId::generate();
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.meta.parent_id = Some(n00nId::generate());
+        persisted.meta.root_session_id = Some(root_id);
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(4));
+        persisted.save(&dir).unwrap();
+
+        let probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: Some(5),
+        }];
+        store
+            .checkpoint_compaction(&[], &transcript, MODEL_SPEC, 5)
+            .unwrap();
+        assert!(
+            probe
+                .captured_identities
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|identity| {
+                    identity.session_id().id() == session_id()
+                        && identity.root_session_id().id() == root_id
+                })
+        );
+        let durable_checkpoint = StoredSession::load(session_id(), &dir)
+            .unwrap()
+            .meta
+            .compaction_state_at(5)
+            .unwrap()
+            .clone();
+        let durable_json = serde_json::to_value(&durable_checkpoint).unwrap();
+        assert!(durable_json["plugins"][PLUGIN]["root"].is_object());
+        assert!(durable_json["plugins"][PLUGIN]["session"].is_object());
+        drop(store);
+
+        let restart_probe = Arc::new(StatePersistenceProbe::default());
+        let state_persistence: Arc<dyn SessionStatePersistence> =
+            Arc::clone(&restart_probe) as Arc<_>;
+        let restarted = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            Some(state_persistence),
+        )
+        .unwrap();
+
+        assert_eq!(restarted.state_revision(), 5);
+        assert_eq!(
+            restart_probe.hydrated_snapshots.lock().unwrap().as_slice(),
+            &[Some(durable_checkpoint)]
+        );
+    }
+
+    #[test]
+    fn newer_latest_snapshot_ignores_stale_checkpoint_set() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut persisted = StoredSession::new(MODEL_SPEC, CWD);
+        persisted.id = session_id();
+        persisted.transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: Some(9),
+        }];
+        persisted
+            .meta
+            .checkpoint_compaction_state(StoredSessionStateSnapshot::new(3))
+            .unwrap();
+        persisted.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(12));
+        persisted.save(&dir).unwrap();
+
+        let store = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(store.state_revision(), 12);
     }
 
     #[test]
@@ -991,9 +1656,10 @@ mod tests {
             MODEL_SPEC,
             &AgentMode::Build,
             Some(state_persistence),
-        );
+        )
+        .unwrap();
         store
-            .record_turn(&[], MODEL_SPEC.into(), &AgentMode::Build, None)
+            .record_turn(&[], &[], MODEL_SPEC.into(), &AgentMode::Build, None)
             .unwrap();
 
         assert_eq!(

@@ -161,6 +161,7 @@ pub struct AgentParams {
     pub subagent_cancels: Arc<CancelMap<String>>,
     pub registry: Arc<crate::tools::ToolRegistry>,
     pub audience: ToolAudience,
+    pub state_revision: Option<u64>,
 }
 
 pub struct AgentRunParams<'h> {
@@ -176,6 +177,9 @@ enum TestCompactionHooks {
     Enabled,
     Disabled,
 }
+
+type CompactionCheckpoint =
+    Box<dyn FnMut(&History, u64) -> Result<(), String> + Send + Sync + 'static>;
 
 pub struct Agent<'h> {
     provider: Arc<dyn Provider>,
@@ -225,6 +229,9 @@ pub struct Agent<'h> {
     active_tools: ActiveTools,
     supports_tool_examples: bool,
     fusion_state: Option<FusionState>,
+    state_revision: Option<u64>,
+    state_revision_allocator: Option<Arc<dyn Fn() -> Result<u64, String> + Send + Sync>>,
+    compaction_checkpoint: Option<CompactionCheckpoint>,
 }
 
 impl<'h> Agent<'h> {
@@ -292,6 +299,9 @@ impl<'h> Agent<'h> {
             active_tools: ActiveTools::default(),
             supports_tool_examples,
             fusion_state,
+            state_revision: params.state_revision,
+            state_revision_allocator: None,
+            compaction_checkpoint: None,
         };
         if fusion_enabled {
             agent
@@ -367,6 +377,29 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn total_cost(&self) -> f64 {
         self.total_cost
+    }
+
+    #[must_use]
+    pub fn state_revision(&self) -> Option<u64> {
+        self.state_revision
+    }
+
+    #[must_use]
+    pub fn with_state_revision_allocator(
+        mut self,
+        allocator: Arc<dyn Fn() -> Result<u64, String> + Send + Sync>,
+    ) -> Self {
+        self.state_revision_allocator = Some(allocator);
+        self
+    }
+
+    #[must_use]
+    pub fn with_compaction_checkpoint(
+        mut self,
+        checkpoint: impl FnMut(&History, u64) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        self.compaction_checkpoint = Some(Box::new(checkpoint));
+        self
     }
 
     /// Runs one tool and emits its completion event.
@@ -1107,18 +1140,14 @@ impl<'h> Agent<'h> {
             return Ok(false);
         }
         info!(context_size = self.context_size, "auto-compacting");
-        self.event_tx.send(AgentEvent::AutoCompacting)?;
-        if let Err(e) = self.do_compact().await {
-            if matches!(e, AgentError::Cancelled) {
-                return Err(e);
+        if let Err(error) = self.do_compact_with_status().await {
+            if matches!(error, AgentError::Cancelled) {
+                return Err(error);
             }
             warn!(
-                error = %e,
+                error = %error,
                 "auto-compaction failed; continuing without compacting"
             );
-            self.event_tx.send(AgentEvent::AutoCompactFailed {
-                error: e.to_string(),
-            })?;
             return Ok(false);
         }
         Ok(true)
@@ -1152,10 +1181,23 @@ impl<'h> Agent<'h> {
         self.rebuild_tools();
     }
 
+    async fn do_compact_with_status(&mut self) -> Result<(), AgentError> {
+        match self.do_compact().await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.event_tx.send(AgentEvent::AutoCompactFailed {
+                    error: error.to_string(),
+                })?;
+                Err(error)
+            }
+        }
+    }
+
     async fn do_compact(&mut self) -> Result<(), AgentError> {
         if !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
+        self.event_tx.send(AgentEvent::AutoCompacting)?;
         let (compact_provider, compact_model) = resolve_compaction_model(
             &self.provider,
             &self.model,
@@ -1167,6 +1209,20 @@ impl<'h> Agent<'h> {
         let run_hooks = matches!(self.test_compaction_hooks, TestCompactionHooks::Enabled);
         #[cfg(not(test))]
         let run_hooks = true;
+        let next_state_revision = if self.state_revision_allocator.is_some() {
+            None
+        } else {
+            self.state_revision
+                .map(|revision| {
+                    revision.checked_add(1).ok_or_else(|| AgentError::Config {
+                        message: "compaction state revision overflow".into(),
+                    })
+                })
+                .transpose()?
+        };
+        let previous_messages = self.history.as_slice().to_vec();
+        let previous_transcript = self.history.transcript().to_vec();
+        let previous_state_revision = self.state_revision;
         let (usage, summary) = compaction::compact_history(
             &*compact_provider,
             &compact_model,
@@ -1178,11 +1234,42 @@ impl<'h> Agent<'h> {
             &cwd,
             None,
             run_hooks,
+            next_state_revision,
         )
         .await?;
-        // Charge compaction to the pre-route lane before any Fusion switch.
         let cost = usage.cost(&compact_model.pricing, false);
         self.record_usage(usage, cost);
+        let next_state_revision = if let Some(allocator) = &self.state_revision_allocator {
+            match allocator() {
+                Ok(revision) => {
+                    if let Err(message) = self.history.set_outer_compaction_state_revision(revision)
+                    {
+                        self.history.restore(previous_messages, previous_transcript);
+                        return Err(AgentError::Config {
+                            message: message.into(),
+                        });
+                    }
+                    Some(revision)
+                }
+                Err(message) => {
+                    self.history.restore(previous_messages, previous_transcript);
+                    return Err(AgentError::Config { message });
+                }
+            }
+        } else {
+            next_state_revision
+        };
+        self.state_revision = next_state_revision;
+        if let (Some(revision), Some(checkpoint)) =
+            (next_state_revision, self.compaction_checkpoint.as_mut())
+            && let Err(message) = checkpoint(self.history, revision)
+        {
+            self.history.restore(previous_messages, previous_transcript);
+            self.state_revision = previous_state_revision;
+            return Err(AgentError::Config {
+                message: format!("failed to persist compaction checkpoint: {message}"),
+            });
+        }
         if self.config.fusion.enabled {
             let route = self.fusion_state.as_mut().map(|state| {
                 let recent_errors = state.recent_tool_errors();
@@ -1206,7 +1293,9 @@ impl<'h> Agent<'h> {
                 model: compact_model.spec(),
                 context_size: Some(self.context_size),
             })))?;
-        self.event_tx.send(AgentEvent::CompactionDone)?;
+        self.event_tx.send(AgentEvent::CompactionDone {
+            state_revision: next_state_revision,
+        })?;
         Ok(())
     }
 
@@ -1248,7 +1337,7 @@ impl<'h> Agent<'h> {
                     }
                 }
                 ExtractedCommand::Compact(_) => {
-                    self.do_compact().await?;
+                    self.do_compact_with_status().await?;
                 }
             }
         }
@@ -2127,6 +2216,7 @@ mod tests {
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
                 registry,
                 audience: ToolAudience::MAIN,
+                state_revision: Some(0),
             },
             AgentRunParams {
                 history,
@@ -2138,6 +2228,180 @@ mod tests {
         );
         agent.test_compaction_hooks = TestCompactionHooks::Disabled;
         (agent, event_rx)
+    }
+
+    #[test]
+    fn sequential_auto_compactions_allocate_distinct_revisions() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let (mut agent, _event_rx) = make_agent(
+                MockProvider::new(vec![
+                    text_response(StopReason::EndTurn),
+                    text_response(StopReason::EndTurn),
+                ]),
+                &mut history,
+            );
+
+            agent.do_compact().await.unwrap();
+            agent.history.push(Message::user("two".into()));
+            agent.do_compact().await.unwrap();
+
+            assert_eq!(agent.state_revision(), Some(2));
+            assert!(matches!(
+                agent.history.transcript(),
+                [TranscriptEntry::Compaction {
+                    entries,
+                    state_revision: Some(2),
+                    ..
+                }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)]
+                    if matches!(entries.as_slice(), [TranscriptEntry::Compaction { state_revision: Some(1), .. }, ..])
+            ));
+        });
+    }
+
+    #[test]
+    fn shared_compaction_revision_is_allocated_after_provider_response() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let (provider, requests) =
+                MockProvider::recording(vec![text_response(StopReason::EndTurn)]);
+            let requests_at_allocation = Arc::clone(&requests);
+            let (agent, event_rx) = make_agent(provider, &mut history);
+            let mut agent = agent.with_state_revision_allocator(Arc::new(move || {
+                assert_eq!(requests_at_allocation.lock().unwrap().len(), 1);
+                Ok(7)
+            }));
+
+            agent.do_compact().await.unwrap();
+
+            assert_eq!(agent.history.latest_state_revision(), Some(7));
+            let continue_prompt = agent.history.as_slice().last().unwrap();
+            assert!(matches!(continue_prompt.role, Role::User));
+            assert_eq!(continue_prompt.display_text.as_deref(), Some(""));
+            assert!(matches!(
+                continue_prompt.content.as_slice(),
+                [ContentBlock::Text { text }] if text == CONTINUE_AFTER_COMPACT
+            ));
+            let events = drain_events(&event_rx);
+            let compacting = events
+                .iter()
+                .position(|envelope| matches!(envelope.event, AgentEvent::AutoCompacting))
+                .unwrap();
+            let done = events
+                .iter()
+                .position(|envelope| matches!(envelope.event, AgentEvent::CompactionDone { .. }))
+                .unwrap();
+            assert!(compacting < done);
+        });
+    }
+
+    #[test]
+    fn failed_compaction_emits_terminal_status() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let (mut agent, event_rx) =
+                make_agent(MockProvider::cancel_on_request(Vec::new(), 0), &mut history);
+
+            agent.do_compact_with_status().await.unwrap_err();
+
+            let events = drain_events(&event_rx);
+            assert!(
+                events
+                    .iter()
+                    .any(|envelope| matches!(envelope.event, AgentEvent::AutoCompacting))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|envelope| matches!(envelope.event, AgentEvent::AutoCompactFailed { .. }))
+            );
+        });
+    }
+
+    #[test]
+    fn compaction_checkpoint_completes_before_boundary_events_are_sent() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let (agent, event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let checkpointed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let checkpointed_in_hook = Arc::clone(&checkpointed);
+            let event_rx_in_hook = event_rx.clone();
+            let mut agent = agent.with_compaction_checkpoint(move |history, revision| {
+                assert_eq!(revision, 1);
+                assert_eq!(history.latest_state_revision(), Some(1));
+                assert!(!event_rx_in_hook.try_iter().any(|envelope| matches!(
+                    envelope.event,
+                    AgentEvent::TurnComplete(_) | AgentEvent::CompactionDone { .. }
+                )));
+                checkpointed_in_hook.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            });
+
+            agent.do_compact().await.unwrap();
+
+            assert!(checkpointed.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(event_rx.try_iter().any(|envelope| matches!(
+                envelope.event,
+                AgentEvent::CompactionDone {
+                    state_revision: Some(1)
+                }
+            )));
+        });
+    }
+
+    #[test]
+    fn failed_compaction_checkpoint_is_not_acknowledged() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let charged = TokenUsage {
+                input: 100,
+                output: 50,
+                ..Default::default()
+            };
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = charged;
+            let (agent, event_rx) = make_agent(MockProvider::new(vec![response]), &mut history);
+            let mut agent = agent.with_compaction_checkpoint(|_, _| Err("disk full".into()));
+
+            let error = agent.do_compact().await.unwrap_err();
+
+            assert!(error.to_string().contains("disk full"));
+            assert_eq!(agent.history.latest_state_revision(), None);
+            assert_eq!(agent.history.len(), 1);
+            assert_eq!(agent.total_usage(), charged);
+            assert!(
+                !event_rx
+                    .try_iter()
+                    .any(|envelope| matches!(envelope.event, AgentEvent::CompactionDone { .. }))
+            );
+        });
+    }
+
+    #[test]
+    fn auto_compaction_revision_overflow_fails_without_consuming_state() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent.state_revision = Some(u64::MAX);
+            let original_transcript_len = agent.history.transcript().len();
+
+            let error = agent.do_compact().await.unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message == "compaction state revision overflow"
+            ));
+            assert_eq!(agent.state_revision(), Some(u64::MAX));
+            assert_eq!(agent.history.transcript().len(), original_transcript_len);
+            assert!(matches!(
+                agent.history.transcript(),
+                [TranscriptEntry::Message(_)]
+            ));
+        });
     }
 
     #[test]
@@ -2905,6 +3169,7 @@ mod tests {
                     subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
                     registry: Arc::new(crate::tools::ToolRegistry::new()),
                     audience: ToolAudience::MAIN,
+                    state_revision: Some(0),
                 },
                 AgentRunParams {
                     history: &mut history,
