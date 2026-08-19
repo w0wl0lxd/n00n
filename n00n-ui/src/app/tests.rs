@@ -4603,6 +4603,29 @@ fn open_split_window(app: &mut App, dir: n00n_lua::Split) {
 }
 
 #[test]
+fn focused_lua_window_receives_app_key_input() {
+    let mut app = test_app();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    let (event_tx, event_rx) = flume::bounded(8);
+    let (_cmd_tx, cmd_rx) = flume::bounded(8);
+    app.float_mgr.open(
+        buf,
+        n00n_lua::FloatConfig::default(),
+        true,
+        event_tx,
+        cmd_rx,
+    );
+
+    let actions = app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+
+    assert!(actions.is_empty());
+    assert!(matches!(
+        event_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(n00n_lua::WinEvent::Key { key }) if key == "enter"
+    ));
+}
+
+#[test]
 fn lua_panel_click_is_consumed_before_underlying_chat_selection() {
     let mut app = test_app();
     set_zone(&mut app, SelectionZone::Messages, TEST_AREA);

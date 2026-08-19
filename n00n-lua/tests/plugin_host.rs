@@ -1025,6 +1025,34 @@ fn handler_nil_waits_for_owned_async_run() {
     assert_eq!(second.join().unwrap().unwrap(), "finished");
 }
 
+#[test]
+fn async_run_excess_fanout_is_rejected_promptly() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "async_fanout",
+        description = "tries excessive async fanout",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function()
+            for _ = 1, 257 do
+                n00n.async.run(function() end)
+            end
+            return "unexpected"
+        end
+    })"#;
+    host.load_source("async_fanout", src).unwrap();
+
+    let started = std::time::Instant::now();
+    let error = exec_tool(&reg, "async_fanout", serde_json::json!({})).unwrap_err();
+
+    assert!(
+        error.contains("async.run capacity exhausted"),
+        "got: {error}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
 #[cfg(unix)]
 #[test]
 fn accepted_finish_does_not_wait_for_unrelated_async_run() {
@@ -6703,6 +6731,50 @@ fn bundled_todo_ctrl_t_keybind_dispatches() {
         host.event_handle().unwrap().run_keybind_callback(entry.id),
         "live plugin host must accept the Ctrl+T callback"
     );
+}
+
+#[test]
+fn bundled_question_consumes_window_input_while_tool_is_running() {
+    let (registry, host) = builtins_host();
+    let ui_rx = host.ui_action_rx().unwrap();
+    let (done_tx, done_rx) = flume::bounded(1);
+    let registry_for_tool = Arc::clone(&registry);
+    std::thread::spawn(move || {
+        let result = exec_tool_output(
+            &registry_for_tool,
+            "ask_user",
+            serde_json::json!({
+                "questions": [{
+                    "header": "Confirm",
+                    "question": "Continue?",
+                    "options": [{"label": "Yes"}, {"label": "No"}]
+                }]
+            }),
+        );
+        let _ = done_tx.send(result);
+    });
+
+    let action = ui_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("question did not open its window");
+    let n00n_lua::UiAction::OpenWin { event_tx, .. } = action else {
+        panic!("expected question window");
+    };
+    assert_eq!(registry.admission().process_active(), 0);
+    event_tx
+        .send(n00n_lua::WinEvent::Key {
+            key: "enter".into(),
+        })
+        .unwrap();
+
+    let output = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("question did not consume window input")
+        .expect("question failed");
+    let n00n_agent::ToolOutput::Markdown(output) = output else {
+        panic!("expected markdown question output");
+    };
+    assert!(output.text.contains("Yes"), "question output: {output:?}");
 }
 
 #[test]

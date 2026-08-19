@@ -82,7 +82,8 @@ lua_class! {
 
 /// Fire off a function as a new async task. It runs in the background and
 /// you do not wait for it. If you need the result, pass an {on_finish}
-/// callback.
+/// callback. A bounded number of `async.run` tasks may be queued or running at
+/// once; excess fanout returns an error instead of consuming memory without bound.
 ///
 /// @param fn function Zero-argument function to execute.
 /// @param on_finish function? Optional callback `function(err, result)`. Called once {fn} completes.

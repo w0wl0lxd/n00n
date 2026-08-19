@@ -25,6 +25,7 @@ n00n.api.register_tool({
   name = "ask_user",
   aliases = { "question" },
   description = DESCRIPTION,
+  workload = "interactive",
   schema = {
     type = "object",
     required = { "questions" },

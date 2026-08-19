@@ -1,9 +1,13 @@
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,9 +16,25 @@ use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::fs::expand_tilde;
 use crate::plugin_permissions::PluginPermissions;
-use crate::runtime::{active_task_id, with_jobs};
+use crate::runtime::{active_task_id, run_non_yieldable, with_jobs};
 
 const READER_BUF_SIZE: usize = 8 * 1024;
+const MAX_JOB_LINE_BYTES: usize = 64 * 1024;
+const JOB_EVENT_CAPACITY: usize = 256;
+const MAX_JOB_EVENTS_PER_TURN: usize = 64;
+const MAX_JOBWAIT_RETAINED_LINES: usize = 10_000;
+const MAX_JOBWAIT_RETAINED_BYTES: usize = 1024 * 1024;
+const JOBWAIT_TRUNCATION_MARKER: &str = "[... job output truncated ...]";
+#[cfg(target_os = "linux")]
+const JOB_RSS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(target_os = "linux")]
+const JOB_RSS_LIMIT_ENV: &str = "N00N_TOOL_MAX_RSS_MB";
+#[cfg(target_os = "linux")]
+const DEFAULT_JOB_RSS_LIMIT_MIN: u64 = 512 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const DEFAULT_JOB_RSS_LIMIT_MAX: u64 = 8 * 1024 * 1024 * 1024;
+#[cfg(unix)]
+const JOB_NICE_ADJUSTMENT: i32 = 10;
 const OWNER_TASK: &str = "task";
 const OWNER_PLUGIN: &str = "plugin";
 const DEFER_DELAY_RANGE_ERR: &str = "defer delay is out of range";
@@ -35,7 +55,7 @@ pub(crate) enum JobEvent {
 
 /// Lifetime of a job. Task-owned jobs die with the call that started them;
 /// plugin-owned jobs survive until their plugin unloads or reloads.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum JobOwner {
     Task(u64),
     Plugin(Arc<str>),
@@ -60,9 +80,311 @@ impl JobMeta {
     }
 }
 
+fn pump_job_output<R: BufRead>(
+    mut reader: R,
+    event_tx: &flume::Sender<JobEvent>,
+    event: fn(String) -> JobEvent,
+) {
+    let mut line = Vec::with_capacity(READER_BUF_SIZE);
+    let mut split_line = false;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok([]) => break,
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::debug!(%error, "job output read failed");
+                break;
+            }
+        };
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let available_end = newline.map_or(available.len(), |position| position + 1);
+        let remaining = MAX_JOB_LINE_BYTES.saturating_sub(line.len());
+        let consumed = available_end.min(remaining);
+        line.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+
+        let complete = newline.is_some_and(|position| consumed > position);
+        if line.len() == MAX_JOB_LINE_BYTES || complete {
+            if complete {
+                while matches!(line.last(), Some(b'\n' | b'\r')) {
+                    line.pop();
+                }
+            }
+            let suppress_split_terminator = split_line && line.is_empty() && complete;
+            if !suppress_split_terminator {
+                let text = String::from_utf8_lossy(&line).into_owned();
+                if event_tx.send(event(text)).is_err() {
+                    break;
+                }
+            }
+            split_line = !complete;
+            line.clear();
+        }
+    }
+    if !line.is_empty() {
+        let text = String::from_utf8_lossy(&line).into_owned();
+        let _ = event_tx.send(event(text));
+    }
+}
+
+fn job_command(spec: JobSpec) -> Result<Command, String> {
+    match spec {
+        JobSpec::Shell(script) => n00n_config::bash_command(&script),
+        JobSpec::Program { program, args } => {
+            let mut command = Command::new(program);
+            command.args(args);
+            Ok(command)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_pid(pid: u32) -> Result<rustix::process::Pid, String> {
+    let raw = i32::try_from(pid).map_err(|error| error.to_string())?;
+    rustix::process::Pid::from_raw(raw).ok_or_else(|| "child process id cannot be zero".into())
+}
+
+#[cfg(unix)]
+fn lower_job_priority(pid: u32) -> Result<(), String> {
+    let process = process_pid(pid)?;
+    rustix::process::setpriority_process(Some(process), JOB_NICE_ADJUSTMENT)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    use rustix::process::{Signal, kill_process_group};
+
+    let Ok(process_group) = process_pid(pid) else {
+        tracing::warn!(pid, "invalid job process group id");
+        return;
+    };
+    let Some(signal) = Signal::from_named_raw(libc::SIGKILL) else {
+        tracing::error!("SIGKILL is unavailable on this platform");
+        return;
+    };
+    if let Err(error) = kill_process_group(process_group, signal) {
+        tracing::debug!(pid, %error, "job process group kill failed");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_memory_bytes() -> Result<u64, String> {
+    let contents = std::fs::read_to_string("/proc/meminfo").map_err(|error| error.to_string())?;
+    let value = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or_else(|| "MemTotal is missing from /proc/meminfo".to_string())?;
+    let kilobytes = value.parse::<u64>().map_err(|error| error.to_string())?;
+    kilobytes
+        .checked_mul(1024)
+        .ok_or_else(|| "system memory size overflowed u64".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn default_job_rss_limit() -> u64 {
+    let total = match system_memory_bytes() {
+        Ok(bytes) => bytes / 4,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read system memory; using maximum default job RSS limit");
+            DEFAULT_JOB_RSS_LIMIT_MAX
+        }
+    };
+    total.clamp(DEFAULT_JOB_RSS_LIMIT_MIN, DEFAULT_JOB_RSS_LIMIT_MAX)
+}
+
+#[cfg(target_os = "linux")]
+fn job_rss_limit() -> u64 {
+    let Ok(value) = env::var(JOB_RSS_LIMIT_ENV) else {
+        return default_job_rss_limit();
+    };
+    match value.parse::<u64>() {
+        Ok(megabytes) if megabytes > 0 => {
+            let Some(bytes) = megabytes.checked_mul(1024 * 1024) else {
+                tracing::warn!("tool RSS limit overflowed; using default");
+                return default_job_rss_limit();
+            };
+            bytes
+        }
+        Ok(_) | Err(_) => {
+            tracing::warn!("invalid tool RSS limit; using default");
+            default_job_rss_limit()
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn status_rss_bytes(status: &str) -> Result<u64, String> {
+    let Some(kilobytes) = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|line| line.split_whitespace().next())
+    else {
+        return Ok(0);
+    };
+    kilobytes
+        .parse::<u64>()
+        .map_err(|error| error.to_string())?
+        .checked_mul(1024)
+        .ok_or_else(|| "process RSS overflowed u64".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn process_rss(pid: u32) -> Result<Option<u64>, String> {
+    let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(status) => status,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    status_rss_bytes(&status).map(Some)
+}
+
+#[cfg(target_os = "linux")]
+fn process_children(pid: u32) -> Result<Vec<u32>, String> {
+    let task_dir = match std::fs::read_dir(format!("/proc/{pid}/task")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut children = Vec::new();
+    for entry in task_dir {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path().join("children");
+        let contents = match std::fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        for child in contents.split_whitespace() {
+            children.push(child.parse::<u32>().map_err(|error| error.to_string())?);
+        }
+    }
+    Ok(children)
+}
+
+#[cfg(target_os = "linux")]
+fn process_tree_rss(pid: u32) -> Result<u64, String> {
+    let mut pending = VecDeque::from([pid]);
+    let mut visited = HashSet::new();
+    let mut total = 0_u64;
+    while let Some(process_id) = pending.pop_front() {
+        if !visited.insert(process_id) {
+            continue;
+        }
+        if let Some(bytes) = process_rss(process_id)? {
+            total = total
+                .checked_add(bytes)
+                .ok_or_else(|| "process tree RSS overflowed u64".to_string())?;
+        }
+        pending.extend(process_children(process_id)?);
+    }
+    Ok(total)
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_resource_monitor(
+    pid: u32,
+    done: Arc<AtomicBool>,
+    limit: u64,
+) -> Result<thread::JoinHandle<()>, String> {
+    thread::Builder::new()
+        .name("job-resource".into())
+        .spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                match process_tree_rss(pid) {
+                    Ok(rss) if rss > limit => {
+                        tracing::warn!(
+                            pid,
+                            rss,
+                            limit,
+                            "job exceeded RSS limit; killing process group"
+                        );
+                        kill_process_group(pid);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(pid, %error, "job RSS monitor stopped");
+                        return;
+                    }
+                }
+                thread::park_timeout(JOB_RSS_POLL_INTERVAL);
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum DrainCursor {
+    Events(JobOwner),
+    Timers(JobOwner),
+    PluginEvents,
+}
+
+impl DrainCursor {
+    fn belongs_to(&self, owner: &JobOwner) -> bool {
+        matches!(self, Self::Events(candidate) | Self::Timers(candidate) if candidate == owner)
+    }
+}
+
 pub(crate) struct JobStore {
     jobs: HashMap<u32, JobMeta>,
     next_id: u32,
+    drain_cursors: HashMap<DrainCursor, u32>,
+}
+
+struct RetainedJobOutput {
+    output: String,
+    retained_lines: usize,
+    max_lines: usize,
+    max_bytes: usize,
+    truncated: bool,
+}
+
+impl RetainedJobOutput {
+    fn new(max_lines: usize, max_bytes: usize) -> Self {
+        Self {
+            output: String::new(),
+            retained_lines: 0,
+            max_lines,
+            max_bytes,
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, line: String) {
+        if self.truncated {
+            return;
+        }
+        let separator_bytes = usize::from(!self.output.is_empty());
+        let next_bytes = self
+            .output
+            .len()
+            .checked_add(separator_bytes)
+            .and_then(|bytes| bytes.checked_add(line.len()));
+        if self.retained_lines >= self.max_lines
+            || next_bytes.is_none_or(|bytes| bytes > self.max_bytes)
+        {
+            self.truncated = true;
+            return;
+        }
+        if separator_bytes != 0 {
+            self.output.push('\n');
+        }
+        self.output.push_str(&line);
+        self.retained_lines += 1;
+    }
+
+    fn finish(mut self) -> String {
+        if self.truncated {
+            if !self.output.is_empty() {
+                self.output.push('\n');
+            }
+            self.output.push_str(JOBWAIT_TRUNCATION_MARKER);
+        }
+        self.output
+    }
 }
 
 enum JobWaitWake {
@@ -107,6 +429,7 @@ impl JobStore {
         Self {
             jobs: HashMap::new(),
             next_id: 1,
+            drain_cursors: HashMap::new(),
         }
     }
 
@@ -121,14 +444,7 @@ impl JobStore {
         on_stderr: Option<RegistryKey>,
         on_exit: Option<RegistryKey>,
     ) -> Result<u32, String> {
-        let mut command = match spec {
-            JobSpec::Shell(cmd) => n00n_config::bash_command(&cmd)?,
-            JobSpec::Program { program, args } => {
-                let mut c = Command::new(&program);
-                c.args(&args);
-                c
-            }
-        };
+        let mut command = job_command(spec)?;
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -154,12 +470,33 @@ impl JobStore {
 
         let mut child = command.spawn().map_err(|e| e.to_string())?;
         let pid = child.id();
+        #[cfg(unix)]
+        if let Err(error) = lower_job_priority(pid) {
+            tracing::warn!(pid, %error, "failed to lower job process priority");
+        }
         let id = self.next_id;
         self.next_id += 1;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let (event_tx, event_rx) = flume::unbounded();
+        let (event_tx, event_rx) = flume::bounded(JOB_EVENT_CAPACITY);
+        #[cfg(target_os = "linux")]
+        let resource_done = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "linux")]
+        let resource_monitor = match spawn_resource_monitor(
+            pid,
+            Arc::clone(&resource_done),
+            job_rss_limit(),
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                kill_process_group(pid);
+                if let Err(wait_error) = child.wait() {
+                    tracing::debug!(pid, %wait_error, "failed to reap job after monitor startup failure");
+                }
+                return Err(error);
+            }
+        };
 
         macro_rules! spawn_reader {
             ($stream:expr, $name:expr, $variant:ident) => {
@@ -169,26 +506,8 @@ impl JobStore {
                         thread::Builder::new()
                             .name($name.into())
                             .spawn(move || {
-                                let mut reader = BufReader::with_capacity(READER_BUF_SIZE, stream);
-                                let mut line = String::new();
-                                loop {
-                                    line.clear();
-                                    match reader.read_line(&mut line) {
-                                        Ok(0) => break,
-                                        Ok(_) => {
-                                            if line.ends_with('\n') {
-                                                line.pop();
-                                                if line.ends_with('\r') {
-                                                    line.pop();
-                                                }
-                                            }
-                                            if tx.send(JobEvent::$variant(line.clone())).is_err() {
-                                                break;
-                                            }
-                                        }
-                                        Err(_) => break,
-                                    }
-                                }
+                                let reader = BufReader::with_capacity(READER_BUF_SIZE, stream);
+                                pump_job_output(reader, &tx, JobEvent::$variant);
                             })
                             .map_err(|e| e.to_string())?,
                     )
@@ -210,6 +529,12 @@ impl JobStore {
                         -1
                     }
                 };
+                #[cfg(target_os = "linux")]
+                {
+                    resource_done.store(true, Ordering::Release);
+                    resource_monitor.thread().unpark();
+                    let _ = resource_monitor.join();
+                }
                 if let Some(h) = stdout_handle {
                     let _ = h.join();
                 }
@@ -295,31 +620,91 @@ impl JobStore {
     }
 
     pub fn drain_events(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
-        self.drain_matching(buf, |job| job.owner == *owner);
+        self.drain_matching(DrainCursor::Events(owner.clone()), buf, |job| {
+            job.owner == *owner
+        });
     }
 
     pub fn drain_timers(&mut self, owner: &JobOwner, buf: &mut Vec<(u32, JobEvent)>) {
-        self.drain_matching(buf, |job| job.owner == *owner && job.pid.is_none());
+        self.drain_matching(DrainCursor::Timers(owner.clone()), buf, |job| {
+            job.owner == *owner && job.pid.is_none()
+        });
     }
 
     pub fn drain_plugin_events(&mut self, buf: &mut Vec<(u32, JobEvent)>) {
-        self.drain_matching(buf, |job| matches!(job.owner, JobOwner::Plugin(_)));
+        self.drain_matching(DrainCursor::PluginEvents, buf, |job| {
+            matches!(job.owner, JobOwner::Plugin(_))
+        });
     }
 
-    fn drain_matching(&mut self, buf: &mut Vec<(u32, JobEvent)>, keep: impl Fn(&JobMeta) -> bool) {
+    fn drain_matching(
+        &mut self,
+        cursor_key: DrainCursor,
+        buf: &mut Vec<(u32, JobEvent)>,
+        keep: impl Fn(&JobMeta) -> bool,
+    ) {
         buf.clear();
-        for (&id, job) in self.jobs.iter_mut().filter(|(_, job)| keep(job)) {
-            if job
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                job.deadline = None;
-                buf.push((id, JobEvent::Exit(0)));
-            } else if let Some(ref rx) = job.event_rx {
-                while let Ok(event) = rx.try_recv() {
-                    buf.push((id, event));
+        let mut job_ids = self
+            .jobs
+            .iter()
+            .filter_map(|(&job_id, job)| keep(job).then_some(job_id))
+            .collect::<Vec<_>>();
+        job_ids.sort_unstable();
+        if job_ids.is_empty() {
+            return;
+        }
+
+        let start = self
+            .drain_cursors
+            .get(&cursor_key)
+            .copied()
+            .map_or(0, |cursor| {
+                let after_cursor = job_ids.partition_point(|job_id| *job_id <= cursor);
+                if after_cursor == job_ids.len() {
+                    0
+                } else {
+                    after_cursor
+                }
+            });
+        let now = Instant::now();
+        let mut last_drained = None;
+        while buf.len() < MAX_JOB_EVENTS_PER_TURN {
+            let mut made_progress = false;
+            for offset in 0..job_ids.len() {
+                let job_id = job_ids[(start + offset) % job_ids.len()];
+                let Some(job) = self.jobs.get_mut(&job_id) else {
+                    continue;
+                };
+                let event = if job.deadline.is_some_and(|deadline| now >= deadline) {
+                    job.deadline = None;
+                    Some(JobEvent::Exit(0))
+                } else {
+                    job.event_rx.as_ref().and_then(|receiver| {
+                        receiver.try_recv().map_or_else(
+                            |error| match error {
+                                flume::TryRecvError::Empty | flume::TryRecvError::Disconnected => {
+                                    None
+                                }
+                            },
+                            Some,
+                        )
+                    })
+                };
+                if let Some(event) = event {
+                    buf.push((job_id, event));
+                    last_drained = Some(job_id);
+                    made_progress = true;
+                    if buf.len() == MAX_JOB_EVENTS_PER_TURN {
+                        break;
+                    }
                 }
             }
+            if !made_progress {
+                break;
+            }
+        }
+        if let Some(job_id) = last_drained {
+            self.drain_cursors.insert(cursor_key, job_id);
         }
     }
 
@@ -365,6 +750,7 @@ impl JobStore {
 
     fn remove(&mut self, lua: &Lua, job_id: u32, kill: bool) {
         if let Some(mut job) = self.jobs.remove(&job_id) {
+            let owner = job.owner.clone();
             if kill {
                 kill_job(&mut job);
             }
@@ -375,6 +761,10 @@ impl JobStore {
                 if let Err(error) = lua.remove_registry_value(key) {
                     tracing::warn!(job_id, %error, "failed to drop job callback key");
                 }
+            }
+            if !self.jobs.values().any(|job| job.owner == owner) {
+                self.drain_cursors
+                    .retain(|cursor, _| !cursor.belongs_to(&owner));
             }
         }
     }
@@ -393,18 +783,7 @@ fn kill_job(meta: &mut JobMeta) {
         return;
     };
     #[cfg(unix)]
-    {
-        use rustix::process::{Pid, Signal, kill_process_group};
-        let Ok(raw) = i32::try_from(pid) else {
-            return;
-        };
-        if let Some(pid) = Pid::from_raw(raw) {
-            let Some(sig) = Signal::from_named_raw(libc::SIGKILL) else {
-                return;
-            };
-            let _ = kill_process_group(pid, sig);
-        }
-    }
+    kill_process_group(pid);
     #[cfg(windows)]
     {
         let _ = Command::new("taskkill")
@@ -420,6 +799,12 @@ fn kill_job(meta: &mut JobMeta) {
 /// For commands that don't need shell features (pipes, redirection, globs),
 /// pass an array to run the program directly with preserved argument quoting:
 /// `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
+///
+/// Unix jobs run in a separate process group at nice level 10. On Linux, the
+/// process tree's summed per-process RSS is limited to one quarter of system
+/// memory, clamped between 512 MiB and 8 GiB. Shared pages may be counted more
+/// than once. Set `N00N_TOOL_MAX_RSS_MB` to a positive whole number of MiB to
+/// override the memory limit.
 ///
 /// @param cmd string|table Shell command string, or array of program + args.
 /// @param opts table? Optional settings:
@@ -687,8 +1072,8 @@ async fn jobwait(
         .ok_or_else(|| mlua::Error::runtime("jobwait timeout is out of range"))?;
     let owner = task_id.map(JobOwner::Task);
     let mut task_events = Vec::new();
-    let mut stdout_lines = Vec::new();
-    let mut stderr_lines = Vec::new();
+    let mut stdout = RetainedJobOutput::new(MAX_JOBWAIT_RETAINED_LINES, MAX_JOBWAIT_RETAINED_BYTES);
+    let mut stderr = RetainedJobOutput::new(MAX_JOBWAIT_RETAINED_LINES, MAX_JOBWAIT_RETAINED_BYTES);
     let mut poll_at = next_jobwait_poll(timeout_at)?;
 
     let exit_code = loop {
@@ -714,8 +1099,8 @@ async fn jobwait(
             JobWaitWake::Event(Some(event)) => {
                 deliver_job_event(&lua, job_id, &event)?;
                 match event {
-                    JobEvent::Stdout(line) => stdout_lines.push(line),
-                    JobEvent::Stderr(line) => stderr_lines.push(line),
+                    JobEvent::Stdout(line) => stdout.push(line),
+                    JobEvent::Stderr(line) => stderr.push(line),
                     JobEvent::Exit(code) => {
                         drain_task_job_events(&lua, owner.as_ref(), &mut task_events);
                         break code;
@@ -728,8 +1113,8 @@ async fn jobwait(
     };
 
     let result = lua.create_table()?;
-    result.set("stdout", stdout_lines.join("\n"))?;
-    result.set("stderr", stderr_lines.join("\n"))?;
+    result.set("stdout", stdout.finish())?;
+    result.set("stderr", stderr.finish())?;
     result.set("exit_code", exit_code)?;
     Ok(mlua::Value::Table(result))
 }
@@ -753,7 +1138,7 @@ pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> Lua
             }
             JobEvent::Exit(code) => Value::Integer(i64::from(*code)),
         };
-        callback.call::<()>((job_id, arg))?;
+        run_non_yieldable(lua, || callback.call::<()>((job_id, arg)))?;
     }
     Ok(())
 }
@@ -891,6 +1276,119 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
             !group_alive(pid)
         })
+    }
+
+    #[test]
+    fn output_pump_splits_oversized_lines_without_unbounded_allocation() {
+        let mut input = vec![b'x'; MAX_JOB_LINE_BYTES + 7];
+        input.push(b'\n');
+        let (tx, rx) = flume::bounded(4);
+        pump_job_output(std::io::Cursor::new(input), &tx, JobEvent::Stdout);
+        drop(tx);
+        let chunks = rx
+            .into_iter()
+            .map(|event| match event {
+                JobEvent::Stdout(line) => line,
+                _ => panic!("unexpected event"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
+        assert_eq!(chunks[1].len(), 7);
+    }
+
+    #[test]
+    fn output_pump_preserves_carriage_return_at_split_boundary() {
+        let mut input = vec![b'x'; MAX_JOB_LINE_BYTES - 1];
+        input.extend_from_slice(b"\ry\n");
+        let (tx, rx) = flume::bounded(2);
+        pump_job_output(std::io::Cursor::new(input), &tx, JobEvent::Stdout);
+        drop(tx);
+        let chunks = rx
+            .into_iter()
+            .map(|event| match event {
+                JobEvent::Stdout(line) => line,
+                _ => panic!("unexpected event"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
+        assert!(chunks[0].ends_with('\r'));
+        assert_eq!(chunks[1], "y");
+    }
+
+    #[test]
+    fn output_pump_does_not_emit_empty_event_after_exact_size_line() {
+        let mut input = vec![b'x'; MAX_JOB_LINE_BYTES];
+        input.push(b'\n');
+        let (tx, rx) = flume::bounded(2);
+        pump_job_output(std::io::Cursor::new(input), &tx, JobEvent::Stdout);
+        drop(tx);
+        let chunks = rx
+            .into_iter()
+            .map(|event| match event {
+                JobEvent::Stdout(line) => line,
+                _ => panic!("unexpected event"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zombie_status_without_rss_counts_as_zero() {
+        assert_eq!(
+            status_rss_bytes("Name:\tzombie\nState:\tZ (zombie)\n").unwrap(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobs_run_at_reduced_priority() {
+        use std::os::unix::process::CommandExt;
+
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("priority probe process");
+        let pid = child.id();
+        lower_job_priority(pid).expect("lower job priority");
+        let process = process_pid(pid).expect("priority probe process");
+        let priority =
+            rustix::process::getpriority_process(Some(process)).expect("read job process priority");
+        kill_process_group(pid);
+        child.wait().expect("priority probe status");
+        assert_eq!(priority, JOB_NICE_ADJUSTMENT);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resource_monitor_kills_oversized_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("bash");
+        command
+            .args([
+                "-c",
+                "v=$(head -c 33554432 /dev/zero | tr '\\0' x); sleep 2; printf %s \"$v\" >/dev/null",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut child = command.spawn().expect("memory probe process");
+        let pid = child.id();
+        let done = Arc::new(AtomicBool::new(false));
+        let monitor = spawn_resource_monitor(pid, Arc::clone(&done), 8 * 1024 * 1024)
+            .expect("resource monitor");
+        let status = child.wait().expect("memory probe status");
+        done.store(true, Ordering::Release);
+        monitor.join().expect("resource monitor join");
+        assert!(!status.success(), "oversized process group was not killed");
     }
 
     #[cfg(unix)]
@@ -1118,6 +1616,70 @@ mod tests {
             lua.globals()
                 .get::<bool>("timer_fired_before_exit")
                 .unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobwait_truncates_retained_output_without_dropping_stream_callbacks() {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let owner = task_owner(lock_cell(scope.handle()).id);
+        lua.globals().set("streamed_chunks", 0_u32).unwrap();
+        let stdout_callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, (_job_id, _line): (u32, String)| {
+                    let streamed = lua.globals().get::<u32>("streamed_chunks")?;
+                    lua.globals().set("streamed_chunks", streamed + 1)
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let exit_callback = lua
+            .create_registry_value(
+                lua.create_function(|lua, (_job_id, _code): (u32, i32)| {
+                    let streamed = lua.globals().get::<u32>("streamed_chunks")?;
+                    lua.globals().set("streamed_chunks_before_exit", streamed)
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let output_bytes = MAX_JOBWAIT_RETAINED_BYTES + MAX_JOB_LINE_BYTES;
+        let process_id = with_jobs(&lua, |store| {
+            store
+                .start(
+                    owner,
+                    JobSpec::Shell(format!("head -c {output_bytes} /dev/zero | tr '\\0' x")),
+                    None,
+                    None,
+                    Some(stdout_callback),
+                    None,
+                    Some(exit_callback),
+                )
+                .unwrap()
+        });
+
+        let result = smol::block_on(scope.scope_future(jobwait(
+            lua.clone(),
+            Arc::from(TEST_PLUGIN),
+            process_id,
+            Some(5_000),
+        )))
+        .unwrap();
+        let result = match result {
+            Value::Table(table) => table,
+            other => panic!("unexpected result: {other:?}"),
+        };
+        let stdout = result.get::<String>("stdout").unwrap();
+        let streamed_chunks = lua.globals().get::<u32>("streamed_chunks").unwrap();
+
+        assert!(stdout.ends_with(JOBWAIT_TRUNCATION_MARKER));
+        assert!(streamed_chunks > 1);
+        assert_eq!(
+            lua.globals()
+                .get::<u32>("streamed_chunks_before_exit")
+                .unwrap(),
+            streamed_chunks
         );
     }
 
@@ -1369,6 +1931,79 @@ mod tests {
             }
         }
         assert!(got_exit, "should receive exit event for completed job");
+    }
+
+    #[test]
+    fn drain_events_are_bounded_and_fair_per_turn() {
+        let mut store = make_store();
+        let noisy_events =
+            (0..=MAX_JOB_EVENTS_PER_TURN).map(|index| JobEvent::Stdout(index.to_string()));
+        let noisy_id = enqueue_job_events(&mut store, task_owner(OWNER_TASK_ID), noisy_events);
+        let quiet_id = enqueue_job_events(
+            &mut store,
+            task_owner(OWNER_TASK_ID),
+            [JobEvent::Stdout("quiet".into())],
+        );
+
+        let mut events = Vec::new();
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut events);
+
+        assert_eq!(events.len(), MAX_JOB_EVENTS_PER_TURN);
+        assert!(events.iter().any(|(job_id, _)| *job_id == noisy_id));
+        assert!(events.iter().any(|(job_id, _)| *job_id == quiet_id));
+    }
+
+    #[test]
+    fn drain_events_rotates_between_turns() {
+        let mut store = make_store();
+        let job_ids = (0..=MAX_JOB_EVENTS_PER_TURN)
+            .map(|index| {
+                enqueue_job_events(
+                    &mut store,
+                    task_owner(OWNER_TASK_ID),
+                    [JobEvent::Stdout(index.to_string())],
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut first_turn = Vec::new();
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut first_turn);
+        let mut second_turn = Vec::new();
+        store.drain_events(&task_owner(OWNER_TASK_ID), &mut second_turn);
+
+        assert_eq!(first_turn.len(), MAX_JOB_EVENTS_PER_TURN);
+        assert_eq!(second_turn.len(), 1);
+        assert!(
+            !first_turn
+                .iter()
+                .any(|(job_id, _)| *job_id == second_turn[0].0)
+        );
+        assert!(job_ids.iter().all(|job_id| {
+            first_turn.iter().any(|(seen_id, _)| seen_id == job_id)
+                || second_turn.iter().any(|(seen_id, _)| seen_id == job_id)
+        }));
+    }
+
+    #[test]
+    fn retained_job_output_marks_line_limit_truncation() {
+        let mut output = RetainedJobOutput::new(2, usize::MAX);
+        output.push("first".into());
+        output.push("second".into());
+        output.push("third".into());
+
+        assert_eq!(
+            output.finish(),
+            format!("first\nsecond\n{JOBWAIT_TRUNCATION_MARKER}")
+        );
+    }
+
+    #[test]
+    fn retained_job_output_marks_byte_limit_truncation() {
+        let mut output = RetainedJobOutput::new(usize::MAX, 5);
+        output.push("abc".into());
+        output.push("de".into());
+
+        assert_eq!(output.finish(), format!("abc\n{JOBWAIT_TRUNCATION_MARKER}"));
     }
 
     #[test]
