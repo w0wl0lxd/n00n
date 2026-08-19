@@ -395,6 +395,8 @@ impl JobWaitState {
     }
 
     fn stop_monitor(&mut self) {
+        #[cfg(not(target_os = "linux"))]
+        let _ = self;
         #[cfg(target_os = "linux")]
         {
             self.resource_done.store(true, Ordering::Release);
