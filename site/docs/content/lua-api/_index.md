@@ -5872,6 +5872,7 @@ function M.snapshot(ctx)
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
 M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
+M.EXPLORER_DEFAULT_MAX_OUTPUT_BYTES = EXPLORER_DEFAULT_MAX_OUTPUT_BYTES
 function M.extend(spec)
 
 --- Returns max_lines, max_bytes: tool override when set, agent-wide otherwise.
