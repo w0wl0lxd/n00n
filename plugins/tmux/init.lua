@@ -401,6 +401,8 @@ opts = n00n.api.register_options(output_limits.extend({
 
 n00n.api.register_tool({
   name = "tmux",
+  defer_loading = true,
+  namespace = "terminal",
   kind = "execute",
   description = [[Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.]],
 

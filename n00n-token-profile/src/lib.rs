@@ -11,4 +11,4 @@ mod metrics;
 pub use baseline::{Baseline, SurfaceLimit, assert_within_baseline};
 pub use error::{ProfileError, RegressionError};
 pub use fixture::{FIXTURE_MODEL_ID, profile_cold_start};
-pub use metrics::{ProfileReport, SurfaceMetric, SurfaceName};
+pub use metrics::{ProfileReport, SurfaceMetric, SurfaceName, ToolAttribution};

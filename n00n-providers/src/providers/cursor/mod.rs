@@ -889,7 +889,8 @@ fn append_content_block(prompt: &mut String, block: &ContentBlock) {
             prompt.push_str(data);
             prompt.push(']');
         }
-        ContentBlock::ToolUse { name, input, .. } => {
+        ContentBlock::ToolUse { name, input, .. }
+        | ContentBlock::NamespacedToolUse { name, input, .. } => {
             prompt.push_str("\n[tool use: ");
             prompt.push_str(name);
             prompt.push(' ');
@@ -915,6 +916,7 @@ fn append_content_block(prompt: &mut String, block: &ContentBlock) {
             prompt.push_str(&source.to_data_url());
             prompt.push(']');
         }
+        ContentBlock::ProviderItem { .. } => {}
         ContentBlock::File { source } => {
             prompt.push_str("\n[file: ");
             if let Some(id) = source.identifier() {

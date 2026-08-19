@@ -899,12 +899,13 @@ fn set_prompt(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaResult<()> 
 /// Return a list of all registered tools. Useful for building UI that shows
 /// available tools or for checking which tools are enabled.
 ///
-/// Each entry has the tool's name, schema, audiences, and an `enabled` flag.
+/// Each entry has the tool's name, schema, audiences, deferred-loading state,
+/// and an `enabled` flag.
 /// Describe callbacks are not invoked (the static description is used).
 ///
 /// @param opts table? Options:
 ///   config (table) Optional config table with a `disabled_tools` string[] field used to compute the `enabled` flag on each entry.
-/// @return (table[]) Array of tool entries: { name, schema, audiences, kind?, enabled }.
+/// @return (table[]) Array of tool entries: { name, schema, audiences, deferred, kind?, enabled }.
 /// @example
 /// local tools = n00n.api.get_tools()
 /// for _, t in ipairs(tools) do
@@ -940,7 +941,7 @@ fn get_tools(lua: &Lua, opts: Option<Table>) -> LuaResult<Table> {
 /// throw).
 ///
 /// @param name string Exact tool name.
-/// @return (table|nil) Tool entry with fields { name, schema, audiences, kind?, header?, restore? }, or nil if not found.
+/// @return (table|nil) Tool entry with fields { name, schema, audiences, deferred, kind?, header?, restore? }, or nil if not found.
 /// @example
 /// local t = n00n.api.get_tool("bash")
 /// if t then
@@ -1007,6 +1008,7 @@ fn tool_entry_to_lua(lua: &Lua, entry: &RegisteredTool) -> LuaResult<Table> {
     t.set("name", entry.name())?;
     t.set("schema", json_to_lua(lua, &entry.tool.schema())?)?;
     t.set("audiences", audiences)?;
+    t.set("deferred", entry.defer_loading)?;
     if let Some(kind) = entry.tool.tool_kind() {
         t.set("kind", kind)?;
     }

@@ -90,11 +90,6 @@ n00n.api.register_prompt_hint({
   end,
 })
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Proactively save non-obvious project gotchas and architecture decisions to **memory**. Use `search` for keyword/tag recall (not semantic paraphrase).",
-})
-
 local function render_content(content, path, ctx)
   local buf = n00n.ui.buf()
   local tol = ctx:tool_output_lines()
@@ -269,6 +264,8 @@ end
 n00n.api.register_tool({
   name = "use_memory",
   aliases = { "memory" },
+  defer_loading = true,
+  namespace = "knowledge",
   description = "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information.",
 
   schema = {

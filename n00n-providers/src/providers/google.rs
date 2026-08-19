@@ -820,8 +820,9 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     }
                     parts.push(part);
                 }
-                ContentBlock::RedactedThinking { .. } => {}
-                ContentBlock::ToolUse { id: _, name, input } => {
+                ContentBlock::RedactedThinking { .. } | ContentBlock::ProviderItem { .. } => {}
+                ContentBlock::ToolUse { id: _, name, input }
+                | ContentBlock::NamespacedToolUse { name, input, .. } => {
                     parts.push(json!({
                         "functionCall": {
                             "name": name,

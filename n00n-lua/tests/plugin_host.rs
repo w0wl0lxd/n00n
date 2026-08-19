@@ -15,8 +15,8 @@ use n00n_agent::AgentEvent;
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
-    ActiveTools, DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-    ToolSource, timeout_annotation,
+    DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry, ToolSource,
+    timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginError, PluginHost, WARM_TOOL_CAP};
@@ -110,7 +110,7 @@ fn builtin_main_tool_definitions_stay_within_prompt_budget() {
             workflow: false,
         },
         true,
-        &ActiveTools::default(),
+        &n00n_agent::tools::default_active_tools(),
     );
     let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
 
@@ -124,6 +124,262 @@ fn builtin_main_tool_definitions_stay_within_prompt_budget() {
         bytes <= TOOL_DEFINITIONS_BYTE_BUDGET,
         "builtin main tool definitions use {bytes} bytes; budget is {TOOL_DEFINITIONS_BYTE_BUDGET}"
     );
+}
+
+#[test]
+fn deferred_builtin_families_have_namespaces_and_stay_out_of_initial_payload() {
+    let (registry, _host) = builtins_host();
+    let definitions = registry.definitions_active(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+        &n00n_agent::tools::default_active_tools(),
+    );
+    let initial_names: Vec<&str> = definitions
+        .as_array()
+        .expect("tool definitions array")
+        .iter()
+        .filter_map(|definition| definition["name"].as_str())
+        .collect();
+    let expected = [
+        ("map_codegraph", "exploration"),
+        ("search_text", "exploration"),
+        ("smell", "exploration"),
+        ("run_task", "orchestration"),
+        ("run_team", "orchestration"),
+        ("run_workflow", "orchestration"),
+        ("use_blackboard", "orchestration"),
+        ("use_memory", "knowledge"),
+        ("load_skill", "knowledge"),
+        ("fetch_url", "web"),
+        ("search_web", "web"),
+        ("github", "repository"),
+        ("tmux", "terminal"),
+    ];
+
+    for (name, namespace) in expected {
+        let entry = registry
+            .get(name)
+            .unwrap_or_else(|| panic!("missing deferred tool {name}"));
+        assert!(entry.defer_loading, "{name} must be deferred");
+        assert_eq!(
+            entry.namespace.as_deref(),
+            Some(namespace),
+            "{name} namespace"
+        );
+
+        assert!(
+            !initial_names.contains(&name),
+            "{name} leaked into initial payload"
+        );
+    }
+}
+
+#[test]
+fn deferred_interpreter_tools_are_not_advertised_or_callable() {
+    let (registry, host) = builtins_host();
+    host.load_source(
+        "code_execution_policy",
+        r#"
+        local schema = { type = "object", properties = {}, additionalProperties = false }
+        local function register(name, deferred)
+            n00n.api.register_tool({
+                name = name,
+                description = name,
+                schema = schema,
+                audiences = { "main", "interpreter" },
+                defer_loading = deferred,
+                namespace = deferred and "policy_test" or nil,
+                handler = function() return name end,
+            })
+        end
+        register("eager_interpreter_probe", false)
+        register("deferred_interpreter_probe", true)
+        "#,
+    )
+    .expect("policy fixture should load");
+
+    let run_python = registry.get("run_python").expect("run_python tool");
+    let description = run_python.tool.description(&DescriptionContext {
+        filter: &ToolFilter::All,
+        audience: ToolAudience::MAIN,
+        workflow: false,
+    });
+    assert!(description.contains("eager_interpreter_probe"));
+    assert!(!description.contains("deferred_interpreter_probe"));
+
+    let output = exec_tool_in(
+        &registry,
+        "run_python",
+        serde_json::json!({
+            "code": "print(await eager_interpreter_probe())\ntry:\n    await deferred_interpreter_probe()\nexcept NameError:\n    print('deferred unavailable')"
+        }),
+        Some(Arc::clone(&registry)),
+    )
+    .expect("run_python should execute");
+    assert_eq!(output, "eager_interpreter_probe\ndeferred unavailable");
+}
+
+#[test]
+fn model_facing_builtin_prompts_use_canonical_tool_names() {
+    let (registry, host) = builtins_host();
+    let slots = host
+        .event_handle()
+        .expect("plugin event handle")
+        .collect_prompt_slots();
+    let prompts = n00n_agent::prompt::PromptId::ALL
+        .iter()
+        .map(|prompt| n00n_agent::prompt::assemble(*prompt, &slots, ""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let filter = ToolFilter::All;
+    let definitions = registry.definitions(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+    );
+    let descriptions = definitions
+        .as_array()
+        .expect("tool definitions")
+        .iter()
+        .filter_map(|definition| definition["description"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for (alias, canonical) in n00n_config::TOOL_ALIASES {
+        for marker in [
+            format!("**{alias}**"),
+            format!("`{alias}`"),
+            format!("await {alias}("),
+            format!("- {alias}("),
+        ] {
+            assert!(
+                !prompts.contains(&marker),
+                "prompt uses {alias}; use {canonical}"
+            );
+            assert!(
+                !descriptions.contains(&marker),
+                "tool description uses {alias}; use {canonical}"
+            );
+        }
+        if alias.contains('_') {
+            assert!(
+                !prompts.contains(alias),
+                "prompt uses {alias}; use {canonical}"
+            );
+            assert!(
+                !descriptions.contains(alias),
+                "tool description uses {alias}; use {canonical}"
+            );
+        }
+    }
+
+    let project_instructions = include_str!("../../AGENTS.md");
+    for legacy_reference in [
+        "`bash` tool",
+        "Use `bash`",
+        "through `bash`",
+        "let `bash`",
+        "Use `edit`/`multiedit`/`write`",
+    ] {
+        assert!(
+            !project_instructions.contains(legacy_reference),
+            "project instructions contain legacy tool reference {legacy_reference}"
+        );
+    }
+}
+
+#[test]
+fn read_file_defaults_to_200_lines_and_honors_explicit_limit() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long.txt");
+    let content = (1..=250)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, content).unwrap();
+
+    let default_output = exec_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({ "path": path.to_string_lossy() }),
+    )
+    .unwrap();
+    assert!(default_output.contains("200: line 200"));
+    assert!(!default_output.contains("\n201: line 201\n"));
+    assert!(default_output.contains("Omitted 50 lines (201-250). Continue with offset=201."));
+
+    let explicit_output = exec_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({ "path": path.to_string_lossy(), "limit": 240 }),
+    )
+    .unwrap();
+    assert!(explicit_output.contains("240: line 240"));
+    assert!(explicit_output.contains("Omitted 10 lines (241-250). Continue with offset=241."));
+}
+#[test]
+fn search_files_defaults_to_50_results_and_honors_explicit_limit() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    for index in 1..=60 {
+        std::fs::write(dir.path().join(format!("result-{index:02}.txt")), "match").unwrap();
+    }
+    let root = dir.path().to_string_lossy().into_owned();
+
+    let default_output = exec_tool(
+        &registry,
+        "search_files",
+        serde_json::json!({ "pattern": "*.txt", "path": &root }),
+    )
+    .unwrap();
+    assert_eq!(default_output.lines().count(), 50);
+
+    let explicit_output = exec_tool(
+        &registry,
+        "search_files",
+        serde_json::json!({ "pattern": "*.txt", "path": &root, "limit": 60 }),
+    )
+    .unwrap();
+    assert_eq!(explicit_output.lines().count(), 60);
+}
+
+#[test]
+fn search_code_defaults_to_50_groups_and_honors_explicit_limit() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("matches.txt");
+    let content = (1..=60)
+        .map(|index| format!("needle {index}\nseparator"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, content).unwrap();
+
+    let default_output = exec_tool(
+        &registry,
+        "search_code",
+        serde_json::json!({ "pattern": "needle", "path": &path }),
+    )
+    .unwrap();
+    assert!(default_output.contains("needle 50"));
+    assert!(!default_output.contains("needle 51"));
+
+    let explicit_output = exec_tool(
+        &registry,
+        "search_code",
+        serde_json::json!({ "pattern": "needle", "path": &path, "limit": 60 }),
+    )
+    .unwrap();
+    assert!(explicit_output.contains("needle 60"));
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: serde_json::Value) -> Result<String, String> {
