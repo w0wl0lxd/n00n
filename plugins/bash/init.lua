@@ -393,8 +393,9 @@ rtk_rewrite = function(command, ctx)
   end
 
   local cmd = normalize_command(command:match("^%s*(.-)%s*$"))
-  if rtk_explicit_proxy(cmd) then
-    return cmd
+  local explicit_proxy = rtk_explicit_proxy(cmd)
+  if explicit_proxy then
+    return explicit_proxy
   end
 
   -- jq and yq must pass through unchanged (FR-018)
@@ -638,13 +639,10 @@ local function is_assignment_word(word)
   return word:match("^[%a_][%w_]*=") ~= nil
 end
 
-local function rtk_wrapped_command_index(words, executable)
-  if executable == "xargs" or executable == "exec" then
-    return nil, true
-  end
+local function rtk_wrapped_command_index(words, executable, executable_index)
   local value_options = RTK_WRAPPER_VALUE_OPTIONS[executable] or {}
   local flag_options = RTK_WRAPPER_FLAG_OPTIONS[executable] or {}
-  local index = 2
+  local index = executable_index + 1
   while index <= #words do
     local word = words[index]
     if word == "--" then
@@ -681,23 +679,38 @@ local function rtk_wrapped_command_index(words, executable)
   return words[index] and index or nil, false
 end
 
-local function rtk_managed_command_index(words)
-  local executable = words[1] and normalized_executable(words[1])
+local function rtk_managed_command_index(words, executable_index, depth)
+  executable_index = executable_index or 1
+  depth = depth or 0
+  if depth > 8 then
+    return nil, true
+  end
+
+  local executable = words[executable_index] and normalized_executable(words[executable_index])
   if not executable or executable:find("$", 1, true) then
     return nil, executable ~= nil
   end
   if RTK_MANAGED_COMMANDS[executable] then
-    return 1, false
+    return executable_index, false
   end
   if not RTK_COMMAND_WRAPPERS[executable] or RTK_STRING_COMMAND_WRAPPERS[executable] then
     return nil, false
   end
-  local index, unresolved = rtk_wrapped_command_index(words, executable)
-  if unresolved or not index then
-    return nil, unresolved
+
+  local index, unresolved = rtk_wrapped_command_index(words, executable, executable_index)
+  if unresolved then
+    for candidate_index = executable_index + 1, #words do
+      local candidate = normalized_executable(words[candidate_index])
+      if candidate and RTK_MANAGED_COMMANDS[candidate] then
+        return candidate_index, false
+      end
+    end
+    return nil, false
   end
-  local candidate = normalized_executable(words[index])
-  return candidate and RTK_MANAGED_COMMANDS[candidate] and index or nil, false
+  if not index then
+    return nil, false
+  end
+  return rtk_managed_command_index(words, index, depth + 1)
 end
 
 local function rtk_manages_segment(segment, depth)
@@ -788,10 +801,17 @@ end
 
 rtk_explicit_proxy = function(command)
   if not rtk_single_command(command) or not command:match("^rtk%s+proxy%s+") then
-    return false
+    return nil
   end
   local target = command:match("^rtk%s+proxy%s+(.+)$")
-  return target and rtk_proxy_target_allowed(target, false) or false
+  if not target then
+    return nil
+  end
+  local allowed, normalized = rtk_proxy_target_allowed(target, false)
+  if not allowed then
+    return nil
+  end
+  return "rtk proxy " .. sanitize_git_command(normalized)
 end
 
 rtk_proxy_fallback = function(command)
