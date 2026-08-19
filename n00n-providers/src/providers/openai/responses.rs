@@ -2173,7 +2173,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 0,
-            openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Explicit),
+            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
             ..Default::default()
         };
         let body = build_body(
@@ -2245,7 +2245,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             false,
             &RequestOptions {
                 message_cache_breakpoints: 1,
-                openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Explicit),
+                openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
                 ..Default::default()
             },
             true,
