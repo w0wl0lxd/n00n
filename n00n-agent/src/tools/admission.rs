@@ -234,6 +234,8 @@ impl ToolAdmission {
             slot
         };
 
+        // Standard tools must not dispatch same-scope admitted children while holding this
+        // slot. Fan-out wrappers are Orchestrator-class and bypass both permits.
         let Ok(agent_guard) = cancel.race(agent.semaphore.acquire_arc()).await else {
             self.release_agent(&scope, &agent);
             return Err(AdmissionError::Cancelled);
