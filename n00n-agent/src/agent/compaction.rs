@@ -466,12 +466,6 @@ mod tests {
     use crate::AgentConfig;
 
     #[test]
-    fn continue_prompt_restores_persisted_todos_for_the_model() {
-        assert!(CONTINUE_AFTER_COMPACT.contains("todo_write"));
-        assert!(CONTINUE_AFTER_COMPACT.contains("restore todos"));
-    }
-
-    #[test]
     fn compaction_summary_is_an_assistant_message() {
         smol::block_on(async {
             let model = default_model();

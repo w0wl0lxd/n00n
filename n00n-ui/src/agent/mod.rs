@@ -298,6 +298,7 @@ fn spawn_agent_internal(
     let (init_trigger, init_cancel) = CancelToken::new();
     let cancel_map = Arc::new(new_run_cancel_map(0, init_trigger));
     let subagent_cancels: Arc<CancelMap<String>> = Arc::new(CancelMap::new());
+    revision_allocator.observe(initial_state_revision);
 
     spawn_command_router(
         cmd_rx,

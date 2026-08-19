@@ -1139,17 +1139,14 @@ impl<'h> Agent<'h> {
             return Ok(false);
         }
         info!(context_size = self.context_size, "auto-compacting");
-        if let Err(e) = self.do_compact().await {
-            if matches!(e, AgentError::Cancelled) {
-                return Err(e);
+        if let Err(error) = self.do_compact_with_status().await {
+            if matches!(error, AgentError::Cancelled) {
+                return Err(error);
             }
             warn!(
-                error = %e,
+                error = %error,
                 "auto-compaction failed; continuing without compacting"
             );
-            self.event_tx.send(AgentEvent::AutoCompactFailed {
-                error: e.to_string(),
-            })?;
             return Ok(false);
         }
         Ok(true)
@@ -1181,6 +1178,18 @@ impl<'h> Agent<'h> {
         let model_filter = ToolFilter::from_config(&self.config, &self.model, &[]);
         self.tool_filter = std::mem::take(&mut self.tool_filter).intersect(&model_filter);
         self.rebuild_tools();
+    }
+
+    async fn do_compact_with_status(&mut self) -> Result<(), AgentError> {
+        match self.do_compact().await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.event_tx.send(AgentEvent::AutoCompactFailed {
+                    error: error.to_string(),
+                })?;
+                Err(error)
+            }
+        }
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
@@ -1327,7 +1336,7 @@ impl<'h> Agent<'h> {
                     }
                 }
                 ExtractedCommand::Compact(_) => {
-                    self.do_compact().await?;
+                    self.do_compact_with_status().await?;
                 }
             }
         }
@@ -2265,6 +2274,13 @@ mod tests {
             agent.do_compact().await.unwrap();
 
             assert_eq!(agent.history.latest_state_revision(), Some(7));
+            let continue_prompt = agent.history.as_slice().last().unwrap();
+            assert!(matches!(continue_prompt.role, Role::User));
+            assert_eq!(continue_prompt.display_text.as_deref(), Some(""));
+            assert!(matches!(
+                continue_prompt.content.as_slice(),
+                [ContentBlock::Text { text }] if text == CONTINUE_AFTER_COMPACT
+            ));
             let events = drain_events(&event_rx);
             let compacting = events
                 .iter()
@@ -2275,6 +2291,29 @@ mod tests {
                 .position(|envelope| matches!(envelope.event, AgentEvent::CompactionDone { .. }))
                 .unwrap();
             assert!(compacting < done);
+        });
+    }
+
+    #[test]
+    fn failed_compaction_emits_terminal_status() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("one".into())]);
+            let (mut agent, event_rx) =
+                make_agent(MockProvider::cancel_on_request(Vec::new(), 0), &mut history);
+
+            agent.do_compact_with_status().await.unwrap_err();
+
+            let events = drain_events(&event_rx);
+            assert!(
+                events
+                    .iter()
+                    .any(|envelope| matches!(envelope.event, AgentEvent::AutoCompacting))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|envelope| matches!(envelope.event, AgentEvent::AutoCompactFailed { .. }))
+            );
         });
     }
 
