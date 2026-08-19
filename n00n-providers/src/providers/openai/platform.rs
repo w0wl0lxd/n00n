@@ -65,7 +65,7 @@ fn coding_plan_slot_count(slots: u64) -> u8 {
 type ResponseOperationSlot = Arc<AsyncMutex<()>>;
 type ResponseOperationKey = (PathBuf, n00nId);
 type ResponseOperationRegistry = Mutex<HashMap<ResponseOperationKey, Weak<AsyncMutex<()>>>>;
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CodexCacheCapabilities {
     pub accepts_prompt_cache_options_implicit: bool,
     pub accepts_prompt_cache_options_explicit: bool,
@@ -73,7 +73,7 @@ pub struct CodexCacheCapabilities {
 }
 
 impl CodexCacheCapabilities {
-    fn apply_to_request_options(self, mut opts: RequestOptions) -> RequestOptions {
+    fn apply_to_request_options(&self, mut opts: RequestOptions) -> RequestOptions {
         let requested_breakpoints = opts.message_cache_breakpoints;
         opts.message_cache_breakpoints = 0;
         opts.openai_prompt_cache_mode = None;
@@ -132,7 +132,7 @@ fn log_response_chain_reset(reason: ResponseChainResetReason, durable_chain: Opt
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct OpenAiOptions {
     coding_plan_slots: u8,
     codex_provider: bool,
