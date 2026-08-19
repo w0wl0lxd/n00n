@@ -28,7 +28,7 @@ See `changelog.d/README.md` for the fragment convention.
 - Memory tool v2: keyword search, YAML frontmatter metadata, append, and lite-layer session recall hints.
 - Added native Cursor `AgentService/Run` spike (HTTP/2 Connect via reqwest duplex streaming) with IDE auth, discovery, checkpoints, checksum headers, and a live Auto/`default` pong path gated by `N00N_CURSOR_LIVE_TESTS=1`.
 - Added lead-owned beta Fusion orchestration (`--fusion` / `always_fusion` / `[agent.fusion]`): a lead agent plans, delegates execution to a conservative sidekick via `fusion_delegate`, and reviews the result. Fusion remains off by default, delegation is lead-directed, and per-lane cost stats are reported on done events.
-- <!-- markdownlint-disable MD041 -->
+<!-- markdownlint-disable MD041 -->
 - Added first-tier explore tooling with `explore` intent routing, expanded `arbor`/`codegraph`/`semblem` commands, native/CLI fallbacks, and `rtk`/`bash` hardening.
 - Added a native tmux tool for managing sessions, windows, and panes.
 - Added host-owned, root- and session-scoped Lua plugin state with bounded snapshots, lifecycle restoration, and cleanup.
@@ -55,7 +55,7 @@ See `changelog.d/README.md` for the fragment convention.
 - Migrate supported non-Codex OpenAI models to Responses API with safe Chat Completions fallback. API-key requests are intentionally stateless: they use `store: false` and send full history on every turn, so provider-side response storage is not enabled.
 - Extended non-Codex OpenAI Responses API with July 2026 model features: explicit prompt-cache options and breakpoints, reasoning mode and context, service-tier fast, safety identifiers, moderation, built-in tool conversion, and output item parsing for gpt-5.5/5.6.
 - Added native `semblem` built-in with `n00n-search` BM25 indexing and `n00n-semble` Lua bindings.
-- <!-- markdownlint-disable MD041 -->
+<!-- markdownlint-disable MD041 -->
 - Added per-model `thinking_dialect`, `thinking_fields`, and `body_override` config for dynamic providers (script `models`/`info`) and custom providers (`providers.toml`), letting a model declare where thinking values go in the request body and shape the body with `defaults`/`replace`/`filter` after the provider's own setup.
 - Show prompt-cache hit percentages in the status bar and token usage panel for every provider that reports cached token usage.
 - Validate model identifiers against the configured model catalog instead of parsing any `provider/model` string, so an unconfigured or unavailable model is now rejected with a clear error when choosing or loading a model. Restored sessions keep working: the saved model resolves through the catalog first and falls back to the static tables when the provider is currently unconfigured, preserving session continuity. Tools also gain canonical names (`read` is now `read_file`, `bash` is now `run_shell`, and similar); the previous names keep working as deprecated aliases and are normalized in permission rules.
