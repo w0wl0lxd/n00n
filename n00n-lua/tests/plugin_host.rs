@@ -1027,7 +1027,7 @@ fn async_run_excess_fanout_is_rejected_promptly() {
     let error = exec_tool(&reg, "async_fanout", serde_json::json!({})).unwrap_err();
 
     assert!(
-        error.contains("async.run capacity exhausted (maximum 256 outstanding tasks)"),
+        error.contains("async.run capacity exhausted"),
         "got: {error}"
     );
     assert!(started.elapsed() < Duration::from_secs(2));

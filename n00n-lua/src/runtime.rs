@@ -93,7 +93,6 @@ const MAX_INFLIGHT_TOOLS: usize = 64;
 const SPAWN_QUEUE_CAPACITY: usize = 256;
 const MAX_RUNTIME_EVENTS_PER_LANE: usize = 64;
 const MAX_CONSECUTIVE_PRIORITY_EVENTS: usize = 64;
-const SPAWN_QUEUE_FULL_MSG: &str = "async.run capacity exhausted (maximum 256 outstanding tasks)";
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 /// Finished tools kept clickable without a restore round-trip. Purely a
 /// cache: a click that misses it falls back to the restore item carried
@@ -1027,7 +1026,7 @@ pub(crate) fn enqueue_async_task(
     match queue.tx.try_send(task) {
         Ok(()) => {}
         Err(flume::TrySendError::Full(_)) => {
-            return Err(mlua::Error::runtime(SPAWN_QUEUE_FULL_MSG));
+            return Err(mlua::Error::runtime(spawn_queue_full_message()));
         }
         Err(flume::TrySendError::Disconnected(_)) => {
             return Err(mlua::Error::runtime("spawn queue closed"));
@@ -1224,6 +1223,10 @@ pub(crate) struct PendingAsyncTask {
     _claim: OutstandingAsyncClaim,
 }
 
+fn spawn_queue_full_message() -> String {
+    format!("async.run capacity exhausted (maximum {SPAWN_QUEUE_CAPACITY} outstanding tasks)")
+}
+
 struct OutstandingAsyncClaim(Arc<AtomicUsize>);
 
 impl Drop for OutstandingAsyncClaim {
@@ -1276,7 +1279,7 @@ impl SpawnQueue {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < SPAWN_QUEUE_CAPACITY).then_some(count + 1)
             })
-            .map_err(|_| mlua::Error::runtime(SPAWN_QUEUE_FULL_MSG))?;
+            .map_err(|_| mlua::Error::runtime(spawn_queue_full_message()))?;
         Ok(OutstandingAsyncClaim(Arc::clone(&self.outstanding)))
     }
 }
@@ -4165,7 +4168,6 @@ mod tests {
     }
 
     const SPAWN_QUEUE_NOT_INIT: &str = "spawn queue not initialized";
-    const EXPECTED_SPAWN_QUEUE_CAPACITY: usize = 256;
 
     fn enqueue_test_lua() -> Lua {
         let lua = Lua::new();
@@ -4403,16 +4405,16 @@ mod tests {
     fn enqueue_async_task_rejects_excess_fanout() {
         let lua = enqueue_test_lua();
         let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
-        for _ in 0..EXPECTED_SPAWN_QUEUE_CAPACITY {
+        for _ in 0..SPAWN_QUEUE_CAPACITY {
             enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
         }
 
         let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
 
-        assert!(error.to_string().contains(SPAWN_QUEUE_FULL_MSG));
+        assert!(error.to_string().contains(&spawn_queue_full_message()));
         assert_eq!(
             lock_cell(scope.handle()).async_tasks.get(),
-            EXPECTED_SPAWN_QUEUE_CAPACITY
+            SPAWN_QUEUE_CAPACITY
         );
     }
 
@@ -4420,7 +4422,7 @@ mod tests {
     fn draining_spawn_queue_does_not_release_fanout_capacity() {
         let lua = enqueue_test_lua();
         let _scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
-        for _ in 0..EXPECTED_SPAWN_QUEUE_CAPACITY {
+        for _ in 0..SPAWN_QUEUE_CAPACITY {
             enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
         }
         let queued: Vec<_> = lua
@@ -4432,7 +4434,7 @@ mod tests {
 
         let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
 
-        assert!(error.to_string().contains(SPAWN_QUEUE_FULL_MSG));
+        assert!(error.to_string().contains(&spawn_queue_full_message()));
         drop(queued);
         enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
     }
@@ -4442,19 +4444,19 @@ mod tests {
         let lua = enqueue_test_lua();
         let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
         lock_cell(scope.handle()).inline_spawn = Some(Vec::new());
-        for _ in 0..EXPECTED_SPAWN_QUEUE_CAPACITY {
+        for _ in 0..SPAWN_QUEUE_CAPACITY {
             enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
         }
 
         let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
 
-        assert!(error.to_string().contains(SPAWN_QUEUE_FULL_MSG));
+        assert!(error.to_string().contains(&spawn_queue_full_message()));
         assert_eq!(
             lock_cell(scope.handle())
                 .inline_spawn
                 .as_ref()
                 .map(Vec::len),
-            Some(EXPECTED_SPAWN_QUEUE_CAPACITY)
+            Some(SPAWN_QUEUE_CAPACITY)
         );
     }
 

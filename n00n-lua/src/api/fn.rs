@@ -105,8 +105,10 @@ fn pump_job_output<R: BufRead>(
 
         let complete = newline.is_some_and(|position| consumed > position);
         if line.len() == MAX_JOB_LINE_BYTES || complete {
-            while matches!(line.last(), Some(b'\n' | b'\r')) {
-                line.pop();
+            if complete {
+                while matches!(line.last(), Some(b'\n' | b'\r')) {
+                    line.pop();
+                }
             }
             let suppress_split_terminator = split_line && line.is_empty() && complete;
             if !suppress_split_terminator {
@@ -1293,6 +1295,26 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
         assert_eq!(chunks[1].len(), 7);
+    }
+
+    #[test]
+    fn output_pump_preserves_carriage_return_at_split_boundary() {
+        let mut input = vec![b'x'; MAX_JOB_LINE_BYTES - 1];
+        input.extend_from_slice(b"\ry\n");
+        let (tx, rx) = flume::bounded(2);
+        pump_job_output(std::io::Cursor::new(input), &tx, JobEvent::Stdout);
+        drop(tx);
+        let chunks = rx
+            .into_iter()
+            .map(|event| match event {
+                JobEvent::Stdout(line) => line,
+                _ => panic!("unexpected event"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), MAX_JOB_LINE_BYTES);
+        assert!(chunks[0].ends_with('\r'));
+        assert_eq!(chunks[1], "y");
     }
 
     #[test]

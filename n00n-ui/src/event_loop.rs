@@ -2456,6 +2456,7 @@ impl<'t> EventLoop<'t> {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
         self.settle_cancelled_sessions();
+        self.preserve_post_draw_submissions();
         let mut tabs = Vec::with_capacity(self.sessions.len());
         let mut agent_tasks = Vec::with_capacity(self.sessions.len());
         for rt in self.sessions.drain(..) {
