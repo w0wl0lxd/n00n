@@ -50,10 +50,13 @@ const MAX_FIRST_MESSAGE_LINE_BYTES: usize = 64 * 1024;
 const MAX_FIRST_MESSAGE_TEXT_BYTES: usize = 1024;
 const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
 pub const SESSION_STATE_SCHEMA_VERSION: u32 = 1;
+pub const COMPACTION_STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_PLUGIN_STATE_ENTRIES: usize = 64;
 const MAX_PLUGIN_STATE_NAME_BYTES: usize = 128;
 pub const MAX_PLUGIN_STATE_BYTES: usize = 256 * 1024;
 const MAX_SESSION_STATE_BYTES: usize = 1024 * 1024;
+const MAX_COMPACTION_STATE_CHECKPOINTS: usize = 64;
+const MAX_COMPACTION_STATE_BYTES: usize = 4 * 1024 * 1024;
 const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
@@ -907,6 +910,361 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct StoredCompactionStateCheckpointsV1 {
+    schema_version: u32,
+    checkpoints: Vec<StoredSessionStateSnapshot>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum StoredCompactionStateCheckpointsInner {
+    Supported(StoredCompactionStateCheckpointsV1),
+    Unsupported {
+        schema_version: u64,
+        raw: serde_json::Value,
+    },
+    Malformed {
+        raw: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredCompactionStateCheckpoints {
+    inner: StoredCompactionStateCheckpointsInner,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CompactionStateError {
+    #[error("unsupported compaction-state schema version {found} (expected {expected})")]
+    UnsupportedSchemaVersion { found: u64, expected: u32 },
+    #[error("compaction-state checkpoint envelope is malformed")]
+    InvalidEnvelope,
+    #[error("compaction-state revision {revision} is not checkpointed")]
+    MissingRevision { revision: u64 },
+    #[error("compaction-state revision {requested} is newer than latest checkpoint {latest}")]
+    FutureRevision { requested: u64, latest: u64 },
+    #[error("compaction-state revision cannot regress from {latest} to {requested}")]
+    RevisionRegression { latest: u64, requested: u64 },
+    #[error("compaction-state revision {revision} already has a different checkpoint")]
+    RevisionConflict { revision: u64 },
+    #[error("compaction state has {found} checkpoints (maximum {maximum})")]
+    TooManyCheckpoints { found: usize, maximum: usize },
+    #[error("compaction state is {bytes} bytes (maximum {maximum})")]
+    CheckpointsTooLarge { bytes: usize, maximum: usize },
+    #[error(transparent)]
+    InvalidSnapshot(#[from] SessionStateError),
+    #[error("failed to encode compaction state: {0}")]
+    Serialize(#[from] serde_json::Error),
+}
+
+impl Default for StoredCompactionStateCheckpoints {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Serialize for StoredCompactionStateCheckpoints {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match &self.inner {
+            StoredCompactionStateCheckpointsInner::Supported(checkpoints) => {
+                checkpoints.serialize(serializer)
+            }
+            StoredCompactionStateCheckpointsInner::Unsupported { raw, .. }
+            | StoredCompactionStateCheckpointsInner::Malformed { raw } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredCompactionStateCheckpoints {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        Self::from_raw(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+impl StoredCompactionStateCheckpoints {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: StoredCompactionStateCheckpointsInner::Supported(
+                StoredCompactionStateCheckpointsV1 {
+                    schema_version: COMPACTION_STATE_SCHEMA_VERSION,
+                    checkpoints: Vec::new(),
+                    extra: BTreeMap::new(),
+                },
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(
+            &self.inner,
+            StoredCompactionStateCheckpointsInner::Supported(checkpoints)
+                if checkpoints.checkpoints.is_empty()
+        )
+    }
+
+    /// Stores a snapshot once, keyed by its exact monotonic state revision.
+    ///
+    /// Re-inserting an identical checkpoint is idempotent. All validation occurs before mutation.
+    ///
+    /// # Errors
+    /// Returns a typed error for unusable snapshots, revision conflicts, or exceeded bounds.
+    pub fn insert(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<(), CompactionStateError> {
+        let Some(candidate) = self.candidate_with(snapshot)? else {
+            return Ok(());
+        };
+        validate_compaction_state_checkpoints(&candidate)?;
+        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
+        Ok(())
+    }
+
+    fn insert_pruning_oldest(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<(), CompactionStateError> {
+        let Some(mut candidate) = self.candidate_with(snapshot)? else {
+            return Ok(());
+        };
+        loop {
+            match validate_compaction_state_checkpoints(&candidate) {
+                Ok(()) => break,
+                Err(
+                    CompactionStateError::TooManyCheckpoints { .. }
+                    | CompactionStateError::CheckpointsTooLarge { .. },
+                ) if candidate.checkpoints.len() > 1 => {
+                    candidate.checkpoints.remove(0);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
+        Ok(())
+    }
+
+    fn candidate_with(
+        &self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<Option<StoredCompactionStateCheckpointsV1>, CompactionStateError> {
+        let StoredCompactionStateCheckpointsInner::Supported(checkpoints) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        snapshot.validate_for_apply()?;
+        let revision = snapshot
+            .state_revision()
+            .ok_or(CompactionStateError::InvalidEnvelope)?;
+        if let Some(existing) = checkpoints
+            .checkpoints
+            .iter()
+            .find(|existing| existing.state_revision() == Some(revision))
+        {
+            return if existing == &snapshot {
+                Ok(None)
+            } else {
+                Err(CompactionStateError::RevisionConflict { revision })
+            };
+        }
+        if let Some(latest) = checkpoints
+            .checkpoints
+            .last()
+            .and_then(StoredSessionStateSnapshot::state_revision)
+            && revision < latest
+        {
+            return Err(CompactionStateError::RevisionRegression {
+                latest,
+                requested: revision,
+            });
+        }
+        let mut candidate = checkpoints.clone();
+        candidate.checkpoints.push(snapshot);
+        Ok(Some(candidate))
+    }
+
+    /// Retrieves only the checkpoint matching `revision` exactly.
+    ///
+    /// # Errors
+    /// Returns a typed error when metadata is unusable, the revision is missing, or it is newer
+    /// than every stored checkpoint.
+    pub fn snapshot_at(
+        &self,
+        revision: u64,
+    ) -> Result<&StoredSessionStateSnapshot, CompactionStateError> {
+        let StoredCompactionStateCheckpointsInner::Supported(checkpoints) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        if let Some(snapshot) = checkpoints
+            .checkpoints
+            .iter()
+            .find(|snapshot| snapshot.state_revision() == Some(revision))
+        {
+            snapshot.validate_for_apply()?;
+            return Ok(snapshot);
+        }
+        let Some(latest) = checkpoints
+            .checkpoints
+            .last()
+            .and_then(StoredSessionStateSnapshot::state_revision)
+        else {
+            return Err(CompactionStateError::MissingRevision { revision });
+        };
+        if revision > latest {
+            Err(CompactionStateError::FutureRevision {
+                requested: revision,
+                latest,
+            })
+        } else {
+            Err(CompactionStateError::MissingRevision { revision })
+        }
+    }
+
+    fn from_raw(raw: serde_json::Value) -> Result<Self, CompactionStateError> {
+        validate_raw_compaction_state_checkpoints(&raw)?;
+        let schema_version = raw
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(CompactionStateError::InvalidEnvelope)?;
+        if schema_version != u64::from(COMPACTION_STATE_SCHEMA_VERSION) {
+            return Ok(Self {
+                inner: StoredCompactionStateCheckpointsInner::Unsupported {
+                    schema_version,
+                    raw,
+                },
+            });
+        }
+        let checkpoints: StoredCompactionStateCheckpointsV1 = serde_json::from_value(raw)?;
+        validate_compaction_state_checkpoints(&checkpoints)?;
+        Ok(Self {
+            inner: StoredCompactionStateCheckpointsInner::Supported(checkpoints),
+        })
+    }
+
+    fn unsupported_schema_error(&self) -> CompactionStateError {
+        match &self.inner {
+            StoredCompactionStateCheckpointsInner::Supported(_)
+            | StoredCompactionStateCheckpointsInner::Malformed { .. } => {
+                CompactionStateError::InvalidEnvelope
+            }
+            StoredCompactionStateCheckpointsInner::Unsupported { schema_version, .. } => {
+                CompactionStateError::UnsupportedSchemaVersion {
+                    found: *schema_version,
+                    expected: COMPACTION_STATE_SCHEMA_VERSION,
+                }
+            }
+        }
+    }
+}
+
+fn validate_raw_compaction_state_checkpoints(
+    raw: &serde_json::Value,
+) -> Result<(), CompactionStateError> {
+    let bytes = serde_json::to_vec(raw)?.len();
+    if bytes > MAX_COMPACTION_STATE_BYTES {
+        return Err(CompactionStateError::CheckpointsTooLarge {
+            bytes,
+            maximum: MAX_COMPACTION_STATE_BYTES,
+        });
+    }
+    let Some(checkpoints) = raw.get("checkpoints").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    if checkpoints.len() > MAX_COMPACTION_STATE_CHECKPOINTS {
+        return Err(CompactionStateError::TooManyCheckpoints {
+            found: checkpoints.len(),
+            maximum: MAX_COMPACTION_STATE_CHECKPOINTS,
+        });
+    }
+    for snapshot in checkpoints {
+        let bytes = serde_json::to_vec(snapshot)?.len();
+        if bytes > MAX_SESSION_STATE_BYTES {
+            return Err(CompactionStateError::InvalidSnapshot(
+                SessionStateError::SnapshotTooLarge {
+                    bytes,
+                    maximum: MAX_SESSION_STATE_BYTES,
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_compaction_state_checkpoints(
+    checkpoints: &StoredCompactionStateCheckpointsV1,
+) -> Result<(), CompactionStateError> {
+    if checkpoints.checkpoints.len() > MAX_COMPACTION_STATE_CHECKPOINTS {
+        return Err(CompactionStateError::TooManyCheckpoints {
+            found: checkpoints.checkpoints.len(),
+            maximum: MAX_COMPACTION_STATE_CHECKPOINTS,
+        });
+    }
+    let mut previous = None;
+    for snapshot in &checkpoints.checkpoints {
+        snapshot.validate_for_apply()?;
+        let revision = snapshot
+            .state_revision()
+            .ok_or(CompactionStateError::InvalidEnvelope)?;
+        if let Some(latest) = previous {
+            if revision == latest {
+                return Err(CompactionStateError::RevisionConflict { revision });
+            }
+            if revision < latest {
+                return Err(CompactionStateError::RevisionRegression {
+                    latest,
+                    requested: revision,
+                });
+            }
+        }
+        previous = Some(revision);
+    }
+    let bytes = serde_json::to_vec(checkpoints)?.len();
+    if bytes > MAX_COMPACTION_STATE_BYTES {
+        return Err(CompactionStateError::CheckpointsTooLarge {
+            bytes,
+            maximum: MAX_COMPACTION_STATE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn deserialize_compaction_state_checkpoints<'de, D>(
+    deserializer: D,
+) -> Result<StoredCompactionStateCheckpoints, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    match StoredCompactionStateCheckpoints::from_raw(raw.clone()) {
+        Ok(checkpoints) => Ok(checkpoints),
+        Err(
+            error @ (CompactionStateError::TooManyCheckpoints { .. }
+            | CompactionStateError::CheckpointsTooLarge { .. }
+            | CompactionStateError::InvalidSnapshot(SessionStateError::SnapshotTooLarge {
+                ..
+            })),
+        ) => Err(serde::de::Error::custom(error)),
+        Err(error) => {
+            warn!(
+                error = %error,
+                "quarantining malformed compaction-state checkpoints"
+            );
+            Ok(StoredCompactionStateCheckpoints {
+                inner: StoredCompactionStateCheckpointsInner::Malformed { raw },
+            })
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -963,9 +1321,40 @@ pub struct SessionMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub state_snapshot: Option<StoredSessionStateSnapshot>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_compaction_state_checkpoints",
+        skip_serializing_if = "StoredCompactionStateCheckpoints::is_empty"
+    )]
+    pub compaction_state_checkpoints: StoredCompactionStateCheckpoints,
     /// Monotonic snapshot ordering used by write-behind persistence.
     #[serde(default)]
     pub revision: u64,
+}
+
+impl SessionMeta {
+    /// Stores a compaction checkpoint and prunes the oldest checkpoints to remain within bounds.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot or checkpoint collection is invalid.
+    pub fn checkpoint_compaction_state(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<(), CompactionStateError> {
+        self.compaction_state_checkpoints
+            .insert_pruning_oldest(snapshot)
+    }
+
+    /// Retrieves the state snapshot associated with an exact compaction-boundary revision.
+    ///
+    /// # Errors
+    /// Returns a typed error for absent revisions or unusable checkpoint metadata.
+    pub fn compaction_state_at(
+        &self,
+        revision: u64,
+    ) -> Result<&StoredSessionStateSnapshot, CompactionStateError> {
+        self.compaction_state_checkpoints.snapshot_at(revision)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1064,6 +1453,8 @@ pub enum TranscriptEntry<M> {
         entries: Vec<TranscriptEntry<M>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         generated_summary: Option<M>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_revision: Option<u64>,
     },
 }
 
@@ -3879,6 +4270,7 @@ mod tests {
                 TranscriptEntry::Message("tool-b".into()),
             ],
             generated_summary: None,
+            state_revision: None,
         });
         session
             .subagent_messages
@@ -3916,6 +4308,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("before compaction"))],
                 generated_summary: Some(assistant_message("generated summary")),
+                state_revision: Some(4),
             },
             TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
             TranscriptEntry::GeneratedMessage(assistant_message("generated summary")),
@@ -3947,7 +4340,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_compaction_without_summary_metadata_deserializes() {
+    fn legacy_compaction_without_state_metadata_deserializes() {
         let entry: TranscriptEntry<Value> = serde_json::from_value(serde_json::json!({
             "Compaction": { "entries": [] }
         }))
@@ -3957,9 +4350,52 @@ mod tests {
             entry,
             TranscriptEntry::Compaction {
                 generated_summary: None,
+                state_revision: None,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn recursive_compaction_state_revisions_round_trip_with_legacy_boundaries() {
+        let raw = serde_json::json!({
+            "Compaction": {
+                "entries": [
+                    {
+                        "Compaction": {
+                            "entries": [],
+                            "state_revision": 3
+                        }
+                    },
+                    {"Compaction": {"entries": []}}
+                ],
+                "state_revision": 7
+            }
+        });
+        let entry: TranscriptEntry<Value> = serde_json::from_value(raw.clone()).unwrap();
+
+        let TranscriptEntry::Compaction {
+            entries,
+            state_revision: Some(7),
+            ..
+        } = &entry
+        else {
+            panic!("expected outer revision");
+        };
+        assert!(matches!(
+            entries.as_slice(),
+            [
+                TranscriptEntry::Compaction {
+                    state_revision: Some(3),
+                    ..
+                },
+                TranscriptEntry::Compaction {
+                    state_revision: None,
+                    ..
+                }
+            ]
+        ));
+        assert_eq!(serde_json::to_value(entry).unwrap(), raw);
     }
 
     #[test]
@@ -3968,6 +4404,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("archived"))],
                 generated_summary: Some(assistant_message("archived summary")),
+                state_revision: None,
             },
             TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
             TranscriptEntry::GeneratedMessage(assistant_message("active summary")),
@@ -3995,6 +4432,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("archived"))],
                 generated_summary: None,
+                state_revision: None,
             },
             TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
             TranscriptEntry::GeneratedMessage(assistant_message("summary")),
@@ -4132,6 +4570,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("old first"))],
                 generated_summary: None,
+                state_revision: None,
             },
             TranscriptEntry::Message(user_message("same tail")),
         ];
@@ -4180,6 +4619,7 @@ mod tests {
         session.transcript = vec![TranscriptEntry::Compaction {
             entries: vec![TranscriptEntry::Message(CountingMessage)],
             generated_summary: None,
+            state_revision: None,
         }];
         session.set_transcript_revision(Some(1));
         let mut log = SessionLog::create(dir, &session).unwrap();
@@ -6466,12 +6906,264 @@ mod tests {
     }
 
     #[test]
+    fn compaction_state_checkpoints_find_exact_revision() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        let first = super::StoredSessionStateSnapshot::new(2);
+        let second = super::StoredSessionStateSnapshot::new(5);
+        checkpoints.insert(first.clone()).unwrap();
+        checkpoints.insert(second.clone()).unwrap();
+
+        assert_eq!(checkpoints.snapshot_at(2).unwrap(), &first);
+        assert_eq!(checkpoints.snapshot_at(5).unwrap(), &second);
+        assert!(matches!(
+            checkpoints.snapshot_at(3),
+            Err(super::CompactionStateError::MissingRevision { revision: 3 })
+        ));
+        assert!(matches!(
+            checkpoints.snapshot_at(6),
+            Err(super::CompactionStateError::FutureRevision {
+                requested: 6,
+                latest: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn session_meta_prunes_oldest_compaction_checkpoints_at_count_limit() {
+        let mut meta = super::SessionMeta::default();
+        for revision in 0..=super::MAX_COMPACTION_STATE_CHECKPOINTS {
+            meta.checkpoint_compaction_state(super::StoredSessionStateSnapshot::new(
+                revision as u64,
+            ))
+            .unwrap();
+        }
+
+        assert!(matches!(
+            meta.compaction_state_at(0),
+            Err(super::CompactionStateError::MissingRevision { revision: 0 })
+        ));
+        assert_eq!(
+            meta.compaction_state_at(super::MAX_COMPACTION_STATE_CHECKPOINTS as u64)
+                .unwrap()
+                .state_revision(),
+            Some(super::MAX_COMPACTION_STATE_CHECKPOINTS as u64)
+        );
+    }
+    #[test]
+    fn session_meta_prunes_oldest_compaction_checkpoints_at_size_limit() {
+        let mut meta = super::SessionMeta::default();
+        for revision in 0..20 {
+            let mut snapshot = super::StoredSessionStateSnapshot::new(revision);
+            snapshot
+                .set_plugin_state(
+                    "large",
+                    1,
+                    super::StoredStateScope::Session,
+                    Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES - 2)),
+                )
+                .unwrap();
+            meta.checkpoint_compaction_state(snapshot).unwrap();
+        }
+
+        assert!(matches!(
+            meta.compaction_state_at(0),
+            Err(super::CompactionStateError::MissingRevision { revision: 0 })
+        ));
+        assert_eq!(
+            meta.compaction_state_at(19).unwrap().state_revision(),
+            Some(19)
+        );
+    }
+
+    #[test]
+    fn compaction_state_checkpoint_insert_is_idempotent_and_atomic() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        let snapshot = super::StoredSessionStateSnapshot::new(5);
+        checkpoints.insert(snapshot.clone()).unwrap();
+        checkpoints.insert(snapshot).unwrap();
+        let before = serde_json::to_value(&checkpoints).unwrap();
+        let mut conflict = super::StoredSessionStateSnapshot::new(5);
+        conflict
+            .set_plugin_state("conflict", 1, super::StoredStateScope::Session, Value::Null)
+            .unwrap();
+        assert!(matches!(
+            checkpoints.insert(conflict),
+            Err(super::CompactionStateError::RevisionConflict { revision: 5 })
+        ));
+        assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+
+        assert!(matches!(
+            checkpoints.insert(super::StoredSessionStateSnapshot::new(4)),
+            Err(super::CompactionStateError::RevisionRegression {
+                latest: 5,
+                requested: 4
+            })
+        ));
+        assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_reject_conflicts_and_count_overflow_atomically() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        for revision in 0..super::MAX_COMPACTION_STATE_CHECKPOINTS {
+            checkpoints
+                .insert(super::StoredSessionStateSnapshot::new(revision as u64))
+                .unwrap();
+        }
+        let before = serde_json::to_value(&checkpoints).unwrap();
+        let revision = super::MAX_COMPACTION_STATE_CHECKPOINTS as u64;
+
+        assert!(matches!(
+            checkpoints.insert(super::StoredSessionStateSnapshot::new(revision)),
+            Err(super::CompactionStateError::TooManyCheckpoints { .. })
+        ));
+        assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_reject_aggregate_overflow_atomically() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        let mut revision = 0;
+        loop {
+            let mut snapshot = super::StoredSessionStateSnapshot::new(revision);
+            snapshot
+                .set_plugin_state(
+                    "large",
+                    1,
+                    super::StoredStateScope::Session,
+                    Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES - 2)),
+                )
+                .unwrap();
+            let before = serde_json::to_value(&checkpoints).unwrap();
+            match checkpoints.insert(snapshot) {
+                Ok(()) => revision += 1,
+                Err(super::CompactionStateError::CheckpointsTooLarge { .. }) => {
+                    assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+                    break;
+                }
+                Err(error) => panic!("unexpected checkpoint error: {error}"),
+            }
+        }
+    }
+
+    #[test_case(
+        &serde_json::json!({"schema_version": 2, "checkpoints": []})
+        ; "future_envelope"
+    )]
+    #[test_case(
+        &serde_json::json!({"schema_version": 1, "checkpoints": [{"invalid": true}]})
+        ; "malformed_snapshot"
+    )]
+    #[test_case(
+        &serde_json::json!({
+            "schema_version": 1,
+            "checkpoints": [{"schema_version": 2, "state_revision": 4}]
+        })
+        ; "future_snapshot"
+    )]
+    #[test_case(
+        &serde_json::json!({
+            "schema_version": 1,
+            "checkpoints": [
+                {"schema_version": 1, "state_revision": 2},
+                {"schema_version": 1, "state_revision": 1}
+            ]
+        })
+        ; "regressing_snapshots"
+    )]
+    fn compaction_state_checkpoints_preserve_unusable_metadata_fail_closed(stored: &Value) {
+        let raw = serde_json::json!({"compaction_state_checkpoints": stored});
+        let meta: super::SessionMeta = serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(matches!(
+            meta.compaction_state_at(1),
+            Err(super::CompactionStateError::UnsupportedSchemaVersion { .. }
+                | super::CompactionStateError::InvalidEnvelope)
+        ));
+        assert_eq!(
+            serde_json::to_value(meta).unwrap()["compaction_state_checkpoints"],
+            raw["compaction_state_checkpoints"]
+        );
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_reject_oversized_metadata() {
+        let raw = serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": 2,
+                "opaque": "x".repeat(super::MAX_COMPACTION_STATE_BYTES),
+            }
+        });
+
+        assert!(serde_json::from_value::<super::SessionMeta>(raw).is_err());
+    }
+
+    #[test_case(1; "supported_envelope")]
+    #[test_case(2; "future_envelope")]
+    fn compaction_state_checkpoints_reject_oversized_raw_count(schema_version: u32) {
+        let checkpoints = (0..=super::MAX_COMPACTION_STATE_CHECKPOINTS)
+            .map(|revision| {
+                serde_json::json!({
+                    "schema_version": 1,
+                    "state_revision": revision,
+                })
+            })
+            .collect::<Vec<_>>();
+        let raw = serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": schema_version,
+                "checkpoints": checkpoints,
+            }
+        });
+
+        assert!(serde_json::from_value::<super::SessionMeta>(raw).is_err());
+    }
+
+    #[test_case(1; "supported_envelope")]
+    #[test_case(2; "future_envelope")]
+    fn compaction_state_checkpoints_reject_oversized_malformed_nested_snapshot(
+        schema_version: u32,
+    ) {
+        let raw = serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": schema_version,
+                "checkpoints": [{
+                    "malformed": "x".repeat(super::MAX_SESSION_STATE_BYTES),
+                }],
+            }
+        });
+
+        assert!(serde_json::from_value::<super::SessionMeta>(raw).is_err());
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_persist_through_session_log() {
+        let temp = TempDir::new().unwrap();
+        let mut session: TestSession = Session::new("model", "/project");
+        session
+            .meta
+            .checkpoint_compaction_state(super::StoredSessionStateSnapshot::new(4))
+            .unwrap();
+        session.save_to(temp.path()).unwrap();
+
+        let loaded = TestSession::load_from(session.id, temp.path()).unwrap();
+        assert_eq!(
+            loaded.meta.compaction_state_at(4).unwrap().state_revision(),
+            Some(4)
+        );
+    }
+
+    #[test]
     fn session_meta_backward_compat_defaults() {
         let json = r#"{"mode":"build"}"#;
         let meta: super::SessionMeta = serde_json::from_str(json).unwrap();
         assert!(meta.thinking.is_none());
         assert!(!meta.fast);
         assert!(!meta.workflow);
+        assert!(matches!(
+            meta.compaction_state_at(1),
+            Err(super::CompactionStateError::MissingRevision { revision: 1 })
+        ));
     }
 
     #[test]
