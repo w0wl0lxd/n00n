@@ -1,1 +1,0 @@
-The embedded Python sandbox now runs on monty v0.0.21, resolving the upstream dependency conflict that blocked the pyo3 security-advisory fix, and removing the dump/load clock-reset workaround since the new interpreter pauses the time budget while awaiting tool calls.

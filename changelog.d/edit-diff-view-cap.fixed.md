@@ -1,1 +1,0 @@
-Replaced the diff preview's unbounded `math.huge` line cap with a large finite one, avoiding a `NaN` from modulo-by-infinity and unbounded buffer growth on a pathological diff, while still never truncating a real diff.

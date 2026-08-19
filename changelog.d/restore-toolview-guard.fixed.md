@@ -1,1 +1,0 @@
-Fixed `task`, `todo_write`, and `workflow` session restore crashing outright when the shared preview renderer hits an edge an older snapshot doesn't defend against; restore now falls back to a plain view instead of failing the whole callback.

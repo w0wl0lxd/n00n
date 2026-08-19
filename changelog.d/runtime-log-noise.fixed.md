@@ -1,1 +1,0 @@
-Stopped `grep`, `glob`, and MCP tool-loading from flooding the log with a warning per unreadable file, vanished path, or truncated description; expected conditions now log once as a summary instead of one line each. `PostCompact` hook timeouts now report the same actionable timeout hint as `PreCompact`.

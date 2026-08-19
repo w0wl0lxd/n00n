@@ -1,1 +1,0 @@
-- **mise:** Relaxed zola version pin from 0.19.2 to latest.

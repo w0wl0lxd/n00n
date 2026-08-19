@@ -4062,7 +4062,7 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "n00n"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-lock",
  "clap",
@@ -4095,7 +4095,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-acp"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "agent-client-protocol-schema",
  "color-eyre",
@@ -4113,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-agent"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "arc-swap",
  "async-io",
@@ -4157,7 +4157,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-codegraph"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "rusqlite",
  "rustix 1.1.4",
@@ -4169,7 +4169,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-config"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "dotenvy",
  "inventory",
@@ -4187,7 +4187,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-config-macro"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4196,7 +4196,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-daemon"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "flume",
  "futures-lite",
@@ -4215,7 +4215,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-docgen"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "n00n-agent",
  "n00n-config",
@@ -4232,7 +4232,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-git"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "gix",
  "serde",
@@ -4244,7 +4244,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-highlight"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde_json",
  "syntect",
@@ -4254,7 +4254,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-interpreter"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "monty",
  "monty-types",
@@ -4266,7 +4266,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-lua"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "arc-swap",
  "async-lock",
@@ -4357,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-lua-macro"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-markdown"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "fastrand",
  "n00n-highlight",
@@ -4376,7 +4376,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-providers"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-lock",
  "async-process",
@@ -4421,7 +4421,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-redact"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde_json",
  "test-case",
@@ -4430,7 +4430,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-search"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "fs2",
  "futures-lite",
@@ -4449,7 +4449,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-semble"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "n00n-search",
  "tempfile",
@@ -4458,7 +4458,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-smell"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "fs2",
  "ignore",
@@ -4472,7 +4472,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-storage"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bs58",
  "etcetera",
@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-token-profile"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "n00n-agent",
  "n00n-lua",
@@ -4505,7 +4505,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-ui"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "arboard",
  "arc-swap",
