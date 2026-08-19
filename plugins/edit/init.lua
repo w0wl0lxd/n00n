@@ -398,7 +398,11 @@ register_tool_if(opts.multiedit, {
       local secret_reason = secret_check.reason(edit.new_string)
       if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
         return {
-          llm_output = "error: edits[" .. (i - 1) .. "] " .. secret_reason .. "; provide justification to multiedit",
+          llm_output = "error: edits["
+            .. (i - 1)
+            .. "] "
+            .. secret_reason
+            .. "; provide justification to edit_file_bulk",
           is_error = true,
         }
       end
@@ -413,7 +417,7 @@ register_tool_if(opts.multiedit, {
               .. (i - 1)
               .. "] "
               .. unescaped_reason
-              .. "; provide justification to multiedit",
+              .. "; provide justification to edit_file_bulk",
             is_error = true,
           }
         end
@@ -438,7 +442,7 @@ register_tool_if(opts.multiedit, {
     end, function(before, after)
       local reason = introduced_secret_reason(before, after, input.justification)
       if reason then
-        return nil, "edit would introduce " .. reason .. "; provide justification to multiedit"
+        return nil, "edit would introduce " .. reason .. "; provide justification to edit_file_bulk"
       end
       return true
     end)
@@ -496,7 +500,7 @@ register_tool_if(opts.edit_lines, {
   handler = function(input, ctx)
     local secret_reason = secret_check.reason(input.new_string)
     if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
-      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit_lines", is_error = true }
+      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit_file_lines", is_error = true }
     end
 
     -- Also check unescaped version for secret patterns
@@ -504,7 +508,10 @@ register_tool_if(opts.edit_lines, {
     if unescaped ~= input.new_string then
       local unescaped_reason = secret_check.reason(unescaped)
       if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
-        return { llm_output = "error: " .. unescaped_reason .. "; provide justification to edit_lines", is_error = true }
+        return {
+          llm_output = "error: " .. unescaped_reason .. "; provide justification to edit_file_lines",
+          is_error = true,
+        }
       end
     end
 
@@ -513,7 +520,7 @@ register_tool_if(opts.edit_lines, {
     end, function(before, after)
       local reason = introduced_secret_reason(before, after, input.justification)
       if reason then
-        return nil, "edit would introduce " .. reason .. "; provide justification to edit_lines"
+        return nil, "edit would introduce " .. reason .. "; provide justification to edit_file_lines"
       end
       return true
     end)
@@ -567,7 +574,10 @@ register_tool_if(opts.insert_lines, {
   handler = function(input, ctx)
     local secret_reason = secret_check.reason(input.new_string)
     if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
-      return { llm_output = "error: " .. secret_reason .. "; provide justification to insert_lines", is_error = true }
+      return {
+        llm_output = "error: " .. secret_reason .. "; provide justification to insert_file_lines",
+        is_error = true,
+      }
     end
 
     -- Also check unescaped version for secret patterns
@@ -576,7 +586,7 @@ register_tool_if(opts.insert_lines, {
       local unescaped_reason = secret_check.reason(unescaped)
       if unescaped_reason and (not input.justification or input.justification:match("^%s*$")) then
         return {
-          llm_output = "error: " .. unescaped_reason .. "; provide justification to insert_lines",
+          llm_output = "error: " .. unescaped_reason .. "; provide justification to insert_file_lines",
           is_error = true,
         }
       end
@@ -587,7 +597,7 @@ register_tool_if(opts.insert_lines, {
     end, function(before, after)
       local reason = introduced_secret_reason(before, after, input.justification)
       if reason then
-        return nil, "edit would introduce " .. reason .. "; provide justification to insert_lines"
+        return nil, "edit would introduce " .. reason .. "; provide justification to insert_file_lines"
       end
       return true
     end)

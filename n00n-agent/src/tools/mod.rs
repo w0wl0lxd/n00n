@@ -186,6 +186,9 @@ impl ToolFilter {
         };
         let mut exclude: Vec<&str> = extra_exclude.to_vec();
         exclude.extend(capability_exclusions(model));
+        if !config.fusion.enabled {
+            exclude.push(FUSION_TOOL_NAME);
+        }
         exclude.extend(
             config
                 .disabled_tools
@@ -242,6 +245,31 @@ pub fn default_active_tools() -> ActiveTools {
     active
 }
 
+/// Build the initial main-agent tool definitions through the production filter path.
+#[must_use]
+pub fn runtime_tool_definitions(
+    registry: &ToolRegistry,
+    vars: &crate::template::Vars,
+    config: &AgentConfig,
+    model: &Model,
+    excluded_tools: &[&str],
+    workflow: bool,
+) -> (Value, ToolFilter) {
+    let filter = ToolFilter::from_config(config, model, excluded_tools);
+    let ctx = DescriptionContext {
+        filter: &filter,
+        audience: ToolAudience::MAIN,
+        workflow,
+    };
+    let definitions = registry.definitions_active(
+        vars,
+        &ctx,
+        model.supports_tool_examples(),
+        &default_active_tools(),
+    );
+    (definitions, filter)
+}
+
 /// A tool is enabled unless named in `disabled_tools` (config, or the raw
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
@@ -257,6 +285,7 @@ pub const BATCH_TOOL_NAME: &str = "run_batch";
 pub const BASH_TOOL_NAME: &str = "run_shell";
 pub const CODE_EXECUTION_TOOL_NAME: &str = "run_python";
 pub const EDIT_TOOL_NAME: &str = "edit_file";
+pub const FUSION_TOOL_NAME: &str = "delegate_fusion";
 pub const GLOB_TOOL_NAME: &str = "search_files";
 pub const GREP_TOOL_NAME: &str = "search_code";
 pub const MULTIEDIT_TOOL_NAME: &str = "edit_file_bulk";
@@ -933,6 +962,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn from_config_hides_fusion_tool_until_enabled() {
+        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let mut config = AgentConfig::default();
+        let disabled = ToolFilter::from_config(&config, &model, &[]);
+        assert!(!disabled.matches(FUSION_TOOL_NAME));
+
+        config.fusion.enabled = true;
+        let enabled = ToolFilter::from_config(&config, &model, &[]);
+        assert!(enabled.matches(FUSION_TOOL_NAME));
+    }
     #[test_case(30,  "30s timeout"   ; "seconds_only")]
     #[test_case(120, "2m timeout"    ; "minutes_only")]
     #[test_case(90,  "1m30s timeout" ; "mixed")]

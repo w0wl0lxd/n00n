@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -90,6 +90,9 @@ const NIL_WITHOUT_FINISH_MSG: &str =
     "handler returned nil without calling ctx:finish() or starting jobs";
 pub(crate) const CANCELLED_MSG: &str = "cancelled";
 const MAX_INFLIGHT_TOOLS: usize = 64;
+const SPAWN_QUEUE_CAPACITY: usize = 256;
+const MAX_RUNTIME_EVENTS_PER_LANE: usize = 64;
+const MAX_CONSECUTIVE_PRIORITY_EVENTS: usize = 64;
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 /// Finished tools kept clickable without a restore round-trip. Purely a
 /// cache: a click that misses it falls back to the restore item carried
@@ -98,6 +101,8 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 pub const WARM_TOOL_CAP: usize = 32;
 const GC_STEP_INTERVAL: usize = 4;
 const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const LUA_EXECUTION_SLICE: Duration = Duration::from_millis(25);
+const INTERRUPT_FORCE_YIELD_GRACE: Duration = Duration::from_millis(100);
 pub const CANCEL_INTERRUPT_GRACE: Duration = Duration::from_millis(100);
 const DEADLINE_CLEANUP_GRACE: Duration = Duration::from_millis(250);
 const ASYNC_CLEANUP_TIMEOUT_MSG: &str = "async.run cleanup timed out";
@@ -163,6 +168,7 @@ pub enum Request {
         tool: Arc<str>,
         input: Value,
         nested: bool,
+        started: flume::Sender<()>,
         reply: flume::Sender<HeaderResult>,
     },
     ComputePermissionScopes {
@@ -170,6 +176,7 @@ pub enum Request {
         tool: Arc<str>,
         input: Value,
         nested: bool,
+        started: flume::Sender<()>,
         reply: flume::Sender<Option<PermissionScopes>>,
     },
     ClearPlugin {
@@ -262,6 +269,7 @@ pub enum Request {
         live: LiveCtx,
         ctx: Box<LuaCtx>,
         nested: bool,
+        started: flume::Sender<()>,
         reply: flume::Sender<()>,
     },
 }
@@ -342,6 +350,8 @@ pub(crate) struct TaskCell {
     interrupted_deadline: Cell<Option<Instant>>,
     interrupt_after: Cell<Option<Instant>>,
     cleanup_callback_deadline: Cell<Option<Instant>>,
+    execution_slice_started: Cell<Instant>,
+    yieldable: Cell<bool>,
     async_cleanup_cutoff: Cell<Option<Instant>>,
     async_parent: Option<TaskHandle>,
     is_async_run: bool,
@@ -386,6 +396,8 @@ impl TaskCell {
             interrupted_deadline: Cell::new(None),
             interrupt_after: Cell::new(None),
             cleanup_callback_deadline: Cell::new(None),
+            execution_slice_started: Cell::new(Instant::now()),
+            yieldable: Cell::new(true),
             async_cleanup_cutoff: Cell::new(None),
             async_parent: None,
             is_async_run: false,
@@ -424,6 +436,33 @@ pub(crate) fn lock_cell(handle: &TaskHandle) -> std::sync::MutexGuard<'_, TaskCe
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+struct NonYieldableGuard {
+    handle: TaskHandle,
+    previous: bool,
+}
+
+impl Drop for NonYieldableGuard {
+    fn drop(&mut self) {
+        lock_cell(&self.handle).yieldable.set(self.previous);
+    }
+}
+
+pub(crate) fn run_non_yieldable<R>(lua: &Lua, callback: impl FnOnce() -> R) -> R {
+    let Some(handle) = lua
+        .app_data_ref::<TaskHandle>()
+        .map(|handle| Arc::clone(&handle))
+    else {
+        return callback();
+    };
+    let previous = {
+        let cell = lock_cell(&handle);
+        cell.execution_slice_started.set(Instant::now());
+        cell.yieldable.replace(false)
+    };
+    let _guard = NonYieldableGuard { handle, previous };
+    callback()
+}
+
 fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
     if lock_cell(handle).cleanup_callbacks.is_empty() {
         return;
@@ -442,10 +481,10 @@ fn run_task_cleanup_callbacks(lua: &Lua, handle: &TaskHandle) {
             break;
         }
         for key in callbacks {
-            if let Err(error) = lua
-                .registry_value::<Function>(&key)
-                .and_then(|callback| callback.call::<()>(()))
-            {
+            if let Err(error) = run_non_yieldable(lua, || {
+                lua.registry_value::<Function>(&key)
+                    .and_then(|callback| callback.call::<()>(()))
+            }) {
                 tracing::warn!(%error, "tool cleanup callback failed");
             }
             if let Err(error) = lua.remove_registry_value(key) {
@@ -588,7 +627,10 @@ fn apply_jit(lua: &Lua, enabled: bool) {
 
 /// Shutdown flag mirrored into app data so the watchdog interrupt can
 /// re-check it on the Lua thread.
-struct ShutdownFlag(Arc<AtomicBool>);
+struct ShutdownFlag {
+    requested: Arc<AtomicBool>,
+    first_seen: Mutex<Option<Instant>>,
+}
 
 /// Cancellation watchdog. The poker thread arms an atomic flag every
 /// poll tick; a resident `mlua` interrupt checks it at VM safepoints.
@@ -636,6 +678,17 @@ enum InterruptDecision {
     Yield,
 }
 
+fn yield_or_raise(lua: &Lua, fallback: &'static str) -> InterruptDecision {
+    if lua
+        .app_data_ref::<TaskHandle>()
+        .is_none_or(|handle| lock_cell(&handle).yieldable.get())
+    {
+        InterruptDecision::Yield
+    } else {
+        InterruptDecision::Raise(fallback)
+    }
+}
+
 /// Install the one-shot interrupt that the watchdog arms every poll tick.
 fn install_interrupt(lua: &Lua, armed: Arc<AtomicBool>) {
     lua.set_interrupt(move |lua| {
@@ -653,29 +706,46 @@ fn install_interrupt(lua: &Lua, armed: Arc<AtomicBool>) {
 }
 
 fn interrupt_decision(lua: &Lua) -> Option<InterruptDecision> {
-    if lua
-        .app_data_ref::<ShutdownFlag>()
-        .is_some_and(|f| f.0.load(Ordering::Acquire))
+    if let Some(flag) = lua.app_data_ref::<ShutdownFlag>()
+        && flag.requested.load(Ordering::Acquire)
     {
-        return Some(InterruptDecision::Raise(INTERRUPT_SHUTDOWN_MSG));
+        let now = Instant::now();
+        let mut first_seen = flag
+            .first_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let started = first_seen.get_or_insert(now);
+        return if now.saturating_duration_since(*started) >= INTERRUPT_FORCE_YIELD_GRACE {
+            Some(yield_or_raise(lua, INTERRUPT_SHUTDOWN_MSG))
+        } else {
+            Some(InterruptDecision::Raise(INTERRUPT_SHUTDOWN_MSG))
+        };
     }
     let handle = lua.app_data_ref::<TaskHandle>()?;
-    if absolute_deadline_cutoff(&handle).is_some_and(|cutoff| Instant::now() >= cutoff)
-        || async_cleanup_cutoff(&handle).is_some_and(|cutoff| Instant::now() >= cutoff)
+    let now = Instant::now();
+    if absolute_deadline_cutoff(&handle).is_some_and(|cutoff| now >= cutoff)
+        || async_cleanup_cutoff(&handle).is_some_and(|cutoff| now >= cutoff)
     {
-        return Some(InterruptDecision::Yield);
+        return Some(yield_or_raise(lua, INTERRUPT_DEADLINE_MSG));
     }
     let cancellation = { cancellation_cutoff(&lock_cell(&handle)) };
     if let Some(interrupt_after) = cancellation {
-        return (Instant::now() >= interrupt_after)
+        if now >= checked_deadline_after(interrupt_after, INTERRUPT_FORCE_YIELD_GRACE) {
+            return Some(yield_or_raise(lua, INTERRUPT_CANCELLED_MSG));
+        }
+        return (now >= interrupt_after)
             .then_some(InterruptDecision::Raise(INTERRUPT_CANCELLED_MSG));
     }
     let interrupted = lock_cell(&handle).deadline_interrupted.get();
-    if !interrupted && task_deadline(&handle).is_some_and(|deadline| Instant::now() > deadline) {
+    if !interrupted && task_deadline(&handle).is_some_and(|deadline| now > deadline) {
         mark_deadline_interrupted(&handle);
         return Some(InterruptDecision::Raise(INTERRUPT_DEADLINE_MSG));
     }
-    None
+    let slice_elapsed = {
+        let cell = lock_cell(&handle);
+        now.saturating_duration_since(cell.execution_slice_started.get()) >= LUA_EXECUTION_SLICE
+    };
+    (slice_elapsed && lock_cell(&handle).yieldable.get()).then_some(InterruptDecision::Yield)
 }
 
 #[cfg(test)]
@@ -828,6 +898,9 @@ impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
         let prev = this
             .lua
             .set_app_data::<TaskHandle>(Arc::clone(&*this.handle));
+        lock_cell(this.handle)
+            .execution_slice_started
+            .set(Instant::now());
         let result = this.inner.poll(cx);
         if result.is_pending() {
             cancellation_cutoff(&lock_cell(this.handle));
@@ -922,6 +995,10 @@ pub(crate) fn enqueue_async_task(
         None => (CancelToken::none(), None, None, None),
     };
 
+    let queue = lua
+        .app_data_ref::<SpawnQueue>()
+        .ok_or_else(|| mlua::Error::runtime("spawn queue not initialized"))?;
+    let claim = queue.try_claim()?;
     let deadline =
         parent_deadline.map(|deadline| deadline.max(Instant::now() + ASYNC_RUN_MIN_DEADLINE));
     let parent = handle.as_ref().map(|h| Arc::clone(h));
@@ -934,6 +1011,7 @@ pub(crate) fn enqueue_async_task(
         identity,
         owner: None,
         parent: None,
+        _claim: claim,
     };
 
     if let Some(h) = &handle {
@@ -948,11 +1026,14 @@ pub(crate) fn enqueue_async_task(
         task.parent.clone_from(&parent);
     }
 
-    let queue = lua
-        .app_data_ref::<SpawnQueue>()
-        .ok_or_else(|| mlua::Error::runtime("spawn queue not initialized"))?;
-    if queue.tx.send(task).is_err() {
-        return Err(mlua::Error::runtime("spawn queue closed"));
+    match queue.tx.try_send(task) {
+        Ok(()) => {}
+        Err(flume::TrySendError::Full(_)) => {
+            return Err(mlua::Error::runtime(spawn_queue_full_message()));
+        }
+        Err(flume::TrySendError::Disconnected(_)) => {
+            return Err(mlua::Error::runtime("spawn queue closed"));
+        }
     }
 
     if let Some(h) = &parent {
@@ -1053,6 +1134,7 @@ impl InflightGate {
     /// Guards are taken on a task's first poll (`acquire`), so one yield
     /// lets just-spawned tasks register before the barrier reads the count;
     /// a `drain` queued right behind a spawn cannot slip past it.
+    #[cfg(test)]
     async fn drain(&self) {
         smol::future::yield_now().await;
         self.wait_below(1).await;
@@ -1141,6 +1223,20 @@ pub(crate) struct PendingAsyncTask {
     /// Parent task that spawned this `noon.async.run` task, if any.
     /// Used to decrement the parent's `async_tasks` counter on completion.
     pub parent: Option<TaskHandle>,
+    _claim: OutstandingAsyncClaim,
+}
+
+fn spawn_queue_full_message() -> String {
+    format!("async.run capacity exhausted (maximum {SPAWN_QUEUE_CAPACITY} outstanding tasks)")
+}
+
+struct OutstandingAsyncClaim(Arc<AtomicUsize>);
+
+impl Drop for OutstandingAsyncClaim {
+    fn drop(&mut self) {
+        let previous = self.0.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "async.run claim underflow");
+    }
 }
 
 /// Shared ownership of a task's `bufs`: the scope holds one clone, each
@@ -1168,12 +1264,26 @@ impl Drop for BufsClaim {
 pub(crate) struct SpawnQueue {
     tx: flume::Sender<PendingAsyncTask>,
     rx: flume::Receiver<PendingAsyncTask>,
+    outstanding: Arc<AtomicUsize>,
 }
 
 impl SpawnQueue {
     fn new() -> Self {
-        let (tx, rx) = flume::unbounded();
-        Self { tx, rx }
+        let (tx, rx) = flume::bounded(SPAWN_QUEUE_CAPACITY);
+        Self {
+            tx,
+            rx,
+            outstanding: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn try_claim(&self) -> Result<OutstandingAsyncClaim, mlua::Error> {
+        self.outstanding
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < SPAWN_QUEUE_CAPACITY).then_some(count + 1)
+            })
+            .map_err(|_| mlua::Error::runtime(spawn_queue_full_message()))?;
+        Ok(OutstandingAsyncClaim(Arc::clone(&self.outstanding)))
     }
 }
 
@@ -1361,9 +1471,25 @@ async fn drain_barrier(
         while let Ok(task) = spawn_rx.try_recv() {
             spawn_async_task(lua, ex, gate, task);
         }
-        gate.drain().await;
-        if spawn_rx.is_empty() {
+        smol::future::yield_now().await;
+        let gate_changed = gate.event.listen();
+        if gate.count.get() == 0 && spawn_rx.is_empty() {
             return;
+        }
+        if spawn_rx.is_disconnected() {
+            gate_changed.await;
+            continue;
+        }
+        if let Some(task) = smol::future::or(
+            async {
+                gate_changed.await;
+                None
+            },
+            async { spawn_rx.recv_async().await.ok() },
+        )
+        .await
+        {
+            spawn_async_task(lua, ex, gate, task);
         }
     }
 }
@@ -1422,8 +1548,12 @@ fn spawn_runtime_request(
             tool,
             input,
             nested: _,
+            started,
             reply,
         } => {
+            if started.send(()).is_err() {
+                return None;
+            }
             let lua = rt.lua.clone();
             let plugins = Rc::clone(&rt.plugins);
             let lifecycle = lifecycle.start();
@@ -1440,8 +1570,12 @@ fn spawn_runtime_request(
             tool,
             input,
             nested: _,
+            started,
             reply,
         } => {
+            if started.send(()).is_err() {
+                return None;
+            }
             let lua = rt.lua.clone();
             let plugins = Rc::clone(&rt.plugins);
             let lifecycle = lifecycle.start();
@@ -1462,8 +1596,12 @@ fn spawn_runtime_request(
             live,
             ctx,
             nested: _,
+            started,
             reply,
         } => {
+            if started.send(()).is_err() {
+                return None;
+            }
             let func = {
                 let plugins = rt.plugins.borrow();
                 plugins
@@ -1519,7 +1657,10 @@ async fn drain_runtime(
         if rt.shutdown.load(Ordering::Acquire) {
             return true;
         }
-        while !priority_closed {
+        for _ in 0..MAX_RUNTIME_EVENTS_PER_LANE {
+            if priority_closed {
+                break;
+            }
             match priority_rx.try_recv() {
                 Ok(Request::Shutdown) => return true,
                 Ok(request) => deferred.push_back(request),
@@ -1530,7 +1671,10 @@ async fn drain_runtime(
                 }
             }
         }
-        while !spawn_closed {
+        for _ in 0..MAX_RUNTIME_EVENTS_PER_LANE {
+            if spawn_closed {
+                break;
+            }
             match spawn_rx.try_recv() {
                 Ok(task) => spawn_async_task(&rt.lua, ex, gate, task),
                 Err(flume::TryRecvError::Empty) => break,
@@ -1540,7 +1684,10 @@ async fn drain_runtime(
                 }
             }
         }
-        while !request_closed {
+        for _ in 0..MAX_RUNTIME_EVENTS_PER_LANE {
+            if request_closed {
+                break;
+            }
             match request_rx.try_recv() {
                 Ok(request) => {
                     if let Some(request) =
@@ -1716,7 +1863,10 @@ impl LuaRuntime {
             })?;
         let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
 
-        lua.set_app_data(ShutdownFlag(Arc::clone(&shutdown)));
+        lua.set_app_data(ShutdownFlag {
+            requested: Arc::clone(&shutdown),
+            first_seen: Mutex::new(None),
+        });
         let armed = Arc::new(AtomicBool::new(false));
         let watchdog = Watchdog::spawn(Arc::clone(&armed));
         install_interrupt(&lua, armed);
@@ -2664,6 +2814,23 @@ async fn dispatch_async(
         with_jobs(lua, |store| store.drain_events(&owner, &mut event_buf));
         for (job_id, event) in event_buf.drain(..) {
             if let Err(error) = deliver_job_event(lua, job_id, &event) {
+                let (cancelled, deadline_expired) = {
+                    let cell = lock_cell(&handle);
+                    (
+                        cell.cancel.is_cancelled(),
+                        cell.deadline_interrupted.get()
+                            || cell
+                                .deadline
+                                .get()
+                                .is_some_and(|deadline| Instant::now() >= deadline),
+                    )
+                };
+                if cancelled {
+                    return ToolCallReply::err(CANCELLED_MSG);
+                }
+                if deadline_expired {
+                    return timeout_reply(&handle, plugin, tool);
+                }
                 return ToolCallReply::err(format!(
                     "job callback error: {}",
                     strip_traceback(&error)
@@ -2716,6 +2883,7 @@ fn spawn_plugin_job_pump(ex: &Rc<smol::LocalExecutor<'_>>, lua: &Lua) {
         let mut event_buf = Vec::new();
         loop {
             with_jobs(&lua, |store| store.drain_plugin_events(&mut event_buf));
+            let saturated = event_buf.len() == crate::api::r#fn::MAX_JOB_EVENTS_PER_TURN;
             if !event_buf.is_empty() {
                 let scope = TaskScope::detached(&lua);
                 for (job_id, event) in event_buf.drain(..) {
@@ -2729,7 +2897,11 @@ fn spawn_plugin_job_pump(ex: &Rc<smol::LocalExecutor<'_>>, lua: &Lua) {
                 }
                 drop(scope);
             }
-            smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+            if saturated {
+                smol::future::yield_now().await;
+            } else {
+                smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+            }
         }
     })
     .detach();
@@ -2835,7 +3007,7 @@ fn run_describe(
     // whatever handle a parked coroutine left installed, and that task's
     // cancel/deadline would kill the callback (see TaskScope::detached).
     let _scope = TaskScope::detached(lua);
-    match func.call::<String>(arg) {
+    match run_non_yieldable(lua, || func.call::<String>(arg)) {
         Ok(s) => Some(s),
         Err(e) => {
             tracing::warn!(plugin, tool, error = %e, "describe callback failed");
@@ -2890,19 +3062,38 @@ async fn wait_for_task_deadline_after_initial_read(
 ) -> Result<LuaValue, mlua::Error> {
     let mut after_initial_read = Some(after_initial_read);
     loop {
-        if lock_cell(handle).deadline_interrupted.get() {
-            return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
-        }
         let deadline = task_deadline(handle);
         if let Some(after_initial_read) = after_initial_read.take() {
             after_initial_read();
         }
+        if let Some(cutoff) = absolute_deadline_cutoff(handle) {
+            let wake_at = cutoff.min(checked_deadline_after(
+                Instant::now(),
+                DISPATCH_POLL_INTERVAL,
+            ));
+            smol::Timer::at(wake_at).await;
+            if Instant::now() >= cutoff {
+                return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
+            }
+            continue;
+        }
         let poll_cutoff = checked_deadline_after(Instant::now(), DISPATCH_POLL_INTERVAL);
         let wake_at = deadline.map_or(poll_cutoff, |deadline| deadline.min(poll_cutoff));
         smol::Timer::at(wake_at).await;
-        if task_deadline(handle).is_some_and(|deadline| Instant::now() >= deadline) {
-            mark_deadline_interrupted(handle);
-            return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
+        if let Some(deadline) = task_deadline(handle)
+            && Instant::now() >= deadline
+        {
+            smol::Timer::at(checked_deadline_after(
+                deadline,
+                LUA_EXECUTION_SLICE + WATCHDOG_POLL_INTERVAL,
+            ))
+            .await;
+            if !lock_cell(handle).deadline_interrupted.get()
+                && task_deadline(handle).is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                mark_deadline_interrupted(handle);
+                return Err(mlua::Error::runtime(DEADLINE_WAITER_TIMEOUT_MSG));
+            }
         }
     }
 }
@@ -3172,31 +3363,68 @@ pub fn spawn(
 
             smol::block_on(ex.run(async {
                 let mut deferred = VecDeque::new();
+                let mut consecutive_priority = 0;
                 loop {
-                    while let Ok(task) = spawn_rx.try_recv() {
+                    for _ in 0..MAX_RUNTIME_EVENTS_PER_LANE {
+                        let Ok(task) = spawn_rx.try_recv() else {
+                            break;
+                        };
                         spawn_async_task(&rt.lua, &ex, &gate, task);
                     }
                     // Biased: user-initiated requests (commands, keybinds) jump
                     // ahead of bulk work like session restores so the UI stays
                     // snappy, and queued `n00n.async.run` tasks jump ahead of
                     // plain requests.
-                    let msg = if let Some(request) = deferred.pop_front() {
+                    let msg = if consecutive_priority < MAX_CONSECUTIVE_PRIORITY_EVENTS
+                        && let Some(request) = deferred.pop_front()
+                    {
+                        consecutive_priority += 1;
+                        request
+                    } else if consecutive_priority < MAX_CONSECUTIVE_PRIORITY_EVENTS
+                        && let Ok(request) = prio_rx.try_recv()
+                    {
+                        consecutive_priority += 1;
+                        request
+                    } else if let Ok(request) = rx.try_recv() {
+                        consecutive_priority = 0;
+                        request
+                    } else if let Some(request) = deferred.pop_front() {
+                        consecutive_priority = consecutive_priority.saturating_add(1);
+                        request
+                    } else if let Ok(request) = prio_rx.try_recv() {
+                        consecutive_priority = consecutive_priority.saturating_add(1);
                         request
                     } else {
                         let next = smol::future::or(
-                            async { prio_rx.recv_async().await.map(Some) },
+                            async {
+                                prio_rx
+                                    .recv_async()
+                                    .await
+                                    .map(|request| Some((request, true)))
+                            },
                             smol::future::or(
                                 async {
                                     let task = spawn_rx.recv_async().await?;
                                     spawn_async_task(&rt.lua, &ex, &gate, task);
                                     Ok(None)
                                 },
-                                async { rx.recv_async().await.map(Some) },
+                                async {
+                                    rx.recv_async()
+                                        .await
+                                        .map(|request| Some((request, false)))
+                                },
                             ),
                         )
                         .await;
                         match next {
-                            Ok(Some(request)) => request,
+                            Ok(Some((request, priority))) => {
+                                consecutive_priority = if priority {
+                                    consecutive_priority.saturating_add(1)
+                                } else {
+                                    0
+                                };
+                                request
+                            }
                             Ok(None) => {
                                 smol::future::yield_now().await;
                                 continue;
@@ -3295,8 +3523,12 @@ pub fn spawn(
                             tool,
                             input,
                             nested: _,
+                            started,
                             reply,
                         } => {
+                            if started.send(()).is_err() {
+                                continue;
+                            }
                             let res =
                                 compute_header(&rt.lua, &rt.plugins, &plugin, &tool, input).await;
                             let _ = reply.send(res);
@@ -3306,8 +3538,12 @@ pub fn spawn(
                             tool,
                             input,
                             nested: _,
+                            started,
                             reply,
                         } => {
+                            if started.send(()).is_err() {
+                                continue;
+                            }
                             let res = LuaRuntime::compute_permission_scopes(
                                 &rt.lua,
                                 &rt.plugins,
@@ -4115,6 +4351,36 @@ mod tests {
     }
 
     #[test]
+    fn execution_slice_preempts_non_yielding_lua() {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        lock_cell(scope.handle()).execution_slice_started.set(
+            Instant::now()
+                .checked_sub(LUA_EXECUTION_SLICE + WATCHDOG_POLL_INTERVAL)
+                .unwrap(),
+        );
+
+        assert_eq!(interrupt_reason(&lua), Some(ASYNC_CLEANUP_TIMEOUT_MSG));
+    }
+
+    #[test]
+    fn non_yieldable_callback_continues_instead_of_yielding() {
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+
+        run_non_yieldable(&lua, || {
+            lock_cell(scope.handle()).execution_slice_started.set(
+                Instant::now()
+                    .checked_sub(LUA_EXECUTION_SLICE + WATCHDOG_POLL_INTERVAL)
+                    .unwrap(),
+            );
+            assert_eq!(interrupt_reason(&lua), None);
+        });
+
+        assert!(lock_cell(scope.handle()).yieldable.get());
+    }
+
+    #[test]
     fn gate_guard_tracks_count_via_raii() {
         let g = Rc::new(gate());
         let g1 = GateGuard::new(&g);
@@ -4161,6 +4427,65 @@ mod tests {
         let queued = queue.rx.try_recv().unwrap();
         assert!(queued.live_ctx.is_none());
         assert!(queued.owner.is_none());
+    }
+
+    #[test]
+    fn enqueue_async_task_rejects_excess_fanout() {
+        let lua = enqueue_test_lua();
+        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        for _ in 0..SPAWN_QUEUE_CAPACITY {
+            enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+        }
+
+        let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
+
+        assert!(error.to_string().contains(&spawn_queue_full_message()));
+        assert_eq!(
+            lock_cell(scope.handle()).async_tasks.get(),
+            SPAWN_QUEUE_CAPACITY
+        );
+    }
+
+    #[test]
+    fn draining_spawn_queue_does_not_release_fanout_capacity() {
+        let lua = enqueue_test_lua();
+        let _scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        for _ in 0..SPAWN_QUEUE_CAPACITY {
+            enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+        }
+        let queued: Vec<_> = lua
+            .app_data_ref::<SpawnQueue>()
+            .unwrap()
+            .rx
+            .drain()
+            .collect();
+
+        let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
+
+        assert!(error.to_string().contains(&spawn_queue_full_message()));
+        drop(queued);
+        enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+    }
+
+    #[test]
+    fn inline_async_task_rejects_excess_fanout() {
+        let lua = enqueue_test_lua();
+        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        lock_cell(scope.handle()).inline_spawn = Some(Vec::new());
+        for _ in 0..SPAWN_QUEUE_CAPACITY {
+            enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
+        }
+
+        let error = enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap_err();
+
+        assert!(error.to_string().contains(&spawn_queue_full_message()));
+        assert_eq!(
+            lock_cell(scope.handle())
+                .inline_spawn
+                .as_ref()
+                .map(Vec::len),
+            Some(SPAWN_QUEUE_CAPACITY)
+        );
     }
 
     #[test]
@@ -4291,6 +4616,11 @@ mod tests {
             identity: None,
             owner: None,
             parent: None,
+            _claim: lua
+                .app_data_ref::<SpawnQueue>()
+                .unwrap()
+                .try_claim()
+                .unwrap(),
         }
     }
 
@@ -4328,6 +4658,11 @@ mod tests {
                 identity: None,
                 owner: None,
                 parent: None,
+                _claim: lua
+                    .app_data_ref::<SpawnQueue>()
+                    .unwrap()
+                    .try_claim()
+                    .unwrap(),
             };
             let g = Rc::new(gate());
             spawn_async_task(&lua, &ex, &g, task);
@@ -4354,9 +4689,76 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn drain_barrier_services_children_spawned_by_inflight_tasks() {
+        let ex = Rc::new(smol::LocalExecutor::new());
+        smol::block_on(ex.run(async {
+            let lua = enqueue_test_lua();
+            let gate = Rc::new(gate());
+            let (child_done_tx, child_done_rx) = flume::bounded(1);
+            let parent_gate = Rc::clone(&gate);
+            let parent = ex.spawn(async move {
+                let _guard = GateGuard::new(&parent_gate);
+                child_done_rx.recv_async().await.unwrap();
+            });
+            smol::future::yield_now().await;
+
+            let child = lua
+                .create_function(move |_, (): ()| {
+                    child_done_tx.send(()).map_err(mlua::Error::external)
+                })
+                .unwrap();
+            let work_fn = lua.create_registry_value(child).unwrap();
+            let queue = lua.app_data_ref::<SpawnQueue>().unwrap();
+            queue
+                .tx
+                .try_send(PendingAsyncTask {
+                    work_fn,
+                    on_finish: None,
+                    cancel: CancelToken::none(),
+                    deadline: None,
+                    live_ctx: None,
+                    identity: None,
+                    owner: None,
+                    parent: None,
+                    _claim: queue.try_claim().unwrap(),
+                })
+                .unwrap();
+            let spawn_rx = queue.rx.clone();
+            drop(queue);
+
+            let barrier_lua = lua.clone();
+            let barrier_gate = Rc::clone(&gate);
+            let barrier_ex = Rc::clone(&ex);
+            let barrier = ex.spawn(async move {
+                drain_barrier(&barrier_lua, &barrier_ex, &barrier_gate, &spawn_rx).await;
+            });
+            let completed = futures_lite::future::race(
+                async {
+                    barrier.await;
+                    true
+                },
+                async {
+                    smol::Timer::after(Duration::from_millis(250)).await;
+                    false
+                },
+            )
+            .await;
+
+            assert!(
+                completed,
+                "barrier did not service an inflight task's child"
+            );
+            parent.await;
+        }));
+    }
+
     fn watchdog_lua(shutdown: bool) -> (Lua, Watchdog) {
         let lua = Lua::new();
-        lua.set_app_data(ShutdownFlag(Arc::new(AtomicBool::new(shutdown))));
+        lua.set_app_data(ShutdownFlag {
+            requested: Arc::new(AtomicBool::new(shutdown)),
+            first_seen: Mutex::new(None),
+        });
         let armed = Arc::new(AtomicBool::new(false));
         let watchdog = Watchdog::spawn(Arc::clone(&armed));
         install_interrupt(&lua, armed);
@@ -4422,6 +4824,37 @@ mod tests {
         lua.set_app_data::<TaskHandle>(handle);
 
         assert_eq!(interrupt_reason(&lua), Some(INTERRUPT_CANCELLED_MSG));
+    }
+
+    #[test]
+    fn repeatedly_caught_cancellation_forces_a_yield() {
+        let (lua, _watchdog) = watchdog_lua(false);
+        let handle = cancelled_handle();
+        lock_cell(&handle).interrupt_after.set(Some(
+            Instant::now()
+                .checked_sub(INTERRUPT_FORCE_YIELD_GRACE + WATCHDOG_POLL_INTERVAL)
+                .unwrap(),
+        ));
+        lua.set_app_data::<TaskHandle>(handle);
+
+        assert_eq!(interrupt_reason(&lua), Some(ASYNC_CLEANUP_TIMEOUT_MSG));
+    }
+
+    #[test]
+    fn repeatedly_caught_shutdown_forces_a_yield() {
+        let (lua, _watchdog) = watchdog_lua(true);
+        let flag = lua.app_data_ref::<ShutdownFlag>().unwrap();
+        *flag
+            .first_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+            Instant::now()
+                .checked_sub(INTERRUPT_FORCE_YIELD_GRACE + WATCHDOG_POLL_INTERVAL)
+                .unwrap(),
+        );
+        drop(flag);
+
+        assert_eq!(interrupt_reason(&lua), Some(ASYNC_CLEANUP_TIMEOUT_MSG));
     }
 
     #[test]

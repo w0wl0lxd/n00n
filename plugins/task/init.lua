@@ -354,6 +354,8 @@ end
 n00n.api.register_tool({
   name = "run_task",
   aliases = { "task" },
+  defer_loading = true,
+  namespace = "orchestration",
   description = description,
   kind = "execute",
   workload = "orchestrator",

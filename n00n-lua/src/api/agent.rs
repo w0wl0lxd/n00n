@@ -40,6 +40,7 @@ use crate::api::util::ctx::{AgentContext, LuaCtx};
 use crate::state::PluginStateStore;
 
 const SESSION_CLOSED_ERR: &str = "session closed";
+const SUBAGENT_FORWARDER_STALLED_ERR: &str = "subagent event forwarder did not settle";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
 const ACTIVITY_MESSAGE_MAX_CHARS: usize = 80;
@@ -60,6 +61,7 @@ const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
     "write",
 ];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
+const FORWARDER_BARRIER_TIMEOUT: Duration = Duration::from_secs(3);
 const LIVE_EVENT_QUEUE_CAPACITY: usize = 256;
 const SUBAGENT_EVENT_QUEUE_CAPACITY: usize = 1024;
 const STEERING_QUEUE_CAPACITY: usize = 32;
@@ -704,7 +706,7 @@ async fn session(
         let p = provider::from_model_fallback_with_openai_options(
             &mut m,
             agent_ctx.timeouts,
-            agent_ctx.openai_options,
+            agent_ctx.openai_options.clone(),
         );
         (m, Arc::from(p))
     } else {
@@ -871,12 +873,13 @@ async fn session(
                 parent_identity.root_session_id().clone(),
             )),
             timeouts: agent_ctx.timeouts,
-            openai_options: agent_ctx.openai_options,
+            openai_options: agent_ctx.openai_options.clone(),
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
             registry: Arc::clone(&agent_ctx.registry),
             audience,
+            state_revision: Some(0),
         },
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
@@ -1145,18 +1148,35 @@ impl Progress {
         let _ = self.barrier_tx.try_send(());
     }
 
-    async fn wait_for_forwarder_barrier(&self, target: u64) {
-        loop {
-            let reached = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .forwarded_barriers
-                >= target;
-            if reached || self.barrier_rx.recv_async().await.is_err() {
-                return;
-            }
-        }
+    async fn wait_for_forwarder_barrier(&self, target: u64) -> bool {
+        self.wait_for_forwarder_barrier_for(target, FORWARDER_BARRIER_TIMEOUT)
+            .await
+    }
+
+    async fn wait_for_forwarder_barrier_for(&self, target: u64, timeout: Duration) -> bool {
+        futures_lite::future::race(
+            async {
+                loop {
+                    let reached = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .forwarded_barriers
+                        >= target;
+                    if reached {
+                        return true;
+                    }
+                    if self.barrier_rx.recv_async().await.is_err() {
+                        return false;
+                    }
+                }
+            },
+            async move {
+                smol::Timer::after(timeout).await;
+                false
+            },
+        )
+        .await
     }
 
     fn record_start(&self, event: &ToolStartEvent) {
@@ -1496,6 +1516,7 @@ async fn prompt(
         let result = agent.run(input).await;
         s.usage += agent.total_usage();
         s.cost += agent.total_cost();
+        s.params.state_revision = agent.state_revision();
         drop(agent);
         if result.is_err()
             && let Err(barrier_error) = s.sub_event_tx.send(AgentEvent::Done {
@@ -1514,7 +1535,23 @@ async fn prompt(
                 )),
             ));
         }
-        s.progress.wait_for_forwarder_barrier(barrier_target).await;
+        if !s.progress.wait_for_forwarder_barrier(barrier_target).await {
+            s.failed = true;
+            s.progress.set_done(progress_turn);
+            let table = prompt_result_table(
+                &lua,
+                s.start.elapsed().as_millis() as u64,
+                s.usage,
+                s.cost,
+                s.fast,
+                None,
+            )?;
+            let error = result.err().map_or_else(
+                || SUBAGENT_FORWARDER_STALLED_ERR.to_owned(),
+                |error| error.to_string(),
+            );
+            return Ok((Some(table), Some(error)));
+        }
         if let Err(e) = result {
             s.failed = true;
             s.progress.set_done(progress_turn);
@@ -1646,7 +1683,8 @@ fn call_local_tool(
 ) -> Result<String, String> {
     let lua = weak.try_upgrade().ok_or("Lua runtime shut down")?;
     let arg = json_to_lua(&lua, input).map_err(|e| e.to_string())?;
-    let values = f.call::<mlua::MultiValue>(arg).map_err(|e| e.to_string())?;
+    let values = crate::runtime::run_non_yieldable(&lua, || f.call::<mlua::MultiValue>(arg))
+        .map_err(|e| e.to_string())?;
     lua_tool_result(values)
 }
 
@@ -1912,7 +1950,7 @@ mod tests {
                 forwarded.record_forwarder_barrier();
             });
 
-            progress.wait_for_forwarder_barrier(target).await;
+            assert!(progress.wait_for_forwarder_barrier(target).await);
             worker.await;
             let state = progress
                 .state
@@ -1920,6 +1958,16 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(state.activities[0].status, ActivityStatus::Success);
         });
+    }
+
+    #[test]
+    fn forwarder_barrier_timeout_does_not_hang() {
+        let progress = Progress::new(Instant::now(), String::new());
+        let target = progress.next_forwarder_barrier();
+        assert!(!smol::block_on(progress.wait_for_forwarder_barrier_for(
+            target,
+            Duration::from_millis(25),
+        )));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -22,9 +23,9 @@ use tracing::{debug, info, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, CacheHealth, CacheKind, HistoryReplayReason, Message, ProviderEvent, ProviderUsage,
-    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, StreamResponse, System,
-    UsageLimit, dialect,
+    AgentError, CacheControl, CacheHealth, CacheKind, HistoryReplayReason, Message,
+    OpenAiPromptCacheMode, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, StreamResponse, System, UsageLimit, dialect,
 };
 
 use super::auth;
@@ -65,11 +66,85 @@ fn coding_plan_slot_count(slots: u64) -> u8 {
 type ResponseOperationSlot = Arc<AsyncMutex<()>>;
 type ResponseOperationKey = (PathBuf, n00nId);
 type ResponseOperationRegistry = Mutex<HashMap<ResponseOperationKey, Weak<AsyncMutex<()>>>>;
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CodexCacheCapabilities {
+    pub accepts_prompt_cache_options_implicit: bool,
+    pub accepts_prompt_cache_options_explicit: bool,
+    pub accepts_prompt_cache_breakpoints: bool,
+}
 
-#[derive(Debug, Clone, Copy)]
+impl CodexCacheCapabilities {
+    fn apply_to_request_options(&self, mut opts: RequestOptions) -> RequestOptions {
+        let requested_breakpoints = opts.message_cache_breakpoints;
+        opts.message_cache_breakpoints = 0;
+        opts.openai_prompt_cache_mode = None;
+
+        if self.accepts_prompt_cache_options_explicit
+            && self.accepts_prompt_cache_breakpoints
+            && requested_breakpoints > 0
+        {
+            opts.message_cache_breakpoints = requested_breakpoints;
+            opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Explicit);
+        } else if self.accepts_prompt_cache_options_implicit {
+            opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Implicit);
+        }
+
+        opts
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseChainResetReason {
+    RequestPrefixScopeChanged,
+    MessagePrefixChanged,
+    NoNewInputAfterResponse,
+    SocketNotReusable,
+    AttemptFailed,
+    PreviousResponseNotFound,
+}
+
+impl ResponseChainResetReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestPrefixScopeChanged => "request_prefix_scope_changed",
+            Self::MessagePrefixChanged => "message_prefix_changed",
+            Self::NoNewInputAfterResponse => "no_new_input_after_response",
+            Self::SocketNotReusable => "socket_not_reusable",
+            Self::AttemptFailed => "attempt_failed",
+            Self::PreviousResponseNotFound => "previous_response_not_found",
+        }
+    }
+}
+
+fn clamp_responses_cache_breakpoints(model: &Model, mut opts: RequestOptions) -> RequestOptions {
+    if !model.supports_prompt_cache_breakpoint() {
+        opts.message_cache_breakpoints = 0;
+    }
+    opts
+}
+
+fn log_response_chain_reset(reason: ResponseChainResetReason, durable_chain: Option<bool>) {
+    if let Some(durable_chain) = durable_chain {
+        debug!(
+            chain_reset = true,
+            chain_reset_reason = reason.as_str(),
+            durable_chain,
+            "resetting OpenAI response chain"
+        );
+    } else {
+        debug!(
+            chain_reset = true,
+            chain_reset_reason = reason.as_str(),
+            "resetting OpenAI response chain"
+        );
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct OpenAiOptions {
     coding_plan_slots: u8,
     codex_provider: bool,
+    codex_cache_capabilities: CodexCacheCapabilities,
 }
 
 impl OpenAiOptions {
@@ -78,12 +153,22 @@ impl OpenAiOptions {
         Self {
             coding_plan_slots: coding_plan_slot_count(slots),
             codex_provider: false,
+            codex_cache_capabilities: CodexCacheCapabilities::default(),
         }
     }
 
     #[must_use]
     pub const fn with_codex(mut self) -> Self {
         self.codex_provider = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_codex_cache_capabilities(
+        mut self,
+        capabilities: CodexCacheCapabilities,
+    ) -> Self {
+        self.codex_cache_capabilities = capabilities;
         self
     }
 
@@ -101,7 +186,16 @@ impl Default for OpenAiOptions {
 
 impl From<&n00n_config::ProviderConfig> for OpenAiOptions {
     fn from(config: &n00n_config::ProviderConfig) -> Self {
-        Self::with_coding_plan_slots(config.openai_coding_plan_slots)
+        Self::with_coding_plan_slots(config.openai_coding_plan_slots).with_codex_cache_capabilities(
+            CodexCacheCapabilities {
+                accepts_prompt_cache_options_implicit: config
+                    .openai_codex_accepts_prompt_cache_options_implicit,
+                accepts_prompt_cache_options_explicit: config
+                    .openai_codex_accepts_prompt_cache_options_explicit,
+                accepts_prompt_cache_breakpoints: config
+                    .openai_codex_accepts_prompt_cache_breakpoints,
+            },
+        )
     }
 }
 
@@ -175,6 +269,8 @@ impl CodexAttempt {
 struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
+    model_id: Option<String>,
+    system_hash: Option<String>,
     tools_hash: Option<String>,
     messages_hash: Option<String>,
     auth_scope_hash: Option<String>,
@@ -187,6 +283,8 @@ impl Default for OpenAiSessionState {
         Self {
             last_response_id: None,
             last_message_count: 0,
+            model_id: None,
+            system_hash: None,
             tools_hash: None,
             messages_hash: None,
             auth_scope_hash: None,
@@ -201,6 +299,8 @@ impl OpenAiSessionState {
         Self {
             last_response_id: Some(stored.response_id),
             last_message_count: stored.message_count,
+            model_id: stored.model_id,
+            system_hash: stored.system_hash,
             tools_hash: Some(stored.tools_hash),
             messages_hash: Some(stored.messages_hash),
             auth_scope_hash: Some(stored.auth_scope_hash),
@@ -213,6 +313,8 @@ impl OpenAiSessionState {
         Some(StoredOpenAiResponseChain {
             response_id: self.last_response_id.clone()?,
             message_count: self.last_message_count,
+            model_id: self.model_id.clone(),
+            system_hash: Some(self.system_hash.clone()?),
             tools_hash: self.tools_hash.clone()?,
             messages_hash: self.messages_hash.clone()?,
             auth_scope_hash: self.auth_scope_hash.clone()?,
@@ -224,6 +326,84 @@ impl OpenAiSessionState {
 fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, serde_json::Error> {
     let bytes = serde_json::to_vec(value)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn system_hash(system: &System) -> String {
+    let mut digest = Sha256::new();
+    for block in system.blocks() {
+        digest.update(block.text.len().to_le_bytes());
+        digest.update(block.text.as_bytes());
+        digest.update([match block.cache {
+            CacheControl::None => 0,
+            CacheControl::Ephemeral => 1,
+            CacheControl::Dynamic => 2,
+        }]);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn short_hash(hash: &str) -> &str {
+    match hash.get(..12) {
+        Some(short) => short,
+        None => hash,
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct CachePrefixFingerprint {
+    model_id: String,
+    prefix_hash: String,
+    system_hash: String,
+    tools_hash: String,
+}
+
+impl CachePrefixFingerprint {
+    fn new(model_id: &str, system: &System, tools_hash: &str) -> Self {
+        let system_text = system.to_string();
+        let mut digest = Sha256::new();
+        digest.update(model_id.len().to_le_bytes());
+        digest.update(model_id.as_bytes());
+        digest.update(system_text.len().to_le_bytes());
+        digest.update(system_text.as_bytes());
+        digest.update(tools_hash.as_bytes());
+        Self {
+            model_id: model_id.to_owned(),
+            prefix_hash: format!("{:x}", digest.finalize()),
+            system_hash: system_hash(system),
+            tools_hash: tools_hash.to_owned(),
+        }
+    }
+
+    fn prefix_hash(&self) -> &str {
+        &self.prefix_hash
+    }
+
+    fn prompt_cache_key(&self, session_id: Option<&SessionRef>) -> String {
+        let prefix_hash = self.prefix_hash();
+        let shard = session_id.map_or(0, |session_id| {
+            Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
+                % PROMPT_CACHE_SHARDS
+        });
+        format!("n00n-{prefix_hash}-s{shard}")
+    }
+}
+
+impl fmt::Debug for CachePrefixFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachePrefixFingerprint")
+            .field("model_id", &self.model_id)
+            .field("prefix_hash", &short_hash(self.prefix_hash()))
+            .field("system_hash", &short_hash(&self.system_hash))
+            .field("tools_hash", &short_hash(&self.tools_hash))
+            .finish()
+    }
+}
+
+fn request_tools_hash(tools: &Value, opts: &RequestOptions) -> Result<String, serde_json::Error> {
+    match opts.hosted_tool_search.as_ref() {
+        Some(tool_search) => stable_json_hash(&(tools, tool_search)),
+        None => stable_json_hash(tools),
+    }
 }
 
 fn credential_hash(auth: &ResolvedAuth) -> String {
@@ -299,27 +479,6 @@ fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
 }
 
-fn prompt_cache_key(
-    model_id: &str,
-    system: &System,
-    tools_hash: &str,
-    session_id: Option<&SessionRef>,
-) -> String {
-    let system_text = system.to_string();
-    let mut digest = Sha256::new();
-    digest.update(model_id.len().to_le_bytes());
-    digest.update(model_id.as_bytes());
-    digest.update(system_text.len().to_le_bytes());
-    digest.update(system_text.as_bytes());
-    digest.update(tools_hash.as_bytes());
-    let prefix_hash = digest.finalize();
-    let shard = session_id.map_or(0, |session_id| {
-        Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
-            % PROMPT_CACHE_SHARDS
-    });
-    format!("n00n-{prefix_hash:x}-s{shard}")
-}
-
 fn log_responses_request(
     transport: &'static str,
     body: &Value,
@@ -388,23 +547,23 @@ fn auth_expiry_bucket(tokens: &n00n_storage::auth::OAuthTokens) -> &'static str 
 
 fn incremental_for_state<'a>(
     state: &mut OpenAiSessionState,
-    tools_hash: &str,
+    fingerprint: &CachePrefixFingerprint,
     auth_scope_hash: &str,
     messages: &'a [Message],
 ) -> Result<(Option<String>, &'a [Message]), serde_json::Error> {
-    if state.tools_hash.as_deref() != Some(tools_hash)
+    if state.model_id.as_deref() != Some(fingerprint.model_id.as_str())
+        || state.system_hash.as_deref() != Some(fingerprint.system_hash.as_str())
+        || state.tools_hash.as_deref() != Some(fingerprint.tools_hash.as_str())
         || state.auth_scope_hash.as_deref() != Some(auth_scope_hash)
         || messages.len() < state.last_message_count
     {
         if state.last_response_id.is_some() {
-            debug!(
-                chain_reset = true,
-                chain_reset_reason = "request_prefix_scope_changed",
-                "resetting OpenAI response chain"
-            );
+            log_response_chain_reset(ResponseChainResetReason::RequestPrefixScopeChanged, None);
         }
         *state = OpenAiSessionState {
-            tools_hash: Some(tools_hash.to_owned()),
+            model_id: Some(fingerprint.model_id.clone()),
+            system_hash: Some(fingerprint.system_hash.clone()),
+            tools_hash: Some(fingerprint.tools_hash.clone()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             ..Default::default()
         };
@@ -413,13 +572,11 @@ fn incremental_for_state<'a>(
     if state.last_message_count > 0 {
         let current_hash = stable_json_hash(&messages[..state.last_message_count])?;
         if state.messages_hash.as_deref() != Some(current_hash.as_str()) {
-            debug!(
-                chain_reset = true,
-                chain_reset_reason = "message_prefix_changed",
-                "resetting OpenAI response chain"
-            );
+            log_response_chain_reset(ResponseChainResetReason::MessagePrefixChanged, None);
             *state = OpenAiSessionState {
-                tools_hash: Some(tools_hash.to_owned()),
+                model_id: Some(fingerprint.model_id.clone()),
+                system_hash: Some(fingerprint.system_hash.clone()),
+                tools_hash: Some(fingerprint.tools_hash.clone()),
                 messages_hash: Some(current_hash),
                 auth_scope_hash: Some(auth_scope_hash.to_owned()),
                 ..Default::default()
@@ -434,13 +591,11 @@ fn incremental_for_state<'a>(
                 &messages[state.last_message_count + 1..],
             ));
         }
-        debug!(
-            chain_reset = true,
-            chain_reset_reason = "no_new_input_after_response",
-            "resetting OpenAI response chain"
-        );
+        log_response_chain_reset(ResponseChainResetReason::NoNewInputAfterResponse, None);
         *state = OpenAiSessionState {
-            tools_hash: Some(tools_hash.to_owned()),
+            model_id: Some(fingerprint.model_id.clone()),
+            system_hash: Some(fingerprint.system_hash.clone()),
+            tools_hash: Some(fingerprint.tools_hash.clone()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             ..Default::default()
         };
@@ -452,7 +607,7 @@ fn incremental_for_state<'a>(
 fn record_in_state(
     state: &mut OpenAiSessionState,
     response_id: Option<String>,
-    tools_hash: &str,
+    fingerprint: &CachePrefixFingerprint,
     auth_scope_hash: &str,
     messages: &[Message],
 ) -> Result<(), serde_json::Error> {
@@ -460,7 +615,9 @@ fn record_in_state(
         *state = OpenAiSessionState {
             last_response_id: Some(response_id),
             last_message_count: messages.len(),
-            tools_hash: Some(tools_hash.to_owned()),
+            model_id: Some(fingerprint.model_id.clone()),
+            system_hash: Some(fingerprint.system_hash.clone()),
+            tools_hash: Some(fingerprint.tools_hash.clone()),
             messages_hash: Some(stable_json_hash(messages)?),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
             expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
@@ -483,6 +640,7 @@ pub struct OpenAi {
     response_state_storage: Option<StateDir>,
     websocket_connect_timeout: Duration,
     coding_plan_slots: u8,
+    codex_cache_capabilities: CodexCacheCapabilities,
     system_prefix: Option<String>,
     session_state: Arc<Mutex<HashMap<n00nId, OpenAiSessionState>>>,
     response_connections: Arc<Mutex<HashMap<n00nId, ResponseConnectionSlot>>>,
@@ -519,6 +677,7 @@ impl OpenAi {
             response_state_storage: Some(storage),
             websocket_connect_timeout: timeouts.connect,
             coding_plan_slots: options.coding_plan_slots,
+            codex_cache_capabilities: options.codex_cache_capabilities,
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
@@ -553,6 +712,7 @@ impl OpenAi {
             response_state_storage: None,
             websocket_connect_timeout: timeouts.connect,
             coding_plan_slots: options.coding_plan_slots,
+            codex_cache_capabilities: options.codex_cache_capabilities,
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
@@ -1041,7 +1201,7 @@ impl OpenAi {
     async fn prepare_request<'a>(
         &self,
         session_id: Option<&SessionRef>,
-        tools_hash: &str,
+        fingerprint: &CachePrefixFingerprint,
         auth_scope_hash: &str,
         messages: &'a [Message],
         response_chain_lock: Option<&OpenAiResponseChainLock>,
@@ -1114,7 +1274,7 @@ impl OpenAi {
         let now = Instant::now();
         let state = states.entry(session_id).or_default();
         state.last_used = now;
-        incremental_for_state(state, tools_hash, auth_scope_hash, messages)
+        incremental_for_state(state, fingerprint, auth_scope_hash, messages)
             .map_err(AgentError::Json)
     }
 
@@ -1122,7 +1282,7 @@ impl OpenAi {
         &self,
         session_id: Option<&SessionRef>,
         response_id: Option<String>,
-        tools_hash: &str,
+        fingerprint: &CachePrefixFingerprint,
         auth_scope_hash: &str,
         messages: &[Message],
         persist: bool,
@@ -1140,7 +1300,7 @@ impl OpenAi {
             let state = states.entry(session_id).or_default();
             state.last_used = Instant::now();
             if let Err(error) =
-                record_in_state(state, response_id, tools_hash, auth_scope_hash, messages)
+                record_in_state(state, response_id, fingerprint, auth_scope_hash, messages)
             {
                 warn!(error = %error, "failed to hash OpenAI response chain; clearing continuation state");
                 *state = OpenAiSessionState::default();
@@ -1284,13 +1444,20 @@ impl OpenAi {
         response_chain_lock: Option<&OpenAiResponseChainLock>,
         event_tx: &Sender<ProviderEvent>,
     ) -> CodexAttempt {
-        if attempt.previous_response_id.is_some()
-            && (is_missing_previous_response(&attempt)
-                || should_clear_response_chain(&attempt.result))
-        {
-            self.clear_response_chain(session_id, response_chain_lock)
-                .await;
-            self.emit_cache_health(session_id, false, event_tx).await;
+        if attempt.previous_response_id.is_some() {
+            let reset_reason = if is_missing_previous_response(&attempt) {
+                Some(ResponseChainResetReason::PreviousResponseNotFound)
+            } else if should_clear_response_chain(&attempt.result) {
+                Some(ResponseChainResetReason::AttemptFailed)
+            } else {
+                None
+            };
+            if let Some(reason) = reset_reason {
+                log_response_chain_reset(reason, Some(response_chain_lock.is_some()));
+                self.clear_response_chain(session_id, response_chain_lock)
+                    .await;
+                self.emit_cache_health(session_id, false, event_tx).await;
+            }
         }
         attempt
     }
@@ -1318,9 +1485,11 @@ impl OpenAi {
         // full history instead of relying on a continuation chain.
         let mut opts = opts.with_idempotency_key().with_idempotency_supported();
         opts.allow_history_replay = true;
-        // The OpenAI Coding Plan endpoint rejects `prompt_cache_options`, so
-        // disable message-cache breakpoints for Codex requests.
-        opts.message_cache_breakpoints = 0;
+        // The OpenAI Coding Plan endpoint has historically rejected
+        // `prompt_cache_options`, so Codex keeps those fields disabled unless
+        // a manual capability probe has proven this account/endpoint accepts
+        // documented cache options.
+        opts = self.codex_cache_capabilities.apply_to_request_options(opts);
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
@@ -1369,19 +1538,18 @@ impl OpenAi {
         // socket. Reset the chain whenever the socket is gone, or the next turn
         // replays a dead id and the endpoint answers `previous_response_not_found`.
         if !connection_reusable {
-            debug!(
-                chain_reset = true,
-                chain_reset_reason = "socket_not_reusable",
-                durable_chain = persist_response_chain,
-                "resetting connection-local OpenAI response chain"
+            log_response_chain_reset(
+                ResponseChainResetReason::SocketNotReusable,
+                Some(persist_response_chain),
             );
             self.clear_response_chain(session_id, response_chain_lock.as_ref())
                 .await;
         }
+        let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
         let (previous_response_id, incremental_messages) = match self
             .prepare_request(
                 session_id,
-                tools_hash,
+                &fingerprint,
                 &state_scope_hash,
                 messages,
                 response_chain_lock.as_ref(),
@@ -1417,7 +1585,7 @@ impl OpenAi {
         }
         self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
             .await;
-        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
+        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -1647,7 +1815,7 @@ impl OpenAi {
         self.record_response(
             session_id,
             chainable.then_some(response_id).flatten(),
-            tools_hash,
+            &fingerprint,
             &state_scope_hash,
             messages,
             persist_response_chain,
@@ -1760,7 +1928,9 @@ impl OpenAi {
     ) -> Result<StreamResponse, AgentError> {
         // API-key Responses requests are intentionally stateless. This HTTP path cannot
         // reuse a store=false response ID safely, so every turn sends full history.
-        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
+        let opts = clamp_responses_cache_breakpoints(model, opts);
+        let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
+        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
         let body = super::responses::build_body(
             model,
             messages,
@@ -2078,7 +2248,7 @@ impl Provider for OpenAi {
                     None => None,
                 };
                 let durable_chain = session_id.is_some() && self.response_state_storage.is_some();
-                let tools_hash = stable_json_hash(tools)?;
+                let tools_hash = request_tools_hash(tools, &opts)?;
                 let attempt = self
                     .run_codex_attempt_with_auth_retry(
                         model,
@@ -2125,7 +2295,7 @@ impl Provider for OpenAi {
                     .result;
             }
 
-            let tools_hash = stable_json_hash(tools)?;
+            let tools_hash = request_tools_hash(tools, &opts)?;
             let prefixed_system_obj = System::from(prefixed_system);
 
             // Try Responses API for supported models
@@ -2156,8 +2326,9 @@ impl Provider for OpenAi {
             }
 
             // Fallback to Chat Completions
-            let prompt_cache_key =
-                prompt_cache_key(&model.id, &prefixed_system_obj, &tools_hash, session_id);
+            let fingerprint =
+                CachePrefixFingerprint::new(&model.id, &prefixed_system_obj, &tools_hash);
+            let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -2285,6 +2456,16 @@ impl Provider for OpenAi {
             model.context_window = model.context_window.min(CODING_PLAN_CONTEXT_WINDOW);
         }
     }
+
+    fn supports_hosted_tool_search(&self, model: &Model) -> bool {
+        if !model.supports_responses() || !model.supports_tool_search() {
+            return false;
+        }
+        let auth = self.current_auth();
+        auth.base_url.as_deref().is_none_or(|base_url| {
+            base_url == super::OPENAI_API_BASE_URL || base_url == auth::CODING_PLAN_BASE_URL
+        })
+    }
 }
 
 fn coding_plan_admission_retry_delay(attempt: &CodexAttempt, retry_count: u8) -> Option<Duration> {
@@ -2324,7 +2505,7 @@ fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
         || !matches!(
             &attempt.delivery,
             Some(RequestDeliveryMetadata {
-                phase: RequestDeliveryPhase::NotSent,
+                phase: RequestDeliveryPhase::NotSent | RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
                 ..
             })
@@ -2376,14 +2557,20 @@ mod tests {
     use super::*;
     use crate::{ContentBlock, Role, TokenUsage};
 
+    const SYSTEM_HASH: &str = "system";
     const TOOLS_HASH: &str = "[]";
     const AUTH_SCOPE_HASH: &str = "account";
     const LEGACY_SESSION_ID: &str = "01965087-4c71-7f00-8000-000000000000";
     const TEST_CREDENTIAL_HASH: &str = "test-credential";
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
+    fn test_fingerprint(system: &str, tools_hash: &str) -> CachePrefixFingerprint {
+        CachePrefixFingerprint::new("gpt-5.6", &System::from(system), tools_hash)
+    }
+
     async fn read_http_request(stream: &mut smol::net::TcpStream) -> (String, Value) {
         let mut request = Vec::new();
+
         let mut chunk = [0_u8; 2048];
         loop {
             let read = stream.read(&mut chunk).await.unwrap();
@@ -2452,9 +2639,35 @@ mod tests {
         assert_eq!(provider.coding_plan_slots, u8::try_from(slots).unwrap());
     }
 
+    #[test]
+    fn provider_config_codex_cache_capabilities_reach_openai_provider() {
+        let config = n00n_config::ProviderConfig {
+            openai_codex_accepts_prompt_cache_options_implicit: true,
+            openai_codex_accepts_prompt_cache_options_explicit: true,
+            openai_codex_accepts_prompt_cache_breakpoints: true,
+            ..Default::default()
+        };
+        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
+        let provider = OpenAi::with_auth_options(
+            auth,
+            crate::providers::Timeouts::default(),
+            OpenAiOptions::from(&config),
+        )
+        .unwrap();
+
+        assert_eq!(
+            provider.codex_cache_capabilities,
+            CodexCacheCapabilities {
+                accepts_prompt_cache_options_implicit: true,
+                accepts_prompt_cache_options_explicit: true,
+                accepts_prompt_cache_breakpoints: true,
+            }
+        );
+    }
     fn provider_with_response_storage(path: &Path) -> OpenAi {
         let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
         let mut provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+
         let storage = StateDir::from_path(path.to_path_buf());
         provider.storage = Some(storage.clone());
         provider.response_state_storage = Some(storage);
@@ -2488,7 +2701,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            "[]",
+            &test_fingerprint(SYSTEM_HASH, "[]"),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2499,8 +2712,13 @@ mod tests {
             Message::user("again".into()),
         ];
 
-        let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, "[]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (previous_response_id, incremental_messages) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, "[]"),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
         assert_eq!(incremental_messages.len(), 1);
@@ -2517,7 +2735,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            "[]",
+            &test_fingerprint(SYSTEM_HASH, "[]"),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2544,8 +2762,13 @@ mod tests {
             },
         ];
 
-        let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, "[]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (previous_response_id, incremental_messages) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, "[]"),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
         assert_eq!(incremental_messages.len(), 1);
@@ -2555,6 +2778,101 @@ mod tests {
                 if tool_use_id == "call_1" && content == "result"
         ));
     }
+
+    #[test]
+    fn api_responses_reject_unsupported_raw_breakpoints() {
+        let opts = clamp_responses_cache_breakpoints(
+            &Model::from_spec("openai/gpt-5.5").unwrap(),
+            RequestOptions {
+                message_cache_breakpoints: 2,
+                openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
+    }
+
+    #[test]
+    fn codex_cache_capabilities_keep_rejected_cache_options_off_by_default() {
+        let opts = CodexCacheCapabilities::default().apply_to_request_options(RequestOptions {
+            message_cache_breakpoints: 2,
+            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
+            ..Default::default()
+        });
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
+        assert_eq!(opts.openai_prompt_cache_mode, None);
+    }
+
+    #[test]
+    fn codex_cache_capabilities_gate_implicit_cache_options() {
+        let opts = CodexCacheCapabilities {
+            accepts_prompt_cache_options_implicit: true,
+            ..Default::default()
+        }
+        .apply_to_request_options(RequestOptions::default());
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
+        assert_eq!(
+            opts.openai_prompt_cache_mode,
+            Some(OpenAiPromptCacheMode::Implicit)
+        );
+    }
+
+    #[test]
+    fn codex_cache_capabilities_reject_explicit_mode_without_breakpoints() {
+        let opts = CodexCacheCapabilities {
+            accepts_prompt_cache_options_explicit: true,
+            ..Default::default()
+        }
+        .apply_to_request_options(RequestOptions {
+            message_cache_breakpoints: 3,
+            ..Default::default()
+        });
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
+        assert_eq!(opts.openai_prompt_cache_mode, None);
+    }
+
+    #[test]
+    fn codex_cache_capabilities_gate_explicit_breakpoints() {
+        let opts = CodexCacheCapabilities {
+            accepts_prompt_cache_options_explicit: true,
+            accepts_prompt_cache_breakpoints: true,
+            ..Default::default()
+        }
+        .apply_to_request_options(RequestOptions {
+            message_cache_breakpoints: 3,
+            ..Default::default()
+        });
+
+        assert_eq!(opts.message_cache_breakpoints, 3);
+        assert_eq!(
+            opts.openai_prompt_cache_mode,
+            Some(OpenAiPromptCacheMode::Explicit)
+        );
+    }
+
+    #[test]
+    fn codex_cache_capabilities_fall_back_to_implicit_without_breakpoints() {
+        let opts = CodexCacheCapabilities {
+            accepts_prompt_cache_options_implicit: true,
+            accepts_prompt_cache_options_explicit: true,
+            accepts_prompt_cache_breakpoints: true,
+        }
+        .apply_to_request_options(RequestOptions {
+            message_cache_breakpoints: 0,
+            ..Default::default()
+        });
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
+        assert_eq!(
+            opts.openai_prompt_cache_mode,
+            Some(OpenAiPromptCacheMode::Implicit)
+        );
+    }
+
     #[test]
     fn incremental_request_resets_when_tools_change() {
         let mut state = OpenAiSessionState::default();
@@ -2562,7 +2880,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            "[]",
+            &test_fingerprint(SYSTEM_HASH, "[]"),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2573,8 +2891,13 @@ mod tests {
             Message::user("again".into()),
         ];
 
-        let (previous_response_id, incremental_messages) =
-            incremental_for_state(&mut state, "[\"new\"]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (previous_response_id, incremental_messages) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, "[\"new\"]"),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(previous_response_id.is_none());
         assert_eq!(incremental_messages.len(), second.len());
@@ -2661,11 +2984,39 @@ mod tests {
     }
 
     #[test]
+    fn hosted_tool_search_requires_supported_model_and_official_endpoint() {
+        let official = OpenAi::with_auth(
+            Arc::new(Mutex::new(ResolvedAuth::bearer("test-key"))),
+            crate::providers::Timeouts::default(),
+        )
+        .unwrap();
+        assert!(official.supports_hosted_tool_search(&Model::from_spec("openai/gpt-5.6").unwrap()));
+        assert!(
+            !official.supports_hosted_tool_search(&Model::from_spec("openai/gpt-4.1").unwrap())
+        );
+
+        let custom = OpenAi::with_auth(
+            Arc::new(Mutex::new(ResolvedAuth {
+                base_url: Some("https://example.test/v1".into()),
+                headers: vec![("authorization".into(), "Bearer test-key".into())],
+            })),
+            crate::providers::Timeouts::default(),
+        )
+        .unwrap();
+        assert!(!custom.supports_hosted_tool_search(&Model::from_spec("openai/gpt-5.6").unwrap()));
+    }
+
+    #[test]
     fn incremental_first_turn_sends_full_messages() {
         let mut state = OpenAiSessionState::default();
         let messages = vec![Message::user("hello".into())];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &messages).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &messages,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 1);
@@ -2676,14 +3027,19 @@ mod tests {
     fn incremental_second_turn_skips_assistant_message() {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("hello".into())];
-        let (prev, _inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &first).unwrap();
+        let (prev, _inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
         assert!(prev.is_none());
 
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2694,8 +3050,13 @@ mod tests {
             assistant("hi"),
             Message::user("again".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(prev.as_deref(), Some("resp_1"));
         assert_eq!(inc.len(), 1);
@@ -2710,13 +3071,18 @@ mod tests {
     fn incremental_tool_loop_skips_assistant_tool_calls() {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("run".into())];
-        let (prev, _inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &first).unwrap();
+        let (prev, _inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
         assert!(prev.is_none());
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2728,8 +3094,13 @@ mod tests {
             tool_result("call_1", "result"),
             Message::user("next".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert_eq!(prev.as_deref(), Some("resp_1"));
         assert_eq!(inc.len(), 2);
@@ -2748,7 +3119,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2759,12 +3130,149 @@ mod tests {
             assistant("hi"),
             Message::user("again".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, "[\"new\"]", AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, "[\"new\"]"),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 3);
         assert_eq!(state.tools_hash, Some("[\"new\"]".to_string()));
+    }
+
+    #[test]
+    fn incremental_system_change_resets_state() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            &test_fingerprint("old-system", TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint("new-system", TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), second.len());
+        assert_eq!(
+            state.system_hash.as_deref(),
+            Some(
+                test_fingerprint("new-system", TOOLS_HASH)
+                    .system_hash
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn incremental_model_change_resets_state() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+        let changed =
+            CachePrefixFingerprint::new("gpt-5.6-luna", &System::from(SYSTEM_HASH), TOOLS_HASH);
+
+        let (previous, incremental) =
+            incremental_for_state(&mut state, &changed, AUTH_SCOPE_HASH, &second).unwrap();
+
+        assert!(previous.is_none());
+        assert_eq!(incremental.len(), second.len());
+    }
+
+    #[test]
+    fn system_hash_preserves_block_boundaries() {
+        let combined = System::from("ab");
+        let mut split = System::new();
+        split.push_static("a");
+        split.push_static("b");
+        split.seal();
+
+        assert_eq!(combined.to_string(), split.to_string());
+        assert_ne!(system_hash(&combined), system_hash(&split));
+    }
+
+    #[test]
+    fn state_without_system_hash_is_not_persisted() {
+        let state = OpenAiSessionState {
+            last_response_id: Some("resp_1".into()),
+            last_message_count: 1,
+            model_id: Some("gpt-5.6".into()),
+            system_hash: None,
+            tools_hash: Some(TOOLS_HASH.into()),
+            messages_hash: Some("messages".into()),
+            auth_scope_hash: Some(AUTH_SCOPE_HASH.into()),
+            expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
+            last_used: Instant::now(),
+        };
+
+        assert!(state.to_stored().is_none());
+    }
+
+    #[test]
+    fn legacy_chain_without_system_hash_resets_state() {
+        let mut state = OpenAiSessionState::from_stored(StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 1,
+            model_id: None,
+            system_hash: None,
+            tools_hash: TOOLS_HASH.into(),
+            messages_hash: stable_json_hash(&[Message::user("hello".into())]).unwrap(),
+            auth_scope_hash: AUTH_SCOPE_HASH.into(),
+            expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
+        });
+        let messages = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &messages,
+        )
+        .unwrap();
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), messages.len());
+        assert_eq!(
+            state.system_hash.as_deref(),
+            Some(
+                test_fingerprint(SYSTEM_HASH, TOOLS_HASH)
+                    .system_hash
+                    .as_str()
+            )
+        );
     }
 
     #[test]
@@ -2774,15 +3282,20 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
         .unwrap();
 
         let second = vec![Message::user("a".into())];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 1);
@@ -2795,7 +3308,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
@@ -2806,8 +3319,13 @@ mod tests {
             assistant("hi"),
             Message::user("again".into()),
         ];
-        let (prev, inc) =
-            incremental_for_state(&mut state, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        let (prev, inc) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 3);
@@ -2820,14 +3338,21 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             AUTH_SCOPE_HASH,
             &first,
         )
         .unwrap();
 
         let second = vec![Message::user("again".into())];
-        record_in_state(&mut state, None, TOOLS_HASH, AUTH_SCOPE_HASH, &second).unwrap();
+        record_in_state(
+            &mut state,
+            None,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            AUTH_SCOPE_HASH,
+            &second,
+        )
+        .unwrap();
 
         assert!(state.last_response_id.is_none());
         assert_eq!(state.last_message_count, 0);
@@ -3038,7 +3563,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_1".into()),
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &first,
                     true,
@@ -3061,7 +3586,7 @@ mod tests {
             let (previous_response_id, incremental) = restored
                 .prepare_request(
                     Some(&session_id),
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &second,
                     restored_lock.as_ref(),
@@ -3111,7 +3636,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_first".into()),
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &first,
                     true,
@@ -3128,7 +3653,7 @@ mod tests {
             let (previous, incremental) = second_provider
                 .prepare_request(
                     Some(&session_id),
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &second,
                     lock.as_ref(),
@@ -3141,7 +3666,7 @@ mod tests {
                 .record_response(
                     Some(&session_id),
                     Some("resp_second".into()),
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &second,
                     true,
@@ -3158,7 +3683,7 @@ mod tests {
             let (previous, incremental) = first_provider
                 .prepare_request(
                     Some(&session_id),
-                    TOOLS_HASH,
+                    &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
                     AUTH_SCOPE_HASH,
                     &third,
                     lock.as_ref(),
@@ -3427,7 +3952,7 @@ mod tests {
         record_in_state(
             &mut state,
             Some("resp_1".into()),
-            TOOLS_HASH,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
             "account-1",
             &first,
         )
@@ -3438,8 +3963,13 @@ mod tests {
             Message::user("again".into()),
         ];
 
-        let (previous_response_id, incremental) =
-            incremental_for_state(&mut state, TOOLS_HASH, "account-2", &second).unwrap();
+        let (previous_response_id, incremental) = incremental_for_state(
+            &mut state,
+            &test_fingerprint(SYSTEM_HASH, TOOLS_HASH),
+            "account-2",
+            &second,
+        )
+        .unwrap();
 
         assert!(previous_response_id.is_none());
         assert_eq!(incremental.len(), second.len());
@@ -3477,24 +4007,79 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_key_groups_matching_stable_prefixes() {
+    fn request_tools_hash_includes_hosted_catalog_descriptions() {
+        let tools = serde_json::json!([{"name": "read_file"}]);
+        let mut opts = RequestOptions {
+            hosted_tool_search: Some(crate::HostedToolSearch {
+                tools: vec![crate::DeferredToolDefinition {
+                    namespace: "knowledge".into(),
+                    definition: serde_json::json!({
+                        "name": "use_memory",
+                        "description": "first description",
+                        "input_schema": {"type": "object"}
+                    }),
+                }],
+            }),
+            ..Default::default()
+        };
+        let first = request_tools_hash(&tools, &opts).unwrap();
+        assert_eq!(first, request_tools_hash(&tools, &opts).unwrap());
+
+        opts.hosted_tool_search.as_mut().unwrap().tools[0].definition["description"] =
+            Value::String("changed description".into());
+        assert_ne!(first, request_tools_hash(&tools, &opts).unwrap());
+    }
+
+    #[test]
+    fn cache_prefix_fingerprint_groups_matching_stable_prefixes() {
         let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
         let system = System::from("stable instructions");
-        let key = prompt_cache_key("gpt-5.6", &system, &tools_hash, None);
+        let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash);
+        let key = fingerprint.prompt_cache_key(None);
+        let system_text = system.to_string();
+        let mut legacy_digest = Sha256::new();
+        legacy_digest.update("gpt-5.6".len().to_le_bytes());
+        legacy_digest.update(b"gpt-5.6");
+        legacy_digest.update(system_text.len().to_le_bytes());
+        legacy_digest.update(system_text.as_bytes());
+        legacy_digest.update(tools_hash.as_bytes());
+        let legacy_prefix_hash = format!("{:x}", legacy_digest.finalize());
 
-        assert_eq!(key, prompt_cache_key("gpt-5.6", &system, &tools_hash, None));
+        assert_eq!(fingerprint.prefix_hash(), legacy_prefix_hash);
+
+        assert_eq!(
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash)
+        );
+        assert_eq!(key, fingerprint.prompt_cache_key(None));
         assert_ne!(
-            key,
-            prompt_cache_key("gpt-5.6", &System::from("changed"), &tools_hash, None)
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6", &System::from("changed"), &tools_hash)
         );
         assert_ne!(
-            key,
-            prompt_cache_key("gpt-5.6-sol", &system, &tools_hash, None)
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6-sol", &system, &tools_hash)
         );
         assert_ne!(
-            key,
-            prompt_cache_key("gpt-5.6", &system, "changed-tools", None)
+            fingerprint,
+            CachePrefixFingerprint::new("gpt-5.6", &system, "changed-tools")
         );
+    }
+
+    #[test]
+    fn cache_prefix_fingerprint_debug_is_sanitized() {
+        let system_text = "private system instructions";
+        let tools_text = "private tool schema";
+        let tools_hash = stable_json_hash(tools_text).unwrap();
+        let fingerprint =
+            CachePrefixFingerprint::new("gpt-5.6", &System::from(system_text), &tools_hash);
+        let debug = format!("{fingerprint:?}");
+
+        assert!(!debug.contains(system_text));
+        assert!(!debug.contains(tools_text));
+        assert!(!debug.contains(&fingerprint.system_hash));
+        assert!(!debug.contains(&fingerprint.tools_hash));
+        assert!(debug.contains(short_hash(fingerprint.prefix_hash())));
     }
 
     #[test]
@@ -3503,16 +4088,12 @@ mod tests {
         let provider = provider_with_response_storage(temp_dir.path());
         let legacy: SessionRef = LEGACY_SESSION_ID.parse().unwrap();
         let canonical = SessionRef::from_id(legacy.id());
+        let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &System::from("system"), "tools");
 
         assert_ne!(legacy.as_str(), canonical.as_str());
         assert_eq!(
-            prompt_cache_key("gpt-5.6", &System::from("system"), "tools", Some(&legacy)),
-            prompt_cache_key(
-                "gpt-5.6",
-                &System::from("system"),
-                "tools",
-                Some(&canonical)
-            )
+            fingerprint.prompt_cache_key(Some(&legacy)),
+            fingerprint.prompt_cache_key(Some(&canonical))
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
@@ -4409,6 +4990,141 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::large_futures)]
+    #[allow(clippy::too_many_lines)]
+    fn stale_previous_response_id_recovers_after_websocket_rejection() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let Some(Ok(WsMessage::Text(first))) = socket.next().await else {
+                    panic!("expected initial response.create");
+                };
+                let first: Value = serde_json::from_str(&first).unwrap();
+                assert!(first.get("previous_response_id").is_none());
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {"id": "resp_stale", "status": "completed"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+
+                let Some(Ok(WsMessage::Ping(payload))) = socket.next().await else {
+                    panic!("expected continuation preflight ping");
+                };
+                socket.send(WsMessage::Pong(payload)).await.unwrap();
+                let Some(Ok(WsMessage::Text(continuation))) = socket.next().await else {
+                    panic!("expected continuation response.create");
+                };
+                let continuation: Value = serde_json::from_str(&continuation).unwrap();
+                assert_eq!(continuation["previous_response_id"], "resp_stale");
+                assert_eq!(continuation["input"].as_array().unwrap().len(), 1);
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "code": "previous_response_not_found",
+                                "message": "Previous response not found"
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+
+                let (retry_stream, _) = listener.accept().await.unwrap();
+                let mut retry = async_tungstenite::accept_async(retry_stream).await.unwrap();
+                let Some(Ok(WsMessage::Text(full_history))) = retry.next().await else {
+                    panic!("expected full-history response.create");
+                };
+                let full_history: Value = serde_json::from_str(&full_history).unwrap();
+                assert!(full_history.get("previous_response_id").is_none());
+                assert_eq!(full_history["input"].as_array().unwrap().len(), 3);
+                retry
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {"id": "resp_recovered", "status": "completed"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            });
+
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let provider = OpenAi::with_auth_options(
+                Arc::new(Mutex::new(auth)),
+                crate::providers::Timeouts {
+                    connect: Duration::from_secs(2),
+                    stream: Duration::from_secs(2),
+                    low_speed: Duration::from_secs(2),
+                },
+                OpenAiOptions::codex(),
+            )
+            .unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let tools = serde_json::json!([]);
+            let session = SessionRef::generate();
+            let (event_tx, _) = flume::unbounded();
+            let first_messages = [Message::user("hello".into())];
+            provider
+                .stream_message(
+                    &model,
+                    &first_messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    RequestOptions::default(),
+                    Some(&session),
+                )
+                .await
+                .unwrap();
+
+            let messages = [
+                Message::user("hello".into()),
+                assistant("hi"),
+                Message::user("what next".into()),
+            ];
+            provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    RequestOptions::default(),
+                    Some(&session),
+                )
+                .await
+                .unwrap();
+            server.await;
+
+            let response_id = provider
+                .session_state
+                .lock()
+                .unwrap()
+                .get(&canonical_session_key(&session))
+                .and_then(|state| state.last_response_id.as_deref().map(ToOwned::to_owned));
+            assert_eq!(response_id.as_deref(), Some("resp_recovered"));
+        });
+    }
+
+    #[test]
     fn full_history_replay_requires_explicit_approval() {
         assert!(full_history_replay_required(None, 2, true, false));
         assert!(!full_history_replay_required(None, 2, false, false));
@@ -4423,7 +5139,7 @@ mod tests {
     }
 
     #[test]
-    fn only_not_sent_missing_previous_rejections_allow_full_history_retry() {
+    fn pre_acceptance_missing_previous_rejections_allow_full_history_retry() {
         let attempt =
             |phase, status, message: &str, emitted_event, definitive_rejection| CodexAttempt {
                 previous_response_id: Some("resp_1".into()),
@@ -4449,7 +5165,7 @@ mod tests {
                 false,
                 true,
             )));
-            assert!(!is_missing_previous_response(&attempt(
+            assert!(is_missing_previous_response(&attempt(
                 RequestDeliveryPhase::SentAwaitingAcceptance,
                 status,
                 message,
@@ -4457,6 +5173,13 @@ mod tests {
                 true,
             )));
         }
+        assert!(!is_missing_previous_response(&attempt(
+            RequestDeliveryPhase::Accepted,
+            400,
+            "previous_response_not_found: Previous response not found",
+            false,
+            true,
+        )));
         assert!(!is_missing_previous_response(&attempt(
             RequestDeliveryPhase::NotSent,
             404,

@@ -579,6 +579,7 @@ impl PluginHost {
         self.inner.as_ref().map(|t| EventHandle {
             tx: t.tx.clone(),
             prio_tx: t.prio_tx.clone(),
+            shutdown: Arc::clone(&t.shutdown),
             state_leases: Arc::clone(&self.state_leases),
         })
     }
@@ -619,6 +620,7 @@ pub struct EventHandle {
     tx: flume::Sender<Request>,
     /// User-initiated requests bypass queued bulk work (session restores).
     prio_tx: flume::Sender<Request>,
+    shutdown: Arc<AtomicBool>,
     state_leases: Arc<StateLeases>,
 }
 
@@ -674,6 +676,7 @@ impl EventHandle {
         Self {
             tx,
             prio_tx: flume::unbounded().0,
+            shutdown: Arc::new(AtomicBool::new(false)),
             state_leases: Arc::new(StateLeases::default()),
         }
     }
@@ -692,6 +695,7 @@ impl EventHandle {
         Self {
             tx: shared.clone(),
             prio_tx: shared,
+            shutdown: Arc::new(AtomicBool::new(false)),
             state_leases: Arc::new(StateLeases::default()),
         }
     }
@@ -716,11 +720,15 @@ impl EventHandle {
     /// # Errors
     /// Returns [`PluginError::HostDead`] if the plugin host is unavailable.
     pub fn try_collect_prompt_slots(&self) -> Result<ResolvedSlots, PluginError> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(PluginError::HostDead);
+        }
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::CollectPromptSlots { reply })
             .map_err(|_| PluginError::HostDead)?;
-        recv.recv().map_err(|_| PluginError::HostDead)
+        recv.recv_timeout(SHUTDOWN_TIMEOUT)
+            .map_err(|_| PluginError::HostDead)
     }
 
     #[must_use]
@@ -732,11 +740,31 @@ impl EventHandle {
     }
 
     pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
+        if self.shutdown.load(Ordering::Acquire) {
+            return ResolvedSlots::default();
+        }
         let (tx, rx) = flume::bounded(1);
-        let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
-        rx.recv_async()
-            .await
-            .unwrap_or_else(|_| ResolvedSlots::default())
+        if let Err(error) = self.tx.send(Request::CollectPromptSlots { reply: tx }) {
+            tracing::warn!(%error, "plugin prompt slot request failed");
+            return ResolvedSlots::default();
+        }
+        futures_lite::future::race(
+            async {
+                match rx.recv_async().await {
+                    Ok(slots) => slots,
+                    Err(error) => {
+                        tracing::warn!(%error, "plugin prompt slot response disconnected");
+                        ResolvedSlots::default()
+                    }
+                }
+            },
+            async {
+                smol::Timer::after(SHUTDOWN_TIMEOUT).await;
+                tracing::warn!("plugin prompt slot collection timed out");
+                ResolvedSlots::default()
+            },
+        )
+        .await
     }
     /// Hydrates host-owned plugin state after all in-flight Lua work drains.
     ///
@@ -1039,6 +1067,7 @@ mod tests {
         let handle = EventHandle {
             tx,
             prio_tx,
+            shutdown: Arc::new(AtomicBool::new(false)),
             state_leases: Arc::new(StateLeases::default()),
         };
         let identity = SessionIdentity::root(n00n_storage::id::SessionRef::generate());

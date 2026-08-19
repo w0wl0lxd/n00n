@@ -57,7 +57,7 @@ local INDICATOR = {
 }
 
 local description = string.format(
-  [[Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-%d tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.]],
+  [[Execute multiple independent tool calls concurrently. ALWAYS use run_batch for multiple independent calls. 1-%d tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest run_batch. Use run_python for dependent operations.]],
   MAX_BATCH_SIZE
 )
 

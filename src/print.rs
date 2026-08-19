@@ -370,7 +370,7 @@ fn handle_print_event(
         | AgentEvent::QueueDrained { .. }
         | AgentEvent::AutoCompacting
         | AgentEvent::AutoCompactFailed { .. }
-        | AgentEvent::CompactionDone
+        | AgentEvent::CompactionDone { .. }
         | AgentEvent::FusionPhase { .. }
         | AgentEvent::AuthRequired
         | AgentEvent::PermissionRequest { .. }

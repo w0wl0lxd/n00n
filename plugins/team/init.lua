@@ -1096,14 +1096,11 @@ local function header(input)
   return "team: " .. (input.goal or ""):sub(1, 40)
 end
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- For multi-step work, use **team** (ALMAS-led agent team) with `compact=true` and `use_retrieval=true` to save tokens. Use **workflow** when you need a sandboxed supervisor script to orchestrate agents at scale.",
-})
-
 n00n.api.register_tool({
   name = "run_team",
   aliases = { "team" },
+  defer_loading = true,
+  namespace = "orchestration",
   description = description,
   kind = "execute",
   workload = "orchestrator",

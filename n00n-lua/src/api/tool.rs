@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use flume::Sender;
+use flume::{Receiver, Sender};
 use mlua::{
     Function, Lua, LuaSerdeExt, MultiValue, RegistryKey, Result as LuaResult, Table,
     Value as LuaValue,
@@ -45,6 +45,8 @@ const TOOL_HANDLER_RETURN_ERR: &str =
 const TIMEOUT_PARSE_ERR: &str = "register_tool: 'timeout' must be a positive number, 0, or false";
 const MAX_HINT_CONTENT_SIZE: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(3);
+const PRE_EXEC_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+const PRE_EXEC_CALLBACK_TIMEOUT: Duration = Duration::from_secs(3);
 const PLAIN_HEADER_STYLE: &str = "tool";
 const MAX_SAFE_INTEGER_I64: i64 = 9_007_199_254_740_991;
 const MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
@@ -168,6 +170,43 @@ pub(crate) struct PendingTool {
 }
 
 pub(crate) type PendingTools = Arc<Mutex<Vec<PendingTool>>>;
+
+async fn recv_reply_with_timeout<T>(
+    rx: Receiver<T>,
+    timeout: Duration,
+) -> Option<Result<T, flume::RecvError>> {
+    futures_lite::future::race(async move { Some(rx.recv_async().await) }, async move {
+        smol::Timer::after(timeout).await;
+        None
+    })
+    .await
+}
+
+async fn recv_pre_exec_reply<T>(
+    started_rx: Receiver<()>,
+    reply_rx: Receiver<T>,
+) -> Option<Result<T, flume::RecvError>> {
+    recv_pre_exec_reply_with_timeouts(
+        started_rx,
+        reply_rx,
+        PRE_EXEC_QUEUE_TIMEOUT,
+        PRE_EXEC_CALLBACK_TIMEOUT,
+    )
+    .await
+}
+
+async fn recv_pre_exec_reply_with_timeouts<T>(
+    started_rx: Receiver<()>,
+    reply_rx: Receiver<T>,
+    queue_timeout: Duration,
+    callback_timeout: Duration,
+) -> Option<Result<T, flume::RecvError>> {
+    match recv_reply_with_timeout(started_rx, queue_timeout).await {
+        Some(Ok(())) => recv_reply_with_timeout(reply_rx, callback_timeout).await,
+        Some(Err(error)) => Some(Err(error)),
+        None => None,
+    }
+}
 
 pub(crate) struct LuaTool {
     pub(crate) name: Arc<str>,
@@ -323,6 +362,7 @@ impl ToolInvocation for LuaToolInvocation {
         if !self.has_header_fn {
             return HeaderFuture::Ready(HeaderResult::plain(self.tool.to_string()));
         }
+        let (started_tx, started_rx) = flume::bounded(1);
         let (reply_tx, reply_rx) = flume::bounded::<HeaderResult>(1);
         let tool = Arc::clone(&self.tool);
         let plugin = Arc::clone(&self.plugin);
@@ -339,16 +379,24 @@ impl ToolInvocation for LuaToolInvocation {
                         tool: Arc::clone(&tool),
                         input,
                         nested,
+                        started: started_tx,
                         reply: reply_tx,
                     })
                     .await;
                 if sent.is_err() {
                     return HeaderResult::plain(fallback);
                 }
-                reply_rx
-                    .recv_async()
-                    .await
-                    .unwrap_or_else(|_| HeaderResult::plain(fallback))
+                match recv_pre_exec_reply(started_rx, reply_rx).await {
+                    Some(Ok(header)) => header,
+                    Some(Err(error)) => {
+                        tracing::warn!(tool = %tool, %error, "tool header callback disconnected");
+                        HeaderResult::plain(fallback)
+                    }
+                    None => {
+                        tracing::warn!(tool = %tool, "tool header callback timed out");
+                        HeaderResult::plain(fallback)
+                    }
+                }
             }),
         }
     }
@@ -378,6 +426,7 @@ impl ToolInvocation for LuaToolInvocation {
         let Some(id) = id else {
             return Box::pin(std::future::ready(()));
         };
+        let (started_tx, started_rx) = flume::bounded(1);
         let (reply_tx, reply_rx) = flume::bounded::<()>(1);
         let req = Request::StartTool {
             plugin: Arc::clone(&self.plugin),
@@ -389,12 +438,21 @@ impl ToolInvocation for LuaToolInvocation {
             },
             ctx: Box::new(LuaCtx::start(ctx)),
             nested: self.nested,
+            started: started_tx,
             reply: reply_tx,
         };
         let tx = self.tx.clone();
+        let tool = Arc::clone(&self.tool);
         Box::pin(async move {
-            if tx.send_async(req).await.is_ok() {
-                let _ = reply_rx.recv_async().await;
+            if tx.send_async(req).await.is_err() {
+                return;
+            }
+            match recv_pre_exec_reply(started_rx, reply_rx).await {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    tracing::warn!(tool = %tool, %error, "tool start callback disconnected");
+                }
+                None => tracing::warn!(tool = %tool, "tool start callback timed out"),
             }
         })
     }
@@ -403,6 +461,7 @@ impl ToolInvocation for LuaToolInvocation {
         match &self.permission_state {
             PermissionState::Ready(v) => Box::pin(std::future::ready(v.clone())),
             PermissionState::NeedsCompute => {
+                let (started_tx, started_rx) = flume::bounded(1);
                 let (reply_tx, reply_rx) = flume::bounded(1);
                 let tx = self.tx.clone();
                 let plugin = Arc::clone(&self.plugin);
@@ -414,9 +473,10 @@ impl ToolInvocation for LuaToolInvocation {
                     if tx
                         .send_async(Request::ComputePermissionScopes {
                             plugin,
-                            tool,
+                            tool: Arc::clone(&tool),
                             input,
                             nested,
+                            started: started_tx,
                             reply: reply_tx,
                         })
                         .await
@@ -424,9 +484,17 @@ impl ToolInvocation for LuaToolInvocation {
                     {
                         return Some(PermissionScopes::force_prompt(fallback));
                     }
-                    match reply_rx.recv_async().await {
-                        Ok(Some(scopes)) => Some(scopes),
-                        _ => Some(PermissionScopes::force_prompt(fallback)),
+                    match recv_pre_exec_reply(started_rx, reply_rx).await {
+                        Some(Ok(Some(scopes))) => Some(scopes),
+                        Some(Ok(None)) => Some(PermissionScopes::force_prompt(fallback)),
+                        Some(Err(error)) => {
+                            tracing::warn!(tool = %tool, %error, "tool permission callback disconnected");
+                            Some(PermissionScopes::force_prompt(fallback))
+                        }
+                        None => {
+                            tracing::warn!(tool = %tool, "tool permission callback timed out");
+                            Some(PermissionScopes::force_prompt(fallback))
+                        }
                     }
                 })
             }
@@ -860,12 +928,13 @@ fn set_prompt(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaResult<()> 
 /// Return a list of all registered tools. Useful for building UI that shows
 /// available tools or for checking which tools are enabled.
 ///
-/// Each entry has the tool's name, schema, audiences, and an `enabled` flag.
+/// Each entry has the tool's name, schema, audiences, deferred-loading state,
+/// and an `enabled` flag.
 /// Describe callbacks are not invoked (the static description is used).
 ///
 /// @param opts table? Options:
 ///   config (table) Optional config table with a `disabled_tools` string[] field used to compute the `enabled` flag on each entry.
-/// @return (table[]) Array of tool entries: { name, schema, audiences, kind?, enabled }.
+/// @return (table[]) Array of tool entries: { name, schema, audiences, deferred, kind?, enabled }.
 /// @example
 /// local tools = n00n.api.get_tools()
 /// for _, t in ipairs(tools) do
@@ -901,7 +970,7 @@ fn get_tools(lua: &Lua, opts: Option<Table>) -> LuaResult<Table> {
 /// throw).
 ///
 /// @param name string Exact tool name.
-/// @return (table|nil) Tool entry with fields { name, schema, audiences, kind?, header?, restore? }, or nil if not found.
+/// @return (table|nil) Tool entry with fields { name, schema, audiences, deferred, kind?, header?, restore? }, or nil if not found.
 /// @example
 /// local t = n00n.api.get_tool("bash")
 /// if t then
@@ -968,6 +1037,7 @@ fn tool_entry_to_lua(lua: &Lua, entry: &RegisteredTool) -> LuaResult<Table> {
     t.set("name", entry.name())?;
     t.set("schema", json_to_lua(lua, &entry.tool.schema())?)?;
     t.set("audiences", audiences)?;
+    t.set("deferred", entry.defer_loading)?;
     if let Some(kind) = entry.tool.tool_kind() {
         t.set("kind", kind)?;
     }
@@ -1275,7 +1345,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
     let workload = match spec.get::<Option<String>>("workload")? {
         Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
             mlua::Error::runtime(
-                "register_tool: workload must be cheap, standard, expensive, or orchestrator",
+                "register_tool: workload must be cheap, standard, expensive, interactive, or orchestrator",
             )
         })?),
         None => None,
@@ -1943,6 +2013,33 @@ mod tests {
     }
 
     #[test]
+    fn pre_execution_callback_timeout_starts_after_dispatch() {
+        smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(1);
+            let (reply_tx, reply_rx) = flume::bounded(1);
+            let waiter = smol::spawn(recv_pre_exec_reply_with_timeouts(
+                started_rx,
+                reply_rx,
+                Duration::from_millis(100),
+                Duration::from_millis(30),
+            ));
+            smol::Timer::after(Duration::from_millis(20)).await;
+            started_tx.send(()).unwrap();
+            smol::Timer::after(Duration::from_millis(20)).await;
+            reply_tx.send(7_u8).unwrap();
+            assert_eq!(waiter.await, Some(Ok(7)));
+        });
+    }
+
+    #[test]
+    fn pre_execution_callback_timeout_does_not_hang() {
+        let (reply_tx, reply_rx) = flume::bounded::<()>(1);
+        let result = smol::block_on(recv_reply_with_timeout(reply_rx, Duration::from_millis(25)));
+        assert!(result.is_none());
+        drop(reply_tx);
+    }
+
+    #[test]
     fn needs_compute_fallback_on_failure() {
         // Closed channel → fallback to force_prompt
         let (tx, rx) = flume::bounded(0);
@@ -1982,7 +2079,8 @@ mod tests {
             has_start_fn: false,
         };
         std::thread::spawn(move || {
-            if let Ok(Request::ComputePermissionScopes { reply, .. }) = rx2.recv() {
+            if let Ok(Request::ComputePermissionScopes { started, reply, .. }) = rx2.recv() {
+                let _ = started.send(());
                 let _ = reply.send(None);
             }
         });
@@ -2008,7 +2106,8 @@ mod tests {
             has_start_fn: false,
         };
         std::thread::spawn(move || {
-            if let Ok(Request::ComputePermissionScopes { reply, .. }) = rx.recv() {
+            if let Ok(Request::ComputePermissionScopes { started, reply, .. }) = rx.recv() {
+                let _ = started.send(());
                 let _ = reply.send(Some(PermissionScopes {
                     scopes: vec!["cargo".into(), "test".into()],
                     force_prompt: false,

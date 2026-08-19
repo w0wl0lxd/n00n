@@ -1,0 +1,1 @@
+Expanded default RTK enforcement to every supported command family and made simple managed commands fall back through `rtk proxy` when no specialized rewrite exists, while still rejecting nested, obfuscated, or policy-violating bypass attempts.

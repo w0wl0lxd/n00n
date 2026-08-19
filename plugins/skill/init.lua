@@ -299,6 +299,8 @@ local DESCRIPTION =
 n00n.api.register_tool({
   name = "load_skill",
   aliases = { "skill" },
+  defer_loading = true,
+  namespace = "knowledge",
   kind = "read",
   description = DESCRIPTION,
 

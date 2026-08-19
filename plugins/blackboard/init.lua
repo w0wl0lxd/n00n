@@ -732,6 +732,8 @@ end
 n00n.api.register_tool({
   name = "use_blackboard",
   aliases = { "blackboard" },
+  defer_loading = true,
+  namespace = "orchestration",
   description = description,
   kind = "execute",
   audiences = { "main", "general_sub", "workflow" },

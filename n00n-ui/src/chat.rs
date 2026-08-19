@@ -1,7 +1,6 @@
 //! Rebuilds display messages from stored sessions. Tool outputs get syntax
 //! highlighted, missing outputs fall back to plain text from `ToolResult`.
 
-#[cfg(test)]
 use crate::components::DisplayMetadata;
 use crate::components::messages::{MessagesPanel, PromptProgress};
 use crate::components::scrollbar::ScrollInfo;
@@ -177,7 +176,7 @@ impl Chat {
             AgentEvent::AutoCompactFailed { error } => {
                 self.messages_panel.fail_pending_compaction(&error);
             }
-            AgentEvent::CompactionDone => {
+            AgentEvent::CompactionDone { .. } => {
                 if !self.messages_panel.complete_pending_compaction() {
                     self.messages_panel.flush();
                 }
@@ -605,9 +604,8 @@ impl Chat {
             .count()
     }
 
-    #[cfg(test)]
     #[must_use]
-    pub fn has_pending_compaction(&self) -> bool {
+    pub(crate) fn has_pending_compaction(&self) -> bool {
         self.messages_panel.messages.iter().any(|message| {
             matches!(
                 message.metadata.as_ref(),
@@ -676,6 +674,7 @@ fn transcript_to_display_at<S: std::hash::BuildHasher>(
             TranscriptEntry::Compaction {
                 entries: children,
                 generated_summary,
+                ..
             } => {
                 let id = if parent_id == "compaction" {
                     format!("{parent_id}:{compaction_index}")
@@ -1161,6 +1160,7 @@ mod tests {
                             }],
                             ..Default::default()
                         }),
+                        state_revision: None,
                     },
                     TranscriptEntry::GeneratedMessage(Message::user(
                         "What did we do so far?".into(),
@@ -1180,6 +1180,7 @@ mod tests {
                     }],
                     ..Default::default()
                 }),
+                state_revision: None,
             },
             TranscriptEntry::GeneratedMessage(Message::user("What did we do so far?".into())),
             TranscriptEntry::GeneratedMessage(Message {
@@ -1218,6 +1219,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
                 generated_summary: None,
+                state_revision: None,
             },
             TranscriptEntry::Message(Message::user("legitimate follow-up".into())),
             TranscriptEntry::Message(Message {
@@ -1251,6 +1253,7 @@ mod tests {
                     }],
                     ..Default::default()
                 }),
+                state_revision: None,
             },
             TranscriptEntry::Message(Message::user("ordinary follow-up".into())),
             TranscriptEntry::Message(Message {
@@ -1651,7 +1654,12 @@ mod tests {
         assert!(!chat.streaming_text_is_empty());
         assert!(!chat.streaming_thinking_is_empty());
 
-        chat.handle_event(AgentEvent::CompactionDone, None);
+        chat.handle_event(
+            AgentEvent::CompactionDone {
+                state_revision: Some(1),
+            },
+            None,
+        );
         assert!(chat.streaming_text_is_empty());
         assert!(chat.streaming_thinking_is_empty());
         assert_eq!(chat.message_count(), 1);

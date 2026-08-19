@@ -15,8 +15,8 @@ use n00n_agent::AgentEvent;
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
-    ActiveTools, DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-    ToolSource, timeout_annotation,
+    DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry, ToolSource,
+    timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginError, PluginHost, WARM_TOOL_CAP};
@@ -110,7 +110,7 @@ fn builtin_main_tool_definitions_stay_within_prompt_budget() {
             workflow: false,
         },
         true,
-        &ActiveTools::default(),
+        &n00n_agent::tools::default_active_tools(),
     );
     let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
 
@@ -124,6 +124,300 @@ fn builtin_main_tool_definitions_stay_within_prompt_budget() {
         bytes <= TOOL_DEFINITIONS_BYTE_BUDGET,
         "builtin main tool definitions use {bytes} bytes; budget is {TOOL_DEFINITIONS_BYTE_BUDGET}"
     );
+}
+
+#[test]
+fn deferred_builtin_families_have_namespaces_and_stay_out_of_initial_payload() {
+    let (registry, _host) = builtins_host();
+    let definitions = registry.definitions_active(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+        &n00n_agent::tools::default_active_tools(),
+    );
+    let initial_names: Vec<&str> = definitions
+        .as_array()
+        .expect("tool definitions array")
+        .iter()
+        .filter_map(|definition| definition["name"].as_str())
+        .collect();
+    let expected = [
+        ("map_codegraph", "exploration"),
+        ("search_text", "exploration"),
+        ("smell", "exploration"),
+        ("run_task", "orchestration"),
+        ("run_team", "orchestration"),
+        ("run_workflow", "orchestration"),
+        ("use_blackboard", "orchestration"),
+        ("use_memory", "knowledge"),
+        ("load_skill", "knowledge"),
+        ("fetch_url", "web"),
+        ("search_web", "web"),
+        ("github", "repository"),
+        ("tmux", "terminal"),
+    ];
+
+    for (name, namespace) in expected {
+        let entry = registry
+            .get(name)
+            .unwrap_or_else(|| panic!("missing deferred tool {name}"));
+        assert!(entry.defer_loading, "{name} must be deferred");
+        assert_eq!(
+            entry.namespace.as_deref(),
+            Some(namespace),
+            "{name} namespace"
+        );
+
+        assert!(
+            !initial_names.contains(&name),
+            "{name} leaked into initial payload"
+        );
+    }
+}
+
+#[test]
+fn fusion_delegate_stays_in_the_initial_payload_when_allowed() {
+    let (registry, _host) = builtins_host();
+    let entry = registry.get("delegate_fusion").unwrap();
+    assert!(!entry.defer_loading);
+    let definitions = registry.definitions_active(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+        &n00n_agent::tools::default_active_tools(),
+    );
+    assert!(
+        definitions
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| {
+                tool.get("name").and_then(serde_json::Value::as_str) == Some("delegate_fusion")
+            }))
+    );
+}
+
+#[test]
+fn deferred_interpreter_tools_are_not_advertised_or_callable() {
+    let (registry, host) = builtins_host();
+    host.load_source(
+        "code_execution_policy",
+        r#"
+        local schema = { type = "object", properties = {}, additionalProperties = false }
+        local function register(name, deferred)
+            n00n.api.register_tool({
+                name = name,
+                description = name,
+                schema = schema,
+                audiences = { "main", "interpreter" },
+                defer_loading = deferred,
+                namespace = deferred and "policy_test" or nil,
+                handler = function() return name end,
+            })
+        end
+        register("eager_interpreter_probe", false)
+        register("deferred_interpreter_probe", true)
+        "#,
+    )
+    .expect("policy fixture should load");
+
+    let run_python = registry.get("run_python").expect("run_python tool");
+    let description = run_python.tool.description(&DescriptionContext {
+        filter: &ToolFilter::All,
+        audience: ToolAudience::MAIN,
+        workflow: false,
+    });
+    assert!(description.contains("eager_interpreter_probe"));
+    assert!(!description.contains("deferred_interpreter_probe"));
+
+    let output = exec_tool_in(
+        &registry,
+        "run_python",
+        serde_json::json!({
+            "code": "print(await eager_interpreter_probe())\ntry:\n    await deferred_interpreter_probe()\nexcept NameError:\n    print('deferred unavailable')"
+        }),
+        Some(Arc::clone(&registry)),
+    )
+    .expect("run_python should execute");
+    assert_eq!(output, "eager_interpreter_probe\ndeferred unavailable");
+}
+
+#[test]
+fn model_facing_builtin_prompts_use_canonical_tool_names() {
+    let (registry, host) = builtins_host();
+    let slots = host
+        .event_handle()
+        .expect("plugin event handle")
+        .collect_prompt_slots();
+    let prompts = n00n_agent::prompt::PromptId::ALL
+        .iter()
+        .map(|prompt| n00n_agent::prompt::assemble(*prompt, &slots, ""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let filter = ToolFilter::All;
+    let definitions = registry.definitions(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+    );
+    let descriptions = definitions
+        .as_array()
+        .expect("tool definitions")
+        .iter()
+        .filter_map(|definition| definition["description"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for (alias, canonical) in n00n_config::TOOL_ALIASES {
+        for marker in [
+            format!("**{alias}**"),
+            format!("`{alias}`"),
+            format!("await {alias}("),
+            format!("- {alias}("),
+        ] {
+            assert!(
+                !prompts.contains(&marker),
+                "prompt uses {alias}; use {canonical}"
+            );
+            assert!(
+                !descriptions.contains(&marker),
+                "tool description uses {alias}; use {canonical}"
+            );
+        }
+        if alias.contains('_') {
+            assert!(
+                !prompts.contains(alias),
+                "prompt uses {alias}; use {canonical}"
+            );
+            assert!(
+                !descriptions.contains(alias),
+                "tool description uses {alias}; use {canonical}"
+            );
+        }
+    }
+
+    let project_instructions = include_str!("../../AGENTS.md");
+    for legacy_reference in [
+        "`bash` tool",
+        "Use `bash`",
+        "through `bash`",
+        "let `bash`",
+        "Use `edit`/`multiedit`/`write`",
+    ] {
+        assert!(
+            !project_instructions.contains(legacy_reference),
+            "project instructions contain legacy tool reference {legacy_reference}"
+        );
+    }
+}
+
+#[test]
+fn read_file_defaults_to_200_lines_and_honors_explicit_limit() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long.txt");
+    let content = (1..=250)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, content).unwrap();
+
+    let default_output = exec_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({ "path": path.to_string_lossy() }),
+    )
+    .unwrap();
+    assert!(default_output.contains("200: line 200"));
+    assert!(!default_output.contains("\n201: line 201\n"));
+    assert!(default_output.contains("Omitted 50 lines (201-250). Continue with offset=201."));
+
+    let explicit_output = exec_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({ "path": path.to_string_lossy(), "limit": 240 }),
+    )
+    .unwrap();
+    assert!(explicit_output.contains("240: line 240"));
+    assert!(explicit_output.contains("Omitted 10 lines (241-250). Continue with offset=241."));
+
+    let invocation = registry
+        .get("read_file")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({ "path": path.to_string_lossy() }))
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    Arc::make_mut(&mut ctx.config).max_output_lines = 240;
+    let configured_output = smol::block_on(invocation.execute(&ctx)).output.unwrap();
+    let n00n_agent::ToolOutput::Plain(configured_output) = configured_output else {
+        panic!("unexpected read output");
+    };
+    assert!(configured_output.text.contains("240: line 240"));
+}
+#[test]
+fn search_files_defaults_to_50_results_and_honors_explicit_limit() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    for index in 1..=60 {
+        std::fs::write(dir.path().join(format!("result-{index:02}.txt")), "match").unwrap();
+    }
+    let root = dir.path().to_string_lossy().into_owned();
+
+    let default_output = exec_tool(
+        &registry,
+        "search_files",
+        serde_json::json!({ "pattern": "*.txt", "path": &root }),
+    )
+    .unwrap();
+    assert_eq!(default_output.lines().count(), 50);
+
+    let explicit_output = exec_tool(
+        &registry,
+        "search_files",
+        serde_json::json!({ "pattern": "*.txt", "path": &root, "limit": 60 }),
+    )
+    .unwrap();
+    assert_eq!(explicit_output.lines().count(), 60);
+}
+
+#[test]
+fn search_code_defaults_to_50_groups_and_honors_explicit_limit() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("matches.txt");
+    let content = (1..=60)
+        .map(|index| format!("needle {index}\nseparator"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, content).unwrap();
+
+    let default_output = exec_tool(
+        &registry,
+        "search_code",
+        serde_json::json!({ "pattern": "needle", "path": &path }),
+    )
+    .unwrap();
+    assert!(default_output.contains("needle 50"));
+    assert!(!default_output.contains("needle 51"));
+
+    let explicit_output = exec_tool(
+        &registry,
+        "search_code",
+        serde_json::json!({ "pattern": "needle", "path": &path, "limit": 60 }),
+    )
+    .unwrap();
+    assert!(explicit_output.contains("needle 60"));
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: serde_json::Value) -> Result<String, String> {
@@ -165,6 +459,68 @@ fn exec_output_in(
         ctx.registry = r;
     }
     smol::block_on(async { inv.execute(&ctx).await }).output
+}
+
+#[test]
+fn bundled_git_tool_executes_status_through_native_api() {
+    let repo = tempfile::tempdir().unwrap();
+    let init = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(repo.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let (registry, _host) = builtins_host();
+    let output = exec_tool(
+        &registry,
+        "git",
+        serde_json::json!({ "command": "status", "path": repo.path() }),
+    )
+    .expect("bundled git status failed");
+
+    assert_eq!(output, "On branch main\nWorking tree clean");
+}
+
+#[test]
+fn bundled_git_conflicts_honors_max_file_bytes() {
+    let repo = tempfile::tempdir().unwrap();
+    let init = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(repo.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    std::fs::write(repo.path().join(".gitkeep"), "").unwrap();
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["add", ".gitkeep"])
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    std::fs::write(
+        repo.path().join("large.rs"),
+        format!("{}\n// TODO: hidden\n", "x".repeat(1_024)),
+    )
+    .unwrap();
+    let (registry, _host) = builtins_host();
+
+    let output = exec_tool(
+        &registry,
+        "git",
+        serde_json::json!({
+            "command": "conflicts",
+            "path": repo.path(),
+            "kinds": ["todo"],
+            "max_file_bytes": 128
+        }),
+    )
+    .expect("bundled git conflicts failed");
+
+    assert!(
+        !output.contains("TODO: hidden"),
+        "unexpected output: {output}"
+    );
 }
 
 const ECHO_PLUGIN: &str = r#"
@@ -1003,6 +1359,34 @@ fn handler_nil_waits_for_owned_async_run() {
 
     assert_eq!(first.join().unwrap().unwrap(), "finished");
     assert_eq!(second.join().unwrap().unwrap(), "finished");
+}
+
+#[test]
+fn async_run_excess_fanout_is_rejected_promptly() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "async_fanout",
+        description = "tries excessive async fanout",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function()
+            for _ = 1, 257 do
+                n00n.async.run(function() end)
+            end
+            return "unexpected"
+        end
+    })"#;
+    host.load_source("async_fanout", src).unwrap();
+
+    let started = std::time::Instant::now();
+    let error = exec_tool(&reg, "async_fanout", serde_json::json!({})).unwrap_err();
+
+    assert!(
+        error.contains("async.run capacity exhausted"),
+        "got: {error}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 
 #[cfg(unix)]
@@ -3816,12 +4200,13 @@ fn bash_schema_exposes_no_agent_controlled_rtk_override() {
     assert!(properties.get("rtk").is_none());
 }
 
-#[test_case::test_case("python -c 'print(123)'" ; "managed_command")]
 #[test_case::test_case("bash -c 'git status'" ; "nested_managed_command")]
 #[test_case::test_case("g''it status" ; "concatenated_quote_command")]
-#[test_case::test_case("exec git status" ; "exec_wrapper")]
+#[test_case::test_case("exec git --version" ; "exec_wrapper")]
+#[test_case::test_case("eval git status" ; "eval_wrapper")]
+#[test_case::test_case("rtk proxy bash -c 'git status'" ; "explicit_proxy_string_wrapper")]
+#[test_case::test_case(r"rtk proxy find . -maxdepth 0 -exec printf bypass \\;" ; "explicit_proxy_unsafe_find")]
 #[test_case::test_case("echo $(git status)" ; "command_substitution")]
-#[test_case::test_case("rtk proxy git status" ; "rtk_proxy")]
 #[test_case::test_case(r"find . -maxdepth 0 -exec printf should-not-run \;" ; "unsupported_find_fallback")]
 fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
     if skip_without_rtk("bash_handler_rejects_managed_commands_rtk_cannot_rewrite") {
@@ -3837,6 +4222,118 @@ fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
         "unexpected error: {error}"
     );
 }
+#[test_case::test_case("python -c 'print(123)'", "123" ; "python")]
+#[test_case::test_case("git --version", "git version" ; "git")]
+#[test_case::test_case("gh --version", "gh version" ; "gh")]
+#[test_case::test_case("rtk proxy git --version", "git version" ; "explicit_rtk_proxy")]
+#[test_case::test_case("env N00N_RTK_TEST=1 git --version", "git version" ; "env_wrapper")]
+#[test_case::test_case("env -u N00N_RTK_TEST git --version", "git version" ; "env_value_option")]
+#[test_case::test_case("nice -n 10 git --version", "git version" ; "nice_value_option")]
+#[test_case::test_case("timeout 5 git --version", "git version" ; "timeout_wrapper")]
+#[test_case::test_case("timeout -s KILL 5 git --version", "git version" ; "timeout_value_option")]
+#[test_case::test_case("nohup env git --version", "git version" ; "stacked_wrappers")]
+#[test_case::test_case("nice -n10 git --version", "git version" ; "attached_wrapper_option")]
+#[test_case::test_case("timeout -sKILL 5 git --version", "git version" ; "attached_wrapper_value")]
+fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
+    command: &str,
+    expected: &str,
+) {
+    if skip_without_rtk("bash_handler_proxies_managed_commands_without_a_specialized_rewrite") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+    let input = serde_json::json!({ "command": command });
+    let invocation = reg
+        .get("bash")
+        .expect("bash registered")
+        .tool
+        .parse(&input)
+        .expect("parse failed");
+    let (ctx, event_rx) = warm_ctx("rtk-proxy-route");
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+    let output = match output {
+        n00n_agent::ToolOutput::Plain(output) => output.text,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    let body = recv_live_buf(&event_rx, "rtk-proxy-route").expect("bash live buffer");
+    let rendered = body
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
+
+    assert!(
+        output.contains(expected),
+        "unexpected output for {command}: {output}"
+    );
+    assert!(
+        rendered.contains("rtk proxy"),
+        "managed command did not take the RTK proxy path: {rendered}"
+    );
+}
+
+#[test_case::test_case("env N00N_RTK_TEST=lint printf go", "go" ; "env_script_argument")]
+#[test_case::test_case("timeout 5 printf lint", "lint" ; "timeout_script_argument")]
+#[test_case::test_case("exec printf ordinary", "ordinary" ; "exec_unmanaged_command")]
+#[test_case::test_case("xargs -r -a /dev/null basename && printf ordinary", "ordinary" ; "xargs_unmanaged_command")]
+#[test_case::test_case("nice -10 printf ordinary", "ordinary" ; "unknown_wrapper_option_without_managed_command")]
+fn bash_handler_routes_wrapper_commands_without_false_positives(command: &str, expected: &str) {
+    if skip_without_rtk("bash_handler_routes_wrapper_commands_without_false_positives") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+        .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+
+    assert!(output.contains(expected), "unexpected output: {output}");
+}
+
+#[test_case::test_case("rtk proxy git -c core.fsmonitor=/untrusted/fsmonitor --version" ; "explicit_proxy")]
+#[test_case::test_case("git -c core.fsmonitor=/untrusted/fsmonitor --version" ; "fallback_proxy")]
+fn bash_handler_sanitizes_git_proxy(command: &str) {
+    if skip_without_rtk("bash_handler_sanitizes_explicit_git_proxy") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+    let input = serde_json::json!({ "command": command });
+    let invocation = reg
+        .get("bash")
+        .expect("bash registered")
+        .tool
+        .parse(&input)
+        .expect("parse failed");
+    let (ctx, event_rx) = warm_ctx("rtk-explicit-proxy");
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("explicit proxy was rejected");
+    let output = match output {
+        n00n_agent::ToolOutput::Plain(output) => output.text,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    let body = recv_live_buf(&event_rx, "rtk-explicit-proxy").expect("bash live buffer");
+    let rendered = body
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
+
+    assert!(
+        output.contains("git version"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        rendered.contains("core.fsmonitor=false"),
+        "unsanitized command: {rendered}"
+    );
+    assert!(
+        !rendered.contains("/untrusted/fsmonitor"),
+        "unsafe override remained: {rendered}"
+    );
+}
+
 #[test]
 fn bash_permission_scopes_marks_broad_commands_for_prompt() {
     let (reg, _host) = builtins_host();
@@ -6683,6 +7180,50 @@ fn bundled_todo_ctrl_t_keybind_dispatches() {
         host.event_handle().unwrap().run_keybind_callback(entry.id),
         "live plugin host must accept the Ctrl+T callback"
     );
+}
+
+#[test]
+fn bundled_question_consumes_window_input_while_tool_is_running() {
+    let (registry, host) = builtins_host();
+    let ui_rx = host.ui_action_rx().unwrap();
+    let (done_tx, done_rx) = flume::bounded(1);
+    let registry_for_tool = Arc::clone(&registry);
+    std::thread::spawn(move || {
+        let result = exec_tool_output(
+            &registry_for_tool,
+            "ask_user",
+            serde_json::json!({
+                "questions": [{
+                    "header": "Confirm",
+                    "question": "Continue?",
+                    "options": [{"label": "Yes"}, {"label": "No"}]
+                }]
+            }),
+        );
+        let _ = done_tx.send(result);
+    });
+
+    let action = ui_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("question did not open its window");
+    let n00n_lua::UiAction::OpenWin { event_tx, .. } = action else {
+        panic!("expected question window");
+    };
+    assert_eq!(registry.admission().process_active(), 0);
+    event_tx
+        .send(n00n_lua::WinEvent::Key {
+            key: "enter".into(),
+        })
+        .unwrap();
+
+    let output = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("question did not consume window input")
+        .expect("question failed");
+    let n00n_agent::ToolOutput::Markdown(output) = output else {
+        panic!("expected markdown question output");
+    };
+    assert!(output.text.contains("Yes"), "question output: {output:?}");
 }
 
 #[test]

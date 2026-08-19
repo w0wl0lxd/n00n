@@ -1,12 +1,20 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum McpError {
     #[error("server {server} failed to start: {reason}")]
     StartFailed { server: String, reason: String },
 
     #[error("server {server} is not running")]
     ServerDied { server: String },
+
+    #[error(
+        "response from server {server} exceeded the {limit_bytes} byte frame limit and was dropped"
+    )]
+    ResponseTooLarge { server: String, limit_bytes: usize },
+
+    #[error("call to MCP tool '{tool}' was cancelled")]
+    Cancelled { tool: String },
 
     #[error("server {server} timed out after {timeout_ms}ms")]
     Timeout { server: String, timeout_ms: u64 },

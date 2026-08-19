@@ -1,0 +1,1 @@
+Stop long sessions from freezing the UI and growing without bound: live sessions now cap how many tool outputs and subagent histories they keep in memory, saves coalesce instead of running once per tool completion, and the full history stays recoverable from the session log.

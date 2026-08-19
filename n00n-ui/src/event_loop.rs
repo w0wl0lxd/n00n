@@ -8,7 +8,7 @@
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -41,15 +41,18 @@ use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{
-    SessionError, StoredDirectTool, StoredSessionLifecycle, TranscriptEntry, normalize_title,
+    CompactionStateError, RetentionBudget, SessionError, StoredDirectTool, StoredSessionLifecycle,
+    StoredSessionStateSnapshot, TranscriptEntry, normalize_title,
 };
 use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::AppSession;
-use crate::agent::{AgentCommand, AgentHandles, ModelSlot, shared_queue::QueueItem};
+use crate::agent::{
+    AgentCommand, AgentHandles, ModelSlot, RevisionAllocator, shared_queue::QueueItem,
+};
 use crate::app::shell::{ShellEvent, spawn_shell};
-use crate::app::{App, AppInit, Msg, QueuedMessage, SubmitOutcome};
+use crate::app::{App, AppInit, Msg, QueuedMessage, SubmitOutcome, message_tool_use_ids};
 use crate::components::input::Submission;
 use crate::components::usage_modal::UsageFetchState;
 use crate::components::{
@@ -69,9 +72,14 @@ const IDLE_POLL_INTERVAL_MS: u64 = 100;
 const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 /// Max events handled per frame so a flood cannot starve rendering.
 const DRAIN_BUDGET: usize = 256;
+/// Max queued matching mouse events coalesced per event-loop turn.
+const COALESCE_BUDGET: usize = 64;
+/// Max input events handled per wake before yielding to rendering and other channels.
+const HANDLE_INPUT_BUDGET: usize = 64;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_COMPACTION_CHECKPOINT_ATTEMPTS: u8 = 3;
 const STORAGE_WRITER_REFS_ERR: &str =
     "storage writer has outstanding references, skipping graceful shutdown";
 const DIRECT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
@@ -100,6 +108,7 @@ pub struct EventLoopParams {
     pub config: AgentConfig,
     pub ui_config: UiConfig,
     pub input_history_size: usize,
+    pub retention_budget: RetentionBudget,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -136,6 +145,10 @@ impl SessionStatus {
             Self::Idle => "idle",
         }
     }
+
+    fn needs_shutdown_settle(self) -> bool {
+        self == Self::Working
+    }
 }
 
 fn parse_session_id(id: &str) -> Result<n00nId, String> {
@@ -157,7 +170,6 @@ fn authorize_ui_delete(
     }
     Ok(())
 }
-
 fn live_session(session: &AppSession) -> std::result::Result<LiveSession, LineageError> {
     let root_session_id = match (session.meta.parent_id, session.meta.root_session_id) {
         (Some(_), None) => return Err(LineageError::MissingRoot(session.id)),
@@ -178,7 +190,6 @@ fn has_restorable_work(session: &AppSession) -> bool {
         || !session.meta.queued_submissions.is_empty()
         || !session.meta.queued_direct_tools.is_empty()
 }
-
 fn cancel_stored_session(session: &mut AppSession) -> bool {
     let had_work = session.meta.lifecycle.is_active()
         || !session.meta.queued_messages.is_empty()
@@ -275,24 +286,179 @@ fn state_revision_or_initial(
     revision
 }
 
+fn current_state_revision(session: &AppSession) -> u64 {
+    state_revision_or_initial(session.meta.state_snapshot.as_ref()).max(session.meta.revision)
+}
+
+fn persisted_root_id(session: &AppSession) -> n00nId {
+    match session.meta.root_session_id {
+        Some(root_id) => root_id,
+        None => session.id,
+    }
+}
+
+fn initial_state_revision(session: &AppSession, root: Option<&AppSession>) -> u64 {
+    let session_revision = current_state_revision(session);
+    root.map_or(session_revision, current_state_revision)
+        .max(session_revision)
+}
+
+fn outer_compaction_boundary_revision(transcript: &[TranscriptEntry<Message>]) -> Option<u64> {
+    match transcript.first() {
+        Some(TranscriptEntry::Compaction { state_revision, .. }) => *state_revision,
+        _ => None,
+    }
+}
+
+fn resume_state_snapshot(
+    session: &AppSession,
+    referenced_revision: Option<u64>,
+) -> std::result::Result<Option<StoredSessionStateSnapshot>, String> {
+    let Some(revision) = referenced_revision else {
+        return Ok(session.meta.state_snapshot.clone());
+    };
+    let latest = session.meta.state_snapshot.clone();
+    if state_revision_or_initial(latest.as_ref()) >= revision {
+        return Ok(latest);
+    }
+    match session.meta.compaction_state_at(revision) {
+        Ok(snapshot) => Ok(Some(snapshot.clone())),
+        Err(
+            error @ (CompactionStateError::MissingRevision { .. }
+            | CompactionStateError::FutureRevision { .. }),
+        ) => {
+            warn!(
+                session_id = %session.id,
+                checkpoint_revision = revision,
+                %error,
+                "compaction state checkpoint unavailable; using latest plugin state"
+            );
+            Ok(latest)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+fn outer_compaction_state_revision(
+    transcript: &[TranscriptEntry<Message>],
+) -> std::result::Result<u64, String> {
+    match transcript.first() {
+        Some(TranscriptEntry::Compaction {
+            state_revision: Some(revision),
+            ..
+        }) => Ok(*revision),
+        Some(TranscriptEntry::Compaction { .. }) => {
+            Err("compaction boundary has no plugin state revision".to_owned())
+        }
+        _ => Err("compaction transcript has no outer boundary".to_owned()),
+    }
+}
+
+fn capture_state_at_revision(
+    handle: Option<&EventHandle>,
+    session: &AppSession,
+    revision: u64,
+) -> std::result::Result<StoredSessionStateSnapshot, String> {
+    let Some(handle) = handle else {
+        let Some(mut snapshot) = session.meta.state_snapshot.clone() else {
+            return Ok(StoredSessionStateSnapshot::new(revision));
+        };
+        snapshot
+            .set_state_revision(revision)
+            .map_err(|error| error.to_string())?;
+        return Ok(snapshot);
+    };
+    let identity = session_identity(session).map_err(|error| error.to_string())?;
+    let snapshot = handle
+        .capture_state(&identity, revision)
+        .map_err(|error| error.to_string())?;
+    if snapshot.state_revision() != Some(revision) {
+        return Err(format!(
+            "captured plugin state revision does not match compaction revision {revision}"
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn prepare_compaction_checkpoint(
+    handle: Option<&EventHandle>,
+    session: &mut AppSession,
+    revision: u64,
+) -> std::result::Result<(), String> {
+    let next_session_revision = session
+        .meta
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| "session revision exhausted".to_owned())?;
+    let snapshot = capture_state_at_revision(handle, session, revision)?;
+    match session.meta.checkpoint_compaction_state(snapshot.clone()) {
+        Ok(()) => {}
+        Err(
+            CompactionStateError::UnsupportedSchemaVersion { .. }
+            | CompactionStateError::InvalidEnvelope,
+        ) => {
+            warn!(session_id = %session.id, checkpoint_revision = revision, "compaction checkpoint metadata is unusable; compacting without an exact checkpoint");
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+    if state_revision_or_initial(session.meta.state_snapshot.as_ref()) <= revision {
+        session.meta.state_snapshot = Some(snapshot);
+    }
+    session.meta.revision = next_session_revision;
+    session.updated_at = n00n_storage::now_epoch();
+    Ok(())
+}
+
+fn merge_compaction_metadata(
+    target: &mut AppSession,
+    checkpoint: &AppSession,
+    revision: u64,
+) -> std::result::Result<(), String> {
+    let snapshot = checkpoint
+        .meta
+        .compaction_state_at(revision)
+        .cloned()
+        .map_err(|error| error.to_string())?;
+    target
+        .meta
+        .checkpoint_compaction_state(snapshot)
+        .map_err(|error| error.to_string())?;
+    if state_revision_or_initial(target.meta.state_snapshot.as_ref())
+        <= state_revision_or_initial(checkpoint.meta.state_snapshot.as_ref())
+    {
+        target
+            .meta
+            .state_snapshot
+            .clone_from(&checkpoint.meta.state_snapshot);
+    }
+    target.meta.revision = target.meta.revision.max(checkpoint.meta.revision);
+    target.updated_at = target.updated_at.max(checkpoint.updated_at);
+    Ok(())
+}
+
 fn capture_session_plugin_state(
     handle: &EventHandle,
     session: &mut AppSession,
+    revision: u64,
 ) -> std::result::Result<(), String> {
     let identity = session_identity(session).map_err(|error| error.to_string())?;
-    let persisted_revision = state_revision_or_initial(session.meta.state_snapshot.as_ref());
-    let revision = session.meta.revision.max(
-        persisted_revision
-            .checked_add(1)
-            .ok_or_else(|| "plugin state revision exhausted".to_owned())?,
-    );
     let snapshot = handle
         .capture_state(&identity, revision)
         .map_err(|error| error.to_string())?;
     let captured_revision = snapshot
         .state_revision()
         .ok_or_else(|| "captured plugin state has no revision".to_owned())?;
-    session.meta.revision = session.meta.revision.max(captured_revision);
+    if captured_revision != revision {
+        return Err(format!(
+            "captured plugin state revision {captured_revision} does not match requested revision {revision}"
+        ));
+    }
+    session.meta.revision = session
+        .meta
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| "session revision exhausted".to_owned())?;
     session.meta.state_snapshot = Some(snapshot);
     Ok(())
 }
@@ -357,7 +523,6 @@ fn paused_team_run(history: &[Message]) -> Option<Value> {
         .enumerate()
         .rev()
         .find(|(_, message)| matches!(message.role, n00n_providers::Role::User))?;
-
     for block in &last_user.content {
         let ContentBlock::ToolResult {
             tool_use_id,
@@ -391,6 +556,38 @@ struct SessionRuntime {
     shell_rx: flume::Receiver<ShellEvent>,
     last_status: SessionStatus,
     direct_bootstrap_active: bool,
+    pending_compactions: VecDeque<PendingCompaction>,
+    deferred_agent_events: VecDeque<Box<n00n_agent::Envelope>>,
+}
+
+struct PreparedCompaction {
+    revision: u64,
+    session: AppSession,
+    root: Option<AppSession>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompactionPersistStage {
+    Ready,
+    PersistingRoot,
+    RootDurable,
+    PersistingSession,
+}
+
+struct PendingCompaction {
+    ack: Box<n00n_agent::Envelope>,
+    transcript: Option<Arc<Vec<TranscriptEntry<Message>>>>,
+    revision: u64,
+    prepared: Option<PreparedCompaction>,
+    attempts: u8,
+    stage: CompactionPersistStage,
+}
+
+impl PendingCompaction {
+    fn should_retry_after_failure(&mut self) -> bool {
+        self.attempts = self.attempts.saturating_add(1);
+        self.attempts < MAX_COMPACTION_CHECKPOINT_ATTEMPTS
+    }
 }
 
 impl SessionRuntime {
@@ -405,6 +602,7 @@ struct SpawnCtx {
     config: AgentConfig,
     ui_config: UiConfig,
     input_history_size: usize,
+    retention_budget: RetentionBudget,
     /// Prototype only: every runtime forks its own manager so session
     /// rules stay per-session.
     permissions: Arc<PermissionManager>,
@@ -421,7 +619,8 @@ struct SpawnCtx {
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
     picker: Arc<Picker>,
-    hydrated_roots: RefCell<HashSet<n00nId>>,
+    hydrated_roots: RefCell<HashMap<n00nId, Option<u64>>>,
+    revision_allocators: RefCell<HashMap<n00nId, Arc<RevisionAllocator>>>,
 }
 
 impl SpawnCtx {
@@ -435,28 +634,70 @@ impl SpawnCtx {
         let direct_bootstrap_active = !session.meta.queued_direct_tools.is_empty();
         let identity = session_identity(&session)
             .map_err(|error| eyre!("invalid session identity: {error}"))?;
+        let root_id = persisted_root_id(&session);
+        let referenced_revision = outer_compaction_boundary_revision(&session.transcript);
+        let root = if root_id == session.id {
+            None
+        } else {
+            match self.storage_writer.latest_snapshot(root_id) {
+                Ok(Some(root)) => Some(Arc::unwrap_or_clone(root)),
+                Ok(None) => match AppSession::load_with_retention(
+                    root_id,
+                    &self.storage,
+                    self.retention_budget,
+                    message_tool_use_ids,
+                ) {
+                    Ok(root) => Some(root),
+                    Err(error) => {
+                        warn!(session_id = %session.id, %root_id, %error, "root session state unavailable; using child plugin state");
+                        None
+                    }
+                },
+                Err(error) => {
+                    warn!(session_id = %session.id, %root_id, %error, "current root session state unavailable; using child plugin state");
+                    None
+                }
+            }
+        };
+        let session_snapshot = resume_state_snapshot(&session, referenced_revision)
+            .map_err(|error| eyre!("failed to select session plugin state: {error}"))?;
+        let root_snapshot = match root.as_ref() {
+            Some(root) => resume_state_snapshot(root, referenced_revision),
+            None => Ok(session_snapshot.clone()),
+        }
+        .map_err(|error| eyre!("failed to select root plugin state: {error}"))?;
+        let initial_state_revision = initial_state_revision(&session, root.as_ref());
+        let revision_allocator = Arc::clone(
+            self.revision_allocators
+                .borrow_mut()
+                .entry(root_id)
+                .or_insert_with(|| Arc::new(RevisionAllocator::new(initial_state_revision))),
+        );
+        revision_allocator.observe(initial_state_revision);
+
         if let Some(handle) = &self.lua_event_handle {
-            let root_id = session.meta.root_session_id.unwrap_or_else(|| session.id);
-            if !self.hydrated_roots.borrow().contains(&root_id) {
-                let root_snapshot = if root_id == session.id {
-                    session.meta.state_snapshot.clone()
-                } else {
-                    AppSession::load(root_id, &self.storage)
-                        .map_err(|error| eyre!("failed to load root session state: {error}"))?
-                        .meta
-                        .state_snapshot
-                };
+            let root_snapshot_revision = root_snapshot
+                .as_ref()
+                .and_then(StoredSessionStateSnapshot::state_revision);
+            let should_hydrate_root = self
+                .hydrated_roots
+                .borrow()
+                .get(&root_id)
+                .is_none_or(|hydrated_revision| root_snapshot_revision > *hydrated_revision);
+            if should_hydrate_root {
                 handle
                     .hydrate_state(
                         &SessionIdentity::root(SessionRef::from_id(root_id)),
                         root_snapshot,
                     )
                     .map_err(|error| eyre!("failed to hydrate root plugin state: {error}"))?;
-                self.hydrated_roots.borrow_mut().insert(root_id);
+                self.hydrated_roots
+                    .borrow_mut()
+                    .insert(root_id, root_snapshot_revision);
             }
             if root_id != session.id {
                 handle
-                    .hydrate_state(&identity, session.meta.state_snapshot.clone())
+                    .hydrate_state(&identity, session_snapshot)
                     .map_err(|error| eyre!("failed to hydrate plugin session state: {error}"))?;
             }
         }
@@ -466,13 +707,15 @@ impl SpawnCtx {
             &self.model_slot,
             session.messages.clone(),
             session.transcript.clone(),
+            initial_state_revision,
+            revision_allocator,
             initial_plan_path,
             self.config.clone(),
             self.ui_config.tool_output_lines,
             &permissions,
             Some(identity),
             self.timeouts,
-            self.openai_options,
+            self.openai_options.clone(),
             self.lua_event_handle.clone(),
             self.mcp_handle.clone(),
             self.mcp_config_errors.clone(),
@@ -490,6 +733,7 @@ impl SpawnCtx {
             storage_writer: Arc::clone(&self.storage_writer),
             ui_config: self.ui_config.clone(),
             input_history_size: self.input_history_size,
+            retention_budget: self.retention_budget,
             permissions,
             custom_commands: Arc::clone(&self.custom_commands),
             picker: Arc::clone(&self.picker),
@@ -508,6 +752,8 @@ impl SpawnCtx {
             shell_rx,
             last_status,
             direct_bootstrap_active,
+            pending_compactions: VecDeque::new(),
+            deferred_agent_events: VecDeque::new(),
         })
     }
 }
@@ -519,11 +765,14 @@ pub(crate) struct EventLoop<'t> {
     lineage: SessionLineageGuard,
     ctx: SpawnCtx,
     input: InputReader,
+    pending_input: RefCell<VecDeque<Event>>,
     warn_rx: flume::Receiver<String>,
     warn_tx: flume::Sender<String>,
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     submission_persist_tx: flume::Sender<SubmissionPersistence>,
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
+    compaction_persist_tx: flume::Sender<CompactionPersistence>,
+    compaction_persist_rx: flume::Receiver<CompactionPersistence>,
     post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     startup_login_slot: Option<Arc<ModelSlot>>,
@@ -544,6 +793,14 @@ struct SubmissionPersistence {
     result: Result<(), SessionError>,
 }
 
+struct CompactionPersistence {
+    session_id: n00nId,
+    run_id: u64,
+    revision: u64,
+    stage: CompactionPersistStage,
+    result: Result<(), SessionError>,
+}
+
 enum Wake {
     Input(Event),
     InputGone,
@@ -551,6 +808,7 @@ enum Wake {
     Agent(usize, Box<n00n_agent::Envelope>),
     Shell(usize, ShellEvent),
     SubmissionPersisted(SubmissionPersistence),
+    CompactionPersisted(CompactionPersistence),
     Warn(String),
 }
 
@@ -771,6 +1029,7 @@ impl<'t> EventLoop<'t> {
             config,
             ui_config,
             input_history_size,
+            retention_budget,
             permissions,
             timeouts,
             openai_options,
@@ -786,7 +1045,6 @@ impl<'t> EventLoop<'t> {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
         });
-
         let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
         let (mcp_handle, mcp_config_errors) =
@@ -794,7 +1052,7 @@ impl<'t> EventLoop<'t> {
 
         let (provider, provider_warning) =
             startup_provider_with(&mut model, needs_login, |model| {
-                from_model_with_openai_options(model, timeouts, openai_options)
+                from_model_with_openai_options(model, timeouts, openai_options.clone())
             });
         if let Some(warning) = provider_warning {
             startup_warnings.push(warning);
@@ -805,7 +1063,7 @@ impl<'t> EventLoop<'t> {
             model: model.clone(),
             provider,
         }));
-        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options, needs_login);
+        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options.clone(), needs_login);
         let startup_login_slot = needs_login.then(|| model_slot.load_full());
 
         let picker = Arc::new(terminal_image::picker());
@@ -818,7 +1076,12 @@ impl<'t> EventLoop<'t> {
             if runtime_ids.contains(&summary.id) {
                 continue;
             }
-            match AppSession::load(summary.id, &storage) {
+            match AppSession::load_with_retention(
+                summary.id,
+                &storage,
+                retention_budget,
+                message_tool_use_ids,
+            ) {
                 Ok(session) => stored_sessions.push(session),
                 Err(error) => startup_warnings.push(format!(
                     "Skipped unreadable stored session {}: {error}",
@@ -892,6 +1155,7 @@ impl<'t> EventLoop<'t> {
             config,
             ui_config,
             input_history_size,
+            retention_budget,
             permissions,
             timeouts,
             openai_options,
@@ -906,7 +1170,8 @@ impl<'t> EventLoop<'t> {
             available_models: bg.available,
             storage_writer,
             picker,
-            hydrated_roots: RefCell::new(HashSet::new()),
+            hydrated_roots: RefCell::new(HashMap::new()),
+            revision_allocators: RefCell::new(HashMap::new()),
         };
 
         let mut runtimes: Vec<SessionRuntime> = sessions
@@ -932,6 +1197,7 @@ impl<'t> EventLoop<'t> {
         app.fire_session_focus_autocmd();
 
         let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
+        let (compaction_persist_tx, compaction_persist_rx) = flume::unbounded();
         Ok(Self {
             terminal,
             sessions: runtimes,
@@ -939,11 +1205,14 @@ impl<'t> EventLoop<'t> {
             lineage,
             ctx,
             input: InputReader::spawn()?,
+            pending_input: RefCell::new(VecDeque::new()),
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,
             submission_persist_tx,
             submission_persist_rx,
+            compaction_persist_tx,
+            compaction_persist_rx,
             post_draw_submissions: Vec::new(),
             last_save: Instant::now(),
             startup_login_slot,
@@ -956,7 +1225,6 @@ impl<'t> EventLoop<'t> {
     fn focused_app(&mut self) -> &mut App {
         &mut self.sessions[self.focused].app
     }
-
     fn dispatch_initial_prompt(&mut self, session_id: n00nId, initial_prompt: &mut Option<String>) {
         let Some(index) = self.position(session_id) else {
             warn!(%session_id, "startup session disappeared before initial prompt dispatch");
@@ -1052,7 +1320,11 @@ impl<'t> EventLoop<'t> {
     }
 
     fn try_input_wake(&self) -> Option<Wake> {
-        self.input.receiver().try_recv().ok().map(Wake::Input)
+        self.pending_input
+            .borrow_mut()
+            .pop_front()
+            .or_else(|| self.input.receiver().try_recv().ok())
+            .map(Wake::Input)
     }
 
     fn select_wake(&self, timeout: Duration) -> Option<Wake> {
@@ -1071,6 +1343,9 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.submission_persist_rx, |res| {
             res.ok().map(Wake::SubmissionPersisted)
         });
+        sel = sel.recv(&self.compaction_persist_rx, |res| {
+            res.ok().map(Wake::CompactionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -1085,6 +1360,10 @@ impl<'t> EventLoop<'t> {
     }
 
     fn next_non_input_wake(&self) -> Option<Wake> {
+        self.select_non_input_wake(Duration::ZERO)
+    }
+
+    fn select_non_input_wake(&self, timeout: Duration) -> Option<Wake> {
         let mut sel = flume::Selector::new();
         if let Some(rx) = self
             .ui_action_rx
@@ -1097,6 +1376,9 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.submission_persist_rx, |res| {
             res.ok().map(Wake::SubmissionPersisted)
         });
+        sel = sel.recv(&self.compaction_persist_rx, |res| {
+            res.ok().map(Wake::CompactionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -1107,7 +1389,7 @@ impl<'t> EventLoop<'t> {
                 res.ok().map(|ev| Wake::Shell(i, ev))
             });
         }
-        sel.wait_timeout(Duration::ZERO).ok().flatten()
+        sel.wait_timeout(timeout).ok().flatten()
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
@@ -1119,12 +1401,16 @@ impl<'t> EventLoop<'t> {
             Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
             Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
             Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
+            Wake::CompactionPersisted(completion) => self.handle_compaction_persisted(completion),
             Wake::Warn(warning) => self.focused_app().flash(warning),
         }
         Ok(())
     }
 
     fn tick(&mut self) {
+        for idx in 0..self.sessions.len() {
+            self.retry_compaction_checkpoint(idx);
+        }
         for (i, rt) in self.sessions.iter_mut().enumerate() {
             rt.app.float_mgr.tick();
             if i != self.focused {
@@ -1137,6 +1423,9 @@ impl<'t> EventLoop<'t> {
             rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
         }
+        for rt in &mut self.sessions {
+            rt.app.tick_pending_save();
+        }
         self.tick_periodic_save();
     }
 
@@ -1144,12 +1433,12 @@ impl<'t> EventLoop<'t> {
         if self.last_save.elapsed() < PERIODIC_SAVE_INTERVAL {
             return;
         }
-        for idx in 0..self.sessions.len() {
-            if should_save_periodically(&self.sessions[idx].app.status) {
-                if let Err(error) = self.capture_plugin_state(idx) {
-                    warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state");
-                }
-                self.sessions[idx].app.save_session();
+        // Lua state capture is a drain barrier. Active tools are captured by their terminal event.
+        for rt in &mut self.sessions {
+            if rt.pending_compactions.is_empty()
+                && should_save_periodically(&rt.app.status, rt.app.awaiting_input())
+            {
+                rt.app.save_session_without_plugin_state_capture();
             }
         }
         self.last_save = Instant::now();
@@ -1169,6 +1458,10 @@ impl<'t> EventLoop<'t> {
         if envelope.run_id != self.sessions[idx].app.run_id {
             let actions = self.sessions[idx].app.update(Msg::Agent(envelope));
             self.dispatch(idx, actions);
+            return;
+        }
+        if !self.sessions[idx].pending_compactions.is_empty() {
+            self.sessions[idx].deferred_agent_events.push_back(envelope);
             return;
         }
         if self.sessions[idx].direct_bootstrap_active {
@@ -1217,14 +1510,43 @@ impl<'t> EventLoop<'t> {
             }
             _ => None,
         };
+        let compaction_revision = match &envelope.event {
+            n00n_agent::AgentEvent::CompactionDone { state_revision } => *state_revision,
+            _ => None,
+        };
+        if let Some(revision) = compaction_revision
+            && envelope.run_id == self.sessions[idx].app.run_id
+            && envelope.subagent.is_none()
+        {
+            let transcript = self.sessions[idx]
+                .app
+                .shared_transcript
+                .as_ref()
+                .map(|transcript| transcript.load_full());
+            self.sessions[idx]
+                .pending_compactions
+                .push_back(PendingCompaction {
+                    ack: envelope,
+                    transcript,
+                    revision,
+                    prepared: None,
+                    attempts: 0,
+                    stage: CompactionPersistStage::Ready,
+                });
+            self.retry_compaction_checkpoint(idx);
+            return;
+        }
         let capture = matches!(
             &envelope.event,
             n00n_agent::AgentEvent::Done { .. }
                 | n00n_agent::AgentEvent::Error { .. }
-                | n00n_agent::AgentEvent::CompactionDone
                 | n00n_agent::AgentEvent::AutoCompactFailed { .. }
+                | n00n_agent::AgentEvent::CompactionDone { .. }
         );
-        if capture && let Err(error) = self.capture_plugin_state(idx) {
+        if capture
+            && self.sessions[idx].pending_compactions.is_empty()
+            && let Err(error) = self.capture_plugin_state(idx)
+        {
             warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state");
         }
         let terminal = matches!(
@@ -1243,9 +1565,10 @@ impl<'t> EventLoop<'t> {
                     .meta
                     .queued_direct_tools
                     .clear();
-                if let Err(error) = self.sessions[idx]
-                    .app
-                    .checkpoint_session(TERMINAL_CHECKPOINT_TIMEOUT)
+                if self.sessions[idx].pending_compactions.is_empty()
+                    && let Err(error) = self.sessions[idx]
+                        .app
+                        .checkpoint_session(TERMINAL_CHECKPOINT_TIMEOUT)
                 {
                     warn!(session_id = %self.sessions[idx].id(), %error, "failed to persist terminal session checkpoint");
                 }
@@ -1254,7 +1577,229 @@ impl<'t> EventLoop<'t> {
         self.dispatch(idx, actions);
     }
 
+    fn prepare_compaction(
+        &mut self,
+        idx: usize,
+        revision: u64,
+    ) -> std::result::Result<PreparedCompaction, String> {
+        let handle = self.ctx.lua_event_handle.as_ref();
+        let mut session = self.sessions[idx].app.session_snapshot();
+        prepare_compaction_checkpoint(handle, &mut session, revision)?;
+
+        let root_id = persisted_root_id(&session);
+        let root = if root_id == session.id {
+            None
+        } else {
+            let mut root = if let Some(root_idx) = self.position(root_id) {
+                self.sessions[root_idx].app.session_snapshot()
+            } else if let Some(root) = self
+                .ctx
+                .storage_writer
+                .latest_snapshot(root_id)
+                .map_err(|error| error.to_string())?
+            {
+                Arc::unwrap_or_clone(root)
+            } else {
+                AppSession::load_with_retention(
+                    root_id,
+                    &self.ctx.storage,
+                    self.ctx.retention_budget,
+                    message_tool_use_ids,
+                )
+                .map_err(|error| error.to_string())?
+            };
+            prepare_compaction_checkpoint(handle, &mut root, revision)?;
+            Some(root)
+        };
+        Ok(PreparedCompaction {
+            revision,
+            session,
+            root,
+        })
+    }
+
+    fn apply_compaction_metadata(
+        &mut self,
+        idx: usize,
+        prepared: &PreparedCompaction,
+    ) -> std::result::Result<(), String> {
+        if let Some(root) = &prepared.root
+            && let Some(root_idx) = self.position(root.id)
+        {
+            merge_compaction_metadata(
+                &mut self.sessions[root_idx].app.state.session,
+                root,
+                prepared.revision,
+            )?;
+        }
+        merge_compaction_metadata(
+            &mut self.sessions[idx].app.state.session,
+            &prepared.session,
+            prepared.revision,
+        )
+    }
+
+    fn retry_compaction_checkpoint(&mut self, idx: usize) {
+        let Some(mut pending) = self.sessions[idx].pending_compactions.pop_front() else {
+            return;
+        };
+        if matches!(
+            pending.stage,
+            CompactionPersistStage::PersistingRoot | CompactionPersistStage::PersistingSession
+        ) {
+            self.sessions[idx].pending_compactions.push_front(pending);
+            return;
+        }
+        if pending.prepared.is_none() {
+            match self.prepare_compaction(idx, pending.revision) {
+                Ok(prepared) => pending.prepared = Some(prepared),
+                Err(error) => {
+                    self.handle_compaction_failure(idx, pending, &error);
+                    return;
+                }
+            }
+        }
+        let Some(prepared) = pending.prepared.as_ref() else {
+            self.handle_compaction_failure(idx, pending, "compaction checkpoint was not prepared");
+            return;
+        };
+        let (stage, snapshot) = match pending.stage {
+            CompactionPersistStage::Ready => match &prepared.root {
+                Some(root) => (CompactionPersistStage::PersistingRoot, root.clone()),
+                None => (
+                    CompactionPersistStage::PersistingSession,
+                    prepared.session.clone(),
+                ),
+            },
+            CompactionPersistStage::RootDurable => (
+                CompactionPersistStage::PersistingSession,
+                prepared.session.clone(),
+            ),
+            CompactionPersistStage::PersistingRoot | CompactionPersistStage::PersistingSession => {
+                return;
+            }
+        };
+        let session_id = self.sessions[idx].id();
+        let run_id = pending.ack.run_id;
+        let revision = pending.revision;
+        pending.stage = stage;
+        self.sessions[idx].pending_compactions.push_front(pending);
+        let completion_tx = self.compaction_persist_tx.clone();
+        self.ctx
+            .storage_writer
+            .persist(Box::new(snapshot), move |result| {
+                let _ = completion_tx.send(CompactionPersistence {
+                    session_id,
+                    run_id,
+                    revision,
+                    stage,
+                    result,
+                });
+            });
+    }
+
+    fn handle_compaction_persisted(&mut self, completion: CompactionPersistence) {
+        let Some(idx) = self.position(completion.session_id) else {
+            return;
+        };
+        let Some(mut pending) = self.sessions[idx].pending_compactions.pop_front() else {
+            return;
+        };
+        if pending.ack.run_id != completion.run_id
+            || pending.revision != completion.revision
+            || pending.stage != completion.stage
+        {
+            self.sessions[idx].pending_compactions.push_front(pending);
+            return;
+        }
+        if let Err(error) = completion.result {
+            pending.stage = CompactionPersistStage::Ready;
+            self.handle_compaction_failure(idx, pending, &error.to_string());
+            return;
+        }
+        if completion.stage == CompactionPersistStage::PersistingRoot {
+            pending.stage = CompactionPersistStage::RootDurable;
+            self.sessions[idx].pending_compactions.push_front(pending);
+            self.retry_compaction_checkpoint(idx);
+            return;
+        }
+        if let Some(prepared) = &pending.prepared
+            && let Err(error) = self.apply_compaction_metadata(idx, prepared)
+        {
+            warn!(session_id = %completion.session_id, %error, "failed to apply durable compaction checkpoint metadata");
+        }
+        self.finish_compaction(idx, pending);
+    }
+
+    fn handle_compaction_failure(
+        &mut self,
+        idx: usize,
+        mut pending: PendingCompaction,
+        error: &str,
+    ) {
+        if pending.should_retry_after_failure() {
+            warn!(
+                session_id = %self.sessions[idx].id(),
+                attempt = pending.attempts,
+                max_attempts = MAX_COMPACTION_CHECKPOINT_ATTEMPTS,
+                %error,
+                "failed to persist compaction state checkpoint; retrying"
+            );
+            self.sessions[idx].pending_compactions.push_front(pending);
+            return;
+        }
+        warn!(
+            session_id = %self.sessions[idx].id(),
+            attempts = pending.attempts,
+            %error,
+            "failed to persist compaction state checkpoint; releasing compaction acknowledgement"
+        );
+        if let Some(prepared) = &pending.prepared
+            && let Err(merge_error) = self.apply_compaction_metadata(idx, prepared)
+        {
+            warn!(
+                session_id = %self.sessions[idx].id(),
+                error = %merge_error,
+                "failed to retain compaction checkpoint metadata in memory"
+            );
+        }
+        self.finish_compaction(idx, pending);
+    }
+
+    fn finish_compaction(&mut self, idx: usize, pending: PendingCompaction) {
+        let transcript = pending
+            .transcript
+            .map(|snapshot| Arc::new(ArcSwap::from(snapshot)));
+        let live_transcript =
+            std::mem::replace(&mut self.sessions[idx].app.shared_transcript, transcript);
+        let actions = self.sessions[idx].app.update(Msg::Agent(pending.ack));
+        self.sessions[idx].app.shared_transcript = live_transcript;
+        self.dispatch(idx, actions);
+        if matches!(
+            self.sessions[idx].app.state.session.meta.lifecycle,
+            StoredSessionLifecycle::Succeeded | StoredSessionLifecycle::Failed
+        ) {
+            if let Err(error) = self.capture_plugin_state(idx) {
+                warn!(session_id = %self.sessions[idx].id(), %error, "failed to capture terminal plugin state after compaction checkpoint");
+            }
+            self.sessions[idx].app.save_session();
+        }
+        self.drain_deferred_agent_events(idx);
+    }
+
+    fn drain_deferred_agent_events(&mut self, idx: usize) {
+        while self.sessions[idx].pending_compactions.is_empty() {
+            let Some(envelope) = self.sessions[idx].deferred_agent_events.pop_front() else {
+                break;
+            };
+            self.handle_agent(idx, envelope);
+        }
+    }
+
     fn capture_plugin_state(&mut self, idx: usize) -> std::result::Result<(), String> {
+        if self.sessions[idx].app.main_chat().has_pending_compaction() {
+            return Ok(());
+        }
         let Some(handle) = self.ctx.lua_event_handle.clone() else {
             return Ok(());
         };
@@ -1265,7 +1810,15 @@ impl<'t> EventLoop<'t> {
             .meta
             .root_session_id
             .unwrap_or_else(|| self.sessions[idx].id());
-        capture_session_plugin_state(&handle, &mut self.sessions[idx].app.state.session)?;
+        let session_revision = self.sessions[idx].handles.allocate_state_revision()?;
+        capture_session_plugin_state(
+            &handle,
+            &mut self.sessions[idx].app.state.session,
+            session_revision,
+        )?;
+        self.sessions[idx]
+            .handles
+            .observe_state_revision(session_revision);
         if root_id == self.sessions[idx].id() {
             return Ok(());
         }
@@ -1280,15 +1833,17 @@ impl<'t> EventLoop<'t> {
         {
             Arc::unwrap_or_clone(root)
         } else {
-            AppSession::load(root_id, &self.ctx.storage).map_err(|error| error.to_string())?
+            AppSession::load_with_retention(
+                root_id,
+                &self.ctx.storage,
+                self.ctx.retention_budget,
+                message_tool_use_ids,
+            )
+            .map_err(|error| error.to_string())?
         };
-        root.meta.revision = root
-            .meta
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| "root session revision exhausted".to_owned())?;
+        let root_revision = self.sessions[idx].handles.allocate_state_revision()?;
+        capture_session_plugin_state(&handle, &mut root, root_revision)?;
         root.updated_at = n00n_storage::now_epoch();
-        capture_session_plugin_state(&handle, &mut root)?;
         if let Some(root_idx) = self.position(root_id) {
             self.sessions[root_idx]
                 .app
@@ -1300,6 +1855,9 @@ impl<'t> EventLoop<'t> {
             self.sessions[root_idx].app.state.session.meta.revision = root.meta.revision;
             self.sessions[root_idx].app.state.session.updated_at = root.updated_at;
         }
+        self.sessions[idx]
+            .handles
+            .observe_state_revision(current_state_revision(&root));
         self.ctx.storage_writer.send(Box::new(root));
         Ok(())
     }
@@ -1315,7 +1873,6 @@ impl<'t> EventLoop<'t> {
             };
             self.handle_wake(wake)?;
         }
-
         for rt in &mut self.sessions {
             if rt.app.status == Status::Streaming && rt.handles.agent_rx.is_disconnected() {
                 rt.app.status = Status::error("agent stopped unexpectedly".into());
@@ -1354,9 +1911,17 @@ impl<'t> EventLoop<'t> {
                 focus,
                 event_tx,
                 cmd_rx,
+                close_requested,
             } => {
                 let app = self.focused_app();
-                app.float_mgr.open(buf, config, focus, event_tx, cmd_rx);
+                app.float_mgr.open_with_close_flag(
+                    buf,
+                    config,
+                    focus,
+                    event_tx,
+                    cmd_rx,
+                    close_requested,
+                );
                 if focus {
                     app.transition_plan(&crate::app::mode::PlanTrigger::InteractivePrompt);
                 }
@@ -1732,8 +2297,13 @@ impl<'t> EventLoop<'t> {
                                 .map_err(|error| error.to_string())?
                             {
                                 Some(session) => Arc::unwrap_or_clone(session),
-                                None => AppSession::load(session_id, &self.ctx.storage)
-                                    .map_err(|error| error.to_string())?,
+                                None => AppSession::load_with_retention(
+                                    session_id,
+                                    &self.ctx.storage,
+                                    self.ctx.retention_budget,
+                                    message_tool_use_ids,
+                                )
+                                .map_err(|error| error.to_string())?,
                             };
                             if cancel_stored_session(&mut session) {
                                 cancelled = true;
@@ -1791,10 +2361,15 @@ impl<'t> EventLoop<'t> {
                     if let Some(i) = self.position(id) {
                         let app = &mut self.sessions[i].app;
                         app.state.session.title = title;
-                        app.save_session();
+                        app.save_session_without_plugin_state_capture();
                     } else {
-                        let mut session =
-                            AppSession::load(id, &self.ctx.storage).map_err(|e| e.to_string())?;
+                        let mut session = AppSession::load_with_retention(
+                            id,
+                            &self.ctx.storage,
+                            self.ctx.retention_budget,
+                            message_tool_use_ids,
+                        )
+                        .map_err(|e| e.to_string())?;
                         session.title = title;
                         session.updated_at = n00n_storage::now_epoch();
                         self.ctx.storage_writer.send(Box::new(session));
@@ -1837,12 +2412,54 @@ impl<'t> EventLoop<'t> {
         self.sessions.iter().position(|rt| rt.id() == id)
     }
 
+    fn current_revision_for(&self, idx: usize) -> u64 {
+        let session = &self.sessions[idx].app.state.session;
+        let revision = current_state_revision(session);
+        let root_id = persisted_root_id(session);
+        if root_id == session.id {
+            return revision;
+        }
+        let root_revision = if let Some(root_idx) = self.position(root_id) {
+            current_state_revision(&self.sessions[root_idx].app.state.session)
+        } else {
+            match self.ctx.storage_writer.latest_snapshot(root_id) {
+                Ok(Some(root)) => current_state_revision(&root),
+                Ok(None) => match AppSession::load_with_retention(
+                    root_id,
+                    &self.ctx.storage,
+                    self.ctx.retention_budget,
+                    message_tool_use_ids,
+                ) {
+                    Ok(root) => current_state_revision(&root),
+                    Err(error) => {
+                        warn!(session_id = %session.id, %root_id, %error, "root state revision unavailable; using session revision");
+                        return revision;
+                    }
+                },
+                Err(error) => {
+                    warn!(session_id = %session.id, %root_id, %error, "current root state revision unavailable; using session revision");
+                    return revision;
+                }
+            }
+        };
+        revision.max(root_revision)
+    }
+
     /// The single place that removes a runtime: keeps `focused` pointing at
     /// the same session afterwards. The focused runtime itself is never
     /// removable, so `sessions` stays non-empty.
     fn remove_runtime(&mut self, idx: usize) -> SessionRuntime {
         debug_assert_ne!(idx, self.focused);
         let rt = self.sessions.remove(idx);
+        let root_id = persisted_root_id(&rt.app.state.session);
+        if !self
+            .sessions
+            .iter()
+            .any(|runtime| persisted_root_id(&runtime.app.state.session) == root_id)
+        {
+            self.ctx.hydrated_roots.borrow_mut().remove(&root_id);
+            self.ctx.revision_allocators.borrow_mut().remove(&root_id);
+        }
         if let Err(error) = self.lineage.remove_runtime(rt.id()) {
             warn!(session_id = %rt.id(), error = %error, "failed to remove session runtime from lineage");
         }
@@ -1856,7 +2473,6 @@ impl<'t> EventLoop<'t> {
         self.sessions.push(rt);
         self.sessions.len() - 1
     }
-
     fn set_focus(&mut self, idx: usize) {
         if idx == self.focused {
             return;
@@ -1881,8 +2497,13 @@ impl<'t> EventLoop<'t> {
             .map_err(|error| format!("Failed to load pending session state: {error}"))?
         {
             Some(session) => Arc::unwrap_or_clone(session),
-            None => AppSession::load(id, &self.ctx.storage)
-                .map_err(|error| format!("Failed to load session: {error}"))?,
+            None => AppSession::load_with_retention(
+                id,
+                &self.ctx.storage,
+                self.ctx.retention_budget,
+                message_tool_use_ids,
+            )
+            .map_err(|error| format!("Failed to load session: {error}"))?,
         };
         let restore_execution = has_restorable_work(&session);
         let mut live = live_session(&session).map_err(|error| error.to_string())?;
@@ -1914,17 +2535,19 @@ impl<'t> EventLoop<'t> {
         Ok(())
     }
 
-    /// Handles one input event plus any leftover produced while coalescing
-    /// bursts of scroll/drag events.
+    /// Handles a bounded number of coalescer leftovers, retaining excess ahead
+    /// of input that is still queued in the reader.
     fn handle_input(&mut self, raw: Event) {
-        let mut pending = Some(raw);
-        while let Some(ev) = pending.take() {
-            let (msg, leftover) = self.translate(ev);
+        let leftover = handle_input_bounded(raw, |event| {
+            let (msg, leftover) = self.translate(event);
             if let Some(msg) = msg {
                 let actions = self.sessions[self.focused].app.update(msg);
                 self.dispatch(self.focused, actions);
             }
-            pending = leftover;
+            leftover
+        });
+        if let Some(event) = leftover {
+            self.pending_input.borrow_mut().push_front(event);
         }
     }
 
@@ -1959,50 +2582,15 @@ impl<'t> EventLoop<'t> {
     /// Sums queued scroll events into one delta; the first non-scroll event
     /// drained along the way is returned so it isn't lost.
     fn aggregate_scroll(&self, first: CtMouseEvent, scroll_lines: u32) -> (Msg, Option<Event>) {
-        let mut delta = scroll_delta(first.kind, scroll_lines);
-        let mut leftover = None;
-        while let Ok(next) = self.input.receiver().try_recv() {
-            match next {
-                Event::Mouse(m)
-                    if matches!(
-                        m.kind,
-                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                    ) =>
-                {
-                    delta += scroll_delta(m.kind, scroll_lines);
-                }
-                other => {
-                    leftover = Some(other);
-                    break;
-                }
-            }
-        }
-        (
-            Msg::Scroll {
-                column: first.column,
-                row: first.row,
-                delta,
-            },
-            leftover,
-        )
+        aggregate_scroll(first, scroll_lines, || {
+            try_recv_input(self.input.receiver())
+        })
     }
 
     /// Keeps only the newest queued drag position; the first non-drag event
     /// drained along the way is returned so it isn't lost.
-    fn coalesce_drag(&self, mut latest: CtMouseEvent) -> (CtMouseEvent, Option<Event>) {
-        let mut leftover = None;
-        while let Ok(next) = self.input.receiver().try_recv() {
-            match next {
-                Event::Mouse(m) if matches!(m.kind, MouseEventKind::Drag(MouseButton::Left)) => {
-                    latest = m;
-                }
-                other => {
-                    leftover = Some(other);
-                    break;
-                }
-            }
-        }
-        (latest, leftover)
+    fn coalesce_drag(&self, latest: CtMouseEvent) -> (CtMouseEvent, Option<Event>) {
+        coalesce_drag(latest, || try_recv_input(self.input.receiver()))
     }
 
     fn dispatch(&mut self, idx: usize, actions: Vec<Action>) {
@@ -2038,12 +2626,14 @@ impl<'t> EventLoop<'t> {
         transcript: Vec<TranscriptEntry<Message>>,
         identity: SessionIdentity,
     ) {
+        let initial_state_revision = self.current_revision_for(idx);
         let rt = &mut self.sessions[idx];
         let lua_handle = rt.app.lua_event_handle.clone();
         let permissions = Arc::clone(&rt.app.permissions);
         rt.handles.respawn(
             history,
             transcript,
+            initial_state_revision,
             &self.ctx.model_slot,
             self.ctx.config.clone(),
             self.ctx.ui_config.tool_output_lines,
@@ -2234,7 +2824,7 @@ impl<'t> EventLoop<'t> {
                     && let Ok(new_provider) = from_model_with_openai_options(
                         &mut new_model,
                         self.ctx.timeouts,
-                        self.ctx.openai_options,
+                        self.ctx.openai_options.clone(),
                     )
                 {
                     self.sessions[idx].app.usage_slot.store(None);
@@ -2250,6 +2840,23 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
+                let hydrated =
+                    loaded.plugin_state_hydrated || self.sessions[idx].app.hydrate_plugin_state();
+                if hydrated {
+                    let session = &self.sessions[idx].app.state.session;
+                    let root_id = persisted_root_id(session);
+                    if root_id == session.id {
+                        let revision = session
+                            .meta
+                            .state_snapshot
+                            .as_ref()
+                            .and_then(StoredSessionStateSnapshot::state_revision);
+                        self.ctx
+                            .hydrated_roots
+                            .borrow_mut()
+                            .insert(root_id, revision);
+                    }
+                }
                 self.respawn_agent(idx, loaded.messages, loaded.transcript, identity);
                 *self.sessions[idx]
                     .handles
@@ -2330,7 +2937,7 @@ impl<'t> EventLoop<'t> {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,
-                self.ctx.openai_options,
+                self.ctx.openai_options.clone(),
             ) {
                 Ok(new_provider) => {
                     let app = self.focused_app();
@@ -2421,7 +3028,6 @@ impl<'t> EventLoop<'t> {
             self.change_model(builtin.default_model);
         }
     }
-
     fn preserve_post_draw_submissions(&mut self) {
         for (session_id, dispatch) in std::mem::take(&mut self.post_draw_submissions)
             .into_iter()
@@ -2437,15 +3043,38 @@ impl<'t> EventLoop<'t> {
         }
     }
 
+    fn settle_cancelled_sessions(&mut self) {
+        let Some(deadline) = Instant::now().checked_add(AGENT_SHUTDOWN_TIMEOUT) else {
+            warn!("shutdown cancellation deadline overflowed");
+            return;
+        };
+        while self
+            .sessions
+            .iter()
+            .any(|runtime| SessionStatus::of(&runtime.app).needs_shutdown_settle())
+            && Instant::now() < deadline
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = remaining.min(Duration::from_millis(IDLE_POLL_INTERVAL_MS));
+            if let Some(wake) = self.select_non_input_wake(timeout)
+                && let Err(error) = self.handle_wake(wake)
+            {
+                warn!(%error, "failed to settle a cancellation event during shutdown");
+            }
+        }
+    }
+
     fn shutdown(mut self) -> Result<ShutdownReport> {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
+        self.settle_cancelled_sessions();
+        self.preserve_post_draw_submissions();
         for idx in 0..self.sessions.len() {
             if let Err(error) = self.capture_plugin_state(idx) {
-                warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state during shutdown");
+                warn!(session_id = %self.sessions[idx].id(), %error, "failed to capture plugin session state during shutdown");
             }
         }
         let mut tabs = Vec::with_capacity(self.sessions.len());
@@ -2463,7 +3092,7 @@ impl<'t> EventLoop<'t> {
         if let Some(handle) = &self.ctx.lua_event_handle {
             for session in &tabs {
                 if let Err(error) = handle.drop_state_owner(session.id) {
-                    warn!(session_id = %session.id, error = %error, "failed to drop plugin session state owner");
+                    warn!(session_id = %session.id, %error, "failed to drop plugin session state owner");
                 }
             }
         }
@@ -2519,8 +3148,8 @@ fn take_painted_submissions<T>(
     ready
 }
 
-fn should_save_periodically(status: &Status) -> bool {
-    matches!(status, Status::Streaming)
+fn should_save_periodically(status: &Status, awaiting_input: bool) -> bool {
+    *status == Status::Streaming && !awaiting_input
 }
 
 fn startup_provider_with(
@@ -2540,6 +3169,89 @@ fn startup_provider_with(
     }
 }
 
+#[allow(clippy::manual_ok_err)]
+fn try_recv_input(rx: &flume::Receiver<Event>) -> Option<Event> {
+    match rx.try_recv() {
+        Ok(event) => Some(event),
+        Err(flume::TryRecvError::Empty | flume::TryRecvError::Disconnected) => None,
+    }
+}
+
+fn handle_input_bounded(
+    first: Event,
+    mut handle: impl FnMut(Event) -> Option<Event>,
+) -> Option<Event> {
+    let mut pending = Some(first);
+    for _ in 0..HANDLE_INPUT_BUDGET {
+        let Some(event) = pending.take() else {
+            break;
+        };
+        pending = handle(event);
+    }
+    pending
+}
+
+fn aggregate_scroll(
+    first: CtMouseEvent,
+    scroll_lines: u32,
+    mut next_event: impl FnMut() -> Option<Event>,
+) -> (Msg, Option<Event>) {
+    let mut delta = scroll_delta(first.kind, scroll_lines);
+    for _ in 0..COALESCE_BUDGET {
+        let Some(next) = next_event() else {
+            break;
+        };
+        match next {
+            Event::Mouse(mouse)
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) =>
+            {
+                delta += scroll_delta(mouse.kind, scroll_lines);
+            }
+            other => {
+                return (
+                    Msg::Scroll {
+                        column: first.column,
+                        row: first.row,
+                        delta,
+                    },
+                    Some(other),
+                );
+            }
+        }
+    }
+    (
+        Msg::Scroll {
+            column: first.column,
+            row: first.row,
+            delta,
+        },
+        None,
+    )
+}
+
+fn coalesce_drag(
+    mut latest: CtMouseEvent,
+    mut next_event: impl FnMut() -> Option<Event>,
+) -> (CtMouseEvent, Option<Event>) {
+    for _ in 0..COALESCE_BUDGET {
+        let Some(next) = next_event() else {
+            break;
+        };
+        match next {
+            Event::Mouse(mouse)
+                if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) =>
+            {
+                latest = mouse;
+            }
+            other => return (latest, Some(other)),
+        }
+    }
+    (latest, None)
+}
+
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     let lines = crate::cast::u32_to_isize(lines);
     let n = i32::try_from(lines).unwrap_or_else(|_| i32::MAX);
@@ -2553,24 +3265,36 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler,
-        PAUSED_TEAM_RUN_ID_MAX_BYTES, TEAM_TOOL_NAME, authorize_ui_delete, bounded_direct_output,
-        cancel_stored_session, complete_model_fetch_with, direct_paused_team_payload,
-        draw_then_post_terminal, merge_model_batch, paused_team_payload, paused_team_run,
-        publish_model_refresh, resolve_model_selection, should_save_periodically,
-        startup_login_completed, startup_provider_with, take_painted_submissions,
+        COALESCE_BUDGET, CompactionPersistStage, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES,
+        DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg,
+        PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, SessionStatus, TEAM_TOOL_NAME,
+        TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll, authorize_ui_delete, bounded_direct_output,
+        cancel_stored_session, coalesce_drag, complete_model_fetch_with,
+        direct_paused_team_payload, draw_then_post_terminal, handle_input_bounded,
+        initial_state_revision, merge_compaction_metadata, merge_model_batch,
+        outer_compaction_state_revision, paused_team_payload, paused_team_run,
+        prepare_compaction_checkpoint, publish_model_refresh, resolve_model_selection,
+        resume_state_snapshot, should_save_periodically, startup_login_completed,
+        startup_provider_with, take_painted_submissions, try_recv_input,
         validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::{ArcSwap, ArcSwapOption};
-    use n00n_agent::AgentConfig;
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use n00n_agent::{AgentConfig, AgentEvent, Envelope};
     use n00n_providers::{
         AgentError, ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, Role,
         provider::{ModelBatch, unconfigured_provider},
     };
     use n00n_storage::{
+        StateDir,
         id::{SessionRef, n00nId},
-        sessions::{StoredDelivery, StoredDirectTool, StoredQueuedMessage, StoredSessionLifecycle},
+        sessions::{
+            StoredDelivery, StoredDirectTool, StoredQueuedMessage, StoredSessionLifecycle,
+            StoredSessionStateSnapshot, StoredStateScope, TranscriptEntry,
+        },
     };
     use ratatui::{
         Terminal,
@@ -2584,7 +3308,39 @@ mod tests {
         io,
         sync::{Arc, Mutex},
     };
+    use tempfile::TempDir;
     use test_case::test_case;
+
+    #[test]
+    fn compaction_checkpoint_retry_budget_is_bounded() {
+        let mut pending = PendingCompaction {
+            ack: Box::new(Envelope {
+                event: AgentEvent::CompactionDone {
+                    state_revision: Some(1),
+                },
+                subagent: None,
+                run_id: 1,
+            }),
+            transcript: None,
+            revision: 1,
+            prepared: None,
+            attempts: 0,
+            stage: CompactionPersistStage::Ready,
+        };
+
+        for _ in 1..MAX_COMPACTION_CHECKPOINT_ATTEMPTS {
+            assert!(pending.should_retry_after_failure());
+        }
+        assert!(!pending.should_retry_after_failure());
+    }
+
+    #[test]
+    fn shutdown_settle_ignores_sessions_waiting_for_input() {
+        assert!(SessionStatus::Working.needs_shutdown_settle());
+        assert!(!SessionStatus::NeedsInput.needs_shutdown_settle());
+        assert!(!SessionStatus::Idle.needs_shutdown_settle());
+    }
+
     #[test]
     fn older_model_refresh_cannot_overwrite_newer_catalog() {
         let available = ArcSwapOption::from(Some(Arc::new(vec!["initial/model".into()])));
@@ -2642,6 +3398,362 @@ mod tests {
         assert!(matches!(result, Err(ModelCatalogError::Unavailable(_))));
     }
 
+    fn compaction_entry(
+        entries: Vec<TranscriptEntry<Message>>,
+        revision: u64,
+    ) -> TranscriptEntry<Message> {
+        TranscriptEntry::Compaction {
+            entries,
+            generated_summary: None,
+            state_revision: Some(revision),
+        }
+    }
+
+    #[test]
+    fn compaction_checkpoint_persists_exact_outer_revision_and_latest_state() {
+        let temp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(temp.path().to_path_buf());
+        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let mut session = AppSession::new("model", "/project");
+        session.transcript = vec![compaction_entry(Vec::new(), 7)];
+        let mut previous = StoredSessionStateSnapshot::new(4);
+        previous
+            .set_plugin_state(
+                "plugin",
+                1,
+                StoredStateScope::Session,
+                serde_json::json!({"kept": true}),
+            )
+            .unwrap();
+        session.meta.state_snapshot = Some(previous);
+        session.meta.revision = 2;
+
+        let revision = outer_compaction_state_revision(&session.transcript).unwrap();
+        prepare_compaction_checkpoint(None, &mut session, revision).unwrap();
+        writer
+            .persist_and_wait(Box::new(session.clone()), TERMINAL_CHECKPOINT_TIMEOUT)
+            .unwrap();
+
+        let durable = AppSession::load(session.id, &dir).unwrap();
+        assert_eq!(durable.meta.revision, 3);
+        assert_eq!(
+            durable
+                .meta
+                .compaction_state_at(7)
+                .unwrap()
+                .state_revision(),
+            Some(7)
+        );
+        assert_eq!(
+            durable
+                .meta
+                .state_snapshot
+                .as_ref()
+                .and_then(StoredSessionStateSnapshot::state_revision),
+            Some(7)
+        );
+        assert_eq!(
+            durable
+                .meta
+                .state_snapshot
+                .as_ref()
+                .unwrap()
+                .plugin_payload_for_apply("plugin", 1, StoredStateScope::Session)
+                .unwrap(),
+            Some(&serde_json::json!({"kept": true}))
+        );
+        writer.shutdown(TERMINAL_CHECKPOINT_TIMEOUT).unwrap();
+    }
+
+    #[test]
+    fn failed_compaction_capture_leaves_prior_durable_checkpoint_authoritative() {
+        let temp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(temp.path().to_path_buf());
+        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let mut session = AppSession::new("model", "/project");
+        let first = StoredSessionStateSnapshot::new(1);
+        session
+            .meta
+            .checkpoint_compaction_state(first.clone())
+            .unwrap();
+        session.meta.state_snapshot = Some(first);
+        writer
+            .persist_and_wait(Box::new(session.clone()), TERMINAL_CHECKPOINT_TIMEOUT)
+            .unwrap();
+        session.transcript = vec![compaction_entry(Vec::new(), 2)];
+        let before_meta = serde_json::to_value(&session.meta).unwrap();
+        let before_updated_at = session.updated_at;
+        let dead = n00n_lua::EventHandle::disconnected_for_test();
+
+        assert!(prepare_compaction_checkpoint(Some(&dead), &mut session, 2).is_err());
+        assert_eq!(serde_json::to_value(&session.meta).unwrap(), before_meta);
+        assert_eq!(session.updated_at, before_updated_at);
+        let durable = AppSession::load(session.id, &dir).unwrap();
+        assert_eq!(
+            durable
+                .meta
+                .compaction_state_at(1)
+                .unwrap()
+                .state_revision(),
+            Some(1)
+        );
+        assert!(durable.meta.compaction_state_at(2).is_err());
+        writer.shutdown(TERMINAL_CHECKPOINT_TIMEOUT).unwrap();
+    }
+
+    #[test]
+    fn revision_exhaustion_leaves_compaction_checkpoint_unchanged() {
+        let mut session = AppSession::new("model", "/project");
+        let previous = StoredSessionStateSnapshot::new(1);
+        session
+            .meta
+            .checkpoint_compaction_state(previous.clone())
+            .unwrap();
+        session.meta.state_snapshot = Some(previous);
+        session.meta.revision = u64::MAX;
+        let before_meta = serde_json::to_value(&session.meta).unwrap();
+        let before_updated_at = session.updated_at;
+
+        assert!(prepare_compaction_checkpoint(None, &mut session, u64::MAX).is_err());
+        assert_eq!(serde_json::to_value(&session.meta).unwrap(), before_meta);
+        assert_eq!(session.updated_at, before_updated_at);
+    }
+
+    #[test]
+    fn recursive_compactions_persist_two_exact_state_revisions() {
+        let temp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(temp.path().to_path_buf());
+        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let mut session = AppSession::new("model", "/project");
+        session.transcript = vec![compaction_entry(Vec::new(), 3)];
+        prepare_compaction_checkpoint(None, &mut session, 3).unwrap();
+        writer
+            .persist_and_wait(Box::new(session.clone()), TERMINAL_CHECKPOINT_TIMEOUT)
+            .unwrap();
+
+        let inner = session.transcript.clone();
+        session.transcript = vec![compaction_entry(inner, 9)];
+        let revision = outer_compaction_state_revision(&session.transcript).unwrap();
+        prepare_compaction_checkpoint(None, &mut session, revision).unwrap();
+        writer
+            .persist_and_wait(Box::new(session.clone()), TERMINAL_CHECKPOINT_TIMEOUT)
+            .unwrap();
+
+        let durable = AppSession::load(session.id, &dir).unwrap();
+        assert_eq!(
+            durable
+                .meta
+                .compaction_state_at(3)
+                .unwrap()
+                .state_revision(),
+            Some(3)
+        );
+        assert_eq!(
+            durable
+                .meta
+                .compaction_state_at(9)
+                .unwrap()
+                .state_revision(),
+            Some(9)
+        );
+        assert_eq!(
+            durable
+                .meta
+                .state_snapshot
+                .as_ref()
+                .and_then(StoredSessionStateSnapshot::state_revision),
+            Some(9)
+        );
+        writer.shutdown(TERMINAL_CHECKPOINT_TIMEOUT).unwrap();
+    }
+
+    #[test]
+    fn resume_selects_latest_snapshot_after_outer_checkpoint() {
+        let mut session = AppSession::new("model", "/project");
+        let mut checkpoint = StoredSessionStateSnapshot::new(3);
+        checkpoint
+            .set_plugin_state(
+                "plugin",
+                1,
+                StoredStateScope::Session,
+                serde_json::json!({"value": "checkpoint"}),
+            )
+            .unwrap();
+        session
+            .meta
+            .checkpoint_compaction_state(checkpoint)
+            .unwrap();
+        let mut latest = StoredSessionStateSnapshot::new(9);
+        latest
+            .set_plugin_state(
+                "plugin",
+                1,
+                StoredStateScope::Session,
+                serde_json::json!({"value": "latest"}),
+            )
+            .unwrap();
+        session.meta.state_snapshot = Some(latest);
+        session.meta.revision = 9;
+
+        let selected = resume_state_snapshot(&session, Some(3)).unwrap().unwrap();
+
+        assert_eq!(selected.state_revision(), Some(9));
+        assert_eq!(
+            selected
+                .plugin_payload_for_apply("plugin", 1, StoredStateScope::Session)
+                .unwrap(),
+            Some(&serde_json::json!({"value": "latest"}))
+        );
+    }
+
+    #[test]
+    fn legacy_compaction_resume_falls_back_to_latest_snapshot() {
+        let mut session = AppSession::new("model", "/project");
+        session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(6));
+        session.transcript = vec![TranscriptEntry::Compaction {
+            entries: Vec::new(),
+            generated_summary: None,
+            state_revision: None,
+        }];
+
+        let selected = resume_state_snapshot(&session, None).unwrap().unwrap();
+
+        assert_eq!(selected.state_revision(), Some(6));
+    }
+
+    #[test]
+    fn missing_or_future_checkpoint_falls_back_to_latest_snapshot() {
+        let mut session = AppSession::new("model", "/project");
+        session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(5));
+        session.meta.revision = 5;
+
+        let missing = resume_state_snapshot(&session, Some(4)).unwrap().unwrap();
+        let future = resume_state_snapshot(&session, Some(6)).unwrap().unwrap();
+
+        assert_eq!(missing.state_revision(), Some(5));
+        assert_eq!(future.state_revision(), Some(5));
+    }
+
+    #[test]
+    fn malformed_referenced_checkpoint_fails_closed() {
+        let mut session = AppSession::new("model", "/project");
+        session.meta = serde_json::from_value(serde_json::json!({
+            "revision": 5,
+            "state_snapshot": {"schema_version": 1, "state_revision": 3},
+            "compaction_state_checkpoints": {
+                "schema_version": 1,
+                "checkpoints": [{"invalid": true}]
+            }
+        }))
+        .unwrap();
+
+        let error = resume_state_snapshot(&session, Some(4)).unwrap_err();
+
+        assert_eq!(error, "compaction-state checkpoint envelope is malformed");
+    }
+
+    #[test]
+    fn initial_revision_uses_session_snapshot_meta_and_root_current_revision() {
+        let mut child = AppSession::new("model", "/project");
+        child.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(8));
+        child.meta.revision = 10;
+        let mut root = AppSession::new("model", "/project");
+        root.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(12));
+        root.meta.revision = 11;
+
+        assert_eq!(initial_state_revision(&child, None), 10);
+        assert_eq!(initial_state_revision(&child, Some(&root)), 12);
+    }
+
+    #[test]
+    fn prepared_root_and_child_checkpoints_are_idempotent_across_retry() {
+        let temp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(temp.path().to_path_buf());
+        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let mut root = AppSession::new("model", "/project");
+        let mut child = AppSession::new("model", "/project");
+        child.meta.root_session_id = Some(root.id);
+        child.transcript = vec![compaction_entry(Vec::new(), 7)];
+        prepare_compaction_checkpoint(None, &mut root, 7).unwrap();
+        prepare_compaction_checkpoint(None, &mut child, 7).unwrap();
+
+        for checkpoint in [&root, &root, &child, &child] {
+            writer
+                .persist_and_wait(Box::new(checkpoint.clone()), TERMINAL_CHECKPOINT_TIMEOUT)
+                .unwrap();
+        }
+
+        assert_eq!(
+            AppSession::load(root.id, &dir)
+                .unwrap()
+                .meta
+                .compaction_state_at(7)
+                .unwrap()
+                .state_revision(),
+            Some(7)
+        );
+        assert_eq!(
+            AppSession::load(child.id, &dir)
+                .unwrap()
+                .meta
+                .compaction_state_at(7)
+                .unwrap()
+                .state_revision(),
+            Some(7)
+        );
+        writer.shutdown(TERMINAL_CHECKPOINT_TIMEOUT).unwrap();
+    }
+
+    #[test]
+    fn merging_delayed_checkpoint_preserves_newer_session_content() {
+        let mut current = AppSession::new("model", "/project");
+        current.messages = vec![Message::user("after checkpoint".into())];
+        current.transcript = vec![TranscriptEntry::Message(Message::user(
+            "after checkpoint".into(),
+        ))];
+        current.meta.revision = 10;
+        let mut checkpoint = current.clone();
+        checkpoint.messages.clear();
+        checkpoint.transcript = vec![compaction_entry(Vec::new(), 7)];
+        checkpoint.meta.revision = 8;
+        prepare_compaction_checkpoint(None, &mut checkpoint, 7).unwrap();
+
+        merge_compaction_metadata(&mut current, &checkpoint, 7).unwrap();
+
+        assert_eq!(current.messages.len(), 1);
+        assert!(matches!(
+            current.transcript.as_slice(),
+            [TranscriptEntry::Message(_)]
+        ));
+        assert_eq!(
+            current
+                .meta
+                .compaction_state_at(7)
+                .unwrap()
+                .state_revision(),
+            Some(7)
+        );
+        assert_eq!(current.meta.revision, 10);
+    }
+
+    #[test]
+    fn root_checkpoint_for_child_is_stored_at_matching_revision() {
+        let mut child = AppSession::new("model", "/project");
+        let mut root = AppSession::new("model", "/project");
+
+        prepare_compaction_checkpoint(None, &mut child, 7).unwrap();
+        prepare_compaction_checkpoint(None, &mut root, 7).unwrap();
+
+        assert_eq!(
+            child.meta.compaction_state_at(7).unwrap().state_revision(),
+            Some(7)
+        );
+        assert_eq!(
+            root.meta.compaction_state_at(7).unwrap().state_revision(),
+            Some(7)
+        );
+    }
+
     #[test]
     fn startup_provider_failure_preserves_model_and_requests_login_once() {
         let mut model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
@@ -2662,7 +3774,6 @@ mod tests {
             Some("Failed to create provider: missing credentials")
         );
     }
-
     #[test]
     fn startup_provider_skips_construction_while_login_is_required() {
         let mut model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
@@ -2900,7 +4011,6 @@ mod tests {
         inactive.meta.lifecycle = StoredSessionLifecycle::Succeeded;
         assert!(!cancel_stored_session(&mut inactive));
         assert_eq!(inactive.meta.lifecycle, StoredSessionLifecycle::Succeeded);
-
         inactive.meta.queued_messages = vec!["pending".into()];
         assert!(cancel_stored_session(&mut inactive));
         assert!(inactive.meta.queued_messages.is_empty());
@@ -2974,10 +4084,14 @@ mod tests {
     }
 
     #[test]
-    fn periodic_save_skips_unchanged_idle_sessions() {
-        assert!(!should_save_periodically(&Status::Idle));
-        assert!(!should_save_periodically(&Status::error("failed".into())));
-        assert!(should_save_periodically(&Status::Streaming));
+    fn periodic_save_only_checkpoints_active_sessions() {
+        assert!(!should_save_periodically(&Status::Idle, false));
+        assert!(!should_save_periodically(
+            &Status::error("failed".into()),
+            false
+        ));
+        assert!(should_save_periodically(&Status::Streaming, false));
+        assert!(!should_save_periodically(&Status::Streaming, true));
     }
 
     #[test]
@@ -3036,6 +4150,184 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!post_draw_ran.get());
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn scroll_coalescing_is_bounded_under_continuous_input() {
+        let first = mouse_event(MouseEventKind::ScrollUp, 1, 1);
+        let mut consumed = 0;
+
+        let (message, leftover) = aggregate_scroll(first, 1, || {
+            consumed += 1;
+            Some(Event::Mouse(mouse_event(MouseEventKind::ScrollUp, 1, 1)))
+        });
+
+        assert_eq!(consumed, COALESCE_BUDGET);
+        let Msg::Scroll { column, row, delta } = message else {
+            panic!("scroll events must produce a scroll message");
+        };
+        assert_eq!((column, row), (1, 1));
+        assert_eq!(
+            delta,
+            i32::try_from(COALESCE_BUDGET + 1).expect("budget fits in i32")
+        );
+        assert!(leftover.is_none());
+    }
+
+    #[test]
+    fn drag_coalescing_is_bounded_under_continuous_input() {
+        let mut row = 0;
+
+        let (latest, leftover) = coalesce_drag(
+            mouse_event(MouseEventKind::Drag(MouseButton::Left), 1, 0),
+            || {
+                row += 1;
+                Some(Event::Mouse(mouse_event(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    1,
+                    row,
+                )))
+            },
+        );
+
+        assert_eq!(
+            row,
+            u16::try_from(COALESCE_BUDGET).expect("budget fits in u16")
+        );
+        assert_eq!(latest.row, row);
+        assert!(leftover.is_none());
+    }
+
+    #[test]
+    fn drag_coalescing_leaves_excess_events_queued() {
+        let (tx, rx) = flume::unbounded();
+        for row in 1..=u16::try_from(COALESCE_BUDGET + 1).expect("budget fits in u16") {
+            tx.send(Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                1,
+                row,
+            )))
+            .expect("receiver remains connected");
+        }
+
+        let (latest, leftover) = coalesce_drag(
+            mouse_event(MouseEventKind::Drag(MouseButton::Left), 1, 0),
+            || try_recv_input(&rx),
+        );
+
+        assert_eq!(
+            latest.row,
+            u16::try_from(COALESCE_BUDGET).expect("budget fits in u16")
+        );
+        assert!(leftover.is_none());
+        assert_eq!(rx.len(), 1);
+        assert_eq!(
+            rx.try_recv().expect("excess drag remains queued"),
+            Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                1,
+                u16::try_from(COALESCE_BUDGET + 1).expect("budget fits in u16"),
+            ))
+        );
+    }
+
+    #[test]
+    fn coalescers_return_first_nonmatching_event_without_reordering() {
+        let (scroll_tx, scroll_rx) = flume::unbounded();
+        let key = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        let trailing_scroll = Event::Mouse(mouse_event(MouseEventKind::ScrollDown, 2, 2));
+        scroll_tx
+            .send(Event::Mouse(mouse_event(MouseEventKind::ScrollUp, 1, 1)))
+            .expect("receiver remains connected");
+        scroll_tx
+            .send(key.clone())
+            .expect("receiver remains connected");
+        scroll_tx
+            .send(trailing_scroll.clone())
+            .expect("receiver remains connected");
+
+        let (scroll, leftover) =
+            aggregate_scroll(mouse_event(MouseEventKind::ScrollUp, 0, 0), 1, || {
+                try_recv_input(&scroll_rx)
+            });
+
+        let Msg::Scroll { column, row, delta } = scroll else {
+            panic!("scroll events must produce a scroll message");
+        };
+        assert_eq!((column, row, delta), (0, 0, 2));
+        assert_eq!(leftover, Some(key));
+        assert_eq!(
+            scroll_rx
+                .try_recv()
+                .expect("trailing scroll remains queued"),
+            trailing_scroll
+        );
+    }
+    #[test]
+    fn alternating_coalescer_leftovers_are_bounded_and_ordered() {
+        let (tx, rx) = flume::unbounded();
+        for row in 1..=u16::try_from(HANDLE_INPUT_BUDGET + 1).expect("budget fits in u16") {
+            let kind = if row % 2 == 0 {
+                MouseEventKind::ScrollUp
+            } else {
+                MouseEventKind::Drag(MouseButton::Left)
+            };
+            tx.send(Event::Mouse(mouse_event(kind, 0, row)))
+                .expect("receiver remains connected");
+        }
+        let mut handled_rows = Vec::new();
+
+        let retained = handle_input_bounded(
+            Event::Mouse(mouse_event(MouseEventKind::ScrollUp, 0, 0)),
+            |event| {
+                let Event::Mouse(mouse) = event else {
+                    panic!("test input must be mouse events");
+                };
+                handled_rows.push(mouse.row);
+                match mouse.kind {
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                        aggregate_scroll(mouse, 1, || try_recv_input(&rx)).1
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        coalesce_drag(mouse, || try_recv_input(&rx)).1
+                    }
+                    _ => panic!("test input must alternate scroll and drag events"),
+                }
+            },
+        )
+        .expect("the bounded handler retains its excess event");
+
+        assert_eq!(handled_rows.len(), HANDLE_INPUT_BUDGET);
+        assert_eq!(handled_rows.first(), Some(&0));
+        assert_eq!(
+            handled_rows.last(),
+            Some(&u16::try_from(HANDLE_INPUT_BUDGET - 1).expect("budget fits in u16"))
+        );
+        assert_eq!(
+            retained,
+            Event::Mouse(mouse_event(
+                MouseEventKind::ScrollUp,
+                0,
+                u16::try_from(HANDLE_INPUT_BUDGET).expect("budget fits in u16")
+            ))
+        );
+        assert_eq!(
+            rx.try_recv().expect("later input remains queued"),
+            Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                0,
+                u16::try_from(HANDLE_INPUT_BUDGET + 1).expect("budget fits in u16")
+            ))
+        );
     }
 
     #[test]

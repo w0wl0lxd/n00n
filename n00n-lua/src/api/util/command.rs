@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 use mlua::RegistryKey;
@@ -462,6 +462,7 @@ pub enum UiAction {
         focus: bool,
         event_tx: flume::Sender<WinEvent>,
         cmd_rx: flume::Receiver<WinCommand>,
+        close_requested: Arc<AtomicBool>,
     },
     Flash(String),
     OpenEditor {

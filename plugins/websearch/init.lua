@@ -45,6 +45,8 @@ end
 n00n.api.register_tool({
   name = "search_web",
   aliases = { "websearch" },
+  defer_loading = true,
+  namespace = "web",
   kind = "fetch",
   description = [[Search the web for real-time information using Firecrawl or Exa.
 

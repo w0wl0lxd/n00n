@@ -19,6 +19,8 @@ use n00n_lua_macro::{lua_fn, lua_table};
 use serde_json::Value;
 use tracing::debug;
 
+use crate::runtime::run_non_yieldable;
+
 use crate::api::util::convert::{json_to_lua, lua_tool_result};
 use crate::plugin_permissions::PluginPermissions;
 use crate::runtime::{TaskHandle, lock_cell};
@@ -236,7 +238,9 @@ async fn interpreter_run(
     let recv_loop = async {
         while let Ok(msg) = rx.recv_async().await {
             match msg {
-                BridgeMsg::Line(line) => on_output.call::<()>(line)?,
+                BridgeMsg::Line(line) => {
+                    run_non_yieldable(&lua, || on_output.call::<()>(line))?;
+                }
                 BridgeMsg::Calls(batch, reply) => {
                     let futs = batch.into_iter().map(|pc| {
                         let f = fns.get(&pc.name).cloned();

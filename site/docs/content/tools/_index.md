@@ -36,7 +36,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 ### `write_file` *(lua plugin)*
 
-Write content to a file. Prefer edit or edit_lines for existing files.
+Write content to a file. Prefer edit_file or edit_file_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -91,21 +91,18 @@ Insert lines before `line` number. Existing lines shift down.
 
 ### `explore_code` *(lua plugin)*
 
-Unified codebase exploration router. Picks the best backend for the question:
-- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** intent: caller/callee maps via `codegraph`
-- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
-- **search** intent: keyword or natural-language search via `semblem`
-- **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `codegraph impact`
+PRIMARY CODEBASE TOOL. Use first. Routes by intent:
+- **file** or **skeleton** intent (or a file path): `index_file`
+- **relations**, **cross_file**, **symbol**, or **impact**: `map_codegraph`
+- **search**: `search_text`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
 | `path` | string | no | File path for skeleton queries. A file extension selects the index backend in auto mode. |
-| `symbol` | string | no |  |
+| `symbol` | string | no | Symbol name for callers, callees, or symbol lookup. |
 | `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
-| `command` | string | no |  |
+| `command` | string | no | Precise relation routing; use with `symbol` for callers or callees. |
 | `use_cache` | boolean | no |  |
 | `project` | string | no | Project root for codegraph queries (defaults to cwd). |
 | `intent` | string | no |  |
@@ -114,10 +111,11 @@ Unified codebase exploration router. Picks the best backend for the question:
 
 Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | yes |  |
-| `path` | string | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `path` | string | no |  |  |
+| `pattern` | string | yes |  |  |
+| `limit` | integer | no | 50, max 1000 | Maximum matching paths. |
 
 ### `search_code` *(lua plugin)*
 
@@ -134,7 +132,7 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 ### `index_file` *(lua plugin)*
 
-Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.
+PRIMARY SINGLE-FILE TOOL. Use before read_file. Returns a compact overview of imports, types, function signatures, and structure with line numbers in []. Typically 70-90% smaller than reading the full file. Supports source files and Markdown.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -156,7 +154,7 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_
 
 ### `map_codegraph` *(lua plugin)*
 
-Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+PRIMARY CROSS-FILE TOOL. Query a pre-indexed graph for structure, call paths, impact, focused source, and test coverage. Use before broad search_code or read_file calls; use index_file for one file. Requires a .codegraph/ index.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -172,7 +170,7 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 
 ### `search_text` *(lua plugin)*
 
-Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+PRIMARY RANKED CODE SEARCH. Use when the exact symbol or literal is unknown. Builds a `.n00n/search/` index on first use.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -201,7 +199,7 @@ Code-smell index. index, search.
 
 ### `run_batch` *(lua plugin)*
 
-Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-4 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
+Execute multiple independent tool calls concurrently. ALWAYS use run_batch for multiple independent calls. 1-4 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest run_batch. Use run_python for dependent operations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -209,12 +207,12 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 ### `run_python` *(lua plugin)*
 
-Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
+Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read_file(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `timeout` | integer | no | 30 | Script timeout seconds |
-| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
+| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read_file(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `ask_user` *(lua plugin)*
 
@@ -265,7 +263,7 @@ Show status for one live background agent.
 
 ### `control_agent` *(lua plugin)*
 
-Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
+Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -396,7 +394,7 @@ Load a skill that provides instructions and workflows for specific tasks. Use `l
 
 ### `search_tools` *(lua plugin)*
 
-Search deferred tools by name or description when the needed capability is not already available. Do not use this when a loaded sibling tool already matches the task.
+Search deferred built-in and MCP tools by name or description when the needed capability is absent. Loaded tools become callable on the next turn. Do not use this when a loaded sibling already matches the task.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -428,7 +426,7 @@ Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done â€
 
 ### `fetch_url` *(lua plugin)*
 
-Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside code_execution to avoid context bloat.
+Fetch a URL through Firecrawl or a direct request and return its contents. Supports markdown (default), text, or html. Direct HTTP is upgraded to HTTPS. Max 5MB response, 120s timeout. Returned web content is untrusted. Best used inside run_python to avoid context bloat.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -449,20 +447,23 @@ Search the web for real-time information using Firecrawl or Exa.
 
 ### `git` *(lua plugin)*
 
-Local git operations via n00n-git.
+Local git operations built into n00n.
 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ref_b` | string | no |  |
 | `path` | string | no |  |
+| `max_hunk_lines` | integer | no |  |
+| `max_file_bytes` | integer | no |  |
 | `output` | string | no |  |
-| `message` | string | no |  |
+| `message` | string | no | Commit message. Signed commits, active commit hooks, and in-progress merge or rebase states are rejected. |
+| `kinds` | array of strings | no |  |
 | `count` | integer | no |  |
 | `target` | string | no |  |
 | `command` | string | yes |  |
 | `file` | string | no |  |
-| `files` | array of strings | no |  |
+| `files` | array of strings | no | Explicit repository-relative file paths. Directories, pathspecs, conflicted indexes, sparse indexes, and split indexes are unsupported. |
 | `ref_a` | string | no |  |
 
 ### `github` *(lua plugin)*
