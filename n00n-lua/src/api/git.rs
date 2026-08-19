@@ -10,23 +10,20 @@ use serde_json::json;
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 use crate::plugin_permissions::{Permission, PluginPermissions};
 
+const DEFAULT_LOG_COUNT: usize = 10;
+
 fn encode(value: &impl Serialize) -> Result<String, mlua::Error> {
     serde_json::to_string(value).map_err(mlua::Error::external)
-}
-
-#[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
-fn value_or<T>(value: Option<T>, default: T) -> T {
-    match value {
-        Some(value) => value,
-        None => default,
-    }
 }
 
 fn run(command: &str, repo: &Path, options: &Table) -> Result<String, mlua::Error> {
     let output = match command {
         "status" => encode(&git::status(repo).map_err(mlua::Error::external)?)?,
         "log" => {
-            let count = value_or(options.get::<Option<usize>>("count")?, 10);
+            let count = match options.get::<Option<usize>>("count")? {
+                Some(count) => count,
+                None => DEFAULT_LOG_COUNT,
+            };
             encode(&git::log(repo, count).map_err(mlua::Error::external)?)?
         }
         "diff" => encode(
@@ -42,22 +39,34 @@ fn run(command: &str, repo: &Path, options: &Table) -> Result<String, mlua::Erro
             &git::blame(repo, &options.get::<String>("file")?).map_err(mlua::Error::external)?,
         )?,
         "conflicts" => {
-            let kinds = value_or(options.get::<Option<Vec<String>>>("kinds")?, Vec::new())
-                .into_iter()
-                .map(|kind| FindingKind::from_str(&kind).map_err(mlua::Error::external))
-                .collect::<Result<Vec<_>, _>>()?;
+            let defaults = ConflictsOptions::default();
+            let kinds = match options.get::<Option<Vec<String>>>("kinds")? {
+                Some(kinds) => kinds
+                    .into_iter()
+                    .map(|kind| FindingKind::from_str(&kind).map_err(mlua::Error::external))
+                    .collect::<Result<Vec<_>, _>>()?,
+                None => defaults.kinds,
+            };
             let output = match options.get::<Option<String>>("output")? {
                 Some(output) => OutputMode::from_str(&output).map_err(mlua::Error::external)?,
-                None => OutputMode::default(),
+                None => defaults.output,
             };
-            let max_hunk_lines = value_or(options.get::<Option<usize>>("max_hunk_lines")?, 200);
-            let max_file_bytes = value_or(
-                options.get::<Option<usize>>("max_file_bytes")?,
-                2 * 1024 * 1024,
-            );
-            let include_untracked =
-                value_or(options.get::<Option<bool>>("include_untracked")?, true);
-            let include_ignored = value_or(options.get::<Option<bool>>("include_ignored")?, false);
+            let max_hunk_lines = match options.get::<Option<usize>>("max_hunk_lines")? {
+                Some(max_hunk_lines) => max_hunk_lines,
+                None => defaults.max_hunk_lines,
+            };
+            let max_file_bytes = match options.get::<Option<usize>>("max_file_bytes")? {
+                Some(max_file_bytes) => max_file_bytes,
+                None => defaults.max_file_bytes,
+            };
+            let include_untracked = match options.get::<Option<bool>>("include_untracked")? {
+                Some(include_untracked) => include_untracked,
+                None => defaults.include_untracked,
+            };
+            let include_ignored = match options.get::<Option<bool>>("include_ignored")? {
+                Some(include_ignored) => include_ignored,
+                None => defaults.include_ignored,
+            };
             encode(
                 &n00n_git::conflicts::find(
                     repo,
@@ -104,7 +113,7 @@ pub(crate) fn create_git_table(lua: &Lua, permissions: &PluginPermissions) -> Lu
         lua.create_function(
             move |lua, (command, repo, options): (String, String, Option<Table>)| {
                 let writes = matches!(command.as_str(), "add" | "commit" | "checkout");
-                let requires_run = matches!(command.as_str(), "add" | "checkout");
+                let requires_run = command == "checkout";
                 let permission = if writes {
                     Permission::FsWrite
                 } else {
@@ -167,9 +176,42 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use mlua::Function;
 
     use super::*;
+
+    fn test_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        let init = Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .arg(repo.path())
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        repo
+    }
+
+    #[test]
+    fn conflicts_uses_library_defaults_when_options_are_absent() {
+        let repo = test_repo();
+        std::fs::write(repo.path().join("sample.rs"), "// TODO: inspect\n").unwrap();
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["add", "sample.rs"])
+            .output()
+            .unwrap();
+        assert!(add.status.success());
+        let lua = Lua::new();
+        let options = lua.create_table().unwrap();
+
+        let output = run("conflicts", repo.path(), &options).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(result["files"][0]["path"], "sample.rs");
+    }
 
     #[test]
     fn native_commit_does_not_require_run_permission() {
@@ -183,21 +225,27 @@ mod tests {
             run.call(("commit", "/missing", None::<Table>)).unwrap();
         assert!(!commit_error.unwrap().contains("permission denied"));
 
-        for command in ["add", "checkout"] {
-            let (_, error): (Option<String>, Option<String>) =
-                run.call((command, "/missing", None::<Table>)).unwrap();
-            assert!(error.unwrap().contains("permission denied"));
-        }
+        let (_, add_error): (Option<String>, Option<String>) =
+            run.call(("add", "/missing", None::<Table>)).unwrap();
+        assert!(!add_error.unwrap().contains("permission denied"));
+
+        let (_, checkout_error): (Option<String>, Option<String>) =
+            run.call(("checkout", "/missing", None::<Table>)).unwrap();
+        assert!(checkout_error.unwrap().contains("permission denied"));
     }
 
     #[test]
     fn status_runs_in_process() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let repo = test_repo();
         let lua = Lua::new();
         let table = create_git_table(&lua, &PluginPermissions::trusted()).unwrap();
         let run: Function = table.get("run").unwrap();
         let (output, error): (Option<String>, Option<String>) = run
-            .call(("status", repo.to_string_lossy().as_ref(), None::<Table>))
+            .call((
+                "status",
+                repo.path().to_string_lossy().as_ref(),
+                None::<Table>,
+            ))
             .unwrap();
         assert!(error.is_none(), "{error:?}");
         let value: serde_json::Value = serde_json::from_str(&output.unwrap()).unwrap();

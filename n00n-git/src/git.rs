@@ -1,7 +1,7 @@
 use std::io::BufWriter;
 use std::path::{Component, Path, PathBuf};
 
-use gix::bstr::{BStr, ByteSlice};
+use gix::bstr::{BStr, BString, ByteSlice};
 use gix::object::Kind;
 use gix::object::tree::diff::ChangeDetached as TreeChange;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,8 @@ use crate::error::GitError;
 
 use gix::dir as gix_dir;
 use gix::status::plumbing as gix_status;
+
+const INDEX_WRITE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatus {
@@ -687,6 +689,43 @@ fn repository_relative_path(path: &str) -> Result<String, GitError> {
     Ok(parts.join("/"))
 }
 
+fn repository_scoped_path(
+    root: &Path,
+    operation_path: &Path,
+    file: &str,
+) -> Result<String, GitError> {
+    let root = root.canonicalize().map_err(|error| {
+        GitError::GitOperation(format!("failed to resolve worktree root: {error}"))
+    })?;
+    let operation_path = operation_path.canonicalize().map_err(|error| {
+        GitError::GitOperation(format!("failed to resolve repository path: {error}"))
+    })?;
+    let prefix = operation_path.strip_prefix(&root).map_err(|_| {
+        GitError::InvalidReference(format!(
+            "repository path '{}' is outside worktree '{}'",
+            operation_path.display(),
+            root.display()
+        ))
+    })?;
+    let file = repository_relative_path(file)?;
+    if prefix.as_os_str().is_empty() {
+        return Ok(file);
+    }
+    let prefix = prefix
+        .components()
+        .map(|component| match component {
+            Component::Normal(component) => component.to_str().ok_or_else(|| {
+                GitError::InvalidReference("repository path is not valid UTF-8".to_string())
+            }),
+            _ => Err(GitError::InvalidReference(
+                "repository path contains invalid components".to_string(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join("/");
+    repository_relative_path(&format!("{prefix}/{file}"))
+}
+
 fn validate_worktree_path(root: &Path, relative: &BStr) -> Result<PathBuf, GitError> {
     let mut absolute = root.to_path_buf();
     let components = relative.split(|byte| *byte == b'/').collect::<Vec<_>>();
@@ -726,6 +765,14 @@ fn path_collides(left: &BStr, right: &BStr) -> bool {
     left == right || is_parent(left, right) || is_parent(right, left)
 }
 
+fn contains_path_collision(paths: impl IntoIterator<Item = BString>) -> bool {
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths
+        .windows(2)
+        .any(|entries| path_collides(entries[0].as_bstr(), entries[1].as_bstr()))
+}
+
 fn acquire_index_lock(repo: &gix::Repository) -> Result<gix::lock::File, GitError> {
     gix::lock::File::acquire_to_update_resource(
         repo.index_path(),
@@ -736,7 +783,7 @@ fn acquire_index_lock(repo: &gix::Repository) -> Result<gix::lock::File, GitErro
 }
 
 fn write_locked_index(index: &gix::index::File, lock: gix::lock::File) -> Result<(), GitError> {
-    let mut lock = BufWriter::with_capacity(64 * 1024, lock);
+    let mut lock = BufWriter::with_capacity(INDEX_WRITE_BUFFER_BYTES, lock);
     index
         .write_to(&mut lock, gix::index::write::Options::default())
         .map_err(|e| GitError::GitOperation(format!("failed to write index: {e}")))?;
@@ -845,7 +892,7 @@ pub fn add(path: &Path, files: &[String]) -> Result<(), GitError> {
     let paths = files
         .iter()
         .map(|file| {
-            let relative = gix::bstr::BString::from(repository_relative_path(file)?);
+            let relative = gix::bstr::BString::from(repository_scoped_path(&root, path, file)?);
             let absolute = validate_worktree_path(&root, relative.as_bstr())?;
             if std::fs::symlink_metadata(&absolute).is_ok_and(|metadata| metadata.is_dir()) {
                 return Err(GitError::InvalidReference(format!(
@@ -954,9 +1001,9 @@ pub fn add(path: &Path, files: &[String]) -> Result<(), GitError> {
             None if !was_tracked => return Err(GitError::FileNotFound((*original).clone())),
             None => {}
         }
+        index.sort_entries();
     }
 
-    index.sort_entries();
     index.remove_tree();
     write_locked_index(&index, index_lock)
 }
@@ -1007,11 +1054,12 @@ pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
     }) {
         return Err(GitError::MergeConflict);
     }
-    if index
-        .entries()
-        .windows(2)
-        .any(|entries| path_collides(entries[0].path(&index), entries[1].path(&index)))
-    {
+    if contains_path_collision(
+        index
+            .entries()
+            .iter()
+            .map(|entry| entry.path(&index).to_owned()),
+    ) {
         return Err(GitError::GitOperation(
             "index contains colliding file and directory paths".to_string(),
         ));
@@ -1095,7 +1143,7 @@ mod tests {
             "[user]\nname = Test\nemail = test@example.com\n",
         )
         .unwrap();
-        run(root, &["init"]);
+        run(root, &["init", "--initial-branch=main"]);
         run(root, &["config", "user.name", "Test"]);
         run(root, &["config", "user.email", "test@example.com"]);
         run(root, &["config", "commit.gpgSign", "false"]);
@@ -1282,6 +1330,31 @@ mod tests {
     }
 
     #[test]
+    fn detects_nonadjacent_file_directory_collisions() {
+        let paths = ["dir/file", "other", "dir"].into_iter().map(BString::from);
+
+        assert!(contains_path_collision(paths));
+    }
+
+    #[test]
+    fn native_add_resolves_files_relative_to_supplied_repository_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::fs::write(root.join("nested/file.txt"), "content\n").unwrap();
+
+        add(&root.join("nested"), &["file.txt".to_string()]).unwrap();
+
+        assert_eq!(
+            String::from_utf8(run(root, &["ls-files"]).stdout)
+                .unwrap()
+                .trim(),
+            "nested/file.txt"
+        );
+    }
+
+    #[test]
     fn native_add_resolves_file_directory_collisions() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -1379,7 +1452,7 @@ mod tests {
         run(root, &["checkout", "-b", "side"]);
         std::fs::write(root.join("conflict.txt"), "side\n").unwrap();
         run(root, &["commit", "-am", "side"]);
-        run(root, &["checkout", "master"]);
+        run(root, &["checkout", "main"]);
         std::fs::write(root.join("conflict.txt"), "main\n").unwrap();
         run(root, &["commit", "-am", "main"]);
         let merge = Command::new("git")

@@ -7,19 +7,13 @@ use n00n_smell::{Query, SearchConfig, SmellIndex};
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 use crate::plugin_permissions::{Permission, PluginPermissions};
 
+const DEFAULT_TOP_K: usize = 5;
+
 fn smell_override() -> Option<PathBuf> {
     std::env::var("N00N_SMELL")
         .ok()
         .map(PathBuf::from)
         .filter(|candidate| candidate.is_file())
-}
-
-#[allow(clippy::manual_unwrap_or)]
-fn top_k_or_default(top_k: Option<usize>) -> usize {
-    match top_k {
-        Some(top_k) => top_k,
-        None => 5,
-    }
 }
 
 fn resolve_project(project: &str) -> Result<PathBuf, mlua::Error> {
@@ -88,13 +82,8 @@ pub(crate) fn create_smell_table(lua: &Lua, permissions: &PluginPermissions) -> 
     let can_run = permissions.is_allowed(Permission::Run);
 
     let has_index = lua.create_function(move |_, project: String| {
-        if !can_read {
-            return Err(mlua::Error::external(
-                "permission denied: smell has_index requires fs_read",
-            ));
-        }
         let path = Path::new(&project);
-        Ok(path.is_dir() && SmellIndex::has_index(path))
+        Ok(can_read && path.is_dir() && SmellIndex::has_index(path))
     })?;
     table.set("has_index", has_index)?;
 
@@ -107,12 +96,13 @@ pub(crate) fn create_smell_table(lua: &Lua, permissions: &PluginPermissions) -> 
                 ));
             }
             let outcome = resolve_project(&project).and_then(|path| {
-                if smell_override().is_some() && !can_run {
+                let override_binary = smell_override();
+                if override_binary.is_some() && !can_run {
                     return Err(mlua::Error::external(
                         "permission denied: N00N_SMELL override requires run",
                     ));
                 }
-                if let Some(binary) = smell_override() {
+                if let Some(binary) = override_binary {
                     run_override(&binary, &["index", &path.to_string_lossy()]).map(|_| ())
                 } else {
                     index_project(&path)
@@ -137,12 +127,13 @@ pub(crate) fn create_smell_table(lua: &Lua, permissions: &PluginPermissions) -> 
                 ));
             }
             let outcome = resolve_project(&project).and_then(|path| {
-                if smell_override().is_some() && !can_run {
+                let override_binary = smell_override();
+                if override_binary.is_some() && !can_run {
                     return Err(mlua::Error::external(
                         "permission denied: N00N_SMELL override requires run",
                     ));
                 }
-                if let Some(binary) = smell_override() {
+                if let Some(binary) = override_binary {
                     let mut owned = vec![
                         "search".to_owned(),
                         path.to_string_lossy().into_owned(),
@@ -159,7 +150,15 @@ pub(crate) fn create_smell_table(lua: &Lua, permissions: &PluginPermissions) -> 
                     let args: Vec<&str> = owned.iter().map(String::as_str).collect();
                     run_override(&binary, &args)
                 } else {
-                    search_project(&path, query, kind, top_k_or_default(top_k))
+                    search_project(
+                        &path,
+                        query,
+                        kind,
+                        match top_k {
+                            Some(top_k) => top_k,
+                            None => DEFAULT_TOP_K,
+                        },
+                    )
                 }
             });
             match outcome {
@@ -237,6 +236,15 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_index_returns_false_without_read_permission() {
+        let lua = Lua::new();
+        let table = create_smell_table(&lua, &PluginPermissions::denied()).unwrap();
+        let has_index: mlua::Function = table.get("has_index").unwrap();
+
+        assert!(!has_index.call::<bool>(".").unwrap());
+    }
 
     #[test]
     fn index_and_search_run_in_process() {

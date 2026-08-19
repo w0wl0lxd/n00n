@@ -38,6 +38,9 @@ local function dispatch(input)
       end
       output = result.stdout
     else
+      if not n00n_git or type(n00n_git.run) ~= "function" then
+        return nil, "bundled n00n.git API is unavailable"
+      end
       output, err = n00n_git.run(command, path, options or {})
       if not output then
         return nil, err
@@ -142,7 +145,7 @@ local function dispatch(input)
     end
     if input.kinds then
       table.insert(args, "--kinds")
-      table.insert(args, tostring(input.kinds))
+      table.insert(args, table.concat(input.kinds, ","))
     end
     local result, err = run_git_subcommand(args, {
       output = input.output,
@@ -225,7 +228,13 @@ Local git operations built into n00n.
         description = "Commit message. Signed commits, active commit hooks, and in-progress merge or rebase states are rejected.",
       },
       target = { type = "string" },
-      output = { type = "string" },
+      output = { type = "string", enum = { "compact", "full", "both" } },
+      kinds = {
+        type = "array",
+        items = { type = "string", enum = { "conflict", "todo", "fixme", "hack", "placeholder" } },
+      },
+      max_hunk_lines = { type = "integer", minimum = 1 },
+      max_file_bytes = { type = "integer", minimum = 1 },
     },
   },
   header = function(input)
