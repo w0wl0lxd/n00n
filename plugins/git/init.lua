@@ -1,4 +1,5 @@
-local git_bin = (n00n.uv.os_getenv and n00n.uv.os_getenv("N00N_GIT_BIN")) or "n00n-git"
+local git_override = n00n.uv.os_getenv and n00n.uv.os_getenv("N00N_GIT_BIN")
+local n00n_git = n00n.git
 local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
@@ -13,49 +14,51 @@ local function dispatch(input)
   local command = input.command:gsub("-", "_")
   local path = input.path or "."
 
-  local function binary_missing_message()
-    return "n00n-git binary not found. Set N00N_GIT_BIN to an absolute path or install n00n-git on PATH."
-  end
-
-  local function run_git_subcommand(args)
-    if git_bin:sub(1, 1) ~= "/" and n00n.fn.executable(git_bin) == 0 then
-      return nil, binary_missing_message()
+  local function run_git_subcommand(args, options)
+    local output, err
+    if git_override then
+      if git_override:sub(1, 1) ~= "/" and n00n.fn.executable(git_override) == 0 then
+        return nil, "git override not found: " .. git_override
+      end
+      local cmd = { git_override, command, path }
+      for _, arg in ipairs(args) do
+        table.insert(cmd, arg)
+      end
+      local job_id, job_err = n00n.fn.jobstart(cmd)
+      if not job_id then
+        return nil, "failed to spawn git override: " .. tostring(job_err or "unknown error")
+      end
+      local result = n00n.fn.jobwait(job_id, 30000)
+      if not result then
+        n00n.fn.jobstop(job_id)
+        return nil, "git override timed out"
+      end
+      if result.exit_code ~= 0 then
+        return nil, "git override exited with code " .. result.exit_code .. ": " .. (result.stderr or "")
+      end
+      output = result.stdout
+    else
+      if not n00n_git or type(n00n_git.run) ~= "function" then
+        return nil, "bundled n00n.git API is unavailable"
+      end
+      output, err = n00n_git.run(command, path, options or {})
+      if not output then
+        return nil, err
+      end
     end
 
-    local cmd = { git_bin, command, path }
-    for _, arg in ipairs(args) do
-      table.insert(cmd, arg)
-    end
-
-    local job_id, job_err = n00n.fn.jobstart(cmd)
-    if not job_id then
-      return nil, "failed to spawn n00n-git: " .. tostring(job_err or "unknown error")
-    end
-
-    local result = n00n.fn.jobwait(job_id, 30000)
-    if not result then
-      n00n.fn.jobstop(job_id)
-      return nil, "n00n-git timed out"
-    end
-
-    if result.exit_code ~= 0 then
-      return nil, "n00n-git exited with code " .. result.exit_code .. ": " .. (result.stderr or "")
-    end
-
-    local ok, data = pcall(n00n.json.decode, result.stdout)
+    local ok, data = pcall(n00n.json.decode, output)
     if not ok then
-      return nil, "failed to parse n00n-git JSON output: " .. tostring(data)
+      return nil, "failed to parse git JSON output: " .. tostring(data)
     end
-
     if data.error then
       return nil, data.error
     end
-
     return data, nil
   end
 
   if command == "status" then
-    local result, err = run_git_subcommand({})
+    local result, err = run_git_subcommand({}, {})
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -76,7 +79,7 @@ local function dispatch(input)
 
   if command == "log" then
     local count = input.count or 10
-    local result, err = run_git_subcommand({ "--count", tostring(count) })
+    local result, err = run_git_subcommand({ "--count", tostring(count) }, { count = count })
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -91,7 +94,7 @@ local function dispatch(input)
     if not input.ref_a or not input.ref_b then
       return { llm_output = "error: ref_a and ref_b required for diff", is_error = true }
     end
-    local result, err = run_git_subcommand({ input.ref_a, input.ref_b })
+    local result, err = run_git_subcommand({ input.ref_a, input.ref_b }, { ref_a = input.ref_a, ref_b = input.ref_b })
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -103,7 +106,7 @@ local function dispatch(input)
   end
 
   if command == "branches" then
-    local result, err = run_git_subcommand({})
+    local result, err = run_git_subcommand({}, {})
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -119,7 +122,7 @@ local function dispatch(input)
     if not input.file then
       return { llm_output = "error: file required for blame", is_error = true }
     end
-    local result, err = run_git_subcommand({ input.file })
+    local result, err = run_git_subcommand({ input.file }, { file = input.file })
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -142,9 +145,14 @@ local function dispatch(input)
     end
     if input.kinds then
       table.insert(args, "--kinds")
-      table.insert(args, tostring(input.kinds))
+      table.insert(args, table.concat(input.kinds, ","))
     end
-    local result, err = run_git_subcommand(args)
+    local result, err = run_git_subcommand(args, {
+      output = input.output,
+      max_hunk_lines = input.max_hunk_lines,
+      kinds = input.kinds,
+      include_untracked = true,
+    })
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -159,7 +167,7 @@ local function dispatch(input)
     if not input.files or #input.files == 0 then
       return { llm_output = "error: files required for add", is_error = true }
     end
-    local _, err = run_git_subcommand(input.files)
+    local _, err = run_git_subcommand(input.files, { files = input.files })
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -170,7 +178,7 @@ local function dispatch(input)
     if not input.message or input.message == "" then
       return { llm_output = "error: message required for commit", is_error = true }
     end
-    local result, err = run_git_subcommand({ "--message", input.message })
+    local result, err = run_git_subcommand({ "--message", input.message }, { message = input.message })
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -181,7 +189,7 @@ local function dispatch(input)
     if not input.target or input.target == "" then
       return { llm_output = "error: target required for checkout", is_error = true }
     end
-    local _, err = run_git_subcommand({ input.target })
+    local _, err = run_git_subcommand({ input.target }, { target = input.target })
     if err then
       return { llm_output = "error: " .. tostring(err), is_error = true }
     end
@@ -195,7 +203,7 @@ n00n.api.register_tool({
   name = "git",
   kind = "read",
   description = [[
-Local git operations via n00n-git.
+Local git operations built into n00n.
 ]],
   schema = {
     type = "object",
@@ -213,10 +221,20 @@ Local git operations via n00n-git.
       files = {
         type = "array",
         items = { type = "string" },
+        description = "Explicit repository-relative file paths. Directories, pathspecs, conflicted indexes, sparse indexes, and split indexes are unsupported.",
       },
-      message = { type = "string" },
+      message = {
+        type = "string",
+        description = "Commit message. Signed commits, active commit hooks, and in-progress merge or rebase states are rejected.",
+      },
       target = { type = "string" },
-      output = { type = "string" },
+      output = { type = "string", enum = { "compact", "full", "both" } },
+      kinds = {
+        type = "array",
+        items = { type = "string", enum = { "conflict", "todo", "fixme", "hack", "placeholder" } },
+      },
+      max_hunk_lines = { type = "integer", minimum = 1 },
+      max_file_bytes = { type = "integer", minimum = 1 },
     },
   },
   header = function(input)

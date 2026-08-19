@@ -2,12 +2,10 @@
 #   git tag vX.Y.Z
 #   git push origin vX.Y.Z
 name: Release
-
 on:
   push:
     tags:
       - "v*"
-
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -15,16 +13,14 @@ env:
   BINARY_NAME: n00n
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
-
 permissions:
   contents: read
-
 jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Create draft release
@@ -33,7 +29,6 @@ jobs:
             "gh release view \"$GITHUB_REF_NAME\" >/dev/null 2>&1 || \
              gh release create \"$GITHUB_REF_NAME\" --draft \
                --title \"$GITHUB_REF_NAME\" --generate-notes"
-
     permissions:
       contents: write
   build-linux:
@@ -48,9 +43,8 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
-
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Build in Alpine container
@@ -67,23 +61,18 @@ jobs:
                 --retry-all-errors -sSf https://sh.rustup.rs | \
                 sh -s -- -y --default-toolchain nightly-2026-08-14 --target ${{ matrix.target }}
               source "$HOME/.cargo/env"
-              cargo build --release --target ${{ matrix.target }}
+              cargo build --release --package n00n --bin n00n --target ${{ matrix.target }}
             '
           sudo chown -R "$(id -u):$(id -g)" target/
-
       - name: Package
         run: |
           tag="$GITHUB_REF_NAME"
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.tar.gz"
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
-          cp "target/${{ matrix.target }}/release/n00n-git" "n00n-git"
-          cp "target/${{ matrix.target }}/release/n00n-smell" "n00n-smell"
-          tar czf "${archive}" "${BINARY_NAME}" n00n-git n00n-smell
+          tar czf "${archive}" "${BINARY_NAME}"
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
-
       - name: Upload artifact
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
-
     permissions:
       contents: write
   build-other:
@@ -100,28 +89,22 @@ jobs:
             runner: macos-15
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install nightly-2026-08-14 --profile minimal --target ${{ matrix.target }}
-
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
+        run: cargo build --release --package n00n --bin n00n --target ${{ matrix.target }}
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           tag="$GITHUB_REF_NAME"
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.tar.gz"
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
-          cp "target/${{ matrix.target }}/release/n00n-git" "n00n-git"
-          cp "target/${{ matrix.target }}/release/n00n-smell" "n00n-smell"
-          tar czf "${archive}" "${BINARY_NAME}" n00n-git n00n-smell
+          tar czf "${archive}" "${BINARY_NAME}"
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
-
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -129,15 +112,11 @@ jobs:
           tag="$GITHUB_REF_NAME"
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.zip"
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}.exe" "${BINARY_NAME}.exe"
-          cp "target/${{ matrix.target }}/release/n00n-git.exe" "n00n-git.exe"
-          cp "target/${{ matrix.target }}/release/n00n-smell.exe" "n00n-smell.exe"
-          7z a "${archive}" "${BINARY_NAME}.exe" n00n-git.exe n00n-smell.exe
+          7z a "${archive}" "${BINARY_NAME}.exe"
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
-
       - name: Upload artifact
         shell: bash
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
-
     permissions:
       contents: write
   publish:
@@ -145,21 +124,18 @@ jobs:
     needs: [build-linux, build-other]
     runs-on: ubuntu-latest
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
       - name: Download artifacts
         run: .github/scripts/retry.sh gh release download "$GITHUB_REF_NAME" --dir artifacts
-
       - name: Generate checksums
         run: |
           cd artifacts
           sha256sum -- * > ../sha256sums.txt
           cat ../sha256sums.txt
-
       - name: Upload checksums
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" sha256sums.txt --clobber
-
       - name: Mark release as published
         run: .github/scripts/retry.sh gh release edit "$GITHUB_REF_NAME" --draft=false
     permissions:
