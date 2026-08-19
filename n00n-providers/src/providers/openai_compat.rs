@@ -556,6 +556,8 @@ pub fn convert_messages_with_breakpoints(
                             tool_results.push(tool_msg);
                         }
                         ContentBlock::ToolUse { .. }
+                        | ContentBlock::NamespacedToolUse { .. }
+                        | ContentBlock::ProviderItem { .. }
                         | ContentBlock::Thinking { .. }
                         | ContentBlock::RedactedThinking { .. } => {}
                     }
@@ -608,7 +610,10 @@ pub fn convert_messages_with_breakpoints(
                         ContentBlock::Thinking { thinking, .. } => {
                             reasoning_text.push_str(thinking);
                         }
-                        ContentBlock::ToolUse { id, name, input } => {
+                        ContentBlock::ToolUse { id, name, input }
+                        | ContentBlock::NamespacedToolUse {
+                            id, name, input, ..
+                        } => {
                             tool_calls.push(json!({
                                 "id": id,
                                 "type": "function",
@@ -621,6 +626,7 @@ pub fn convert_messages_with_breakpoints(
                         ContentBlock::ToolResult { .. }
                         | ContentBlock::Image { .. }
                         | ContentBlock::RedactedThinking { .. }
+                        | ContentBlock::ProviderItem { .. }
                         | ContentBlock::File { .. } => {}
                     }
                 }

@@ -226,6 +226,13 @@ fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, s
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn request_tools_hash(tools: &Value, opts: &RequestOptions) -> Result<String, serde_json::Error> {
+    match opts.hosted_tool_search.as_ref() {
+        Some(tool_search) => stable_json_hash(&(tools, tool_search)),
+        None => stable_json_hash(tools),
+    }
+}
+
 fn credential_hash(auth: &ResolvedAuth) -> String {
     let mut headers = auth.headers.iter().collect::<Vec<_>>();
     headers.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
@@ -2078,7 +2085,7 @@ impl Provider for OpenAi {
                     None => None,
                 };
                 let durable_chain = session_id.is_some() && self.response_state_storage.is_some();
-                let tools_hash = stable_json_hash(tools)?;
+                let tools_hash = request_tools_hash(tools, &opts)?;
                 let attempt = self
                     .run_codex_attempt_with_auth_retry(
                         model,
@@ -2125,7 +2132,7 @@ impl Provider for OpenAi {
                     .result;
             }
 
-            let tools_hash = stable_json_hash(tools)?;
+            let tools_hash = request_tools_hash(tools, &opts)?;
             let prefixed_system_obj = System::from(prefixed_system);
 
             // Try Responses API for supported models
@@ -2284,6 +2291,16 @@ impl Provider for OpenAi {
         if self.codex {
             model.context_window = model.context_window.min(CODING_PLAN_CONTEXT_WINDOW);
         }
+    }
+
+    fn supports_hosted_tool_search(&self, model: &Model) -> bool {
+        if !model.supports_responses() || !model.supports_tool_search() {
+            return false;
+        }
+        let auth = self.current_auth();
+        auth.base_url.as_deref().is_none_or(|base_url| {
+            base_url == super::OPENAI_API_BASE_URL || base_url == auth::CODING_PLAN_BASE_URL
+        })
     }
 }
 
@@ -2658,6 +2675,29 @@ mod tests {
         provider.adjust_model(&mut model);
 
         assert_eq!(model.context_window, expected);
+    }
+
+    #[test]
+    fn hosted_tool_search_requires_supported_model_and_official_endpoint() {
+        let official = OpenAi::with_auth(
+            Arc::new(Mutex::new(ResolvedAuth::bearer("test-key"))),
+            crate::providers::Timeouts::default(),
+        )
+        .unwrap();
+        assert!(official.supports_hosted_tool_search(&Model::from_spec("openai/gpt-5.6").unwrap()));
+        assert!(
+            !official.supports_hosted_tool_search(&Model::from_spec("openai/gpt-4.1").unwrap())
+        );
+
+        let custom = OpenAi::with_auth(
+            Arc::new(Mutex::new(ResolvedAuth {
+                base_url: Some("https://example.test/v1".into()),
+                headers: vec![("authorization".into(), "Bearer test-key".into())],
+            })),
+            crate::providers::Timeouts::default(),
+        )
+        .unwrap();
+        assert!(!custom.supports_hosted_tool_search(&Model::from_spec("openai/gpt-5.6").unwrap()));
     }
 
     #[test]
@@ -3474,6 +3514,30 @@ mod tests {
             .unwrap();
 
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn request_tools_hash_includes_hosted_catalog_descriptions() {
+        let tools = serde_json::json!([{"name": "read_file"}]);
+        let mut opts = RequestOptions {
+            hosted_tool_search: Some(crate::HostedToolSearch {
+                tools: vec![crate::DeferredToolDefinition {
+                    namespace: "knowledge".into(),
+                    definition: serde_json::json!({
+                        "name": "use_memory",
+                        "description": "first description",
+                        "input_schema": {"type": "object"}
+                    }),
+                }],
+            }),
+            ..Default::default()
+        };
+        let first = request_tools_hash(&tools, &opts).unwrap();
+        assert_eq!(first, request_tools_hash(&tools, &opts).unwrap());
+
+        opts.hosted_tool_search.as_mut().unwrap().tools[0].definition["description"] =
+            Value::String("changed description".into());
+        assert_ne!(first, request_tools_hash(&tools, &opts).unwrap());
     }
 
     #[test]

@@ -8,8 +8,9 @@ use n00n_redact::demoted;
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, HostedToolSearch, Message, Model, OpenAiOptions,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, Role, StopReason,
+    StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -444,6 +445,7 @@ impl<'h> Agent<'h> {
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
+            hosted_tool_search: None,
         };
 
         info!(
@@ -526,7 +528,13 @@ impl<'h> Agent<'h> {
             .is_none_or(|gate| gate.try_commit())
     }
 
-    async fn stream_response(&self, opts: RequestOptions) -> Result<StreamResponse, AgentError> {
+    async fn stream_response(
+        &self,
+        mut opts: RequestOptions,
+    ) -> Result<StreamResponse, AgentError> {
+        if self.provider.supports_hosted_tool_search(&self.model) {
+            opts.hosted_tool_search = self.hosted_tool_search();
+        }
         stream_with_retry(super::streaming::StreamContext {
             provider: &*self.provider,
             model: &self.model,
@@ -968,6 +976,15 @@ impl<'h> Agent<'h> {
         let capability_exclusions = crate::tools::capability_exclusions(&self.model);
         let mut definitions = Value::Array(Vec::new());
         mcp.extend_tools(&mut definitions);
+        if self.provider.supports_hosted_tool_search(&self.model)
+            && let Some(items) = definitions.as_array_mut()
+        {
+            items.extend(
+                mcp.deferred_definitions()
+                    .into_iter()
+                    .map(|tool| tool.definition),
+            );
+        }
         let names = definitions
             .as_array()
             .into_iter()
@@ -979,6 +996,51 @@ impl<'h> Agent<'h> {
             })
             .map(str::to_owned);
         filter.including(names)
+    }
+
+    fn hosted_tool_search(&self) -> Option<HostedToolSearch> {
+        let vars = crate::template::env_vars();
+        let effective_filter = self.effective_tool_filter();
+        let ctx = crate::tools::DescriptionContext {
+            filter: &effective_filter,
+            audience: self.audience,
+            workflow: self.workflow,
+        };
+        let mut definitions = self.registry.deferred_definitions(
+            &vars,
+            &ctx,
+            self.supports_tool_examples,
+            &self.active_tools,
+        );
+        if let Some(mcp) = &self.mcp {
+            definitions.extend(mcp.deferred_definitions());
+            definitions.sort_by(|left, right| {
+                left.namespace.cmp(&right.namespace).then_with(|| {
+                    left.definition["name"]
+                        .as_str()
+                        .cmp(&right.definition["name"].as_str())
+                })
+            });
+        }
+        let mut mode_filtered = Value::Array(
+            definitions
+                .iter()
+                .map(|tool| tool.definition.clone())
+                .collect(),
+        );
+        filter_provider_tools(&mut mode_filtered, &effective_filter, &self.mode);
+        let allowed: std::collections::HashSet<&str> = mode_filtered
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|definition| definition.get("name").and_then(Value::as_str))
+            .collect();
+        definitions.retain(|tool| {
+            tool.definition["name"]
+                .as_str()
+                .is_some_and(|name| allowed.contains(name))
+        });
+        (!definitions.is_empty()).then_some(HostedToolSearch { tools: definitions })
     }
 
     fn tool_context(&self) -> ToolContext {
@@ -1362,7 +1424,10 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
             ContentBlock::ToolResult { content, .. } => {
                 count_tokens_with_tokenizer(tokenizer, content)
             }
-            ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
+            ContentBlock::ToolUse { input, .. } | ContentBlock::NamespacedToolUse { input, .. } => {
+                count_json_with_tokenizer(tokenizer, input)
+            }
+            ContentBlock::ProviderItem { data, .. } => count_json_with_tokenizer(tokenizer, data),
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
             ContentBlock::File { source } => source
                 .file_data

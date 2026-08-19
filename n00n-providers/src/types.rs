@@ -506,6 +506,16 @@ pub enum ContentBlock {
         name: String,
         input: Value,
     },
+    NamespacedToolUse {
+        id: String,
+        namespace: String,
+        name: String,
+        input: Value,
+    },
+    ProviderItem {
+        provider: String,
+        data: Value,
+    },
     ToolResult {
         tool_use_id: String,
         content: String,
@@ -667,17 +677,35 @@ impl Message {
     }
 
     pub fn tool_uses(&self) -> impl Iterator<Item = (&str, &str, &Value)> {
-        self.content.iter().filter_map(|b| match b {
-            ContentBlock::ToolUse { id, name, input } => Some((id.as_str(), name.as_str(), input)),
+        self.tool_uses_with_namespace()
+            .map(|(id, _, name, input)| (id, name, input))
+    }
+
+    pub fn tool_uses_with_namespace(
+        &self,
+    ) -> impl Iterator<Item = (&str, Option<&str>, &str, &Value)> {
+        self.content.iter().filter_map(|block| match block {
+            ContentBlock::ToolUse { id, name, input } => {
+                Some((id.as_str(), None, name.as_str(), input))
+            }
+            ContentBlock::NamespacedToolUse {
+                id,
+                namespace,
+                name,
+                input,
+            } => Some((id.as_str(), Some(namespace.as_str()), name.as_str(), input)),
             _ => None,
         })
     }
 
     #[must_use]
     pub fn has_tool_calls(&self) -> bool {
-        self.content
-            .iter()
-            .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+        self.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolUse { .. } | ContentBlock::NamespacedToolUse { .. }
+            )
+        })
     }
 }
 
@@ -1219,6 +1247,17 @@ impl From<ThinkingConfig> for StoredThinking {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeferredToolDefinition {
+    pub namespace: String,
+    pub definition: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostedToolSearch {
+    pub tools: Vec<DeferredToolDefinition>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
@@ -1243,6 +1282,7 @@ pub struct RequestOptions {
     /// header. Retries after send are only marked safe when both the key is
     /// present and this flag is set.
     pub idempotency_supported: bool,
+    pub hosted_tool_search: Option<HostedToolSearch>,
 }
 
 impl Default for RequestOptions {
@@ -1257,6 +1297,7 @@ impl Default for RequestOptions {
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
+            hosted_tool_search: None,
         }
     }
 }
@@ -1300,6 +1341,7 @@ impl RequestOptions {
             moderation: self.moderation,
             idempotency_key: self.idempotency_key,
             idempotency_supported: self.idempotency_supported,
+            hosted_tool_search: self.hosted_tool_search,
         }
     }
 }
@@ -1814,6 +1856,7 @@ mod tests {
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
+            hosted_tool_search: None,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1831,6 +1874,7 @@ mod tests {
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
+            hosted_tool_search: None,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -1959,6 +2003,7 @@ mod tests {
             moderation: true,
             idempotency_key: None,
             idempotency_supported: false,
+            hosted_tool_search: None,
         };
         let clamped = opts.clamped(&model);
         assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));

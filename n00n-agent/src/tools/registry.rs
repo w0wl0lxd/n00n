@@ -865,6 +865,67 @@ impl ToolRegistry {
     }
 
     #[must_use]
+    pub fn deferred_definitions(
+        &self,
+        vars: &Vars,
+        ctx: &DescriptionContext,
+        supports_examples: bool,
+        active: &ActiveTools,
+    ) -> Vec<n00n_providers::DeferredToolDefinition> {
+        let snapshot = self.tools.load();
+        let mut definitions = Vec::new();
+        for entry in snapshot.iter() {
+            if !entry.defer_loading
+                || !entry.tool.audience().contains(ctx.audience)
+                || !ctx.filter.matches(entry.name())
+                || active.names.contains(entry.name())
+                || entry
+                    .namespace
+                    .as_ref()
+                    .is_some_and(|namespace| active.namespaces.contains(namespace.as_ref()))
+            {
+                continue;
+            }
+            let Some(namespace) = entry.namespace.as_deref() else {
+                continue;
+            };
+            let description = vars.apply(&entry.tool.description(ctx)).into_owned();
+            let sanitized_schema = sanitize_tool_input_schema(entry.tool.schema());
+            let mut definition = json!({
+                "name": entry.name(),
+                "description": description,
+                "input_schema": sanitized_schema,
+            });
+            if let Some(examples) = entry.tool.examples() {
+                if supports_examples {
+                    definition["input_examples"] = examples;
+                } else if let Some(text) = format_examples_as_text(&examples) {
+                    let merged = format!(
+                        "{}\n\n{}",
+                        definition["description"]
+                            .as_str()
+                            .map_or_else(|| "", |value| value),
+                        text
+                    );
+                    definition["description"] = Value::String(merged);
+                }
+            }
+            definitions.push(n00n_providers::DeferredToolDefinition {
+                namespace: namespace.to_owned(),
+                definition,
+            });
+        }
+        definitions.sort_by(|left, right| {
+            left.namespace.cmp(&right.namespace).then_with(|| {
+                left.definition["name"]
+                    .as_str()
+                    .cmp(&right.definition["name"].as_str())
+            })
+        });
+        definitions
+    }
+
+    #[must_use]
     pub fn snapshot(&self) -> RegistrySnapshot {
         RegistrySnapshot(self.tools.load_full())
     }
@@ -1554,5 +1615,33 @@ mod tests {
         let arr = defs.as_array().expect("definitions returns array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["name"].as_str(), Some("deferred_tool"));
+    }
+
+    #[test]
+    fn deferred_definitions_are_filtered_namespaced_and_deterministic() {
+        let reg = ToolRegistry::new();
+        for tool in [
+            deferred_mock("zeta", &[], ToolAudience::MAIN, Some("web")),
+            deferred_mock("alpha", &[], ToolAudience::MAIN, Some("knowledge")),
+            deferred_mock("active", &[], ToolAudience::MAIN, Some("knowledge")),
+            deferred_mock("unnamespaced", &[], ToolAudience::MAIN, None),
+            deferred_mock("subagent_only", &[], ToolAudience::GENERAL_SUB, Some("web")),
+        ] {
+            reg.register(&tool, &lua_source("p")).unwrap();
+        }
+        let filter = crate::tools::ToolFilter::All.excluding(&["zeta"]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let mut active = ActiveTools::default();
+        active.names.insert("active".into());
+
+        let definitions = reg.deferred_definitions(&Vars::new(), &ctx, false, &active);
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].namespace, "knowledge");
+        assert_eq!(definitions[0].definition["name"], "alpha");
     }
 }

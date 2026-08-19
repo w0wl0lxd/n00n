@@ -358,8 +358,7 @@ mod tests {
                 "deferred tool advertised: {deferred}"
             );
         }
-        assert!(out.contains("search_tools"));
-        assert!(out.contains("load_toolset"));
+        assert!(out.contains("tool discovery mechanism"));
     }
 
     /// One test to pin the whole System layout: every slot shows up, in order,
