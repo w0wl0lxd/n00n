@@ -999,15 +999,16 @@ pub(super) async fn process_tool_calls(
         };
         let namespace_matches = namespace.as_deref().is_none_or(|wire_namespace| {
             let registry_matches = ctx.registry.get(&name).is_some_and(|entry| {
-                entry
-                    .namespace
-                    .as_deref()
-                    .is_some_and(|namespace| wire_namespace == format!("n00n_{namespace}"))
+                entry.namespace.as_deref().is_some_and(|namespace| {
+                    wire_namespace
+                        == format!("{}{namespace}", n00n_providers::HOSTED_NAMESPACE_PREFIX)
+                })
             });
             let mcp_matches = ctx.mcp.as_ref().is_some_and(|mcp| {
-                crate::mcp::hosted_namespace_for_wire(&name)
-                    .is_some_and(|namespace| wire_namespace == format!("n00n_{namespace}"))
-                    && mcp.has_tool(&crate::mcp::internal_tool_name(&name))
+                crate::mcp::hosted_namespace_for_wire(&name).is_some_and(|namespace| {
+                    wire_namespace
+                        == format!("{}{namespace}", n00n_providers::HOSTED_NAMESPACE_PREFIX)
+                }) && mcp.has_tool(&crate::mcp::internal_tool_name(&name))
             });
             registry_matches || mcp_matches
         });

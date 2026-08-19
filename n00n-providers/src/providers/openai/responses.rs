@@ -462,11 +462,6 @@ fn apply_hosted_tool_search(wire_tools: &mut Value, tool_search: &crate::HostedT
     let Some(tools) = wire_tools.as_array_mut() else {
         return;
     };
-    tools.retain(|tool| {
-        tool.get("name")
-            .and_then(Value::as_str)
-            .is_none_or(|name| !LOCAL_TOOL_SEARCH_NAMES.contains(&name))
-    });
     let mut namespaces: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
     for deferred in &tool_search.tools {
         let Some(name) = deferred.definition.get("name").and_then(Value::as_str) else {
@@ -490,10 +485,18 @@ fn apply_hosted_tool_search(wire_tools: &mut Value, tool_search: &crate::HostedT
                 "defer_loading": true,
             }));
     }
+    if namespaces.is_empty() {
+        return;
+    }
+    tools.retain(|tool| {
+        tool.get("name")
+            .and_then(Value::as_str)
+            .is_none_or(|name| !LOCAL_TOOL_SEARCH_NAMES.contains(&name))
+    });
     for (namespace, deferred_tools) in namespaces {
         tools.push(json!({
             "type": "namespace",
-            "name": format!("n00n_{namespace}"),
+            "name": format!("{}{namespace}", crate::HOSTED_NAMESPACE_PREFIX),
             "description": namespace_description(namespace),
             "tools": deferred_tools,
         }));
@@ -2502,6 +2505,39 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         assert_eq!(wire_tools[3]["type"], "tool_search");
         assert!(wire_tools.iter().all(|tool| tool["name"] != "search_tools"));
     }
+
+    #[test]
+    fn build_body_keeps_local_discovery_when_all_deferred_definitions_are_invalid() {
+        let tools = json!([{
+            "name": "search_tools",
+            "description": "local search",
+            "input_schema": {"type": "object"}
+        }]);
+        let opts = RequestOptions {
+            hosted_tool_search: Some(crate::HostedToolSearch {
+                tools: vec![crate::DeferredToolDefinition {
+                    namespace: "web".into(),
+                    definition: json!({"name": "search_web"}),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let body = build_body(
+            &Model::from_spec("openai/gpt-5.6").unwrap(),
+            &[],
+            &System::default(),
+            &tools,
+            None,
+            None,
+            false,
+            &opts,
+            false,
+        );
+
+        assert_eq!(body["tools"][0]["name"], "search_tools");
+    }
+
     #[test]
     fn convert_tools_keeps_custom_as_function() {
         let tools = json!([{

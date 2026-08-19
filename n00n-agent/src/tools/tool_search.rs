@@ -64,12 +64,9 @@ impl ToolInvocation for ToolSearchInvocation {
                     })
                 })
                 .collect();
-            if self
-                .namespace
-                .as_deref()
-                .is_none_or(|namespace| namespace == "mcp")
-                && let Some(mcp) = &ctx.mcp
-            {
+            let search_mcp = self.namespace.as_deref() == Some("mcp")
+                || self.namespace.is_none() && filtered.is_empty();
+            if search_mcp && let Some(mcp) = &ctx.mcp {
                 let before: BTreeSet<String> = mcp.loaded_tool_names().into_iter().collect();
                 let message = mcp.search_tools(&self.query);
                 if let Ok(description) = message {
@@ -78,10 +75,14 @@ impl ToolInvocation for ToolSearchInvocation {
                             .into_iter()
                             .filter(|name| !before.contains(name))
                             .map(|name| {
+                                let tool_description = match mcp.tool_description(&name) {
+                                    Some(tool_description) => tool_description,
+                                    None => description.clone(),
+                                };
                                 json!({
                                     "name": name,
                                     "namespace": "mcp",
-                                    "description": description
+                                    "description": tool_description
                                 })
                             }),
                     );

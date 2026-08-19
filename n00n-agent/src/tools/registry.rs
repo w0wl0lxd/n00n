@@ -20,6 +20,18 @@ use super::admission::{ToolAdmission, ToolAdmissionClass};
 use super::schema::sanitize_tool_input_schema;
 use super::{DescriptionContext, ToolContext};
 
+const EXACT_NAME_SCORE: u32 = 10_000;
+const EXACT_ALIAS_SCORE: u32 = 9_000;
+const EXACT_NAMESPACE_SCORE: u32 = 8_000;
+const NAME_SUBSTRING_SCORE: u32 = 1_000;
+const ALIAS_SUBSTRING_SCORE: u32 = 900;
+const NAME_TOKEN_SCORE: u32 = 100;
+const ALIAS_TOKEN_SCORE: u32 = 90;
+const NAMESPACE_TOKEN_SCORE: u32 = 80;
+const SCHEMA_TOKEN_SCORE: u32 = 30;
+const DESCRIPTION_TOKEN_SCORE: u32 = 10;
+const SEARCH_DESCRIPTION_LIMIT: usize = 120;
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ToolAudience: u8 {
@@ -726,53 +738,55 @@ impl ToolRegistry {
             let aliases_lower: Vec<String> =
                 aliases.iter().map(|alias| alias.to_lowercase()).collect();
             let namespace_lower = entry.namespace.as_deref().map(str::to_lowercase);
-            let description = entry.tool.description(ctx);
+            let description = crate::template::env_vars()
+                .apply(&entry.tool.description(ctx))
+                .into_owned();
             let description_lower = description.to_lowercase();
             let schema_lower = entry.tool.schema().to_string().to_lowercase();
             let mut score = 0_u32;
             if name_lower == query {
-                score = score.saturating_add(10_000);
+                score = score.saturating_add(EXACT_NAME_SCORE);
             } else if aliases_lower.iter().any(|alias| alias == &query) {
-                score = score.saturating_add(9_000);
+                score = score.saturating_add(EXACT_ALIAS_SCORE);
             } else if namespace_lower.as_deref() == Some(query.as_str()) {
-                score = score.saturating_add(8_000);
+                score = score.saturating_add(EXACT_NAMESPACE_SCORE);
             }
             if name_lower.contains(&query) {
-                score = score.saturating_add(1_000);
+                score = score.saturating_add(NAME_SUBSTRING_SCORE);
             }
             if aliases_lower.iter().any(|alias| alias.contains(&query)) {
-                score = score.saturating_add(900);
+                score = score.saturating_add(ALIAS_SUBSTRING_SCORE);
             }
             for token in &tokens {
                 if name_lower.contains(token) {
-                    score = score.saturating_add(100);
+                    score = score.saturating_add(NAME_TOKEN_SCORE);
                 }
                 if aliases_lower.iter().any(|alias| alias.contains(token)) {
-                    score = score.saturating_add(90);
+                    score = score.saturating_add(ALIAS_TOKEN_SCORE);
                 }
                 if namespace_lower
                     .as_deref()
                     .is_some_and(|namespace| namespace.contains(token))
                 {
-                    score = score.saturating_add(80);
+                    score = score.saturating_add(NAMESPACE_TOKEN_SCORE);
                 }
                 if schema_lower.contains(token) {
-                    score = score.saturating_add(30);
+                    score = score.saturating_add(SCHEMA_TOKEN_SCORE);
                 }
                 if description_lower.contains(token) {
-                    score = score.saturating_add(10);
+                    score = score.saturating_add(DESCRIPTION_TOKEN_SCORE);
                 }
             }
             if score == 0 {
                 continue;
             }
-            let description = if description.len() > 120 {
+            let description = if description.len() > SEARCH_DESCRIPTION_LIMIT {
                 format!(
                     "{}...",
-                    &description[..description.floor_char_boundary(120)]
+                    &description[..description.floor_char_boundary(SEARCH_DESCRIPTION_LIMIT)]
                 )
             } else {
-                description.into_owned()
+                description
             };
             results.push((
                 score,

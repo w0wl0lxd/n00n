@@ -583,6 +583,18 @@ impl McpSession {
             .collect()
     }
 
+    #[must_use]
+    pub fn tool_description(&self, wire_name: &str) -> Option<String> {
+        self.handle
+            .index
+            .load()
+            .descriptors
+            .iter()
+            .find(|descriptor| descriptor.wire_name() == wire_name)
+            .and_then(|descriptor| descriptor.definition["description"].as_str())
+            .map(String::from)
+    }
+
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
         self.loaded
             .lock()

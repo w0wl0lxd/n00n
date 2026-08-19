@@ -73,7 +73,8 @@ Commands:
       return { llm_output = "error: command is required", is_error = true }
     end
 
-    local max_lines, max_bytes = output_limits.resolve_capped(opts, ctx, 12 * 1024)
+    local max_lines, max_bytes =
+      output_limits.resolve_capped(opts, ctx, output_limits.EXPLORER_DEFAULT_MAX_OUTPUT_BYTES)
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish semblem results: " .. tostring(live_err), is_error = true }

@@ -17,6 +17,8 @@ pub(crate) mod providers;
 pub mod retry;
 pub(crate) mod types;
 
+pub const HOSTED_NAMESPACE_PREFIX: &str = "n00n_";
+
 pub use error::{AgentError, HistoryReplayReason, RequestDeliveryMetadata, RequestDeliveryPhase};
 pub use model::{
     FastPricing, Model, ModelEntry, ModelError, ModelFamily, ModelInfo, ModelPricing, ModelTier,
