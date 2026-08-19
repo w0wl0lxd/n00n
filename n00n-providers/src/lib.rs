@@ -33,10 +33,11 @@ pub use providers::opencode::{
     ProviderData, catalog_provider, catalog_providers, catalog_providers_if_available,
 };
 pub use types::{
-    BodyOverride, CacheControl, CacheHealth, CacheKind, ContentBlock, Effort, EffortDialect,
-    EffortDialectId, FILE_OMITTED_NOTE, FileSource, IMAGE_OMITTED_NOTE, ImageDetail,
-    ImageMediaType, ImageSource, Message, ProviderEvent, ProviderUsage, ReasoningContext,
-    ReasoningMode, RequestOptions, Role, StopReason, StreamResponse, System, SystemBlock,
-    ThinkingConfig, ThinkingExtras, ThinkingFieldConfig, ToggleEntry, UsageLimit,
-    adapt_files_for_model, adapt_images_for_model, dialect, effort_dialect_for,
+    BodyOverride, CacheControl, CacheHealth, CacheKind, ContentBlock, DeferredToolDefinition,
+    Effort, EffortDialect, EffortDialectId, FILE_OMITTED_NOTE, FileSource, HostedToolSearch,
+    IMAGE_OMITTED_NOTE, ImageDetail, ImageMediaType, ImageSource, Message, ProviderEvent,
+    ProviderUsage, ReasoningContext, ReasoningMode, RequestOptions, Role, StopReason,
+    StreamResponse, System, SystemBlock, ThinkingConfig, ThinkingExtras, ThinkingFieldConfig,
+    ToggleEntry, UsageLimit, adapt_files_for_model, adapt_images_for_model, dialect,
+    effort_dialect_for,
 };

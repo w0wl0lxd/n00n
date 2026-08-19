@@ -314,6 +314,10 @@ pub trait Provider: Send + Sync {
     }
 
     fn adjust_model(&self, _model: &mut Model) {}
+
+    fn supports_hosted_tool_search(&self, _model: &Model) -> bool {
+        false
+    }
 }
 
 /// Create a provider for the given slug.
