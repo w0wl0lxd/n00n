@@ -26,17 +26,17 @@ pub use model_catalog::{ModelCatalog, ModelCatalogError, ModelResolver};
 pub use providers::Timeouts;
 pub use providers::copilot::auth as copilot_auth;
 pub use providers::dynamic;
-pub use providers::openai::OpenAiOptions;
 pub use providers::openai::auth as openai_auth;
 pub use providers::openai::websocket::ensure_rustls_crypto_provider;
+pub use providers::openai::{CodexCacheCapabilities, OpenAiOptions};
 pub use providers::opencode::{
     ProviderData, catalog_provider, catalog_providers, catalog_providers_if_available,
 };
 pub use types::{
     BodyOverride, CacheControl, CacheHealth, CacheKind, ContentBlock, Effort, EffortDialect,
     EffortDialectId, FILE_OMITTED_NOTE, FileSource, IMAGE_OMITTED_NOTE, ImageDetail,
-    ImageMediaType, ImageSource, Message, ProviderEvent, ProviderUsage, ReasoningContext,
-    ReasoningMode, RequestOptions, Role, StopReason, StreamResponse, System, SystemBlock,
-    ThinkingConfig, ThinkingExtras, ThinkingFieldConfig, ToggleEntry, UsageLimit,
+    ImageMediaType, ImageSource, Message, OpenAiPromptCacheMode, ProviderEvent, ProviderUsage,
+    ReasoningContext, ReasoningMode, RequestOptions, Role, StopReason, StreamResponse, System,
+    SystemBlock, ThinkingConfig, ThinkingExtras, ThinkingFieldConfig, ToggleEntry, UsageLimit,
     adapt_files_for_model, adapt_images_for_model, dialect, effort_dialect_for,
 };

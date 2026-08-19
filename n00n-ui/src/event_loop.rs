@@ -472,7 +472,7 @@ impl SpawnCtx {
             &permissions,
             Some(identity),
             self.timeouts,
-            self.openai_options,
+            self.openai_options.clone(),
             self.lua_event_handle.clone(),
             self.mcp_handle.clone(),
             self.mcp_config_errors.clone(),
@@ -794,7 +794,7 @@ impl<'t> EventLoop<'t> {
 
         let (provider, provider_warning) =
             startup_provider_with(&mut model, needs_login, |model| {
-                from_model_with_openai_options(model, timeouts, openai_options)
+                from_model_with_openai_options(model, timeouts, openai_options.clone())
             });
         if let Some(warning) = provider_warning {
             startup_warnings.push(warning);
@@ -805,7 +805,7 @@ impl<'t> EventLoop<'t> {
             model: model.clone(),
             provider,
         }));
-        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options, needs_login);
+        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options.clone(), needs_login);
         let startup_login_slot = needs_login.then(|| model_slot.load_full());
 
         let picker = Arc::new(terminal_image::picker());
@@ -2234,7 +2234,7 @@ impl<'t> EventLoop<'t> {
                     && let Ok(new_provider) = from_model_with_openai_options(
                         &mut new_model,
                         self.ctx.timeouts,
-                        self.ctx.openai_options,
+                        self.ctx.openai_options.clone(),
                     )
                 {
                     self.sessions[idx].app.usage_slot.store(None);
@@ -2330,7 +2330,7 @@ impl<'t> EventLoop<'t> {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,
-                self.ctx.openai_options,
+                self.ctx.openai_options.clone(),
             ) {
                 Ok(new_provider) => {
                     let app = self.focused_app();

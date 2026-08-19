@@ -1219,6 +1219,22 @@ impl From<ThinkingConfig> for StoredThinking {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenAiPromptCacheMode {
+    Implicit,
+    Explicit,
+}
+
+impl OpenAiPromptCacheMode {
+    #[must_use]
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::Implicit => "implicit",
+            Self::Explicit => "explicit",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
@@ -1228,6 +1244,7 @@ pub struct RequestOptions {
     /// `cache_control`. Default is 2. Higher values increase cache write cost but
     /// may improve cache hit rates in long conversations.
     pub message_cache_breakpoints: usize,
+    pub openai_prompt_cache_mode: Option<OpenAiPromptCacheMode>,
     pub protect_history_replay: bool,
     pub allow_history_replay: bool,
     /// Optional safety identifier for the request (max 64 chars for `OpenAI`).
@@ -1251,6 +1268,7 @@ impl Default for RequestOptions {
             thinking: Default::default(),
             fast: false,
             message_cache_breakpoints: 2,
+            openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
             safety_identifier: None,
@@ -1294,6 +1312,7 @@ impl RequestOptions {
             },
             fast: self.fast && model.supports_fast(),
             message_cache_breakpoints: self.message_cache_breakpoints,
+            openai_prompt_cache_mode: self.openai_prompt_cache_mode,
             protect_history_replay: self.protect_history_replay,
             allow_history_replay: self.allow_history_replay,
             safety_identifier: self.safety_identifier,
@@ -1808,6 +1827,7 @@ mod tests {
             thinking,
             fast: false,
             message_cache_breakpoints: 2,
+            openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
             safety_identifier: None,
@@ -1825,6 +1845,7 @@ mod tests {
             thinking: ThinkingConfig::Off,
             fast: true,
             message_cache_breakpoints: 2,
+            openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
             safety_identifier: None,
@@ -1953,6 +1974,7 @@ mod tests {
             thinking: ThinkingConfig::Off,
             fast: false,
             message_cache_breakpoints: 2,
+            openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
             safety_identifier: Some("test-id".to_string()),

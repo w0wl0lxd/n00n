@@ -257,7 +257,7 @@ impl AgentLoop {
                 permissions: Arc::clone(&self.permissions),
                 identity: self.identity.clone(),
                 timeouts: self.timeouts,
-                openai_options: self.openai_options,
+                openai_options: self.openai_options.clone(),
                 file_tracker: Arc::clone(&self.file_tracker),
                 prompt_slots: Arc::new(n00n_agent::prompt::ResolvedSlots::default()),
                 subagent_cancels: Arc::clone(&self.subagent_cancels),
@@ -301,7 +301,7 @@ impl AgentLoop {
             &slot.provider,
             &slot.model,
             self.timeouts,
-            self.openai_options,
+            self.openai_options.clone(),
         );
         agent::compact(&*provider, &model, &mut self.history, event_tx).await
     }
@@ -421,7 +421,7 @@ impl AgentLoop {
                 subagent_cancels: Arc::clone(&self.subagent_cancels),
                 registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
                 audience: ToolAudience::MAIN,
-                openai_options: self.openai_options,
+                openai_options: self.openai_options.clone(),
             },
             AgentRunParams {
                 history: &mut self.history,

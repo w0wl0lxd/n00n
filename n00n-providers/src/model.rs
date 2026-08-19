@@ -1212,12 +1212,24 @@ mod tests {
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
-    #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
+    #[test_case("openai/gpt-5.6-codex", false ; "openai_gpt_5_6_codex")]
+    #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
+    #[test_case("codex/gpt-5.2-codex", false ; "gpt_5_2_codex")]
+    #[test_case("codex/gpt-5.1-codex-mini", false ; "gpt_5_1_codex_mini")]
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
     #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
-    fn supports_prompt_cache_breakpoint_for_gpt_5_6_only(spec: &str, expected: bool) {
+    fn supports_prompt_cache_breakpoint_by_model_id(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.supports_prompt_cache_breakpoint(), expected);
+    }
+
+    #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
+    #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
+    #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
+    fn supports_responses_built_in_tools_excludes_codex(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_responses_built_in_tools(), expected);
     }
 
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
