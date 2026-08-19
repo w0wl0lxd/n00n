@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787133851080,
+  "lastUpdate": 1787180322689,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20511,6 +20511,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 129383,
             "range": "± 24635",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa1c399d68ea5bb85015e79abd281aad96d74dc2",
+          "message": "chore(release): finalize 0.6.1 changelog prep (#401)\n\n* chore(release): finalize 0.6.1 changelog release prep\n\n* fix(github): guard nil user and correct ref field for get_pr\n\n* fix(providers): reuse opencode token for opencode-go and document Go model set\n\nopencode-go now falls back to opencode storage credentials, matching\nthe shared OPENCODE_API_KEY flow. The provider auth override also\nhandles opencode-go, allowing live tests without separate login.\nDocs updated to list Go-only models (muse-spark-1.2-contributor,\ngpt-5.3-codex-spark, qwen3.7/3.8) and the Zen catalog prefixes.\n\nGenerated docs via cargo run -p n00n-docgen.",
+          "timestamp": "2026-08-19T18:43:36-04:00",
+          "tree_id": "3515b7485cea9d078bc815f9b5a224b01499c906",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/fa1c399d68ea5bb85015e79abd281aad96d74dc2"
+        },
+        "date": 1787180320465,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6469316,
+            "range": "± 115978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2463212,
+            "range": "± 8431",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2461212,
+            "range": "± 25786",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7611386,
+            "range": "± 244077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3856586,
+            "range": "± 110264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3849096,
+            "range": "± 9145",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 555239,
+            "range": "± 1094",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168169,
+            "range": "± 238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167869,
+            "range": "± 350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1098663,
+            "range": "± 3960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 638922,
+            "range": "± 5492",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 639549,
+            "range": "± 7700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58303,
+            "range": "± 6102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 166349,
+            "range": "± 11234",
             "unit": "ns/iter"
           }
         ]
