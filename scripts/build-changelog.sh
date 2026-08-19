@@ -34,11 +34,11 @@ fi
 
 TMP="$(mktemp -d)"
 ENTRY="$TMP/entry.md"
-: > "$ENTRY"
-echo "## [$VERSION] - $DATE" >> "$ENTRY"
-echo >> "$ENTRY"
+: >"$ENTRY"
+echo "## [$VERSION] - $DATE" >>"$ENTRY"
+echo >>"$ENTRY"
 
-for t in "${ORDER[@]}"; do : > "$TMP/$t"; done
+for t in "${ORDER[@]}"; do : >"$TMP/$t"; done
 
 for f in "${FRAGS[@]}"; do
   base="$(basename "$f" .md)"
@@ -50,38 +50,47 @@ for f in "${FRAGS[@]}"; do
   fi
   # Strip a single leading/trailing blank line, then append each non-empty line as a normalized entry.
   while IFS= read -r line || [ -n "$line" ]; do
-    [ -z "$line" ] && continue
     # Trim CR from Windows endings so adjacent lines don't glue together.
     line="${line%$'\r'}"
+    [ -z "$line" ] && continue
     case "$line" in
-      -*|"*") printf '%s\n' "$line" >> "$TMP/$type" ;;
-      *) printf '%s\n' "- $line" >> "$TMP/$type" ;;
+    '-'* | '"'* | '*'*) printf '%s\n' "$line" >>"$TMP/$type" ;;
+    *) printf '%s\n' "- $line" >>"$TMP/$type" ;;
     esac
   done < <(sed -e '1{/^$/d}' -e '${/^$/d}' "$f")
 done
 
 for t in "${ORDER[@]}"; do
   if [ -s "$TMP/$t" ]; then
-    echo "### ${HEAD[$t]}" >> "$ENTRY"
-    echo >> "$ENTRY"
+    echo "### ${HEAD[$t]}" >>"$ENTRY"
+    echo >>"$ENTRY"
     while IFS= read -r line; do
+      line="${line%$'\r'}"
       [ -z "$line" ] && continue
       case "$line" in
-        -*|"*") echo "$line" >> "$ENTRY" ;;
-        *) echo "- $line" >> "$ENTRY" ;;
+      '-'* | '"'* | '*'*) echo "$line" >>"$ENTRY" ;;
+      *) echo "- $line" >>"$ENTRY" ;;
       esac
-    done < "$TMP/$t"
-    echo >> "$ENTRY"
+    done <"$TMP/$t"
+    echo >>"$ENTRY"
   fi
 done
 
 if [ ! -f "$CHANGELOG" ]; then
-  { echo "# Changelog"; echo; cat "$ENTRY"; } > "$CHANGELOG"
+  {
+    echo "# Changelog"
+    echo
+    cat "$ENTRY"
+  } >"$CHANGELOG"
 else
   if grep -q '^## ' "$CHANGELOG"; then
-    awk 'FNR==NR{e=e "\n" $0; next} /^## / && !ins{printf "%s\n", e; ins=1} {print}' "$ENTRY" "$CHANGELOG" > "$CHANGELOG.tmp"
+    awk 'FNR==NR{e=e "\n" $0; next} /^## / && !ins{printf "%s\n", e; ins=1} {print}' "$ENTRY" "$CHANGELOG" >"$CHANGELOG.tmp"
   else
-    { cat "$CHANGELOG"; echo; cat "$ENTRY"; } > "$CHANGELOG.tmp"
+    {
+      cat "$CHANGELOG"
+      echo
+      cat "$ENTRY"
+    } >"$CHANGELOG.tmp"
   fi
   mv "$CHANGELOG.tmp" "$CHANGELOG"
 fi

@@ -24,7 +24,6 @@ See `changelog.d/README.md` for the fragment convention.
 - Add native web extraction core to n00n-search crate with URL policy validation, DNS pinning, and bounded fetching.
 - Documented OpenCode Go (`opencode/opencode-go/<model_id>`), a separate flat-subscription tier and models.dev catalog entry from OpenCode Zen with its own base URL (`https://opencode.ai/zen/go/v1`) and curated model set, reached through the same `OPENCODE_API_KEY`. Added live, key-gated test coverage for the Opencode provider covering Zen model discovery, a streamed completion, a tool call, and a Go completion; these skip cleanly (reported as ignored, not passed) when no key is configured, so CI stays honest about what it has and has not exercised.
 - Per-model file input support flags: static model tables carry a `files` flag (regular OpenAI GPT-5.6 model entries support files; coding-plan/Codex entries remain disabled with `files` set to `false`), discovery can report file support, and overrides still take precedence.
-- # Skill system v2
 - Skill system v2: recursive discovery, frontmatter policy, agent enforcement, search ranking, and structured plans.
 - Memory tool v2: keyword search, YAML frontmatter metadata, append, and lite-layer session recall hints.
 - Added native Cursor `AgentService/Run` spike (HTTP/2 Connect via reqwest duplex streaming) with IDE auth, discovery, checkpoints, checksum headers, and a live Auto/`default` pong path gated by `N00N_CURSOR_LIVE_TESTS=1`.
@@ -196,8 +195,7 @@ See `changelog.d/README.md` for the fragment convention.
 - CI now runs lint and test jobs on macOS and no longer installs ripgrep in Ubuntu test and coverage jobs.
 - Improved agent guidance to prefer token-efficient code search and Thoughtbox for non-trivial reasoning.
 - Removed additional `#[allow(clippy::...)]` attributes from small crates and refactored `n00n-storage` `append` into helpers.Update SWE-1.7 context window to 262K tokens.
-- # Tool preference guidance
-- Prompt and instruction guidance now steer agents toward token-efficient, pre-indexed exploration tools. `codegraph` and `arbor` are included in the native efficient-tools list, system/general/research prompts describe the `codegraph`/`arbor`/`index` ladder before `grep`/`read`, and `AGENTS.md` adds a "Token-efficient exploration" section covering `rtk` and `tooned`.
+- Tool preference guidance: prompt and instruction guidance now steer agents toward token-efficient, pre-indexed exploration tools. `codegraph` and `arbor` are included in the native efficient-tools list, system/general/research prompts describe the `codegraph`/`arbor`/`index` ladder before `grep`/`read`, and `AGENTS.md` adds a "Token-efficient exploration" section covering `rtk` and `tooned`.
 - Fix hang when models emit only reasoning without final text.
 - Build assistant message with both `Thinking` and `Text` content blocks
 - Remove invalid `reasoning_content` field from OpenAI compat message conversion
@@ -241,11 +239,6 @@ See `changelog.d/README.md` for the fragment convention.
 - Fixed bash tool RTK auto-rewrite coverage: `cargo` commands with `--`, `cargo nextest run`, `head -n N`, and read-only `git` subcommands (`remote`, `config`, `tag`, etc.) are now routed through `rtk` when possible. Updated prompts and AGENTS.md to stop claiming `jq`/`yq` are rewritten.
 - Fixed strict workspace lint failures while preserving the established `n00nId` public API.
 - Fixed team wave validation resolving model tiers as literal model IDs, which caused repeated validation failures and exhausted agent-call budgets.
-- Fix hang when models emit only reasoning without final text.
-- Build assistant message with both `Thinking` and `Text` content blocks
-- Remove invalid `reasoning_content` field from OpenAI compat message conversion
-- Add nudge logic in agent when assistant produces only reasoning without text
-- Add system prompt instruction to always end with a user-facing final answer
 - Use `cortexkit-tree-sitter-scss` so the SCSS grammar compiles on Windows with MSVC.
 - Fixed `task`, `todo_write`, and `workflow` session restore crashing outright when the shared preview renderer hits an edge an older snapshot doesn't defend against; restore now falls back to a plain view instead of failing the whole callback.
 - Stopped `grep`, `glob`, and MCP tool-loading from flooding the log with a warning per unreadable file, vanished path, or truncated description; expected conditions now log once as a summary instead of one line each. `PostCompact` hook timeouts now report the same actionable timeout hint as `PreCompact`.
