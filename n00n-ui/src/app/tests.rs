@@ -2674,6 +2674,42 @@ fn save_session_captures_plugin_state_snapshot() {
 }
 
 #[test]
+fn save_session_without_plugin_capture_keeps_live_state_snapshot() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    app.lua_event_handle = host.event_handle();
+    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(3));
+    app.hydrate_plugin_state();
+    app.state
+        .session
+        .messages
+        .push(Message::user("persist without capture".into()));
+    let session_id = app.state.session.id;
+
+    app.save_session_without_plugin_state_capture();
+
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        Some(3)
+    );
+    drain_writer(app, writer);
+    assert_eq!(
+        AppSession::load(session_id, &dir)
+            .unwrap()
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        Some(3)
+    );
+}
+
+#[test]
 fn save_session_does_not_overtake_pending_compaction_revision() {
     let (_tmp, _dir, writer, mut app) = tempdir_app();
     let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
@@ -3223,12 +3259,34 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
         TranscriptEntry::Message(Message::user("remove".into())),
         TranscriptEntry::Message(removed_reply),
     ];
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    let handle = host.event_handle().unwrap();
+    app.lua_event_handle = Some(handle.clone());
+    let mut checkpoint = StoredSessionStateSnapshot::new(7);
+    checkpoint
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({"value": "boundary"}),
+        )
+        .unwrap();
     app.state
         .session
         .meta
-        .checkpoint_compaction_state(StoredSessionStateSnapshot::new(7))
+        .checkpoint_compaction_state(checkpoint)
         .unwrap();
-    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(9));
+    let mut future = StoredSessionStateSnapshot::new(9);
+    future
+        .set_plugin_state(
+            "todo_write",
+            1,
+            StoredStateScope::Root,
+            serde_json::json!({"value": "future"}),
+        )
+        .unwrap();
+    app.state.session.meta.state_snapshot = Some(future);
+    app.hydrate_plugin_state();
     let actions = app.rewind_to(&crate::components::rewind_picker::RewindEntry {
         turn_index: 4,
         prompt_preview: "remove".into(),
@@ -3243,6 +3301,14 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
             .as_ref()
             .and_then(StoredSessionStateSnapshot::state_revision),
         Some(7)
+    );
+    let identity = SessionIdentity::root(SessionRef::from_id(app.state.session.id));
+    let captured = handle.capture_state(&identity, 10).unwrap();
+    assert_eq!(
+        captured
+            .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
+            .unwrap(),
+        Some(&serde_json::json!({"value": "boundary"}))
     );
     assert!(matches!(
         app.state.session.transcript.as_slice(),

@@ -143,6 +143,10 @@ local function dispatch(input)
       table.insert(args, "--max-hunk-lines")
       table.insert(args, tostring(input.max_hunk_lines))
     end
+    if input.max_file_bytes then
+      table.insert(args, "--max-file-bytes")
+      table.insert(args, tostring(input.max_file_bytes))
+    end
     if input.kinds then
       table.insert(args, "--kinds")
       table.insert(args, table.concat(input.kinds, ","))
@@ -150,6 +154,7 @@ local function dispatch(input)
     local result, err = run_git_subcommand(args, {
       output = input.output,
       max_hunk_lines = input.max_hunk_lines,
+      max_file_bytes = input.max_file_bytes,
       kinds = input.kinds,
       include_untracked = true,
     })

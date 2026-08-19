@@ -2,9 +2,9 @@ local ToolView = require("n00n.tool_view")
 local shorten_path = require("n00n.shorten_path")
 local output_limits = require("n00n.output_limits")
 
-local DESCRIPTION = "Read a file or directory. Returns contents with line numbers (1-indexed)."
-
 local DEFAULT_MAX_OUTPUT_LINES = 200
+
+local DESCRIPTION = "Read a file or directory. Returns contents with line numbers (1-indexed)."
 
 local opts = n00n.api.register_options({
   max_line_bytes = { default = 500, min = 80, desc = "Truncate lines longer than this many bytes." },
@@ -96,7 +96,10 @@ end
 
 local function read_file(path, offset, limit, ctx)
   local start = math.max(offset or 1, 1)
-  local max_lines = limit or math.min(opts.max_output_lines or DEFAULT_MAX_OUTPUT_LINES, DEFAULT_MAX_OUTPUT_LINES)
+  local configured_max_lines = ctx:config("max_output_lines", output_limits.DEFAULT_MAX_OUTPUT_LINES)
+  local default_max_lines = configured_max_lines == output_limits.DEFAULT_MAX_OUTPUT_LINES and DEFAULT_MAX_OUTPUT_LINES
+    or configured_max_lines
+  local max_lines = limit or opts.max_output_lines or default_max_lines
   local max_line_bytes = opts.max_line_bytes
 
   local res, err = n00n.fs.read_lines(path, start, max_lines)

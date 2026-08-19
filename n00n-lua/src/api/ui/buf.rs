@@ -289,8 +289,11 @@ fn on(lua: &Lua, this: &BufHandle, event: String, callback: Function) -> LuaResu
         // must not yield or mutate this buffer.
         "change" => {
             track_slot(lua, HandlerSlot::Change(Arc::clone(&this.buf)));
-            let lua = lua.clone();
+            let weak = lua.weak();
             this.buf.set_on_change(move || {
+                let Some(lua) = weak.try_upgrade() else {
+                    return;
+                };
                 if let Err(e) = run_non_yieldable(&lua, || callback.call::<()>(())) {
                     tracing::warn!(error = %e, "buf change callback failed");
                 }

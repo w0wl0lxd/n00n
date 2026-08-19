@@ -453,9 +453,10 @@ impl Model {
     #[must_use]
     pub fn supports_responses(&self) -> bool {
         self.family == ModelFamily::Gpt
-            && self
-                .openai_model_version()
-                .is_some_and(|version| version >= (5, 4))
+            && self.openai_model_version().is_some_and(|(major, minor)| {
+                major > MIN_TOOL_SEARCH_MODEL_MAJOR
+                    || major == MIN_TOOL_SEARCH_MODEL_MAJOR && minor >= MIN_TOOL_SEARCH_MODEL_MINOR
+            })
     }
 
     /// Check if the model supports explicit prompt-cache breakpoints.

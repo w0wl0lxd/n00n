@@ -1438,7 +1438,7 @@ impl<'t> EventLoop<'t> {
             if rt.pending_compactions.is_empty()
                 && should_save_periodically(&rt.app.status, rt.app.awaiting_input())
             {
-                rt.app.save_session();
+                rt.app.save_session_without_plugin_state_capture();
             }
         }
         self.last_save = Instant::now();
@@ -1660,6 +1660,7 @@ impl<'t> EventLoop<'t> {
             }
         }
         let Some(prepared) = pending.prepared.as_ref() else {
+            self.handle_compaction_failure(idx, pending, "compaction checkpoint was not prepared");
             return;
         };
         let (stage, snapshot) = match pending.stage {
@@ -2360,7 +2361,7 @@ impl<'t> EventLoop<'t> {
                     if let Some(i) = self.position(id) {
                         let app = &mut self.sessions[i].app;
                         app.state.session.title = title;
-                        app.save_session();
+                        app.save_session_without_plugin_state_capture();
                     } else {
                         let mut session = AppSession::load_with_retention(
                             id,
@@ -3071,6 +3072,11 @@ impl<'t> EventLoop<'t> {
         }
         self.settle_cancelled_sessions();
         self.preserve_post_draw_submissions();
+        for idx in 0..self.sessions.len() {
+            if let Err(error) = self.capture_plugin_state(idx) {
+                warn!(session_id = %self.sessions[idx].id(), %error, "failed to capture plugin session state during shutdown");
+            }
+        }
         let mut tabs = Vec::with_capacity(self.sessions.len());
         let mut agent_tasks = Vec::with_capacity(self.sessions.len());
         for rt in self.sessions.drain(..) {
@@ -3082,6 +3088,13 @@ impl<'t> EventLoop<'t> {
             // channels the agent loop waits on, so `join_all` can finish.
             tabs.push(app.state.session);
             agent_tasks.push(handles.into_task());
+        }
+        if let Some(handle) = &self.ctx.lua_event_handle {
+            for session in &tabs {
+                if let Err(error) = handle.drop_state_owner(session.id) {
+                    warn!(session_id = %session.id, %error, "failed to drop plugin session state owner");
+                }
+            }
         }
         if let Some(ref h) = self.ctx.mcp_handle {
             smol::block_on(h.shutdown());

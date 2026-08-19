@@ -116,6 +116,13 @@ impl ResponseChainResetReason {
     }
 }
 
+fn clamp_responses_cache_breakpoints(model: &Model, mut opts: RequestOptions) -> RequestOptions {
+    if !model.supports_prompt_cache_breakpoint() {
+        opts.message_cache_breakpoints = 0;
+    }
+    opts
+}
+
 fn log_response_chain_reset(reason: ResponseChainResetReason, durable_chain: Option<bool>) {
     if let Some(durable_chain) = durable_chain {
         debug!(
@@ -1446,7 +1453,7 @@ impl OpenAi {
                 None
             };
             if let Some(reason) = reset_reason {
-                log_response_chain_reset(reason, response_chain_lock.map(|_| true));
+                log_response_chain_reset(reason, Some(response_chain_lock.is_some()));
                 self.clear_response_chain(session_id, response_chain_lock)
                     .await;
                 self.emit_cache_health(session_id, false, event_tx).await;
@@ -1921,6 +1928,7 @@ impl OpenAi {
     ) -> Result<StreamResponse, AgentError> {
         // API-key Responses requests are intentionally stateless. This HTTP path cannot
         // reuse a store=false response ID safely, so every turn sends full history.
+        let opts = clamp_responses_cache_breakpoints(model, opts);
         let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
         let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
         let body = super::responses::build_body(
@@ -2769,6 +2777,20 @@ mod tests {
             ContentBlock::ToolResult { tool_use_id, content, .. }
                 if tool_use_id == "call_1" && content == "result"
         ));
+    }
+
+    #[test]
+    fn api_responses_reject_unsupported_raw_breakpoints() {
+        let opts = clamp_responses_cache_breakpoints(
+            &Model::from_spec("openai/gpt-5.5").unwrap(),
+            RequestOptions {
+                message_cache_breakpoints: 2,
+                openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(opts.message_cache_breakpoints, 0);
     }
 
     #[test]

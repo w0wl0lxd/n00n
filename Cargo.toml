@@ -333,13 +333,11 @@ clone_on_ref_ptr = "deny"
 redundant_clone = "deny"
 manual_assert = "deny"
 disallowed_methods = "deny"
-# These style lints suggest `unwrap_or`/`unwrap_or_default`/`assert_eq!`,
-# which the workspace bans or does not use at scale; allowing them avoids
-# clippy auto-fix introducing banned methods or mass-rewriting test asserts.
+# These style lints suggest `unwrap_or`/`unwrap_or_default`, which the workspace
+# bans; allowing them avoids clippy auto-fix introducing banned methods.
 unnecessary_lazy_evaluations = "allow"
 unnecessary_map_or = "allow"
 unwrap_or_default = "allow"
-assert_is_empty = "allow"
 
 [profile.bench]
 debug = true

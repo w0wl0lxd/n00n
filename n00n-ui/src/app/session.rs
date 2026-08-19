@@ -234,13 +234,22 @@ impl App {
         session_has_content(&self.state.session)
     }
     pub(crate) fn save_session(&mut self) {
+        let snapshot = self.session_snapshot_with_plugin_state();
+        self.save_snapshot(snapshot);
+    }
+
+    pub(crate) fn save_session_without_plugin_state_capture(&mut self) {
+        let snapshot = self.session_snapshot();
+        self.save_snapshot(snapshot);
+    }
+
+    fn save_snapshot(&mut self, snapshot: AppSession) {
         self.pending_save = false;
         self.last_save_flush = Some(Instant::now());
         #[cfg(test)]
         {
             self.session_saves += 1;
         }
-        let snapshot = self.session_snapshot_with_plugin_state();
         if !session_has_content(&snapshot) {
             return;
         }
@@ -753,7 +762,11 @@ impl App {
         );
         if let Some(revision) = outer_compaction_revision(&self.state.session.transcript) {
             match self.state.session.meta.compaction_state_at(revision) {
-                Ok(snapshot) => self.state.session.meta.state_snapshot = Some(snapshot.clone()),
+                Ok(snapshot) => {
+                    let snapshot = snapshot.clone();
+                    self.state.session.meta.state_snapshot = Some(snapshot.clone());
+                    self.hydrate_plugin_snapshot(Some(snapshot));
+                }
                 Err(error) => tracing::warn!(
                     session_id = %self.state.session.id,
                     checkpoint_revision = revision,
