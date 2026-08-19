@@ -118,6 +118,23 @@ impl ModelPricing {
     /// Cache multipliers Anthropic applies on top of the base input rate.
     const CACHE_WRITE_MULTIPLIER: f64 = 1.25;
     const CACHE_READ_MULTIPLIER: f64 = 0.10;
+
+    #[must_use]
+    pub fn effective(&self, fast: bool) -> Self {
+        match self.fast {
+            Some(fast_pricing) if fast => Self {
+                input: fast_pricing.input,
+                output: fast_pricing.output,
+                cache_write: fast_pricing.input * Self::CACHE_WRITE_MULTIPLIER,
+                cache_read: fast_pricing.input * Self::CACHE_READ_MULTIPLIER,
+                fast: None,
+            },
+            _ => Self {
+                fast: None,
+                ..*self
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -615,34 +632,18 @@ impl TokenUsage {
 
     #[must_use]
     pub fn savings_cost(&self, pricing: &ModelPricing, fast: bool) -> f64 {
-        let (input_price, cache_read_price) = match &pricing.fast {
-            Some(f) if fast => (f.input, f.input * ModelPricing::CACHE_READ_MULTIPLIER),
-            _ => (pricing.input, pricing.cache_read),
-        };
-        let savings_per_token = (input_price - cache_read_price).max(0.0);
+        let effective = pricing.effective(fast);
+        let savings_per_token = (effective.input - effective.cache_read).max(0.0);
         f64::from(self.cache_read) * savings_per_token / PER_MILLION
     }
 
     #[must_use]
     pub fn cost(&self, pricing: &ModelPricing, fast: bool) -> f64 {
-        let (input, output, cache_write, cache_read) = match &pricing.fast {
-            Some(f) if fast => (
-                f.input,
-                f.output,
-                f.input * ModelPricing::CACHE_WRITE_MULTIPLIER,
-                f.input * ModelPricing::CACHE_READ_MULTIPLIER,
-            ),
-            _ => (
-                pricing.input,
-                pricing.output,
-                pricing.cache_write,
-                pricing.cache_read,
-            ),
-        };
-        f64::from(self.input) * input / PER_MILLION
-            + f64::from(self.output) * output / PER_MILLION
-            + f64::from(self.cache_creation) * cache_write / PER_MILLION
-            + f64::from(self.cache_read) * cache_read / PER_MILLION
+        let effective = pricing.effective(fast);
+        f64::from(self.input) * effective.input / PER_MILLION
+            + f64::from(self.output) * effective.output / PER_MILLION
+            + f64::from(self.cache_creation) * effective.cache_write / PER_MILLION
+            + f64::from(self.cache_read) * effective.cache_read / PER_MILLION
     }
 }
 
@@ -753,6 +754,28 @@ mod tests {
         assert_eq!(usage.output, 750);
         assert_eq!(usage.cache_creation, 300);
         assert_eq!(usage.cache_read, 450);
+    }
+
+    #[test]
+    fn effective_pricing_applies_fast_rates_and_cache_multipliers() {
+        let pricing = ModelPricing {
+            input: 5.0,
+            output: 25.0,
+            cache_write: 6.25,
+            cache_read: 0.5,
+            fast: Some(FastPricing {
+                input: 10.0,
+                output: 50.0,
+            }),
+        };
+
+        let effective = pricing.effective(true);
+
+        assert!((effective.input - 10.0).abs() < f64::EPSILON);
+        assert!((effective.output - 50.0).abs() < f64::EPSILON);
+        assert!((effective.cache_write - 12.5).abs() < f64::EPSILON);
+        assert!((effective.cache_read - 1.0).abs() < f64::EPSILON);
+        assert!(effective.fast.is_none());
     }
 
     #[test]

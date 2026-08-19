@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use jiff::Timestamp;
@@ -26,6 +26,10 @@ const NUM_COL: usize = 7;
 const HIT_COL: usize = 6;
 const COL_GAP: usize = 2;
 const NO_USAGE_ENDPOINT: &str = "no usage endpoint for this provider";
+const PRICE_HEADING: &str = "Prices per 1M tokens";
+const FAST_PRICE_HEADING: &str = "Prices per 1M tokens (fast mode when available)";
+const PRICE_DISCLAIMER: &str = "Estimates use current reported rates and selected mode; models without reported rates are excluded. Fast mode uses premium rates where the provider reports them. Coding-plan values are API-equivalent, not subscription charges.";
+const MIN_DISPLAY_PRICE: f64 = 0.0001;
 const HOUR: i64 = 3600;
 const DAY: i64 = 24 * HOUR;
 const WEEK: i64 = 7 * DAY;
@@ -50,6 +54,7 @@ pub struct UsageModalContext<'a> {
 pub struct UsageModal {
     open: bool,
     scroll: ModalScroll,
+    checked_model_specs: HashSet<String>,
 }
 
 impl UsageModal {
@@ -57,6 +62,7 @@ impl UsageModal {
         Self {
             open: false,
             scroll: ModalScroll::new_top(),
+            checked_model_specs: HashSet::new(),
         }
     }
 
@@ -90,6 +96,7 @@ impl UsageModal {
             return Rect::default();
         }
 
+        self.warn_unresolved_models(ctx);
         let theme = theme::current();
         let lines = build_lines(ctx, &theme);
 
@@ -126,17 +133,55 @@ impl UsageModal {
 
         popup
     }
+
+    fn warn_unresolved_models(&mut self, ctx: &UsageModalContext) {
+        for id in ctx.by_model.keys() {
+            let key = format!("{}/{id}", ctx.model.provider);
+            if self.checked_model_specs.insert(key) && model_for(id, ctx.model).is_none() {
+                tracing::warn!(model_id = id, "unable to resolve usage model");
+            }
+        }
+    }
+}
+
+fn model_for(id: &str, current: &Model) -> Option<Model> {
+    if id == current.id || id == current.spec() {
+        return Some(current.clone());
+    }
+    if let Ok(model) = Model::from_spec(id) {
+        return Some(model);
+    }
+    let fallback_spec = format!("{}/{id}", current.provider);
+    let Ok(model) = Model::from_spec(&fallback_spec) else {
+        return None;
+    };
+    Some(model)
 }
 
 fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
-    if id == current.id {
-        return Some(current.pricing);
+    model_for(id, current).map(|model| model.pricing)
+}
+
+fn display_model_id(id: &str) -> String {
+    id.split_once('/')
+        .map_or_else(|| id.to_owned(), |(_, model_id)| model_id.to_owned())
+}
+
+fn colliding_model_labels<'a>(ids: impl IntoIterator<Item = &'a str>) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    ids.into_iter()
+        .map(display_model_id)
+        .filter(|label| !seen.insert(label.clone()))
+        .collect()
+}
+
+fn model_label(id: &str, collisions: &HashSet<String>) -> String {
+    let display_id = display_model_id(id);
+    if collisions.contains(&display_id) {
+        id.to_owned()
+    } else {
+        display_id
     }
-    Model::from_spec(id).ok().map(|m| m.pricing).or_else(|| {
-        Model::from_spec(&format!("{}/{}", current.provider, id))
-            .ok()
-            .map(|m| m.pricing)
-    })
 }
 
 pub(crate) fn attributed_costs(
@@ -147,16 +192,24 @@ pub(crate) fn attributed_costs(
     if by_model.is_empty() {
         return None;
     }
-    by_model
-        .iter()
-        .try_fold((0.0, 0.0), |(cost, savings), (id, usage)| {
-            let pricing = pricing_for(id, current)?;
+    let (cost, savings, any_priced) = by_model.iter().fold(
+        (0.0, 0.0, false),
+        |(cost, savings, any_priced), (id, usage)| {
+            let Some(pricing) = pricing_for(id, current) else {
+                return (cost, savings, any_priced);
+            };
+            if pricing.effective(fast).is_zero() {
+                return (cost, savings, any_priced);
+            }
             let usage = TokenUsage::from(*usage);
-            Some((
+            (
                 cost + usage.cost(&pricing, fast),
                 savings + usage.savings_cost(&pricing, fast),
-            ))
-        })
+                true,
+            )
+        },
+    );
+    any_priced.then_some((cost, savings))
 }
 
 fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
@@ -168,10 +221,11 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         theme.keybind_section,
     )));
 
-    let total_cost = if ctx.model.pricing.is_zero() {
-        None
+    let total_cost = if ctx.by_model.is_empty() {
+        (!ctx.model.pricing.effective(ctx.fast).is_zero())
+            .then(|| ctx.total.cost(&ctx.model.pricing, ctx.fast))
     } else {
-        Some(ctx.total.cost(&ctx.model.pricing, ctx.fast))
+        attributed_costs(ctx.by_model, ctx.model, ctx.fast).map(|(cost, _)| cost)
     };
     lines.push(Line::from(totals_row(ctx.total, total_cost, theme)));
     lines.push(Line::from(Span::styled(
@@ -180,6 +234,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         ),
         theme.status_dim,
     )));
+    lines.extend(pricing_lines(ctx, theme));
 
     if let Some(state) = ctx.quota {
         lines.push(Line::default());
@@ -197,9 +252,10 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     let mut entries: Vec<(&String, &StoredTokenUsage)> = ctx.by_model.iter().collect();
     entries.sort_by_key(|(_, u)| Reverse(u.total()));
 
+    let label_collisions = colliding_model_labels(entries.iter().map(|(id, _)| id.as_str()));
     let model_w = entries
         .iter()
-        .map(|(id, _)| id.chars().count())
+        .map(|(id, _)| model_label(id, &label_collisions).chars().count())
         .max()
         .unwrap_or_else(|| 0)
         .max(MODEL_COL_MIN);
@@ -215,13 +271,17 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         let pricing = pricing_for(id, ctx.model);
         let token_usage = TokenUsage::from(*usage);
         let (cost, savings) = pricing.as_ref().map_or((None, None), |p| {
-            (
-                Some(token_usage.cost(p, ctx.fast)),
-                Some(token_usage.savings_cost(p, ctx.fast)),
-            )
+            if p.effective(ctx.fast).is_zero() {
+                (None, None)
+            } else {
+                (
+                    Some(token_usage.cost(p, ctx.fast)),
+                    Some(token_usage.savings_cost(p, ctx.fast)),
+                )
+            }
         });
         lines.push(Line::from(model_row(
-            id,
+            &model_label(id, &label_collisions),
             usage,
             cost,
             savings,
@@ -232,6 +292,72 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     }
 
     lines
+}
+fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
+    let mut rates = ctx
+        .by_model
+        .keys()
+        .filter_map(|id| model_for(id, ctx.model))
+        .map(|model| (model.spec(), model.pricing))
+        .collect::<Vec<_>>();
+    rates.push((ctx.model.spec(), ctx.model.pricing));
+    rates.retain(|(_, pricing)| !pricing.effective(ctx.fast).is_zero());
+    if rates.is_empty() {
+        return Vec::new();
+    }
+    rates.sort_by(|(left, _), (right, _)| left.cmp(right));
+    rates.dedup_by(|(left, _), (right, _)| left == right);
+
+    let price_heading = if ctx.fast {
+        FAST_PRICE_HEADING
+    } else {
+        PRICE_HEADING
+    };
+    let mut lines = vec![
+        Line::default(),
+        Line::from(Span::styled(
+            format!("{PREFIX}{price_heading}"),
+            theme.keybind_section,
+        )),
+    ];
+    for (id, pricing) in rates {
+        let pricing = pricing.effective(ctx.fast);
+        lines.push(Line::from(vec![
+            Span::raw(PREFIX),
+            Span::styled(format!("{id}: "), Style::new().fg(theme.foreground)),
+            Span::styled(
+                format!(
+                    "input {}  output {}  cache read {}  cache write {}",
+                    format_currency(pricing.input),
+                    format_currency(pricing.output),
+                    format_currency(pricing.cache_read),
+                    format_currency(pricing.cache_write),
+                ),
+                theme.status_dim,
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("{PREFIX}{PRICE_DISCLAIMER}"),
+        theme.status_dim,
+    )));
+    lines
+}
+
+fn format_currency(price: f64) -> String {
+    if price > 0.0 && price < MIN_DISPLAY_PRICE {
+        return format!("<${MIN_DISPLAY_PRICE:.4}");
+    }
+    let formatted = format!("{price:.4}");
+    let trimmed = formatted.trim_end_matches('0');
+    let decimals = trimmed
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    if decimals >= 2 {
+        format!("${trimmed}")
+    } else {
+        format!("${price:.2}")
+    }
 }
 
 fn cache_hit_rate(usage: &TokenUsage) -> Option<f64> {
@@ -293,7 +419,7 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
         gap(),
         h("saved $"),
         gap(),
-        Span::styled(format!("{:>6}", "cost"), theme.status_dim),
+        h("est $"),
     ]
 }
 
@@ -335,8 +461,8 @@ fn model_row(
         money(savings),
         gap(),
         match cost {
-            Some(c) => Span::styled(format!("{c:>6.3}"), fg),
-            None => Span::styled(format!("{:>6}", "—"), dim),
+            Some(c) => Span::styled(format!("{c:>NUM_COL$.3}"), fg),
+            None => Span::styled(format!("{:>NUM_COL$}", "—"), dim),
         },
     ]
 }
@@ -473,6 +599,25 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_model_is_checked_once_per_provider() {
+        let current_model = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let total = TokenUsage::default();
+        let by_model = HashMap::from([("unknown-model".into(), StoredTokenUsage::default())]);
+        let ctx = UsageModalContext {
+            total: &total,
+            by_model: &by_model,
+            model: &current_model,
+            fast: false,
+            quota: None,
+        };
+        let mut usage_modal = UsageModal::new();
+
+        usage_modal.warn_unresolved_models(&ctx);
+        usage_modal.warn_unresolved_models(&ctx);
+
+        assert_eq!(usage_modal.checked_model_specs.len(), 1);
+    }
+    #[test]
     fn quota_ready_lines_include_labels_and_percentages() {
         let theme = crate::theme::current();
         let usage = ProviderUsage {
@@ -584,6 +729,135 @@ mod tests {
     }
 
     #[test]
+    fn priced_models_show_effective_token_rates() {
+        let theme = crate::theme::current();
+        let model = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let total = TokenUsage {
+            input: 1_000_000,
+            output: 100_000,
+            cache_read: 500_000,
+            cache_creation: 200_000,
+        };
+        let by_model = HashMap::from([(
+            model.id.clone(),
+            StoredTokenUsage {
+                input: total.input,
+                output: total.output,
+                cache_read: total.cache_read,
+                cache_creation: total.cache_creation,
+            },
+        )]);
+        let lines = build_lines(
+            &UsageModalContext {
+                total: &total,
+                by_model: &by_model,
+                model: &model,
+                fast: false,
+                quota: None,
+            },
+            &theme,
+        );
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains(PRICE_HEADING));
+        assert!(text.contains("input $5.00"));
+        assert!(text.contains("output $30.00"));
+        assert!(text.contains("cache read $0.50"));
+        assert!(text.contains("cache write $6.25"));
+        assert!(text.contains("API-equivalent"));
+    }
+
+    #[test]
+    fn pricing_includes_current_model_after_switching_models() {
+        let theme = crate::theme::current();
+        let model = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let by_model = HashMap::from([(
+            "anthropic/claude-haiku-4-5".into(),
+            StoredTokenUsage::default(),
+        )]);
+
+        let text = pricing_lines(
+            &UsageModalContext {
+                total: &TokenUsage::default(),
+                by_model: &by_model,
+                model: &model,
+                fast: false,
+                quota: None,
+            },
+            &theme,
+        )
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+        assert!(text.contains(&model.spec()));
+        assert!(text.contains("anthropic/claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn model_rows_hide_provider_prefixes() {
+        let label = model_label("anthropic/claude-haiku-4-5", &HashSet::new());
+        let row = model_row(
+            &label,
+            &StoredTokenUsage::default(),
+            None,
+            None,
+            18,
+            Style::new(),
+            Style::new(),
+        )
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+        assert!(row.contains("claude-haiku-4-5"));
+        assert!(!row.contains("anthropic/"));
+    }
+
+    #[test]
+    fn model_rows_keep_provider_prefixes_for_colliding_ids() {
+        let ids = ["copilot/gpt-5.2", "cursor/gpt-5.2"];
+        let collisions = colliding_model_labels(ids);
+
+        assert_eq!(model_label(ids[0], &collisions), ids[0]);
+        assert_eq!(model_label(ids[1], &collisions), ids[1]);
+    }
+
+    #[test]
+    fn zero_priced_models_keep_usage_without_price_metrics() {
+        let theme = crate::theme::current();
+        let model = Model::from_spec("ollama/test-model").unwrap();
+        let total = TokenUsage {
+            input: 100,
+            output: 20,
+            ..TokenUsage::default()
+        };
+        let lines = build_lines(
+            &UsageModalContext {
+                total: &total,
+                by_model: &HashMap::new(),
+                model: &model,
+                fast: false,
+                quota: None,
+            },
+            &theme,
+        );
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(!text.contains(PRICE_HEADING));
+        assert!(text.contains("in 100"));
+    }
+
+    #[test]
     fn attributed_costs_price_each_model_separately() {
         let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
         let mut by_model = HashMap::new();
@@ -611,6 +885,79 @@ mod tests {
             (savings - token_usage.savings_cost(&current.pricing, false) * 2.0).abs()
                 > f64::EPSILON
         );
+    }
+
+    #[test]
+    fn attributed_costs_skip_zero_priced_models_without_dropping_the_estimate() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        let free = Model::from_spec("zai/glm-4.7-flash").unwrap();
+        assert!(free.pricing.is_zero(), "test needs a zero-priced model");
+
+        let by_model = HashMap::from([(current.id.clone(), usage), (free.id.clone(), usage)]);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false)
+            .expect("a priced model in the session still yields an estimate");
+        let token_usage = TokenUsage::from(usage);
+
+        assert!((cost - token_usage.cost(&current.pricing, false)).abs() < f64::EPSILON);
+        assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
+
+        let only_free = HashMap::from([(free.id, usage)]);
+        assert!(attributed_costs(&only_free, &current, false).is_none());
+    }
+
+    #[test]
+    fn attributed_costs_resolve_provider_qualified_models() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        let by_model = HashMap::from([("openai/gpt-5.6-sol".into(), usage)]);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
+        let pricing = Model::from_spec("openai/gpt-5.6-sol").unwrap().pricing;
+        let token_usage = TokenUsage::from(usage);
+
+        assert!((cost - token_usage.cost(&pricing, false)).abs() < f64::EPSILON);
+        assert!((savings - token_usage.savings_cost(&pricing, false)).abs() < f64::EPSILON);
+        assert!((cost - token_usage.cost(&current.pricing, false)).abs() > f64::EPSILON);
+    }
+
+    #[test]
+    fn attributed_costs_skip_unknown_models_without_dropping_known_estimates() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        let by_model = HashMap::from([
+            (current.id.clone(), usage),
+            ("unknown-provider/unknown-model".into(), usage),
+        ]);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
+        let token_usage = TokenUsage::from(usage);
+
+        assert!((cost - token_usage.cost(&current.pricing, false)).abs() < f64::EPSILON);
+        assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
+    }
+
+    #[test_case(0.00001, "<$0.0001" ; "tiny_nonzero")]
+    #[test_case(0.0, "$0.00" ; "zero")]
+    #[test_case(1.25, "$1.25" ; "regular")]
+    fn currency_format_preserves_nonzero_rates(price: f64, expected: &str) {
+        assert_eq!(format_currency(price), expected);
     }
 
     #[test]
