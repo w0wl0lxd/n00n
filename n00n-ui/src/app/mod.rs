@@ -59,7 +59,7 @@ use n00n_agent::{
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
-use n00n_providers::{Effort, Message, Model, System, ThinkingConfig};
+use n00n_providers::{Effort, Message, Model, ModelPricing, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
@@ -1648,8 +1648,14 @@ impl App {
             if chat_idx == 0 {
                 self.state.context_size = ctx_size;
             }
-            let formatted =
-                format_turn_usage(&tc.usage, &self.state.model.pricing, self.state.fast);
+            let pricing = match Model::from_spec(&tc.model) {
+                Ok(model) => model.pricing,
+                Err(error) => {
+                    tracing::warn!(model = %tc.model, %error, "omitting turn cost for unresolved model");
+                    ModelPricing::default()
+                }
+            };
+            let formatted = format_turn_usage(&tc.usage, &pricing, self.state.fast);
             self.chats[chat_idx].set_pending_turn_usage(formatted);
         }
 
