@@ -3864,12 +3864,13 @@ fn bash_schema_exposes_no_agent_controlled_rtk_override() {
     assert!(properties.get("rtk").is_none());
 }
 
-#[test_case::test_case("python -c 'print(123)'" ; "managed_command")]
 #[test_case::test_case("bash -c 'git status'" ; "nested_managed_command")]
 #[test_case::test_case("g''it status" ; "concatenated_quote_command")]
-#[test_case::test_case("exec git status" ; "exec_wrapper")]
+#[test_case::test_case("exec git --version" ; "exec_wrapper")]
+#[test_case::test_case("eval git status" ; "eval_wrapper")]
+#[test_case::test_case("rtk proxy bash -c 'git status'" ; "explicit_proxy_string_wrapper")]
+#[test_case::test_case(r"rtk proxy find . -maxdepth 0 -exec printf bypass \\;" ; "explicit_proxy_unsafe_find")]
 #[test_case::test_case("echo $(git status)" ; "command_substitution")]
-#[test_case::test_case("rtk proxy git status" ; "rtk_proxy")]
 #[test_case::test_case(r"find . -maxdepth 0 -exec printf should-not-run \;" ; "unsupported_find_fallback")]
 fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
     if skip_without_rtk("bash_handler_rejects_managed_commands_rtk_cannot_rewrite") {
@@ -3885,6 +3886,119 @@ fn bash_handler_rejects_managed_commands_rtk_cannot_rewrite(command: &str) {
         "unexpected error: {error}"
     );
 }
+#[test_case::test_case("python -c 'print(123)'", "123" ; "python")]
+#[test_case::test_case("git --version", "git version" ; "git")]
+#[test_case::test_case("gh --version", "gh version" ; "gh")]
+#[test_case::test_case("rtk proxy git --version", "git version" ; "explicit_rtk_proxy")]
+#[test_case::test_case("env N00N_RTK_TEST=1 git --version", "git version" ; "env_wrapper")]
+#[test_case::test_case("env -u N00N_RTK_TEST git --version", "git version" ; "env_value_option")]
+#[test_case::test_case("nice -n 10 git --version", "git version" ; "nice_value_option")]
+#[test_case::test_case("timeout 5 git --version", "git version" ; "timeout_wrapper")]
+#[test_case::test_case("timeout -s KILL 5 git --version", "git version" ; "timeout_value_option")]
+#[test_case::test_case("nohup env git --version", "git version" ; "stacked_wrappers")]
+#[test_case::test_case("nice -n10 git --version", "git version" ; "attached_wrapper_option")]
+#[test_case::test_case("timeout -sKILL 5 git --version", "git version" ; "attached_wrapper_value")]
+fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
+    command: &str,
+    expected: &str,
+) {
+    if skip_without_rtk("bash_handler_proxies_managed_commands_without_a_specialized_rewrite") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+    let input = serde_json::json!({ "command": command });
+    let invocation = reg
+        .get("bash")
+        .expect("bash registered")
+        .tool
+        .parse(&input)
+        .expect("parse failed");
+    let (ctx, event_rx) = warm_ctx("rtk-proxy-route");
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+    let output = match output {
+        n00n_agent::ToolOutput::Plain(output) => output.text,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    let body = recv_live_buf(&event_rx, "rtk-proxy-route").expect("bash live buffer");
+    let rendered = body
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
+
+    assert!(
+        output.contains(expected),
+        "unexpected output for {command}: {output}"
+    );
+    assert!(
+        rendered.contains("rtk proxy"),
+        "managed command did not take the RTK proxy path: {rendered}"
+    );
+}
+
+#[test_case::test_case("env N00N_RTK_TEST=lint printf go", "go" ; "env_script_argument")]
+#[test_case::test_case("timeout 5 printf lint", "lint" ; "timeout_script_argument")]
+#[test_case::test_case("exec printf ordinary", "ordinary" ; "exec_unmanaged_command")]
+#[test_case::test_case("xargs -r -a /dev/null basename && printf ordinary", "ordinary" ; "xargs_unmanaged_command")]
+#[test_case::test_case("nice -10 printf ordinary", "ordinary" ; "unknown_wrapper_option_without_managed_command")]
+fn bash_handler_routes_wrapper_commands_without_false_positives(command: &str, expected: &str) {
+    if skip_without_rtk("bash_handler_routes_wrapper_commands_without_false_positives") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+
+    let output = exec_tool(&reg, "bash", serde_json::json!({ "command": command }))
+        .unwrap_or_else(|error| panic!("{command} was rejected: {error}"));
+
+    assert!(output.contains(expected), "unexpected output: {output}");
+}
+
+#[test]
+fn bash_handler_sanitizes_explicit_git_proxy() {
+    if skip_without_rtk("bash_handler_sanitizes_explicit_git_proxy") {
+        return;
+    }
+    let (reg, _host) = builtins_host();
+    let input = serde_json::json!({
+        "command": "rtk proxy git -c core.fsmonitor=/untrusted/fsmonitor --version"
+    });
+    let invocation = reg
+        .get("bash")
+        .expect("bash registered")
+        .tool
+        .parse(&input)
+        .expect("parse failed");
+    let (ctx, event_rx) = warm_ctx("rtk-explicit-proxy");
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("explicit proxy was rejected");
+    let output = match output {
+        n00n_agent::ToolOutput::Plain(output) => output.text,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    let body = recv_live_buf(&event_rx, "rtk-explicit-proxy").expect("bash live buffer");
+    let rendered = body
+        .read()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect::<String>();
+
+    assert!(
+        output.contains("git version"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        rendered.contains("core.fsmonitor=false"),
+        "unsanitized command: {rendered}"
+    );
+    assert!(
+        !rendered.contains("/untrusted/fsmonitor"),
+        "unsafe override remained: {rendered}"
+    );
+}
+
 #[test]
 fn bash_permission_scopes_marks_broad_commands_for_prompt() {
     let (reg, _host) = builtins_host();
