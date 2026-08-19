@@ -570,6 +570,7 @@ enum CompactionPersistStage {
 
 struct PendingCompaction {
     ack: Box<n00n_agent::Envelope>,
+    transcript: Option<Arc<Vec<TranscriptEntry<Message>>>>,
     revision: u64,
     prepared: Option<PreparedCompaction>,
     attempts: u8,
@@ -1488,10 +1489,16 @@ impl<'t> EventLoop<'t> {
             && envelope.run_id == self.sessions[idx].app.run_id
             && envelope.subagent.is_none()
         {
+            let transcript = self.sessions[idx]
+                .app
+                .shared_transcript
+                .as_ref()
+                .map(|transcript| transcript.load_full());
             self.sessions[idx]
                 .pending_compactions
                 .push_back(PendingCompaction {
                     ack: envelope,
+                    transcript,
                     revision,
                     prepared: None,
                     attempts: 0,
@@ -1724,7 +1731,13 @@ impl<'t> EventLoop<'t> {
     }
 
     fn finish_compaction(&mut self, idx: usize, pending: PendingCompaction) {
+        let transcript = pending
+            .transcript
+            .map(|snapshot| Arc::new(ArcSwap::from(snapshot)));
+        let live_transcript =
+            std::mem::replace(&mut self.sessions[idx].app.shared_transcript, transcript);
         let actions = self.sessions[idx].app.update(Msg::Agent(pending.ack));
+        self.sessions[idx].app.shared_transcript = live_transcript;
         self.dispatch(idx, actions);
         if matches!(
             self.sessions[idx].app.state.session.meta.lifecycle,
@@ -3163,6 +3176,7 @@ mod tests {
                 subagent: None,
                 run_id: 1,
             }),
+            transcript: None,
             revision: 1,
             prepared: None,
             attempts: 0,
