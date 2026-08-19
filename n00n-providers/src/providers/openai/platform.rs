@@ -2497,7 +2497,7 @@ fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
         || !matches!(
             &attempt.delivery,
             Some(RequestDeliveryMetadata {
-                phase: RequestDeliveryPhase::NotSent,
+                phase: RequestDeliveryPhase::NotSent | RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
                 ..
             })
@@ -4968,6 +4968,141 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::large_futures)]
+    #[allow(clippy::too_many_lines)]
+    fn stale_previous_response_id_recovers_after_websocket_rejection() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let Some(Ok(WsMessage::Text(first))) = socket.next().await else {
+                    panic!("expected initial response.create");
+                };
+                let first: Value = serde_json::from_str(&first).unwrap();
+                assert!(first.get("previous_response_id").is_none());
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {"id": "resp_stale", "status": "completed"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+
+                let Some(Ok(WsMessage::Ping(payload))) = socket.next().await else {
+                    panic!("expected continuation preflight ping");
+                };
+                socket.send(WsMessage::Pong(payload)).await.unwrap();
+                let Some(Ok(WsMessage::Text(continuation))) = socket.next().await else {
+                    panic!("expected continuation response.create");
+                };
+                let continuation: Value = serde_json::from_str(&continuation).unwrap();
+                assert_eq!(continuation["previous_response_id"], "resp_stale");
+                assert_eq!(continuation["input"].as_array().unwrap().len(), 1);
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "code": "previous_response_not_found",
+                                "message": "Previous response not found"
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+
+                let (retry_stream, _) = listener.accept().await.unwrap();
+                let mut retry = async_tungstenite::accept_async(retry_stream).await.unwrap();
+                let Some(Ok(WsMessage::Text(full_history))) = retry.next().await else {
+                    panic!("expected full-history response.create");
+                };
+                let full_history: Value = serde_json::from_str(&full_history).unwrap();
+                assert!(full_history.get("previous_response_id").is_none());
+                assert_eq!(full_history["input"].as_array().unwrap().len(), 3);
+                retry
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {"id": "resp_recovered", "status": "completed"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            });
+
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let provider = OpenAi::with_auth_options(
+                Arc::new(Mutex::new(auth)),
+                crate::providers::Timeouts {
+                    connect: Duration::from_secs(2),
+                    stream: Duration::from_secs(2),
+                    low_speed: Duration::from_secs(2),
+                },
+                OpenAiOptions::codex(),
+            )
+            .unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let tools = serde_json::json!([]);
+            let session = SessionRef::generate();
+            let (event_tx, _) = flume::unbounded();
+            let first_messages = [Message::user("hello".into())];
+            provider
+                .stream_message(
+                    &model,
+                    &first_messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    RequestOptions::default(),
+                    Some(&session),
+                )
+                .await
+                .unwrap();
+
+            let messages = [
+                Message::user("hello".into()),
+                assistant("hi"),
+                Message::user("what next".into()),
+            ];
+            provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    RequestOptions::default(),
+                    Some(&session),
+                )
+                .await
+                .unwrap();
+            server.await;
+
+            let response_id = provider
+                .session_state
+                .lock()
+                .unwrap()
+                .get(&canonical_session_key(&session))
+                .and_then(|state| state.last_response_id.as_deref().map(ToOwned::to_owned));
+            assert_eq!(response_id.as_deref(), Some("resp_recovered"));
+        });
+    }
+
+    #[test]
     fn full_history_replay_requires_explicit_approval() {
         assert!(full_history_replay_required(None, 2, true, false));
         assert!(!full_history_replay_required(None, 2, false, false));
@@ -4982,7 +5117,7 @@ mod tests {
     }
 
     #[test]
-    fn only_not_sent_missing_previous_rejections_allow_full_history_retry() {
+    fn pre_acceptance_missing_previous_rejections_allow_full_history_retry() {
         let attempt =
             |phase, status, message: &str, emitted_event, definitive_rejection| CodexAttempt {
                 previous_response_id: Some("resp_1".into()),
@@ -5008,7 +5143,7 @@ mod tests {
                 false,
                 true,
             )));
-            assert!(!is_missing_previous_response(&attempt(
+            assert!(is_missing_previous_response(&attempt(
                 RequestDeliveryPhase::SentAwaitingAcceptance,
                 status,
                 message,
@@ -5016,6 +5151,13 @@ mod tests {
                 true,
             )));
         }
+        assert!(!is_missing_previous_response(&attempt(
+            RequestDeliveryPhase::Accepted,
+            400,
+            "previous_response_not_found: Previous response not found",
+            false,
+            true,
+        )));
         assert!(!is_missing_previous_response(&attempt(
             RequestDeliveryPhase::NotSent,
             404,
