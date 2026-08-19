@@ -1,1 +1,0 @@
-Fix the JobStore kill unit test to use the current start/kill/take_receiver call signatures.

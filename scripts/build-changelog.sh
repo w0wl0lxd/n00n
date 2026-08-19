@@ -48,8 +48,16 @@ for f in "${FRAGS[@]}"; do
     rm -rf "$TMP"
     exit 1
   fi
-  # Strip a single leading/trailing blank line, then append.
-  sed -e '1{/^$/d}' -e '${/^$/d}' "$f" >> "$TMP/$type"
+  # Strip a single leading/trailing blank line, then append each non-empty line as a normalized entry.
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] && continue
+    # Trim CR from Windows endings so adjacent lines don't glue together.
+    line="${line%$'\r'}"
+    case "$line" in
+      -*|"*") printf '%s\n' "$line" >> "$TMP/$type" ;;
+      *) printf '%s\n' "- $line" >> "$TMP/$type" ;;
+    esac
+  done < <(sed -e '1{/^$/d}' -e '${/^$/d}' "$f")
 done
 
 for t in "${ORDER[@]}"; do

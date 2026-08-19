@@ -49,7 +49,7 @@ You will need `AWS_REGION` and one of the following for auth:
 
 You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROPIC_BEDROCK_BASE_URL`. These env var names match Claude Code, so if you were already using Bedrock there, the same setup works here.";
 
-const OPENCODE_GO_NOTE: &str = r"OpenCode Go (`https://opencode.ai/zen/go/v1`) is a separate models.dev catalog entry with its own curated model set; select it with a spec like `opencode/opencode-go/<model>`, or `opencode/opencode-go` for the default model.";
+const OPENCODE_GO_NOTE: &str = r"OpenCode Go (`https://opencode.ai/zen/go/v1`) is a separate models.dev catalog entry with its own curated model set — including `muse-spark-1.2-contributor` (the Go-only contributor variant of `muse-spark-1.2`), `gpt-5.3-codex-spark`, and Go-exclusive `qwen3.7-*`/`qwen3.8-max` models; select it with a spec like `opencode/opencode-go/<model>`, or `opencode/opencode-go` for the default model. The main Zen catalog (`https://opencode.ai/zen/v1`) includes `muse-spark-1.2` and `opencode-go` as selectable model prefixes.";
 
 const OPENCODE_FREE_MODELS_NOTE: &str = r"By default n00n hides free models from the Opencode catalog. To list free models (they use a public fallback, no API key needed), add this to `~/.config/n00n/providers.toml`:
 

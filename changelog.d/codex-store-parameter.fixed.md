@@ -1,1 +1,0 @@
-Send `store: false` on OpenAI Codex WebSocket requests. The Coding Plan endpoint rejects `store: true` with a 400 "Store must be set to false" error, so continuation requests now also disable server-side response storage.

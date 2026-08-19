@@ -157,6 +157,13 @@ impl ProviderData {
             debug!(provider = %self.display_name, "api key resolved from storage");
             return Some(key);
         }
+        if self.slug == "opencode-go"
+            && let Some(creds) = load_provider_credentials(state_dir, "opencode")
+            && !creds.api_key.trim().is_empty()
+        {
+            debug!(provider = %self.display_name, "api key resolved from opencode storage fallback");
+            return Some(creds.api_key);
+        }
         None
     }
 
@@ -211,7 +218,7 @@ impl ProviderData {
         override_auth: Option<&Arc<Mutex<ResolvedAuth>>>,
         state_dir: &StateDir,
     ) -> Option<ResolvedAuth> {
-        if self.slug == "opencode"
+        if (self.slug == "opencode" || self.slug == "opencode-go")
             && let Some(auth) = override_auth
         {
             return Some(
