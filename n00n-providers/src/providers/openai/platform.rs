@@ -23,9 +23,9 @@ use tracing::{debug, info, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, CacheHealth, CacheKind, HistoryReplayReason, Message, OpenAiPromptCacheMode,
-    ProviderEvent, ProviderUsage, RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions,
-    StreamResponse, System, UsageLimit, dialect,
+    AgentError, CacheControl, CacheHealth, CacheKind, HistoryReplayReason, Message,
+    OpenAiPromptCacheMode, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, StreamResponse, System, UsageLimit, dialect,
 };
 
 use super::auth;
@@ -397,7 +397,7 @@ impl OpenAiSessionState {
             response_id: self.last_response_id.clone()?,
             message_count: self.last_message_count,
             model_id: self.model_id.clone(),
-            system_hash: self.system_hash.clone(),
+            system_hash: Some(self.system_hash.clone()?),
             tools_hash: self.tools_hash.clone()?,
             messages_hash: self.messages_hash.clone()?,
             auth_scope_hash: self.auth_scope_hash.clone()?,
@@ -411,10 +411,17 @@ fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, s
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn stable_text_hash(text: &str) -> String {
+fn system_hash(system: &System) -> String {
     let mut digest = Sha256::new();
-    digest.update(text.len().to_le_bytes());
-    digest.update(text.as_bytes());
+    for block in system.blocks() {
+        digest.update(block.text.len().to_le_bytes());
+        digest.update(block.text.as_bytes());
+        digest.update([match block.cache {
+            CacheControl::None => 0,
+            CacheControl::Ephemeral => 1,
+            CacheControl::Dynamic => 2,
+        }]);
+    }
     format!("{:x}", digest.finalize())
 }
 
@@ -445,7 +452,7 @@ impl CachePrefixFingerprint {
         Self {
             model_id: model_id.to_owned(),
             prefix_hash: format!("{:x}", digest.finalize()),
-            system_hash: stable_text_hash(&system_text),
+            system_hash: system_hash(system),
             tools_hash: tools_hash.to_owned(),
         }
     }
@@ -546,13 +553,6 @@ fn suppress_retry_after_send(error: AgentError) -> AgentError {
 
 fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
-}
-
-fn prompt_cache_key(
-    fingerprint: &CachePrefixFingerprint,
-    session_id: Option<&SessionRef>,
-) -> String {
-    fingerprint.prompt_cache_key(session_id)
 }
 
 fn log_responses_request(
@@ -1669,7 +1669,7 @@ impl OpenAi {
         }
         self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
             .await;
-        let prompt_cache_key = prompt_cache_key(&fingerprint, session_id);
+        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -2013,7 +2013,7 @@ impl OpenAi {
         // API-key Responses requests are intentionally stateless. This HTTP path cannot
         // reuse a store=false response ID safely, so every turn sends full history.
         let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
-        let prompt_cache_key = prompt_cache_key(&fingerprint, session_id);
+        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
         let body = super::responses::build_body(
             model,
             messages,
@@ -2411,7 +2411,7 @@ impl Provider for OpenAi {
             // Fallback to Chat Completions
             let fingerprint =
                 CachePrefixFingerprint::new(&model.id, &prefixed_system_obj, &tools_hash);
-            let prompt_cache_key = prompt_cache_key(&fingerprint, session_id);
+            let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -2637,13 +2637,8 @@ mod tests {
     const TEST_CREDENTIAL_HASH: &str = "test-credential";
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
-    fn test_fingerprint(system_hash: &str, tools_hash: &str) -> CachePrefixFingerprint {
-        CachePrefixFingerprint {
-            model_id: "gpt-5.6".into(),
-            prefix_hash: stable_text_hash(&format!("{system_hash}:{tools_hash}")),
-            system_hash: system_hash.into(),
-            tools_hash: tools_hash.into(),
-        }
+    fn test_fingerprint(system: &str, tools_hash: &str) -> CachePrefixFingerprint {
+        CachePrefixFingerprint::new("gpt-5.6", &System::from(system), tools_hash)
     }
 
     async fn read_http_request(stream: &mut smol::net::TcpStream) -> (String, Value) {
@@ -3212,7 +3207,14 @@ mod tests {
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), second.len());
-        assert_eq!(state.system_hash.as_deref(), Some("new-system"));
+        assert_eq!(
+            state.system_hash.as_deref(),
+            Some(
+                test_fingerprint("new-system", TOOLS_HASH)
+                    .system_hash
+                    .as_str()
+            )
+        );
     }
 
     #[test]
@@ -3232,15 +3234,43 @@ mod tests {
             assistant("hi"),
             Message::user("again".into()),
         ];
-        let mut changed = test_fingerprint(SYSTEM_HASH, TOOLS_HASH);
-        changed.model_id = "gpt-5.6-luna".into();
-        changed.prefix_hash = stable_text_hash("changed-model");
+        let changed =
+            CachePrefixFingerprint::new("gpt-5.6-luna", &System::from(SYSTEM_HASH), TOOLS_HASH);
 
         let (previous, incremental) =
             incremental_for_state(&mut state, &changed, AUTH_SCOPE_HASH, &second).unwrap();
 
         assert!(previous.is_none());
         assert_eq!(incremental.len(), second.len());
+    }
+
+    #[test]
+    fn system_hash_preserves_block_boundaries() {
+        let combined = System::from("ab");
+        let mut split = System::new();
+        split.push_static("a");
+        split.push_static("b");
+        split.seal();
+
+        assert_eq!(combined.to_string(), split.to_string());
+        assert_ne!(system_hash(&combined), system_hash(&split));
+    }
+
+    #[test]
+    fn state_without_system_hash_is_not_persisted() {
+        let state = OpenAiSessionState {
+            last_response_id: Some("resp_1".into()),
+            last_message_count: 1,
+            model_id: Some("gpt-5.6".into()),
+            system_hash: None,
+            tools_hash: Some(TOOLS_HASH.into()),
+            messages_hash: Some("messages".into()),
+            auth_scope_hash: Some(AUTH_SCOPE_HASH.into()),
+            expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
+            last_used: Instant::now(),
+        };
+
+        assert!(state.to_stored().is_none());
     }
 
     #[test]
@@ -3271,7 +3301,14 @@ mod tests {
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), messages.len());
-        assert_eq!(state.system_hash.as_deref(), Some(SYSTEM_HASH));
+        assert_eq!(
+            state.system_hash.as_deref(),
+            Some(
+                test_fingerprint(SYSTEM_HASH, TOOLS_HASH)
+                    .system_hash
+                    .as_str()
+            )
+        );
     }
 
     #[test]
@@ -4010,7 +4047,7 @@ mod tests {
         let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
         let system = System::from("stable instructions");
         let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash);
-        let key = prompt_cache_key(&fingerprint, None);
+        let key = fingerprint.prompt_cache_key(None);
         let system_text = system.to_string();
         let mut legacy_digest = Sha256::new();
         legacy_digest.update("gpt-5.6".len().to_le_bytes());
@@ -4026,7 +4063,7 @@ mod tests {
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash)
         );
-        assert_eq!(key, prompt_cache_key(&fingerprint, None));
+        assert_eq!(key, fingerprint.prompt_cache_key(None));
         assert_ne!(
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &System::from("changed"), &tools_hash)
@@ -4045,7 +4082,7 @@ mod tests {
     fn cache_prefix_fingerprint_debug_is_sanitized() {
         let system_text = "private system instructions";
         let tools_text = "private tool schema";
-        let tools_hash = stable_text_hash(tools_text);
+        let tools_hash = stable_json_hash(tools_text).unwrap();
         let fingerprint =
             CachePrefixFingerprint::new("gpt-5.6", &System::from(system_text), &tools_hash);
         let debug = format!("{fingerprint:?}");
@@ -4067,8 +4104,8 @@ mod tests {
 
         assert_ne!(legacy.as_str(), canonical.as_str());
         assert_eq!(
-            prompt_cache_key(&fingerprint, Some(&legacy)),
-            prompt_cache_key(&fingerprint, Some(&canonical))
+            fingerprint.prompt_cache_key(Some(&legacy)),
+            fingerprint.prompt_cache_key(Some(&canonical))
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
