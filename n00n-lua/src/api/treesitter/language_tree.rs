@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::language::Language;
+use crate::{language::Language, runtime::run_non_yieldable};
 use mlua::{Function, Lua, Result as LuaResult, Table, Value as LuaValue};
 use n00n_lua_macro::{lua_class, lua_fn};
 use tree_sitter::{Parser, Tree};
@@ -134,9 +134,11 @@ fn is_valid(
 ///   print(tree:root():type())
 /// end)
 #[lua_fn]
-fn for_each_tree(_lua: &Lua, this: &mut LuaLanguageTree, r#fn: Function) -> LuaResult<()> {
+fn for_each_tree(lua: &Lua, this: &mut LuaLanguageTree, r#fn: Function) -> LuaResult<()> {
     let tree = this.ensure_parsed()?;
-    r#fn.call::<()>((LuaTree { inner: tree }, LuaValue::Nil))?;
+    run_non_yieldable(lua, || {
+        r#fn.call::<()>((LuaTree { inner: tree }, LuaValue::Nil))
+    })?;
     Ok(())
 }
 

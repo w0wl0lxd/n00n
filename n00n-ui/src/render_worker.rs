@@ -155,6 +155,10 @@ impl RenderWorker {
         }
     }
 
+    pub fn has_pending_results(&self) -> bool {
+        !self.result_rx.is_empty()
+    }
+
     #[cfg(test)]
     pub fn enqueue_result_for_test(&self, result: RenderResult) {
         publish_result(&self.inner, result);

@@ -462,6 +462,10 @@ impl Segment {
         true
     }
 
+    pub fn has_pending_highlight(&self) -> bool {
+        self.pending_highlight.is_some() || self.highlight_retry.is_some()
+    }
+
     pub fn matches_pending_highlight(&self, id: u64) -> bool {
         self.pending_highlight == Some(id)
     }

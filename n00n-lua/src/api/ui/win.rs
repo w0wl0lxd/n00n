@@ -286,7 +286,7 @@ fn close(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 #[lua_fn]
 fn is_open(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
     if !this.closed.load(Ordering::Acquire) && this.cmd_tx.is_disconnected() {
-        this.closed.store(true, Ordering::Relaxed);
+        this.closed.store(true, Ordering::Release);
     }
     Ok(!this.closed.load(Ordering::Acquire))
 }
@@ -330,7 +330,7 @@ fn hide(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 #[lua_fn]
 fn is_visible(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
     if !this.closed.load(Ordering::Acquire) && this.cmd_tx.is_disconnected() {
-        this.closed.store(true, Ordering::Relaxed);
+        this.closed.store(true, Ordering::Release);
     }
     Ok(this.visible.load(Ordering::Relaxed) && !this.closed.load(Ordering::Acquire))
 }
