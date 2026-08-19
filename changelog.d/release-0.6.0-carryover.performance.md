@@ -1,6 +1,0 @@
-- Improved session startup by making session-header scanning faster and cwd index handling more robust.
-- Improved tool registry lookups with a HashMap-backed snapshot instead of linear scans.
-- Reduced token use by trimming tool JSON schemas and result payloads.
-- Improved OpenAI prompt cache routing and Google explicit cache reuse, billing, and token accounting.
-- Reduced per-turn token overhead by compressing system/subagent prompts, tightening default output limits, and improving `dynamic_tool_size` observability. Prompt templates are smaller, tool-output line/byte defaults are lower, and the token-measurement binary now reports per-tool and per-prompt costs.Use model-aware tiktoken vocabularies (cl100k/o200k) for context-size estimation, choosing o200k for GPT-4o/GPT-4.1/GPT-5/o-series models. Adjust Anthropic cache breakpoints by conversation length so short sessions pay for fewer cache writes and long sessions cache more prefixes.
-- Reduced the `skill` tool definition size by moving skill enumeration behind a `list` parameter, and added tiktoken-based token accounting for messages and tool definitions to the agent context window.

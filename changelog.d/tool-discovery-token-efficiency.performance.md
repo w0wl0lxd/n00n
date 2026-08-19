@@ -1,1 +1,0 @@
-Reduced initial prompt size by deferring low-frequency tool families behind filtered discovery, while keeping loaded tools available for the session. Tool search now ranks and caps results, file reads default to 200 lines, and file/content searches default to 50 results.

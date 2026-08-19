@@ -1,1 +1,0 @@
-Generate client-side idempotency keys for provider POST requests. When a request fails after being sent (RequestSent error), retry with the same key so the provider can deduplicate. Makes transport failures retryable without duplicate output or charges.
