@@ -11,7 +11,7 @@ This is not a tool contract but a configuration and prompt contract for RTK bash
 
 ### Availability Detection
 
-- RTK availability is checked via `rtk --version` with a 2s timeout.
+- RTK availability is checked via `rtk --version` with a 10s timeout.
 - Availability is cached per session to avoid repeated spawns.
 - Config option `no_rtk` in CLI/config disables RTK rewriting.
 
@@ -30,7 +30,7 @@ The following commands pass through unchanged:
 
 - jq
 - yq
-- Commands with unsupported flags (e.g., find with -exec, -delete)
+- Commands outside the managed-command set
 
 ## Prompt Contract
 
@@ -51,10 +51,11 @@ The agent's `NATIVE_EFFICIENT_TOOLS` list should recommend rtk-wrapped bash for 
 ### When RTK is Available
 
 1. Normalize the command (e.g., `head -n N` to `head -N`).
-2. Call `rtk rewrite <command>` with a 2s timeout.
+2. Call `rtk rewrite <command>` with a 10s timeout.
 3. If rewrite succeeds (exit code 0 or 3), use the rewritten command.
-4. If rewrite fails for unsupported commands, fall back to `rtk git` for git subcommands or run unchanged.
-5. Execute the rewritten or original command.
+4. Exit code 1 means no specialized rewrite is available. Use an allowlisted RTK fallback where one is safe.
+5. Reject a managed command when it cannot be safely rewritten or proxied.
+6. Execute unmanaged commands unchanged.
 
 ### When RTK is Unavailable
 
@@ -69,9 +70,10 @@ The agent's `NATIVE_EFFICIENT_TOOLS` list should recommend rtk-wrapped bash for 
 
 ## Error Handling
 
-- If rtk version check times out, assume rtk is unavailable.
-- If rtk rewrite times out, run the original command unchanged.
-- If rtk rewrite returns an unexpected error, run the original command unchanged.
+- If the RTK binary is absent, run the original command unchanged.
+- If the availability check fails or times out, reject managed commands and leave unmanaged commands unchanged.
+- If rewriting fails or times out, reject managed commands unless an allowlisted fallback is available.
+- Treat only rewrite exit code 1 as "no specialized rewrite". Other unexpected failures are not safe fallback signals.
 
 ## Notes
 
