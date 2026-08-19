@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
+use std::io::{Error as IoError, Write};
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +13,7 @@ use n00n_config::Effect;
 use n00n_providers::{Message, Model, ModelResolver, ThinkingConfig, TokenUsage};
 use n00n_storage::sessions::{StoredEffect, StoredMode, StoredRule};
 use n00n_storage::{StateDir, TranscriptEntry};
-use serde_json::Value;
+use serde::Serialize;
 
 use crate::AppSession;
 
@@ -28,7 +32,55 @@ pub(crate) struct SessionState {
     pub workflow: bool,
     transcript_revision: u64,
     shared_transcript_snapshot: Option<Arc<Vec<TranscriptEntry<Message>>>>,
-    last_snapshot: Option<Value>,
+    last_fingerprint: Option<u64>,
+}
+
+/// Change detection used to keep a whole `serde_json::Value` of the session
+/// resident as its baseline. On a long session that tree dwarfed the session
+/// itself, so hash the encoding as it streams and keep only the digest.
+struct FingerprintWriter(DefaultHasher);
+
+impl Write for FingerprintWriter {
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, IoError> {
+        Hasher::write(&mut self.0, bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> Result<(), IoError> {
+        Ok(())
+    }
+}
+
+fn hash_serialized<T: Serialize>(value: &T) -> Option<u64> {
+    let mut writer = FingerprintWriter(DefaultHasher::new());
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Some(writer.0.finish()),
+        Err(error) => {
+            tracing::warn!(%error, "session change detection failed; advancing revision");
+            None
+        }
+    }
+}
+
+/// The two `tool_use_id`-keyed maps iterate in unspecified order, so they are
+/// folded commutatively and the rest of the session is hashed with them lifted
+/// out. Lifting them (rather than listing the other fields) keeps the digest
+/// correct when `Session` gains a field.
+fn session_fingerprint(session: &mut AppSession) -> Option<u64> {
+    let tool_outputs = mem::take(&mut session.tool_outputs);
+    let subagent_messages = mem::take(&mut session.subagent_messages);
+    let base = hash_serialized(&*session);
+    session.tool_outputs = tool_outputs;
+    session.subagent_messages = subagent_messages;
+
+    let mut fingerprint = base?;
+    for entry in &session.tool_outputs {
+        fingerprint ^= hash_serialized(&entry)?;
+    }
+    for entry in &session.subagent_messages {
+        fingerprint ^= hash_serialized(&entry)?;
+    }
+    Some(fingerprint)
 }
 
 const PLAN_FILE_MISSING_WARNING: &str = "Plan file was deleted \u{2014} started a new plan";
@@ -83,13 +135,7 @@ impl SessionState {
 
         let token_usage = session.token_usage;
         let context_size = session.meta.context_size;
-        let last_snapshot = match serde_json::to_value(&session) {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) => {
-                tracing::warn!(%error, "session change detection baseline failed");
-                None
-            }
-        };
+        let last_fingerprint = session_fingerprint(&mut session);
 
         Self {
             // Saved model may differ from the live one (updated, removed, etc).
@@ -111,7 +157,7 @@ impl SessionState {
             warnings,
             transcript_revision: 0,
             shared_transcript_snapshot: None,
-            last_snapshot,
+            last_fingerprint,
         }
     }
 
@@ -163,26 +209,12 @@ impl SessionState {
     }
 
     pub fn finish_snapshot(&mut self) {
-        let current = self.serialized_session();
-        let changed = current.as_ref().is_none_or(|current| {
-            self.last_snapshot
-                .as_ref()
-                .is_none_or(|previous| previous != current)
-        });
+        let current = session_fingerprint(&mut self.session);
+        let changed = current.is_none_or(|current| self.last_fingerprint != Some(current));
         if changed {
             self.session.meta.revision = self.session.meta.revision.saturating_add(1);
             self.session.updated_at = n00n_storage::now_epoch();
-            self.last_snapshot = self.serialized_session();
-        }
-    }
-
-    fn serialized_session(&self) -> Option<Value> {
-        match serde_json::to_value(&self.session) {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) => {
-                tracing::warn!(%error, "session change detection failed; advancing revision");
-                None
-            }
+            self.last_fingerprint = session_fingerprint(&mut self.session);
         }
     }
 
@@ -325,7 +357,6 @@ mod tests {
         assert_eq!(state.mode, Mode::Plan);
         assert_eq!(state.plan.path(), Some(plan_file.as_path()));
     }
-
     #[test]
     fn build_mode_does_not_allocate_path() {
         let tmp = tempfile::tempdir().unwrap();

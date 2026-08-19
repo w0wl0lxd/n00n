@@ -1,3 +1,4 @@
+use super::session::message_tool_use_ids;
 use super::*;
 use crate::agent::shared_queue;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
@@ -24,6 +25,7 @@ use n00n_storage::sessions::{
 };
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -48,10 +50,24 @@ fn build_app_with_mcp(
     writer: Arc<StorageWriter>,
     mcp_reader: McpSnapshotReader,
 ) -> App {
+    build_app_with_session(
+        dir,
+        writer,
+        mcp_reader,
+        AppSession::new("test-model", "/tmp/test"),
+    )
+}
+
+fn build_app_with_session(
+    dir: StateDir,
+    writer: Arc<StorageWriter>,
+    mcp_reader: McpSnapshotReader,
+    session: AppSession,
+) -> App {
     let model = test_model();
     App::new(AppInit {
         model,
-        session: AppSession::new("test-model", "/tmp/test"),
+        session,
         storage: dir,
         available_models: Arc::new(ArcSwapOption::empty()),
         mcp_reader,
@@ -62,6 +78,7 @@ fn build_app_with_mcp(
         storage_writer: writer,
         ui_config: UiConfig::default(),
         input_history_size: 100,
+        retention_budget: RetentionBudget::default(),
         permissions: Arc::new(PermissionManager::new(
             PermissionsConfig {
                 rules: vec![],
@@ -1265,7 +1282,6 @@ fn turn_complete_accumulates_usage_by_model() {
     assert_eq!(sub.input, 200);
     assert_eq!(sub.output, 75);
 }
-
 #[test]
 fn cancel_resets_all_chats_and_indices() {
     let mut app = app_with_subagent();
@@ -1437,7 +1453,6 @@ fn open_tasks_picker(app: &mut App) {
     }
     app.update(Msg::Key(key(KeyCode::Enter)));
 }
-
 #[test]
 fn agent_picker_exposes_names_models_and_status() {
     let mut app = app_with_subagent();
@@ -1598,7 +1613,6 @@ fn task_picker_preview_scrollbar_uses_rendered_chat() {
         zone: SelectionZone::Messages,
         scroll_info: Some(info),
     });
-
     app.update(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         area.right() - 1,
@@ -1608,7 +1622,6 @@ fn task_picker_preview_scrollbar_uses_rendered_chat() {
     assert_eq!(app.chats[0].scroll_top(), u16::MAX);
     assert!(app.chats[1].scroll_top() > 0);
 }
-
 #[test]
 fn picker_escape_restores_chat() {
     let mut app = app_with_subagent();
@@ -1617,7 +1630,6 @@ fn picker_escape_restores_chat() {
     open_tasks_picker(&mut app);
     app.update(Msg::Key(key(KeyCode::Down)));
     app.update(Msg::Key(key(KeyCode::Esc)));
-
     assert!(!app.task_picker.is_open());
     assert_eq!(app.active_chat, 0);
 }
@@ -1625,7 +1637,6 @@ fn picker_escape_restores_chat() {
 #[test]
 fn picker_enter_stays_at_navigated() {
     let mut app = app_with_subagent();
-
     open_tasks_picker(&mut app);
     app.update(Msg::Key(key(KeyCode::Down)));
     app.update(Msg::Key(key(KeyCode::Enter)));
@@ -2157,7 +2168,6 @@ fn drag_back_into_area_clears_edge_scroll() {
 fn mouse_down_outside_all_zones_ignored() {
     let mut app = test_app();
     set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 40, 10));
-
     app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 50, 15));
     assert!(
         app.selection_state.is_none(),
@@ -3219,7 +3229,6 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
         .checkpoint_compaction_state(StoredSessionStateSnapshot::new(7))
         .unwrap();
     app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(9));
-
     let actions = app.rewind_to(&crate::components::rewind_picker::RewindEntry {
         turn_index: 4,
         prompt_preview: "remove".into(),
@@ -3398,7 +3407,6 @@ fn typing_in_read_only_subagent_flashes_explanation() {
 
     assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
 }
-
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
     let (sub_tx, sub_rx) = flume::unbounded();
     let (main_tx, main_rx) = flume::unbounded();
@@ -3513,7 +3521,6 @@ fn expanded_subagent_chat_sends_pasted_steering() {
     let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
     app.update(Msg::Paste("pasted steering".into()));
     assert_eq!(app.input_box.buffer.value(), "pasted steering");
-
     app.update(Msg::Key(key(KeyCode::Enter)));
 
     let prompt = prompt_rx.try_recv().unwrap();
@@ -3756,7 +3763,6 @@ fn btw_with_question_returns_action() {
     });
     assert!(matches!(&actions[..], [Action::Btw(q)] if q == "what is rust?"));
 }
-
 #[test]
 fn btw_modal_key_routing_and_animation() {
     let mut app = test_app();
@@ -3856,7 +3862,6 @@ fn error_event_matching_run_id_saves_session() {
 }
 
 // --- Plan form integration tests ---
-
 fn done_event() -> Msg {
     agent_msg(AgentEvent::Done {
         usage: TokenUsage::default(),
@@ -3873,7 +3878,6 @@ fn implement_msg(parallel: bool) -> String {
         format!("{IMPLEMENT_MSG_PREFIX} at `test-plan.md`.")
     }
 }
-
 fn plan_app() -> App {
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -4053,7 +4057,6 @@ fn dismiss_plan_esc(app: &mut App) {
 fn rewrite_does_not_reopen_after_dismiss() {
     let mut app = plan_app();
     assert!(app.plan_form.is_visible());
-
     dismiss_plan_esc(&mut app);
     assert!(!app.plan_form.is_visible());
     assert!(app.state.plan.is_ready());
@@ -4110,7 +4113,6 @@ fn override_shadows_builtin_ctrl_when_no_overlay_open() {
         "override must consume the key before the built-in HELP handler runs"
     );
 }
-
 #[test]
 fn override_shadows_quit_builtin() {
     let entry = n00n_lua::KeymapEntry {
@@ -4217,7 +4219,6 @@ fn builtin_runs_when_no_override() {
 
     assert!(app.help_modal.is_open());
 }
-
 #[test]
 fn overlay_wins_over_override_when_plan_form_open() {
     let entry = n00n_lua::KeymapEntry {
@@ -4234,7 +4235,6 @@ fn overlay_wins_over_override_when_plan_form_open() {
     assert!(app.lua_event_handle.is_none());
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
-
     assert!(!app.plan_form.is_visible());
 }
 
@@ -4413,7 +4413,6 @@ fn fast_toggle_on_off_on_opus() {
     let mut app = test_app();
     set_opus_model(&mut app);
     assert!(!app.state.fast);
-
     app.execute_command(cmd("/fast"));
     assert!(app.state.fast);
     assert_eq!(app.status_bar.flash_text(), Some(FAST_ON_MSG));
@@ -4645,7 +4644,6 @@ fn lua_panel_click_is_consumed_before_underlying_chat_selection() {
     terminal.draw(|frame| app.view(frame)).unwrap();
 
     app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 1, 34));
-
     assert!(app.selection_state.is_none());
 }
 
@@ -4678,7 +4676,6 @@ fn below_split_reserves_bottom_and_suppresses_input() {
         "input box is suppressed under a below split"
     );
 }
-
 /// `carve` already tests the per-direction geometry; this pins the app wiring:
 /// a split shrinks the chat while the full-width status bar stays put. Below is
 /// tested separately since it also hides the input box.
@@ -4797,7 +4794,6 @@ fn cancel_subagent_removes_answer_sender() {
     app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(!app.subagent_answers.contains_key("task1"));
 }
-
 #[test]
 fn multiple_subagents_cancel_one_other_unaffected() {
     let mut app = app_with_subagent_id("task1");
@@ -4842,4 +4838,302 @@ fn subagent_cancel_then_navigate_back_main_unaffected() {
     assert_eq!(app.active_chat, 0);
     assert_eq!(app.status, Status::Streaming);
     assert!(!app.chats[0].is_finished());
+}
+
+const COMPLETION_BURST: usize = 50;
+const RETAINED_SUBAGENTS: usize = 2;
+const RETAINED_TOOL_OUTPUTS: usize = 2;
+const GROWN_SUBAGENTS: usize = 6;
+
+fn subagent_tool_use_id(index: usize) -> String {
+    format!("task-{index:03}")
+}
+
+fn nested_tool_use_id(index: usize) -> String {
+    format!("task-{index:03}-inner")
+}
+
+fn tool_use_turn(id: &str, name: &str) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolUse {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            input: serde_json::json!({}),
+        }],
+        ..Default::default()
+    }
+}
+
+/// One assistant turn per subagent, so the session records the ids in the
+/// order they ran. Retention ranks by that order.
+fn push_subagent_turns(app: &mut App, count: usize) {
+    push_subagent_turns_from(app, 0, count);
+}
+
+fn push_subagent_turns_from(app: &mut App, start: usize, count: usize) {
+    for index in start..start + count {
+        let id = subagent_tool_use_id(index);
+        let nested = nested_tool_use_id(index);
+        app.state.session.messages.push(tool_use_turn(&id, "task"));
+        app.state.session.subagent_messages.insert(
+            id.clone(),
+            vec![
+                Message::user(format!("{id} history")),
+                tool_use_turn(&nested, "bash"),
+            ],
+        );
+        app.state
+            .session
+            .tool_outputs
+            .insert(id.clone(), ToolOutput::Plain(format!("{id} output").into()));
+        app.state.session.tool_outputs.insert(
+            nested.clone(),
+            ToolOutput::Plain(format!("{nested} output").into()),
+        );
+    }
+}
+
+#[test]
+fn burst_of_completions_coalesces_into_one_save() {
+    let mut app = test_app();
+    app.state
+        .session
+        .messages
+        .push(Message::user("work".into()));
+    app.save_session();
+    let baseline = app.session_saves;
+
+    for index in 0..COMPLETION_BURST {
+        let id = subagent_tool_use_id(index);
+        app.state
+            .session
+            .subagent_messages
+            .insert(id.clone(), vec![Message::user(format!("{id} history"))]);
+        app.save_session_coalesced();
+    }
+
+    assert_eq!(
+        app.session_saves, baseline,
+        "a burst inside the coalescing window must not snapshot per event"
+    );
+    assert!(app.pending_save);
+}
+
+#[test]
+fn deferred_save_lands_once_the_window_elapses() {
+    let mut app = test_app();
+    app.state
+        .session
+        .messages
+        .push(Message::user("work".into()));
+    app.save_session();
+    for index in 0..COMPLETION_BURST {
+        let id = subagent_tool_use_id(index);
+        app.state
+            .session
+            .subagent_messages
+            .insert(id.clone(), vec![Message::user(format!("{id} history"))]);
+        app.save_session_coalesced();
+    }
+    let deferred = app.session_saves;
+
+    app.last_save_flush = None;
+    app.tick_pending_save();
+
+    assert_eq!(app.session_saves, deferred + 1);
+    assert!(!app.pending_save);
+}
+
+#[test]
+fn coalesced_burst_still_persists_every_completion() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let session_id = app.state.session.id;
+    app.state
+        .session
+        .messages
+        .push(Message::user("work".into()));
+    app.save_session();
+    for index in 0..COMPLETION_BURST {
+        let id = subagent_tool_use_id(index);
+        app.state
+            .session
+            .subagent_messages
+            .insert(id.clone(), vec![Message::user(format!("{id} history"))]);
+        app.save_session_coalesced();
+    }
+    assert!(app.session_saves < COMPLETION_BURST);
+
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+
+    let loaded = AppSession::load(session_id, &dir).unwrap();
+    assert_eq!(loaded.subagent_messages.len(), COMPLETION_BURST);
+    drain_writer(app, writer);
+}
+
+#[test]
+fn retention_budget_bounds_live_session_and_keeps_the_log_complete() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let session_id = app.state.session.id;
+    app.retention_budget = RetentionBudget {
+        tool_outputs: RETAINED_TOOL_OUTPUTS,
+        subagent_histories: RETAINED_SUBAGENTS,
+    };
+    push_subagent_turns(&mut app, GROWN_SUBAGENTS);
+
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+
+    assert_eq!(
+        app.state.session.subagent_messages.len(),
+        RETAINED_SUBAGENTS
+    );
+    assert_eq!(app.state.session.tool_outputs.len(), RETAINED_TOOL_OUTPUTS);
+    let loaded = AppSession::load(session_id, &dir).unwrap();
+    assert_eq!(loaded.subagent_messages.len(), GROWN_SUBAGENTS);
+    assert_eq!(loaded.tool_outputs.len(), GROWN_SUBAGENTS * 2);
+    drain_writer(app, writer);
+}
+
+#[test]
+fn restarted_session_evicts_records_that_were_already_durable() {
+    let (tmp, dir, writer, mut app) = tempdir_app();
+    let session_id = app.state.session.id;
+    let budget = RetentionBudget {
+        tool_outputs: RETAINED_TOOL_OUTPUTS,
+        subagent_histories: RETAINED_SUBAGENTS,
+    };
+    app.retention_budget = budget;
+    push_subagent_turns(&mut app, GROWN_SUBAGENTS);
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+    drain_writer(app, writer);
+
+    let loaded =
+        AppSession::load_with_retention(session_id, &dir, budget, message_tool_use_ids).unwrap();
+    let restarted_writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
+    let mut restarted = build_app_with_session(
+        dir,
+        Arc::clone(&restarted_writer),
+        McpSnapshotReader::empty(),
+        loaded,
+    );
+    restarted.retention_budget = budget;
+    push_subagent_turns_from(&mut restarted, GROWN_SUBAGENTS, 1);
+
+    restarted.save_session();
+
+    assert_eq!(
+        restarted.state.session.subagent_messages.len(),
+        RETAINED_SUBAGENTS
+    );
+    assert_eq!(
+        restarted.state.session.tool_outputs.len(),
+        RETAINED_TOOL_OUTPUTS
+    );
+    drain_writer(restarted, restarted_writer);
+    drop(tmp);
+}
+
+/// A rewind rebuilds subagent tabs from the live session, so an evicted history
+/// and the tool outputs it renders have to come back off the log.
+#[test]
+fn evicted_subagent_history_loads_back_from_the_log() {
+    let (_tmp, _dir, writer, mut app) = tempdir_app();
+    app.retention_budget = RetentionBudget {
+        tool_outputs: RETAINED_TOOL_OUTPUTS,
+        subagent_histories: RETAINED_SUBAGENTS,
+    };
+    push_subagent_turns(&mut app, GROWN_SUBAGENTS);
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+    let evicted = subagent_tool_use_id(0);
+    let nested = nested_tool_use_id(0);
+    assert!(
+        app.state
+            .session
+            .evicted_subagent_messages()
+            .contains(&evicted)
+    );
+    assert!(!app.state.session.tool_outputs.contains_key(&nested));
+
+    let source = app.subagent_display_source(&evicted).unwrap();
+
+    assert_eq!(source.messages.len(), 2);
+    assert!(source.tool_outputs.contains_key(&nested));
+    drain_writer(app, writer);
+}
+
+/// A rewind redraws the main transcript from the live session, so outputs the
+/// budget evicted have to come back off the log or the turns render empty.
+#[test]
+fn rewound_transcript_reloads_evicted_tool_outputs() {
+    let (_tmp, _dir, writer, mut app) = tempdir_app();
+    app.retention_budget = RetentionBudget {
+        tool_outputs: RETAINED_TOOL_OUTPUTS,
+        subagent_histories: RETAINED_SUBAGENTS,
+    };
+    push_subagent_turns(&mut app, GROWN_SUBAGENTS);
+    app.checkpoint_session(WRITER_DRAIN_TIMEOUT).unwrap();
+    let evicted = subagent_tool_use_id(0);
+    assert!(!app.state.session.tool_outputs.contains_key(&evicted));
+
+    app.restore_display();
+    let referenced = app
+        .state
+        .session
+        .displayed_tool_use_ids(&message_tool_use_ids);
+    let rendered = app.display_tool_outputs(referenced.into_iter());
+
+    assert!(
+        rendered.contains_key(&evicted),
+        "a rewind has to render the evicted output, not a blank result"
+    );
+    assert!(
+        !app.state.session.tool_outputs.contains_key(&evicted),
+        "reading an output back for one frame must not undo the eviction"
+    );
+    drain_writer(app, writer);
+}
+
+/// The common path renders straight off the live map, so nothing is cloned and
+/// the log is never touched.
+#[test]
+fn display_tool_outputs_borrows_when_nothing_is_evicted() {
+    let (_tmp, _dir, writer, mut app) = tempdir_app();
+    push_subagent_turns(&mut app, GROWN_SUBAGENTS);
+    let referenced = app
+        .state
+        .session
+        .displayed_tool_use_ids(&message_tool_use_ids);
+
+    let rendered = app.display_tool_outputs(referenced.into_iter());
+
+    assert!(matches!(rendered, Cow::Borrowed(_)));
+    drain_writer(app, writer);
+}
+
+#[test]
+fn retention_never_evicts_records_the_writer_has_not_persisted() {
+    let mut app = test_app();
+    app.retention_budget = RetentionBudget {
+        tool_outputs: RETAINED_TOOL_OUTPUTS,
+        subagent_histories: RETAINED_SUBAGENTS,
+    };
+    push_subagent_turns(&mut app, GROWN_SUBAGENTS);
+
+    let mut eviction =
+        app.state
+            .session
+            .retention_eviction_candidates(app.retention_budget, |message| {
+                message
+                    .tool_uses()
+                    .map(|(id, _, _)| id.to_owned())
+                    .collect()
+            });
+    assert!(!eviction.is_empty());
+    app.storage_writer
+        .retain_durable(app.state.session.id, &mut eviction);
+
+    assert!(
+        eviction.is_empty(),
+        "nothing is durable before the first write, so nothing may be evicted"
+    );
 }

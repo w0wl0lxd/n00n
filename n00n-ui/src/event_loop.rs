@@ -41,7 +41,7 @@ use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{
-    CompactionStateError, SessionError, StoredDirectTool, StoredSessionLifecycle,
+    CompactionStateError, RetentionBudget, SessionError, StoredDirectTool, StoredSessionLifecycle,
     StoredSessionStateSnapshot, TranscriptEntry, normalize_title,
 };
 use serde_json::{Value, json};
@@ -52,7 +52,7 @@ use crate::agent::{
     AgentCommand, AgentHandles, ModelSlot, RevisionAllocator, shared_queue::QueueItem,
 };
 use crate::app::shell::{ShellEvent, spawn_shell};
-use crate::app::{App, AppInit, Msg, QueuedMessage, SubmitOutcome};
+use crate::app::{App, AppInit, Msg, QueuedMessage, SubmitOutcome, message_tool_use_ids};
 use crate::components::input::Submission;
 use crate::components::usage_modal::UsageFetchState;
 use crate::components::{
@@ -108,6 +108,7 @@ pub struct EventLoopParams {
     pub config: AgentConfig,
     pub ui_config: UiConfig,
     pub input_history_size: usize,
+    pub retention_budget: RetentionBudget,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -169,7 +170,6 @@ fn authorize_ui_delete(
     }
     Ok(())
 }
-
 fn live_session(session: &AppSession) -> std::result::Result<LiveSession, LineageError> {
     let root_session_id = match (session.meta.parent_id, session.meta.root_session_id) {
         (Some(_), None) => return Err(LineageError::MissingRoot(session.id)),
@@ -190,7 +190,6 @@ fn has_restorable_work(session: &AppSession) -> bool {
         || !session.meta.queued_submissions.is_empty()
         || !session.meta.queued_direct_tools.is_empty()
 }
-
 fn cancel_stored_session(session: &mut AppSession) -> bool {
     let had_work = session.meta.lifecycle.is_active()
         || !session.meta.queued_messages.is_empty()
@@ -524,7 +523,6 @@ fn paused_team_run(history: &[Message]) -> Option<Value> {
         .enumerate()
         .rev()
         .find(|(_, message)| matches!(message.role, n00n_providers::Role::User))?;
-
     for block in &last_user.content {
         let ContentBlock::ToolResult {
             tool_use_id,
@@ -604,6 +602,7 @@ struct SpawnCtx {
     config: AgentConfig,
     ui_config: UiConfig,
     input_history_size: usize,
+    retention_budget: RetentionBudget,
     /// Prototype only: every runtime forks its own manager so session
     /// rules stay per-session.
     permissions: Arc<PermissionManager>,
@@ -642,7 +641,12 @@ impl SpawnCtx {
         } else {
             match self.storage_writer.latest_snapshot(root_id) {
                 Ok(Some(root)) => Some(Arc::unwrap_or_clone(root)),
-                Ok(None) => match AppSession::load(root_id, &self.storage) {
+                Ok(None) => match AppSession::load_with_retention(
+                    root_id,
+                    &self.storage,
+                    self.retention_budget,
+                    message_tool_use_ids,
+                ) {
                     Ok(root) => Some(root),
                     Err(error) => {
                         warn!(session_id = %session.id, %root_id, %error, "root session state unavailable; using child plugin state");
@@ -729,6 +733,7 @@ impl SpawnCtx {
             storage_writer: Arc::clone(&self.storage_writer),
             ui_config: self.ui_config.clone(),
             input_history_size: self.input_history_size,
+            retention_budget: self.retention_budget,
             permissions,
             custom_commands: Arc::clone(&self.custom_commands),
             picker: Arc::clone(&self.picker),
@@ -1024,6 +1029,7 @@ impl<'t> EventLoop<'t> {
             config,
             ui_config,
             input_history_size,
+            retention_budget,
             permissions,
             timeouts,
             openai_options,
@@ -1039,7 +1045,6 @@ impl<'t> EventLoop<'t> {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
         });
-
         let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
         let (mcp_handle, mcp_config_errors) =
@@ -1071,7 +1076,12 @@ impl<'t> EventLoop<'t> {
             if runtime_ids.contains(&summary.id) {
                 continue;
             }
-            match AppSession::load(summary.id, &storage) {
+            match AppSession::load_with_retention(
+                summary.id,
+                &storage,
+                retention_budget,
+                message_tool_use_ids,
+            ) {
                 Ok(session) => stored_sessions.push(session),
                 Err(error) => startup_warnings.push(format!(
                     "Skipped unreadable stored session {}: {error}",
@@ -1145,6 +1155,7 @@ impl<'t> EventLoop<'t> {
             config,
             ui_config,
             input_history_size,
+            retention_budget,
             permissions,
             timeouts,
             openai_options,
@@ -1214,7 +1225,6 @@ impl<'t> EventLoop<'t> {
     fn focused_app(&mut self) -> &mut App {
         &mut self.sessions[self.focused].app
     }
-
     fn dispatch_initial_prompt(&mut self, session_id: n00nId, initial_prompt: &mut Option<String>) {
         let Some(index) = self.position(session_id) else {
             warn!(%session_id, "startup session disappeared before initial prompt dispatch");
@@ -1413,6 +1423,9 @@ impl<'t> EventLoop<'t> {
             rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
         }
+        for rt in &mut self.sessions {
+            rt.app.tick_pending_save();
+        }
         self.tick_periodic_save();
     }
 
@@ -1587,7 +1600,13 @@ impl<'t> EventLoop<'t> {
             {
                 Arc::unwrap_or_clone(root)
             } else {
-                AppSession::load(root_id, &self.ctx.storage).map_err(|error| error.to_string())?
+                AppSession::load_with_retention(
+                    root_id,
+                    &self.ctx.storage,
+                    self.ctx.retention_budget,
+                    message_tool_use_ids,
+                )
+                .map_err(|error| error.to_string())?
             };
             prepare_compaction_checkpoint(handle, &mut root, revision)?;
             Some(root)
@@ -1813,7 +1832,13 @@ impl<'t> EventLoop<'t> {
         {
             Arc::unwrap_or_clone(root)
         } else {
-            AppSession::load(root_id, &self.ctx.storage).map_err(|error| error.to_string())?
+            AppSession::load_with_retention(
+                root_id,
+                &self.ctx.storage,
+                self.ctx.retention_budget,
+                message_tool_use_ids,
+            )
+            .map_err(|error| error.to_string())?
         };
         let root_revision = self.sessions[idx].handles.allocate_state_revision()?;
         capture_session_plugin_state(&handle, &mut root, root_revision)?;
@@ -1847,7 +1872,6 @@ impl<'t> EventLoop<'t> {
             };
             self.handle_wake(wake)?;
         }
-
         for rt in &mut self.sessions {
             if rt.app.status == Status::Streaming && rt.handles.agent_rx.is_disconnected() {
                 rt.app.status = Status::error("agent stopped unexpectedly".into());
@@ -2272,8 +2296,13 @@ impl<'t> EventLoop<'t> {
                                 .map_err(|error| error.to_string())?
                             {
                                 Some(session) => Arc::unwrap_or_clone(session),
-                                None => AppSession::load(session_id, &self.ctx.storage)
-                                    .map_err(|error| error.to_string())?,
+                                None => AppSession::load_with_retention(
+                                    session_id,
+                                    &self.ctx.storage,
+                                    self.ctx.retention_budget,
+                                    message_tool_use_ids,
+                                )
+                                .map_err(|error| error.to_string())?,
                             };
                             if cancel_stored_session(&mut session) {
                                 cancelled = true;
@@ -2333,8 +2362,13 @@ impl<'t> EventLoop<'t> {
                         app.state.session.title = title;
                         app.save_session();
                     } else {
-                        let mut session =
-                            AppSession::load(id, &self.ctx.storage).map_err(|e| e.to_string())?;
+                        let mut session = AppSession::load_with_retention(
+                            id,
+                            &self.ctx.storage,
+                            self.ctx.retention_budget,
+                            message_tool_use_ids,
+                        )
+                        .map_err(|e| e.to_string())?;
                         session.title = title;
                         session.updated_at = n00n_storage::now_epoch();
                         self.ctx.storage_writer.send(Box::new(session));
@@ -2389,7 +2423,12 @@ impl<'t> EventLoop<'t> {
         } else {
             match self.ctx.storage_writer.latest_snapshot(root_id) {
                 Ok(Some(root)) => current_state_revision(&root),
-                Ok(None) => match AppSession::load(root_id, &self.ctx.storage) {
+                Ok(None) => match AppSession::load_with_retention(
+                    root_id,
+                    &self.ctx.storage,
+                    self.ctx.retention_budget,
+                    message_tool_use_ids,
+                ) {
                     Ok(root) => current_state_revision(&root),
                     Err(error) => {
                         warn!(session_id = %session.id, %root_id, %error, "root state revision unavailable; using session revision");
@@ -2433,7 +2472,6 @@ impl<'t> EventLoop<'t> {
         self.sessions.push(rt);
         self.sessions.len() - 1
     }
-
     fn set_focus(&mut self, idx: usize) {
         if idx == self.focused {
             return;
@@ -2458,8 +2496,13 @@ impl<'t> EventLoop<'t> {
             .map_err(|error| format!("Failed to load pending session state: {error}"))?
         {
             Some(session) => Arc::unwrap_or_clone(session),
-            None => AppSession::load(id, &self.ctx.storage)
-                .map_err(|error| format!("Failed to load session: {error}"))?,
+            None => AppSession::load_with_retention(
+                id,
+                &self.ctx.storage,
+                self.ctx.retention_budget,
+                message_tool_use_ids,
+            )
+            .map_err(|error| format!("Failed to load session: {error}"))?,
         };
         let restore_execution = has_restorable_work(&session);
         let mut live = live_session(&session).map_err(|error| error.to_string())?;
@@ -2984,7 +3027,6 @@ impl<'t> EventLoop<'t> {
             self.change_model(builtin.default_model);
         }
     }
-
     fn preserve_post_draw_submissions(&mut self) {
         for (session_id, dispatch) in std::mem::take(&mut self.post_draw_submissions)
             .into_iter()
@@ -3719,7 +3761,6 @@ mod tests {
             Some("Failed to create provider: missing credentials")
         );
     }
-
     #[test]
     fn startup_provider_skips_construction_while_login_is_required() {
         let mut model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
@@ -3957,7 +3998,6 @@ mod tests {
         inactive.meta.lifecycle = StoredSessionLifecycle::Succeeded;
         assert!(!cancel_stored_session(&mut inactive));
         assert_eq!(inactive.meta.lifecycle, StoredSessionLifecycle::Succeeded);
-
         inactive.meta.queued_messages = vec!["pending".into()];
         assert!(cancel_stored_session(&mut inactive));
         assert!(inactive.meta.queued_messages.is_empty());
