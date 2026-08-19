@@ -4,44 +4,347 @@
   "surfaces": {
     "cache_prefix": {
       "name": "cache_prefix",
-      "bytes": 22749,
-      "tokens": 5614
+      "tool_count": 22,
+      "bytes": 19496,
+      "tokens": 4776
+    },
+    "deferred_catalog_payload": {
+      "name": "deferred_catalog_payload",
+      "tool_count": 16,
+      "bytes": 18618,
+      "tokens": 4654
+    },
+    "deferred_catalog_schemas": {
+      "name": "deferred_catalog_schemas",
+      "tool_count": 16,
+      "bytes": 14452,
+      "tokens": 3613
+    },
+    "full_catalog_payload": {
+      "name": "full_catalog_payload",
+      "tool_count": 35,
+      "bytes": 31835,
+      "tokens": 7958
+    },
+    "full_catalog_schemas": {
+      "name": "full_catalog_schemas",
+      "tool_count": 35,
+      "bytes": 22523,
+      "tokens": 5630
     },
     "main_tools_payload": {
       "name": "main_tools_payload",
-      "tool_count": 33,
-      "bytes": 30837,
-      "tokens": 7709
+      "tool_count": 22,
+      "bytes": 16096,
+      "tokens": 4024
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
-      "tool_count": 33,
-      "bytes": 20120,
-      "tokens": 5030
+      "tool_count": 22,
+      "bytes": 10269,
+      "tokens": 2567
+    },
+    "mcp_above_threshold_payload": {
+      "name": "mcp_above_threshold_payload",
+      "tool_count": 0,
+      "bytes": 2,
+      "tokens": 1
+    },
+    "mcp_below_threshold_payload": {
+      "name": "mcp_below_threshold_payload",
+      "tool_count": 10,
+      "bytes": 2653,
+      "tokens": 532
+    },
+    "mcp_deferred_catalog_payload": {
+      "name": "mcp_deferred_catalog_payload",
+      "tool_count": 11,
+      "bytes": 2920,
+      "tokens": 585
     },
     "system_prompt": {
       "name": "system_prompt",
-      "bytes": 2629,
-      "tokens": 584
+      "bytes": 3485,
+      "tokens": 779
     }
   },
+  "tools": [
+    {
+      "name": "ask_user",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 917,
+      "tokens": 180
+    },
+    {
+      "name": "control_agent",
+      "deferred": true,
+      "initially_active": true,
+      "bytes": 1459,
+      "tokens": 319
+    },
+    {
+      "name": "edit_file",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 679,
+      "tokens": 144
+    },
+    {
+      "name": "edit_file_bulk",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 752,
+      "tokens": 161
+    },
+    {
+      "name": "edit_file_lines",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 484,
+      "tokens": 111
+    },
+    {
+      "name": "explore_code",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 1304,
+      "tokens": 310
+    },
+    {
+      "name": "fetch_url",
+      "namespace": "web",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 628,
+      "tokens": 144
+    },
+    {
+      "name": "get_agent",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 219,
+      "tokens": 47
+    },
+    {
+      "name": "git",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 1005,
+      "tokens": 231
+    },
+    {
+      "name": "github",
+      "namespace": "repository",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 518,
+      "tokens": 124
+    },
+    {
+      "name": "index_file",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 373,
+      "tokens": 78
+    },
+    {
+      "name": "insert_file_lines",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 412,
+      "tokens": 89
+    },
+    {
+      "name": "list_agents",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 146,
+      "tokens": 31
+    },
+    {
+      "name": "load_skill",
+      "namespace": "knowledge",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 1943,
+      "tokens": 390
+    },
+    {
+      "name": "load_toolset",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 318,
+      "tokens": 64
+    },
+    {
+      "name": "map_codegraph",
+      "namespace": "exploration",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 1260,
+      "tokens": 266
+    },
+    {
+      "name": "read_file",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 258,
+      "tokens": 58
+    },
+    {
+      "name": "run_batch",
+      "deferred": true,
+      "initially_active": true,
+      "bytes": 627,
+      "tokens": 134
+    },
+    {
+      "name": "run_python",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 2096,
+      "tokens": 533
+    },
+    {
+      "name": "run_shell",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 1119,
+      "tokens": 253
+    },
+    {
+      "name": "run_task",
+      "namespace": "orchestration",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 1240,
+      "tokens": 267
+    },
+    {
+      "name": "run_team",
+      "namespace": "orchestration",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 2251,
+      "tokens": 494
+    },
+    {
+      "name": "run_workflow",
+      "namespace": "orchestration",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 1494,
+      "tokens": 345
+    },
+    {
+      "name": "search_code",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 1181,
+      "tokens": 292
+    },
+    {
+      "name": "search_files",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 342,
+      "tokens": 77
+    },
+    {
+      "name": "search_text",
+      "namespace": "exploration",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 1066,
+      "tokens": 254
+    },
+    {
+      "name": "search_tools",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 482,
+      "tokens": 92
+    },
+    {
+      "name": "search_web",
+      "namespace": "web",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 583,
+      "tokens": 135
+    },
+    {
+      "name": "smell",
+      "namespace": "exploration",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 651,
+      "tokens": 143
+    },
+    {
+      "name": "tmux",
+      "namespace": "terminal",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 814,
+      "tokens": 184
+    },
+    {
+      "name": "update_todo",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 722,
+      "tokens": 153
+    },
+    {
+      "name": "use_blackboard",
+      "namespace": "orchestration",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 1823,
+      "tokens": 405
+    },
+    {
+      "name": "use_memory",
+      "namespace": "knowledge",
+      "deferred": true,
+      "initially_active": false,
+      "bytes": 1455,
+      "tokens": 317
+    },
+    {
+      "name": "view_image",
+      "deferred": true,
+      "initially_active": true,
+      "bytes": 789,
+      "tokens": 196
+    },
+    {
+      "name": "write_file",
+      "deferred": false,
+      "initially_active": true,
+      "bytes": 389,
+      "tokens": 83
+    }
+  ],
   "limits": {
     "cache_prefix": {
-      "tool_count_exact": false,
-      "max_token_delta": null,
-      "max_byte_delta": null,
-      "warn_token_delta": 200
+      "tool_count_exact": true,
+      "max_token_delta": 0,
+      "max_byte_delta": 0,
+      "warn_token_delta": null
     },
     "main_tools_payload": {
-      "tool_count_exact": false,
-      "max_token_delta": null,
-      "max_byte_delta": null,
-      "warn_token_delta": 200
+      "tool_count_exact": true,
+      "max_token_delta": 0,
+      "max_byte_delta": 0,
+      "warn_token_delta": null
     },
     "main_tools_schemas": {
       "tool_count_exact": true,
-      "max_token_delta": 100,
-      "max_byte_delta": 400,
+      "max_token_delta": 0,
+      "max_byte_delta": 0,
       "warn_token_delta": null
     },
     "system_prompt": {

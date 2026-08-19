@@ -2,51 +2,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use mlua::{Lua, Result as LuaResult, Table};
+use n00n_smell::{Query, SearchConfig, SmellIndex};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
+use crate::plugin_permissions::{Permission, PluginPermissions};
 
-fn smell_binary_path() -> Result<PathBuf, mlua::Error> {
-    if let Ok(path) = std::env::var("N00N_SMELL") {
-        let candidate = PathBuf::from(path);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
+const DEFAULT_TOP_K: usize = 5;
 
-    if let Ok(exe) = std::env::current_exe() {
-        let same = exe.with_file_name("n00n-smell");
-        if same.is_file() {
-            return Ok(same);
-        }
-        if let Some(parent) = exe.parent() {
-            let sibling = parent.join("n00n-smell");
-            if sibling.is_file() {
-                return Ok(sibling);
-            }
-            if let Some(grandparent) = parent.parent() {
-                let cousin = grandparent.join("n00n-smell");
-                if cousin.is_file() {
-                    return Ok(cousin);
-                }
-            }
-        }
-    }
-
-    if let Some(path) = which("n00n-smell") {
-        return Ok(path);
-    }
-
-    Err(mlua::Error::external(
-        "n00n-smell binary not found; set N00N_SMELL or build the workspace",
-    ))
-}
-
-fn which(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(name))
-            .find(|candidate| candidate.is_file())
-    })
+fn smell_override() -> Option<PathBuf> {
+    std::env::var("N00N_SMELL")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|candidate| candidate.is_file())
 }
 
 fn resolve_project(project: &str) -> Result<PathBuf, mlua::Error> {
@@ -60,65 +27,139 @@ fn resolve_project(project: &str) -> Result<PathBuf, mlua::Error> {
         .map_err(|err| mlua::Error::external(format!("failed to resolve {project}: {err}")))
 }
 
-fn run_smell(args: &[&str]) -> Result<String, mlua::Error> {
-    let binary = smell_binary_path()?;
+fn run_override(binary: &Path, args: &[&str]) -> Result<String, mlua::Error> {
     let output = Command::new(binary)
         .args(args)
         .output()
-        .map_err(|err| mlua::Error::external(format!("failed to run n00n-smell: {err}")))?;
+        .map_err(|err| mlua::Error::external(format!("failed to run n00n smell: {err}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if output.status.success() {
         Ok(stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         Err(mlua::Error::external(format!(
-            "n00n-smell failed: {stderr}{stdout}",
+            "n00n smell failed: {stderr}{stdout}",
         )))
     }
 }
 
-pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
-    let table = lua.create_table()?;
+fn index_project(project: &Path) -> Result<(), mlua::Error> {
+    let index_dir = SmellIndex::index_dir(project);
+    let mut index = SmellIndex::open_or_create(&index_dir, &SearchConfig::default())
+        .map_err(mlua::Error::external)?;
+    index.update(project, |_| {}).map_err(mlua::Error::external)
+}
 
-    let has_index = lua.create_function(|_, project: String| {
+fn search_project(
+    project: &Path,
+    query: String,
+    kind: Option<String>,
+    top_k: usize,
+) -> Result<String, mlua::Error> {
+    if !SmellIndex::has_index(project) {
+        return Err(mlua::Error::external(format!(
+            "no smell index for {}; run `n00n smell index`",
+            project.display()
+        )));
+    }
+    let index =
+        SmellIndex::open_or_create(&SmellIndex::index_dir(project), &SearchConfig::default())
+            .map_err(mlua::Error::external)?;
+    let results = index
+        .search(&Query {
+            text: query,
+            kind,
+            top_k,
+        })
+        .map_err(mlua::Error::external)?;
+    Ok(n00n_smell::format_results(&results))
+}
+
+pub(crate) fn create_smell_table(lua: &Lua, permissions: &PluginPermissions) -> LuaResult<Table> {
+    let table = lua.create_table()?;
+    let can_read = permissions.is_allowed(Permission::FsRead);
+    let can_write = permissions.is_allowed(Permission::FsWrite);
+    let can_run = permissions.is_allowed(Permission::Run);
+
+    let has_index = lua.create_function(move |_, project: String| {
         let path = Path::new(&project);
-        if !path.is_dir() {
-            return Ok(false);
-        }
-        Ok(path.join(".n00n/smells/metadata.json").is_file())
+        Ok(can_read && path.is_dir() && SmellIndex::has_index(path))
     })?;
     table.set("has_index", has_index)?;
 
-    let index = lua.create_function(|_, project: String| -> LuaResult<(bool, Option<String>)> {
-        let outcome = resolve_project(&project)
-            .and_then(|path| run_smell(&["index", &path.to_string_lossy()]).map(|_| ()));
-        match outcome {
-            Ok(()) => Ok((true, None)),
-            Err(err) => Ok((false, Some(err.to_string()))),
-        }
-    })?;
+    let index = lua.create_function(
+        move |_, project: String| -> LuaResult<(bool, Option<String>)> {
+            if !can_read || !can_write {
+                return Ok((
+                    false,
+                    Some("permission denied: smell index requires fs_read and fs_write".to_owned()),
+                ));
+            }
+            let outcome = resolve_project(&project).and_then(|path| {
+                let override_binary = smell_override();
+                if override_binary.is_some() && !can_run {
+                    return Err(mlua::Error::external(
+                        "permission denied: N00N_SMELL override requires run",
+                    ));
+                }
+                if let Some(binary) = override_binary {
+                    run_override(&binary, &["index", &path.to_string_lossy()]).map(|_| ())
+                } else {
+                    index_project(&path)
+                }
+            });
+            match outcome {
+                Ok(()) => Ok((true, None)),
+                Err(err) => Ok((false, Some(err.to_string()))),
+            }
+        },
+    )?;
     table.set("index", index)?;
 
     let search = lua.create_function(
-        |_,
-         (project, query, kind, top_k): (String, String, Option<String>, Option<usize>)|
-         -> LuaResult<(Option<String>, Option<String>)> {
+        move |_,
+              (project, query, kind, top_k): (String, String, Option<String>, Option<usize>)|
+              -> LuaResult<(Option<String>, Option<String>)> {
+            if !can_read {
+                return Ok((
+                    None,
+                    Some("permission denied: smell search requires fs_read".to_owned()),
+                ));
+            }
             let outcome = resolve_project(&project).and_then(|path| {
-                let mut owned = vec![
-                    "search".to_owned(),
-                    path.to_string_lossy().into_owned(),
-                    query,
-                ];
-                if let Some(k) = kind {
-                    owned.push("--kind".to_owned());
-                    owned.push(k);
+                let override_binary = smell_override();
+                if override_binary.is_some() && !can_run {
+                    return Err(mlua::Error::external(
+                        "permission denied: N00N_SMELL override requires run",
+                    ));
                 }
-                if let Some(n) = top_k {
-                    owned.push("--top-k".to_owned());
-                    owned.push(n.to_string());
+                if let Some(binary) = override_binary {
+                    let mut owned = vec![
+                        "search".to_owned(),
+                        path.to_string_lossy().into_owned(),
+                        query,
+                    ];
+                    if let Some(kind) = kind {
+                        owned.push("--kind".to_owned());
+                        owned.push(kind);
+                    }
+                    if let Some(top_k) = top_k {
+                        owned.push("--top-k".to_owned());
+                        owned.push(top_k.to_string());
+                    }
+                    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
+                    run_override(&binary, &args)
+                } else {
+                    search_project(
+                        &path,
+                        query,
+                        kind,
+                        match top_k {
+                            Some(top_k) => top_k,
+                            None => DEFAULT_TOP_K,
+                        },
+                    )
                 }
-                let args: Vec<&str> = owned.iter().map(String::as_str).collect();
-                run_smell(&args)
             });
             match outcome {
                 Ok(output) => Ok((Some(output), None)),
@@ -134,7 +175,7 @@ pub(crate) fn create_smell_table(lua: &Lua) -> LuaResult<Table> {
 pub(crate) const DOCS: ModuleDoc = ModuleDoc {
     name: "n00n.smell",
     kind: DocKind::Table,
-    desc: "Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.",
+    desc: "Persistent code-smell and comment index built into n00n. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index.",
     fns: &[
         FnDoc {
             name: "has_index",
@@ -151,7 +192,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         FnDoc {
             name: "index",
             args: "{project}",
-            desc: "Build or rebuild the smell index for a repository by invoking n00n-smell.",
+            desc: "Build or rebuild the smell index for a repository.",
             params: &[ParamDoc {
                 name: "{project}",
                 ty: "string",
@@ -191,3 +232,32 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         },
     ],
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn has_index_returns_false_without_read_permission() {
+        let lua = Lua::new();
+        let table = create_smell_table(&lua, &PluginPermissions::denied()).unwrap();
+        let has_index: mlua::Function = table.get("has_index").unwrap();
+
+        assert!(!has_index.call::<bool>(".").unwrap());
+    }
+
+    #[test]
+    fn index_and_search_run_in_process() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("sample.rs"),
+            "// TODO: test direct smell search\n",
+        )
+        .unwrap();
+
+        index_project(temp.path()).unwrap();
+        let output = search_project(temp.path(), "direct smell".to_owned(), None, 5).unwrap();
+
+        assert!(output.contains("sample.rs"));
+    }
+}

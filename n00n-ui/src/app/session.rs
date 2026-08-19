@@ -1,20 +1,23 @@
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, transcript_to_display};
 use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use n00n_agent::tools::SessionIdentity;
-use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
-use n00n_providers::{Model, TokenUsage};
+use n00n_agent::{AgentInput, AgentMode, McpPromptRef, ToolOutput};
+use n00n_providers::{Message, Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
-    SessionError, StoredDelivery, StoredDirectTool, StoredImageMediaType, StoredImageSource,
-    StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
-    StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
+    CompactionStateError, SESSIONS_DIR, SessionError, StoredDelivery, StoredDirectTool,
+    StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage,
+    StoredSessionLifecycle, StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
+    TranscriptEntry,
 };
 
 use crate::AppSession;
@@ -24,7 +27,24 @@ use super::{App, Mode, PendingInput, PlanState};
 use crate::agent::shared_queue::QueueItem;
 use crate::agent::{Delivery, QueuedMessage};
 
+pub(super) struct SubagentDisplaySource<'a> {
+    pub(super) messages: Cow<'a, [Message]>,
+    pub(super) tool_outputs: Cow<'a, HashMap<String, ToolOutput>>,
+}
+
 const INITIAL_STATE_REVISION: u64 = 0;
+/// Floor between full session snapshots. Snapshotting walks the whole session,
+/// so an unthrottled save per tool completion is quadratic over a long run.
+pub(crate) const SAVE_COALESCE_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Every `tool_use_id` a message calls. The storage layer takes this as a
+/// closure so it does not have to know the provider message type.
+pub(crate) fn message_tool_use_ids(message: &Message) -> Vec<String> {
+    message
+        .tool_uses()
+        .map(|(id, _, _)| id.to_owned())
+        .collect()
+}
 
 pub(super) fn plugin_state_identity(session: &AppSession) -> SessionIdentity {
     let root_id = session.meta.root_session_id.unwrap_or_else(|| session.id);
@@ -44,6 +64,41 @@ fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u
         return INITIAL_STATE_REVISION;
     };
     revision
+}
+
+fn outer_compaction_revision(transcript: &[TranscriptEntry<Message>]) -> Option<u64> {
+    match transcript.first() {
+        Some(TranscriptEntry::Compaction { state_revision, .. }) => *state_revision,
+        _ => None,
+    }
+}
+
+fn selected_plugin_snapshot(
+    session: &AppSession,
+) -> Result<Option<StoredSessionStateSnapshot>, CompactionStateError> {
+    let latest = session.meta.state_snapshot.clone();
+    let Some(revision) = outer_compaction_revision(&session.transcript) else {
+        return Ok(latest);
+    };
+    if state_revision_or_initial(latest.as_ref()) >= revision {
+        return Ok(latest);
+    }
+    match session.meta.compaction_state_at(revision) {
+        Ok(snapshot) => Ok(Some(snapshot.clone())),
+        Err(
+            error @ (CompactionStateError::MissingRevision { .. }
+            | CompactionStateError::FutureRevision { .. }),
+        ) => {
+            tracing::warn!(
+                session_id = %session.id,
+                checkpoint_revision = revision,
+                %error,
+                "compaction checkpoint unavailable while loading plugin state; using latest snapshot"
+            );
+            Ok(latest)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// The single content predicate: `App::save_session` persists a session
@@ -178,22 +233,101 @@ impl App {
     pub(crate) fn has_content(&self) -> bool {
         session_has_content(&self.state.session)
     }
-
     pub(crate) fn save_session(&mut self) {
         let snapshot = self.session_snapshot_with_plugin_state();
+        self.save_snapshot(snapshot);
+    }
+
+    pub(crate) fn save_session_without_plugin_state_capture(&mut self) {
+        let snapshot = self.session_snapshot();
+        self.save_snapshot(snapshot);
+    }
+
+    fn save_snapshot(&mut self, snapshot: AppSession) {
+        self.pending_save = false;
+        self.last_save_flush = Some(Instant::now());
+        #[cfg(test)]
+        {
+            self.session_saves += 1;
+        }
         if !session_has_content(&snapshot) {
             return;
         }
         self.storage_writer.send(Box::new(snapshot));
+        self.enforce_retention_budget();
+    }
+
+    /// [`Self::save_session`] at most once per [`SAVE_COALESCE_INTERVAL`].
+    /// Snapshotting walks the whole session, so a save per tool or subagent
+    /// completion is quadratic over a long run.
+    pub(crate) fn save_session_coalesced(&mut self) {
+        if self.save_window_elapsed() {
+            self.save_session();
+        } else {
+            self.pending_save = true;
+        }
+    }
+
+    /// Driven by the event loop so a deferred save still lands once the burst
+    /// stops.
+    pub(crate) fn tick_pending_save(&mut self) {
+        if self.pending_save && self.save_window_elapsed() {
+            self.save_session();
+        }
+    }
+
+    fn save_window_elapsed(&self) -> bool {
+        self.last_save_flush
+            .is_none_or(|flushed| flushed.elapsed() >= SAVE_COALESCE_INTERVAL)
+    }
+
+    /// Drops the oldest tool outputs and subagent histories past the budget.
+    /// Only records the writer already put on disk are dropped, so the log
+    /// stays the complete history.
+    fn enforce_retention_budget(&mut self) {
+        let mut eviction = self
+            .state
+            .session
+            .retention_eviction_candidates(self.retention_budget, message_tool_use_ids);
+        if eviction.is_empty() {
+            return;
+        }
+        self.storage_writer
+            .retain_durable(self.state.session.id, &mut eviction);
+        if eviction.is_empty() {
+            return;
+        }
+        if let Some(outputs) = &self.shared_tool_outputs {
+            let mut outputs = outputs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for tool_use_id in &eviction.tool_outputs {
+                outputs.remove(tool_use_id);
+            }
+        }
+        tracing::debug!(
+            session_id = %self.state.session.id,
+            tool_outputs = eviction.tool_outputs.len(),
+            subagent_messages = eviction.subagent_messages.len(),
+            "evicted live-session records past the retention budget",
+        );
+        self.state.session.evict_retained(&eviction);
     }
 
     pub(crate) fn checkpoint_session(&mut self, timeout: Duration) -> Result<(), SessionError> {
+        self.pending_save = false;
+        self.last_save_flush = Some(Instant::now());
         let snapshot = self.session_snapshot_with_plugin_state();
         if !session_has_content(&snapshot) {
             return Ok(());
         }
-        self.storage_writer
-            .persist_and_wait(Box::new(snapshot), timeout)
+        let result = self
+            .storage_writer
+            .persist_and_wait(Box::new(snapshot), timeout);
+        if result.is_ok() {
+            self.enforce_retention_budget();
+        }
+        result
     }
 
     pub(crate) fn session_snapshot(&mut self) -> AppSession {
@@ -236,35 +370,65 @@ impl App {
         );
     }
 
-    pub(crate) fn hydrate_plugin_state(&mut self) {
+    pub(crate) fn hydrate_plugin_state(&mut self) -> bool {
+        let snapshot = match selected_plugin_snapshot(&self.state.session) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(session_id = %self.state.session.id, %error, "refusing unusable compaction checkpoint while loading plugin state");
+                return false;
+            }
+        };
+        self.hydrate_plugin_snapshot(snapshot)
+    }
+
+    fn hydrate_plugin_snapshot(&mut self, snapshot: Option<StoredSessionStateSnapshot>) -> bool {
         let Some(handle) = &self.lua_event_handle else {
-            return;
+            return false;
         };
         let session_id = self.state.session.id;
         let identity = plugin_state_identity(&self.state.session);
-        if let Err(error) =
-            handle.hydrate_state(&identity, self.state.session.meta.state_snapshot.clone())
-        {
-            tracing::warn!(%session_id, %error, "failed to restore plugin session state");
+        match handle.hydrate_state(&identity, snapshot) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "failed to restore plugin session state");
+                false
+            }
         }
     }
 
     fn capture_plugin_state(&mut self) {
+        if self.main_chat().has_pending_compaction() {
+            return;
+        }
         let Some(handle) = &self.lua_event_handle else {
             return;
         };
         let session_id = self.state.session.id;
         let identity = plugin_state_identity(&self.state.session);
-        let persisted_revision =
-            state_revision_or_initial(self.state.session.meta.state_snapshot.as_ref());
-        let revision = self
-            .state
-            .session
-            .meta
-            .revision
-            .max(persisted_revision.saturating_add(1));
+        let revision = if let Some(allocator) = &self.revision_allocator {
+            match allocator.allocate() {
+                Ok(revision) => revision,
+                Err(error) => {
+                    tracing::warn!(%session_id, %error, "failed to allocate plugin state revision");
+                    return;
+                }
+            }
+        } else {
+            let persisted_revision =
+                state_revision_or_initial(self.state.session.meta.state_snapshot.as_ref());
+            self.state
+                .session
+                .meta
+                .revision
+                .max(persisted_revision.saturating_add(1))
+        };
         match handle.capture_state(&identity, revision) {
-            Ok(snapshot) => self.state.session.meta.state_snapshot = Some(snapshot),
+            Ok(snapshot) => {
+                if let Some(allocator) = &self.revision_allocator {
+                    allocator.observe(state_revision_or_initial(Some(&snapshot)));
+                }
+                self.state.session.meta.state_snapshot = Some(snapshot);
+            }
             Err(error) => {
                 tracing::warn!(%session_id, %error, "failed to capture plugin session state");
             }
@@ -356,16 +520,24 @@ impl App {
         let restoring = Arc::new(AtomicBool::new(true));
         self.restoring = Arc::clone(&restoring);
 
+        // A rewind redraws the live session, whose oldest outputs the retention
+        // budget may have evicted. Read those back before rendering, or the
+        // restored transcript shows empty tool results.
+        let referenced = self
+            .state
+            .session
+            .displayed_tool_use_ids(&message_tool_use_ids);
+        let tool_outputs = self.display_tool_outputs(referenced.into_iter());
         let (display_msgs, restore_items) = if self.state.session.transcript.is_empty() {
             history_to_display(
                 &self.state.session.messages,
-                &self.state.session.tool_outputs,
+                &tool_outputs,
                 &self.ui_config.tool_output_lines,
             )
         } else {
             transcript_to_display(
                 &self.state.session.transcript,
-                &self.state.session.tool_outputs,
+                &tool_outputs,
                 &self.ui_config.tool_output_lines,
             )
         };
@@ -421,10 +593,10 @@ impl App {
             chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
             chat.tool_use_id = Some(sa.tool_use_id.clone());
             chat.model_id = sa.model;
-            if let Some(messages) = self.state.session.subagent_messages.get(&sa.tool_use_id) {
+            if let Some(source) = self.subagent_display_source(&sa.tool_use_id) {
                 let (display, items) = history_to_display(
-                    messages,
-                    &self.state.session.tool_outputs,
+                    &source.messages,
+                    &source.tool_outputs,
                     &self.ui_config.tool_output_lines,
                 );
                 chat.begin_restore(display, RESTORE_BATCH_SIZE);
@@ -439,6 +611,94 @@ impl App {
         } else {
             self.restoring
                 .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// A rewind rebuilds every subagent tab from the *live* session, which may
+    /// have evicted older histories under its retention budget. Those come
+    /// back off the log, along with the tool outputs they render.
+    pub(super) fn subagent_display_source(
+        &self,
+        tool_use_id: &str,
+    ) -> Option<SubagentDisplaySource<'_>> {
+        if let Some(messages) = self.state.session.subagent_messages.get(tool_use_id) {
+            return Some(SubagentDisplaySource {
+                messages: Cow::Borrowed(messages),
+                tool_outputs: Cow::Borrowed(&self.state.session.tool_outputs),
+            });
+        }
+        if !self
+            .state
+            .session
+            .evicted_subagent_messages()
+            .contains(tool_use_id)
+        {
+            return None;
+        }
+        let session_id = self.state.session.id;
+        let dir = self.sessions_dir()?;
+        let messages = match AppSession::load_subagent_messages_from(session_id, &dir, tool_use_id)
+        {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "failed to load an evicted subagent history");
+                return None;
+            }
+        };
+        let tool_outputs =
+            self.display_tool_outputs(messages.iter().flat_map(message_tool_use_ids));
+        Some(SubagentDisplaySource {
+            messages: Cow::Owned(messages),
+            tool_outputs,
+        })
+    }
+
+    /// The tool outputs a display pass needs, with any the retention budget
+    /// evicted read back from the log. Borrowed whenever nothing is missing, so
+    /// the common path stays allocation-free.
+    pub(super) fn display_tool_outputs(
+        &self,
+        referenced: impl Iterator<Item = String>,
+    ) -> Cow<'_, HashMap<String, ToolOutput>> {
+        let resident = &self.state.session.tool_outputs;
+        if self.state.session.evicted_tool_outputs().is_empty() {
+            return Cow::Borrowed(resident);
+        }
+        let missing: HashSet<String> = referenced
+            .filter(|id| !resident.contains_key(id))
+            .filter(|id| self.state.session.evicted_tool_outputs().contains(id))
+            .collect();
+        if missing.is_empty() {
+            return Cow::Borrowed(resident);
+        }
+        let Some(dir) = self.sessions_dir() else {
+            return Cow::Borrowed(resident);
+        };
+        let session_id = self.state.session.id;
+        match AppSession::load_tool_outputs_from(session_id, &dir, &missing) {
+            Ok(loaded) => {
+                let mut outputs = resident.clone();
+                outputs.extend(loaded);
+                Cow::Owned(outputs)
+            }
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "failed to load evicted tool outputs");
+                Cow::Borrowed(resident)
+            }
+        }
+    }
+
+    fn sessions_dir(&self) -> Option<PathBuf> {
+        match self.storage.ensure_subdir(SESSIONS_DIR) {
+            Ok(dir) => Some(dir),
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.state.session.id,
+                    %error,
+                    "cannot reach the session log to recover evicted history",
+                );
+                None
+            }
         }
     }
 
@@ -459,6 +719,7 @@ impl App {
             transcript: self.state.session.transcript.clone(),
             tool_outputs: self.state.session.tool_outputs.clone(),
             model_spec: self.state.session.model.clone(),
+            plugin_state_hydrated: false,
         }
     }
 
@@ -499,6 +760,21 @@ impl App {
             &mut self.state.session.transcript,
             &self.state.session.messages,
         );
+        if let Some(revision) = outer_compaction_revision(&self.state.session.transcript) {
+            match self.state.session.meta.compaction_state_at(revision) {
+                Ok(snapshot) => {
+                    let snapshot = snapshot.clone();
+                    self.state.session.meta.state_snapshot = Some(snapshot.clone());
+                    self.hydrate_plugin_snapshot(Some(snapshot));
+                }
+                Err(error) => tracing::warn!(
+                    session_id = %self.state.session.id,
+                    checkpoint_revision = revision,
+                    %error,
+                    "failed to select rewound plugin session state"
+                ),
+            }
+        }
         self.state
             .session
             .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
@@ -530,11 +806,12 @@ impl App {
         self.permissions
             .load_session_rules(stored_to_rules(&session.meta.session_rules));
         let previous_session_id = self.state.session.id;
+        self.storage_writer.register_loaded(&session);
         self.state = SessionState::from_session(session, fallback_model, &self.storage);
         if previous_session_id != self.state.session.id {
             self.drop_plugin_state(previous_session_id);
         }
-        self.hydrate_plugin_state();
+        let plugin_state_hydrated = self.hydrate_plugin_state();
         self.state
             .session
             .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
@@ -546,12 +823,19 @@ impl App {
         self.fire_session_focus_autocmd();
 
         self.enqueue_save();
-        self.loaded_session_snapshot()
+        let mut loaded = self.loaded_session_snapshot();
+        loaded.plugin_state_hydrated = plugin_state_hydrated;
+        loaded
     }
 
     #[allow(dead_code)]
     pub(crate) fn load_session(&mut self, session_id: n00nId) -> Vec<Action> {
-        let mut session = match AppSession::load(session_id, &self.storage) {
+        let mut session = match AppSession::load_with_retention(
+            session_id,
+            &self.storage,
+            self.retention_budget,
+            message_tool_use_ids,
+        ) {
             Ok(s) => s,
             Err(e) => {
                 self.status_bar

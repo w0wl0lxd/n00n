@@ -1025,11 +1025,6 @@ local function handler(input, ctx)
   return nil
 end
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- For complex, multi-stage orchestration of many agents, use **workflow** (a team of agents led by a supervisor inside the sandboxed runtime).",
-})
-
 local function header(input)
   if type(input.script) == "string" then
     local name = input.script:match('meta%s*%(%s*[%s%S]-name%s*=%s*"([^"]+)"')
@@ -1079,6 +1074,8 @@ end
 n00n.api.register_tool({
   name = "run_workflow",
   aliases = { "workflow" },
+  defer_loading = true,
+  namespace = "orchestration",
   description = description,
   kind = "execute",
   workload = "orchestrator",

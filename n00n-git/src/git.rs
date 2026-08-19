@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::io::BufWriter;
+use std::path::{Component, Path, PathBuf};
 
-use gix::bstr::{BStr, ByteSlice};
+use gix::bstr::{BStr, BString, ByteSlice};
 use gix::object::Kind;
 use gix::object::tree::diff::ChangeDetached as TreeChange;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,8 @@ use crate::error::GitError;
 
 use gix::dir as gix_dir;
 use gix::status::plumbing as gix_status;
+
+const INDEX_WRITE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatus {
@@ -656,6 +659,222 @@ fn run_git(path: &Path, args: &[&str]) -> Result<std::process::Output, GitError>
     Ok(output)
 }
 
+fn repository_relative_path(path: &str) -> Result<String, GitError> {
+    let mut parts = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part.to_string_lossy().into_owned();
+                gix::validate::path::component(
+                    part.as_bytes().as_bstr(),
+                    None,
+                    gix::validate::path::component::Options::default(),
+                )
+                .map_err(|e| {
+                    GitError::InvalidReference(format!("invalid path component '{part}': {e}"))
+                })?;
+                parts.push(part);
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(GitError::InvalidReference(format!(
+                    "path must be repository-relative: {path}"
+                )));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err(GitError::InvalidReference("empty file path".to_string()));
+    }
+    Ok(parts.join("/"))
+}
+
+fn repository_scoped_path(
+    root: &Path,
+    operation_path: &Path,
+    file: &str,
+) -> Result<String, GitError> {
+    let root = root.canonicalize().map_err(|error| {
+        GitError::GitOperation(format!("failed to resolve worktree root: {error}"))
+    })?;
+    let operation_path = operation_path.canonicalize().map_err(|error| {
+        GitError::GitOperation(format!("failed to resolve repository path: {error}"))
+    })?;
+    let prefix = operation_path.strip_prefix(&root).map_err(|_| {
+        GitError::InvalidReference(format!(
+            "repository path '{}' is outside worktree '{}'",
+            operation_path.display(),
+            root.display()
+        ))
+    })?;
+    let file = repository_relative_path(file)?;
+    if prefix.as_os_str().is_empty() {
+        return Ok(file);
+    }
+    let prefix = prefix
+        .components()
+        .map(|component| match component {
+            Component::Normal(component) => component.to_str().ok_or_else(|| {
+                GitError::InvalidReference("repository path is not valid UTF-8".to_string())
+            }),
+            _ => Err(GitError::InvalidReference(
+                "repository path contains invalid components".to_string(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join("/");
+    repository_relative_path(&format!("{prefix}/{file}"))
+}
+
+fn validate_worktree_path(root: &Path, relative: &BStr) -> Result<PathBuf, GitError> {
+    let mut absolute = root.to_path_buf();
+    let components = relative.split(|byte| *byte == b'/').collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        absolute.push(gix::path::from_bstr(component.as_bstr()).as_ref());
+        if let Ok(metadata) = std::fs::symlink_metadata(&absolute) {
+            let is_leaf = index + 1 == components.len();
+            if metadata.file_type().is_symlink() {
+                if !is_leaf {
+                    return Err(GitError::InvalidReference(format!(
+                        "path traverses an intermediate symlink: {relative}"
+                    )));
+                }
+                gix::validate::path::component(
+                    component.as_bstr(),
+                    Some(gix::validate::path::component::Mode::Symlink),
+                    gix::validate::path::component::Options::default(),
+                )
+                .map_err(|e| {
+                    GitError::InvalidReference(format!("invalid symlink '{relative}': {e}"))
+                })?;
+            }
+        }
+    }
+    Ok(absolute)
+}
+
+fn path_collides(left: &BStr, right: &BStr) -> bool {
+    fn is_parent(parent: &BStr, child: &BStr) -> bool {
+        let parent: &[u8] = parent.as_ref();
+        let child: &[u8] = child.as_ref();
+        child.len() > parent.len()
+            && child.starts_with(parent)
+            && child.get(parent.len()) == Some(&b'/')
+    }
+
+    left == right || is_parent(left, right) || is_parent(right, left)
+}
+
+fn contains_path_collision(paths: impl IntoIterator<Item = BString>) -> bool {
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths
+        .windows(2)
+        .any(|entries| path_collides(entries[0].as_bstr(), entries[1].as_bstr()))
+}
+
+fn map_index_lock_error(error: gix::lock::acquire::Error) -> GitError {
+    match error {
+        gix::lock::acquire::Error::PermanentlyLocked { .. } => GitError::RepositoryLocked,
+        gix::lock::acquire::Error::Io(error) => {
+            GitError::GitOperation(format!("failed to acquire index lock: {error}"))
+        }
+    }
+}
+
+fn acquire_index_lock(repo: &gix::Repository) -> Result<gix::lock::File, GitError> {
+    gix::lock::File::acquire_to_update_resource(
+        repo.index_path(),
+        gix::lock::acquire::Fail::Immediately,
+        None,
+    )
+    .map_err(map_index_lock_error)
+}
+
+fn write_locked_index(index: &gix::index::File, lock: gix::lock::File) -> Result<(), GitError> {
+    let mut lock = BufWriter::with_capacity(INDEX_WRITE_BUFFER_BYTES, lock);
+    index
+        .write_to(&mut lock, gix::index::write::Options::default())
+        .map_err(|e| GitError::GitOperation(format!("failed to write index: {e}")))?;
+    let lock = lock
+        .into_inner()
+        .map_err(|e| GitError::GitOperation(format!("failed to flush index: {}", e.error())))?;
+    lock.commit()
+        .map_err(|e| GitError::GitOperation(format!("failed to commit index lock: {e}")))?;
+    Ok(())
+}
+
+fn repository_uses_split_index(repo: &gix::Repository) -> bool {
+    repo.config_snapshot().boolean("core.splitIndex") == Some(true)
+        || std::fs::read_dir(repo.common_dir()).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("sharedindex.")
+            })
+        })
+}
+
+fn reject_unsupported_index_for_add(index: &gix::index::State) -> Result<(), GitError> {
+    if index.link().is_some()
+        || index.entries().iter().any(|entry| {
+            entry.mode.is_sparse()
+                || entry
+                    .flags
+                    .contains(gix::index::entry::Flags::SKIP_WORKTREE)
+        })
+    {
+        return Err(GitError::GitOperation(
+            "sparse and split indexes are not supported by native mutations".to_string(),
+        ));
+    }
+    if index.resolve_undo().is_some()
+        || index
+            .entries()
+            .iter()
+            .any(|entry| entry.stage() != gix::index::entry::Stage::Unconflicted)
+    {
+        return Err(GitError::GitOperation(
+            "conflicted and resolve-undo indexes are not supported by native mutations".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn active_commit_hook(repo: &gix::Repository) -> Result<Option<PathBuf>, GitError> {
+    let config = repo.config_snapshot();
+    let configured = config
+        .trusted_path("core.hooksPath")
+        .map_err(|e| GitError::GitOperation(format!("invalid core.hooksPath: {e}")))?;
+    let hooks = match configured {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => repo.workdir().unwrap_or_else(|| repo.git_dir()).join(path),
+        None => repo.git_dir().join("hooks"),
+    };
+    Ok([
+        "pre-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-commit",
+    ]
+    .into_iter()
+    .map(|name| hooks.join(name))
+    .find(|path| hook_is_executable(path)))
+}
+
+#[cfg(unix)]
+fn hook_is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn hook_is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
 /// Stage files in a repository.
 ///
 /// # Errors
@@ -663,16 +882,139 @@ fn run_git(path: &Path, args: &[&str]) -> Result<std::process::Output, GitError>
 /// Returns `GitError` if the repository cannot be opened or git add fails.
 #[instrument(skip(path, files))]
 pub fn add(path: &Path, files: &[String]) -> Result<(), GitError> {
-    let root = worktree_root(path)?;
     if files.is_empty() {
         return Err(GitError::InvalidReference("no files specified".to_string()));
     }
-    let mut args = vec!["add", "--"];
-    for file in files {
-        args.push(file);
+
+    let repo = gix::discover(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to discover repository: {e}")))?;
+    let root = repo
+        .worktree()
+        .ok_or(GitError::BareRepo)?
+        .base()
+        .to_path_buf();
+    if repository_uses_split_index(&repo) {
+        return Err(GitError::GitOperation(
+            "split indexes are not supported by native mutations".to_string(),
+        ));
     }
-    run_git(&root, &args)?;
-    Ok(())
+    let paths = files
+        .iter()
+        .map(|file| {
+            let relative = gix::bstr::BString::from(repository_scoped_path(&root, path, file)?);
+            let absolute = validate_worktree_path(&root, relative.as_bstr())?;
+            if std::fs::symlink_metadata(&absolute).is_ok_and(|metadata| metadata.is_dir()) {
+                return Err(GitError::InvalidReference(format!(
+                    "directories are not supported by native add: {relative}"
+                )));
+            }
+            Ok((file, relative, absolute))
+        })
+        .collect::<Result<Vec<_>, GitError>>()?;
+
+    let index_lock = acquire_index_lock(&repo)?;
+    let mut index = repo
+        .index_or_load_from_head_or_empty()
+        .map_err(|e| GitError::GitOperation(format!("failed to load index: {e}")))?
+        .into_owned();
+    reject_unsupported_index_for_add(&index)?;
+    let attributes = repo
+        .attributes_only(
+            &index,
+            gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+        )
+        .map_err(|e| GitError::GitOperation(format!("failed to load git attributes: {e}")))?;
+    let mut pipeline = gix::filter::Pipeline::new(&repo, attributes.detach())
+        .map_err(|e| GitError::GitOperation(format!("failed to initialize git filters: {e}")))?;
+    let mut excludes = repo
+        .excludes(
+            &index,
+            None,
+            gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+        )
+        .map_err(|e| GitError::GitOperation(format!("failed to load git excludes: {e}")))?;
+    let fs = repo
+        .filesystem_options()
+        .map_err(|e| GitError::GitOperation(format!("failed to load filesystem options: {e}")))?;
+
+    for (original, relative, absolute) in paths {
+        let existing = index
+            .entries()
+            .iter()
+            .find(|entry| {
+                entry.stage() == gix::index::entry::Stage::Unconflicted
+                    && entry.path(&index) == relative.as_bstr()
+            })
+            .map(|entry| entry.mode);
+        let was_tracked = index
+            .entries()
+            .iter()
+            .any(|entry| entry.path(&index) == relative.as_bstr());
+        if !was_tracked
+            && excludes
+                .at_entry(relative.as_bstr(), None)
+                .map_err(|e| {
+                    GitError::GitOperation(format!(
+                        "failed to check excludes for '{relative}': {e}"
+                    ))
+                })?
+                .is_excluded()
+        {
+            return Err(GitError::GitOperation(format!(
+                "path is ignored by git: {relative}"
+            )));
+        }
+        let outcome = pipeline
+            .worktree_file_to_object(relative.as_bstr(), &index)
+            .map_err(|e| GitError::GitOperation(format!("failed to stage '{relative}': {e}")))?;
+        index.remove_entries(|_, entry_path, _| path_collides(entry_path, relative.as_bstr()));
+
+        match outcome {
+            Some((id, kind, _)) => {
+                let metadata =
+                    gix::index::fs::Metadata::from_path_no_follow(&absolute).map_err(|e| {
+                        GitError::GitOperation(format!("failed to stat '{relative}': {e}"))
+                    })?;
+                let stat = gix::index::entry::Stat::from_fs(&metadata).map_err(|e| {
+                    GitError::GitOperation(format!("failed to stat '{relative}': {e}"))
+                })?;
+                let mut mode: gix::index::entry::Mode = kind.into();
+                if !fs.executable_bit
+                    && (mode == gix::index::entry::Mode::FILE
+                        || mode == gix::index::entry::Mode::FILE_EXECUTABLE)
+                {
+                    mode = match existing {
+                        Some(existing)
+                            if existing == gix::index::entry::Mode::FILE
+                                || existing == gix::index::entry::Mode::FILE_EXECUTABLE =>
+                        {
+                            existing
+                        }
+                        _ => gix::index::entry::Mode::FILE,
+                    };
+                }
+                if !fs.symlink
+                    && mode == gix::index::entry::Mode::FILE
+                    && existing == Some(gix::index::entry::Mode::SYMLINK)
+                {
+                    mode = gix::index::entry::Mode::SYMLINK;
+                }
+                index.dangerously_push_entry(
+                    stat,
+                    id,
+                    gix::index::entry::Flags::from_stage(gix::index::entry::Stage::Unconflicted),
+                    mode,
+                    relative.as_bstr(),
+                );
+            }
+            None if !was_tracked => return Err(GitError::FileNotFound((*original).clone())),
+            None => {}
+        }
+        index.sort_entries();
+    }
+
+    index.remove_tree();
+    write_locked_index(&index, index_lock)
 }
 
 /// Create a commit with the given message and return the new commit id.
@@ -682,10 +1024,104 @@ pub fn add(path: &Path, files: &[String]) -> Result<(), GitError> {
 /// Returns `GitError` if the repository cannot be opened or git commit fails.
 #[instrument(skip(path, message))]
 pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
-    let root = worktree_root(path)?;
-    run_git(&root, &["commit", "-m", message])?;
-    let output = run_git(&root, &["rev-parse", "HEAD"])?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    if message.trim().is_empty() {
+        return Err(GitError::GitOperation("empty commit message".to_string()));
+    }
+
+    let repo = gix::discover(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to discover repository: {e}")))?;
+    if repo.is_bare() {
+        return Err(GitError::BareRepo);
+    }
+    if let Some(state) = repo.state() {
+        return Err(GitError::GitOperation(format!(
+            "repository operation is in progress: {state:?}"
+        )));
+    }
+    if repo.config_snapshot().boolean("commit.gpgSign") == Some(true) {
+        return Err(GitError::GitOperation(
+            "signed commits are not supported by native commit".to_string(),
+        ));
+    }
+    if let Some(hook) = active_commit_hook(&repo)? {
+        return Err(GitError::GitOperation(format!(
+            "commit hook is not supported by native commit: {}",
+            hook.display()
+        )));
+    }
+
+    let _index_lock = acquire_index_lock(&repo)?;
+    let index = repo
+        .index_or_load_from_head_or_empty()
+        .map_err(|e| GitError::GitOperation(format!("failed to load index: {e}")))?;
+    if index.entries().iter().any(|entry| {
+        entry.mode.is_sparse()
+            || entry.stage() != gix::index::entry::Stage::Unconflicted
+            || entry
+                .flags
+                .contains(gix::index::entry::Flags::INTENT_TO_ADD)
+    }) {
+        return Err(GitError::MergeConflict);
+    }
+    if contains_path_collision(
+        index
+            .entries()
+            .iter()
+            .map(|entry| entry.path(&index).to_owned()),
+    ) {
+        return Err(GitError::GitOperation(
+            "index contains colliding file and directory paths".to_string(),
+        ));
+    }
+
+    let mut editor = repo
+        .empty_tree()
+        .edit()
+        .map_err(|e| GitError::GitOperation(format!("failed to create tree editor: {e}")))?;
+    for entry in index.entries() {
+        let mode = entry.mode.to_tree_entry_mode().ok_or_else(|| {
+            GitError::GitOperation(format!("invalid index mode for '{}'", entry.path(&index)))
+        })?;
+        editor
+            .upsert(entry.path(&index), mode.kind(), entry.id)
+            .map_err(|e| GitError::GitOperation(format!("failed to build commit tree: {e}")))?;
+    }
+    let tree_id = editor
+        .write()
+        .map_err(|e| GitError::GitOperation(format!("failed to write commit tree: {e}")))?
+        .detach();
+
+    let head = repo
+        .head()
+        .map_err(|e| GitError::GitOperation(format!("failed to read HEAD: {e}")))?;
+    let parent = head.id().map(gix::Id::detach);
+    if parent.is_none() && index.entries().is_empty() {
+        return Err(GitError::GitOperation("nothing to commit".to_string()));
+    }
+    if let Some(parent_id) = parent {
+        let parent_commit = repo
+            .find_object(parent_id)
+            .map_err(|e| GitError::GitOperation(format!("failed to read HEAD: {e}")))?
+            .peel_to_commit()
+            .map_err(|e| GitError::GitOperation(format!("failed to peel HEAD to commit: {e}")))?;
+        let parent_tree = parent_commit
+            .tree_id()
+            .map_err(|e| GitError::GitOperation(format!("failed to read HEAD tree: {e}")))?
+            .detach();
+        if parent_tree == tree_id {
+            return Err(GitError::GitOperation("nothing to commit".to_string()));
+        }
+    }
+
+    let message = if message.ends_with('\n') {
+        std::borrow::Cow::Borrowed(message)
+    } else {
+        std::borrow::Cow::Owned(format!("{message}\n"))
+    };
+    let commit_id = repo
+        .commit("HEAD", message.as_ref(), tree_id, parent)
+        .map_err(|e| GitError::GitOperation(format!("failed to create commit: {e}")))?;
+    Ok(commit_id.detach().to_string())
 }
 
 /// Checkout a branch, tag, or ref in a repository.
@@ -716,7 +1152,11 @@ mod tests {
             "[user]\nname = Test\nemail = test@example.com\n",
         )
         .unwrap();
-        run(root, &["init"]);
+        run(root, &["init", "--initial-branch=main"]);
+        run(root, &["config", "user.name", "Test"]);
+        run(root, &["config", "user.email", "test@example.com"]);
+        run(root, &["config", "commit.gpgSign", "false"]);
+        run(root, &["config", "core.hooksPath", ".git/hooks"]);
     }
 
     fn run(root: &Path, args: &[&str]) -> std::process::Output {
@@ -751,6 +1191,459 @@ mod tests {
         // The worktree must be untouched: git never ran with `-f` as an option.
         let head = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout).unwrap();
         assert!(!head.trim().is_empty());
+    }
+
+    #[test]
+    fn native_add_stages_new_modified_and_deleted_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("modified.txt"), "one\n").unwrap();
+        std::fs::write(root.join("deleted.txt"), "one\n").unwrap();
+        run(root, &["add", "modified.txt", "deleted.txt"]);
+        run(root, &["commit", "-m", "base"]);
+
+        std::fs::write(root.join("modified.txt"), "two\n").unwrap();
+        std::fs::remove_file(root.join("deleted.txt")).unwrap();
+        std::fs::write(root.join("new.txt"), "new\n").unwrap();
+        add(
+            root,
+            &[
+                "modified.txt".to_string(),
+                "deleted.txt".to_string(),
+                "new.txt".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let staged =
+            String::from_utf8(run(root, &["diff", "--cached", "--name-status"]).stdout).unwrap();
+        assert!(staged.lines().any(|line| line == "M\tmodified.txt"));
+        assert!(staged.lines().any(|line| line == "D\tdeleted.txt"));
+        assert!(staged.lines().any(|line| line == "A\tnew.txt"));
+    }
+
+    #[test]
+    fn native_add_recreates_missing_index_without_losing_head_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("changed.txt"), "one\n").unwrap();
+        std::fs::write(root.join("unchanged.txt"), "one\n").unwrap();
+        run(root, &["add", "changed.txt", "unchanged.txt"]);
+        run(root, &["commit", "-m", "base"]);
+        std::fs::remove_file(root.join(".git/index")).unwrap();
+        std::fs::write(root.join("changed.txt"), "two\n").unwrap();
+
+        add(root, &["changed.txt".to_string()]).unwrap();
+
+        let tracked = String::from_utf8(run(root, &["ls-files"]).stdout).unwrap();
+        assert!(tracked.lines().any(|line| line == "changed.txt"));
+        assert!(tracked.lines().any(|line| line == "unchanged.txt"));
+    }
+
+    #[test]
+    fn native_add_rejects_ignored_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), "ignored\n").unwrap();
+
+        assert!(matches!(
+            add(root, &["ignored.txt".to_string()]),
+            Err(GitError::GitOperation(_))
+        ));
+        let tracked = String::from_utf8(run(root, &["ls-files"]).stdout).unwrap();
+        assert!(tracked.trim().is_empty());
+    }
+
+    #[test]
+    fn native_add_rejects_unsupported_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::create_dir(root.join("directory")).unwrap();
+
+        assert!(matches!(
+            add(root, &["../outside".to_string()]),
+            Err(GitError::InvalidReference(_))
+        ));
+        assert!(matches!(
+            add(root, &["directory".to_string()]),
+            Err(GitError::InvalidReference(_))
+        ));
+        assert!(matches!(
+            add(root, &["missing.txt".to_string()]),
+            Err(GitError::FileNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn native_mutations_respect_an_existing_index_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        std::fs::write(root.join(".git/index.lock"), "locked").unwrap();
+
+        assert!(matches!(
+            add(root, &["file.txt".to_string()]),
+            Err(GitError::RepositoryLocked)
+        ));
+        assert!(matches!(
+            commit(root, "locked"),
+            Err(GitError::RepositoryLocked)
+        ));
+    }
+
+    #[test]
+    fn index_lock_io_errors_preserve_the_cause() {
+        let error = map_index_lock_error(gix::lock::acquire::Error::Io(std::io::Error::other(
+            "disk unavailable",
+        )));
+
+        assert!(matches!(
+            error,
+            GitError::GitOperation(message)
+                if message == "failed to acquire index lock: disk unavailable"
+        ));
+    }
+
+    #[test]
+    fn native_add_rejects_git_metadata_paths_without_changing_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("tracked.txt"), "tracked\n").unwrap();
+        run(root, &["add", "tracked.txt"]);
+        let before = std::fs::read(root.join(".git/index")).unwrap();
+
+        assert!(matches!(
+            add(root, &[".git/config".to_string()]),
+            Err(GitError::InvalidReference(_))
+        ));
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_add_rejects_paths_through_intermediate_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
+        symlink(outside.path(), root.join("link")).unwrap();
+
+        assert!(matches!(
+            add(root, &["link/secret.txt".to_string()]),
+            Err(GitError::InvalidReference(_))
+        ));
+        assert!(
+            String::from_utf8(run(root, &["ls-files"]).stdout)
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn detects_nonadjacent_file_directory_collisions() {
+        let paths = ["dir/file", "other", "dir"].into_iter().map(BString::from);
+
+        assert!(contains_path_collision(paths));
+    }
+
+    #[test]
+    fn native_add_resolves_files_relative_to_supplied_repository_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::fs::write(root.join("nested/file.txt"), "content\n").unwrap();
+
+        add(&root.join("nested"), &["file.txt".to_string()]).unwrap();
+
+        assert_eq!(
+            String::from_utf8(run(root, &["ls-files"]).stdout)
+                .unwrap()
+                .trim(),
+            "nested/file.txt"
+        );
+    }
+
+    #[test]
+    fn native_add_resolves_file_directory_collisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("entry"), "file\n").unwrap();
+        run(root, &["add", "entry"]);
+        run(root, &["commit", "-m", "file"]);
+
+        std::fs::remove_file(root.join("entry")).unwrap();
+        std::fs::create_dir(root.join("entry")).unwrap();
+        std::fs::write(root.join("entry/child"), "child\n").unwrap();
+        add(root, &["entry/child".to_string()]).unwrap();
+        assert_eq!(
+            String::from_utf8(run(root, &["ls-files"]).stdout)
+                .unwrap()
+                .trim(),
+            "entry/child"
+        );
+        commit(root, "directory").unwrap();
+
+        std::fs::remove_dir_all(root.join("entry")).unwrap();
+        std::fs::write(root.join("entry"), "file again\n").unwrap();
+        add(root, &["entry".to_string()]).unwrap();
+        assert_eq!(
+            String::from_utf8(run(root, &["ls-files"]).stdout)
+                .unwrap()
+                .trim(),
+            "entry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_add_respects_core_filemode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "base"]);
+        run(root, &["config", "core.fileMode", "false"]);
+        let mut permissions = std::fs::metadata(root.join("file.txt"))
+            .unwrap()
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(root.join("file.txt"), permissions).unwrap();
+
+        add(root, &["file.txt".to_string()]).unwrap();
+        assert!(
+            String::from_utf8(run(root, &["diff", "--cached", "--summary"]).stdout)
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+
+        std::fs::write(root.join("new.txt"), "new\n").unwrap();
+        let mut permissions = std::fs::metadata(root.join("new.txt"))
+            .unwrap()
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(root.join("new.txt"), permissions).unwrap();
+        add(root, &["new.txt".to_string()]).unwrap();
+        assert!(
+            String::from_utf8(run(root, &["ls-files", "--stage", "new.txt"]).stdout)
+                .unwrap()
+                .starts_with("100644 ")
+        );
+    }
+
+    #[test]
+    fn native_add_rejects_split_indexes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["update-index", "--split-index"]);
+
+        assert!(matches!(
+            add(root, &["file.txt".to_string()]),
+            Err(GitError::GitOperation(_))
+        ));
+    }
+
+    #[test]
+    fn native_add_preserves_resolve_undo_index_data_by_rejecting_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("conflict.txt"), "base\n").unwrap();
+        run(root, &["add", "conflict.txt"]);
+        run(root, &["commit", "-m", "base"]);
+        run(root, &["checkout", "-b", "side"]);
+        std::fs::write(root.join("conflict.txt"), "side\n").unwrap();
+        run(root, &["commit", "-am", "side"]);
+        run(root, &["checkout", "main"]);
+        std::fs::write(root.join("conflict.txt"), "main\n").unwrap();
+        run(root, &["commit", "-am", "main"]);
+        let merge = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root)
+            .args(["merge", "side"])
+            .output()
+            .unwrap();
+        assert!(!merge.status.success());
+        std::fs::write(root.join("conflict.txt"), "resolved\n").unwrap();
+        let conflicted = std::fs::read(root.join(".git/index")).unwrap();
+        assert!(matches!(
+            add(root, &["conflict.txt".to_string()]),
+            Err(GitError::GitOperation(_))
+        ));
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), conflicted);
+        run(root, &["add", "conflict.txt"]);
+        assert!(
+            !String::from_utf8(run(root, &["ls-files", "--resolve-undo"]).stdout)
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        let before = std::fs::read(root.join(".git/index")).unwrap();
+
+        assert!(matches!(
+            add(root, &["other.txt".to_string()]),
+            Err(GitError::GitOperation(_))
+        ));
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), before);
+    }
+
+    #[test]
+    fn native_commit_rejects_required_signing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["config", "commit.gpgSign", "true"]);
+
+        assert!(matches!(
+            commit(root, "signed"),
+            Err(GitError::GitOperation(_))
+        ));
+        let verify = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(!verify.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_commit_rejects_active_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        let hook = root.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&hook, permissions).unwrap();
+
+        assert!(matches!(
+            commit(root, "hooked"),
+            Err(GitError::GitOperation(_))
+        ));
+    }
+
+    #[test]
+    fn native_commit_advances_detached_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "base"]);
+        run(root, &["checkout", "--detach", "HEAD"]);
+        std::fs::write(root.join("file.txt"), "two\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+
+        let id = commit(root, "detached").unwrap();
+        assert_eq!(
+            String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
+                .unwrap()
+                .trim(),
+            id
+        );
+        let symbolic = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["symbolic-ref", "-q", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(!symbolic.status.success());
+    }
+
+    #[test]
+    fn native_commit_creates_commit_and_advances_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        assert!(matches!(
+            commit(root, "empty root"),
+            Err(GitError::GitOperation(_))
+        ));
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+
+        let first = commit(root, "first").unwrap();
+        let head = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout).unwrap();
+        assert_eq!(first, head.trim());
+        let subject =
+            String::from_utf8(run(root, &["show", "-s", "--format=%s", "HEAD"]).stdout).unwrap();
+        assert_eq!(subject.trim(), "first");
+        assert!(
+            run(root, &["cat-file", "commit", "HEAD"])
+                .stdout
+                .ends_with(b"\n\nfirst\n")
+        );
+
+        std::fs::write(root.join("file.txt"), "two\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+        let second = commit(root, "second").unwrap();
+        assert_ne!(first, second);
+        let parents =
+            String::from_utf8(run(root, &["show", "-s", "--format=%P", "HEAD"]).stdout).unwrap();
+        assert_eq!(parents.trim(), first);
+        assert!(matches!(
+            commit(root, "empty"),
+            Err(GitError::GitOperation(_))
+        ));
+    }
+
+    #[test]
+    fn native_commit_rejects_intent_to_add_and_repository_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        run(root, &["add", "base.txt"]);
+        run(root, &["commit", "-m", "base"]);
+        std::fs::write(root.join("intent.txt"), "intent\n").unwrap();
+        run(root, &["add", "--intent-to-add", "intent.txt"]);
+        assert!(matches!(
+            commit(root, "intent"),
+            Err(GitError::MergeConflict)
+        ));
+
+        run(root, &["reset"]);
+        std::fs::write(
+            root.join(".git/MERGE_HEAD"),
+            run(root, &["rev-parse", "HEAD"]).stdout,
+        )
+        .unwrap();
+        assert!(matches!(
+            commit(root, "merge"),
+            Err(GitError::GitOperation(_))
+        ));
     }
 
     #[test]

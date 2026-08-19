@@ -4,7 +4,7 @@ pub(crate) mod responses;
 pub(crate) mod websocket;
 
 pub(crate) use platform::CODING_PLAN_CONTEXT_WINDOW;
-pub use platform::{OpenAi, OpenAiOptions};
+pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 
 use std::cmp::Reverse;
 

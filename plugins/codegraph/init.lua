@@ -6,28 +6,15 @@ local n00n_codegraph = n00n.codegraph
 local cwd = n00n.uv.cwd() or "."
 local CG_TIMEOUT_SECS = 30
 
-n00n.api.register_prompt_hint({
-  slot = "tool_usage",
-  content = "- Use **codegraph** for cross-file structural queries, call paths, and impact analysis before editing. Use **index** for single-file skeletons before read.",
-})
-
 local opts = n00n.api.register_options(output_limits.extend({}))
 
 n00n.api.register_tool({
   name = "map_codegraph",
   aliases = { "codegraph" },
+  defer_loading = true,
+  namespace = "exploration",
   kind = "read",
-  description = [[Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
-
-Best for:
-- Understanding how a system works end-to-end ("how does X work")
-- Finding call paths ("what calls Y", "call path from A to B")
-- Checking blast radius before editing ("what depends on Z")
-- Cross-file symbol resolution
-
-Prefer **index** for single-file structure, then **read** for specific sections. codegraph excels at multi-file exploration and impact analysis.
-
-Requires a .codegraph/ index in the project root.]],
+  description = [[PRIMARY CROSS-FILE TOOL. Query a pre-indexed graph for structure, call paths, impact, focused source, and test coverage. Use before broad search_code or read_file calls; use index_file for one file. Requires a .codegraph/ index.]],
 
   schema = {
     type = "object",
@@ -104,7 +91,8 @@ Requires a .codegraph/ index in the project root.]],
       }
     end
 
-    local max_lines, max_bytes = output_limits.resolve(opts, ctx)
+    local max_lines, max_bytes =
+      output_limits.resolve_capped(opts, ctx, output_limits.EXPLORER_DEFAULT_MAX_OUTPUT_BYTES)
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish codegraph results: " .. tostring(live_err), is_error = true }

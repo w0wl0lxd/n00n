@@ -81,11 +81,50 @@ impl History {
         &self.transcript
     }
 
-    pub fn compact_boundary(&mut self, prompt: Message, summary: Message) {
+    #[cfg(test)]
+    #[must_use]
+    pub fn latest_state_revision(&self) -> Option<u64> {
+        fn latest(entries: &[TranscriptEntry<Message>]) -> Option<u64> {
+            entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    TranscriptEntry::Compaction {
+                        entries,
+                        state_revision,
+                        ..
+                    } => (*state_revision).max(latest(entries)),
+                    TranscriptEntry::Message(_) | TranscriptEntry::GeneratedMessage(_) => None,
+                })
+                .max()
+        }
+
+        latest(&self.transcript)
+    }
+
+    pub(crate) fn set_outer_compaction_state_revision(
+        &mut self,
+        revision: u64,
+    ) -> Result<(), &'static str> {
+        let Some(TranscriptEntry::Compaction { state_revision, .. }) = self.transcript.first_mut()
+        else {
+            return Err("compaction transcript boundary is missing");
+        };
+        *state_revision = Some(revision);
+        self.publish();
+        Ok(())
+    }
+
+    pub fn compact_boundary(
+        &mut self,
+        prompt: Message,
+        summary: Message,
+        state_revision: Option<u64>,
+    ) {
         let previous = std::mem::take(&mut self.transcript);
         self.transcript = vec![TranscriptEntry::Compaction {
             entries: previous,
             generated_summary: Some(summary.clone()),
+            state_revision,
         }];
         self.messages = vec![prompt.clone(), summary.clone()];
         self.transcript.extend([
@@ -129,6 +168,16 @@ impl History {
     pub fn replace(&mut self, messages: Vec<Message>) {
         rebuild_transcript(&mut self.transcript, &messages);
         self.messages = messages;
+        self.publish();
+    }
+
+    pub(super) fn restore(
+        &mut self,
+        messages: Vec<Message>,
+        transcript: Vec<TranscriptEntry<Message>>,
+    ) {
+        self.messages = messages;
+        self.transcript = transcript;
         self.publish();
     }
 
@@ -310,7 +359,15 @@ mod tests {
     }
 
     fn compact(history: &mut History, summary: &str) {
-        history.compact_boundary(Message::user("summary prompt".into()), assistant(summary));
+        compact_at_revision(history, summary, None);
+    }
+
+    fn compact_at_revision(history: &mut History, summary: &str, state_revision: Option<u64>) {
+        history.compact_boundary(
+            Message::user("summary prompt".into()),
+            assistant(summary),
+            state_revision,
+        );
     }
 
     #[track_caller]
@@ -333,6 +390,7 @@ mod tests {
                 TranscriptEntry::Compaction {
                     entries,
                     generated_summary: Some(_),
+                    ..
                 },
                 TranscriptEntry::GeneratedMessage(_),
                 TranscriptEntry::GeneratedMessage(_),
@@ -341,16 +399,39 @@ mod tests {
     }
 
     #[test]
-    fn later_compactions_nest_independently() {
-        let mut history = History::new(vec![Message::user("one".into())]);
-        compact(&mut history, "summary one");
-        history.push(Message::user("two".into()));
-        compact(&mut history, "summary two");
+    fn compaction_boundary_stores_state_revision() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+
+        compact_at_revision(&mut history, "summary", Some(7));
 
         assert!(matches!(
             history.transcript(),
-            [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
-                if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)])
+            [
+                TranscriptEntry::Compaction {
+                    state_revision: Some(7),
+                    ..
+                },
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::GeneratedMessage(_)
+            ]
+        ));
+    }
+
+    #[test]
+    fn later_compactions_nest_independently() {
+        let mut history = History::new(vec![Message::user("one".into())]);
+        compact_at_revision(&mut history, "summary one", Some(1));
+        history.push(Message::user("two".into()));
+        compact_at_revision(&mut history, "summary two", Some(2));
+
+        assert!(matches!(
+            history.transcript(),
+            [TranscriptEntry::Compaction {
+                entries,
+                state_revision: Some(2),
+                ..
+            }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
+                if matches!(entries.as_slice(), [TranscriptEntry::Compaction { state_revision: Some(1), .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)])
         ));
     }
 
@@ -360,6 +441,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
                 generated_summary: Some(assistant("first summary")),
+                state_revision: Some(1),
             },
             TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
             TranscriptEntry::GeneratedMessage(assistant("first summary")),
@@ -409,6 +491,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("archived".into()))],
                 generated_summary: Some(assistant("archived summary")),
+                state_revision: None,
             },
             TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
             TranscriptEntry::GeneratedMessage(assistant("active summary")),
@@ -440,6 +523,7 @@ mod tests {
         let transcript = vec![TranscriptEntry::Compaction {
             entries: vec![TranscriptEntry::Message(Message::user("archived".into()))],
             generated_summary: None,
+            state_revision: None,
         }];
 
         let history = History::restored_with_transcript(Vec::new(), transcript);
@@ -458,8 +542,10 @@ mod tests {
             entries: vec![TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
                 generated_summary: None,
+                state_revision: Some(1),
             }],
             generated_summary: Some(assistant("summary")),
+            state_revision: Some(2),
         };
         let active = vec![
             Message::user("summary prompt".into()),

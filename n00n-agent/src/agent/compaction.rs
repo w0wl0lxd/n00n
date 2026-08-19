@@ -83,6 +83,7 @@ pub(super) async fn compact_history(
     cwd: &std::path::Path,
     transcript_path: Option<&std::path::Path>,
     run_hooks: bool,
+    state_revision: Option<u64>,
 ) -> Result<(TokenUsage, String), AgentError> {
     if run_hooks {
         run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
@@ -169,7 +170,7 @@ pub(super) async fn compact_history(
         run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
     }
 
-    let usage = finish_compact(response, history, compact_start, model);
+    let usage = finish_compact(response, history, compact_start, model, state_revision);
     Ok((usage, summary))
 }
 
@@ -178,6 +179,7 @@ fn finish_compact(
     history: &mut History,
     compact_start: Instant,
     model: &Model,
+    state_revision: Option<u64>,
 ) -> TokenUsage {
     let StreamResponse {
         message: summary,
@@ -189,7 +191,11 @@ fn finish_compact(
     // so the UI meter reflects the compacted conversation, not just the
     // summary output tokens. Callers pass continue-prompt/tool-definition
     // tokens that are part of the agent's full post-compact context.
-    history.compact_boundary(Message::user("What did we do so far?".into()), summary);
+    history.compact_boundary(
+        Message::user("What did we do so far?".into()),
+        summary,
+        state_revision,
+    );
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(
@@ -214,12 +220,45 @@ pub async fn compact(
     compact_inner(provider, model, history, event_tx, true).await
 }
 
+/// Compacts the conversation history at an allocated plugin-state revision.
+///
+/// # Errors
+/// Returns an error if the provider fails to stream the compaction response.
+pub async fn compact_at_state_revision(
+    provider: &dyn n00n_providers::provider::Provider,
+    model: &Model,
+    history: &mut History,
+    event_tx: &EventSender,
+    state_revision: u64,
+) -> Result<(), AgentError> {
+    compact_inner_at_state_revision(
+        provider,
+        model,
+        history,
+        event_tx,
+        true,
+        Some(state_revision),
+    )
+    .await
+}
+
 async fn compact_inner(
     provider: &dyn n00n_providers::provider::Provider,
     model: &Model,
     history: &mut History,
     event_tx: &EventSender,
     run_hooks: bool,
+) -> Result<(), AgentError> {
+    compact_inner_at_state_revision(provider, model, history, event_tx, run_hooks, None).await
+}
+
+async fn compact_inner_at_state_revision(
+    provider: &dyn n00n_providers::provider::Provider,
+    model: &Model,
+    history: &mut History,
+    event_tx: &EventSender,
+    run_hooks: bool,
+    state_revision: Option<u64>,
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
@@ -234,6 +273,7 @@ async fn compact_inner(
         &cwd,
         None,
         run_hooks,
+        state_revision,
     )
     .await?;
     let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
@@ -243,7 +283,7 @@ async fn compact_inner(
         model: model.spec(),
         context_size: Some(context_size),
     })))?;
-    event_tx.send(AgentEvent::CompactionDone)?;
+    event_tx.send(AgentEvent::CompactionDone { state_revision })?;
 
     event_tx.send(AgentEvent::Done {
         usage,
@@ -455,6 +495,50 @@ mod tests {
             assert!(matches!(turn_complete.message.role, Role::Assistant));
             assert_eq!(turn_complete.message.first_text_content(), Some("response"));
             assert!(turn_complete.context_size.is_some());
+            assert!(matches!(
+                history.transcript(),
+                [
+                    n00n_storage::sessions::TranscriptEntry::Compaction {
+                        state_revision: None,
+                        ..
+                    },
+                    ..
+                ]
+            ));
+        });
+    }
+
+    #[test]
+    fn manual_compaction_records_allocated_state_revision() {
+        smol::block_on(async {
+            let model = default_model();
+            let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(MockProvider::new(
+                vec![Ok(text_response(StopReason::EndTurn))],
+            ));
+            let (event_tx, _event_rx) = flume::unbounded();
+            let mut history = History::new(vec![Message::user("before".into())]);
+
+            compact_inner_at_state_revision(
+                &*provider,
+                &model,
+                &mut history,
+                &EventSender::new(event_tx, 0),
+                false,
+                Some(7),
+            )
+            .await
+            .expect("compact should succeed");
+
+            assert!(matches!(
+                history.transcript(),
+                [
+                    n00n_storage::sessions::TranscriptEntry::Compaction {
+                        state_revision: Some(7),
+                        ..
+                    },
+                    ..
+                ]
+            ));
         });
     }
 
@@ -1296,6 +1380,7 @@ mod tests {
                 &std::env::current_dir().unwrap(),
                 None,
                 false,
+                None,
             )
             .await;
 
@@ -1349,6 +1434,7 @@ mod tests {
                 &std::env::current_dir().unwrap(),
                 None,
                 false,
+                None,
             )
             .await;
 

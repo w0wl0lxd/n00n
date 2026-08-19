@@ -7,7 +7,7 @@ use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyl
 use n00n_lua_macro::{lua_class, lua_fn};
 
 use super::blit;
-use crate::runtime::{TaskHandle, lock_cell};
+use crate::runtime::{TaskHandle, lock_cell, run_non_yieldable};
 
 /// `live_buf` tracks the first buffer a handler creates, the one
 /// that gets streamed to the UI during execution.
@@ -288,12 +288,16 @@ fn on(lua: &Lua, this: &BufHandle, event: String, callback: Function) -> LuaResu
         // Change callbacks fire inline from buf mutations, so they
         // must not yield or mutate this buffer.
         "change" => {
+            track_slot(lua, HandlerSlot::Change(Arc::clone(&this.buf)));
+            let weak = lua.weak();
             this.buf.set_on_change(move || {
-                if let Err(e) = callback.call::<()>(()) {
+                let Some(lua) = weak.try_upgrade() else {
+                    return;
+                };
+                if let Err(e) = run_non_yieldable(&lua, || callback.call::<()>(())) {
                     tracing::warn!(error = %e, "buf change callback failed");
                 }
             });
-            track_slot(lua, HandlerSlot::Change(Arc::clone(&this.buf)));
             Ok(())
         }
         _ => Err(mlua::Error::runtime(format!("unsupported event: {event}"))),

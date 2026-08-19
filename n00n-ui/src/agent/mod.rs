@@ -6,7 +6,10 @@ pub(crate) mod shared_queue;
 use std::collections::HashMap;
 use std::mem;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -28,6 +31,32 @@ use crate::app::App;
 use self::agent_loop::{AgentLoop, AgentLoopInit};
 use self::command_router::spawn_command_router;
 pub(crate) use self::shared_queue::{Delivery, QueueSender, QueuedMessage};
+
+pub(crate) struct RevisionAllocator(AtomicU64);
+
+impl RevisionAllocator {
+    pub(crate) fn new(revision: u64) -> Self {
+        Self(AtomicU64::new(revision))
+    }
+
+    pub(crate) fn observe(&self, revision: u64) {
+        self.0.fetch_max(revision, Ordering::SeqCst);
+    }
+
+    pub(crate) fn allocate(&self) -> Result<u64, String> {
+        self.0
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |revision| {
+                revision.checked_add(1)
+            })
+            .map(|revision| revision + 1)
+            .map_err(|_| "compaction state revision overflow".to_owned())
+    }
+
+    #[cfg(test)]
+    fn current(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 pub(crate) struct ModelSlot {
     pub(crate) model: Model,
@@ -55,6 +84,7 @@ pub(crate) struct AgentHandles {
     pub(crate) timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
     identity: Option<SessionIdentity>,
+    revision_allocator: Arc<RevisionAllocator>,
     task: smol::Task<()>,
 }
 
@@ -66,6 +96,8 @@ impl AgentHandles {
         model_slot: &Arc<ArcSwap<ModelSlot>>,
         initial_history: Vec<Message>,
         initial_transcript: Vec<TranscriptEntry<Message>>,
+        initial_state_revision: u64,
+        revision_allocator: Arc<RevisionAllocator>,
         initial_plan_path: Option<PathBuf>,
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
@@ -81,6 +113,8 @@ impl AgentHandles {
             model_slot,
             initial_history,
             initial_transcript,
+            initial_state_revision,
+            revision_allocator,
             initial_plan_path,
             config,
             tool_output_lines,
@@ -107,6 +141,7 @@ impl AgentHandles {
         app.shared_transcript = Some(Arc::clone(&self.transcript));
         app.btw_system = Some(Arc::clone(&self.btw_system));
         app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
+        app.revision_allocator = Some(Arc::clone(&self.revision_allocator));
         app.queue.set_shared(self.queue.clone());
         let restore_tx =
             n00n_agent::EventSender::new(self.agent_tx.clone(), crate::app::RESTORE_RUN_ID);
@@ -118,6 +153,14 @@ impl AgentHandles {
 
     pub(crate) fn cancel(self) {
         let _ = self.cmd_tx.try_send(AgentCommand::CancelAll);
+    }
+
+    pub(crate) fn observe_state_revision(&self, revision: u64) {
+        self.revision_allocator.observe(revision);
+    }
+
+    pub(crate) fn allocate_state_revision(&self) -> Result<u64, String> {
+        self.revision_allocator.allocate()
     }
 
     pub(crate) fn send_mcp(&self, cmd: McpCommand) {
@@ -132,6 +175,7 @@ impl AgentHandles {
         &mut self,
         history: Vec<Message>,
         transcript: Vec<TranscriptEntry<Message>>,
+        initial_state_revision: u64,
         model_slot: &Arc<ArcSwap<ModelSlot>>,
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
@@ -150,6 +194,8 @@ impl AgentHandles {
             model_slot,
             history,
             transcript,
+            initial_state_revision,
+            Arc::clone(&self.revision_allocator),
             initial_plan_path,
             config,
             tool_output_lines,
@@ -158,7 +204,7 @@ impl AgentHandles {
             self.mcp_config_errors.clone(),
             self.identity.clone(),
             self.timeouts,
-            self.openai_options,
+            self.openai_options.clone(),
             lua_handle,
         );
         let old = mem::replace(self, new);
@@ -214,6 +260,8 @@ fn spawn_agent_internal(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     initial_history: Vec<Message>,
     initial_transcript: Vec<TranscriptEntry<Message>>,
+    initial_state_revision: u64,
+    revision_allocator: Arc<RevisionAllocator>,
     initial_plan_path: Option<PathBuf>,
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
@@ -250,6 +298,7 @@ fn spawn_agent_internal(
     let (init_trigger, init_cancel) = CancelToken::new();
     let cancel_map = Arc::new(new_run_cancel_map(0, init_trigger));
     let subagent_cancels: Arc<CancelMap<String>> = Arc::new(CancelMap::new());
+    revision_allocator.observe(initial_state_revision);
 
     spawn_command_router(
         cmd_rx,
@@ -263,6 +312,8 @@ fn spawn_agent_internal(
         tool_output_lines,
         initial_history,
         initial_transcript,
+        initial_state_revision,
+        revision_allocator: Arc::clone(&revision_allocator),
         initial_plan_path,
         shared_history: Arc::clone(&shared_history),
         shared_transcript: Arc::clone(&shared_transcript),
@@ -276,7 +327,7 @@ fn spawn_agent_internal(
         init_cancel,
         identity: identity.clone(),
         timeouts,
-        openai_options,
+        openai_options: openai_options.clone(),
         lua_handle,
         subagent_cancels,
     });
@@ -298,6 +349,7 @@ fn spawn_agent_internal(
         timeouts,
         openai_options,
         identity,
+        revision_allocator,
         task,
     }
 }
@@ -307,6 +359,24 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn revision_allocator_observes_captures_and_allocates_unique_revisions() {
+        let allocator = RevisionAllocator::new(4);
+
+        allocator.observe(9);
+        assert_eq!(allocator.allocate().unwrap(), 10);
+        assert_eq!(allocator.allocate().unwrap(), 11);
+        assert_eq!(allocator.current(), 11);
+    }
+
+    #[test]
+    fn revision_allocator_rejects_overflow_without_regressing() {
+        let allocator = RevisionAllocator::new(u64::MAX);
+
+        assert!(allocator.allocate().is_err());
+        assert_eq!(allocator.current(), u64::MAX);
+    }
 
     const LONG_TIMEOUT: Duration = Duration::from_mins(1);
     const SHORT_TIMEOUT: Duration = Duration::from_millis(50);

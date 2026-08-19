@@ -8,6 +8,7 @@ pub(crate) mod mode;
 mod mouse;
 mod queue;
 mod session;
+pub(crate) use session::message_tool_use_ids;
 pub(crate) mod session_state;
 pub(crate) mod shell;
 #[cfg(test)]
@@ -21,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
+use crate::agent::RevisionAllocator;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
@@ -63,7 +65,7 @@ use n00n_providers::{Effort, Message, Model, ModelPricing, System, ThinkingConfi
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
-use n00n_storage::sessions::StoredTokenUsage;
+use n00n_storage::sessions::{RetentionBudget, StoredTokenUsage};
 
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
@@ -178,7 +180,6 @@ impl SubmissionClock for SystemSubmissionClock {
         Instant::now()
     }
 }
-
 struct PendingSubmission {
     submission_id: u64,
     run_id: u64,
@@ -288,6 +289,11 @@ pub struct App {
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,
+    pending_save: bool,
+    last_save_flush: Option<Instant>,
+    pub(crate) retention_budget: RetentionBudget,
+    #[cfg(test)]
+    session_saves: usize,
     #[cfg(test)]
     test_state_dir: Option<TestStateDir>,
     pub(crate) shell: shell::ShellState,
@@ -295,6 +301,7 @@ pub struct App {
     pub(crate) permissions: Arc<PermissionManager>,
     pub(crate) picker: Arc<Picker>,
     pub(crate) lua_event_handle: Option<EventHandle>,
+    pub(crate) revision_allocator: Option<Arc<RevisionAllocator>>,
     pub(super) keymap_reader: KeymapReader,
     pub(super) hint_reader: HintReader,
     pub(crate) restore_event_tx: Option<n00n_agent::EventSender>,
@@ -316,6 +323,7 @@ pub struct AppInit {
     pub storage_writer: Arc<StorageWriter>,
     pub ui_config: UiConfig,
     pub input_history_size: usize,
+    pub retention_budget: RetentionBudget,
     pub permissions: Arc<PermissionManager>,
     pub custom_commands: Arc<[n00n_agent::command::CustomCommand]>,
     pub picker: Arc<Picker>,
@@ -337,11 +345,13 @@ impl App {
             storage_writer,
             ui_config,
             input_history_size,
+            retention_budget,
             permissions,
             custom_commands,
             picker,
         } = init;
         scrollbar::set_enabled(ui_config.scrollbar);
+        storage_writer.register_loaded(&session);
         let state = SessionState::from_session(session, &model, &storage);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
         input_box.set_max_input_lines(ui_config.max_input_lines);
@@ -405,12 +415,18 @@ impl App {
             shared_tool_outputs: None,
             image_paste_rx: vec![],
             storage_writer,
+            pending_save: false,
+            last_save_flush: None,
+            retention_budget,
+            #[cfg(test)]
+            session_saves: 0,
             #[cfg(test)]
             test_state_dir: None,
             shell: shell::ShellState::default(),
             ui_config,
             permissions,
             lua_event_handle: None,
+            revision_allocator: None,
             keymap_reader,
             hint_reader,
             restore_event_tx: None,
@@ -1498,7 +1514,7 @@ impl App {
                         .session
                         .subagent_messages
                         .insert(tool_use_id, messages);
-                    self.save_session();
+                    self.save_session_coalesced();
                 }
                 _ => {}
             }
@@ -1525,7 +1541,7 @@ impl App {
                 .session
                 .subagent_messages
                 .insert(tool_use_id, messages);
-            self.save_session();
+            self.save_session_coalesced();
             return vec![];
         }
 
@@ -1540,7 +1556,7 @@ impl App {
             None => 0,
         };
 
-        if matches!(envelope.event, AgentEvent::CompactionDone) && chat_idx == 0 {
+        if matches!(envelope.event, AgentEvent::CompactionDone { .. }) && chat_idx == 0 {
             self.chats[chat_idx].flush();
             if let Some(shared_transcript) = &self.shared_transcript {
                 let transcript = shared_transcript.load();
@@ -1605,7 +1621,7 @@ impl App {
                 self.subagent_answers.remove(&e.id);
                 self.subagent_prompts.remove(&e.id);
             }
-            self.save_session();
+            self.save_session_coalesced();
         }
 
         if let AgentEvent::Retry {
@@ -1803,7 +1819,6 @@ impl App {
         }
         vec![]
     }
-
     fn resolve_or_create_chat(&mut self, subagent: &SubagentInfo) -> usize {
         let id = &subagent.parent_tool_use_id;
         if let Some(&idx) = self.chat_index.get(id.as_str()) {
@@ -1983,7 +1998,6 @@ impl App {
             return Vec::new();
         };
         let prompt = prompt.clone();
-
         let arguments = Self::parse_prompt_args(&prompt, args);
         let missing: Vec<_> = prompt
             .arguments
@@ -2149,7 +2163,6 @@ impl App {
     pub fn close_all_overlays(&mut self) {
         self.overlays_mut().iter_mut().for_each(|o| o.close());
     }
-
     #[must_use]
     pub fn is_animating(&self) -> bool {
         self.status == Status::Streaming
@@ -2164,7 +2177,6 @@ impl App {
             || self.restoring.load(Ordering::Relaxed)
             || self.chats.iter().any(super::chat::Chat::is_animating)
     }
-
     fn finish_subagents(&mut self, role: &DisplayRole, text: &str) {
         for &sub_idx in self.chat_index.values() {
             self.chats[sub_idx].mark_finished(role.clone(), text);

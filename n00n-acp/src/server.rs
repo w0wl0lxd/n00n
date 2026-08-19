@@ -27,7 +27,7 @@ use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
 use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::Session;
+use n00n_storage::sessions::{Session, TranscriptEntry};
 use serde::Serialize;
 use serde_json::{Deserializer, Result as JsonResult, Value};
 use smol::io::AsyncBufReadExt;
@@ -215,7 +215,7 @@ async fn handle_new_session(
 ) -> Result<AgentResponse, AcpError> {
     let req = parse_params::<NewSessionRequest>(raw)?;
     retire_session(srv).await;
-    let handle = spawn_session(params, req.cwd, None, Vec::new());
+    let handle = spawn_session(params, req.cwd, None, Vec::new(), Vec::new());
     let spec = params.model.spec();
     let resp = methods::new_session_response(handle.session_id.as_str())
         .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
@@ -240,12 +240,13 @@ async fn handle_load_session(
     let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
         .map_err(|error| AcpError::internal_error().data(json_str(&error)))?;
     let history = stored.messages;
+    let transcript = stored.transcript;
     retire_session(srv).await;
     let sid = SessionId::from(session_ref.to_string());
     for update in translate::replay_history(&history) {
         session_update(&srv.out_tx, &sid, update);
     }
-    let handle = spawn_session(params, req.cwd, Some(session_ref), history);
+    let handle = spawn_session(params, req.cwd, Some(session_ref), history, transcript);
     let spec = params.model.spec();
     let resp = methods::load_session_response()
         .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
@@ -288,13 +289,14 @@ fn spawn_session(
     cwd: PathBuf,
     session_id: Option<SessionRef>,
     history: Vec<Message>,
+    transcript: Vec<TranscriptEntry<Message>>,
 ) -> InteractiveHandle {
     headless::spawn_interactive(InteractiveParams {
         model: params.model.clone(),
         config: Arc::clone(&params.config),
         permissions_config: params.permissions_config.clone(),
         timeouts: params.timeouts,
-        openai_options: params.openai_options,
+        openai_options: params.openai_options.clone(),
         prompt_slots: Arc::clone(&params.prompt_slots),
         state_persistence: params.state_persistence.clone(),
         excluded_tools: Vec::new(),
@@ -302,6 +304,7 @@ fn spawn_session(
         initial_wd: cwd,
         session_id,
         initial_history: history,
+        initial_transcript: transcript,
         yolo: params.yolo,
         system_prompt_override: None,
         append_system_prompt: None,

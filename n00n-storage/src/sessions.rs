@@ -8,6 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
+use std::hash::BuildHasher;
 use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Take, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -50,16 +51,23 @@ const MAX_FIRST_MESSAGE_LINE_BYTES: usize = 64 * 1024;
 const MAX_FIRST_MESSAGE_TEXT_BYTES: usize = 1024;
 const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
 pub const SESSION_STATE_SCHEMA_VERSION: u32 = 1;
+pub const COMPACTION_STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_PLUGIN_STATE_ENTRIES: usize = 64;
 const MAX_PLUGIN_STATE_NAME_BYTES: usize = 128;
 pub const MAX_PLUGIN_STATE_BYTES: usize = 256 * 1024;
 const MAX_SESSION_STATE_BYTES: usize = 1024 * 1024;
+const MAX_COMPACTION_STATE_CHECKPOINTS: usize = 64;
+const MAX_COMPACTION_STATE_BYTES: usize = 4 * 1024 * 1024;
 const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
 const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
 const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
 pub const OPENAI_RESPONSE_CHAIN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+/// Tool outputs a live session keeps resident before the oldest are evicted.
+pub const DEFAULT_MAX_RETAINED_TOOL_OUTPUTS: usize = 512;
+/// Subagent histories a live session keeps resident before the oldest are evicted.
+pub const DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -169,7 +177,6 @@ pub enum StoredSessionLifecycle {
     #[default]
     Idle,
 }
-
 impl StoredSessionLifecycle {
     #[must_use]
     pub fn is_active(self) -> bool {
@@ -178,7 +185,6 @@ impl StoredSessionLifecycle {
             Self::Queued | Self::Bootstrapping | Self::Running | Self::WaitingInput
         )
     }
-
     #[must_use]
     pub fn is_idle(&self) -> bool {
         matches!(self, Self::Idle)
@@ -347,7 +353,6 @@ impl StoredPluginScopes {
         Ok(())
     }
 }
-
 impl Serialize for StoredPluginScopes {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -537,7 +542,6 @@ impl StoredSessionStateSnapshot {
             | StoredSessionStateSnapshotInner::Malformed { .. } => None,
         }
     }
-
     /// Advances the state revision without allowing regression.
     ///
     /// # Errors
@@ -907,6 +911,361 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct StoredCompactionStateCheckpointsV1 {
+    schema_version: u32,
+    checkpoints: Vec<StoredSessionStateSnapshot>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum StoredCompactionStateCheckpointsInner {
+    Supported(StoredCompactionStateCheckpointsV1),
+    Unsupported {
+        schema_version: u64,
+        raw: serde_json::Value,
+    },
+    Malformed {
+        raw: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredCompactionStateCheckpoints {
+    inner: StoredCompactionStateCheckpointsInner,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CompactionStateError {
+    #[error("unsupported compaction-state schema version {found} (expected {expected})")]
+    UnsupportedSchemaVersion { found: u64, expected: u32 },
+    #[error("compaction-state checkpoint envelope is malformed")]
+    InvalidEnvelope,
+    #[error("compaction-state revision {revision} is not checkpointed")]
+    MissingRevision { revision: u64 },
+    #[error("compaction-state revision {requested} is newer than latest checkpoint {latest}")]
+    FutureRevision { requested: u64, latest: u64 },
+    #[error("compaction-state revision cannot regress from {latest} to {requested}")]
+    RevisionRegression { latest: u64, requested: u64 },
+    #[error("compaction-state revision {revision} already has a different checkpoint")]
+    RevisionConflict { revision: u64 },
+    #[error("compaction state has {found} checkpoints (maximum {maximum})")]
+    TooManyCheckpoints { found: usize, maximum: usize },
+    #[error("compaction state is {bytes} bytes (maximum {maximum})")]
+    CheckpointsTooLarge { bytes: usize, maximum: usize },
+    #[error(transparent)]
+    InvalidSnapshot(#[from] SessionStateError),
+    #[error("failed to encode compaction state: {0}")]
+    Serialize(#[from] serde_json::Error),
+}
+
+impl Default for StoredCompactionStateCheckpoints {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Serialize for StoredCompactionStateCheckpoints {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match &self.inner {
+            StoredCompactionStateCheckpointsInner::Supported(checkpoints) => {
+                checkpoints.serialize(serializer)
+            }
+            StoredCompactionStateCheckpointsInner::Unsupported { raw, .. }
+            | StoredCompactionStateCheckpointsInner::Malformed { raw } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredCompactionStateCheckpoints {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        Self::from_raw(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+impl StoredCompactionStateCheckpoints {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: StoredCompactionStateCheckpointsInner::Supported(
+                StoredCompactionStateCheckpointsV1 {
+                    schema_version: COMPACTION_STATE_SCHEMA_VERSION,
+                    checkpoints: Vec::new(),
+                    extra: BTreeMap::new(),
+                },
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(
+            &self.inner,
+            StoredCompactionStateCheckpointsInner::Supported(checkpoints)
+                if checkpoints.checkpoints.is_empty()
+        )
+    }
+
+    /// Stores a snapshot once, keyed by its exact monotonic state revision.
+    ///
+    /// Re-inserting an identical checkpoint is idempotent. All validation occurs before mutation.
+    ///
+    /// # Errors
+    /// Returns a typed error for unusable snapshots, revision conflicts, or exceeded bounds.
+    pub fn insert(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<(), CompactionStateError> {
+        let Some(candidate) = self.candidate_with(snapshot)? else {
+            return Ok(());
+        };
+        validate_compaction_state_checkpoints(&candidate)?;
+        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
+        Ok(())
+    }
+
+    fn insert_pruning_oldest(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<(), CompactionStateError> {
+        let Some(mut candidate) = self.candidate_with(snapshot)? else {
+            return Ok(());
+        };
+        loop {
+            match validate_compaction_state_checkpoints(&candidate) {
+                Ok(()) => break,
+                Err(
+                    CompactionStateError::TooManyCheckpoints { .. }
+                    | CompactionStateError::CheckpointsTooLarge { .. },
+                ) if candidate.checkpoints.len() > 1 => {
+                    candidate.checkpoints.remove(0);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
+        Ok(())
+    }
+
+    fn candidate_with(
+        &self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<Option<StoredCompactionStateCheckpointsV1>, CompactionStateError> {
+        let StoredCompactionStateCheckpointsInner::Supported(checkpoints) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        snapshot.validate_for_apply()?;
+        let revision = snapshot
+            .state_revision()
+            .ok_or(CompactionStateError::InvalidEnvelope)?;
+        if let Some(existing) = checkpoints
+            .checkpoints
+            .iter()
+            .find(|existing| existing.state_revision() == Some(revision))
+        {
+            return if existing == &snapshot {
+                Ok(None)
+            } else {
+                Err(CompactionStateError::RevisionConflict { revision })
+            };
+        }
+        if let Some(latest) = checkpoints
+            .checkpoints
+            .last()
+            .and_then(StoredSessionStateSnapshot::state_revision)
+            && revision < latest
+        {
+            return Err(CompactionStateError::RevisionRegression {
+                latest,
+                requested: revision,
+            });
+        }
+        let mut candidate = checkpoints.clone();
+        candidate.checkpoints.push(snapshot);
+        Ok(Some(candidate))
+    }
+
+    /// Retrieves only the checkpoint matching `revision` exactly.
+    ///
+    /// # Errors
+    /// Returns a typed error when metadata is unusable, the revision is missing, or it is newer
+    /// than every stored checkpoint.
+    pub fn snapshot_at(
+        &self,
+        revision: u64,
+    ) -> Result<&StoredSessionStateSnapshot, CompactionStateError> {
+        let StoredCompactionStateCheckpointsInner::Supported(checkpoints) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        if let Some(snapshot) = checkpoints
+            .checkpoints
+            .iter()
+            .find(|snapshot| snapshot.state_revision() == Some(revision))
+        {
+            snapshot.validate_for_apply()?;
+            return Ok(snapshot);
+        }
+        let Some(latest) = checkpoints
+            .checkpoints
+            .last()
+            .and_then(StoredSessionStateSnapshot::state_revision)
+        else {
+            return Err(CompactionStateError::MissingRevision { revision });
+        };
+        if revision > latest {
+            Err(CompactionStateError::FutureRevision {
+                requested: revision,
+                latest,
+            })
+        } else {
+            Err(CompactionStateError::MissingRevision { revision })
+        }
+    }
+
+    fn from_raw(raw: serde_json::Value) -> Result<Self, CompactionStateError> {
+        validate_raw_compaction_state_checkpoints(&raw)?;
+        let schema_version = raw
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(CompactionStateError::InvalidEnvelope)?;
+        if schema_version != u64::from(COMPACTION_STATE_SCHEMA_VERSION) {
+            return Ok(Self {
+                inner: StoredCompactionStateCheckpointsInner::Unsupported {
+                    schema_version,
+                    raw,
+                },
+            });
+        }
+        let checkpoints: StoredCompactionStateCheckpointsV1 = serde_json::from_value(raw)?;
+        validate_compaction_state_checkpoints(&checkpoints)?;
+        Ok(Self {
+            inner: StoredCompactionStateCheckpointsInner::Supported(checkpoints),
+        })
+    }
+
+    fn unsupported_schema_error(&self) -> CompactionStateError {
+        match &self.inner {
+            StoredCompactionStateCheckpointsInner::Supported(_)
+            | StoredCompactionStateCheckpointsInner::Malformed { .. } => {
+                CompactionStateError::InvalidEnvelope
+            }
+            StoredCompactionStateCheckpointsInner::Unsupported { schema_version, .. } => {
+                CompactionStateError::UnsupportedSchemaVersion {
+                    found: *schema_version,
+                    expected: COMPACTION_STATE_SCHEMA_VERSION,
+                }
+            }
+        }
+    }
+}
+
+fn validate_raw_compaction_state_checkpoints(
+    raw: &serde_json::Value,
+) -> Result<(), CompactionStateError> {
+    let bytes = serde_json::to_vec(raw)?.len();
+    if bytes > MAX_COMPACTION_STATE_BYTES {
+        return Err(CompactionStateError::CheckpointsTooLarge {
+            bytes,
+            maximum: MAX_COMPACTION_STATE_BYTES,
+        });
+    }
+    let Some(checkpoints) = raw.get("checkpoints").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    if checkpoints.len() > MAX_COMPACTION_STATE_CHECKPOINTS {
+        return Err(CompactionStateError::TooManyCheckpoints {
+            found: checkpoints.len(),
+            maximum: MAX_COMPACTION_STATE_CHECKPOINTS,
+        });
+    }
+    for snapshot in checkpoints {
+        let bytes = serde_json::to_vec(snapshot)?.len();
+        if bytes > MAX_SESSION_STATE_BYTES {
+            return Err(CompactionStateError::InvalidSnapshot(
+                SessionStateError::SnapshotTooLarge {
+                    bytes,
+                    maximum: MAX_SESSION_STATE_BYTES,
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_compaction_state_checkpoints(
+    checkpoints: &StoredCompactionStateCheckpointsV1,
+) -> Result<(), CompactionStateError> {
+    if checkpoints.checkpoints.len() > MAX_COMPACTION_STATE_CHECKPOINTS {
+        return Err(CompactionStateError::TooManyCheckpoints {
+            found: checkpoints.checkpoints.len(),
+            maximum: MAX_COMPACTION_STATE_CHECKPOINTS,
+        });
+    }
+    let mut previous = None;
+    for snapshot in &checkpoints.checkpoints {
+        snapshot.validate_for_apply()?;
+        let revision = snapshot
+            .state_revision()
+            .ok_or(CompactionStateError::InvalidEnvelope)?;
+        if let Some(latest) = previous {
+            if revision == latest {
+                return Err(CompactionStateError::RevisionConflict { revision });
+            }
+            if revision < latest {
+                return Err(CompactionStateError::RevisionRegression {
+                    latest,
+                    requested: revision,
+                });
+            }
+        }
+        previous = Some(revision);
+    }
+    let bytes = serde_json::to_vec(checkpoints)?.len();
+    if bytes > MAX_COMPACTION_STATE_BYTES {
+        return Err(CompactionStateError::CheckpointsTooLarge {
+            bytes,
+            maximum: MAX_COMPACTION_STATE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn deserialize_compaction_state_checkpoints<'de, D>(
+    deserializer: D,
+) -> Result<StoredCompactionStateCheckpoints, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    match StoredCompactionStateCheckpoints::from_raw(raw.clone()) {
+        Ok(checkpoints) => Ok(checkpoints),
+        Err(
+            error @ (CompactionStateError::TooManyCheckpoints { .. }
+            | CompactionStateError::CheckpointsTooLarge { .. }
+            | CompactionStateError::InvalidSnapshot(SessionStateError::SnapshotTooLarge {
+                ..
+            })),
+        ) => Err(serde::de::Error::custom(error)),
+        Err(error) => {
+            warn!(
+                error = %error,
+                "quarantining malformed compaction-state checkpoints"
+            );
+            Ok(StoredCompactionStateCheckpoints {
+                inner: StoredCompactionStateCheckpointsInner::Malformed { raw },
+            })
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -963,9 +1322,40 @@ pub struct SessionMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub state_snapshot: Option<StoredSessionStateSnapshot>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_compaction_state_checkpoints",
+        skip_serializing_if = "StoredCompactionStateCheckpoints::is_empty"
+    )]
+    pub compaction_state_checkpoints: StoredCompactionStateCheckpoints,
     /// Monotonic snapshot ordering used by write-behind persistence.
     #[serde(default)]
     pub revision: u64,
+}
+
+impl SessionMeta {
+    /// Stores a compaction checkpoint and prunes the oldest checkpoints to remain within bounds.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot or checkpoint collection is invalid.
+    pub fn checkpoint_compaction_state(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+    ) -> Result<(), CompactionStateError> {
+        self.compaction_state_checkpoints
+            .insert_pruning_oldest(snapshot)
+    }
+
+    /// Retrieves the state snapshot associated with an exact compaction-boundary revision.
+    ///
+    /// # Errors
+    /// Returns a typed error for absent revisions or unusable checkpoint metadata.
+    pub fn compaction_state_at(
+        &self,
+        revision: u64,
+    ) -> Result<&StoredSessionStateSnapshot, CompactionStateError> {
+        self.compaction_state_checkpoints.snapshot_at(revision)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1030,6 +1420,10 @@ where
 pub struct StoredOpenAiResponseChain {
     pub response_id: String,
     pub message_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_hash: Option<String>,
     pub tools_hash: String,
     pub messages_hash: String,
     pub auth_scope_hash: String,
@@ -1060,6 +1454,8 @@ pub enum TranscriptEntry<M> {
         entries: Vec<TranscriptEntry<M>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         generated_summary: Option<M>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_revision: Option<u64>,
     },
 }
 
@@ -1074,6 +1470,38 @@ pub fn active_messages_from_transcript<M: Clone>(transcript: &[TranscriptEntry<M
             TranscriptEntry::Compaction { .. } => None,
         })
         .collect()
+}
+
+/// Ceiling on what a *live* session keeps resident. The on-disk log always
+/// stays complete: eviction only drops in-memory copies of records the log
+/// already owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionBudget {
+    pub tool_outputs: usize,
+    pub subagent_histories: usize,
+}
+
+impl Default for RetentionBudget {
+    fn default() -> Self {
+        Self {
+            tool_outputs: DEFAULT_MAX_RETAINED_TOOL_OUTPUTS,
+            subagent_histories: DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES,
+        }
+    }
+}
+
+/// Ids a [`RetentionBudget`] would drop, oldest first by transcript position.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RetentionEviction {
+    pub tool_outputs: Vec<String>,
+    pub subagent_messages: Vec<String>,
+}
+
+impl RetentionEviction {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tool_outputs.is_empty() && self.subagent_messages.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1093,6 +1521,16 @@ pub struct Session<M, U, T> {
     pub tool_outputs: HashMap<String, T>,
     #[serde(default = "HashMap::new", skip_serializing_if = "HashMap::is_empty")]
     pub subagent_messages: HashMap<String, Vec<M>>,
+    /// Tool outputs dropped from `tool_outputs` under a [`RetentionBudget`].
+    /// Live-process state only: a session loaded from disk owns nothing yet.
+    #[serde(skip)]
+    evicted_tool_outputs: HashSet<String>,
+    /// Subagent histories dropped from `subagent_messages` under a
+    /// [`RetentionBudget`]. Live-process state only, as above.
+    #[serde(skip)]
+    evicted_subagent_messages: HashSet<String>,
+    #[serde(skip)]
+    loaded_from_disk: bool,
     #[serde(flatten)]
     pub meta: SessionMeta,
     pub created_at: u64,
@@ -1402,7 +1840,6 @@ pub struct StoredSubagent {
 pub trait TitleSource {
     fn first_user_text(&self) -> Option<&str>;
 }
-
 /// A pasted code block bakes `\n` into a title and skews width-based padding
 /// in single-line UI like the picker, so every title entry point calls this.
 #[must_use]
@@ -1726,6 +2163,57 @@ impl SessionLog {
         Ok((session, log))
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed,
+    /// or if the session ID does not match.
+    pub fn open_cursor<M, U, T>(dir: &Path, session_id: n00nId) -> Result<(u64, Self), SessionError>
+    where
+        M: Serialize + DeserializeOwned + Clone + Default,
+        U: Serialize + DeserializeOwned + Default,
+        T: Serialize + DeserializeOwned,
+    {
+        let path = locate_session_file(dir, session_id)
+            .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
+        let mut index = RetainedIndex::default();
+        let ignore_tool_ids = |_message: &M| Vec::new();
+        let (mut session, saw_legacy_transcript, recovered_tail, log_appends, decoded_bytes) =
+            parse_records_with_limits_retained::<M, U, T>(
+                &path,
+                DecodeLimits::LOAD,
+                Some((&ignore_tool_ids, &mut index)),
+            )?;
+        if session.id != session_id {
+            return Err(SessionError::IdMismatch {
+                log_id: session.id,
+                given_id: session_id,
+            });
+        }
+        session.evicted_tool_outputs.clone_from(&index.tool_outputs);
+        session
+            .evicted_subagent_messages
+            .clone_from(&index.subagent_messages);
+        let revision = session.meta.revision;
+        let rewrite = saw_legacy_transcript || recovered_tail;
+        let (file, decoded_bytes) = if rewrite {
+            write_session_file_with_limits(dir, &session, &DecodeLimits::LOAD)?
+        } else {
+            (
+                OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .open(&path)
+                    .map_err(StorageError::from)?,
+                decoded_bytes,
+            )
+        };
+        let appended_frames = if rewrite { 0 } else { log_appends };
+        let mut log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes)?;
+        log.saved_tool_ids = index.tool_outputs;
+        log.saved_sub_msg_counts = index.subagent_message_counts;
+        update_cwd_index(dir, &session.cwd, session.id)?;
+        Ok((revision, log))
+    }
+
     #[must_use]
     pub fn session_id(&self) -> n00nId {
         self.session_id
@@ -1819,7 +2307,7 @@ impl SessionLog {
 
             let new_sub_counts = self.append_subagent_records::<M, U, T>(
                 &mut buf,
-                &session.subagent_messages,
+                session,
                 &path,
                 &limits,
                 &mut next_decoded_bytes,
@@ -1921,7 +2409,7 @@ impl SessionLog {
     fn append_subagent_records<M, U, T>(
         &self,
         buf: &mut Vec<u8>,
-        subagent_messages: &HashMap<String, Vec<M>>,
+        session: &Session<M, U, T>,
         path: &Path,
         limits: &DecodeLimits,
         decoded_bytes: &mut usize,
@@ -1932,7 +2420,10 @@ impl SessionLog {
         T: Serialize,
     {
         let mut new_sub_counts = Vec::new();
-        for (sub_id, msgs) in subagent_messages {
+        for (sub_id, msgs) in &session.subagent_messages {
+            if session.evicted_subagent_messages.contains(sub_id) {
+                continue;
+            }
             let saved = self
                 .saved_sub_msg_counts
                 .get(sub_id)
@@ -2032,7 +2523,12 @@ impl SessionLog {
             file,
             saved_messages: MessageCursor::capture(&session.messages)?,
             saved_transcript: MessageCursor::capture(&session.transcript)?,
-            saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
+            saved_tool_ids: session
+                .tool_outputs
+                .keys()
+                .chain(session.evicted_tool_outputs.iter())
+                .cloned()
+                .collect(),
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
             appended_frames,
             saved_transcript_revision: session.transcript_revision,
@@ -2051,18 +2547,17 @@ impl SessionLog {
         }
         Ok(())
     }
-
     fn cursor_ahead<M, U, T>(&self, session: &Session<M, U, T>) -> bool {
         self.saved_messages.len() > session.messages.len()
-            || self
-                .saved_tool_ids
-                .iter()
-                .any(|id| !session.tool_outputs.contains_key(id))
+            || self.saved_tool_ids.iter().any(|id| {
+                !session.tool_outputs.contains_key(id) && !session.evicted_tool_outputs.contains(id)
+            })
             || self.saved_sub_msg_counts.iter().any(|(sub, &count)| {
-                session
-                    .subagent_messages
-                    .get(sub)
-                    .is_none_or(|msgs| count > msgs.len())
+                !session.evicted_subagent_messages.contains(sub)
+                    && session
+                        .subagent_messages
+                        .get(sub)
+                        .is_none_or(|msgs| count > msgs.len())
             })
     }
 }
@@ -2155,6 +2650,9 @@ where
         )?;
     }
     for (id, output) in &session.tool_outputs {
+        if session.evicted_tool_outputs.contains(id) {
+            continue;
+        }
         write_record_with_limits(
             writer,
             &LogRecord::<&M, &U, &T>::Out {
@@ -2167,6 +2665,9 @@ where
         )?;
     }
     for (sub_id, msgs) in &session.subagent_messages {
+        if session.evicted_subagent_messages.contains(sub_id) {
+            continue;
+        }
         for msg in msgs {
             write_record_with_limits(
                 writer,
@@ -2179,6 +2680,9 @@ where
                 &mut decoded_bytes,
             )?;
         }
+    }
+    if session.has_evicted_records() {
+        copy_evicted_records(writer, path, session, limits, &mut decoded_bytes)?;
     }
     for entry in &session.transcript {
         write_record_with_limits(
@@ -2207,6 +2711,130 @@ where
         &mut decoded_bytes,
     )?;
     Ok(decoded_bytes)
+}
+
+/// Decodes only `sub_msg` payloads, so one subagent history can be recovered
+/// without materializing the whole session.
+#[derive(Deserialize)]
+#[serde(tag = "t")]
+enum SubMsgRecord<M> {
+    #[serde(rename = "sub_msg")]
+    SubMsg { sub: String, d: M },
+    #[serde(other)]
+    Other,
+}
+
+/// Decodes only `out` payloads, so named tool outputs can be recovered without
+/// materializing the whole session.
+#[derive(Deserialize)]
+#[serde(tag = "t")]
+enum OutRecord<T> {
+    #[serde(rename = "out")]
+    Out { id: String, d: T },
+    #[serde(other)]
+    Other,
+}
+
+/// Classifies a record by tag and key without decoding its payload.
+#[derive(Deserialize)]
+#[serde(tag = "t")]
+enum RetainedTag {
+    #[serde(rename = "out")]
+    Out { id: String },
+    #[serde(rename = "sub_msg")]
+    SubMsg { sub: String },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Default)]
+struct RetainedIndex {
+    tool_outputs: HashSet<String>,
+    subagent_messages: HashSet<String>,
+    subagent_message_counts: HashMap<String, usize>,
+    nested_tool_ids: HashMap<String, Vec<String>>,
+}
+
+type RetainedParse<'a, M> = (&'a dyn Fn(&M) -> Vec<String>, &'a mut RetainedIndex);
+
+/// Compaction rewrites the log from the live session, which no longer holds
+/// evicted records. Stream them out of the file being replaced so the on-disk
+/// history stays complete.
+fn copy_evicted_records<W, M, U, T>(
+    writer: &mut W,
+    source: &Path,
+    session: &Session<M, U, T>,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+) -> Result<(), SessionError>
+where
+    W: Write,
+{
+    if !source.exists() {
+        warn!(
+            path = %source.display(),
+            session_id = %session.id,
+            evicted_tool_outputs = session.evicted_tool_outputs.len(),
+            evicted_subagent_messages = session.evicted_subagent_messages.len(),
+            "no previous session log to recover evicted records from",
+        );
+        return Ok(());
+    }
+    let (_recovered_tail, _read_bytes) =
+        visit_zstd_lines_with_decoded_bytes(source, *limits, |line| {
+            let retained = match serde_json::from_str::<RetainedTag>(line) {
+                Ok(RetainedTag::Out { id }) => session.evicted_tool_outputs.contains(&id),
+                Ok(RetainedTag::SubMsg { sub }) => session.evicted_subagent_messages.contains(&sub),
+                Ok(RetainedTag::Other) => false,
+                Err(error) => {
+                    warn!(
+                        path = %source.display(),
+                        error = %error,
+                        record_len = line.len(),
+                        "skipping unrecognized record while recovering evicted history",
+                    );
+                    false
+                }
+            };
+            if retained {
+                write_raw_record(writer, line, source, limits, decoded_bytes)?;
+            }
+            Ok(())
+        })?;
+    Ok(())
+}
+
+fn write_raw_record<W: Write>(
+    writer: &mut W,
+    line: &str,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+) -> Result<(), SessionError> {
+    if line.len() > limits.line_bytes {
+        return Err(SessionError::RecordTooLarge {
+            path: path.display().to_string(),
+            limit: limits.line_bytes,
+        });
+    }
+    let Some(next_decoded_bytes) = decoded_bytes.checked_add(line.len() + 1) else {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    };
+    if next_decoded_bytes > limits.decoded_bytes {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    }
+    writer
+        .write_all(line.as_bytes())
+        .map_err(StorageError::from)?;
+    writer.write_all(b"\n").map_err(StorageError::from)?;
+    *decoded_bytes = next_decoded_bytes;
+    Ok(())
 }
 
 struct RecordLimitWriter<'a, W> {
@@ -2419,6 +3047,19 @@ where
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
+    parse_records_with_limits_retained(path, limits, None)
+}
+
+fn parse_records_with_limits_retained<M, U, T>(
+    path: &Path,
+    limits: DecodeLimits,
+    mut retained: Option<RetainedParse<'_, M>>,
+) -> Result<ParsedRecords<M, U, T>, SessionError>
+where
+    M: DeserializeOwned + Default + Clone,
+    U: DeserializeOwned + Default,
+    T: DeserializeOwned,
+{
     let mut line_count = 0usize;
     let mut builder = SessionBuilder {
         title: DEFAULT_TITLE.to_string(),
@@ -2431,6 +3072,32 @@ where
             line_count += 1;
             if line.is_empty() {
                 return Ok(());
+            }
+            if let Some((tool_ids, index)) = retained.as_mut() {
+                match serde_json::from_str::<RetainedTag>(line) {
+                    Ok(RetainedTag::Out { id }) => {
+                        index.tool_outputs.insert(id);
+                        return Ok(());
+                    }
+                    Ok(RetainedTag::SubMsg { .. }) => {
+                        if let Ok(SubMsgRecord::SubMsg { sub, d }) =
+                            serde_json::from_str::<SubMsgRecord<M>>(line)
+                        {
+                            index.subagent_messages.insert(sub.clone());
+                            *index
+                                .subagent_message_counts
+                                .entry(sub.clone())
+                                .or_insert(0) += 1;
+                            index
+                                .nested_tool_ids
+                                .entry(sub)
+                                .or_default()
+                                .extend(tool_ids(&d));
+                            return Ok(());
+                        }
+                    }
+                    Ok(RetainedTag::Other) | Err(_) => {}
+                }
             }
             let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
                 Ok(record) => record,
@@ -2490,6 +3157,9 @@ where
         token_usage: builder.token_usage,
         tool_outputs: builder.tool_outputs,
         subagent_messages: builder.subagent_messages,
+        evicted_tool_outputs: HashSet::new(),
+        evicted_subagent_messages: HashSet::new(),
+        loaded_from_disk: true,
         meta: builder.meta,
         created_at: builder.created_at,
         updated_at: builder.updated_at,
@@ -2596,7 +3266,6 @@ fn encode_frame<W: Write>(file: &mut W, bytes: &[u8]) -> Result<(), SessionError
     enc.finish().map_err(StorageError::from)?;
     Ok(())
 }
-
 fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
@@ -3458,7 +4127,6 @@ where
     if header.v != LOG_FORMAT_VERSION {
         return None;
     }
-
     let mut budget = DecodedWorkBudget::new(MAX_SCAN_DECODED_BYTES);
     let (meta_title, updated_at, first_message) = find_last_frame_meta::<M>(path, &mut budget)
         .unwrap_or_else(|| scan_meta_from_start::<M>(path, &mut budget));
@@ -3546,6 +4214,147 @@ where
 
 // -- Session impl --
 
+/// Ids in `present` that fall outside the newest `keep`, oldest first. Ids
+/// missing from `order` were recorded after the last transcript update; they
+/// sort last so a known-older id always goes first, but they stay evictable so
+/// the budget is a real ceiling rather than a best effort.
+fn oldest_beyond_budget<'a>(
+    order: &[String],
+    present: impl Iterator<Item = &'a String>,
+    keep: usize,
+) -> Vec<String> {
+    let present: HashSet<&String> = present.collect();
+    let mut ranked: Vec<&String> = order.iter().filter(|id| present.contains(id)).collect();
+    let known: HashSet<&String> = ranked.iter().copied().collect();
+    let mut unranked: Vec<&String> = present
+        .iter()
+        .copied()
+        .filter(|id| !known.contains(id))
+        .collect();
+    unranked.sort();
+    ranked.extend(unranked);
+    let over_budget = ranked.len().saturating_sub(keep);
+    ranked.into_iter().take(over_budget).cloned().collect()
+}
+
+impl<M, U, T> Session<M, U, T> {
+    /// Ids the budget would drop, oldest first by position in the transcript.
+    ///
+    /// This only *selects*; the caller must confirm every id is already durable
+    /// on disk before calling [`Self::evict_retained`], because eviction hands
+    /// ownership of those records to the log.
+    #[must_use]
+    pub fn retention_eviction_candidates(
+        &self,
+        budget: RetentionBudget,
+        tool_ids: impl Fn(&M) -> Vec<String>,
+    ) -> RetentionEviction {
+        let order = self.tool_use_id_order(&tool_ids);
+        RetentionEviction {
+            tool_outputs: oldest_beyond_budget(
+                &order,
+                self.tool_outputs.keys(),
+                budget.tool_outputs,
+            ),
+            subagent_messages: oldest_beyond_budget(
+                &order,
+                self.subagent_messages.keys(),
+                budget.subagent_histories,
+            ),
+        }
+    }
+
+    /// Drops the selected ids from the in-memory maps and records them as owned
+    /// by the on-disk log, so later appends never re-emit them and compaction
+    /// copies them forward from the previous log file.
+    pub fn evict_retained(&mut self, eviction: &RetentionEviction) {
+        for id in &eviction.tool_outputs {
+            self.tool_outputs.remove(id);
+            self.evicted_tool_outputs.insert(id.clone());
+        }
+        for id in &eviction.subagent_messages {
+            self.subagent_messages.remove(id);
+            self.evicted_subagent_messages.insert(id.clone());
+        }
+    }
+
+    #[must_use]
+    pub fn evicted_tool_outputs(&self) -> &HashSet<String> {
+        &self.evicted_tool_outputs
+    }
+
+    #[must_use]
+    pub fn evicted_subagent_messages(&self) -> &HashSet<String> {
+        &self.evicted_subagent_messages
+    }
+
+    #[must_use]
+    pub fn has_evicted_records(&self) -> bool {
+        !self.evicted_tool_outputs.is_empty() || !self.evicted_subagent_messages.is_empty()
+    }
+
+    #[must_use]
+    pub fn loaded_from_disk(&self) -> bool {
+        self.loaded_from_disk
+    }
+
+    /// Every `tool_use_id` the session has seen, oldest first. The transcript
+    /// keeps compacted history the active `messages` window has already lost,
+    /// so it leads; ids only in `messages` follow. A subagent's own tool calls
+    /// never reach the parent's history, so they are spliced in at the position
+    /// of the call that launched them.
+    fn tool_use_id_order(&self, tool_ids: &impl Fn(&M) -> Vec<String>) -> Vec<String> {
+        let nested_tool_ids: HashMap<String, Vec<String>> = self
+            .subagent_messages
+            .iter()
+            .map(|(id, messages)| {
+                (
+                    id.clone(),
+                    messages.iter().flat_map(tool_ids).collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        self.tool_use_id_order_with_nested(tool_ids, &nested_tool_ids)
+    }
+
+    fn tool_use_id_order_with_nested(
+        &self,
+        tool_ids: &impl Fn(&M) -> Vec<String>,
+        nested_tool_ids: &HashMap<String, Vec<String>>,
+    ) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut order = Vec::new();
+        let parent = tool_ids_in_transcript(&self.transcript, tool_ids)
+            .into_iter()
+            .chain(self.messages.iter().flat_map(tool_ids));
+        for id in parent {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let nested = nested_tool_ids.get(&id).map_or_else(Vec::new, Clone::clone);
+            order.push(id);
+            for nested_id in nested {
+                if seen.insert(nested_id.clone()) {
+                    order.push(nested_id);
+                }
+            }
+        }
+        order
+    }
+
+    /// The `tool_use_id`s the main transcript renders, in display order. The
+    /// renderer reads the transcript when it has one and the active message
+    /// window otherwise, so this mirrors that choice; nested subagent ids are
+    /// left out because the parent view never draws them.
+    pub fn displayed_tool_use_ids(&self, tool_ids: &impl Fn(&M) -> Vec<String>) -> Vec<String> {
+        if self.transcript.is_empty() {
+            self.messages.iter().flat_map(tool_ids).collect()
+        } else {
+            tool_ids_in_transcript(&self.transcript, tool_ids)
+        }
+    }
+}
+
 impl<M, U, T> Session<M, U, T>
 where
     M: Serialize + DeserializeOwned + TitleSource + Clone + Default,
@@ -3567,6 +4376,9 @@ where
             token_usage: U::default(),
             tool_outputs: HashMap::new(),
             subagent_messages: HashMap::new(),
+            evicted_tool_outputs: HashSet::new(),
+            evicted_subagent_messages: HashSet::new(),
+            loaded_from_disk: false,
             meta: SessionMeta {
                 mode: Some(StoredMode::Build),
                 ..Default::default()
@@ -3592,6 +4404,8 @@ where
         main_ids.extend(tool_ids_in_transcript(&self.transcript, &tool_ids));
         let main_ids: HashSet<String> = main_ids.into_iter().collect();
         self.subagent_messages.retain(|id, _| main_ids.contains(id));
+        self.evicted_subagent_messages
+            .retain(|id| main_ids.contains(id));
         self.meta
             .subagents
             .retain(|sa| main_ids.contains(&sa.tool_use_id));
@@ -3604,6 +4418,7 @@ where
             .chain(main_ids)
             .collect();
         self.tool_outputs.retain(|id, _| live.contains(id));
+        self.evicted_tool_outputs.retain(|id| live.contains(id));
     }
 
     /// # Errors
@@ -3648,6 +4463,145 @@ where
     }
 
     /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the session cannot be loaded.
+    pub fn load_with_retention(
+        id: n00nId,
+        dir: &StateDir,
+        budget: RetentionBudget,
+        tool_ids: impl Fn(&M) -> Vec<String>,
+    ) -> Result<Self, SessionError> {
+        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
+        Self::load_from_with_retention(id, &sessions_dir, budget, tool_ids)
+    }
+
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed,
+    /// or if the session ID does not match.
+    pub fn load_from_with_retention(
+        id: n00nId,
+        dir: &Path,
+        budget: RetentionBudget,
+        tool_ids: impl Fn(&M) -> Vec<String>,
+    ) -> Result<Self, SessionError> {
+        let Some(path) = locate_session_file(dir, id) else {
+            return Err(StorageError::NotFound(id.to_string()).into());
+        };
+        let mut index = RetainedIndex::default();
+        let (mut session, _, _, _, _) = parse_records_with_limits_retained(
+            &path,
+            DecodeLimits::LOAD,
+            Some((&tool_ids, &mut index)),
+        )?;
+        if session.id != id {
+            return Err(SessionError::IdMismatch {
+                log_id: session.id,
+                given_id: id,
+            });
+        }
+
+        let order = session.tool_use_id_order_with_nested(&tool_ids, &index.nested_tool_ids);
+        let evicted_tool_outputs: HashSet<String> =
+            oldest_beyond_budget(&order, index.tool_outputs.iter(), budget.tool_outputs)
+                .into_iter()
+                .collect();
+        let evicted_subagent_messages: HashSet<String> = oldest_beyond_budget(
+            &order,
+            index.subagent_messages.iter(),
+            budget.subagent_histories,
+        )
+        .into_iter()
+        .collect();
+
+        visit_zstd_lines_with_decoded_bytes(&path, DecodeLimits::LOAD, |line| {
+            match serde_json::from_str::<RetainedTag>(line) {
+                Ok(RetainedTag::Out { id: output_id })
+                    if !evicted_tool_outputs.contains(&output_id) =>
+                {
+                    if let Ok(OutRecord::Out { id, d }) = serde_json::from_str::<OutRecord<T>>(line)
+                    {
+                        session.tool_outputs.insert(id, d);
+                    }
+                }
+                Ok(RetainedTag::SubMsg { sub }) if !evicted_subagent_messages.contains(&sub) => {
+                    if let Ok(SubMsgRecord::SubMsg { sub, d }) =
+                        serde_json::from_str::<SubMsgRecord<M>>(line)
+                    {
+                        session.subagent_messages.entry(sub).or_default().push(d);
+                    }
+                }
+                Ok(_) | Err(_) => {}
+            }
+            Ok(())
+        })?;
+        session.evicted_tool_outputs = evicted_tool_outputs;
+        session.evicted_subagent_messages = evicted_subagent_messages;
+        Ok(session)
+    }
+
+    /// Reads one subagent's history straight out of the log, so a session that
+    /// evicted it under a [`RetentionBudget`] can show the tab again without
+    /// rehydrating the rest of the session.
+    ///
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed.
+    pub fn load_subagent_messages_from(
+        id: n00nId,
+        dir: &Path,
+        sub_id: &str,
+    ) -> Result<Vec<M>, SessionError> {
+        let Some(path) = locate_session_file(dir, id) else {
+            return Err(StorageError::NotFound(id.to_string()).into());
+        };
+        let mut messages = Vec::new();
+        visit_zstd_lines_with_decoded_bytes(&path, DecodeLimits::LOAD, |line| {
+            match serde_json::from_str::<SubMsgRecord<M>>(line) {
+                Ok(SubMsgRecord::SubMsg { sub, d }) if sub == sub_id => messages.push(d),
+                Ok(_) => {}
+                Err(error) => warn!(
+                    path = %path.display(),
+                    error = %error,
+                    record_len = line.len(),
+                    "skipping unrecognized record while loading subagent history",
+                ),
+            }
+            Ok(())
+        })?;
+        Ok(messages)
+    }
+
+    /// Reads the named tool outputs straight out of the log, for rendering
+    /// history a [`RetentionBudget`] evicted.
+    ///
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed.
+    pub fn load_tool_outputs_from<S: BuildHasher>(
+        id: n00nId,
+        dir: &Path,
+        wanted: &HashSet<String, S>,
+    ) -> Result<HashMap<String, T>, SessionError> {
+        let Some(path) = locate_session_file(dir, id) else {
+            return Err(StorageError::NotFound(id.to_string()).into());
+        };
+        let mut outputs = HashMap::new();
+        visit_zstd_lines_with_decoded_bytes(&path, DecodeLimits::LOAD, |line| {
+            match serde_json::from_str::<OutRecord<T>>(line) {
+                Ok(OutRecord::Out { id: out_id, d }) if wanted.contains(&out_id) => {
+                    outputs.insert(out_id, d);
+                }
+                Ok(_) => {}
+                Err(error) => warn!(
+                    path = %path.display(),
+                    error = %error,
+                    record_len = line.len(),
+                    "skipping unrecognized record while loading tool outputs",
+                ),
+            }
+            Ok(())
+        })?;
+        Ok(outputs)
+    }
+
+    /// # Errors
     /// Returns `SessionError` if the sessions directory cannot be created or the scan fails.
     pub fn list(cwd: &str, dir: &StateDir) -> Result<Vec<SessionSummary>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
@@ -3667,6 +4621,28 @@ where
     pub fn latest(cwd: &str, dir: &StateDir) -> Result<Option<Self>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::latest_in(cwd, &sessions_dir)
+    }
+
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the latest session cannot be loaded.
+    pub fn latest_with_retention(
+        cwd: &str,
+        dir: &StateDir,
+        budget: RetentionBudget,
+        tool_ids: impl Fn(&M) -> Vec<String>,
+    ) -> Result<Option<Self>, SessionError> {
+        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
+        let latest = scan_headers::<M>(cwd, &sessions_dir)?
+            .into_iter()
+            .max_by_key(|summary| summary.updated_at);
+        match latest {
+            Some(summary) => {
+                update_cwd_index(&sessions_dir, cwd, summary.id)?;
+                Self::load_from_with_retention(summary.id, &sessions_dir, budget, tool_ids)
+                    .map(Some)
+            }
+            None => Ok(None),
+        }
     }
 
     /// # Errors
@@ -3875,6 +4851,7 @@ mod tests {
                 TranscriptEntry::Message("tool-b".into()),
             ],
             generated_summary: None,
+            state_revision: None,
         });
         session
             .subagent_messages
@@ -3912,6 +4889,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("before compaction"))],
                 generated_summary: Some(assistant_message("generated summary")),
+                state_revision: Some(4),
             },
             TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
             TranscriptEntry::GeneratedMessage(assistant_message("generated summary")),
@@ -3921,7 +4899,6 @@ mod tests {
             vec![user_message("sub-prompt"), assistant_message("sub-reply")],
         );
         session.save_to(dir).unwrap();
-
         let loaded = TestSession::load_from(session.id, dir).unwrap();
         assert_eq!(loaded.id, session.id);
         assert_eq!(loaded.model, "anthropic/claude-sonnet-4");
@@ -3943,7 +4920,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_compaction_without_summary_metadata_deserializes() {
+    fn legacy_compaction_without_state_metadata_deserializes() {
         let entry: TranscriptEntry<Value> = serde_json::from_value(serde_json::json!({
             "Compaction": { "entries": [] }
         }))
@@ -3953,9 +4930,51 @@ mod tests {
             entry,
             TranscriptEntry::Compaction {
                 generated_summary: None,
+                state_revision: None,
                 ..
             }
         ));
+    }
+    #[test]
+    fn recursive_compaction_state_revisions_round_trip_with_legacy_boundaries() {
+        let raw = serde_json::json!({
+            "Compaction": {
+                "entries": [
+                    {
+                        "Compaction": {
+                            "entries": [],
+                            "state_revision": 3
+                        }
+                    },
+                    {"Compaction": {"entries": []}}
+                ],
+                "state_revision": 7
+            }
+        });
+        let entry: TranscriptEntry<Value> = serde_json::from_value(raw.clone()).unwrap();
+
+        let TranscriptEntry::Compaction {
+            entries,
+            state_revision: Some(7),
+            ..
+        } = &entry
+        else {
+            panic!("expected outer revision");
+        };
+        assert!(matches!(
+            entries.as_slice(),
+            [
+                TranscriptEntry::Compaction {
+                    state_revision: Some(3),
+                    ..
+                },
+                TranscriptEntry::Compaction {
+                    state_revision: None,
+                    ..
+                }
+            ]
+        ));
+        assert_eq!(serde_json::to_value(entry).unwrap(), raw);
     }
 
     #[test]
@@ -3964,6 +4983,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("archived"))],
                 generated_summary: Some(assistant_message("archived summary")),
+                state_revision: None,
             },
             TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
             TranscriptEntry::GeneratedMessage(assistant_message("active summary")),
@@ -3991,6 +5011,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("archived"))],
                 generated_summary: None,
+                state_revision: None,
             },
             TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
             TranscriptEntry::GeneratedMessage(assistant_message("summary")),
@@ -4055,7 +5076,6 @@ mod tests {
         let dir = tmp.path();
         let mut session: TestSession = Session::new("m", "/project");
         session.messages.push(user_message("first"));
-
         let mut log = SessionLog::create(dir, &session).unwrap();
 
         session.messages.push(assistant_message("reply"));
@@ -4128,6 +5148,7 @@ mod tests {
             TranscriptEntry::Compaction {
                 entries: vec![TranscriptEntry::Message(user_message("old first"))],
                 generated_summary: None,
+                state_revision: None,
             },
             TranscriptEntry::Message(user_message("same tail")),
         ];
@@ -4176,6 +5197,7 @@ mod tests {
         session.transcript = vec![TranscriptEntry::Compaction {
             entries: vec![TranscriptEntry::Message(CountingMessage)],
             generated_summary: None,
+            state_revision: None,
         }];
         session.set_transcript_revision(Some(1));
         let mut log = SessionLog::create(dir, &session).unwrap();
@@ -4628,7 +5650,6 @@ mod tests {
         ));
         assert_eq!(fs::read(&path).unwrap(), before);
     }
-
     #[test]
     fn append_compacts_when_history_exhausts_decoded_budget() {
         let tmp = TempDir::new().unwrap();
@@ -4719,7 +5740,6 @@ mod tests {
             SessionError::DecoderWindowLimitExceeded { window_log: 10, .. }
         ));
     }
-
     #[test]
     fn bounded_reader_decodes_fixed_file_length_snapshot() {
         let tmp = TempDir::new().unwrap();
@@ -4900,7 +5920,6 @@ mod tests {
         let decoded = format!("{header}{oversized}{meta}");
         write_encoded(&path, decoded.as_bytes());
         let max_normal_line = header.len().max(meta.len()) - 1;
-
         let found = super::try_decode_last_meta_at_with_limits::<Value>(
             &path,
             0,
@@ -5348,7 +6367,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(500));
             return;
         }
-
         let temp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(temp.path().to_path_buf());
         let ready = temp.path().join("ready");
@@ -5393,12 +6411,13 @@ mod tests {
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 3,
+            model_id: Some("model".into()),
+            system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
             auth_scope_hash: "account".into(),
             expires_at: now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
         };
-
         let lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
         save_openai_response_chain(&state_dir, session_id, &chain, &lock).unwrap();
         assert_eq!(
@@ -5437,6 +6456,8 @@ mod tests {
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 1,
+            model_id: Some("model".into()),
+            system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
             auth_scope_hash: "account".into(),
@@ -5485,6 +6506,8 @@ mod tests {
         let updated = StoredOpenAiResponseChain {
             response_id: "resp_new".into(),
             message_count: 2,
+            model_id: Some("model".into()),
+            system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
             auth_scope_hash: "account".into(),
@@ -5531,6 +6554,8 @@ mod tests {
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 1,
+            model_id: Some("model".into()),
+            system_hash: Some("system".into()),
             tools_hash: "tools".into(),
             messages_hash: "messages".into(),
             auth_scope_hash: "account".into(),
@@ -5789,7 +6814,6 @@ mod tests {
                 .any(|value| *value == session.id.to_string())
         );
     }
-
     #[test]
     fn title_unicode_safe() {
         let input = "あ".repeat(100);
@@ -6068,7 +7092,6 @@ mod tests {
         assert_eq!(entries[0].scope, super::StoredStateScope::Root);
         assert_eq!(entries[0].payload, &serde_json::json!({ "valid": true }));
     }
-
     #[test]
     fn session_state_snapshot_mutations_preserve_opaque_data() {
         let raw = serde_json::json!({
@@ -6454,12 +7477,264 @@ mod tests {
     }
 
     #[test]
+    fn compaction_state_checkpoints_find_exact_revision() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        let first = super::StoredSessionStateSnapshot::new(2);
+        let second = super::StoredSessionStateSnapshot::new(5);
+        checkpoints.insert(first.clone()).unwrap();
+        checkpoints.insert(second.clone()).unwrap();
+
+        assert_eq!(checkpoints.snapshot_at(2).unwrap(), &first);
+        assert_eq!(checkpoints.snapshot_at(5).unwrap(), &second);
+        assert!(matches!(
+            checkpoints.snapshot_at(3),
+            Err(super::CompactionStateError::MissingRevision { revision: 3 })
+        ));
+        assert!(matches!(
+            checkpoints.snapshot_at(6),
+            Err(super::CompactionStateError::FutureRevision {
+                requested: 6,
+                latest: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn session_meta_prunes_oldest_compaction_checkpoints_at_count_limit() {
+        let mut meta = super::SessionMeta::default();
+        for revision in 0..=super::MAX_COMPACTION_STATE_CHECKPOINTS {
+            meta.checkpoint_compaction_state(super::StoredSessionStateSnapshot::new(
+                revision as u64,
+            ))
+            .unwrap();
+        }
+
+        assert!(matches!(
+            meta.compaction_state_at(0),
+            Err(super::CompactionStateError::MissingRevision { revision: 0 })
+        ));
+        assert_eq!(
+            meta.compaction_state_at(super::MAX_COMPACTION_STATE_CHECKPOINTS as u64)
+                .unwrap()
+                .state_revision(),
+            Some(super::MAX_COMPACTION_STATE_CHECKPOINTS as u64)
+        );
+    }
+    #[test]
+    fn session_meta_prunes_oldest_compaction_checkpoints_at_size_limit() {
+        let mut meta = super::SessionMeta::default();
+        for revision in 0..20 {
+            let mut snapshot = super::StoredSessionStateSnapshot::new(revision);
+            snapshot
+                .set_plugin_state(
+                    "large",
+                    1,
+                    super::StoredStateScope::Session,
+                    Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES - 2)),
+                )
+                .unwrap();
+            meta.checkpoint_compaction_state(snapshot).unwrap();
+        }
+
+        assert!(matches!(
+            meta.compaction_state_at(0),
+            Err(super::CompactionStateError::MissingRevision { revision: 0 })
+        ));
+        assert_eq!(
+            meta.compaction_state_at(19).unwrap().state_revision(),
+            Some(19)
+        );
+    }
+
+    #[test]
+    fn compaction_state_checkpoint_insert_is_idempotent_and_atomic() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        let snapshot = super::StoredSessionStateSnapshot::new(5);
+        checkpoints.insert(snapshot.clone()).unwrap();
+        checkpoints.insert(snapshot).unwrap();
+        let before = serde_json::to_value(&checkpoints).unwrap();
+        let mut conflict = super::StoredSessionStateSnapshot::new(5);
+        conflict
+            .set_plugin_state("conflict", 1, super::StoredStateScope::Session, Value::Null)
+            .unwrap();
+        assert!(matches!(
+            checkpoints.insert(conflict),
+            Err(super::CompactionStateError::RevisionConflict { revision: 5 })
+        ));
+        assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+
+        assert!(matches!(
+            checkpoints.insert(super::StoredSessionStateSnapshot::new(4)),
+            Err(super::CompactionStateError::RevisionRegression {
+                latest: 5,
+                requested: 4
+            })
+        ));
+        assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_reject_conflicts_and_count_overflow_atomically() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        for revision in 0..super::MAX_COMPACTION_STATE_CHECKPOINTS {
+            checkpoints
+                .insert(super::StoredSessionStateSnapshot::new(revision as u64))
+                .unwrap();
+        }
+        let before = serde_json::to_value(&checkpoints).unwrap();
+        let revision = super::MAX_COMPACTION_STATE_CHECKPOINTS as u64;
+
+        assert!(matches!(
+            checkpoints.insert(super::StoredSessionStateSnapshot::new(revision)),
+            Err(super::CompactionStateError::TooManyCheckpoints { .. })
+        ));
+        assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_reject_aggregate_overflow_atomically() {
+        let mut checkpoints = super::StoredCompactionStateCheckpoints::new();
+        let mut revision = 0;
+        loop {
+            let mut snapshot = super::StoredSessionStateSnapshot::new(revision);
+            snapshot
+                .set_plugin_state(
+                    "large",
+                    1,
+                    super::StoredStateScope::Session,
+                    Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES - 2)),
+                )
+                .unwrap();
+            let before = serde_json::to_value(&checkpoints).unwrap();
+            match checkpoints.insert(snapshot) {
+                Ok(()) => revision += 1,
+                Err(super::CompactionStateError::CheckpointsTooLarge { .. }) => {
+                    assert_eq!(serde_json::to_value(&checkpoints).unwrap(), before);
+                    break;
+                }
+                Err(error) => panic!("unexpected checkpoint error: {error}"),
+            }
+        }
+    }
+
+    #[test_case(
+        &serde_json::json!({"schema_version": 2, "checkpoints": []})
+        ; "future_envelope"
+    )]
+    #[test_case(
+        &serde_json::json!({"schema_version": 1, "checkpoints": [{"invalid": true}]})
+        ; "malformed_snapshot"
+    )]
+    #[test_case(
+        &serde_json::json!({
+            "schema_version": 1,
+            "checkpoints": [{"schema_version": 2, "state_revision": 4}]
+        })
+        ; "future_snapshot"
+    )]
+    #[test_case(
+        &serde_json::json!({
+            "schema_version": 1,
+            "checkpoints": [
+                {"schema_version": 1, "state_revision": 2},
+                {"schema_version": 1, "state_revision": 1}
+            ]
+        })
+        ; "regressing_snapshots"
+    )]
+    fn compaction_state_checkpoints_preserve_unusable_metadata_fail_closed(stored: &Value) {
+        let raw = serde_json::json!({"compaction_state_checkpoints": stored});
+        let meta: super::SessionMeta = serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(matches!(
+            meta.compaction_state_at(1),
+            Err(super::CompactionStateError::UnsupportedSchemaVersion { .. }
+                | super::CompactionStateError::InvalidEnvelope)
+        ));
+        assert_eq!(
+            serde_json::to_value(meta).unwrap()["compaction_state_checkpoints"],
+            raw["compaction_state_checkpoints"]
+        );
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_reject_oversized_metadata() {
+        let raw = serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": 2,
+                "opaque": "x".repeat(super::MAX_COMPACTION_STATE_BYTES),
+            }
+        });
+
+        assert!(serde_json::from_value::<super::SessionMeta>(raw).is_err());
+    }
+
+    #[test_case(1; "supported_envelope")]
+    #[test_case(2; "future_envelope")]
+    fn compaction_state_checkpoints_reject_oversized_raw_count(schema_version: u32) {
+        let checkpoints = (0..=super::MAX_COMPACTION_STATE_CHECKPOINTS)
+            .map(|revision| {
+                serde_json::json!({
+                    "schema_version": 1,
+                    "state_revision": revision,
+                })
+            })
+            .collect::<Vec<_>>();
+        let raw = serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": schema_version,
+                "checkpoints": checkpoints,
+            }
+        });
+
+        assert!(serde_json::from_value::<super::SessionMeta>(raw).is_err());
+    }
+
+    #[test_case(1; "supported_envelope")]
+    #[test_case(2; "future_envelope")]
+    fn compaction_state_checkpoints_reject_oversized_malformed_nested_snapshot(
+        schema_version: u32,
+    ) {
+        let raw = serde_json::json!({
+            "compaction_state_checkpoints": {
+                "schema_version": schema_version,
+                "checkpoints": [{
+                    "malformed": "x".repeat(super::MAX_SESSION_STATE_BYTES),
+                }],
+            }
+        });
+
+        assert!(serde_json::from_value::<super::SessionMeta>(raw).is_err());
+    }
+
+    #[test]
+    fn compaction_state_checkpoints_persist_through_session_log() {
+        let temp = TempDir::new().unwrap();
+        let mut session: TestSession = Session::new("model", "/project");
+        session
+            .meta
+            .checkpoint_compaction_state(super::StoredSessionStateSnapshot::new(4))
+            .unwrap();
+        session.save_to(temp.path()).unwrap();
+
+        let loaded = TestSession::load_from(session.id, temp.path()).unwrap();
+        assert_eq!(
+            loaded.meta.compaction_state_at(4).unwrap().state_revision(),
+            Some(4)
+        );
+    }
+
+    #[test]
     fn session_meta_backward_compat_defaults() {
         let json = r#"{"mode":"build"}"#;
         let meta: super::SessionMeta = serde_json::from_str(json).unwrap();
         assert!(meta.thinking.is_none());
         assert!(!meta.fast);
         assert!(!meta.workflow);
+        assert!(matches!(
+            meta.compaction_state_at(1),
+            Err(super::CompactionStateError::MissingRevision { revision: 1 })
+        ));
     }
 
     #[test]
@@ -6619,7 +7894,6 @@ mod tests {
         SessionLog::create(dir, &session).unwrap();
 
         fs::remove_file(dir.join(CWD_INDEX_FILE)).unwrap();
-
         let _ = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
 
         let index = load_cwd_index(dir);
@@ -6755,5 +8029,319 @@ mod tests {
             serde_json::from_str::<BodyOverride>(&json).unwrap(),
             override_config
         );
+    }
+
+    const SUBAGENT_COUNT: usize = 12;
+    const MESSAGES_PER_SUBAGENT: usize = 5;
+    const TOOL_OUTPUT_COUNT: usize = 40;
+    const RETAINED_SUBAGENTS: usize = 3;
+    const RETAINED_TOOL_OUTPUTS: usize = 8;
+
+    fn tool_use_ids(message: &Value) -> Vec<String> {
+        message
+            .as_str()
+            .map_or_else(Vec::new, |id| vec![id.to_owned()])
+    }
+
+    fn tool_output_id(index: usize) -> String {
+        format!("out-{index:03}")
+    }
+
+    fn subagent_id(index: usize) -> String {
+        format!("sub-{index:03}")
+    }
+
+    /// A session that ran `SUBAGENT_COUNT` subagents and `TOOL_OUTPUT_COUNT`
+    /// tools, with every id recorded in `messages` in the order it happened.
+    fn grown_session() -> TestSession {
+        let mut session: TestSession = Session::new("model", "/project");
+        for index in 0..SUBAGENT_COUNT {
+            let id = subagent_id(index);
+            session.messages.push(id.clone().into());
+            let messages = (0..MESSAGES_PER_SUBAGENT)
+                .map(|n| Value::from(format!("{id}-msg-{n}")))
+                .collect();
+            session.subagent_messages.insert(id, messages);
+        }
+        for index in 0..TOOL_OUTPUT_COUNT {
+            let id = tool_output_id(index);
+            session.messages.push(id.clone().into());
+            session
+                .tool_outputs
+                .insert(id.clone(), Value::from(format!("{id}-output")));
+        }
+        session
+    }
+    fn test_budget() -> super::RetentionBudget {
+        super::RetentionBudget {
+            tool_outputs: RETAINED_TOOL_OUTPUTS,
+            subagent_histories: RETAINED_SUBAGENTS,
+        }
+    }
+
+    #[test]
+    fn displayed_tool_use_ids_read_the_messages_without_a_transcript() {
+        let session = grown_session();
+
+        let displayed = session.displayed_tool_use_ids(&tool_use_ids);
+
+        assert_eq!(displayed.len(), SUBAGENT_COUNT + TOOL_OUTPUT_COUNT);
+        assert_eq!(displayed.first(), Some(&subagent_id(0)));
+    }
+
+    /// The renderer draws the transcript whenever there is one, so the ids it
+    /// needs come from there and not from the active message window.
+    #[test]
+    fn displayed_tool_use_ids_read_the_transcript_when_there_is_one() {
+        let mut session = grown_session();
+        let compacted = tool_output_id(TOOL_OUTPUT_COUNT);
+        session
+            .transcript
+            .push(TranscriptEntry::Message(compacted.clone().into()));
+
+        let displayed = session.displayed_tool_use_ids(&tool_use_ids);
+
+        assert_eq!(displayed, vec![compacted]);
+    }
+
+    #[test]
+    fn retention_budget_bounds_live_session_maps() {
+        let mut session = grown_session();
+
+        let eviction = session.retention_eviction_candidates(test_budget(), tool_use_ids);
+        session.evict_retained(&eviction);
+
+        assert_eq!(session.subagent_messages.len(), RETAINED_SUBAGENTS);
+        assert_eq!(session.tool_outputs.len(), RETAINED_TOOL_OUTPUTS);
+        assert_eq!(
+            session.evicted_subagent_messages().len(),
+            SUBAGENT_COUNT - RETAINED_SUBAGENTS
+        );
+        assert_eq!(
+            session.evicted_tool_outputs().len(),
+            TOOL_OUTPUT_COUNT - RETAINED_TOOL_OUTPUTS
+        );
+    }
+
+    #[test]
+    fn retention_budget_evicts_oldest_first() {
+        let mut session = grown_session();
+
+        let eviction = session.retention_eviction_candidates(test_budget(), tool_use_ids);
+        session.evict_retained(&eviction);
+
+        let kept_subagents = (SUBAGENT_COUNT - RETAINED_SUBAGENTS)..SUBAGENT_COUNT;
+        for index in kept_subagents {
+            assert!(
+                session.subagent_messages.contains_key(&subagent_id(index)),
+                "newest subagent {index} must stay resident"
+            );
+        }
+        for index in 0..(SUBAGENT_COUNT - RETAINED_SUBAGENTS) {
+            assert!(
+                session
+                    .evicted_subagent_messages()
+                    .contains(&subagent_id(index)),
+                "oldest subagent {index} must be evicted"
+            );
+        }
+        for index in (TOOL_OUTPUT_COUNT - RETAINED_TOOL_OUTPUTS)..TOOL_OUTPUT_COUNT {
+            assert!(
+                session.tool_outputs.contains_key(&tool_output_id(index)),
+                "newest tool output {index} must stay resident"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_load_bounds_restart_maps_and_marks_older_records_evicted() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = grown_session();
+        session.save_to(dir).unwrap();
+
+        let loaded =
+            TestSession::load_from_with_retention(session.id, dir, test_budget(), tool_use_ids)
+                .unwrap();
+
+        assert_eq!(loaded.subagent_messages.len(), RETAINED_SUBAGENTS);
+        assert_eq!(loaded.tool_outputs.len(), RETAINED_TOOL_OUTPUTS);
+        assert_eq!(
+            loaded.evicted_subagent_messages().len(),
+            SUBAGENT_COUNT - RETAINED_SUBAGENTS
+        );
+        assert_eq!(
+            loaded.evicted_tool_outputs().len(),
+            TOOL_OUTPUT_COUNT - RETAINED_TOOL_OUTPUTS
+        );
+        assert!(
+            loaded
+                .subagent_messages
+                .contains_key(&subagent_id(SUBAGENT_COUNT - 1))
+        );
+        assert!(
+            loaded
+                .tool_outputs
+                .contains_key(&tool_output_id(TOOL_OUTPUT_COUNT - 1))
+        );
+    }
+
+    #[test]
+    fn retained_restart_load_keeps_complete_history_through_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut original = grown_session();
+        original.save_to(dir).unwrap();
+        let session_id = original.id;
+        let mut loaded =
+            TestSession::load_from_with_retention(session_id, dir, test_budget(), tool_use_ids)
+                .unwrap();
+        let (_revision, mut log) =
+            SessionLog::open_cursor::<Value, Value, Value>(dir, session_id).unwrap();
+
+        loaded.messages.push("after-restart".into());
+        log.compact(dir, &loaded).unwrap();
+        drop(log);
+
+        let complete = TestSession::load_from(session_id, dir).unwrap();
+        assert_eq!(complete.subagent_messages.len(), SUBAGENT_COUNT);
+        assert_eq!(complete.tool_outputs.len(), TOOL_OUTPUT_COUNT);
+    }
+
+    #[test]
+    fn eviction_keeps_the_log_complete_across_append() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = grown_session();
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        let eviction = session.retention_eviction_candidates(test_budget(), tool_use_ids);
+        session.evict_retained(&eviction);
+        session.messages.push("after-eviction".into());
+        log.append(&session).unwrap();
+        drop(log);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.subagent_messages.len(), SUBAGENT_COUNT);
+        assert_eq!(loaded.tool_outputs.len(), TOOL_OUTPUT_COUNT);
+        for index in 0..SUBAGENT_COUNT {
+            assert_eq!(
+                loaded.subagent_messages[&subagent_id(index)].len(),
+                MESSAGES_PER_SUBAGENT
+            );
+        }
+    }
+
+    #[test]
+    fn eviction_keeps_the_log_complete_across_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = grown_session();
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        let eviction = session.retention_eviction_candidates(test_budget(), tool_use_ids);
+        session.evict_retained(&eviction);
+        log.compact(dir, &session).unwrap();
+        drop(log);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.subagent_messages.len(), SUBAGENT_COUNT);
+        assert_eq!(loaded.tool_outputs.len(), TOOL_OUTPUT_COUNT);
+        for index in 0..TOOL_OUTPUT_COUNT {
+            let id = tool_output_id(index);
+            assert_eq!(
+                loaded.tool_outputs[&id],
+                Value::from(format!("{id}-output"))
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_compaction_does_not_duplicate_evicted_records() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = grown_session();
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        let eviction = session.retention_eviction_candidates(test_budget(), tool_use_ids);
+        session.evict_retained(&eviction);
+        log.compact(dir, &session).unwrap();
+        log.compact(dir, &session).unwrap();
+        drop(log);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        for index in 0..SUBAGENT_COUNT {
+            assert_eq!(
+                loaded.subagent_messages[&subagent_id(index)].len(),
+                MESSAGES_PER_SUBAGENT,
+                "subagent {index} history must not be duplicated"
+            );
+        }
+    }
+
+    #[test]
+    fn evicted_subagent_rehydrated_for_viewing_is_not_appended_again() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = grown_session();
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        let eviction = session.retention_eviction_candidates(test_budget(), tool_use_ids);
+        session.evict_retained(&eviction);
+        let evicted = subagent_id(0);
+        let rehydrated =
+            TestSession::load_subagent_messages_from(session.id, dir, &evicted).unwrap();
+        assert_eq!(rehydrated.len(), MESSAGES_PER_SUBAGENT);
+        session
+            .subagent_messages
+            .insert(evicted.clone(), rehydrated);
+        session.messages.push("after-rehydrate".into());
+        log.append(&session).unwrap();
+        drop(log);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(
+            loaded.subagent_messages[&evicted].len(),
+            MESSAGES_PER_SUBAGENT
+        );
+    }
+
+    #[test]
+    fn load_subagent_messages_reads_one_history_only() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = grown_session();
+        session.save_to(dir).unwrap();
+
+        let wanted = subagent_id(4);
+        let messages = TestSession::load_subagent_messages_from(session.id, dir, &wanted).unwrap();
+
+        let expected: Vec<Value> = (0..MESSAGES_PER_SUBAGENT)
+            .map(|n| Value::from(format!("{wanted}-msg-{n}")))
+            .collect();
+        assert_eq!(messages, expected);
+    }
+
+    #[test]
+    fn rewind_stops_compaction_from_reviving_evicted_records() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = grown_session();
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let eviction = session.retention_eviction_candidates(test_budget(), tool_use_ids);
+        session.evict_retained(&eviction);
+
+        let survivor = subagent_id(0);
+        session.messages.retain(|m| m.as_str() == Some(&survivor));
+        session.prune_orphans(tool_use_ids);
+        log.compact(dir, &session).unwrap();
+        drop(log);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(
+            loaded.subagent_messages.keys().collect::<Vec<_>>(),
+            [&survivor]
+        );
+        assert!(loaded.tool_outputs.is_empty());
     }
 }

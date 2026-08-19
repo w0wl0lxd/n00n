@@ -1,10 +1,14 @@
 use std::path::PathBuf;
 
+#[cfg(test)]
+use std::path::Path;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 use color_eyre::eyre::bail;
 
 use n00n_agent::tools::{all_builtin_tool_names, is_builtin_tool};
+use n00n_git::conflicts::{FindingKind, OutputMode};
 
 use crate::print::OutputFormat;
 
@@ -287,10 +291,93 @@ pub enum Command {
         #[arg(long, requires = "tools")]
         names: bool,
     },
+    /// Run native git operations
+    Git {
+        #[command(subcommand)]
+        action: GitAction,
+    },
+    /// Index and search code smells
+    Smell {
+        #[command(subcommand)]
+        action: SmellAction,
+    },
     /// Run agent commands (foreground/background workers + control plane)
     Agent {
         #[command(subcommand)]
         action: AgentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GitAction {
+    /// Get the current git status of a repository
+    Status { repo: PathBuf },
+    /// Get commit history for a repository
+    Log {
+        repo: PathBuf,
+        #[arg(short, long, default_value = "10")]
+        count: usize,
+    },
+    /// Get diff between two references
+    Diff {
+        repo: PathBuf,
+        ref_a: String,
+        ref_b: String,
+    },
+    /// List branches in a repository
+    Branches { repo: PathBuf },
+    /// Get blame information for a file
+    Blame { repo: PathBuf, file: String },
+    /// Stage files relative to the supplied repository directory
+    Add { repo: PathBuf, files: Vec<String> },
+    /// Create a commit
+    Commit {
+        repo: PathBuf,
+        #[arg(short, long)]
+        message: String,
+    },
+    /// Checkout a branch, tag, or ref
+    Checkout { repo: PathBuf, target: String },
+    /// Find conflict markers and code smells
+    Conflicts {
+        repo: PathBuf,
+        #[arg(short, long, default_value = "both")]
+        output: OutputMode,
+        #[arg(long, default_value = "8")]
+        max_hunk_lines: usize,
+        #[arg(long, default_value = "1048576")]
+        max_file_bytes: usize,
+        #[arg(
+            short,
+            long,
+            value_delimiter = ',',
+            default_value = "conflict,todo,fixme,hack,placeholder"
+        )]
+        kinds: Vec<FindingKind>,
+        #[arg(long)]
+        include_untracked: bool,
+        #[arg(long)]
+        include_ignored: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SmellAction {
+    /// Build or rebuild the smell index for a repository
+    Index {
+        #[arg(allow_hyphen_values = true)]
+        repo: PathBuf,
+    },
+    /// Search the smell index for a repository
+    Search {
+        #[arg(allow_hyphen_values = true)]
+        repo: PathBuf,
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        #[arg(short, long)]
+        kind: Option<String>,
+        #[arg(short, long, default_value = "5")]
+        top_k: usize,
     },
 }
 
@@ -585,6 +672,35 @@ mod tests {
                     ..
                 }
             }) if g == "cleanup" && d == "refactor"
+        ));
+    }
+
+    #[test]
+    fn git_status_parse() {
+        let cli = Cli::parse_from(["n00n", "git", "status", "."]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Git {
+                action: GitAction::Status { repo }
+            }) if repo.as_path() == Path::new(".")
+        ));
+    }
+
+    #[test]
+    fn smell_search_parse() {
+        let cli = Cli::parse_from([
+            "n00n", "smell", "search", ".", "todo", "--kind", "todo", "--top-k", "3",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Smell {
+                action: SmellAction::Search {
+                    repo,
+                    query,
+                    kind: Some(kind),
+                    top_k: 3,
+                }
+            }) if repo.as_path() == Path::new(".") && query == "todo" && kind == "todo"
         ));
     }
 

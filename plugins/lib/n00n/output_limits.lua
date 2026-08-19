@@ -4,10 +4,13 @@
 local DEFAULT_MAX_OUTPUT_LINES = 500
 local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
 local DEFAULT_MAX_LINE_BYTES = 400
+local EXPLORER_DEFAULT_MAX_OUTPUT_BYTES = 12 * 1024
 
 local M = {}
 
+M.DEFAULT_MAX_OUTPUT_LINES = DEFAULT_MAX_OUTPUT_LINES
 M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
+M.EXPLORER_DEFAULT_MAX_OUTPUT_BYTES = EXPLORER_DEFAULT_MAX_OUTPUT_BYTES
 M.specs = {
   max_output_lines = { type = "integer", desc = "Override `agent.max_output_lines` for this tool." },
   max_output_bytes = { type = "integer", desc = "Override `agent.max_output_bytes` for this tool." },
@@ -24,6 +27,15 @@ end
 function M.resolve(opts, ctx)
   return opts.max_output_lines or ctx:config("max_output_lines", DEFAULT_MAX_OUTPUT_LINES),
     opts.max_output_bytes or ctx:config("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+end
+
+function M.resolve_capped(opts, ctx, default_max_bytes)
+  local max_lines = opts.max_output_lines or ctx:config("max_output_lines", DEFAULT_MAX_OUTPUT_LINES)
+  if opts.max_output_bytes then
+    return max_lines, opts.max_output_bytes
+  end
+  local configured_max_bytes = ctx:config("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+  return max_lines, math.min(default_max_bytes, configured_max_bytes)
 end
 
 return M

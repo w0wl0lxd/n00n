@@ -136,6 +136,9 @@ Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, o
 | `low_speed_timeout_secs` | u64 | `120` | 1 | Low speed timeout (seconds with less than 1 byte received) |
 | `stream_timeout_secs` | u64 | `300` | 10 | Streaming response timeout (seconds) |
 | `openai_coding_plan_slots` | u64 | `8` | 1 | Maximum concurrent OpenAI Coding Plan streams per account (1-8) |
+| `openai_codex_accepts_prompt_cache_options_implicit` | bool | `false` | - | Experimental: allow Codex implicit prompt_cache_options only after independently verifying endpoint support |
+| `openai_codex_accepts_prompt_cache_options_explicit` | bool | `false` | - | Experimental: allow Codex explicit prompt_cache_options only after independently verifying endpoint support |
+| `openai_codex_accepts_prompt_cache_breakpoints` | bool | `false` | - | Experimental: allow Codex cache breakpoints only after independently verifying endpoint support |
 
 ### `storage`
 
@@ -144,6 +147,8 @@ Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, o
 | `max_log_bytes_mb` | u64 | `200` | 1 | Max total log size (MB) |
 | `max_log_files` | u32 | `10` | 1 | Max number of log files to keep |
 | `input_history_size` | usize | `100` | 10 | Number of input history entries to retain |
+| `max_retained_tool_outputs` | usize | `512` | 16 | Tool outputs a live session keeps in memory; older ones are read back from the session log on demand |
+| `max_retained_subagent_histories` | usize | `32` | 4 | Subagent histories a live session keeps in memory; older ones are read back from the session log on demand |
 
 ## Plugins
 
@@ -207,7 +212,7 @@ n00n.setup({
 |-------|------|---------|-----|-------------|
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
-| `search_result_limit` | integer | `100` | 10 | Max files returned per search. |
+| `search_result_limit` | integer | `50` | 10 | Max files returned per search. |
 
 ### `plugins.grep`
 
@@ -216,7 +221,7 @@ n00n.setup({
 | `max_line_bytes` | integer | `500` | 80 | Skip lines longer than this many bytes. |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
-| `search_result_limit` | integer | `100` | 10 | Max match groups per search. A call's `limit` param overrides it. |
+| `search_result_limit` | integer | `50` | 10 | Max match groups per search. A call's `limit` param overrides it. |
 
 ### `plugins.index`
 

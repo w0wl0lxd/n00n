@@ -2,9 +2,9 @@ local ToolView = require("n00n.tool_view")
 local shorten_path = require("n00n.shorten_path")
 local output_limits = require("n00n.output_limits")
 
-local DESCRIPTION = "Read a file or directory. Returns contents with line numbers (1-indexed)."
+local DEFAULT_MAX_OUTPUT_LINES = 200
 
-local DEFAULT_MAX_OUTPUT_LINES = 500
+local DESCRIPTION = "Read a file or directory. Returns contents with line numbers (1-indexed)."
 
 local opts = n00n.api.register_options({
   max_line_bytes = { default = 500, min = 80, desc = "Truncate lines longer than this many bytes." },
@@ -96,7 +96,10 @@ end
 
 local function read_file(path, offset, limit, ctx)
   local start = math.max(offset or 1, 1)
-  local max_lines = limit or opts.max_output_lines or ctx:config("max_output_lines", DEFAULT_MAX_OUTPUT_LINES)
+  local configured_max_lines = ctx:config("max_output_lines", output_limits.DEFAULT_MAX_OUTPUT_LINES)
+  local default_max_lines = configured_max_lines == output_limits.DEFAULT_MAX_OUTPUT_LINES and DEFAULT_MAX_OUTPUT_LINES
+    or configured_max_lines
+  local max_lines = limit or opts.max_output_lines or default_max_lines
   local max_line_bytes = opts.max_line_bytes
 
   local res, err = n00n.fs.read_lines(path, start, max_lines)
@@ -121,7 +124,8 @@ local function read_file(path, offset, limit, ctx)
   if trunc_start <= res.total_lines then
     llm_output = llm_output
       .. string.format(
-        "\n\n...\n\nTruncated lines: %d-%d. Use offset=%d to read further.",
+        "\n\nOmitted %d lines (%d-%d). Continue with offset=%d.",
+        res.total_lines - trunc_start + 1,
         trunc_start,
         res.total_lines,
         trunc_start
@@ -197,10 +201,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = [[- When using the **read** tool, only read the sections you actually need.
-- Use `wc -l` to check total number of lines before reading to decide a reasonable **read** tool limit unless known already.
-- Supports absolute, relative, and ~/ paths. No offset = start at 1; no limit = up to 500 lines.
-- Use truncation hints (e.g. "truncated lines X-Y") to continue with the correct offset.]],
+  content = "- Read only the needed range with **read_file**; omitted output reports the exact continuation `offset`.",
 })
 
 n00n.api.register_tool({

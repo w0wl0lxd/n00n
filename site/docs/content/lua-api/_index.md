@@ -88,9 +88,10 @@ a string belongs.
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
+| [`n00n.git`](#n00n-git) | In-process access to the git operations linked into n00n. |
 | [`n00n.github`](#n00n-github) | GitHub REST API client using reqwest. |
 | [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
-| [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index. |
+| [`n00n.smell`](#n00n-smell) | Persistent code-smell and comment index built into n00n. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -425,7 +426,8 @@ n00n.api.get_tools({opts?})
 Return a list of all registered tools. Useful for building UI that shows
 available tools or for checking which tools are enabled.
 
-Each entry has the tool's name, schema, audiences, and an `enabled` flag.
+Each entry has the tool's name, schema, audiences, deferred-loading state,
+and an `enabled` flag.
 Describe callbacks are not invoked (the static description is used).
 
 **Parameters:**
@@ -433,7 +435,7 @@ Describe callbacks are not invoked (the static description is used).
 - `{opts?}` (`table?`) Options:
   - `config` (`table`) Optional config table with a `disabled_tools` string[] field used to compute the `enabled` flag on each entry.
 
-**Returns:** (`table[]`) Array of tool entries: { name, schema, audiences, kind?, enabled }.
+**Returns:** (`table[]`) Array of tool entries: { name, schema, audiences, deferred, kind?, enabled }.
 
 **Example:**
 
@@ -461,7 +463,7 @@ throw).
 
 - `{name}` (`string`) Exact tool name.
 
-**Returns:** (`table|nil`) Tool entry with fields { name, schema, audiences, kind?, header?, restore? }, or nil if not found.
+**Returns:** (`table|nil`) Tool entry with fields { name, schema, audiences, deferred, kind?, header?, restore? }, or nil if not found.
 
 **Example:**
 
@@ -1026,7 +1028,8 @@ n00n.async.run({fn}, {on_finish?})
 
 Fire off a function as a new async task. It runs in the background and
 you do not wait for it. If you need the result, pass an {on_finish}
-callback.
+callback. A bounded number of `async.run` tasks may be queued or running at
+once; excess fanout returns an error instead of consuming memory without bound.
 
 **Parameters:**
 
@@ -1387,6 +1390,12 @@ that you can pass to `jobstop` or `jobwait` to control the process.
 For commands that don't need shell features (pipes, redirection, globs),
 pass an array to run the program directly with preserved argument quoting:
 `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
+
+Unix jobs run in a separate process group at nice level 10. On Linux, the
+process tree's summed per-process RSS is limited to one quarter of system
+memory, clamped between 512 MiB and 8 GiB. Shared pages may be counted more
+than once. Set `N00N_TOOL_MAX_RSS_MB` to a positive whole number of MiB to
+override the memory limit.
 
 **Parameters:**
 
@@ -5033,6 +5042,24 @@ local home = n00n.uv.os_homedir() -- e.g. "/home/user"
 
 ---
 
+### `n00n.uv.current_exe()` {#n00n-uv-current_exe}
+
+```lua
+n00n.uv.current_exe()
+```
+
+Return the path of the running n00n executable.
+
+**Returns:** (`string?`) Executable path, or nil if it cannot be determined.
+
+**Example:**
+
+```lua
+local n00n_bin = n00n.uv.current_exe()
+```
+
+---
+
 ### `n00n.uv.os_getenv()` {#n00n-uv-os_getenv}
 
 ```lua
@@ -5276,6 +5303,29 @@ Show project file structure from the index using native SQLite when available, o
 **Returns:** (`string?`, `string?`) output and optional error message.
 
 
+## n00n.git {#n00n-git}
+
+In-process access to the git operations linked into n00n.
+
+---
+
+### `n00n.git.run()` {#n00n-git-run}
+
+```lua
+n00n.git.run({command}, {repo}, {options?})
+```
+
+Run a bundled git operation and return its JSON result.
+
+**Parameters:**
+
+- `{command}` (`string`) Operation name.
+- `{repo}` (`string`) Path to the repository.
+- `{options}` (`table`) Operation-specific arguments.
+
+**Returns:** (`string|nil`, `string|nil`) JSON result, or nil and the error message.
+
+
 ## n00n.github {#n00n-github}
 
 GitHub REST API client using reqwest. Provides structured access to GitHub issues, pull requests, and repository metadata. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
@@ -5513,7 +5563,7 @@ Estimate token savings from using a hybrid/semantic embedder. Requires the sembl
 
 ## n00n.smell {#n00n-smell}
 
-Persistent code-smell and comment index. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index. The n00n-smell binary does the actual indexing and searching.
+Persistent code-smell and comment index built into n00n. Stores TODO/FIXME/HACK comments and placeholder phrases in a local `.n00n/smells` Tantivy index.
 
 ---
 
@@ -5539,7 +5589,7 @@ Returns true when `.n00n/smells/metadata.json` exists in the project root.
 n00n.smell.index({project})
 ```
 
-Build or rebuild the smell index for a repository by invoking n00n-smell.
+Build or rebuild the smell index for a repository.
 
 **Parameters:**
 
@@ -5821,33 +5871,14 @@ function M.snapshot(ctx)
 ```lua
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
-
-local DEFAULT_MAX_OUTPUT_LINES = 500
-local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
-local DEFAULT_MAX_LINE_BYTES = 400
-
-local M = {}
-
+M.DEFAULT_MAX_OUTPUT_LINES = DEFAULT_MAX_OUTPUT_LINES
 M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
-M.specs = {
-  max_output_lines = { type = "integer", desc = "Override `agent.max_output_lines` for this tool." },
-  max_output_bytes = { type = "integer", desc = "Override `agent.max_output_bytes` for this tool." },
-}
-
+M.EXPLORER_DEFAULT_MAX_OUTPUT_BYTES = EXPLORER_DEFAULT_MAX_OUTPUT_BYTES
 function M.extend(spec)
-  for name, s in pairs(M.specs) do
-    spec[name] = s
-  end
-  return spec
-end
 
 --- Returns max_lines, max_bytes: tool override when set, agent-wide otherwise.
 function M.resolve(opts, ctx)
-  return opts.max_output_lines or ctx:config("max_output_lines", DEFAULT_MAX_OUTPUT_LINES),
-    opts.max_output_bytes or ctx:config("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
-end
-
-return M
+function M.resolve_capped(opts, ctx, default_max_bytes)
 ```
 
 ### `require("n00n.policy")`

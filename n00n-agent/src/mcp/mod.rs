@@ -50,7 +50,7 @@ pub const TOOL_SEARCH_TOOL_NAME: &str = "search_tools";
 /// Below this many deferrable tools, a search round-trip plus its
 /// prompt-cache miss cost more than a handful of upfront definitions.
 /// Overridden by `defer_tools` in mcp.toml.
-const DEFAULT_DEFER_TOOLS: usize = 10;
+pub const DEFAULT_DEFER_TOOLS: usize = 10;
 /// Loads per search are capped so one broad query can't flood the context.
 const MAX_SEARCH_LOADS: usize = 5;
 const NAME_HIT_SCORE: usize = 2;
@@ -77,6 +77,20 @@ pub fn wire_tool_name(qualified: &str) -> String {
 #[must_use]
 pub fn internal_tool_name(wire: &str) -> String {
     wire.replacen(WIRE_SEPARATOR, SEPARATOR, 1)
+}
+
+#[must_use]
+pub fn hosted_namespace_for_wire(wire_name: &str) -> Option<String> {
+    let (server, tool) = wire_name.split_once(WIRE_SEPARATOR)?;
+    if server.is_empty()
+        || tool.is_empty()
+        || !server
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return None;
+    }
+    Some(format!("mcp_{server}"))
 }
 const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -129,6 +143,7 @@ struct ServerEntry {
     transport_kind: &'static str,
     origin: PathBuf,
     status: McpServerStatus,
+    connection_id: u64,
     transport: Option<Arc<dyn McpTransport>>,
     tools: Vec<McpToolDef>,
     prompts: Vec<McpPromptDef>,
@@ -137,6 +152,7 @@ struct ServerEntry {
 impl ServerEntry {
     fn begin_clear_connection(&mut self) -> Option<Arc<dyn McpTransport>> {
         let transport = self.transport.take();
+        self.connection_id = 0;
         if let Some(transport) = &transport {
             transport.begin_shutdown();
         }
@@ -153,6 +169,7 @@ impl ServerEntry {
 
     fn populate(&mut self, result: StartResult) {
         let StartResult {
+            connection_id,
             transport,
             tool_infos,
             prompt_infos,
@@ -189,6 +206,7 @@ impl ServerEntry {
             .into_iter()
             .map(|info| McpPromptDef::from_info(&self.name, info))
             .collect();
+        self.connection_id = connection_id;
         self.transport = Some(transport);
         self.status = McpServerStatus::Running;
     }
@@ -197,7 +215,18 @@ impl ServerEntry {
 struct McpManagerInner {
     entries: Vec<ServerEntry>,
     generation: u64,
+    next_connection_id: u64,
     max_desc_chars: usize,
+}
+
+impl McpManagerInner {
+    fn reserve_connection_id(&mut self) -> Result<u64, McpError> {
+        self.next_connection_id = self
+            .next_connection_id
+            .checked_add(1)
+            .ok_or_else(|| McpError::Config("MCP connection generation exhausted".into()))?;
+        Ok(self.next_connection_id)
+    }
 }
 
 #[derive(Default)]
@@ -289,6 +318,14 @@ pub enum McpCommand {
     Reconnect {
         server: String,
     },
+    /// Sent by a transport's own reader task when its connection ends unexpectedly,
+    /// so a crashed server is marked `Failed` and drops out of every tool list
+    /// instead of staying `Running` with stale tool definitions.
+    Failed {
+        server: String,
+        connection_id: u64,
+        reason: String,
+    },
     /// Drain every running transport and stop the loop. The loop sends `()` on `ack` once
     /// every shutdown has finished, so callers can wait with a timeout.
     Shutdown {
@@ -336,7 +373,10 @@ impl McpSession {
             .iter()
             .flat_map(|m| &m.content)
             .filter_map(|block| match block {
-                ContentBlock::ToolUse { name, .. } if name.contains(WIRE_SEPARATOR) => {
+                ContentBlock::ToolUse { name, .. }
+                | ContentBlock::NamespacedToolUse { name, .. }
+                    if name.contains(WIRE_SEPARATOR) =>
+                {
                     Some(internal_tool_name(name).into())
                 }
                 _ => None,
@@ -415,6 +455,42 @@ impl McpSession {
                 arr.push(tool_search_definition(&deferred));
             }
         }
+    }
+
+    #[must_use]
+    pub fn deferred_definitions(&self) -> Vec<n00n_providers::DeferredToolDefinition> {
+        let index = self.handle.index.load();
+        let should_defer = index
+            .descriptors
+            .iter()
+            .filter(|descriptor| !descriptor.always_load)
+            .count()
+            > self.handle.defer_tools;
+        if !should_defer {
+            return Vec::new();
+        }
+        let loaded = self.lock_loaded();
+        let mut definitions: Vec<n00n_providers::DeferredToolDefinition> = index
+            .descriptors
+            .iter()
+            .filter(|descriptor| !descriptor.always_load)
+            .filter(|descriptor| !loaded.contains(&*descriptor.qualified_name))
+            .filter(|descriptor| !self.excluded.contains(&descriptor.qualified_name))
+            .filter_map(|descriptor| {
+                Some(n00n_providers::DeferredToolDefinition {
+                    namespace: hosted_namespace_for_wire(descriptor.wire_name())?,
+                    definition: descriptor.definition.clone(),
+                })
+            })
+            .collect();
+        definitions.sort_by(|left, right| {
+            left.namespace.cmp(&right.namespace).then_with(|| {
+                left.definition["name"]
+                    .as_str()
+                    .cmp(&right.definition["name"].as_str())
+            })
+        });
+        definitions
     }
 
     /// Rank deferred tools against `query` keywords (exact name first,
@@ -518,7 +594,6 @@ impl McpSession {
     pub fn is_excluded(&self, qualified_name: &str) -> bool {
         self.excluded.contains(qualified_name)
     }
-
     #[must_use]
     pub fn loaded_tool_names(&self) -> Vec<String> {
         let loaded = self.lock_loaded();
@@ -531,6 +606,18 @@ impl McpSession {
             .filter(|descriptor| !self.excluded.contains(&descriptor.qualified_name))
             .map(|descriptor| descriptor.wire_name().to_owned())
             .collect()
+    }
+
+    #[must_use]
+    pub fn tool_description(&self, wire_name: &str) -> Option<String> {
+        self.handle
+            .index
+            .load()
+            .descriptors
+            .iter()
+            .find(|descriptor| descriptor.wire_name() == wire_name)
+            .and_then(|descriptor| descriptor.definition["description"].as_str())
+            .map(String::from)
     }
 
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
@@ -650,21 +737,21 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
     let defer_tools = config.defer_tools.unwrap_or_else(|| DEFAULT_DEFER_TOOLS);
     let mut inner = parse_entries(config);
     inner.max_desc_chars = max_desc_chars;
-    start_enabled(&mut inner).await;
+
+    let (cmd_tx, cmd_rx) = flume::unbounded();
+    start_enabled(&mut inner, &cmd_tx).await;
     inner.generation += 1;
 
     let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
     let index: Arc<ArcSwap<ToolIndex>> = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
     publish(&inner, &index, &snapshot, max_desc_chars);
-
-    let (cmd_tx, cmd_rx) = flume::unbounded();
     let handle = McpHandle {
-        cmd_tx,
+        cmd_tx: cmd_tx.clone(),
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
     };
-    smol::spawn(run(inner, index, snapshot, cmd_rx)).detach();
+    smol::spawn(run(inner, index, snapshot, cmd_tx, cmd_rx)).detach();
     Some(handle)
 }
 
@@ -692,13 +779,14 @@ async fn initialize_deferred(
     inner: &mut McpManagerInner,
     index: &Arc<ArcSwap<ToolIndex>>,
     snapshot: &Arc<ArcSwap<McpSnapshot>>,
+    cmd_tx: &flume::Sender<McpCommand>,
     cmd_rx: &flume::Receiver<McpCommand>,
 ) -> bool {
     let mut shutdown_ack = None;
     loop {
         let wake = futures_lite::future::or(
             async {
-                start_enabled(inner).await;
+                start_enabled(inner, cmd_tx).await;
                 InitializationWake::Complete
             },
             async {
@@ -722,10 +810,17 @@ async fn initialize_deferred(
                 return true;
             }
             InitializationWake::Command(Some(McpCommand::Toggle { server, enabled })) => {
-                handle_toggle(inner, &server, enabled).await;
+                handle_toggle(inner, &server, enabled, cmd_tx).await;
             }
             InitializationWake::Command(Some(McpCommand::Reconnect { server })) => {
-                handle_reconnect(inner, &server).await;
+                handle_reconnect(inner, &server, cmd_tx).await;
+            }
+            InitializationWake::Command(Some(McpCommand::Failed {
+                server,
+                connection_id,
+                reason,
+            })) => {
+                handle_died(inner, &server, connection_id, &reason);
             }
             InitializationWake::Command(Some(McpCommand::Shutdown { ack })) => {
                 shutdown_ack = Some(ack);
@@ -750,16 +845,24 @@ async fn run(
     mut inner: McpManagerInner,
     index: Arc<ArcSwap<ToolIndex>>,
     snapshot: Arc<ArcSwap<McpSnapshot>>,
+    cmd_tx: flume::Sender<McpCommand>,
     cmd_rx: flume::Receiver<McpCommand>,
 ) {
     let mut ack: Option<flume::Sender<()>> = None;
     while let Ok(cmd) = cmd_rx.recv_async().await {
         match cmd {
             McpCommand::Toggle { server, enabled } => {
-                handle_toggle(&mut inner, &server, enabled).await;
+                handle_toggle(&mut inner, &server, enabled, &cmd_tx).await;
             }
             McpCommand::Reconnect { server } => {
-                handle_reconnect(&mut inner, &server).await;
+                handle_reconnect(&mut inner, &server, &cmd_tx).await;
+            }
+            McpCommand::Failed {
+                server,
+                connection_id,
+                reason,
+            } => {
+                handle_died(&mut inner, &server, connection_id, &reason);
             }
             McpCommand::Shutdown { ack: tx } => {
                 ack = Some(tx);
@@ -777,7 +880,12 @@ async fn run(
     }
 }
 
-async fn handle_toggle(inner: &mut McpManagerInner, server_name: &str, enabled: bool) {
+async fn handle_toggle(
+    inner: &mut McpManagerInner,
+    server_name: &str,
+    enabled: bool,
+    cmd_tx: &flume::Sender<McpCommand>,
+) {
     if let Some(path) = inner
         .entries
         .iter()
@@ -788,7 +896,7 @@ async fn handle_toggle(inner: &mut McpManagerInner, server_name: &str, enabled: 
     }
 
     if enabled {
-        if let Err(e) = refresh_server(inner, server_name).await {
+        if let Err(e) = refresh_server(inner, server_name, cmd_tx).await {
             warn!(server = %server_name, error = %e, "MCP server refresh failed");
         }
     } else if let Some(entry) = inner.entries.iter_mut().find(|e| e.name == server_name) {
@@ -801,7 +909,11 @@ async fn handle_toggle(inner: &mut McpManagerInner, server_name: &str, enabled: 
 
 /// Restart the server with its stored config. Fresh OAuth tokens are picked up
 /// from storage by the transport, so no credentials travel through the command.
-async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
+async fn handle_reconnect(
+    inner: &mut McpManagerInner,
+    server_name: &str,
+    cmd_tx: &flume::Sender<McpCommand>,
+) {
     let Some(entry) = inner.entries.iter().find(|e| e.name == server_name) else {
         warn!(server = server_name, "reconnect for unknown server");
         return;
@@ -813,11 +925,27 @@ async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
         );
         return;
     }
-    if let Err(e) = refresh_server(inner, server_name).await {
+    if let Err(e) = refresh_server(inner, server_name, cmd_tx).await {
         warn!(server = %server_name, error = %e, "reconnect failed");
     } else {
         info!(server = server_name, "MCP reconnect complete");
     }
+}
+
+/// Reacts to a `McpCommand::Failed` signal raised by a transport's own reader task.
+/// Only acts on servers still believed `Running`: a toggle-off or reconnect may have
+/// already replaced the transport by the time this stale signal arrives.
+fn handle_died(inner: &mut McpManagerInner, server_name: &str, connection_id: u64, reason: &str) {
+    let Some(entry) = inner.entries.iter_mut().find(|entry| {
+        entry.name == server_name
+            && entry.connection_id == connection_id
+            && entry.status == McpServerStatus::Running
+    }) else {
+        return;
+    };
+    entry.begin_clear_connection();
+    entry.status = McpServerStatus::Failed(reason.to_owned());
+    warn!(server = server_name, reason, "MCP server died unexpectedly");
 }
 
 async fn shutdown_all(inner: &mut McpManagerInner) {
@@ -848,7 +976,11 @@ async fn shutdown_all(inner: &mut McpManagerInner) {
 /// Tear the old transport down and wipe tools/prompts *before* starting the new one. That way
 /// a failed start leaves the entry empty instead of holding zombie tool references into a dead
 /// transport.
-async fn refresh_server(inner: &mut McpManagerInner, server_name: &str) -> Result<(), McpError> {
+async fn refresh_server(
+    inner: &mut McpManagerInner,
+    server_name: &str,
+    cmd_tx: &flume::Sender<McpCommand>,
+) -> Result<(), McpError> {
     let Some(idx) = inner.entries.iter().position(|e| e.name == server_name) else {
         return Err(McpError::Config(format!("unknown server '{server_name}'")));
     };
@@ -857,6 +989,7 @@ async fn refresh_server(inner: &mut McpManagerInner, server_name: &str) -> Resul
         .config
         .clone()
         .ok_or_else(|| McpError::Config(format!("server '{server_name}' has no config")))?;
+    let connection_id = inner.reserve_connection_id()?;
 
     {
         let entry = &mut inner.entries[idx];
@@ -864,7 +997,7 @@ async fn refresh_server(inner: &mut McpManagerInner, server_name: &str) -> Resul
         entry.clear_connection().await;
     }
 
-    let result = start_server(&config).await;
+    let result = start_server(&config, cmd_tx, connection_id).await;
     apply_start_result(&mut inner.entries[idx], result, "refresh")?;
     info!(
         server = server_name,
@@ -890,31 +1023,61 @@ fn status_from_err(e: &McpError) -> McpServerStatus {
 }
 
 struct StartResult {
+    connection_id: u64,
     transport: Arc<dyn McpTransport>,
     tool_infos: Vec<protocol::ToolInfo>,
     prompt_infos: Vec<protocol::PromptInfo>,
 }
 
-async fn start_server(config: &ServerConfig) -> Result<StartResult, McpError> {
+async fn start_server(
+    config: &ServerConfig,
+    cmd_tx: &flume::Sender<McpCommand>,
+    connection_id: u64,
+) -> Result<StartResult, McpError> {
     let transport: Arc<dyn McpTransport> = match &config.transport {
         Transport::Stdio {
             program,
             args,
             environment,
-        } => Arc::new(StdioTransport::spawn(
-            &config.name,
-            program,
-            args,
-            environment,
-            config.timeout,
-        )?),
-        Transport::Http { url, headers } => Arc::new(HttpTransport::new(
-            &config.name,
-            url,
-            headers,
-            config.timeout,
-            n00n_storage::StateDir::resolve().ok(),
-        )?),
+        } => {
+            let server = config.name.clone();
+            let died_tx = cmd_tx.clone();
+            let on_death: stdio::DeathCallback = Box::new(move |e| {
+                let _ = died_tx.try_send(McpCommand::Failed {
+                    server: server.clone(),
+                    connection_id,
+                    reason: e.to_string(),
+                });
+            });
+            Arc::new(StdioTransport::spawn(
+                &config.name,
+                program,
+                args,
+                environment,
+                config.timeout,
+                on_death,
+            )?)
+        }
+        Transport::Http { url, headers } => {
+            let storage = match n00n_storage::StateDir::resolve() {
+                Ok(dir) => Some(dir),
+                Err(e) => {
+                    warn!(
+                        server = config.name,
+                        error = %e,
+                        "failed to resolve state directory; MCP OAuth tokens won't persist across restarts"
+                    );
+                    None
+                }
+            };
+            Arc::new(HttpTransport::new(
+                &config.name,
+                url,
+                headers,
+                config.timeout,
+                storage,
+            )?)
+        }
     };
     let capabilities = transport::initialize(transport.as_ref()).await?;
     // Asymmetric on purpose: sloppy servers omit `capabilities` yet serve
@@ -941,6 +1104,7 @@ async fn start_server(config: &ServerConfig) -> Result<StartResult, McpError> {
         "MCP server initialized"
     );
     Ok(StartResult {
+        connection_id,
         transport,
         tool_infos,
         prompt_infos,
@@ -969,6 +1133,7 @@ fn parse_entries(config: McpConfig) -> McpManagerInner {
             transport_kind,
             origin,
             status,
+            connection_id: 0,
             transport: None,
             tools: Vec::new(),
             prompts: Vec::new(),
@@ -982,19 +1147,33 @@ fn parse_entries(config: McpConfig) -> McpManagerInner {
     McpManagerInner {
         entries,
         generation: 0,
+        next_connection_id: 0,
         max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
     }
 }
 
-async fn start_enabled(inner: &mut McpManagerInner) {
-    let tasks: Vec<_> = inner
+async fn start_enabled(inner: &mut McpManagerInner, cmd_tx: &flume::Sender<McpCommand>) {
+    let candidates: Vec<_> = inner
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.status == McpServerStatus::Connecting)
-        .filter_map(|(i, e)| e.config.clone().map(|c| (i, c)))
-        .map(|(i, cfg)| smol::spawn(async move { (i, start_server(&cfg).await) }))
+        .filter(|(_, entry)| entry.status == McpServerStatus::Connecting)
+        .filter_map(|(index, entry)| entry.config.clone().map(|config| (index, config)))
         .collect();
+    let mut tasks = Vec::with_capacity(candidates.len());
+    for (index, config) in candidates {
+        let connection_id = match inner.reserve_connection_id() {
+            Ok(connection_id) => connection_id,
+            Err(error) => {
+                let _ = apply_start_result(&mut inner.entries[index], Err(error), "start");
+                continue;
+            }
+        };
+        let cmd_tx = cmd_tx.clone();
+        tasks.push(smol::spawn(async move {
+            (index, start_server(&config, &cmd_tx, connection_id).await)
+        }));
+    }
 
     for task in tasks {
         let (i, result) = task.await;
@@ -1136,6 +1315,7 @@ pub(crate) fn stub_session_with_read_only(tools: &[(&str, &str)], read_only: boo
         transport_kind: "stub",
         origin: PathBuf::new(),
         status: McpServerStatus::Running,
+        connection_id: 1,
         transport: Some(Arc::new(StubTransport(Arc::from("stub")))),
         tools: tools
             .iter()
@@ -1155,6 +1335,7 @@ pub(crate) fn stub_session_with_read_only(tools: &[(&str, &str)], read_only: boo
     let inner = McpManagerInner {
         entries: vec![entry],
         generation: 0,
+        next_connection_id: 0,
         max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
     };
     let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
@@ -1531,6 +1712,7 @@ mod tests {
             transport_kind: "fake",
             origin: PathBuf::new(),
             status: McpServerStatus::Running,
+            connection_id: 1,
             transport: Some(transport),
             tools: vec![McpToolDef {
                 qualified_name: qualified,
@@ -1555,7 +1737,6 @@ mod tests {
             },
         }
     }
-
     /// Build `inner`, publish it into fresh `ArcSwap`s, and return a live `McpSession` pointing
     /// at the same state so tests can hit both the mutation and the read path.
     fn setup(entries: Vec<ServerEntry>) -> (McpManagerInner, McpSession) {
@@ -1569,6 +1750,7 @@ mod tests {
         let inner = McpManagerInner {
             entries,
             generation: 0,
+            next_connection_id: 0,
             max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
         };
         let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
@@ -1648,6 +1830,23 @@ mod tests {
         let catalog = tools[0]["description"].as_str().unwrap();
         assert!(catalog.contains("srv: tool"), "catalog groups by server");
         assert!(handle.has_tool(TOOL_NAME), "deferred tools stay callable");
+    }
+
+    #[test]
+    fn deferred_definitions_use_stable_mcp_namespaces() {
+        let (_inner, session) = setup(vec![fake_entry("issues", FakeTransport::new())]);
+
+        let definitions = session.deferred_definitions();
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].namespace, "mcp_issues");
+        assert_eq!(definitions[0].definition["name"], "issues__tool");
+        assert_eq!(
+            hosted_namespace_for_wire("issue-server__tool").as_deref(),
+            Some("mcp_issue-server")
+        );
+        assert!(hosted_namespace_for_wire("issue.server__tool").is_none());
+        assert!(hosted_namespace_for_wire("issues__").is_none());
     }
 
     #[test]
@@ -1814,7 +2013,6 @@ mod tests {
         handle.extend_tools(&mut tools);
         assert_eq!(tool_names(&tools), vec!["eager__tool"]);
     }
-
     #[test]
     fn new_seeds_loads_only_from_wire_names_in_history() {
         let (_inner, session) = setup(vec![fake_entry("srv", FakeTransport::new())]);
@@ -1826,7 +2024,12 @@ mod tests {
         let history = vec![Message {
             role: Role::Assistant,
             content: vec![
-                tool_use(WIRE_TOOL_NAME),
+                ContentBlock::NamespacedToolUse {
+                    id: "hosted".into(),
+                    namespace: "n00n_mcp_srv".into(),
+                    name: WIRE_TOOL_NAME.into(),
+                    input: json!({}),
+                },
                 tool_use("read"),
                 tool_use("gone__tool"),
             ],
@@ -1878,7 +2081,6 @@ mod tests {
         let nested = session.fresh();
         let mut tools = json!([]);
         nested.extend_tools(&mut tools);
-
         assert!(tool_names(&tools).is_empty());
         assert!(
             nested
@@ -2030,7 +2232,9 @@ mod tests {
             let (ack_tx, ack_rx) = flume::bounded(1);
             handle.send(McpCommand::Shutdown { ack: ack_tx });
 
-            assert!(!initialize_deferred(&mut inner, &index, &snapshot, &cmd_rx).await);
+            assert!(
+                !initialize_deferred(&mut inner, &index, &snapshot, &handle.cmd_tx, &cmd_rx).await
+            );
             assert_eq!(ack_rx.recv_async().await, Ok(()));
             assert!(matches!(
                 inner.entries[0].status,
@@ -2047,8 +2251,9 @@ mod tests {
             let t = FakeTransport::new();
             let (mut inner, _) = setup(vec![fake_entry("srv", Arc::clone(&t) as _)]);
             inner.entries[0].config = Some(bad_stdio_config("srv"));
+            let (cmd_tx, _cmd_rx) = flume::unbounded();
 
-            assert!(refresh_server(&mut inner, "srv").await.is_err());
+            assert!(refresh_server(&mut inner, "srv", &cmd_tx).await.is_err());
 
             let entry = &inner.entries[0];
             assert_eq!(t.shutdowns(), 1);
@@ -2057,6 +2262,33 @@ mod tests {
             assert!(entry.transport.is_none());
             assert!(matches!(entry.status, McpServerStatus::Failed(_)));
         });
+    }
+
+    #[test]
+    fn stale_transport_death_cannot_fail_reconnected_server() {
+        let transport = FakeTransport::new();
+        let (mut inner, _) = setup(vec![fake_entry("srv", transport)]);
+        let stale_connection_id = inner.entries[0].connection_id;
+        let current_connection_id = stale_connection_id + 1;
+        inner.entries[0].connection_id = current_connection_id;
+
+        handle_died(&mut inner, "srv", stale_connection_id, "old transport died");
+
+        assert_eq!(inner.entries[0].status, McpServerStatus::Running);
+        assert_eq!(inner.entries[0].connection_id, current_connection_id);
+
+        handle_died(
+            &mut inner,
+            "srv",
+            current_connection_id,
+            "current transport died",
+        );
+
+        assert!(matches!(
+            inner.entries[0].status,
+            McpServerStatus::Failed(ref reason) if reason == "current transport died"
+        ));
+        assert_eq!(inner.entries[0].connection_id, 0);
     }
 
     #[test]
@@ -2070,7 +2302,7 @@ mod tests {
             handle.extend_tools(&mut tools);
             assert_eq!(tools[0]["name"], TOOL_SEARCH_TOOL_NAME);
 
-            handle_toggle(&mut inner, "srv", false).await;
+            handle_toggle(&mut inner, "srv", false, &handle.cmd_tx).await;
             publish(
                 &inner,
                 &handle.index,
@@ -2131,6 +2363,7 @@ mod tests {
             let mut inner = McpManagerInner {
                 entries: vec![fake_entry("a", first as _), fake_entry("b", second as _)],
                 generation: 0,
+                next_connection_id: 0,
                 max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
             };
 
@@ -2179,6 +2412,7 @@ mod tests {
                     fake_entry("fast", second as _),
                 ],
                 generation: 0,
+                next_connection_id: 0,
                 max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
             };
 
@@ -2225,6 +2459,7 @@ mod tests {
                     fake_entry("b", Arc::clone(&t2) as _),
                 ],
                 generation: 0,
+                next_connection_id: 0,
                 max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
             };
             let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
@@ -2234,6 +2469,7 @@ mod tests {
                 inner,
                 Arc::clone(&index),
                 Arc::clone(&snapshot),
+                cmd_tx.clone(),
                 cmd_rx,
             ));
 
@@ -2264,12 +2500,12 @@ mod tests {
         let inner = McpManagerInner {
             entries: vec![entry],
             generation: 0,
+            next_connection_id: 0,
             max_desc_chars: 100,
         };
         let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
         let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
         publish(&inner, &index, &snapshot, 100);
-
         let descriptors = &index.load().descriptors;
         assert_eq!(descriptors.len(), 1);
         let desc = descriptors[0].definition["description"].as_str().unwrap();
@@ -2292,6 +2528,7 @@ mod tests {
         let inner = McpManagerInner {
             entries: vec![entry],
             generation: 0,
+            next_connection_id: 0,
             max_desc_chars: 100,
         };
         let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
@@ -2319,6 +2556,7 @@ mod tests {
         let inner = McpManagerInner {
             entries: vec![entry],
             generation: 0,
+            next_connection_id: 0,
             max_desc_chars: 300,
         };
         let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));

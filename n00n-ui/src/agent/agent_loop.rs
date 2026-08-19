@@ -9,8 +9,7 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    DescriptionContext, FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
-    ToolsSnapshot,
+    FileReadTracker, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry, ToolsSnapshot,
 };
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -23,9 +22,9 @@ use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
 use tracing::{error, info, warn};
 
-use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
 use super::shared_queue::{QueueItem, QueueReceiver};
+use super::{ModelSlot, RevisionAllocator};
 
 fn build_plan_path<'a>(
     mode: &n00n_agent::AgentMode,
@@ -62,6 +61,8 @@ pub(super) struct AgentLoop {
     subagent_cancels: Arc<CancelMap<String>>,
     tools_cache: Option<ToolsCache>,
     plan_path: Option<PathBuf>,
+    state_revision: Option<u64>,
+    revision_allocator: Arc<RevisionAllocator>,
 }
 
 struct ToolsCache {
@@ -80,6 +81,8 @@ pub(super) struct AgentLoopInit {
     pub(super) tool_output_lines: ToolOutputLines,
     pub(super) initial_history: Vec<Message>,
     pub(super) initial_transcript: Vec<TranscriptEntry<Message>>,
+    pub(super) initial_state_revision: u64,
+    pub(super) revision_allocator: Arc<RevisionAllocator>,
     pub(super) initial_plan_path: Option<PathBuf>,
     pub(super) shared_history: Arc<ArcSwap<Vec<Message>>>,
     pub(super) shared_transcript: n00n_agent::SharedTranscript,
@@ -106,6 +109,8 @@ impl AgentLoop {
             tool_output_lines,
             initial_history,
             initial_transcript,
+            initial_state_revision,
+            revision_allocator,
             initial_plan_path,
             shared_history,
             shared_transcript,
@@ -123,6 +128,11 @@ impl AgentLoop {
             lua_handle,
             subagent_cancels,
         } = init;
+        let mcp = mcp_handle.map(|handle| McpSession::new(handle, &initial_history));
+        let history = History::restored_with_transcript(initial_history, initial_transcript)
+            .with_mirror(shared_history)
+            .with_transcript_mirror(shared_transcript);
+        let state_revision = Some(initial_state_revision);
         Self {
             model_slot,
             config,
@@ -131,10 +141,8 @@ impl AgentLoop {
             instructions: Instructions::default(),
             tools: Value::Null,
             tool_filter: ToolFilter::All,
-            mcp: mcp_handle.map(|h| McpSession::new(h, &initial_history)),
-            history: History::restored_with_transcript(initial_history, initial_transcript)
-                .with_mirror(shared_history)
-                .with_transcript_mirror(shared_transcript),
+            mcp,
+            history,
             btw_system,
             cancel_map,
             init_cancel,
@@ -151,6 +159,8 @@ impl AgentLoop {
             subagent_cancels,
             tools_cache: None,
             plan_path: initial_plan_path,
+            state_revision,
+            revision_allocator,
         }
     }
 
@@ -257,12 +267,13 @@ impl AgentLoop {
                 permissions: Arc::clone(&self.permissions),
                 identity: self.identity.clone(),
                 timeouts: self.timeouts,
-                openai_options: self.openai_options,
+                openai_options: self.openai_options.clone(),
                 file_tracker: Arc::clone(&self.file_tracker),
                 prompt_slots: Arc::new(n00n_agent::prompt::ResolvedSlots::default()),
                 subagent_cancels: Arc::clone(&self.subagent_cancels),
                 registry: Arc::clone(ToolRegistry::global_arc()),
                 audience: ToolAudience::MAIN,
+                state_revision: self.state_revision,
             },
             AgentRunParams {
                 history: &mut self.history,
@@ -301,9 +312,16 @@ impl AgentLoop {
             &slot.provider,
             &slot.model,
             self.timeouts,
-            self.openai_options,
+            self.openai_options.clone(),
         );
-        agent::compact(&*provider, &model, &mut self.history, event_tx).await
+        let revision = self
+            .revision_allocator
+            .allocate()
+            .map_err(|message| AgentError::Config { message })?;
+        agent::compact_at_state_revision(&*provider, &model, &mut self.history, event_tx, revision)
+            .await?;
+        self.state_revision = Some(revision);
+        Ok(())
     }
 
     async fn do_agent_run(
@@ -407,6 +425,9 @@ impl AgentLoop {
 
         while self.answer_rx.lock().await.try_recv().is_ok() {}
 
+        let allocator = Arc::clone(&self.revision_allocator);
+        let revision_allocator: Arc<dyn Fn() -> Result<u64, String> + Send + Sync> =
+            Arc::new(move || allocator.allocate());
         let mut agent = Agent::new(
             AgentParams {
                 provider: Arc::clone(&slot.provider),
@@ -421,7 +442,8 @@ impl AgentLoop {
                 subagent_cancels: Arc::clone(&self.subagent_cancels),
                 registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
                 audience: ToolAudience::MAIN,
-                openai_options: self.openai_options,
+                openai_options: self.openai_options.clone(),
+                state_revision: self.state_revision,
             },
             AgentRunParams {
                 history: &mut self.history,
@@ -431,6 +453,7 @@ impl AgentLoop {
                 tool_filter: self.tool_filter.clone(),
             },
         )
+        .with_state_revision_allocator(revision_allocator)
         .with_loaded_instructions(self.instructions.loaded.clone())
         .with_user_response_rx(Arc::clone(&self.answer_rx))
         .with_interrupt_source(Arc::clone(&self.queue) as Arc<dyn n00n_agent::InterruptSource>)
@@ -440,6 +463,7 @@ impl AgentLoop {
         .with_pre_dispatch_rollback_len(rollback_len);
 
         let result = agent.run(input).await;
+        self.state_revision = agent.state_revision();
         drop(agent);
 
         self.clear_cancel_trigger(run_id);
@@ -485,20 +509,16 @@ impl AgentLoop {
     }
 
     fn build_tools(&mut self, model: &Model, workflow: bool) -> Value {
-        let examples = model.supports_tool_examples();
-        let filter = ToolFilter::from_config(&self.config, model, &[]);
-        self.tool_filter = filter.clone();
-        let ctx = DescriptionContext {
-            filter: &filter,
-            audience: ToolAudience::MAIN,
-            workflow,
-        };
-        ToolRegistry::global().definitions_active(
+        let (definitions, filter) = n00n_agent::tools::runtime_tool_definitions(
+            ToolRegistry::global(),
             &self.vars,
-            &ctx,
-            examples,
-            &n00n_agent::tools::default_active_tools(),
-        )
+            &self.config,
+            model,
+            &[],
+            workflow,
+        );
+        self.tool_filter = filter;
+        definitions
     }
 
     async fn reload_instructions(&mut self) {

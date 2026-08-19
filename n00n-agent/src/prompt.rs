@@ -31,15 +31,7 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 - Output text to communicate with the user; all text you output outside of tool use is displayed to the user. Only use tools to complete tasks. NEVER use bash echo or other command-line tools to communicate thoughts, explanations, diagrams, or instructions to the user. Output all communication directly in your response text instead.
 - NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files.";
 
-const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
-    "explore",
-    "batch",
-    "code_execution",
-    "codegraph",
-    "index",
-    "semblem",
-    "task",
-];
+const NATIVE_EFFICIENT_TOOLS: &[&str] = &["explore_code", "index_file", "run_batch", "run_python"];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 
 /// Singleton: alphabetically last plugin wins, discarding all prior content
@@ -310,7 +302,7 @@ mod tests {
     use test_case::test_case;
 
     const NATIVE_EFFICIENT_LINE: &str =
-        "Most efficient tools: explore, batch, code_execution, codegraph, index, semblem, task";
+        "Most efficient tools: explore_code, index_file, run_batch, run_python";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();
@@ -341,6 +333,32 @@ mod tests {
             "unfilled marker left in output:\n{out}"
         );
         assert!(out.contains(&format!("{NATIVE_EFFICIENT_LINE}.")));
+    }
+
+    #[test]
+    fn system_routes_codebase_questions_without_advertising_deferred_backends() {
+        let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
+        assert!(
+            out.contains("index_file"),
+            "missing primary tool index_file"
+        );
+        assert!(
+            at(&out, "explore_code") < at(&out, "read_file"),
+            "explore_code must be the first codebase route"
+        );
+        for deferred in [
+            "map_codegraph",
+            "search_text",
+            "run_task",
+            "run_team",
+            "run_workflow",
+        ] {
+            assert!(
+                !out.contains(deferred),
+                "deferred tool advertised: {deferred}"
+            );
+        }
+        assert!(out.contains("tool discovery mechanism"));
     }
 
     /// One test to pin the whole System layout: every slot shows up, in order,

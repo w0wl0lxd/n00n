@@ -12,9 +12,11 @@ use n00n_agent::tools::ToolRegistry;
 use n00n_config::providers::ProvidersConfig;
 use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
+use n00n_providers::Message;
 use n00n_providers::model::Model;
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
+use n00n_storage::sessions::RetentionBudget;
 use n00n_ui::{AppSession, RunOutcome};
 
 use crate::cli::{Cli, normalize_tool_name};
@@ -278,15 +280,17 @@ fn resolve_session(
     model: &str,
     cwd: &str,
     storage: &StateDir,
+    retention_budget: RetentionBudget,
 ) -> Result<AppSession> {
     if let Some(raw) = session_id {
         let id: n00nId = raw
             .parse()
             .map_err(|e| color_eyre::eyre::eyre!("invalid session id {raw:?}: {e}"))?;
-        return AppSession::load(id, storage).map_err(|e| color_eyre::eyre::eyre!("{e}"));
+        return AppSession::load_with_retention(id, storage, retention_budget, message_tool_ids)
+            .map_err(|e| color_eyre::eyre::eyre!("{e}"));
     }
     if continue_session {
-        match AppSession::latest(cwd, storage) {
+        match AppSession::latest_with_retention(cwd, storage, retention_budget, message_tool_ids) {
             Ok(Some(session)) => return Ok(session),
             Ok(None) => {
                 tracing::info!("no previous session found for this directory, starting new");
@@ -297,6 +301,13 @@ fn resolve_session(
         }
     }
     Ok(AppSession::new(model, cwd))
+}
+
+fn message_tool_ids(message: &Message) -> Vec<String> {
+    message
+        .tool_uses()
+        .map(|(id, _, _)| id.to_owned())
+        .collect()
 }
 
 fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
@@ -413,6 +424,7 @@ fn run_ui_loop(
         &stack.model.spec(),
         &cwd_str,
         storage,
+        stack.config.storage.retention_budget(),
     )?];
     let mut focused = 0;
     let mut initial_prompt = read_initial_prompt(cli.initial_prompt.clone())?;
@@ -456,6 +468,7 @@ fn run_ui_loop(
                 config: stack.config.agent.clone(),
                 ui_config: stack.config.ui.clone(),
                 input_history_size: stack.config.storage.input_history_size,
+                retention_budget: stack.config.storage.retention_budget(),
                 permissions: Arc::new(n00n_agent::permissions::PermissionManager::new(
                     stack.config.permissions.clone(),
                     cwd.to_path_buf(),

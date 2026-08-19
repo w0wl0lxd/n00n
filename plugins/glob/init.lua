@@ -4,9 +4,10 @@ local shorten_path = require("n00n.shorten_path")
 local output_limits = require("n00n.output_limits")
 
 local NO_FILES_FOUND = "No files found"
+local MAX_PER_CALL_LIMIT = 1000
 
 local opts = n00n.api.register_options(output_limits.extend({
-  search_result_limit = { default = 100, min = 10, desc = "Max files returned per search." },
+  search_result_limit = { default = 50, min = 10, desc = "Max files returned per search." },
 }))
 
 local function glob_view_opts(ctx)
@@ -27,6 +28,7 @@ n00n.api.register_tool({
     properties = {
       pattern = { type = "string", required = true },
       path = { type = "string" },
+      limit = { type = "integer", description = "Maximum matching paths (default 50, max 1000)." },
     },
   },
 
@@ -51,7 +53,7 @@ n00n.api.register_tool({
       return { llm_output = "error: pattern is required", is_error = true }
     end
 
-    local limit = opts.search_result_limit
+    local limit = math.min(input.limit or opts.search_result_limit, MAX_PER_CALL_LIMIT)
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
 
     local files, err = n00n.fs.glob(pattern, {
