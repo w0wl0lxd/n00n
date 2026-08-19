@@ -15,9 +15,9 @@ use crate::types::{
     ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX, ThinkingFieldConfig,
 };
 use crate::{
-    AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
-    dialect,
+    AgentError, ContentBlock, Message, OpenAiPromptCacheMode, ProviderEvent,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, Role, StopReason,
+    StreamResponse, System, TokenUsage, dialect,
 };
 
 const RESPONSES_PATH: &str = "/responses";
@@ -52,7 +52,7 @@ pub(crate) fn build_body(
         system,
         opts.message_cache_breakpoints,
         model.supports_prompt_cache_breakpoint()
-            || opts.openai_prompt_cache_mode == Some(crate::OpenAiPromptCacheMode::Explicit),
+            || opts.openai_prompt_cache_mode == Some(OpenAiPromptCacheMode::Explicit),
     );
     let has_prompt_cache_breakpoint = contains_prompt_cache_breakpoint(&input);
     let mut wire_tools = convert_tools(tools, model);
@@ -86,8 +86,8 @@ pub(crate) fn build_body(
         Some("explicit")
     } else {
         opts.openai_prompt_cache_mode
-            .filter(|mode| *mode == crate::OpenAiPromptCacheMode::Implicit)
-            .map(crate::OpenAiPromptCacheMode::as_wire)
+            .filter(|mode| *mode == OpenAiPromptCacheMode::Implicit)
+            .map(OpenAiPromptCacheMode::as_wire)
     };
     if let Some(mode) = prompt_cache_mode {
         body["prompt_cache_options"] = json!({
@@ -455,8 +455,6 @@ const BUILTIN_CONFIG_KEYS: &[(&[&str], &[&str])] = &[
         &["environment", "display_width", "display_height"],
     ),
 ];
-const LOCAL_TOOL_SEARCH_NAMES: &[&str] = &["search_tools", "load_toolset"];
-
 fn namespace_description(namespace: &str) -> String {
     match namespace {
         "exploration" => "Cross-file analysis and specialized code search tools.".into(),
@@ -500,11 +498,6 @@ fn apply_hosted_tool_search(wire_tools: &mut Value, tool_search: &crate::HostedT
     if namespaces.is_empty() {
         return;
     }
-    tools.retain(|tool| {
-        tool.get("name")
-            .and_then(Value::as_str)
-            .is_none_or(|name| !LOCAL_TOOL_SEARCH_NAMES.contains(&name))
-    });
     for (namespace, deferred_tools) in namespaces {
         tools.push(json!({
             "type": "namespace",
@@ -2252,7 +2245,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 0,
-            openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Implicit),
+            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
             ..Default::default()
         };
         let body = build_body(
@@ -2277,7 +2270,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 0,
-            openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Explicit),
+            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
             ..Default::default()
         };
         let body = build_body(
@@ -2300,7 +2293,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 1,
-            openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Implicit),
+            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
             ..Default::default()
         };
         let body = build_body(
@@ -2349,7 +2342,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             false,
             &RequestOptions {
                 message_cache_breakpoints: 1,
-                openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Explicit),
+                openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
                 ..Default::default()
             },
             true,
@@ -2543,7 +2536,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
-    fn build_body_groups_deferred_tools_and_replaces_local_discovery() {
+    fn build_body_groups_deferred_tools_and_keeps_local_discovery() {
         let tools = json!([
             {
                 "name": "search_tools",
@@ -2609,13 +2602,13 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         );
         let wire_tools = body["tools"].as_array().unwrap();
 
-        assert_eq!(wire_tools[0]["name"], "read_file");
-        assert_eq!(wire_tools[1]["name"], "n00n_knowledge");
-        assert_eq!(wire_tools[1]["tools"][0]["name"], "use_memory");
-        assert_eq!(wire_tools[1]["tools"][0]["defer_loading"], true);
-        assert_eq!(wire_tools[2]["name"], "n00n_web");
-        assert_eq!(wire_tools[3]["type"], "tool_search");
-        assert!(wire_tools.iter().all(|tool| tool["name"] != "search_tools"));
+        assert_eq!(wire_tools[0]["name"], "search_tools");
+        assert_eq!(wire_tools[1]["name"], "read_file");
+        assert_eq!(wire_tools[2]["name"], "n00n_knowledge");
+        assert_eq!(wire_tools[2]["tools"][0]["name"], "use_memory");
+        assert_eq!(wire_tools[2]["tools"][0]["defer_loading"], true);
+        assert_eq!(wire_tools[3]["name"], "n00n_web");
+        assert_eq!(wire_tools[4]["type"], "tool_search");
     }
 
     #[test]

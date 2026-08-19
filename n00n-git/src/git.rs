@@ -773,13 +773,22 @@ fn contains_path_collision(paths: impl IntoIterator<Item = BString>) -> bool {
         .any(|entries| path_collides(entries[0].as_bstr(), entries[1].as_bstr()))
 }
 
+fn map_index_lock_error(error: gix::lock::acquire::Error) -> GitError {
+    match error {
+        gix::lock::acquire::Error::PermanentlyLocked { .. } => GitError::RepositoryLocked,
+        gix::lock::acquire::Error::Io(error) => {
+            GitError::GitOperation(format!("failed to acquire index lock: {error}"))
+        }
+    }
+}
+
 fn acquire_index_lock(repo: &gix::Repository) -> Result<gix::lock::File, GitError> {
     gix::lock::File::acquire_to_update_resource(
         repo.index_path(),
         gix::lock::acquire::Fail::Immediately,
         None,
     )
-    .map_err(|_| GitError::RepositoryLocked)
+    .map_err(map_index_lock_error)
 }
 
 fn write_locked_index(index: &gix::index::File, lock: gix::lock::File) -> Result<(), GitError> {
@@ -1286,6 +1295,19 @@ mod tests {
         assert!(matches!(
             commit(root, "locked"),
             Err(GitError::RepositoryLocked)
+        ));
+    }
+
+    #[test]
+    fn index_lock_io_errors_preserve_the_cause() {
+        let error = map_index_lock_error(gix::lock::acquire::Error::Io(std::io::Error::other(
+            "disk unavailable",
+        )));
+
+        assert!(matches!(
+            error,
+            GitError::GitOperation(message)
+                if message == "failed to acquire index lock: disk unavailable"
         ));
     }
 

@@ -180,6 +180,30 @@ fn deferred_builtin_families_have_namespaces_and_stay_out_of_initial_payload() {
 }
 
 #[test]
+fn fusion_delegate_stays_in_the_initial_payload_when_allowed() {
+    let (registry, _host) = builtins_host();
+    let entry = registry.get("delegate_fusion").unwrap();
+    assert!(!entry.defer_loading);
+    let definitions = registry.definitions_active(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+        &n00n_agent::tools::default_active_tools(),
+    );
+    assert!(
+        definitions
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| {
+                tool.get("name").and_then(serde_json::Value::as_str) == Some("delegate_fusion")
+            }))
+    );
+}
+
+#[test]
 fn deferred_interpreter_tools_are_not_advertised_or_callable() {
     let (registry, host) = builtins_host();
     host.load_source(
@@ -326,6 +350,20 @@ fn read_file_defaults_to_200_lines_and_honors_explicit_limit() {
     .unwrap();
     assert!(explicit_output.contains("240: line 240"));
     assert!(explicit_output.contains("Omitted 10 lines (241-250). Continue with offset=241."));
+
+    let invocation = registry
+        .get("read_file")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({ "path": path.to_string_lossy() }))
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    Arc::make_mut(&mut ctx.config).max_output_lines = 240;
+    let configured_output = smol::block_on(invocation.execute(&ctx)).output.unwrap();
+    let n00n_agent::ToolOutput::Plain(configured_output) = configured_output else {
+        panic!("unexpected read output");
+    };
+    assert!(configured_output.text.contains("240: line 240"));
 }
 #[test]
 fn search_files_defaults_to_50_results_and_honors_explicit_limit() {
@@ -441,6 +479,48 @@ fn bundled_git_tool_executes_status_through_native_api() {
     .expect("bundled git status failed");
 
     assert_eq!(output, "On branch main\nWorking tree clean");
+}
+
+#[test]
+fn bundled_git_conflicts_honors_max_file_bytes() {
+    let repo = tempfile::tempdir().unwrap();
+    let init = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(repo.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    std::fs::write(repo.path().join(".gitkeep"), "").unwrap();
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["add", ".gitkeep"])
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    std::fs::write(
+        repo.path().join("large.rs"),
+        format!("{}\n// TODO: hidden\n", "x".repeat(1_024)),
+    )
+    .unwrap();
+    let (registry, _host) = builtins_host();
+
+    let output = exec_tool(
+        &registry,
+        "git",
+        serde_json::json!({
+            "command": "conflicts",
+            "path": repo.path(),
+            "kinds": ["todo"],
+            "max_file_bytes": 128
+        }),
+    )
+    .expect("bundled git conflicts failed");
+
+    assert!(
+        !output.contains("TODO: hidden"),
+        "unexpected output: {output}"
+    );
 }
 
 const ECHO_PLUGIN: &str = r#"
@@ -4211,15 +4291,14 @@ fn bash_handler_routes_wrapper_commands_without_false_positives(command: &str, e
     assert!(output.contains(expected), "unexpected output: {output}");
 }
 
-#[test]
-fn bash_handler_sanitizes_explicit_git_proxy() {
+#[test_case::test_case("rtk proxy git -c core.fsmonitor=/untrusted/fsmonitor --version" ; "explicit_proxy")]
+#[test_case::test_case("git -c core.fsmonitor=/untrusted/fsmonitor --version" ; "fallback_proxy")]
+fn bash_handler_sanitizes_git_proxy(command: &str) {
     if skip_without_rtk("bash_handler_sanitizes_explicit_git_proxy") {
         return;
     }
     let (reg, _host) = builtins_host();
-    let input = serde_json::json!({
-        "command": "rtk proxy git -c core.fsmonitor=/untrusted/fsmonitor --version"
-    });
+    let input = serde_json::json!({ "command": command });
     let invocation = reg
         .get("bash")
         .expect("bash registered")

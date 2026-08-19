@@ -724,6 +724,7 @@ impl ToolRegistry {
             .filter(|token| !token.is_empty())
             .collect();
         let snapshot = self.tools.load();
+        let vars = crate::template::env_vars();
         let mut results = Vec::new();
         for entry in snapshot.iter() {
             if !entry.defer_loading
@@ -738,9 +739,7 @@ impl ToolRegistry {
             let aliases_lower: Vec<String> =
                 aliases.iter().map(|alias| alias.to_lowercase()).collect();
             let namespace_lower = entry.namespace.as_deref().map(str::to_lowercase);
-            let description = crate::template::env_vars()
-                .apply(&entry.tool.description(ctx))
-                .into_owned();
+            let description = vars.apply(&entry.tool.description(ctx)).into_owned();
             let description_lower = description.to_lowercase();
             let schema_lower = entry.tool.schema().to_string().to_lowercase();
             let mut score = 0_u32;

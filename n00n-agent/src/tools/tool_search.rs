@@ -68,25 +68,30 @@ impl ToolInvocation for ToolSearchInvocation {
                 || self.namespace.is_none() && filtered.is_empty();
             if search_mcp && let Some(mcp) = &ctx.mcp {
                 let before: BTreeSet<String> = mcp.loaded_tool_names().into_iter().collect();
-                let message = mcp.search_tools(&self.query);
-                if let Ok(description) = message {
-                    output.extend(
-                        mcp.loaded_tool_names()
-                            .into_iter()
-                            .filter(|name| !before.contains(name))
-                            .map(|name| {
-                                let tool_description = match mcp.tool_description(&name) {
-                                    Some(tool_description) => tool_description,
-                                    None => description.clone(),
-                                };
-                                json!({
-                                    "name": name,
-                                    "namespace": "mcp",
-                                    "description": tool_description
-                                })
-                            }),
-                    );
-                }
+                let description = match mcp.search_tools(&self.query) {
+                    Ok(description) => description,
+                    Err(error) => {
+                        return ToolExecResult::from(Err(format!(
+                            "MCP tool search failed: {error}"
+                        )));
+                    }
+                };
+                output.extend(
+                    mcp.loaded_tool_names()
+                        .into_iter()
+                        .filter(|name| !before.contains(name))
+                        .map(|name| {
+                            let tool_description = match mcp.tool_description(&name) {
+                                Some(tool_description) => tool_description,
+                                None => description.clone(),
+                            };
+                            json!({
+                                "name": name,
+                                "namespace": "mcp",
+                                "description": tool_description
+                            })
+                        }),
+                );
             }
             let output = Value::Array(output);
             ToolExecResult::from(Ok(ToolOutput::Plain(output.to_string().into())))

@@ -221,12 +221,16 @@ mod tests {
         let table = create_git_table(&lua, &permissions).unwrap();
         let run: Function = table.get("run").unwrap();
 
+        let commit_options = lua.create_table().unwrap();
+        commit_options.set("message", "test").unwrap();
         let (_, commit_error): (Option<String>, Option<String>) =
-            run.call(("commit", "/missing", None::<Table>)).unwrap();
+            run.call(("commit", "/missing", commit_options)).unwrap();
         assert!(!commit_error.unwrap().contains("permission denied"));
 
+        let add_options = lua.create_table().unwrap();
+        add_options.set("files", vec!["file.txt"]).unwrap();
         let (_, add_error): (Option<String>, Option<String>) =
-            run.call(("add", "/missing", None::<Table>)).unwrap();
+            run.call(("add", "/missing", add_options)).unwrap();
         assert!(!add_error.unwrap().contains("permission denied"));
 
         let (_, checkout_error): (Option<String>, Option<String>) =

@@ -373,7 +373,10 @@ impl McpSession {
             .iter()
             .flat_map(|m| &m.content)
             .filter_map(|block| match block {
-                ContentBlock::ToolUse { name, .. } if name.contains(WIRE_SEPARATOR) => {
+                ContentBlock::ToolUse { name, .. }
+                | ContentBlock::NamespacedToolUse { name, .. }
+                    if name.contains(WIRE_SEPARATOR) =>
+                {
                     Some(internal_tool_name(name).into())
                 }
                 _ => None,
@@ -2021,7 +2024,12 @@ mod tests {
         let history = vec![Message {
             role: Role::Assistant,
             content: vec![
-                tool_use(WIRE_TOOL_NAME),
+                ContentBlock::NamespacedToolUse {
+                    id: "hosted".into(),
+                    namespace: "n00n_mcp_srv".into(),
+                    name: WIRE_TOOL_NAME.into(),
+                    input: json!({}),
+                },
                 tool_use("read"),
                 tool_use("gone__tool"),
             ],

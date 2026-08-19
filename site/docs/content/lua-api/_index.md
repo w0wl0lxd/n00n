@@ -5871,6 +5871,7 @@ function M.snapshot(ctx)
 ```lua
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
+M.DEFAULT_MAX_OUTPUT_LINES = DEFAULT_MAX_OUTPUT_LINES
 M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
 M.EXPLORER_DEFAULT_MAX_OUTPUT_BYTES = EXPLORER_DEFAULT_MAX_OUTPUT_BYTES
 function M.extend(spec)

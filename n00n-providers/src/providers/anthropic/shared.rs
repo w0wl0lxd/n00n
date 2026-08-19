@@ -248,6 +248,7 @@ pub(super) fn build_wire_messages(
                 })
                 .collect(),
         })
+        .filter(|message| !message.content.is_empty())
         .collect()
 }
 
@@ -900,5 +901,20 @@ mod tests {
         assert_eq!(wire[0]["content"].as_array().map(Vec::len), Some(1));
         assert_eq!(wire[0]["content"][0]["type"], "tool_use");
         assert_eq!(wire[0]["content"][0]["name"], "search_web");
+    }
+
+    #[test]
+    fn build_wire_messages_omits_provider_only_turns() {
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ProviderItem {
+                provider: "openai".into(),
+                data: json!({"type": "tool_search_call"}),
+            }],
+            display_text: None,
+            control: false,
+        }];
+
+        assert!(build_wire_messages(&messages, 0).is_empty());
     }
 }
