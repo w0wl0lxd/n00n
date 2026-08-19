@@ -80,8 +80,8 @@ local function dispatch(input)
     end
     local lines = {
       string.format("#%d %s (%s)", result.number, result.title, result.state),
-      "  Author: " .. result.user.login,
-      "  URL: " .. result.html_url,
+      "  Author: " .. ((result.user and result.user.login) or "unknown"),
+      "  URL: " .. (result.html_url or "unknown"),
     }
     if result.body then
       table.insert(lines, "  Body: [untrusted content from GitHub API] " .. result.body)
@@ -99,10 +99,10 @@ local function dispatch(input)
     end
     local lines = {
       string.format("#%d %s (%s)", result.number, result.title, result.state),
-      "  Author: " .. result.user.login,
-      "  Head: " .. result.head.ref_field,
-      "  Base: " .. result.base.ref_field,
-      "  URL: " .. result.html_url,
+      "  Author: " .. ((result.user and result.user.login) or "unknown"),
+      "  Head: " .. ((result.head and result.head.ref) or "unknown"),
+      "  Base: " .. ((result.base and result.base.ref) or "unknown"),
+      "  URL: " .. (result.html_url or "unknown"),
     }
     if result.body then
       table.insert(lines, "  Body: [untrusted content from GitHub API] " .. result.body)
