@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786917903143,
+  "lastUpdate": 1787099914360,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20295,6 +20295,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 192819,
             "range": "± 8009",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3cce8bb546e5e5eb1060fd6ead02ff1bc1c02619",
+          "message": "feat(ui): show model usage price metrics (#389)\n\n* feat(ui): show model usage price metrics\n\n* fix(ui): attribute compaction usage to compact model\n\n* fix(ui): keep usage pricing labels consistent\n\n* docs(changelog): add fragment for usage price metrics\n\n* fix(ui): keep the session cost estimate when a model is free\n\nA single zero-priced model in the session made attributed_costs return\nNone for the whole fold, hiding the estimate even when another model in\nthe same session had a real cost. Skip zero-priced models instead, and\nreport no estimate only when no priced model contributed at all.\n\n* fix(ui): remove redundant usage test clone\n\n* test(providers): compare effective pricing with an epsilon\n\nassert_eq! on f64 trips clippy::float_cmp, which is denied by just lint,\nso the effective-pricing test failed the Lint job on all three\nplatforms.\n\n* fix(ui): address usage pricing review\n\n* fix(ui): align effective price formatting\n\n* fix(ui): address remaining usage review\n\n* fix(ui): preserve usage model identity\n\n* fix(ui): bound usage model diagnostics",
+          "timestamp": "2026-08-18T20:24:29-04:00",
+          "tree_id": "2d52a4098b8a89c18ada4e8adfe0d4c3c11e9c09",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/3cce8bb546e5e5eb1060fd6ead02ff1bc1c02619"
+        },
+        "date": 1787099913137,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6701479,
+            "range": "± 207129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2222723,
+            "range": "± 3779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2374950,
+            "range": "± 33605",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8094392,
+            "range": "± 40324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4306752,
+            "range": "± 13085",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4308073,
+            "range": "± 15695",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583020,
+            "range": "± 3141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191463,
+            "range": "± 315",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191308,
+            "range": "± 436",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041725,
+            "range": "± 14329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 583490,
+            "range": "± 2237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 583396,
+            "range": "± 2924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81323,
+            "range": "± 1771",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 174035,
+            "range": "± 18342",
             "unit": "ns/iter"
           }
         ]
