@@ -744,15 +744,23 @@ impl EventHandle {
             return ResolvedSlots::default();
         }
         let (tx, rx) = flume::bounded(1);
-        let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
+        if let Err(error) = self.tx.send(Request::CollectPromptSlots { reply: tx }) {
+            tracing::warn!(%error, "plugin prompt slot request failed");
+            return ResolvedSlots::default();
+        }
         futures_lite::future::race(
             async {
-                rx.recv_async()
-                    .await
-                    .unwrap_or_else(|_| ResolvedSlots::default())
+                match rx.recv_async().await {
+                    Ok(slots) => slots,
+                    Err(error) => {
+                        tracing::warn!(%error, "plugin prompt slot response disconnected");
+                        ResolvedSlots::default()
+                    }
+                }
             },
             async {
                 smol::Timer::after(SHUTDOWN_TIMEOUT).await;
+                tracing::warn!("plugin prompt slot collection timed out");
                 ResolvedSlots::default()
             },
         )

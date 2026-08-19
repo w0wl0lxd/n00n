@@ -168,6 +168,7 @@ pub enum Request {
         tool: Arc<str>,
         input: Value,
         nested: bool,
+        started: flume::Sender<()>,
         reply: flume::Sender<HeaderResult>,
     },
     ComputePermissionScopes {
@@ -175,6 +176,7 @@ pub enum Request {
         tool: Arc<str>,
         input: Value,
         nested: bool,
+        started: flume::Sender<()>,
         reply: flume::Sender<Option<PermissionScopes>>,
     },
     ClearPlugin {
@@ -267,6 +269,7 @@ pub enum Request {
         live: LiveCtx,
         ctx: Box<LuaCtx>,
         nested: bool,
+        started: flume::Sender<()>,
         reply: flume::Sender<()>,
     },
 }
@@ -1545,8 +1548,12 @@ fn spawn_runtime_request(
             tool,
             input,
             nested: _,
+            started,
             reply,
         } => {
+            if started.send(()).is_err() {
+                return None;
+            }
             let lua = rt.lua.clone();
             let plugins = Rc::clone(&rt.plugins);
             let lifecycle = lifecycle.start();
@@ -1563,8 +1570,12 @@ fn spawn_runtime_request(
             tool,
             input,
             nested: _,
+            started,
             reply,
         } => {
+            if started.send(()).is_err() {
+                return None;
+            }
             let lua = rt.lua.clone();
             let plugins = Rc::clone(&rt.plugins);
             let lifecycle = lifecycle.start();
@@ -1585,8 +1596,12 @@ fn spawn_runtime_request(
             live,
             ctx,
             nested: _,
+            started,
             reply,
         } => {
+            if started.send(()).is_err() {
+                return None;
+            }
             let func = {
                 let plugins = rt.plugins.borrow();
                 plugins
@@ -2868,6 +2883,7 @@ fn spawn_plugin_job_pump(ex: &Rc<smol::LocalExecutor<'_>>, lua: &Lua) {
         let mut event_buf = Vec::new();
         loop {
             with_jobs(&lua, |store| store.drain_plugin_events(&mut event_buf));
+            let saturated = event_buf.len() == crate::api::r#fn::MAX_JOB_EVENTS_PER_TURN;
             if !event_buf.is_empty() {
                 let scope = TaskScope::detached(&lua);
                 for (job_id, event) in event_buf.drain(..) {
@@ -2881,7 +2897,11 @@ fn spawn_plugin_job_pump(ex: &Rc<smol::LocalExecutor<'_>>, lua: &Lua) {
                 }
                 drop(scope);
             }
-            smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+            if saturated {
+                smol::future::yield_now().await;
+            } else {
+                smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+            }
         }
     })
     .detach();
@@ -3503,8 +3523,12 @@ pub fn spawn(
                             tool,
                             input,
                             nested: _,
+                            started,
                             reply,
                         } => {
+                            if started.send(()).is_err() {
+                                continue;
+                            }
                             let res =
                                 compute_header(&rt.lua, &rt.plugins, &plugin, &tool, input).await;
                             let _ = reply.send(res);
@@ -3514,8 +3538,12 @@ pub fn spawn(
                             tool,
                             input,
                             nested: _,
+                            started,
                             reply,
                         } => {
+                            if started.send(()).is_err() {
+                                continue;
+                            }
                             let res = LuaRuntime::compute_permission_scopes(
                                 &rt.lua,
                                 &rt.plugins,

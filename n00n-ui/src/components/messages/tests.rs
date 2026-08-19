@@ -23,6 +23,8 @@ fn test_panel_with_config(ui_config: UiConfig) -> MessagesPanel {
 #[test]
 fn highlight_result_drain_is_limited_per_frame() {
     let mut panel = test_panel();
+    panel.push(DisplayMessage::new(DisplayRole::User, "ready".into()));
+    assert!(!panel.is_animating());
     for id in 0..=MAX_HIGHLIGHT_RESULTS_PER_FRAME as u64 {
         panel
             .hl_worker
@@ -35,6 +37,7 @@ fn highlight_result_drain_is_limited_per_frame() {
     panel.drain_highlights();
 
     assert_eq!(panel.hl_worker.pending_results_for_test(), 1);
+    assert!(panel.is_animating());
 }
 
 fn snap_line(text: &str) -> SnapshotLine {
