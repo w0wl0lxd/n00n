@@ -332,7 +332,16 @@ pub fn persist_enabled(
     server_name: &str,
     enabled: bool,
 ) -> Result<(), McpError> {
-    let content = fs::read_to_string(config_path).unwrap_or_else(|_| String::new());
+    let content = match fs::read_to_string(config_path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(McpError::Config(format!(
+                "failed to read {}: {e}",
+                config_path.display()
+            )));
+        }
+    };
     let mut doc: DocumentMut = content
         .parse()
         .map_err(|e| McpError::Config(format!("failed to parse {}: {e}", config_path.display())))?;
@@ -349,7 +358,6 @@ pub fn persist_enabled(
         .as_table_like_mut()
         .ok_or_else(|| McpError::Config(format!("[mcp.{server_name}] is not a table")))?;
     server["enabled"] = toml_edit::value(enabled);
-
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| McpError::Config(format!("cannot create dir: {e}")))?;
@@ -358,7 +366,6 @@ pub fn persist_enabled(
         .map_err(|e| McpError::Config(format!("cannot write {}: {e}", config_path.display())))?;
     Ok(())
 }
-
 fn read_config(path: &Path) -> Result<Option<McpConfig>, McpConfigError> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,

@@ -23,6 +23,15 @@ type PendingMap = HashMap<u64, channel::Sender<Result<Value, McpError>>>;
 
 const LINE_DELIMITER: u8 = b'\n';
 
+/// Caps memory used while buffering one JSON-RPC line from a server's stdout.
+/// A server that exceeds this is malfunctioning or hostile; the line is
+/// dropped instead of fully buffered. A live n00n process was observed at
+/// 13.9 GiB RSS from an unbounded read before this cap existed.
+#[cfg(not(test))]
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(test)]
+const MAX_FRAME_BYTES: usize = 128;
+
 use crate::ChildGuard;
 
 fn log_stderr_line(server: &str, line: &str) {
@@ -30,6 +39,65 @@ fn log_stderr_line(server: &str, line: &str) {
         warn!(server, "{line}");
     } else {
         debug!(server, "{line}");
+    }
+}
+
+/// A death callback invoked once, from the reader task, when the transport's
+/// connection to the server ends for any reason.
+pub type DeathCallback = Box<dyn Fn(McpError) + Send + Sync>;
+
+/// Outcome of reading one newline-delimited frame with `read_bounded_line`.
+enum BoundedLine {
+    /// The stream ended with no bytes read for this frame.
+    Eof,
+    /// A complete line, at or under the byte cap.
+    Line(Vec<u8>),
+    /// The line exceeded the cap; excess bytes were discarded, not buffered.
+    Truncated { discarded_bytes: usize },
+}
+
+/// Reads one newline-delimited frame, buffering at most `max_bytes`. Bytes
+/// beyond the cap are consumed from the stream (to resync at the next line)
+/// but never copied into memory, bounding RSS regardless of frame size.
+async fn read_bounded_line(
+    reader: &mut (impl AsyncBufReadExt + Unpin),
+    max_bytes: usize,
+) -> std::io::Result<BoundedLine> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut discarded = 0usize;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok(if buf.is_empty() && discarded == 0 {
+                BoundedLine::Eof
+            } else if discarded > 0 {
+                BoundedLine::Truncated {
+                    discarded_bytes: discarded,
+                }
+            } else {
+                BoundedLine::Line(buf)
+            });
+        }
+        let delimiter_pos = chunk.iter().position(|&b| b == LINE_DELIMITER);
+        let scan_len = match delimiter_pos {
+            Some(position) => position,
+            None => chunk.len(),
+        };
+        let room = max_bytes.saturating_sub(buf.len());
+        let take = scan_len.min(room);
+        buf.extend_from_slice(&chunk[..take]);
+        discarded += scan_len - take;
+        let consumed = delimiter_pos.map_or(chunk.len(), |pos| pos + 1);
+        reader.consume(consumed);
+        if delimiter_pos.is_some() {
+            return Ok(if discarded > 0 {
+                BoundedLine::Truncated {
+                    discarded_bytes: discarded,
+                }
+            } else {
+                BoundedLine::Line(buf)
+            });
+        }
     }
 }
 
@@ -125,6 +193,7 @@ impl StdioTransport {
         args: &[String],
         environment: &HashMap<String, String>,
         timeout: Duration,
+        on_death: DeathCallback,
     ) -> Result<Self, McpError> {
         let mut std_cmd = std::process::Command::new(program);
         std_cmd.args(args).envs(environment);
@@ -169,16 +238,14 @@ impl StdioTransport {
             let pending = Arc::clone(&pending);
             smol::spawn(async move {
                 let result = Self::reader_loop(&name, &mut BufReader::new(stdout), &pending).await;
-                if let Err(e) = &result {
-                    warn!(server = &*name, error = %e, "MCP reader loop ended");
-                }
+                let terminal_err = result.err().unwrap_or_else(|| McpError::ServerDied {
+                    server: (*name).into(),
+                });
+                warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
                 alive.store(false, Ordering::Release);
+                on_death(terminal_err.clone());
                 for (_, sender) in pending.lock().await.drain() {
-                    let _ = sender
-                        .send(Err(McpError::ServerDied {
-                            server: (*name).into(),
-                        }))
-                        .await;
+                    let _ = sender.send(Err(terminal_err.clone())).await;
                 }
             })
         };
@@ -245,22 +312,35 @@ impl StdioTransport {
         reader: &mut (impl AsyncBufReadExt + Unpin),
         pending: &Mutex<PendingMap>,
     ) -> Result<(), McpError> {
-        let mut line = String::new();
         loop {
-            line.clear();
-            let n = reader
-                .read_line(&mut line)
+            let outcome = read_bounded_line(reader, MAX_FRAME_BYTES)
                 .await
                 .map_err(|e| McpError::ServerDied {
                     server: format!("{}: read failed: {e}", &**name),
                 })?;
 
-            if n == 0 {
-                return Err(McpError::ServerDied {
-                    server: (**name).into(),
-                });
-            }
+            let bytes = match outcome {
+                BoundedLine::Eof => {
+                    return Err(McpError::ServerDied {
+                        server: (**name).into(),
+                    });
+                }
+                BoundedLine::Truncated { discarded_bytes } => {
+                    warn!(
+                        server = &**name,
+                        discarded_bytes,
+                        limit_bytes = MAX_FRAME_BYTES,
+                        "MCP response exceeded frame size limit; dropping connection"
+                    );
+                    return Err(McpError::ResponseTooLarge {
+                        server: (**name).into(),
+                        limit_bytes: MAX_FRAME_BYTES,
+                    });
+                }
+                BoundedLine::Line(bytes) => bytes,
+            };
 
+            let line = String::from_utf8_lossy(&bytes);
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -357,7 +437,6 @@ impl McpTransport for StdioTransport {
 
             let (tx, rx) = smol::channel::bounded(1);
             self.pending.lock().await.insert(id, tx);
-
             if let Err(e) = self.write_line(&self.serialize(&req)?).await {
                 self.pending.lock().await.remove(&id);
                 return Err(e);
@@ -468,6 +547,54 @@ mod tests {
         });
     }
 
+    #[test]
+    fn reader_loop_drops_frame_exceeding_size_cap() {
+        let oversized = "x".repeat(MAX_FRAME_BYTES * 2);
+        let input = format!("{oversized}\n");
+        smol::block_on(async {
+            let pending: Mutex<PendingMap> = Mutex::new(HashMap::new());
+            let name: Arc<str> = Arc::from("test");
+            let mut reader = BufReader::new(Cursor::new(input.into_bytes()));
+            let result = StdioTransport::reader_loop(&name, &mut reader, &pending).await;
+            assert!(matches!(
+                result,
+                Err(McpError::ResponseTooLarge { limit_bytes, .. }) if limit_bytes == MAX_FRAME_BYTES
+            ));
+        });
+    }
+
+    #[test]
+    fn read_bounded_line_returns_line_at_cap() {
+        let input = "hello\n";
+        smol::block_on(async {
+            let mut reader = BufReader::new(Cursor::new(input.as_bytes().to_vec()));
+            let outcome = read_bounded_line(&mut reader, 16).await.unwrap();
+            assert!(matches!(outcome, BoundedLine::Line(bytes) if bytes == b"hello"));
+        });
+    }
+
+    #[test]
+    fn read_bounded_line_truncates_oversized_frame_without_unbounded_growth() {
+        let input = format!("{}\n", "x".repeat(64));
+        smol::block_on(async {
+            let mut reader = BufReader::new(Cursor::new(input.into_bytes()));
+            let outcome = read_bounded_line(&mut reader, 16).await.unwrap();
+            assert!(matches!(
+                outcome,
+                BoundedLine::Truncated { discarded_bytes } if discarded_bytes == 48
+            ));
+        });
+    }
+
+    #[test]
+    fn read_bounded_line_reports_eof() {
+        smol::block_on(async {
+            let mut reader = BufReader::new(Cursor::new(Vec::new()));
+            let outcome = read_bounded_line(&mut reader, 16).await.unwrap();
+            assert!(matches!(outcome, BoundedLine::Eof));
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     #[allow(unsafe_code)]
@@ -480,6 +607,7 @@ mod tests {
                     &["60".into()],
                     &HashMap::new(),
                     Duration::from_secs(1),
+                    Box::new(|_| {}),
                 )
                 .unwrap(),
             );
@@ -551,5 +679,37 @@ mod tests {
         let mut dedup = StderrDedup::new();
         dedup.observe("only-once");
         assert!(dedup.flush().is_none());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn reader_loop_end_invokes_death_callback() {
+        smol::block_on(async {
+            let died: Arc<StdMutex<Option<McpError>>> = Arc::new(StdMutex::new(None));
+            let died_write = Arc::clone(&died);
+            let transport = StdioTransport::spawn(
+                "test",
+                "sh",
+                &["-c".into(), "exit 0".into()],
+                &HashMap::new(),
+                Duration::from_secs(5),
+                Box::new(move |e| {
+                    *died_write
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+                }),
+            )
+            .unwrap();
+
+            let StdioTransport {
+                _reader_task: reader_task,
+                ..
+            } = transport;
+            reader_task.await;
+            assert!(
+                died.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+            );
+        });
     }
 }
