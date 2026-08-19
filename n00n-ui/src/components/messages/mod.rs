@@ -1056,6 +1056,12 @@ impl MessagesPanel {
             || !self.live_bufs.is_empty()
             || self.streaming_thinking_collapsed()
             || self.is_restoring()
+            || self.hl_worker.has_pending_results()
+            || self
+                .cache
+                .segments()
+                .iter()
+                .any(Segment::has_pending_highlight)
     }
 
     fn streaming_thinking_collapsed(&self) -> bool {

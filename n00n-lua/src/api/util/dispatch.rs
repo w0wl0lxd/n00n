@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use mlua::{FromLuaMulti, Function, IntoLuaMulti, Lua};
 
-use crate::runtime::TaskScope;
+use crate::runtime::{TaskScope, run_non_yieldable};
 
 pub(crate) const MAX_HOOK_DEPTH: u8 = 8;
 
@@ -67,7 +67,7 @@ pub(crate) fn call_isolated<R: FromLuaMulti>(
     plugin: &str,
 ) -> Option<R> {
     let _scope = TaskScope::detached(lua);
-    match func.call::<R>(args) {
+    match run_non_yieldable(lua, || func.call::<R>(args)) {
         Ok(r) => Some(r),
         Err(e) => {
             tracing::warn!(seam, plugin, error = %e, "plugin callback failed");
