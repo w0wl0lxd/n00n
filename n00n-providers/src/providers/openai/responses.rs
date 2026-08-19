@@ -3161,11 +3161,11 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
                 ContentBlock::NamespacedToolUse { namespace, name, .. }
                     if namespace == "n00n_knowledge" && name == "use_memory"
             ));
-            let replay = convert_input(
+            let replay = convert_input_with_breakpoint_support(
                 &[resp.message],
                 &System::default(),
                 0,
-                &Model::from_spec("openai/gpt-5.6").unwrap(),
+                false,
             );
             assert_eq!(replay[0]["type"], "tool_search_call");
             assert_eq!(replay[1]["type"], "tool_search_output");
