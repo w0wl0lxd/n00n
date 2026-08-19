@@ -39,5 +39,4 @@ tar -xzf "$tmp/$asset" -C "$tmp"
 
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$tmp/n00n" "$INSTALL_DIR/n00n"
-install -m 0755 "$tmp/n00n-git" "$INSTALL_DIR/n00n-git"
-echo "Installed n00n and n00n-git to ${INSTALL_DIR}"
+echo "Installed n00n to ${INSTALL_DIR}"

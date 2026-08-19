@@ -449,20 +449,23 @@ Search the web for real-time information using Firecrawl or Exa.
 
 ### `git` *(lua plugin)*
 
-Local git operations via n00n-git.
+Local git operations built into n00n.
 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ref_b` | string | no |  |
 | `path` | string | no |  |
+| `max_hunk_lines` | integer | no |  |
+| `max_file_bytes` | integer | no |  |
 | `output` | string | no |  |
-| `message` | string | no |  |
+| `message` | string | no | Commit message. Signed commits, active commit hooks, and in-progress merge or rebase states are rejected. |
+| `kinds` | array of strings | no |  |
 | `count` | integer | no |  |
 | `target` | string | no |  |
 | `command` | string | yes |  |
 | `file` | string | no |  |
-| `files` | array of strings | no |  |
+| `files` | array of strings | no | Explicit repository-relative file paths. Directories, pathspecs, conflicted indexes, sparse indexes, and split indexes are unsupported. |
 | `ref_a` | string | no |  |
 
 ### `github` *(lua plugin)*

@@ -167,6 +167,26 @@ fn exec_output_in(
     smol::block_on(async { inv.execute(&ctx).await }).output
 }
 
+#[test]
+fn bundled_git_tool_executes_status_through_native_api() {
+    let repo = tempfile::tempdir().unwrap();
+    let init = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(repo.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let (registry, _host) = builtins_host();
+    let output = exec_tool(
+        &registry,
+        "git",
+        serde_json::json!({ "command": "status", "path": repo.path() }),
+    )
+    .expect("bundled git status failed");
+
+    assert_eq!(output, "On branch main\nWorking tree clean");
+}
+
 const ECHO_PLUGIN: &str = r#"
 n00n.api.register_tool({
     name = "echo_",

@@ -4,6 +4,7 @@ pub mod agent;
 #[cfg(not(unix))]
 #[path = "agent_stub.rs"]
 pub mod agent;
+mod native;
 pub(crate) mod session_daemon;
 mod subcmd;
 mod tui;
@@ -59,6 +60,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Some(Command::Acp { model, yolo }) => {
             acp::run(model.as_deref(), yolo, cli.plugin_flags.no_jit)?;
         }
+        Some(Command::Git { action }) => native::git_command(action)?,
+        Some(Command::Smell { action }) => native::smell_command(action)?,
         Some(Command::Prompt {
             variant,
             plan,

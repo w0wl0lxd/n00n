@@ -26,6 +26,18 @@ fn os_homedir(_lua: &Lua) -> LuaResult<Option<String>> {
     Ok(n00n_storage::paths::home().and_then(|p| p.to_str().map(String::from)))
 }
 
+/// Return the path of the running n00n executable.
+///
+/// @return (string?) Executable path, or nil if it cannot be determined.
+/// @example
+/// local n00n_bin = n00n.uv.current_exe()
+#[lua_fn(guard = Env)]
+fn current_exe(_lua: &Lua) -> LuaResult<Option<String>> {
+    Ok(std::env::current_exe()
+        .ok()
+        .and_then(|path| path.to_str().map(String::from)))
+}
+
 /// Look up the environment variable {name}. Like `vim.uv.os_getenv`.
 /// Returns nil when the variable is not set.
 ///
@@ -48,6 +60,6 @@ lua_table! {
     /// local home = n00n.uv.os_homedir()
     /// ```
     "n00n.uv" => pub(crate) fn create_uv_table(perms: &PluginPermissions), DOCS [
-        cwd(perms), os_homedir(perms), os_getenv(perms),
+        cwd(perms), os_homedir(perms), current_exe(perms), os_getenv(perms),
     ]
 }
