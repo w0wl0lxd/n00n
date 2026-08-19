@@ -22,9 +22,9 @@ use tracing::{debug, info, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, CacheHealth, CacheKind, HistoryReplayReason, Message, OpenAiPromptCacheMode,
-    ProviderEvent, ProviderUsage, RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions,
-    StreamResponse, System, UsageLimit, dialect,
+    AgentError, CacheControl, CacheHealth, CacheKind, HistoryReplayReason, Message,
+    OpenAiPromptCacheMode, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, StreamResponse, System, UsageLimit, dialect,
 };
 
 use super::auth;
@@ -392,7 +392,7 @@ impl OpenAiSessionState {
         Some(StoredOpenAiResponseChain {
             response_id: self.last_response_id.clone()?,
             message_count: self.last_message_count,
-            system_hash: self.system_hash.clone(),
+            system_hash: Some(self.system_hash.clone()?),
             tools_hash: self.tools_hash.clone()?,
             messages_hash: self.messages_hash.clone()?,
             auth_scope_hash: self.auth_scope_hash.clone()?,
@@ -407,10 +407,16 @@ fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, s
 }
 
 fn system_hash(system: &System) -> String {
-    let text = system.to_string();
     let mut digest = Sha256::new();
-    digest.update(text.len().to_le_bytes());
-    digest.update(text.as_bytes());
+    for block in system.blocks() {
+        digest.update(block.text.len().to_le_bytes());
+        digest.update(block.text.as_bytes());
+        digest.update([match block.cache {
+            CacheControl::None => 0,
+            CacheControl::Ephemeral => 1,
+            CacheControl::Dynamic => 2,
+        }]);
+    }
     format!("{:x}", digest.finalize())
 }
 
@@ -3155,6 +3161,34 @@ mod tests {
         assert!(prev.is_none());
         assert_eq!(inc.len(), second.len());
         assert_eq!(state.system_hash.as_deref(), Some("new-system"));
+    }
+
+    #[test]
+    fn system_hash_preserves_block_boundaries() {
+        let combined = System::from("ab");
+        let mut split = System::new();
+        split.push_static("a");
+        split.push_static("b");
+        split.seal();
+
+        assert_eq!(combined.to_string(), split.to_string());
+        assert_ne!(system_hash(&combined), system_hash(&split));
+    }
+
+    #[test]
+    fn state_without_system_hash_is_not_persisted() {
+        let state = OpenAiSessionState {
+            last_response_id: Some("resp_1".into()),
+            last_message_count: 1,
+            system_hash: None,
+            tools_hash: Some(TOOLS_HASH.into()),
+            messages_hash: Some("messages".into()),
+            auth_scope_hash: Some(AUTH_SCOPE_HASH.into()),
+            expires_at: now_epoch().saturating_add(OPENAI_RESPONSE_CHAIN_TTL_SECONDS),
+            last_used: Instant::now(),
+        };
+
+        assert!(state.to_stored().is_none());
     }
 
     #[test]
