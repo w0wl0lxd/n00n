@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+#[cfg(test)]
+use std::path::Path;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 use color_eyre::eyre::bail;
@@ -325,7 +328,7 @@ pub enum GitAction {
     Branches { repo: PathBuf },
     /// Get blame information for a file
     Blame { repo: PathBuf, file: String },
-    /// Stage files in a repository
+    /// Stage files relative to the supplied repository directory
     Add { repo: PathBuf, files: Vec<String> },
     /// Create a commit
     Commit {
@@ -679,7 +682,7 @@ mod tests {
             cli.command,
             Some(Command::Git {
                 action: GitAction::Status { repo }
-            }) if repo.as_path() == std::path::Path::new(".")
+            }) if repo.as_path() == Path::new(".")
         ));
     }
 
@@ -697,7 +700,7 @@ mod tests {
                     kind: Some(kind),
                     top_k: 3,
                 }
-            }) if repo.as_path() == std::path::Path::new(".") && query == "todo" && kind == "todo"
+            }) if repo.as_path() == Path::new(".") && query == "todo" && kind == "todo"
         ));
     }
 

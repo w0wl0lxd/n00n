@@ -456,8 +456,11 @@ Local git operations built into n00n.
 |-----------|------|----------|-------------|
 | `ref_b` | string | no |  |
 | `path` | string | no |  |
+| `max_hunk_lines` | integer | no |  |
+| `max_file_bytes` | integer | no |  |
 | `output` | string | no |  |
 | `message` | string | no | Commit message. Signed commits, active commit hooks, and in-progress merge or rebase states are rejected. |
+| `kinds` | array of strings | no |  |
 | `count` | integer | no |  |
 | `target` | string | no |  |
 | `command` | string | yes |  |

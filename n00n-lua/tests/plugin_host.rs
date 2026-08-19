@@ -169,21 +169,22 @@ fn exec_output_in(
 
 #[test]
 fn bundled_git_tool_executes_status_through_native_api() {
+    let repo = tempfile::tempdir().unwrap();
+    let init = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(repo.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success());
     let (registry, _host) = builtins_host();
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let output = exec_tool(
         &registry,
         "git",
-        serde_json::json!({ "command": "status", "path": repo }),
+        serde_json::json!({ "command": "status", "path": repo.path() }),
     )
     .expect("bundled git status failed");
 
-    assert!(
-        output.contains("On branch")
-            || output.contains("Working tree clean")
-            || output.contains(':'),
-        "unexpected git status output: {output}"
-    );
+    assert_eq!(output, "On branch main\nWorking tree clean");
 }
 
 const ECHO_PLUGIN: &str = r#"
