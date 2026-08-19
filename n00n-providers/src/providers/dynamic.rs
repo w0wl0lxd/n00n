@@ -520,6 +520,14 @@ pub fn auth_providers() -> Vec<(&'static str, &'static str)> {
 ///
 /// Returns an `AgentError` if the provider is unknown, auth resolution fails, or the base provider cannot be created.
 pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+    create_with_openai_options(slug, timeouts, crate::OpenAiOptions::default())
+}
+
+pub(crate) fn create_with_openai_options(
+    slug: &str,
+    timeouts: super::Timeouts,
+    openai_options: crate::OpenAiOptions,
+) -> Result<Box<dyn Provider>, AgentError> {
     let meta = find_meta(slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown dynamic provider '{slug}'"),
     })?;
@@ -536,7 +544,7 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Codex => Box::new(
-            OpenAi::with_auth_options(Arc::clone(&auth), timeouts, crate::OpenAiOptions::codex())?
+            OpenAi::with_auth_options(Arc::clone(&auth), timeouts, openai_options.with_codex())?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Google => Box::new(Google::with_auth(Arc::clone(&auth), timeouts)?),

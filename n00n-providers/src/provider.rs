@@ -323,11 +323,19 @@ pub trait Provider: Send + Sync {
 /// Returns `AgentError` if the slug does not match a builtin, dynamic,
 /// or custom provider, or if provider construction fails.
 pub fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+    provider_for_slug_with_openai_options(slug, timeouts, OpenAiOptions::default())
+}
+
+fn provider_for_slug_with_openai_options(
+    slug: &str,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+) -> Result<Box<dyn Provider>, AgentError> {
     if let Ok(kind) = ProviderKind::from_str(slug) {
-        return kind.create(timeouts);
+        return kind.create_with_openai_options(timeouts, openai_options);
     }
     if dynamic::display_name(slug).is_some() {
-        dynamic::create(slug, timeouts)
+        dynamic::create_with_openai_options(slug, timeouts, openai_options)
     } else {
         crate::providers::custom::create(slug, timeouts)
     }
@@ -411,7 +419,8 @@ pub fn from_model_with_openai_options(
         debug!(provider = %model.provider, model = %model.id, "provider created");
         return Ok(provider);
     }
-    let provider = provider_for_slug(&model.provider, timeouts)?;
+    let provider =
+        provider_for_slug_with_openai_options(&model.provider, timeouts, openai_options)?;
     provider.adjust_model(model);
     debug!(provider = %model.provider, model = %model.id, "provider created");
     Ok(provider)

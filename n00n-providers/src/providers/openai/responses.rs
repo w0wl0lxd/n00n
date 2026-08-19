@@ -15,9 +15,9 @@ use crate::types::{
     ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX, ThinkingFieldConfig,
 };
 use crate::{
-    AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
-    dialect,
+    AgentError, ContentBlock, Message, OpenAiPromptCacheMode, ProviderEvent,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, Role, StopReason,
+    StreamResponse, System, TokenUsage, dialect,
 };
 
 const RESPONSES_PATH: &str = "/responses";
@@ -52,7 +52,7 @@ pub(crate) fn build_body(
         system,
         opts.message_cache_breakpoints,
         model.supports_prompt_cache_breakpoint()
-            || opts.openai_prompt_cache_mode == Some(crate::OpenAiPromptCacheMode::Explicit),
+            || opts.openai_prompt_cache_mode == Some(OpenAiPromptCacheMode::Explicit),
     );
     let has_prompt_cache_breakpoint = contains_prompt_cache_breakpoint(&input);
     let wire_tools = convert_tools(tools, model);
@@ -80,11 +80,11 @@ pub(crate) fn build_body(
     }
 
     let prompt_cache_mode = if has_prompt_cache_breakpoint {
-        Some("explicit")
+        Some(OpenAiPromptCacheMode::Explicit.as_wire())
     } else {
         opts.openai_prompt_cache_mode
-            .filter(|mode| *mode == crate::OpenAiPromptCacheMode::Implicit)
-            .map(crate::OpenAiPromptCacheMode::as_wire)
+            .filter(|mode| *mode == OpenAiPromptCacheMode::Implicit)
+            .map(OpenAiPromptCacheMode::as_wire)
     };
     if let Some(mode) = prompt_cache_mode {
         body["prompt_cache_options"] = json!({
@@ -243,7 +243,8 @@ fn convert_input_with_breakpoint_support(
 
                 let add_breakpoint = supports_breakpoint && breakpoint_indices.contains(&msg_idx);
                 if add_breakpoint && let Some(last) = content_blocks.last_mut() {
-                    last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
+                    last["prompt_cache_breakpoint"] =
+                        json!({"mode": OpenAiPromptCacheMode::Explicit.as_wire()});
                 }
 
                 if !content_blocks.is_empty() {
@@ -256,7 +257,8 @@ fn convert_input_with_breakpoint_support(
                     && input.len() > input_start
                     && let Some(last) = input.last_mut()
                 {
-                    last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
+                    last["prompt_cache_breakpoint"] =
+                        json!({"mode": OpenAiPromptCacheMode::Explicit.as_wire()});
                 }
             }
             Role::Assistant => {
@@ -2146,7 +2148,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 0,
-            openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Implicit),
+            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
             ..Default::default()
         };
         let body = build_body(
@@ -2194,7 +2196,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 1,
-            openai_prompt_cache_mode: Some(crate::OpenAiPromptCacheMode::Implicit),
+            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
             ..Default::default()
         };
         let body = build_body(
@@ -2532,7 +2534,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         assert_eq!(input[1]["content"][0]["text"], "continue");
         assert_eq!(
             input[1]["content"][0]["prompt_cache_breakpoint"],
-            json!({"mode": "explicit"})
+            json!({"mode": OpenAiPromptCacheMode::Explicit.as_wire()})
         );
     }
 
@@ -2559,7 +2561,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         assert!(input[0].get("prompt_cache_breakpoint").is_none());
         assert_eq!(
             input[1]["prompt_cache_breakpoint"],
-            json!({"mode": "explicit"})
+            json!({"mode": OpenAiPromptCacheMode::Explicit.as_wire()})
         );
     }
 

@@ -24,7 +24,7 @@ use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, CacheHealth, CacheKind, HistoryReplayReason, Message, OpenAiPromptCacheMode,
     ProviderEvent, ProviderUsage, RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions,
-    StreamResponse, System, UsageLimit, dialect,
+    Role, StreamResponse, System, UsageLimit, dialect,
 };
 
 use super::auth;
@@ -73,7 +73,11 @@ pub struct CodexCacheCapabilities {
 }
 
 impl CodexCacheCapabilities {
-    fn apply_to_request_options(&self, mut opts: RequestOptions) -> RequestOptions {
+    fn apply_to_request_options(
+        &self,
+        mut opts: RequestOptions,
+        has_breakpoint_target: bool,
+    ) -> RequestOptions {
         let requested_breakpoints = opts.message_cache_breakpoints;
         opts.message_cache_breakpoints = 0;
         opts.openai_prompt_cache_mode = None;
@@ -81,6 +85,7 @@ impl CodexCacheCapabilities {
         if self.accepts_prompt_cache_options_explicit
             && self.accepts_prompt_cache_breakpoints
             && requested_breakpoints > 0
+            && has_breakpoint_target
         {
             opts.message_cache_breakpoints = requested_breakpoints;
             opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Explicit);
@@ -1406,7 +1411,12 @@ impl OpenAi {
         // `prompt_cache_options`, so Codex keeps those fields disabled unless
         // a manual capability probe has proven this account/endpoint accepts
         // documented cache options.
-        opts = self.codex_cache_capabilities.apply_to_request_options(opts);
+        let has_breakpoint_target = messages
+            .iter()
+            .any(|message| matches!(message.role, Role::User));
+        opts = self
+            .codex_cache_capabilities
+            .apply_to_request_options(opts, has_breakpoint_target);
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
@@ -2668,11 +2678,14 @@ mod tests {
 
     #[test]
     fn codex_cache_capabilities_keep_rejected_cache_options_off_by_default() {
-        let opts = CodexCacheCapabilities::default().apply_to_request_options(RequestOptions {
-            message_cache_breakpoints: 2,
-            openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
-            ..Default::default()
-        });
+        let opts = CodexCacheCapabilities::default().apply_to_request_options(
+            RequestOptions {
+                message_cache_breakpoints: 2,
+                openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
+                ..Default::default()
+            },
+            false,
+        );
 
         assert_eq!(opts.message_cache_breakpoints, 0);
         assert_eq!(opts.openai_prompt_cache_mode, None);
@@ -2684,7 +2697,7 @@ mod tests {
             accepts_prompt_cache_options_implicit: true,
             ..Default::default()
         }
-        .apply_to_request_options(RequestOptions::default());
+        .apply_to_request_options(RequestOptions::default(), false);
 
         assert_eq!(opts.message_cache_breakpoints, 0);
         assert_eq!(
@@ -2699,10 +2712,13 @@ mod tests {
             accepts_prompt_cache_options_explicit: true,
             ..Default::default()
         }
-        .apply_to_request_options(RequestOptions {
-            message_cache_breakpoints: 3,
-            ..Default::default()
-        });
+        .apply_to_request_options(
+            RequestOptions {
+                message_cache_breakpoints: 3,
+                ..Default::default()
+            },
+            false,
+        );
 
         assert_eq!(opts.message_cache_breakpoints, 0);
         assert_eq!(opts.openai_prompt_cache_mode, None);
@@ -2715,10 +2731,13 @@ mod tests {
             accepts_prompt_cache_breakpoints: true,
             ..Default::default()
         }
-        .apply_to_request_options(RequestOptions {
-            message_cache_breakpoints: 3,
-            ..Default::default()
-        });
+        .apply_to_request_options(
+            RequestOptions {
+                message_cache_breakpoints: 3,
+                ..Default::default()
+            },
+            true,
+        );
 
         assert_eq!(opts.message_cache_breakpoints, 3);
         assert_eq!(
@@ -2728,16 +2747,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_cache_capabilities_fall_back_to_implicit_without_breakpoints() {
+    fn codex_cache_capabilities_fall_back_to_implicit_without_breakpoint_target() {
         let opts = CodexCacheCapabilities {
             accepts_prompt_cache_options_implicit: true,
             accepts_prompt_cache_options_explicit: true,
             accepts_prompt_cache_breakpoints: true,
         }
-        .apply_to_request_options(RequestOptions {
-            message_cache_breakpoints: 0,
-            ..Default::default()
-        });
+        .apply_to_request_options(
+            RequestOptions {
+                message_cache_breakpoints: 3,
+                ..Default::default()
+            },
+            false,
+        );
 
         assert_eq!(opts.message_cache_breakpoints, 0);
         assert_eq!(
