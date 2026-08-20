@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787185424416,
+  "lastUpdate": 1787196180783,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20727,6 +20727,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 112294,
             "range": "± 3324",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2dd42fc65322e23043812b726789b42c5081a837",
+          "message": "fix(docs): wrap Lua API markdown in raw for Zola 0.23 and handle zstd sessions (#403)\n\n* fix(docs): wrap Lua API markdown in raw for Zola 0.23 and handle zstd sessions in token analysis\n\nWrap site_page output in {% raw %}…{% endraw %} so Zola 0.23 does not parse\nheading ids \\`{#id}\\` as Tera comments or \\`{{\"\",\"\"}}\\` examples as\ntemplate expressions. This fixes \\`zola build\\` failure on main after the\nmise \\`zola = latest\\` bump from 0.19.2 to 0.23.3.\n\nUpdate scripts/tool_token_analysis.py to read current\n~/.local/state/n00n/sessions/*.jsonl zstd frames in addition to legacy\n~/.n00n/sessions/*.json, matching n00n-storage/src/sessions.rs and\nscripts/extract_n00n_sessions.py. Fix post-0.6.1 Docs workflow failure on\nmain (32316143971) and stale token analysis.\n\n* fix(scripts): handle token usage and batch outputs for new session format\n\nAddress PR #403 review comments:\n- Collect out records into tool_outputs and last meta token_usage so\n  aggregate usage and batch breakdown no longer show as zero for\n  zstd JSONL sessions.\n- Validate rec/d shapes (skip non-dict, malformed content) and remove\n  dead duplicate content check.\n- Distinguish missing zstd binary from decompression failure, warn\n  clearly, and count jsonl_seen for better diagnostics.\n- Update module docstring and No sessions error to list both\n  SESSION_DIRS.\n\n* fix: address PR 403 review -- zstd partial frames and site wrapper placement\n\n- Return recovered stdout even when zstd exits non-zero due to trailing\n  partial frame (normal per sessions.rs) and warn with recovered size;\n  previously the session was dropped entirely, understating token usage.\n- Cache missing zstd warning to avoid 48 duplicate lines.\n- Remove unused SESSION_DIR alias (SESSION_DIRS covers both paths).\n- Move {% raw %} wrapper from n00n-lua/src/docs_render.rs (library) to\n  n00n-docgen/src/gen_lua_api.rs (site layer) so Tera markup stays with\n  front matter; output remains byte-identical and passes Zola 0.19.2/0.23.3.\n\n* fix(scripts): move subprocess import and include subagent messages\n\n- Move subprocess import to top per repo style (was inside function).\n- Include sub_msg records in addition to msg so subagent tool calls are\n  counted (previously only msg, skewing distribution for team sessions).\n- Combine msg/sub_msg branches per SIM114.\n- Warn per-file when decompression yields no recovered content (was\n  silent unless all sessions failed).\n- Addresses remaining PR 403 review infos (batch legacy, sub_msg, etc).",
+          "timestamp": "2026-08-19T23:07:52-04:00",
+          "tree_id": "bd641b31ab812547e41f3c29110763881c5ff6aa",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/2dd42fc65322e23043812b726789b42c5081a837"
+        },
+        "date": 1787196178395,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6690119,
+            "range": "± 249322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2339725,
+            "range": "± 4073",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2337453,
+            "range": "± 3343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8179663,
+            "range": "± 18229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4295412,
+            "range": "± 28832",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4289916,
+            "range": "± 9234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 580028,
+            "range": "± 5234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191667,
+            "range": "± 363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191432,
+            "range": "± 2474",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044324,
+            "range": "± 8585",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582258,
+            "range": "± 2499",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581742,
+            "range": "± 910",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 78243,
+            "range": "± 5948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 144236,
+            "range": "± 22611",
             "unit": "ns/iter"
           }
         ]
