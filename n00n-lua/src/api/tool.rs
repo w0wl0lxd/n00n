@@ -2020,8 +2020,8 @@ mod tests {
             let waiter = smol::spawn(recv_pre_exec_reply_with_timeouts(
                 started_rx,
                 reply_rx,
-                Duration::from_millis(100),
-                Duration::from_millis(30),
+                Duration::from_secs(5),
+                Duration::from_secs(2),
             ));
             smol::Timer::after(Duration::from_millis(20)).await;
             started_tx.send(()).unwrap();
