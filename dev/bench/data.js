@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787203986477,
+  "lastUpdate": 1787206486868,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -21051,6 +21051,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 173995,
             "range": "± 14031",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aa431ebaaec7335989abd7d8971ae524be1bde9a",
+          "message": "test(git): add unit tests for branches (#405)\n\n* test(git): add unit tests for `branches` function\n\nAdd test coverage for `branches()` in `n00n-git/src/git.rs`:\n- Single branch listing and current branch marking\n- Multiple branches listing, tracking current branch across checkouts\n- Detached HEAD state handling\n- Error response when path is not a git repository\n\n* test(git): add unit tests for `branches` function\n\nAdd test coverage for `branches()` in `n00n-git/src/git.rs`:\n- Single branch listing and current branch marking\n- Multiple branches listing, tracking current branch across checkouts\n- Detached HEAD state handling\n- Error response when path is not a git repository\n- Add changelog fragment in `changelog.d/test-branches.docs.md`\n\n* test(git): add unit tests for `branches` function\n\nAdd test coverage for `branches()` in `n00n-git/src/git.rs`:\n- Single branch listing and current branch marking\n- Multiple branches listing, tracking current branch across checkouts\n- Detached HEAD state handling\n- Error response when path is not a git repository\n- Add changelog fragment in `changelog.d/test-branches.docs.md`\n\n* style: format n00n-git branches test\n\n* style(git): remove trivial comment per review",
+          "timestamp": "2026-08-20T01:58:08-04:00",
+          "tree_id": "f4389c57535da080f682fe64cc4d28d8670e9f1d",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/aa431ebaaec7335989abd7d8971ae524be1bde9a"
+        },
+        "date": 1787206485616,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6684714,
+            "range": "± 27395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2307132,
+            "range": "± 9466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2226435,
+            "range": "± 36366",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8119388,
+            "range": "± 35043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4284255,
+            "range": "± 16412",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4275278,
+            "range": "± 23847",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582597,
+            "range": "± 1198",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192365,
+            "range": "± 527",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192226,
+            "range": "± 1038",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1034474,
+            "range": "± 34272",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 586240,
+            "range": "± 2984",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584299,
+            "range": "± 1415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 63281,
+            "range": "± 6838",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 172311,
+            "range": "± 10596",
             "unit": "ns/iter"
           }
         ]
