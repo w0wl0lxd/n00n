@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787231592755,
+  "lastUpdate": 1787270334707,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -22131,6 +22131,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 167753,
             "range": "± 12928",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff16da293867db1698b3b39b930b2fef40ac5f48",
+          "message": "chore(rust): advance the pin to nightly-2026-08-20 (#430)\n\n* chore(rust): advance the pin to nightly-2026-08-20\n\n`rust-toolchain.toml` moves from `nightly-2026-08-14` to `nightly-2026-08-20`,\nwhich is rustc 1.100.0-nightly (f7d782a3b 2026-08-19).\n\nTwo things have to move with it or the bump is incomplete.\n\n`flake.lock`'s `rust-overlay` was pinned at 2026-08-19, one day behind the new\nchannel. `fromRustupToolchainFile` resolves the channel out of the overlay's\nbundled manifests, so a channel newer than the pin cannot be built: the dev\nshell failed with `error: Nightly 2026-08-20 is not available`. Note that\n`nix eval .#devShells.x86_64-linux.default.name` exits 0 in that state — it does\nnot force the toolchain derivation — so the check that actually proves the\ncoupling is `nix develop --command rustc --version`.\n\nThe release, docs, rust and benchmarks workflows name the channel inline in five\nplaces rather than reading `rust-toolchain.toml`, so they would have kept\ncompiling on the old toolchain while the repo declared the new one.\n\n* chore(changelog): name the fragment for its PR",
+          "timestamp": "2026-08-20T19:45:18-04:00",
+          "tree_id": "a4df1f721af1114270c40b164b88e0daba65dd1a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/ff16da293867db1698b3b39b930b2fef40ac5f48"
+        },
+        "date": 1787270333678,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5150303,
+            "range": "± 36894",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1892227,
+            "range": "± 20229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1891596,
+            "range": "± 5426",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 6046772,
+            "range": "± 8534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3014434,
+            "range": "± 7960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2969492,
+            "range": "± 74465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 434377,
+            "range": "± 1868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130194,
+            "range": "± 137",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130205,
+            "range": "± 214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 832502,
+            "range": "± 12828",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 474745,
+            "range": "± 4557",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 475041,
+            "range": "± 4379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 60130,
+            "range": "± 906",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 111191,
+            "range": "± 12691",
             "unit": "ns/iter"
           }
         ]
