@@ -4151,6 +4151,7 @@ dependencies = [
  "async-process",
  "base64",
  "bitflags 2.13.1",
+ "criterion",
  "event-listener",
  "flume",
  "futures-lite",
