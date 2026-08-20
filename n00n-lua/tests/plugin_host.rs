@@ -15,8 +15,8 @@ use n00n_agent::AgentEvent;
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
-    DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry, ToolSource,
-    timeout_annotation,
+    Deadline, DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
+    ToolSource, timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginError, PluginHost, WARM_TOOL_CAP};
@@ -5420,6 +5420,27 @@ impl Provider for ScriptedSessionProvider {
     }
 }
 
+struct PendingSessionProvider;
+
+impl Provider for PendingSessionProvider {
+    fn stream_message<'a>(
+        &'a self,
+        _: &'a Model,
+        _: &'a [Message],
+        _: &'a System,
+        _: &'a serde_json::Value,
+        _: &'a flume::Sender<ProviderEvent>,
+        _: RequestOptions,
+        _: Option<&'a SessionRef>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
 fn session_response(
     content: Vec<ContentBlock>,
     usage: TokenUsage,
@@ -5546,6 +5567,67 @@ fn session_prompt_returns_charged_usage_with_later_error() {
     assert_eq!(output["result"]["cost"], usage.cost(&model.pricing, false));
 }
 
+#[test]
+fn session_cancel_interrupts_inflight_prompt_without_waiting_for_session_lock() {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let source = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_cancel_probe",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, session_err = n00n.agent.session(ctx, {{}})
+                if session_err then return session_err end
+                local results = n00n.async.gather({{
+                    function()
+                        local _, prompt_err = sess:prompt("wait for cancellation")
+                        return prompt_err or "prompt was not cancelled"
+                    end,
+                    function()
+                        while true do
+                            local progress, progress_err = sess:get_progress()
+                            if progress_err then error(progress_err, 0) end
+                            if progress.turn_id > 0 then break end
+                        end
+                        sess:cancel()
+                        return "cancel requested"
+                    end,
+                }})
+                sess:close()
+                if not results[1].ok then error(results[1].err, 0) end
+                if not results[2].ok then error(results[2].err, 0) end
+                return results[2].value .. "|" .. results[1].value
+            end
+        }})"#,
+    );
+    host.load_source("session_cancel_plugin", &source).unwrap();
+
+    let entry = registry.get("session_cancel_probe").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, _event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        None,
+    );
+    ctx.provider = Arc::new(PendingSessionProvider);
+    ctx.registry = Arc::clone(&registry);
+    ctx.deadline = Deadline::after(Duration::from_secs(5));
+
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("session cancel probe failed")
+        .as_text();
+
+    assert!(output.starts_with("cancel requested|"), "got: {output}");
+    assert!(
+        !output.contains("prompt was not cancelled"),
+        "got: {output}"
+    );
+}
 #[test]
 fn session_close_idempotent_and_prompt_after_close_errors() {
     let reg = fresh_registry();
