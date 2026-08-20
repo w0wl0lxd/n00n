@@ -83,8 +83,9 @@ local function dispatch(input)
       "  Author: " .. ((result.user and result.user.login) or "unknown"),
       "  URL: " .. (result.html_url or "unknown"),
     }
-    if result.body then
-      table.insert(lines, "  Body: [untrusted content from GitHub API] " .. result.body)
+    local body = result.body
+    if type(body) == "string" then
+      table.insert(lines, "  Body: [untrusted content from GitHub API] " .. body)
     end
     return { llm_output = table.concat(lines, "\n") }
   end
@@ -104,8 +105,9 @@ local function dispatch(input)
       "  Base: " .. ((result.base and result.base.ref) or "unknown"),
       "  URL: " .. (result.html_url or "unknown"),
     }
-    if result.body then
-      table.insert(lines, "  Body: [untrusted content from GitHub API] " .. result.body)
+    local body = result.body
+    if type(body) == "string" then
+      table.insert(lines, "  Body: [untrusted content from GitHub API] " .. body)
     end
     return { llm_output = table.concat(lines, "\n") }
   end
