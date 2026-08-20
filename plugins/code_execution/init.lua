@@ -99,9 +99,7 @@ local schema = {
     },
     timeout = {
       type = "integer",
-      minimum = 5,
-      maximum = 300,
-      description = "Script timeout seconds (default 30)",
+      description = "Script timeout seconds (5-300, default 30)",
     },
   },
 }

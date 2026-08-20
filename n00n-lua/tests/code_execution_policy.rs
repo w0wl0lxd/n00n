@@ -25,6 +25,7 @@ const INTERP_ECHO_SIG: &str =
     "- interp_echo(msg: str, count?: int, flag?: bool, items?: list, raw?: any)";
 const WF_TASK_SIG: &str = "- wf_task(prompt: str, model_tier?: str)";
 const SUB_TOOL_SIG: &str = "- sub_tool()";
+const INVALID_TIMEOUT_ERROR: &str = "error: timeout must be between 5 and 300 seconds";
 
 fn fixture_plugin() -> String {
     format!(
@@ -135,7 +136,7 @@ fn invalid_timeout_returns_structured_tool_error() {
 
     assert_eq!(
         result.output.expect_err("invalid timeout should fail"),
-        "error: timeout must be between 5 and 300 seconds"
+        INVALID_TIMEOUT_ERROR
     );
 }
 
