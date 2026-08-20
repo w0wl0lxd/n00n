@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787218212678,
+  "lastUpdate": 1787221760082,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -21591,6 +21591,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 164058,
             "range": "± 23906",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f26bde5c6a526db8f0e32ee85c34cd28a7f2bb9d",
+          "message": "test(n00n-lua): add unit tests for plugin_options (#413)\n\n* test(n00n-lua): add unit tests for plugin_options\n\nAdd test coverage for `PluginHost::plugin_options()` when no option specs are registered.\n\n* test(n00n-lua): add unit tests for plugin_options\n\nAdd test coverage for `PluginHost::plugin_options()` when no option specs are registered.\n\n* test(n00n-lua): add unit tests for plugin_options\n\nAdd test coverage for `PluginHost::plugin_options()` when no option specs are registered.",
+          "timestamp": "2026-08-20T06:13:58-04:00",
+          "tree_id": "962a250bb64edb92c2474e228416bbbbd4c63d53",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f26bde5c6a526db8f0e32ee85c34cd28a7f2bb9d"
+        },
+        "date": 1787221759265,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6470233,
+            "range": "± 247054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2436072,
+            "range": "± 72063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2443679,
+            "range": "± 11920",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7695759,
+            "range": "± 53616",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3883099,
+            "range": "± 12054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3840294,
+            "range": "± 20238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554536,
+            "range": "± 1040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168159,
+            "range": "± 476",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 168115,
+            "range": "± 1317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1072553,
+            "range": "± 11244",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 620748,
+            "range": "± 8487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 618795,
+            "range": "± 6750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 47992,
+            "range": "± 2140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 145500,
+            "range": "± 15069",
             "unit": "ns/iter"
           }
         ]
