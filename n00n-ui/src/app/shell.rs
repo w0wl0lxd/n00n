@@ -19,6 +19,8 @@ const SHELL_TIMEOUT: Duration = Duration::from_mins(5);
 const OUTPUT_QUEUE_CAPACITY: usize = 64;
 const OUTPUT_READ_CHUNK_SIZE: usize = 8 * 1024;
 const MAX_UTF8_SEQUENCE_BYTES: usize = 4;
+#[cfg(unix)]
+const SHELL_NICE_ADJUSTMENT: libc::c_int = 10;
 
 struct OutputLimits {
     lines: usize,
@@ -221,8 +223,12 @@ async fn run_command(
 
     #[cfg(unix)]
     unsafe {
+        // SAFETY: the closure only calls async-signal-safe libc functions before exec.
         std_cmd.pre_exec(|| {
             libc::setsid();
+            if libc::setpriority(libc::PRIO_PROCESS, 0, SHELL_NICE_ADJUSTMENT) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
@@ -250,6 +256,7 @@ async fn run_command(
     let mut pending_newline = false;
     let mut truncated = false;
     let mut last_flush = Instant::now();
+    let mut last_flushed_len = 0;
     let deadline = Instant::now() + SHELL_TIMEOUT;
 
     macro_rules! race_deadline {
@@ -296,8 +303,9 @@ async fn run_command(
             }
         }
 
-        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && !output.is_empty() {
+        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && output.len() != last_flushed_len {
             flush_output(tx, id, &output_text(&output));
+            last_flushed_len = output.len();
             last_flush = Instant::now();
         }
     }
@@ -307,7 +315,9 @@ async fn run_command(
     match status {
         Ok(status) => {
             let mut output = output_text(&output);
-            flush_output(tx, id, &output);
+            if output.len() != last_flushed_len {
+                flush_output(tx, id, &output);
+            }
             if truncated {
                 output.push_str("\n[truncated]");
             }
@@ -545,6 +555,7 @@ mod tests {
                 }
                 _ => panic!("expected output before completion"),
             }
+            assert!(rx.try_recv().is_err());
         });
     }
 }

@@ -340,6 +340,7 @@ impl StorageWriter {
     }
 
     /// Deletes a session on the writer thread after superseded commands have
+    #[cfg(test)]
     pub(crate) fn persist_and_wait(
         &self,
         session: Box<AppSession>,

@@ -797,15 +797,29 @@ impl EventHandle {
         identity: &SessionIdentity,
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, PluginError> {
+        smol::block_on(self.capture_state_async(identity, revision))
+    }
+
+    /// Captures host-owned plugin state without blocking the calling thread.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable or capture validation fails.
+    pub async fn capture_state_async(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+    ) -> Result<StoredSessionStateSnapshot, PluginError> {
         let (reply, recv) = flume::bounded(1);
         self.tx
-            .send(Request::CaptureState {
+            .send_async(Request::CaptureState {
                 identity: PluginStateIdentity::from(identity),
                 revision,
                 reply,
             })
+            .await
             .map_err(|_| PluginError::HostDead)?;
-        recv.recv()
+        recv.recv_async()
+            .await
             .map_err(|_| PluginError::HostDead)?
             .map_err(|message| PluginError::State { message })
     }

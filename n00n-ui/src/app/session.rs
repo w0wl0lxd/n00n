@@ -1,3 +1,5 @@
+#[cfg(test)]
+use n00n_storage::sessions::SessionError;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -7,17 +9,18 @@ use std::time::{Duration, Instant};
 
 use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, transcript_to_display};
 use crate::components::DisplayRole;
+#[cfg(test)]
+use crate::components::Status;
 use crate::components::rewind_picker::RewindEntry;
-use crate::components::{Action, LoadedSession, Status};
+use crate::components::{Action, LoadedSession};
 use n00n_agent::tools::SessionIdentity;
 use n00n_agent::{AgentInput, AgentMode, McpPromptRef, ToolOutput};
 use n00n_providers::{Message, Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
-    CompactionStateError, SESSIONS_DIR, SessionError, StoredDelivery, StoredDirectTool,
-    StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage,
-    StoredSessionLifecycle, StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
-    TranscriptEntry,
+    CompactionStateError, SESSIONS_DIR, StoredDelivery, StoredDirectTool, StoredImageMediaType,
+    StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
+    StoredSessionStateSnapshot, StoredSubagent, StoredThinking, TranscriptEntry,
 };
 
 use crate::AppSession;
@@ -233,6 +236,7 @@ impl App {
     pub(crate) fn has_content(&self) -> bool {
         session_has_content(&self.state.session)
     }
+    #[cfg(test)]
     pub(crate) fn save_session(&mut self) {
         if self.plugin_state_capture_safe() {
             self.save_session_with_plugin_state_capture();
@@ -241,6 +245,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn save_session_with_plugin_state_capture(&mut self) {
         let snapshot = self.session_snapshot_with_plugin_state();
         self.save_snapshot(snapshot);
@@ -287,6 +292,7 @@ impl App {
             .is_none_or(|flushed| flushed.elapsed() >= SAVE_COALESCE_INTERVAL)
     }
 
+    #[cfg(test)]
     fn plugin_state_capture_safe(&self) -> bool {
         self.status != Status::Streaming && !self.chats.iter().any(Chat::is_working)
     }
@@ -324,6 +330,7 @@ impl App {
         self.state.session.evict_retained(&eviction);
     }
 
+    #[cfg(test)]
     pub(crate) fn checkpoint_session(&mut self, timeout: Duration) -> Result<(), SessionError> {
         self.pending_save = false;
         self.last_save_flush = Some(Instant::now());
@@ -352,6 +359,7 @@ impl App {
         self.state.session.clone()
     }
 
+    #[cfg(test)]
     fn session_snapshot_with_plugin_state(&mut self) -> AppSession {
         let mut snapshot = self.session_snapshot();
         self.capture_plugin_state();
@@ -363,9 +371,6 @@ impl App {
     }
 
     pub(crate) fn fire_session_focus_autocmd(&mut self) {
-        if self.plugin_state_capture_safe() {
-            self.capture_plugin_state();
-        }
         let state_snapshot = match self.state.session.meta.state_snapshot.as_ref() {
             Some(snapshot) => match serde_json::to_value(snapshot) {
                 Ok(value) => value,
@@ -408,6 +413,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     fn capture_plugin_state(&mut self) {
         if self.main_chat().has_pending_compaction() {
             return;
@@ -736,7 +742,7 @@ impl App {
     }
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
-        self.save_session();
+        self.save_session_without_plugin_state_capture();
         let previous_id = self.state.session.id;
         self.drop_plugin_state(previous_id);
         self.reset_ui_chrome();
@@ -754,7 +760,7 @@ impl App {
     }
 
     pub(super) fn open_rewind_picker(&mut self) -> Vec<Action> {
-        self.save_session();
+        self.save_session_without_plugin_state_capture();
         match self.rewind_picker.open(&self.state.session.messages) {
             Ok(()) => vec![],
             Err(msg) => {
@@ -855,7 +861,7 @@ impl App {
                 return vec![];
             }
         };
-        self.save_session();
+        self.save_session_without_plugin_state_capture();
         session.meta.revision = session.meta.revision.max(self.state.session.meta.revision);
         let loaded = self.apply_loaded_session(session, &self.state.model.clone());
         vec![Action::LoadSession(Box::new(loaded))]

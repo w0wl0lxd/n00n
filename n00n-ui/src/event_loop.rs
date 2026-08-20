@@ -381,17 +381,16 @@ fn capture_state_at_revision(
     Ok(snapshot)
 }
 
-fn prepare_compaction_checkpoint(
-    handle: Option<&EventHandle>,
+fn apply_compaction_checkpoint(
     session: &mut AppSession,
     revision: u64,
+    snapshot: StoredSessionStateSnapshot,
 ) -> std::result::Result<(), String> {
     let next_session_revision = session
         .meta
         .revision
         .checked_add(1)
         .ok_or_else(|| "session revision exhausted".to_owned())?;
-    let snapshot = capture_state_at_revision(handle, session, revision)?;
     match session.meta.checkpoint_compaction_state(snapshot.clone()) {
         Ok(()) => {}
         Err(
@@ -408,6 +407,39 @@ fn prepare_compaction_checkpoint(
     session.meta.revision = next_session_revision;
     session.updated_at = n00n_storage::now_epoch();
     Ok(())
+}
+
+#[cfg(test)]
+fn prepare_compaction_checkpoint(
+    handle: Option<&EventHandle>,
+    session: &mut AppSession,
+    revision: u64,
+) -> std::result::Result<(), String> {
+    let snapshot = capture_state_at_revision(handle, session, revision)?;
+    apply_compaction_checkpoint(session, revision, snapshot)
+}
+
+async fn prepare_compaction_checkpoint_async(
+    handle: Option<&EventHandle>,
+    session: &mut AppSession,
+    revision: u64,
+) -> std::result::Result<(), String> {
+    let snapshot = match handle {
+        Some(handle) => {
+            let identity = session_identity(session).map_err(|error| error.to_string())?;
+            handle
+                .capture_state_async(&identity, revision)
+                .await
+                .map_err(|error| error.to_string())?
+        }
+        None => capture_state_at_revision(None, session, revision)?,
+    };
+    if snapshot.state_revision() != Some(revision) {
+        return Err(format!(
+            "captured plugin state revision does not match compaction revision {revision}"
+        ));
+    }
+    apply_compaction_checkpoint(session, revision, snapshot)
 }
 
 fn merge_compaction_metadata(
@@ -434,32 +466,6 @@ fn merge_compaction_metadata(
     }
     target.meta.revision = target.meta.revision.max(checkpoint.meta.revision);
     target.updated_at = target.updated_at.max(checkpoint.updated_at);
-    Ok(())
-}
-
-fn capture_session_plugin_state(
-    handle: &EventHandle,
-    session: &mut AppSession,
-    revision: u64,
-) -> std::result::Result<(), String> {
-    let identity = session_identity(session).map_err(|error| error.to_string())?;
-    let snapshot = handle
-        .capture_state(&identity, revision)
-        .map_err(|error| error.to_string())?;
-    let captured_revision = snapshot
-        .state_revision()
-        .ok_or_else(|| "captured plugin state has no revision".to_owned())?;
-    if captured_revision != revision {
-        return Err(format!(
-            "captured plugin state revision {captured_revision} does not match requested revision {revision}"
-        ));
-    }
-    session.meta.revision = session
-        .meta
-        .revision
-        .checked_add(1)
-        .ok_or_else(|| "session revision exhausted".to_owned())?;
-    session.meta.state_snapshot = Some(snapshot);
     Ok(())
 }
 
@@ -569,6 +575,7 @@ struct PreparedCompaction {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompactionPersistStage {
     Ready,
+    Capturing,
     PersistingRoot,
     RootDurable,
     PersistingSession,
@@ -771,8 +778,14 @@ pub(crate) struct EventLoop<'t> {
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     submission_persist_tx: flume::Sender<SubmissionPersistence>,
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
+    compaction_capture_tx: flume::Sender<CompactionCaptureCompletion>,
+    compaction_capture_rx: flume::Receiver<CompactionCaptureCompletion>,
     compaction_persist_tx: flume::Sender<CompactionPersistence>,
     compaction_persist_rx: flume::Receiver<CompactionPersistence>,
+    state_capture_tx: flume::Sender<StateCaptureCompletion>,
+    state_capture_rx: flume::Receiver<StateCaptureCompletion>,
+    pending_state_captures: HashSet<n00nId>,
+    deferred_state_captures: HashSet<n00nId>,
     post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     startup_login_slot: Option<Arc<ModelSlot>>,
@@ -793,12 +806,42 @@ struct SubmissionPersistence {
     result: Result<(), SessionError>,
 }
 
+struct CompactionCaptureCompletion {
+    session_id: n00nId,
+    run_id: u64,
+    revision: u64,
+    result: std::result::Result<PreparedCompaction, String>,
+}
+
 struct CompactionPersistence {
     session_id: n00nId,
     run_id: u64,
     revision: u64,
     stage: CompactionPersistStage,
     result: Result<(), SessionError>,
+}
+
+struct CapturedState {
+    revision: u64,
+    result: std::result::Result<StoredSessionStateSnapshot, String>,
+}
+
+struct StateCaptureCompletion {
+    session_id: n00nId,
+    session: CapturedState,
+    root: Option<(n00nId, CapturedState)>,
+}
+fn begin_state_capture(
+    pending: &mut HashSet<n00nId>,
+    deferred: &mut HashSet<n00nId>,
+    session_id: n00nId,
+) -> bool {
+    if pending.insert(session_id) {
+        true
+    } else {
+        deferred.insert(session_id);
+        false
+    }
 }
 
 enum Wake {
@@ -808,7 +851,9 @@ enum Wake {
     Agent(usize, Box<n00n_agent::Envelope>),
     Shell(usize, ShellEvent),
     SubmissionPersisted(SubmissionPersistence),
+    CompactionCaptured(Box<CompactionCaptureCompletion>),
     CompactionPersisted(CompactionPersistence),
+    StateCaptured(StateCaptureCompletion),
     Warn(String),
 }
 
@@ -1197,7 +1242,9 @@ impl<'t> EventLoop<'t> {
         app.fire_session_focus_autocmd();
 
         let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
+        let (compaction_capture_tx, compaction_capture_rx) = flume::unbounded();
         let (compaction_persist_tx, compaction_persist_rx) = flume::unbounded();
+        let (state_capture_tx, state_capture_rx) = flume::unbounded();
         Ok(Self {
             terminal,
             sessions: runtimes,
@@ -1211,8 +1258,14 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             submission_persist_tx,
             submission_persist_rx,
+            compaction_capture_tx,
+            compaction_capture_rx,
             compaction_persist_tx,
             compaction_persist_rx,
+            state_capture_tx,
+            state_capture_rx,
+            pending_state_captures: HashSet::new(),
+            deferred_state_captures: HashSet::new(),
             post_draw_submissions: Vec::new(),
             last_save: Instant::now(),
             startup_login_slot,
@@ -1275,11 +1328,10 @@ impl<'t> EventLoop<'t> {
                 self.after_terminal_draw();
             }
 
-            if let Some(i) = self
-                .sessions
-                .iter()
-                .position(|rt| rt.app.exit_request != ExitRequest::None)
-            {
+            if let Some(i) = self.sessions.iter().position(|rt| {
+                rt.app.exit_request != ExitRequest::None
+                    && !self.pending_state_captures.contains(&rt.id())
+            }) {
                 // A backgrounded session can finish an `exit_on_done` turn;
                 // focus it so shutdown reports its exit code and id.
                 self.focused = i;
@@ -1343,8 +1395,14 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.submission_persist_rx, |res| {
             res.ok().map(Wake::SubmissionPersisted)
         });
+        sel = sel.recv(&self.compaction_capture_rx, |res| {
+            res.ok().map(Box::new).map(Wake::CompactionCaptured)
+        });
         sel = sel.recv(&self.compaction_persist_rx, |res| {
             res.ok().map(Wake::CompactionPersisted)
+        });
+        sel = sel.recv(&self.state_capture_rx, |res| {
+            res.ok().map(Wake::StateCaptured)
         });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
@@ -1376,8 +1434,14 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.submission_persist_rx, |res| {
             res.ok().map(Wake::SubmissionPersisted)
         });
+        sel = sel.recv(&self.compaction_capture_rx, |res| {
+            res.ok().map(Box::new).map(Wake::CompactionCaptured)
+        });
         sel = sel.recv(&self.compaction_persist_rx, |res| {
             res.ok().map(Wake::CompactionPersisted)
+        });
+        sel = sel.recv(&self.state_capture_rx, |res| {
+            res.ok().map(Wake::StateCaptured)
         });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
@@ -1401,7 +1465,9 @@ impl<'t> EventLoop<'t> {
             Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
             Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
             Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
+            Wake::CompactionCaptured(completion) => self.handle_compaction_captured(*completion),
             Wake::CompactionPersisted(completion) => self.handle_compaction_persisted(completion),
+            Wake::StateCaptured(completion) => self.handle_state_captured(completion),
             Wake::Warn(warning) => self.focused_app().flash(warning),
         }
         Ok(())
@@ -1451,7 +1517,9 @@ impl<'t> EventLoop<'t> {
                 if let Err(error) = self.lineage.set_execution_active(id, false) {
                     warn!(session_id = %id, error = %error, "failed to release drained session activity");
                 }
-                self.sessions[idx].app.save_session();
+                self.sessions[idx]
+                    .app
+                    .save_session_without_plugin_state_capture();
             }
             return;
         }
@@ -1543,12 +1611,6 @@ impl<'t> EventLoop<'t> {
                 | n00n_agent::AgentEvent::AutoCompactFailed { .. }
                 | n00n_agent::AgentEvent::CompactionDone { .. }
         );
-        if capture
-            && self.sessions[idx].pending_compactions.is_empty()
-            && let Err(error) = self.capture_plugin_state(idx)
-        {
-            warn!(session_id = %self.sessions[idx].id(), error = %error, "failed to capture plugin session state");
-        }
         let terminal = matches!(
             lifecycle,
             Some(StoredSessionLifecycle::Succeeded | StoredSessionLifecycle::Failed)
@@ -1565,32 +1627,24 @@ impl<'t> EventLoop<'t> {
                     .meta
                     .queued_direct_tools
                     .clear();
-                if self.sessions[idx].pending_compactions.is_empty()
-                    && let Err(error) = self.sessions[idx]
-                        .app
-                        .checkpoint_session(TERMINAL_CHECKPOINT_TIMEOUT)
-                {
-                    warn!(session_id = %self.sessions[idx].id(), %error, "failed to persist terminal session checkpoint");
-                }
             }
         }
         self.dispatch(idx, actions);
+        if capture && self.sessions[idx].pending_compactions.is_empty() {
+            self.schedule_plugin_state_capture(idx);
+        }
     }
 
-    fn prepare_compaction(
+    fn compaction_snapshots(
         &mut self,
         idx: usize,
-        revision: u64,
-    ) -> std::result::Result<PreparedCompaction, String> {
-        let handle = self.ctx.lua_event_handle.as_ref();
-        let mut session = self.sessions[idx].app.session_snapshot();
-        prepare_compaction_checkpoint(handle, &mut session, revision)?;
-
+    ) -> std::result::Result<(AppSession, Option<AppSession>), String> {
+        let session = self.sessions[idx].app.session_snapshot();
         let root_id = persisted_root_id(&session);
         let root = if root_id == session.id {
             None
         } else {
-            let mut root = if let Some(root_idx) = self.position(root_id) {
+            let root = if let Some(root_idx) = self.position(root_id) {
                 self.sessions[root_idx].app.session_snapshot()
             } else if let Some(root) = self
                 .ctx
@@ -1608,14 +1662,9 @@ impl<'t> EventLoop<'t> {
                 )
                 .map_err(|error| error.to_string())?
             };
-            prepare_compaction_checkpoint(handle, &mut root, revision)?;
             Some(root)
         };
-        Ok(PreparedCompaction {
-            revision,
-            session,
-            root,
-        })
+        Ok((session, root))
     }
 
     fn apply_compaction_metadata(
@@ -1645,19 +1694,54 @@ impl<'t> EventLoop<'t> {
         };
         if matches!(
             pending.stage,
-            CompactionPersistStage::PersistingRoot | CompactionPersistStage::PersistingSession
+            CompactionPersistStage::Capturing
+                | CompactionPersistStage::PersistingRoot
+                | CompactionPersistStage::PersistingSession
         ) {
             self.sessions[idx].pending_compactions.push_front(pending);
             return;
         }
         if pending.prepared.is_none() {
-            match self.prepare_compaction(idx, pending.revision) {
-                Ok(prepared) => pending.prepared = Some(prepared),
+            let (mut session, mut root) = match self.compaction_snapshots(idx) {
+                Ok(snapshots) => snapshots,
                 Err(error) => {
                     self.handle_compaction_failure(idx, pending, &error);
                     return;
                 }
-            }
+            };
+            let session_id = self.sessions[idx].id();
+            let run_id = pending.ack.run_id;
+            let revision = pending.revision;
+            pending.stage = CompactionPersistStage::Capturing;
+            self.sessions[idx].pending_compactions.push_front(pending);
+            let handle = self.ctx.lua_event_handle.clone();
+            let completion_tx = self.compaction_capture_tx.clone();
+            smol::spawn(async move {
+                let result = async {
+                    prepare_compaction_checkpoint_async(handle.as_ref(), &mut session, revision)
+                        .await?;
+                    if let Some(root) = &mut root {
+                        prepare_compaction_checkpoint_async(handle.as_ref(), root, revision)
+                            .await?;
+                    }
+                    Ok(PreparedCompaction {
+                        revision,
+                        session,
+                        root,
+                    })
+                }
+                .await;
+                let _ = completion_tx
+                    .send_async(CompactionCaptureCompletion {
+                        session_id,
+                        run_id,
+                        revision,
+                        result,
+                    })
+                    .await;
+            })
+            .detach();
+            return;
         }
         let Some(prepared) = pending.prepared.as_ref() else {
             self.handle_compaction_failure(idx, pending, "compaction checkpoint was not prepared");
@@ -1675,9 +1759,9 @@ impl<'t> EventLoop<'t> {
                 CompactionPersistStage::PersistingSession,
                 prepared.session.clone(),
             ),
-            CompactionPersistStage::PersistingRoot | CompactionPersistStage::PersistingSession => {
-                return;
-            }
+            CompactionPersistStage::Capturing
+            | CompactionPersistStage::PersistingRoot
+            | CompactionPersistStage::PersistingSession => return,
         };
         let session_id = self.sessions[idx].id();
         let run_id = pending.ack.run_id;
@@ -1696,6 +1780,34 @@ impl<'t> EventLoop<'t> {
                     result,
                 });
             });
+    }
+
+    fn handle_compaction_captured(&mut self, completion: CompactionCaptureCompletion) {
+        let Some(idx) = self.position(completion.session_id) else {
+            return;
+        };
+        let Some(mut pending) = self.sessions[idx].pending_compactions.pop_front() else {
+            return;
+        };
+        if pending.ack.run_id != completion.run_id
+            || pending.revision != completion.revision
+            || pending.stage != CompactionPersistStage::Capturing
+        {
+            self.sessions[idx].pending_compactions.push_front(pending);
+            return;
+        }
+        match completion.result {
+            Ok(prepared) => {
+                pending.prepared = Some(prepared);
+                pending.stage = CompactionPersistStage::Ready;
+                self.sessions[idx].pending_compactions.push_front(pending);
+                self.retry_compaction_checkpoint(idx);
+            }
+            Err(error) => {
+                pending.stage = CompactionPersistStage::Ready;
+                self.handle_compaction_failure(idx, pending, &error);
+            }
+        }
     }
 
     fn handle_compaction_persisted(&mut self, completion: CompactionPersistence) {
@@ -1779,10 +1891,10 @@ impl<'t> EventLoop<'t> {
             self.sessions[idx].app.state.session.meta.lifecycle,
             StoredSessionLifecycle::Succeeded | StoredSessionLifecycle::Failed
         ) {
-            if let Err(error) = self.capture_plugin_state(idx) {
-                warn!(session_id = %self.sessions[idx].id(), %error, "failed to capture terminal plugin state after compaction checkpoint");
-            }
-            self.sessions[idx].app.save_session();
+            self.schedule_plugin_state_capture(idx);
+            self.sessions[idx]
+                .app
+                .save_session_without_plugin_state_capture();
         }
         self.drain_deferred_agent_events(idx);
     }
@@ -1796,12 +1908,33 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn capture_plugin_state(&mut self, idx: usize) -> std::result::Result<(), String> {
-        if self.sessions[idx].app.main_chat().has_pending_compaction() {
-            return Ok(());
-        }
+    fn schedule_plugin_state_capture(&mut self, idx: usize) {
         let Some(handle) = self.ctx.lua_event_handle.clone() else {
-            return Ok(());
+            return;
+        };
+        let session_id = self.sessions[idx].id();
+        if !begin_state_capture(
+            &mut self.pending_state_captures,
+            &mut self.deferred_state_captures,
+            session_id,
+        ) {
+            return;
+        }
+        let session_identity = match session_identity(&self.sessions[idx].app.state.session) {
+            Ok(identity) => identity,
+            Err(error) => {
+                self.pending_state_captures.remove(&session_id);
+                warn!(%session_id, %error, "failed to identify plugin state capture");
+                return;
+            }
+        };
+        let session_revision = match self.sessions[idx].handles.allocate_state_revision() {
+            Ok(revision) => revision,
+            Err(error) => {
+                self.pending_state_captures.remove(&session_id);
+                warn!(%session_id, %error, "failed to allocate plugin state revision");
+                return;
+            }
         };
         let root_id = self.sessions[idx]
             .app
@@ -1809,57 +1942,171 @@ impl<'t> EventLoop<'t> {
             .session
             .meta
             .root_session_id
-            .unwrap_or_else(|| self.sessions[idx].id());
-        let session_revision = self.sessions[idx].handles.allocate_state_revision()?;
-        capture_session_plugin_state(
-            &handle,
-            &mut self.sessions[idx].app.state.session,
-            session_revision,
-        )?;
-        self.sessions[idx]
-            .handles
-            .observe_state_revision(session_revision);
-        if root_id == self.sessions[idx].id() {
-            return Ok(());
-        }
-
-        let mut root = if let Some(root_idx) = self.position(root_id) {
-            self.sessions[root_idx].app.session_snapshot()
-        } else if let Some(root) = self
-            .ctx
-            .storage_writer
-            .latest_snapshot(root_id)
-            .map_err(|error| error.to_string())?
-        {
-            Arc::unwrap_or_clone(root)
+            .unwrap_or_else(|| session_id);
+        let root = if root_id == session_id {
+            None
         } else {
-            AppSession::load_with_retention(
-                root_id,
-                &self.ctx.storage,
-                self.ctx.retention_budget,
-                message_tool_use_ids,
-            )
-            .map_err(|error| error.to_string())?
+            match self.sessions[idx].handles.allocate_state_revision() {
+                Ok(revision) => Some((
+                    root_id,
+                    SessionIdentity::root(SessionRef::from_id(root_id)),
+                    revision,
+                )),
+                Err(error) => {
+                    self.pending_state_captures.remove(&session_id);
+                    warn!(%session_id, %error, "failed to allocate root plugin state revision");
+                    return;
+                }
+            }
         };
-        let root_revision = self.sessions[idx].handles.allocate_state_revision()?;
-        capture_session_plugin_state(&handle, &mut root, root_revision)?;
-        root.updated_at = n00n_storage::now_epoch();
-        if let Some(root_idx) = self.position(root_id) {
-            self.sessions[root_idx]
+        let completion_tx = self.state_capture_tx.clone();
+        smol::spawn(async move {
+            let session = CapturedState {
+                revision: session_revision,
+                result: handle
+                    .capture_state_async(&session_identity, session_revision)
+                    .await
+                    .map_err(|error| error.to_string()),
+            };
+            let root = if let Some((root_id, identity, revision)) = root {
+                Some((
+                    root_id,
+                    CapturedState {
+                        revision,
+                        result: handle
+                            .capture_state_async(&identity, revision)
+                            .await
+                            .map_err(|error| error.to_string()),
+                    },
+                ))
+            } else {
+                None
+            };
+            let _ = completion_tx
+                .send_async(StateCaptureCompletion {
+                    session_id,
+                    session,
+                    root,
+                })
+                .await;
+        })
+        .detach();
+    }
+
+    fn handle_state_captured(&mut self, completion: StateCaptureCompletion) {
+        let StateCaptureCompletion {
+            session_id,
+            session,
+            root,
+        } = completion;
+        self.pending_state_captures.remove(&session_id);
+        let Some(idx) = self.position(session_id) else {
+            self.deferred_state_captures.remove(&session_id);
+            return;
+        };
+        if let Some((root_id, captured)) = root {
+            self.sessions[idx]
+                .handles
+                .observe_state_revision(captured.revision);
+            if let Some(root_idx) = self.position(root_id) {
+                self.apply_captured_state(root_idx, captured, "root");
+                self.sessions[root_idx]
+                    .app
+                    .save_session_without_plugin_state_capture();
+            } else {
+                self.persist_stored_root_capture(root_id, captured);
+            }
+        }
+        self.apply_captured_state(idx, session, "session");
+        self.sessions[idx]
+            .app
+            .save_session_without_plugin_state_capture();
+        if self.deferred_state_captures.remove(&session_id) {
+            self.schedule_plugin_state_capture(idx);
+        }
+    }
+
+    fn apply_captured_state(&mut self, idx: usize, captured: CapturedState, scope: &'static str) {
+        let session_id = self.sessions[idx].id();
+        let snapshot = match captured.result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                warn!(%session_id, %error, scope, "plugin state capture failed");
+                return;
+            }
+        };
+        if snapshot.state_revision() != Some(captured.revision) {
+            warn!(%session_id, scope, expected = captured.revision, actual = ?snapshot.state_revision(), "plugin state capture returned the wrong revision");
+            return;
+        }
+        let current = state_revision_or_initial(
+            self.sessions[idx]
                 .app
                 .state
                 .session
                 .meta
                 .state_snapshot
-                .clone_from(&root.meta.state_snapshot);
-            self.sessions[root_idx].app.state.session.meta.revision = root.meta.revision;
-            self.sessions[root_idx].app.state.session.updated_at = root.updated_at;
+                .as_ref(),
+        );
+        if captured.revision < current {
+            return;
         }
+        let Some(session_revision) = self.sessions[idx]
+            .app
+            .state
+            .session
+            .meta
+            .revision
+            .checked_add(1)
+        else {
+            warn!(%session_id, "session revision exhausted while applying plugin state");
+            return;
+        };
+        self.sessions[idx].app.state.session.meta.revision = session_revision;
+        self.sessions[idx].app.state.session.meta.state_snapshot = Some(snapshot);
         self.sessions[idx]
             .handles
-            .observe_state_revision(current_state_revision(&root));
+            .observe_state_revision(captured.revision);
+    }
+
+    fn persist_stored_root_capture(&mut self, root_id: n00nId, captured: CapturedState) {
+        let snapshot = match captured.result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                warn!(%root_id, %error, "root plugin state capture failed");
+                return;
+            }
+        };
+        let mut root = match self.ctx.storage_writer.latest_snapshot(root_id) {
+            Ok(Some(root)) => Arc::unwrap_or_clone(root),
+            Ok(None) => match AppSession::load_with_retention(
+                root_id,
+                &self.ctx.storage,
+                self.ctx.retention_budget,
+                message_tool_use_ids,
+            ) {
+                Ok(root) => root,
+                Err(error) => {
+                    warn!(%root_id, %error, "failed to load root for plugin state capture");
+                    return;
+                }
+            },
+            Err(error) => {
+                warn!(%root_id, %error, "failed to read root plugin state snapshot");
+                return;
+            }
+        };
+        if captured.revision < state_revision_or_initial(root.meta.state_snapshot.as_ref()) {
+            return;
+        }
+        let Some(revision) = root.meta.revision.checked_add(1) else {
+            warn!(%root_id, "root session revision exhausted while applying plugin state");
+            return;
+        };
+        root.meta.revision = revision;
+        root.meta.state_snapshot = Some(snapshot);
+        root.updated_at = n00n_storage::now_epoch();
         self.ctx.storage_writer.send(Box::new(root));
-        Ok(())
     }
 
     fn drain_channels(&mut self) -> Result<()> {
@@ -2212,7 +2459,9 @@ impl<'t> EventLoop<'t> {
                         );
                         return Err(error);
                     }
-                    self.sessions[idx].app.save_session();
+                    self.sessions[idx]
+                        .app
+                        .save_session_without_plugin_state_capture();
                     if focus {
                         self.set_focus(idx);
                     }
@@ -2332,7 +2581,9 @@ impl<'t> EventLoop<'t> {
                             let meta = &mut self.sessions[idx].app.state.session.meta;
                             meta.lifecycle = StoredSessionLifecycle::Cancelled;
                             meta.direct_paused_team = None;
-                            self.sessions[idx].app.save_session();
+                            self.sessions[idx]
+                                .app
+                                .save_session_without_plugin_state_capture();
                             cancelled = true;
                         }
                         warn_lineage_cleanup(
@@ -2451,6 +2702,8 @@ impl<'t> EventLoop<'t> {
     fn remove_runtime(&mut self, idx: usize) -> SessionRuntime {
         debug_assert_ne!(idx, self.focused);
         let rt = self.sessions.remove(idx);
+        self.pending_state_captures.remove(&rt.id());
+        self.deferred_state_captures.remove(&rt.id());
         let root_id = persisted_root_id(&rt.app.state.session);
         if !self
             .sessions
@@ -2477,7 +2730,10 @@ impl<'t> EventLoop<'t> {
         if idx == self.focused {
             return;
         }
-        self.sessions[self.focused].app.save_session();
+        self.schedule_plugin_state_capture(self.focused);
+        self.sessions[self.focused]
+            .app
+            .save_session_without_plugin_state_capture();
         self.focused = idx;
         self.sessions[self.focused].app.fire_session_focus_autocmd();
     }
@@ -2666,7 +2922,7 @@ impl<'t> EventLoop<'t> {
             rt.app
                 .queue
                 .remove_submission(completion.dispatch.submission_id);
-            rt.app.save_session();
+            rt.app.save_session_without_plugin_state_capture();
             if completion.execution_started && rt.app.queue.is_empty() {
                 warn_lineage_cleanup(
                     self.lineage
@@ -2686,7 +2942,7 @@ impl<'t> EventLoop<'t> {
             rt.app.state.session.meta.direct_paused_team = None;
         } else {
             rt.app.queue.remove_submission(submission_id);
-            rt.app.save_session();
+            rt.app.save_session_without_plugin_state_capture();
             if completion.execution_started && rt.app.queue.is_empty() {
                 warn_lineage_cleanup(
                     self.lineage
@@ -2762,7 +3018,9 @@ impl<'t> EventLoop<'t> {
                     id,
                     "clear keyboard-cancelled activity",
                 );
-                self.sessions[idx].app.save_session();
+                self.sessions[idx]
+                    .app
+                    .save_session_without_plugin_state_capture();
             }
             Action::CancelSubagent { tool_use_id } => {
                 let _ = self.sessions[idx]
@@ -3064,6 +3322,31 @@ impl<'t> EventLoop<'t> {
         }
     }
 
+    fn settle_state_captures(&mut self) {
+        for idx in 0..self.sessions.len() {
+            self.schedule_plugin_state_capture(idx);
+        }
+        let Some(deadline) = Instant::now().checked_add(TERMINAL_CHECKPOINT_TIMEOUT) else {
+            warn!("plugin state capture shutdown deadline overflowed");
+            return;
+        };
+        while !self.pending_state_captures.is_empty() && Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = remaining.min(Duration::from_millis(IDLE_POLL_INTERVAL_MS));
+            if let Some(wake) = self.select_non_input_wake(timeout)
+                && let Err(error) = self.handle_wake(wake)
+            {
+                warn!(%error, "failed to settle plugin state capture during shutdown");
+            }
+        }
+        if !self.pending_state_captures.is_empty() {
+            warn!(
+                pending = self.pending_state_captures.len(),
+                "timed out waiting for plugin state capture during shutdown"
+            );
+        }
+    }
+
     fn shutdown(mut self) -> Result<ShutdownReport> {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
@@ -3071,30 +3354,19 @@ impl<'t> EventLoop<'t> {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
         self.settle_cancelled_sessions();
+        self.settle_state_captures();
         self.preserve_post_draw_submissions();
-        for idx in 0..self.sessions.len() {
-            if let Err(error) = self.capture_plugin_state(idx) {
-                warn!(session_id = %self.sessions[idx].id(), %error, "failed to capture plugin session state during shutdown");
-            }
-        }
         let mut tabs = Vec::with_capacity(self.sessions.len());
         let mut agent_tasks = Vec::with_capacity(self.sessions.len());
         for rt in self.sessions.drain(..) {
             let SessionRuntime {
                 mut app, handles, ..
             } = rt;
-            app.save_session();
+            app.save_session_without_plugin_state_capture();
             // `app` drops at the end of this iteration, closing the
             // channels the agent loop waits on, so `join_all` can finish.
             tabs.push(app.state.session);
             agent_tasks.push(handles.into_task());
-        }
-        if let Some(handle) = &self.ctx.lua_event_handle {
-            for session in &tabs {
-                if let Err(error) = handle.drop_state_owner(session.id) {
-                    warn!(session_id = %session.id, %error, "failed to drop plugin session state owner");
-                }
-            }
         }
         if let Some(ref h) = self.ctx.mcp_handle {
             smol::block_on(h.shutdown());
@@ -3268,8 +3540,8 @@ mod tests {
         COALESCE_BUDGET, CompactionPersistStage, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES,
         DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg,
         PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, SessionStatus, TEAM_TOOL_NAME,
-        TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll, authorize_ui_delete, bounded_direct_output,
-        cancel_stored_session, coalesce_drag, complete_model_fetch_with,
+        TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll, authorize_ui_delete, begin_state_capture,
+        bounded_direct_output, cancel_stored_session, coalesce_drag, complete_model_fetch_with,
         direct_paused_team_payload, draw_then_post_terminal, handle_input_bounded,
         initial_state_revision, merge_compaction_metadata, merge_model_batch,
         outer_compaction_state_revision, paused_team_payload, paused_team_run,
@@ -3305,11 +3577,28 @@ mod tests {
     };
     use std::{
         cell::Cell as Counter,
+        collections::HashSet,
         io,
         sync::{Arc, Mutex},
     };
     use tempfile::TempDir;
     use test_case::test_case;
+
+    #[test]
+    fn state_capture_requests_are_coalesced() {
+        let session_id = n00nId::generate();
+        let mut pending = HashSet::new();
+        let mut deferred = HashSet::new();
+
+        assert!(begin_state_capture(&mut pending, &mut deferred, session_id));
+        assert!(!begin_state_capture(
+            &mut pending,
+            &mut deferred,
+            session_id
+        ));
+        assert_eq!(pending.len(), 1);
+        assert_eq!(deferred, HashSet::from([session_id]));
+    }
 
     #[test]
     fn compaction_checkpoint_retry_budget_is_bounded() {
