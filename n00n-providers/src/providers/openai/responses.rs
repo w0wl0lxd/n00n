@@ -81,11 +81,17 @@ pub(crate) fn build_body(
         body["prompt_cache_key"] = json!(prompt_cache_key);
     }
 
-    let prompt_cache_mode = opts.openai_prompt_cache_mode.and_then(|mode| match mode {
-        OpenAiPromptCacheMode::Implicit => Some(mode.as_wire()),
-        OpenAiPromptCacheMode::Explicit if has_prompt_cache_breakpoint => Some(mode.as_wire()),
-        OpenAiPromptCacheMode::Explicit => None,
-    });
+    let prompt_cache_mode = opts
+        .openai_prompt_cache_mode
+        .and_then(|mode| match mode {
+            OpenAiPromptCacheMode::Implicit => Some(mode.as_wire()),
+            OpenAiPromptCacheMode::Explicit if has_prompt_cache_breakpoint => Some(mode.as_wire()),
+            OpenAiPromptCacheMode::Explicit => None,
+        })
+        .or_else(|| {
+            (has_prompt_cache_breakpoint && model.supports_prompt_cache_breakpoint())
+                .then_some(OpenAiPromptCacheMode::Explicit.as_wire())
+        });
     if let Some(mode) = prompt_cache_mode {
         body["prompt_cache_options"] = json!({
             "mode": mode,
@@ -2214,7 +2220,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test_case(0, false ; "no_emitted_breakpoint")]
     #[test_case(1, true ; "emitted_breakpoint")]
-    fn build_body_emits_breakpoint_without_prompt_cache_options(
+    fn build_body_default_cache_options_follow_model_support(
         message_cache_breakpoints: usize,
         expected: bool,
     ) {
@@ -2235,7 +2241,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             true,
         );
         assert_eq!(contains_prompt_cache_breakpoint(&body["input"]), expected);
-        assert!(body.get("prompt_cache_options").is_none());
+        assert_eq!(body.get("prompt_cache_options").is_some(), expected);
     }
 
     #[test]
