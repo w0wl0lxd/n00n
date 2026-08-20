@@ -193,6 +193,10 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
 /// Returns `GitError` if the repository cannot be opened or commit operations fail.
 #[instrument(skip(path))]
 pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
     let repo = gix::open(path)
         .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
 
@@ -1790,6 +1794,132 @@ mod tests {
     }
 
     #[test]
+    fn diff_file_addition_and_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file1.txt"), "hello\n").unwrap();
+        run(root, &["add", "file1.txt"]);
+        run(root, &["commit", "-m", "first"]);
+
+        std::fs::remove_file(root.join("file1.txt")).unwrap();
+        std::fs::write(root.join("file2.txt"), "world\n").unwrap();
+        run(root, &["add", "file1.txt", "file2.txt"]);
+        run(root, &["commit", "-m", "second"]);
+
+        let diff_result = diff(root, "HEAD~1", "HEAD").unwrap();
+        assert_eq!(diff_result.files.len(), 2);
+
+        let file1_diff = diff_result
+            .files
+            .iter()
+            .find(|file| file.path == "file1.txt")
+            .expect("file1.txt diff missing");
+        assert_eq!(file1_diff.deletions, 1);
+        assert_eq!(file1_diff.additions, 0);
+        assert_eq!(file1_diff.changes.len(), 1);
+        assert_eq!(file1_diff.changes[0].kind, "deleted");
+        assert_eq!(file1_diff.changes[0].old_line, Some(1));
+        assert_eq!(file1_diff.changes[0].new_line, None);
+        assert_eq!(file1_diff.changes[0].content, "hello");
+
+        let file2_diff = diff_result
+            .files
+            .iter()
+            .find(|file| file.path == "file2.txt")
+            .expect("file2.txt diff missing");
+        assert_eq!(file2_diff.additions, 1);
+        assert_eq!(file2_diff.deletions, 0);
+        assert_eq!(file2_diff.changes.len(), 1);
+        assert_eq!(file2_diff.changes[0].kind, "added");
+        assert_eq!(file2_diff.changes[0].old_line, None);
+        assert_eq!(file2_diff.changes[0].new_line, Some(1));
+        assert_eq!(file2_diff.changes[0].content, "world");
+    }
+
+    #[test]
+    fn diff_file_modification() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "line1\nline2\nline3\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial"]);
+
+        std::fs::write(
+            root.join("file.txt"),
+            "line1\nline2 modified\nline3\nline4\n",
+        )
+        .unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "modified"]);
+
+        let diff_result = diff(root, "HEAD~1", "HEAD").unwrap();
+        assert_eq!(diff_result.files.len(), 1);
+
+        let file_diff = &diff_result.files[0];
+        assert_eq!(file_diff.path, "file.txt");
+        assert_eq!(file_diff.deletions, 1);
+        assert_eq!(file_diff.additions, 2);
+
+        let deleted = file_diff
+            .changes
+            .iter()
+            .find(|change| change.kind == "deleted")
+            .expect("deleted line missing");
+        assert_eq!(deleted.old_line, Some(2));
+        assert_eq!(deleted.content, "line2");
+
+        let added = file_diff
+            .changes
+            .iter()
+            .filter(|change| change.kind == "added")
+            .collect::<Vec<_>>();
+        assert_eq!(added.len(), 2);
+        assert_eq!(added[0].new_line, Some(2));
+        assert_eq!(added[0].content, "line2 modified");
+        assert_eq!(added[1].new_line, Some(4));
+        assert_eq!(added[1].content, "line4");
+    }
+
+    #[test]
+    fn diff_identical_refs_returns_empty_diff() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "content\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial"]);
+
+        let diff_result = diff(root, "HEAD", "HEAD").unwrap();
+        assert!(diff_result.files.is_empty());
+    }
+
+    #[test]
+    fn diff_invalid_repository_and_invalid_refs() {
+        let temp = tempfile::tempdir().unwrap();
+        let invalid_path = temp.path().join("nonexistent_repo");
+
+        let repo_error = diff(&invalid_path, "HEAD~1", "HEAD");
+        assert!(matches!(repo_error, Err(GitError::GitOperation(_))));
+
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "content\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial"]);
+
+        let invalid_a = diff(root, "nonexistent-ref-a", "HEAD");
+        assert!(matches!(invalid_a, Err(GitError::InvalidReference(_))));
+
+        let invalid_b = diff(root, "HEAD", "nonexistent-ref-b");
+        assert!(matches!(invalid_b, Err(GitError::InvalidReference(_))));
+    }
+
+    #[test]
     fn blame_multi_commit_attributes_lines_correctly() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -1867,5 +1997,63 @@ mod tests {
             blame(bare_root, "file.txt"),
             Err(GitError::BareRepo)
         ));
+    }
+    #[test]
+    fn log_returns_error_for_invalid_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let invalid_path = temp.path().join("nonexistent");
+        assert!(matches!(
+            log(&invalid_path, 10),
+            Err(GitError::GitOperation(_))
+        ));
+    }
+
+    #[test]
+    fn log_returns_error_for_repo_without_commits() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        assert!(matches!(log(root, 10), Err(GitError::GitOperation(_))));
+    }
+
+    #[test]
+    fn log_returns_commits_in_reverse_chronological_order_and_respects_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+        let first_id = commit(root, "first commit\n\nbody text").unwrap();
+
+        std::fs::write(root.join("file.txt"), "two\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+        let second_id = commit(root, "second commit").unwrap();
+
+        std::fs::write(root.join("file.txt"), "three\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+        let third_id = commit(root, "third commit").unwrap();
+
+        let history = log(root, 10).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].id, third_id);
+        assert_eq!(history[0].message, "third commit\n");
+        assert_eq!(history[0].author, "Test");
+        assert_eq!(history[0].email, "test@example.com");
+        assert!(history[0].time > 0);
+        assert_eq!(history[1].id, second_id);
+        assert_eq!(history[1].message, "second commit\n");
+        assert_eq!(history[2].id, first_id);
+        assert_eq!(history[2].message, "first commit\n\nbody text\n");
+
+        let limited = log(root, 2).unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].id, third_id);
+        assert_eq!(limited[1].id, second_id);
+
+        let single = log(root, 1).unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].id, third_id);
+        assert!(log(root, 0).unwrap().is_empty());
     }
 }
