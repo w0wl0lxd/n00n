@@ -11,9 +11,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::debug;
 
-use crate::AgentError;
 use crate::model::Model;
 use crate::types::ThinkingFieldConfig;
+use crate::{AgentError, CacheHealth, CacheKind, TokenUsage};
 
 pub(crate) mod anthropic;
 pub(crate) mod copilot;
@@ -42,6 +42,25 @@ pub(crate) mod zai;
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
 const REASONING_EFFORT_FIELD: &str = "reasoning_effort";
 pub(crate) const MESSAGES_FIELD: &str = "messages";
+
+pub(crate) fn prompt_cache_health(
+    usage: &TokenUsage,
+    known_lifetime: Option<(u64, u64)>,
+) -> CacheHealth {
+    let hit = usage.cache_read > 0;
+    let cached = hit || usage.cache_creation > 0;
+    let (valid_until, ttl_seconds) = match (cached, known_lifetime) {
+        (true, Some(lifetime)) => lifetime,
+        _ => (0, 0),
+    };
+
+    CacheHealth {
+        kind: CacheKind::Prompt,
+        valid_until,
+        ttl_seconds,
+        hit,
+    }
+}
 
 pub(crate) fn user_agent() -> &'static str {
     concat!(
