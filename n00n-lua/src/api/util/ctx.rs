@@ -26,6 +26,7 @@ use crate::state::{PluginStateIdentity, PluginStateScope, PluginStateStore};
 const CONTEXT_INACTIVE_MSG: &str = "state context is no longer active";
 const DEADLINE_ALREADY_SET_MSG: &str = "ctx:set_deadline() already called";
 const INVALID_STATE_SCOPE_MSG: &str = "state scope must be 'session' or 'root'";
+const NESTED_ADMISSION_SCOPE_SUFFIX: &str = "/nested";
 
 fn parse_state_scope(scope: &str) -> Result<PluginStateScope, &'static str> {
     PluginStateScope::parse(scope).ok_or(INVALID_STATE_SCOPE_MSG)
@@ -75,13 +76,16 @@ impl Deref for AgentContext {
 }
 
 impl AgentContext {
-    /// Drops `tool_use_id` so an inner tool never emits UI events under the
-    /// outer call's id, and `live_sink` so a grandchild never streams into
-    /// a sink meant for its parent.
+    /// Drops per-dispatch routing state and gives nested tools a child admission
+    /// scope so they cannot deadlock against every slot held by their parents.
     pub(crate) fn to_tool_context(&self) -> ToolContext {
         let mut c = self.0.clone();
         c.tool_use_id = None;
         c.live_sink = None;
+        c.admission_scope = Arc::from(format!(
+            "{}{NESTED_ADMISSION_SCOPE_SUFFIX}",
+            c.admission_scope
+        ));
         c
     }
 }
@@ -692,6 +696,12 @@ mod tests {
         assert_eq!(inner.tool_use_id, None);
         assert_eq!(inner.identity, agent.identity);
         assert!(inner.live_sink.is_none(), "sink must not be inherited");
+        assert_ne!(inner.admission_scope, agent.admission_scope);
+        assert!(
+            inner
+                .admission_scope
+                .ends_with(NESTED_ADMISSION_SCOPE_SUFFIX)
+        );
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
     }
 
