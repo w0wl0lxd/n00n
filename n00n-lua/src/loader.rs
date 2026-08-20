@@ -952,6 +952,29 @@ mod tests {
         PluginHost::disabled().begin_shutdown();
     }
 
+    #[test]
+    fn set_search_config_disabled_host_returns_ok() {
+        let host = PluginHost::disabled();
+        let config = Arc::new(SearchConfig::default());
+        assert!(host.set_search_config(config).is_ok());
+    }
+
+    #[test]
+    fn set_search_config_active_host_succeeds() {
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        let config = Arc::new(SearchConfig::default());
+        assert!(host.set_search_config(config).is_ok());
+    }
+
+    #[test]
+    fn set_search_config_dead_host_returns_error() {
+        let mut host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        host.begin_shutdown();
+        let config = Arc::new(SearchConfig::default());
+        let err = host.set_search_config(config).unwrap_err();
+        assert!(matches!(err, PluginError::HostDead));
+    }
+
     /// Regression for the exit drain in `runtime::spawn`. An `EventHandle`
     /// clone keeps queued requests alive after the Lua thread exits, and
     /// dispatch prefers the priority lane, so a bulk request queued behind
