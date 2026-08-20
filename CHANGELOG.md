@@ -5,6 +5,25 @@ generated from `changelog.d/` fragments at release time via `just changelog`.
 See `changelog.d/README.md` for the fragment convention.
 
 
+
+## [0.6.3] - 2026-08-20
+
+### Added
+
+- Added unit test coverage for `Baseline::load` in `n00n-token-profile`.
+- Added unit tests for `hydrate_state` covering snapshot application, dead host handling, and state error propagation in `n00n-lua`.
+
+### Fixed
+
+- Report unknown Mistral and OpenRouter prompt-cache lifetimes without inventing expiry times.
+- Prevent the built-in GitHub tool from crashing when a pull request or issue has a missing or non-string body.
+- Question prompts and long-running tools no longer block the UI during periodic saves or shutdown. Interactive prompts use a separate bounded execution lane, busy agent scopes no longer reserve slots needed by other sessions, and shutdown settles active tool cancellation before saving plugin state. Ambiguous provider replays remain explicitly approval-gated even when no output reached the client. Lua subprocesses now use bounded output buffering, lower CPU priority, process-group cancellation, and Linux memory limits without repeatedly scanning the full process table, while excessive `async.run` fanout is rejected before it can grow an unbounded task backlog. Tool setup callbacks and subagent event barriers now time out safely instead of leaving question prompts or task agents pending forever.
+- Periodic saves now avoid active input prompts, highlight workers keep the UI awake until bounded result queues drain, saturated Lua job queues yield without adding polling delay, and queued setup callbacks start their timeout only after dispatch.
+
+### Docs
+
+- Add unit tests for `load_source_with_permissions` in `n00n-lua`.
+
 ## [0.6.2] - 2026-08-20
 
 ### Added
