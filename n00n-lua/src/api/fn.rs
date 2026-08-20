@@ -1231,14 +1231,12 @@ async fn jobwait(
 
         match wake {
             JobWaitWake::Event(Some(event)) => {
+                drain_task_job_events(&lua, owner.as_ref(), &mut task_events);
                 deliver_job_event(&lua, job_id, &event)?;
                 match event {
                     JobEvent::Stdout(line) => stdout.push(line),
                     JobEvent::Stderr(line) => stderr.push(line),
-                    JobEvent::Exit(code) => {
-                        drain_task_job_events(&lua, owner.as_ref(), &mut task_events);
-                        break code;
-                    }
+                    JobEvent::Exit(code) => break code,
                 }
             }
             JobWaitWake::Event(None) => return Ok(mlua::Value::Nil),
