@@ -14,6 +14,7 @@ use gix::dir as gix_dir;
 use gix::status::plumbing as gix_status;
 
 const INDEX_WRITE_BUFFER_BYTES: usize = 64 * 1024;
+const FILE_PATH_EMPTY_ERROR: &str = "file path is empty";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatus {
@@ -532,7 +533,7 @@ pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
 #[instrument(skip(path))]
 pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
     if file.is_empty() {
-        return Err(GitError::FileNotFound("file path is empty".to_string()));
+        return Err(GitError::FileNotFound(FILE_PATH_EMPTY_ERROR.to_string()));
     }
 
     let repo = gix::open(path)
@@ -1835,13 +1836,9 @@ mod tests {
         let root = temp.path();
         init_repo(root);
 
-        std::fs::write(root.join("file.txt"), "line 1\n").unwrap();
-        run(root, &["add", "file.txt"]);
-        run(root, &["commit", "-m", "first commit"]);
-
         assert!(matches!(
             blame(root, ""),
-            Err(GitError::FileNotFound(msg)) if msg == "file path is empty"
+            Err(GitError::FileNotFound(msg)) if msg == FILE_PATH_EMPTY_ERROR
         ));
 
         assert!(matches!(
@@ -1865,13 +1862,7 @@ mod tests {
 
         let bare_temp = tempfile::tempdir().unwrap();
         let bare_root = bare_temp.path();
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(bare_root)
-            .args(["init", "--bare"])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
+        run(bare_root, &["init", "--bare"]);
         assert!(matches!(
             blame(bare_root, "file.txt"),
             Err(GitError::BareRepo)
