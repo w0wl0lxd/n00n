@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787216423096,
+  "lastUpdate": 1787218212678,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -21483,6 +21483,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 193653,
             "range": "± 6123",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7401f20791ce943263f1310555b07ec8c32e46e8",
+          "message": "perf(agent): optimize diff unified_text formatting (#407)\n\n* perf(diff): optimize string interpolation in unified_text loop\n\nAvoid `std::fmt::Write` macro formatting machinery overhead in `unified_text` loops by using direct `push` and `push_str` methods on `String`. Add Criterion benchmarks for unified_text diff rendering.\n\n* perf(diff): optimize string interpolation in unified_text loop\n\nAvoid `std::fmt::Write` macro formatting machinery overhead in `unified_text` loops by using direct `push` and `push_str` methods on `String`. Add Criterion benchmarks for unified_text diff rendering and changelog fragment.\n\n* perf(diff): optimize string interpolation in unified_text loop\n\nAvoid `std::fmt::Write` macro formatting machinery overhead in `unified_text` loops by using direct `push` and `push_str` methods on `String`. Add Criterion benchmarks for unified_text diff rendering and changelog fragment.\n\n* perf(diff): optimize string interpolation in unified_text loop\n\nAvoid `std::fmt::Write` macro formatting machinery overhead in `unified_text` loops by using direct `push` and `push_str` methods on `String`. Add Criterion benchmarks for unified_text diff rendering and changelog fragment.\n\n* fix(perf): address review -- import DiffHunk and rename fragment\n\nImport DiffHunk at top per style guide (no inline path) and rename changelog fragment to 407.performance.md per naming rule.",
+          "timestamp": "2026-08-20T05:14:16-04:00",
+          "tree_id": "beb89b688330c9de6dd120cf6812622ec9d7f74d",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/7401f20791ce943263f1310555b07ec8c32e46e8"
+        },
+        "date": 1787218211363,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6734114,
+            "range": "± 98509",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2253258,
+            "range": "± 9222",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2267030,
+            "range": "± 51119",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8059648,
+            "range": "± 40513",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4316930,
+            "range": "± 22062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4297816,
+            "range": "± 84334",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584638,
+            "range": "± 1294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192442,
+            "range": "± 341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191990,
+            "range": "± 580",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041336,
+            "range": "± 11206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 584641,
+            "range": "± 24705",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584582,
+            "range": "± 2765",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 68440,
+            "range": "± 5128",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 164058,
+            "range": "± 23906",
             "unit": "ns/iter"
           }
         ]
