@@ -31,8 +31,13 @@ pub(crate) struct SessionState {
     pub fast: bool,
     pub workflow: bool,
     transcript_revision: u64,
+    shared_history_snapshot: Option<Arc<Vec<Message>>>,
     shared_transcript_snapshot: Option<Arc<Vec<TranscriptEntry<Message>>>>,
     last_fingerprint: Option<u64>,
+    #[cfg(test)]
+    fingerprint_count: usize,
+    #[cfg(test)]
+    history_sync_count: usize,
 }
 
 /// Change detection used to keep a whole `serde_json::Value` of the session
@@ -69,9 +74,13 @@ fn hash_serialized<T: Serialize>(value: &T) -> Option<u64> {
 fn session_fingerprint(session: &mut AppSession) -> Option<u64> {
     let tool_outputs = mem::take(&mut session.tool_outputs);
     let subagent_messages = mem::take(&mut session.subagent_messages);
+    let revision = mem::take(&mut session.meta.revision);
+    let updated_at = mem::take(&mut session.updated_at);
     let base = hash_serialized(&*session);
     session.tool_outputs = tool_outputs;
     session.subagent_messages = subagent_messages;
+    session.meta.revision = revision;
+    session.updated_at = updated_at;
 
     let mut fingerprint = base?;
     for entry in &session.tool_outputs {
@@ -156,8 +165,13 @@ impl SessionState {
             plan,
             warnings,
             transcript_revision: 0,
+            shared_history_snapshot: None,
             shared_transcript_snapshot: None,
             last_fingerprint,
+            #[cfg(test)]
+            fingerprint_count: 1,
+            #[cfg(test)]
+            history_sync_count: 0,
         }
     }
 
@@ -169,7 +183,21 @@ impl SessionState {
         permissions: &Arc<PermissionManager>,
     ) {
         if let Some(history) = shared_history {
-            Clone::clone_from(&mut self.session.messages, &history.load());
+            let snapshot = history.load_full();
+            let changed = self
+                .shared_history_snapshot
+                .as_ref()
+                .is_none_or(|saved| !Arc::ptr_eq(saved, &snapshot));
+            if changed {
+                Clone::clone_from(&mut self.session.messages, &snapshot);
+                self.shared_history_snapshot = Some(snapshot);
+                #[cfg(test)]
+                {
+                    self.history_sync_count += 1;
+                }
+            }
+        } else {
+            self.shared_history_snapshot = None;
         }
         if let Some(transcript) = shared_transcript {
             let snapshot = transcript.load_full();
@@ -209,13 +237,21 @@ impl SessionState {
     }
 
     pub fn finish_snapshot(&mut self) {
-        let current = session_fingerprint(&mut self.session);
+        let current = self.fingerprint();
         let changed = current.is_none_or(|current| self.last_fingerprint != Some(current));
         if changed {
             self.session.meta.revision = self.session.meta.revision.saturating_add(1);
             self.session.updated_at = n00n_storage::now_epoch();
-            self.last_fingerprint = session_fingerprint(&mut self.session);
+            self.last_fingerprint = current;
         }
+    }
+
+    fn fingerprint(&mut self) -> Option<u64> {
+        #[cfg(test)]
+        {
+            self.fingerprint_count += 1;
+        }
+        session_fingerprint(&mut self.session)
     }
 
     pub fn update_model(&mut self, model: &Model) {
@@ -317,6 +353,51 @@ mod tests {
         session.meta.mode = mode;
         session.meta.plan_path = plan_path;
         session
+    }
+
+    #[test]
+    fn changed_snapshot_fingerprints_session_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let session = AppSession::new("test-model", "/tmp");
+        let mut state = SessionState::from_session(session, &test_model(), &storage);
+        let fingerprint_count = state.fingerprint_count;
+        let revision = state.session.meta.revision;
+
+        state.session.title.push_str(" changed");
+        state.finish_snapshot();
+
+        assert_eq!(state.fingerprint_count - fingerprint_count, 1);
+        assert_eq!(state.session.meta.revision, revision + 1);
+        let updated_at = state.session.updated_at;
+        state.finish_snapshot();
+        assert_eq!(state.session.meta.revision, revision + 1);
+        assert_eq!(state.session.updated_at, updated_at);
+    }
+
+    #[test]
+    fn shared_history_clones_only_after_pointer_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let session = AppSession::new("test-model", "/tmp");
+        let mut state = SessionState::from_session(session, &test_model(), &storage);
+        let history = Arc::new(ArcSwap::from_pointee(vec![Message::user("first".into())]));
+        let permissions = Arc::new(PermissionManager::new(
+            n00n_config::PermissionsConfig::default(),
+            PathBuf::from("/tmp"),
+        ));
+
+        state.sync_session(Some(&history), None, None, &permissions);
+        state.sync_session(Some(&history), None, None, &permissions);
+        assert_eq!(state.history_sync_count, 1);
+
+        history.store(Arc::new(vec![Message::user("second".into())]));
+        state.sync_session(Some(&history), None, None, &permissions);
+        assert_eq!(state.history_sync_count, 2);
+        assert_eq!(
+            serde_json::to_value(&state.session.messages).unwrap(),
+            serde_json::to_value(history.load().as_ref()).unwrap()
+        );
     }
 
     #[test]
