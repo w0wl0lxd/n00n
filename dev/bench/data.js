@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787227246591,
+  "lastUpdate": 1787231592755,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -22023,6 +22023,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 126260,
             "range": "± 24299",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3d229b1a76459cb19dd0c110f2c07c6791bfa8d9",
+          "message": "Merge pull request #427 from w0wl0lxd/chore/cargo-lock-0.6.3\n\nchore: update Cargo.lock for v0.6.3",
+          "timestamp": "2026-08-20T08:58:01-04:00",
+          "tree_id": "4662ef97c9b693a655f7c291540c100dac131460",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/3d229b1a76459cb19dd0c110f2c07c6791bfa8d9"
+        },
+        "date": 1787231591922,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6447053,
+            "range": "± 77319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2454310,
+            "range": "± 5689",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2458289,
+            "range": "± 5111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7618292,
+            "range": "± 13706",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3858449,
+            "range": "± 18729",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3763534,
+            "range": "± 6981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554867,
+            "range": "± 3021",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168203,
+            "range": "± 200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167852,
+            "range": "± 242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1048980,
+            "range": "± 4154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 626410,
+            "range": "± 13097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 615752,
+            "range": "± 10156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 55201,
+            "range": "± 5644",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 167753,
+            "range": "± 12928",
             "unit": "ns/iter"
           }
         ]
