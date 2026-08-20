@@ -7,6 +7,7 @@ Requires zstd on PATH for current sessions; see scripts/extract_n00n_sessions.py
 """
 
 import json
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -114,8 +115,6 @@ def extract_batch_subtool_calls(session):
 
 
 def _decompress_zstd(path: Path) -> str | None:
-    import subprocess
-
     global _ZSTD_MISSING_WARNED
     try:
         out = subprocess.run(
@@ -146,6 +145,10 @@ def _load_new_format(path: Path) -> dict[str, Any] | None:
     if txt is None:
         return None
     if not txt:
+        print(
+            f"warning: failed to decompress {path}; no recovered content",
+            file=sys.stderr,
+        )
         return None
     messages: list[dict[str, Any]] = []
     tool_outputs: dict[str, Any] = {}
@@ -161,7 +164,7 @@ def _load_new_format(path: Path) -> dict[str, Any] | None:
         if not isinstance(rec, dict):
             continue
         t = rec.get("t")
-        if t == "msg":
+        if t in ("msg", "sub_msg"):
             d = rec.get("d")
             if not isinstance(d, dict):
                 continue
