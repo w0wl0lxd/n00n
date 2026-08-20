@@ -206,42 +206,43 @@ fn execute_plugin_with_native_mock_and_opts(
         })
 }
 
-#[test]
-fn github_get_pr_ignores_non_string_body_values() {
+#[test_case::test_case("get_pr", "pr_number" ; "pull_request")]
+#[test_case::test_case("get_issue", "issue_number" ; "issue")]
+fn github_get_ignores_non_string_body_values(command: &str, number_field: &str) {
+    let mut input = json!({
+        "command": command,
+        "owner": "owner",
+        "repo": "repo",
+    });
+    input[number_field] = json!(420);
     let output = execute_plugin_with_native_mock(
         "github",
         GITHUB_SRC,
         r#"
             local reads = 0
-            n00n.github = {
-                get_pr = function()
-                    return setmetatable({
-                        number = 420,
-                        title = "tool fix",
-                        state = "open",
-                        user = { login = "tester" },
-                        head = { ref = "fix/tool" },
-                        base = { ref = "main" },
-                        html_url = "https://example.invalid/pr/420",
-                    }, {
-                        __index = function(_, key)
-                            if key == "body" then
-                                reads = reads + 1
-                                if reads == 1 then
-                                    return true
-                                end
+            local function result()
+                return setmetatable({
+                    number = 420,
+                    title = "tool fix",
+                    state = "open",
+                    user = { login = "tester" },
+                    head = { ref = "fix/tool" },
+                    base = { ref = "main" },
+                    html_url = "https://example.invalid/420",
+                }, {
+                    __index = function(_, key)
+                        if key == "body" then
+                            reads = reads + 1
+                            if reads == 1 then
+                                return true
                             end
-                        end,
-                    }), nil
-                end,
-            }
+                        end
+                    end,
+                }), nil
+            end
+            n00n.github = { get_pr = result, get_issue = result }
         "#,
-        json!({
-            "command": "get_pr",
-            "owner": "owner",
-            "repo": "repo",
-            "pr_number": 420,
-        }),
+        input,
     )
     .unwrap();
 
@@ -250,6 +251,43 @@ fn github_get_pr_ignores_non_string_body_values() {
         "unexpected output: {output}"
     );
     assert!(!output.contains("Body:"), "unexpected output: {output}");
+}
+
+#[test_case::test_case("get_pr", "pr_number" ; "pull_request")]
+#[test_case::test_case("get_issue", "issue_number" ; "issue")]
+fn github_get_preserves_string_body_values(command: &str, number_field: &str) {
+    let mut input = json!({
+        "command": command,
+        "owner": "owner",
+        "repo": "repo",
+    });
+    input[number_field] = json!(420);
+    let output = execute_plugin_with_native_mock(
+        "github",
+        GITHUB_SRC,
+        r#"
+            local function result()
+                return {
+                    number = 420,
+                    title = "tool fix",
+                    state = "open",
+                    user = { login = "tester" },
+                    head = { ref = "fix/tool" },
+                    base = { ref = "main" },
+                    html_url = "https://example.invalid/420",
+                    body = "kept body",
+                }, nil
+            end
+            n00n.github = { get_pr = result, get_issue = result }
+        "#,
+        input,
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("Body: [untrusted content from GitHub API] kept body"),
+        "unexpected output: {output}"
+    );
 }
 
 fn firecrawl_plugin_opts(max_response_bytes: usize) -> Map<String, Value> {

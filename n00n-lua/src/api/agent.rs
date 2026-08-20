@@ -906,7 +906,7 @@ async fn session(
         parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
         plugin_state_store,
         child_state_owner: session_id,
-        child_id,
+        child_id: child_id.clone(),
         parent_tool_use_id,
         parent_event_tx: parent_tx,
         subagent_info,
@@ -923,6 +923,8 @@ async fn session(
     let sess = lua.create_userdata(LuaSession {
         inner: Arc::new(AsyncMutex::new(state)),
         progress,
+        parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
+        child_id,
     })?;
     Ok((Some(sess), None))
 }
@@ -1409,6 +1411,8 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
 struct LuaSession {
     inner: Arc<AsyncMutex<SessionState>>,
     progress: Arc<Progress>,
+    parent_cancels: Arc<CancelMap<String>>,
+    child_id: String,
 }
 
 impl Drop for LuaSession {
@@ -1643,11 +1647,10 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
 ///
 /// @return
 #[lua_fn]
-async fn cancel(_lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<()> {
-    let inner = Arc::clone(&this.inner);
-    drop(this);
-    let s = inner.lock().await;
-    s.parent_cancels.cancel_or_precancel(s.child_id.clone());
+#[allow(clippy::needless_pass_by_value)]
+fn cancel(_lua: &Lua, this: &LuaSession) -> LuaResult<()> {
+    this.parent_cancels
+        .cancel_or_precancel(this.child_id.clone());
     Ok(())
 }
 
