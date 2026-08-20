@@ -5767,6 +5767,17 @@ fn plugin_state_capture_waits_for_inflight_handler_callbacks() {
 }
 
 #[test]
+fn plugin_options_empty_when_no_options_registered() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(reg).unwrap();
+    let options = host.plugin_options().unwrap();
+    assert!(
+        options.is_empty(),
+        "expected no options registered initially"
+    );
+}
+
+#[test]
 fn plugin_state_lifecycle_methods_reject_dead_host() {
     let reg = fresh_registry();
     let host = PluginHost::new(reg).unwrap();
