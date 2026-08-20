@@ -9,8 +9,8 @@ use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
 use crate::types::ThinkingFieldConfig;
 use crate::{
-    AgentError, CacheHealth, CacheKind, Effort, EffortDialect, Message, ProviderEvent,
-    RequestOptions, StreamResponse, System, dialect,
+    AgentError, CacheHealth, Effort, EffortDialect, Message, ProviderEvent, RequestOptions,
+    StreamResponse, System, TokenUsage, dialect,
 };
 
 use super::openai_compat::OpenAiCompatProvider;
@@ -20,8 +20,6 @@ const REASONING_EFFORT_PATH: &str = "reasoning.effort";
 const REFERER: &str = "https://github.com/w0wl0lxd/n00n";
 const APP_TITLE: &str = "n00n";
 const PER_MILLION: f64 = 1_000_000.0;
-const OPENROUTER_CACHE_TTL_SECONDS: u64 = 300;
-
 include!(concat!(env!("OUT_DIR"), "/provider_configs/openrouter.rs"));
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
@@ -173,6 +171,10 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
     })
 }
 
+fn openrouter_cache_health(usage: &TokenUsage) -> CacheHealth {
+    super::prompt_cache_health(usage, None)
+}
+
 impl Provider for OpenRouter {
     fn stream_message<'a>(
         &'a self,
@@ -242,24 +244,7 @@ impl Provider for OpenRouter {
                 .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
                 .await?;
 
-            let hit = response.usage.cache_read > 0;
-            let cached = response.usage.cache_read > 0 || response.usage.cache_creation > 0;
-            let valid_until = if cached {
-                n00n_storage::now_epoch().saturating_add(OPENROUTER_CACHE_TTL_SECONDS)
-            } else {
-                0
-            };
-            let ttl_seconds = if cached {
-                OPENROUTER_CACHE_TTL_SECONDS
-            } else {
-                0
-            };
-            let health = CacheHealth {
-                kind: CacheKind::Prompt,
-                valid_until,
-                ttl_seconds,
-                hit,
-            };
+            let health = openrouter_cache_health(&response.usage);
             if let Err(error) = event_tx
                 .send_async(ProviderEvent::CacheHealth { cache: health })
                 .await
@@ -297,7 +282,7 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
-    use crate::ThinkingConfig;
+    use crate::{CacheKind, ThinkingConfig};
 
     fn kimi_k3_json() -> Value {
         json!({
@@ -404,6 +389,26 @@ mod tests {
         let info = reasoning_info(efforts);
         let (dialect, model) = openrouter_model(Some(&info));
         assert_eq!(config.effort_str(&dialect, &model), Some(expected));
+    }
+
+    #[test_case(10, 0, true ; "hit")]
+    #[test_case(0, 10, false ; "write")]
+    #[test_case(0, 0, false ; "miss")]
+    fn cache_health_keeps_openrouter_lifetime_unknown(
+        cache_read: u32,
+        cache_creation: u32,
+        expected_hit: bool,
+    ) {
+        let health = openrouter_cache_health(&crate::TokenUsage {
+            cache_creation,
+            cache_read,
+            ..Default::default()
+        });
+
+        assert_eq!(health.kind, CacheKind::Prompt);
+        assert_eq!(health.valid_until, 0);
+        assert_eq!(health.ttl_seconds, 0);
+        assert_eq!(health.hit, expected_hit);
     }
 
     #[test]

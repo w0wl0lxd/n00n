@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use crate::model::{FastPricing, Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::{
-    AgentError, CacheHealth, CacheKind, ContentBlock, Message, ProviderEvent, Role, StopReason,
+    AgentError, CacheHealth, ContentBlock, Message, ProviderEvent, Role, StopReason,
     StreamResponse, ThinkingConfig, TokenUsage,
 };
 
@@ -74,15 +74,25 @@ struct Usage {
     cache_read_input_tokens: u32,
 }
 
-impl From<Usage> for TokenUsage {
-    fn from(u: Usage) -> Self {
+impl From<&Usage> for TokenUsage {
+    fn from(usage: &Usage) -> Self {
         Self {
-            input: u.input_tokens,
-            output: u.output_tokens,
-            cache_creation: u.cache_creation_input_tokens,
-            cache_read: u.cache_read_input_tokens,
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+            cache_creation: usage.cache_creation_input_tokens,
+            cache_read: usage.cache_read_input_tokens,
         }
     }
+}
+
+fn anthropic_cache_health(usage: &Usage, observed_at: u64) -> CacheHealth {
+    super::super::prompt_cache_health(
+        &TokenUsage::from(usage),
+        Some((
+            observed_at.saturating_add(ANTHROPIC_CACHE_TTL_SECONDS),
+            ANTHROPIC_CACHE_TTL_SECONDS,
+        )),
+    )
 }
 
 #[derive(Deserialize)]
@@ -320,25 +330,8 @@ impl EventParser {
                 if let Ok(ev) = serde_json::from_str::<MessageStartEvent>(data)
                     && let Some(u) = ev.message.usage
                 {
-                    let hit = u.cache_read_input_tokens > 0;
-                    let cached = u.cache_read_input_tokens > 0 || u.cache_creation_input_tokens > 0;
-                    self.usage = TokenUsage::from(u);
-                    let valid_until = if cached {
-                        n00n_storage::now_epoch().saturating_add(ANTHROPIC_CACHE_TTL_SECONDS)
-                    } else {
-                        0
-                    };
-                    let ttl_seconds = if cached {
-                        ANTHROPIC_CACHE_TTL_SECONDS
-                    } else {
-                        0
-                    };
-                    let health = CacheHealth {
-                        kind: CacheKind::Prompt,
-                        valid_until,
-                        ttl_seconds,
-                        hit,
-                    };
+                    let health = anthropic_cache_health(&u, n00n_storage::now_epoch());
+                    self.usage = TokenUsage::from(&u);
                     if let Err(error) = event_tx
                         .send_async(ProviderEvent::CacheHealth { cache: health })
                         .await
@@ -686,12 +679,13 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        LONG_CONTEXT_SUFFIX, LONG_CONTEXT_WINDOW, build_request_body_with_system,
-        build_wire_messages, long_context_window, strip_long_context,
+        ANTHROPIC_CACHE_TTL_SECONDS, LONG_CONTEXT_SUFFIX, LONG_CONTEXT_WINDOW, Usage,
+        anthropic_cache_health, build_request_body_with_system, build_wire_messages,
+        long_context_window, strip_long_context,
     };
     use crate::model::{Model, ModelFamily, ModelPricing, ModelTier};
     use crate::types::{BodyOverride, ThinkingConfig};
-    use crate::{ContentBlock, Message, Role};
+    use crate::{CacheKind, ContentBlock, Message, Role};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -762,6 +756,46 @@ mod tests {
         );
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["messages"], json!([]));
+    }
+
+    #[test_case(10, 0, true ; "hit")]
+    #[test_case(0, 10, false ; "write")]
+    #[test_case(0, 0, false ; "miss")]
+    fn cache_health_tracks_anthropic_ephemeral_ttl(
+        cache_read_input_tokens: u32,
+        cache_creation_input_tokens: u32,
+        expected_hit: bool,
+    ) {
+        const OBSERVED_AT: u64 = 1_000;
+        let health = anthropic_cache_health(
+            &Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+            },
+            OBSERVED_AT,
+        );
+        let cached = cache_read_input_tokens > 0 || cache_creation_input_tokens > 0;
+
+        assert_eq!(health.kind, CacheKind::Prompt);
+        assert_eq!(
+            health.valid_until,
+            if cached {
+                OBSERVED_AT + ANTHROPIC_CACHE_TTL_SECONDS
+            } else {
+                0
+            }
+        );
+        assert_eq!(
+            health.ttl_seconds,
+            if cached {
+                ANTHROPIC_CACHE_TTL_SECONDS
+            } else {
+                0
+            }
+        );
+        assert_eq!(health.hit, expected_hit);
     }
 
     #[test_case("claude-opus-4-8-1m", "claude-opus-4-8" ; "strips_suffix")]
