@@ -1787,4 +1787,94 @@ mod tests {
         let result = branches(&non_repo);
         assert!(matches!(result, Err(GitError::GitOperation(_))));
     }
+
+    #[test]
+    fn blame_multi_commit_attributes_lines_correctly() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "line 1\nline 2\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "first commit"]);
+        let commit1 = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        std::fs::write(root.join("file.txt"), "line 1 updated\nline 2\nline 3\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "second commit"]);
+        let commit2 = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let res = blame(root, "file.txt").unwrap();
+        assert_eq!(res.lines.len(), 3);
+
+        assert_eq!(res.lines[0].line_number, 1);
+        assert_eq!(res.lines[0].content, "line 1 updated\n");
+        assert_eq!(res.lines[0].author, "Test");
+        assert_eq!(res.lines[0].commit_id, commit2);
+
+        assert_eq!(res.lines[1].line_number, 2);
+        assert_eq!(res.lines[1].content, "line 2\n");
+        assert_eq!(res.lines[1].author, "Test");
+        assert_eq!(res.lines[1].commit_id, commit1);
+
+        assert_eq!(res.lines[2].line_number, 3);
+        assert_eq!(res.lines[2].content, "line 3\n");
+        assert_eq!(res.lines[2].author, "Test");
+        assert_eq!(res.lines[2].commit_id, commit2);
+    }
+
+    #[test]
+    fn blame_error_cases_handled_properly() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "line 1\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "first commit"]);
+
+        assert!(matches!(
+            blame(root, ""),
+            Err(GitError::FileNotFound(msg)) if msg == "file path is empty"
+        ));
+
+        assert!(matches!(
+            blame(root, "missing.txt"),
+            Err(GitError::FileNotFound(_))
+        ));
+
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        assert!(matches!(
+            blame(root, "subdir"),
+            Err(GitError::FileNotFound(_))
+        ));
+
+        let outside_temp = tempfile::tempdir().unwrap();
+        let outside_file = outside_temp.path().join("outside.txt");
+        std::fs::write(&outside_file, "outside\n").unwrap();
+        assert!(matches!(
+            blame(root, outside_file.to_str().unwrap()),
+            Err(GitError::FileNotFound(_))
+        ));
+
+        let bare_temp = tempfile::tempdir().unwrap();
+        let bare_root = bare_temp.path();
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(bare_root)
+            .args(["init", "--bare"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(matches!(
+            blame(bare_root, "file.txt"),
+            Err(GitError::BareRepo)
+        ));
+    }
 }
