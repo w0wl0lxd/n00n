@@ -51,8 +51,7 @@ pub(crate) fn build_body(
         messages,
         system,
         opts.message_cache_breakpoints,
-        model.supports_prompt_cache_breakpoint()
-            || opts.openai_prompt_cache_mode == Some(OpenAiPromptCacheMode::Explicit),
+        model.supports_prompt_cache_breakpoint() || opts.message_cache_breakpoints > 0,
     );
     let has_prompt_cache_breakpoint = contains_prompt_cache_breakpoint(&input);
     let mut wire_tools = convert_tools(tools, model);
@@ -82,13 +81,17 @@ pub(crate) fn build_body(
         body["prompt_cache_key"] = json!(prompt_cache_key);
     }
 
-    let prompt_cache_mode = if has_prompt_cache_breakpoint {
-        Some("explicit")
-    } else {
-        opts.openai_prompt_cache_mode
-            .filter(|mode| *mode == OpenAiPromptCacheMode::Implicit)
-            .map(OpenAiPromptCacheMode::as_wire)
-    };
+    let prompt_cache_mode = opts
+        .openai_prompt_cache_mode
+        .and_then(|mode| match mode {
+            OpenAiPromptCacheMode::Implicit => Some(mode.as_wire()),
+            OpenAiPromptCacheMode::Explicit if has_prompt_cache_breakpoint => Some(mode.as_wire()),
+            OpenAiPromptCacheMode::Explicit => None,
+        })
+        .or_else(|| {
+            (has_prompt_cache_breakpoint && model.supports_prompt_cache_breakpoint())
+                .then_some(OpenAiPromptCacheMode::Explicit.as_wire())
+        });
     if let Some(mode) = prompt_cache_mode {
         body["prompt_cache_options"] = json!({
             "mode": mode,
@@ -2217,7 +2220,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test_case(0, false ; "no_emitted_breakpoint")]
     #[test_case(1, true ; "emitted_breakpoint")]
-    fn build_body_prompt_cache_options_require_emitted_breakpoint(
+    fn build_body_default_cache_options_follow_model_support(
         message_cache_breakpoints: usize,
         expected: bool,
     ) {
@@ -2237,6 +2240,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             &opts,
             true,
         );
+        assert_eq!(contains_prompt_cache_breakpoint(&body["input"]), expected);
         assert_eq!(body.get("prompt_cache_options").is_some(), expected);
     }
 
@@ -2289,7 +2293,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
-    fn build_body_explicit_breakpoint_overrides_requested_implicit_prompt_cache_options() {
+    fn build_body_explicit_breakpoint_keeps_requested_implicit_prompt_cache_options() {
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 1,
@@ -2308,11 +2312,12 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             true,
         );
 
-        assert_eq!(body["prompt_cache_options"]["mode"], "explicit");
+        assert!(contains_prompt_cache_breakpoint(&body["input"]));
+        assert_eq!(body["prompt_cache_options"]["mode"], "implicit");
     }
 
     #[test]
-    fn build_body_gates_codex_breakpoints_on_explicit_request_mode() {
+    fn build_body_codex_breakpoints_do_not_require_top_level_options() {
         let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
         let messages = [Message::user("cache me".into())];
         let default_body = build_body(
@@ -2329,7 +2334,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             },
             true,
         );
-        assert!(!contains_prompt_cache_breakpoint(&default_body["input"]));
+        assert!(contains_prompt_cache_breakpoint(&default_body["input"]));
         assert!(default_body.get("prompt_cache_options").is_none());
 
         let explicit_body = build_body(
