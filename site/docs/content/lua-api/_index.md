@@ -5,6 +5,7 @@ weight = 6
 group = "Reference"
 +++
 
+{% raw %}
 # Lua API
 
 n00n plugins are plain Lua files. Everything a plugin can touch lives under
@@ -6194,3 +6195,5 @@ function M.firecrawl_search(results)
 function M.bounded_firecrawl_search(results, max_lines, max_bytes)
 ```
 
+
+{% endraw %}

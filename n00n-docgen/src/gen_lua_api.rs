@@ -10,5 +10,8 @@ group = "Reference"
 "#;
 
 pub fn generate() -> String {
-    format!("{FRONTMATTER}{}", docs_render::site_page())
+    format!(
+        "{FRONTMATTER}{{% raw %}}\n{}\n{{% endraw %}}\n",
+        docs_render::site_page()
+    )
 }
