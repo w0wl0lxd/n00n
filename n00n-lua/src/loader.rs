@@ -1610,3 +1610,59 @@ mod tests {
         );
     }
 }
+
+#[test]
+fn load_source_with_permissions_passes_permissions() {
+    use crate::plugin_permissions::Permission;
+
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+
+    let mut perms = PluginPermissions::denied();
+    perms.set(Permission::FsRead, true);
+
+    let src = r#"
+            n00n.api.register_tool({
+                name = "perm_check_tool",
+                description = "check perms",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function(input, ctx)
+                    local read_ok = pcall(function() n00n.fs.read("/dev/null") end)
+                    local write_ok = pcall(function() n00n.fs.write("/tmp/test", "x") end)
+                    return "read=" .. tostring(read_ok) .. ",write=" .. tostring(write_ok)
+                end,
+            })
+        "#;
+
+    host.load_source_with_permissions("perm_check_plugin", src, perms)
+        .unwrap();
+
+    let entry = reg
+        .get("perm_check_tool")
+        .expect("tool should be registered");
+    let inv = entry
+        .tool
+        .parse(&serde_json::json!({}))
+        .expect("parse input");
+    let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    let exec_res = smol::block_on(async { inv.execute(&ctx).await });
+    let output = exec_res.output.expect("execution should succeed");
+
+    match output {
+        n00n_agent::ToolOutput::Plain(s) => {
+            assert_eq!(s.text, "read=true,write=false");
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
+}
+
+#[test]
+fn load_source_with_permissions_fails_when_host_dead() {
+    let mut host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    host.begin_shutdown();
+
+    let err = host
+        .load_source_with_permissions("dead_host", "return {}", PluginPermissions::denied())
+        .unwrap_err();
+    assert!(matches!(err, PluginError::HostDead));
+}
