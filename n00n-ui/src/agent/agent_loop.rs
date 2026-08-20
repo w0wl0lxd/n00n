@@ -396,9 +396,10 @@ impl AgentLoop {
             self.history.push(msg);
         }
 
-        let prompt_slots = match self.lua_handle.as_ref() {
-            Some(h) => h.collect_prompt_slots_async().await,
-            None => n00n_agent::prompt::ResolvedSlots::default(),
+        let prompt_slots = match (self.lua_handle.as_ref(), self.identity.as_ref()) {
+            (Some(handle), Some(identity)) => handle.collect_prompt_slots_async_for(identity).await,
+            (Some(handle), None) => handle.collect_prompt_slots_async().await,
+            (None, _) => n00n_agent::prompt::ResolvedSlots::default(),
         };
         let mut system = agent::build_system_prompt(
             &self.vars,

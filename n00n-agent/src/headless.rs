@@ -36,26 +36,58 @@ const NON_UTF8_PLAN_PATH_ERR: &str = "plan path must be valid UTF-8";
 const INITIAL_STATE_REVISION: u64 = 0;
 
 pub trait SessionStatePersistence: Send + Sync {
+    /// Hydrates the runtime for one session and returns an ownership lease.
+    ///
     /// # Errors
-    /// Returns an error when the runtime cannot restore the snapshot.
+    /// Returns an error when the persisted snapshot cannot be restored.
     fn hydrate(
         &self,
         identity: &SessionIdentity,
         snapshot: Option<StoredSessionStateSnapshot>,
     ) -> Result<u64, String>;
 
+    /// Captures the runtime state for one session revision.
+    ///
     /// # Errors
-    /// Returns an error when the runtime cannot capture its current state.
+    /// Returns an error when runtime state cannot be serialized.
     fn capture(
         &self,
         identity: &SessionIdentity,
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, String>;
 
+    /// Resolves prompt slots that depend on the hydrated session state.
+    ///
     /// # Errors
-    /// Returns an error when the runtime cannot remove the owner state.
+    /// Returns an error when the session-bound prompt context is unavailable.
+    fn prompt_slots(&self, _identity: &SessionIdentity) -> Result<Option<ResolvedSlots>, String> {
+        Ok(None)
+    }
+
+    /// Drops state owned by a session when its matching lease is released.
+    ///
+    /// # Errors
+    /// Returns an error when runtime state cannot be discarded.
     fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String>;
 }
+fn resolved_prompt_slots(
+    persistence: Option<&Arc<dyn SessionStatePersistence>>,
+    identity: &SessionIdentity,
+    fallback: Arc<ResolvedSlots>,
+) -> Arc<ResolvedSlots> {
+    let Some(persistence) = persistence else {
+        return fallback;
+    };
+    match persistence.prompt_slots(identity) {
+        Ok(Some(slots)) => Arc::new(slots),
+        Ok(None) => fallback,
+        Err(error) => {
+            warn!(%error, "session prompt slots unavailable; using startup slots");
+            fallback
+        }
+    }
+}
+
 fn state_revision_or_initial(snapshot: Option<&StoredSessionStateSnapshot>) -> u64 {
     let Some(snapshot) = snapshot else {
         return INITIAL_STATE_REVISION;
@@ -470,7 +502,7 @@ fn tool_definitions(
 }
 
 #[must_use]
-pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
+pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
     let working_dir = params.initial_wd.to_string_lossy().into_owned();
     let mode = params.mode.clone();
     let AgentSetup {
@@ -485,14 +517,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         params.workflow,
     );
 
-    let system = agent::build_system_prompt(
-        &vars,
-        &mode,
-        &instructions.text,
-        &params.prompt_slots,
-        &params.model,
-    );
-
+    let startup_prompt_slots = Arc::new(std::mem::take(&mut params.prompt_slots));
     let tool_names = extract_tool_names(&tools);
 
     let (raw_tx, event_rx) = flume::unbounded::<Envelope>();
@@ -523,7 +548,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 &session_cwd,
                 &model_spec,
                 &mode,
-                params.state_persistence,
+                params.state_persistence.clone(),
             ) {
                 Ok(store) => store,
                 Err(message) => {
@@ -553,6 +578,13 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 || SessionIdentity::root(session_ref_clone.clone()),
                 |store| store.identity.clone(),
             );
+            let prompt_slots = resolved_prompt_slots(
+                params.state_persistence.as_ref(),
+                &identity,
+                startup_prompt_slots,
+            );
+            let system =
+                agent::build_system_prompt(&vars, &mode, &instructions.text, &prompt_slots, &model);
             let session_store = Arc::new(SyncMutex::new(session_store));
             let checkpoint_store = Arc::clone(&session_store);
             let checkpoint_model_spec = model_spec.clone();
@@ -570,7 +602,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     timeouts: params.timeouts,
                     openai_options: params.openai_options,
                     file_tracker: FileReadTracker::fresh(),
-                    prompt_slots: Arc::new(params.prompt_slots),
+                    prompt_slots: Arc::clone(&prompt_slots),
                     subagent_cancels: Arc::new(CancelMap::new()),
                     registry: Arc::clone(ToolRegistry::global_arc()),
                     audience: ToolAudience::MAIN,
@@ -822,6 +854,11 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     model = new_model;
                 }
 
+                let prompt_slots = resolved_prompt_slots(
+                    params.state_persistence.as_ref(),
+                    &identity,
+                    Arc::clone(&params.prompt_slots),
+                );
                 let mut system = if let Some(override_) = params.system_prompt_override.as_deref() {
                     System::from(override_)
                 } else {
@@ -829,7 +866,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         &vars,
                         &input.mode,
                         &instructions.text,
-                        &params.prompt_slots,
+                        &prompt_slots,
                         &model,
                     )
                 };
@@ -879,7 +916,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         timeouts: params.timeouts,
                         openai_options: params.openai_options.clone(),
                         file_tracker: Arc::clone(&file_tracker),
-                        prompt_slots: Arc::clone(&params.prompt_slots),
+                        prompt_slots: Arc::clone(&prompt_slots),
                         subagent_cancels: Arc::new(CancelMap::new()),
                         registry: Arc::clone(ToolRegistry::global_arc()),
                         audience: ToolAudience::MAIN,
@@ -993,6 +1030,8 @@ mod tests {
         captured_revisions: std::sync::Mutex<Vec<u64>>,
         captured_identities: std::sync::Mutex<Vec<SessionIdentity>>,
         dropped_owners: std::sync::Mutex<Vec<(n00nId, u64)>>,
+        prompt_identities: std::sync::Mutex<Vec<SessionIdentity>>,
+        prompt_content: std::sync::Mutex<Option<String>>,
         next_lease: std::sync::atomic::AtomicU64,
         fail_capture: std::sync::atomic::AtomicBool,
         fail_hydrate: std::sync::atomic::AtomicBool,
@@ -1051,6 +1090,29 @@ mod tests {
             Ok(snapshot)
         }
 
+        fn prompt_slots(
+            &self,
+            identity: &SessionIdentity,
+        ) -> Result<Option<ResolvedSlots>, String> {
+            self.prompt_identities
+                .lock()
+                .unwrap()
+                .push(identity.clone());
+            let Some(content) = self.prompt_content.lock().unwrap().clone() else {
+                return Ok(None);
+            };
+            let mut slots = ResolvedSlots::default();
+            slots.insert(
+                crate::prompt::PromptId::System,
+                crate::prompt::Slot::AfterInstructions,
+                crate::prompt::SlotEntry {
+                    plugin: Arc::from(PLUGIN),
+                    content,
+                },
+            );
+            Ok(Some(slots))
+        }
+
         fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String> {
             self.dropped_owners.lock().unwrap().push((owner, lease));
             Ok(())
@@ -1073,6 +1135,36 @@ mod tests {
 
     fn load(tmp: &TempDir) -> StoredSession {
         StoredSession::load(session_id(), &StateDir::from_path(tmp.path().to_path_buf())).unwrap()
+    }
+
+    #[test]
+    fn resolved_prompt_slots_uses_requested_session() {
+        let probe = Arc::new(StatePersistenceProbe::default());
+        *probe.prompt_content.lock().unwrap() = Some("restored todo".into());
+        let persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        let slots = resolved_prompt_slots(
+            Some(&persistence),
+            &identity,
+            Arc::new(ResolvedSlots::default()),
+        );
+
+        assert_eq!(
+            probe.prompt_identities.lock().unwrap().as_slice(),
+            std::slice::from_ref(&identity)
+        );
+        assert_eq!(
+            slots
+                .get(
+                    crate::prompt::PromptId::System,
+                    crate::prompt::Slot::AfterInstructions,
+                )
+                .iter()
+                .map(|entry| entry.content.as_str())
+                .collect::<Vec<_>>(),
+            ["restored todo"]
+        );
     }
 
     #[test]

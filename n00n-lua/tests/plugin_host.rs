@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use n00n_agent::AgentEvent;
 use n00n_agent::headless::SessionStatePersistence;
+use n00n_agent::prompt::{PromptId, Slot};
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
     Deadline, DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
@@ -7186,11 +7187,8 @@ fn bundled_todo_persists_root_scoped_state() {
 
     smol::block_on(invocation.execute(&ctx)).output.unwrap();
 
-    let snapshot = host
-        .event_handle()
-        .unwrap()
-        .capture_state(&identity, 1)
-        .unwrap();
+    let handle = host.event_handle().unwrap();
+    let snapshot = handle.capture_state(&identity, 1).unwrap();
     assert_eq!(
         snapshot
             .plugin_payload_for_apply("todo_write", 1, StoredStateScope::Root)
@@ -7198,6 +7196,21 @@ fn bundled_todo_persists_root_scoped_state() {
         Some(&serde_json::json!({
             "todos": [{ "content": "Resume work", "status": "in_progress", "priority": "high" }]
         }))
+    );
+    let slots = handle.collect_prompt_slots_for(&identity);
+    let context = slots
+        .get(PromptId::System, Slot::AfterInstructions)
+        .iter()
+        .map(|entry| entry.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        context.contains("# Current todos"),
+        "missing todo heading: {context}"
+    );
+    assert!(
+        context.contains("[in_progress] Resume work"),
+        "missing todo state: {context}"
     );
 }
 

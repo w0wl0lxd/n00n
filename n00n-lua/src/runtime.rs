@@ -38,7 +38,7 @@ use crate::api::ui::buf::{BufHandle, BufferStore};
 use crate::api::util::command::{CommandHandlerMap, HintWriter, publish_command_snapshot};
 use crate::api::util::command::{LuaCommandReader, LuaCommandWriter, UiAction};
 use crate::api::util::convert::json_to_lua;
-use crate::api::util::ctx::LuaCtx;
+use crate::api::util::ctx::{LuaCtx, PromptCtx};
 use crate::api::util::setup::ConfigStore;
 use crate::api::util::state_convert::json_to_lua as state_json_to_lua;
 use crate::docs_render;
@@ -196,6 +196,7 @@ pub enum Request {
         identity: Option<SessionIdentity>,
     },
     CollectPromptSlots {
+        identity: Option<PluginStateIdentity>,
         reply: flume::Sender<ResolvedSlots>,
     },
     CollectPluginOptions {
@@ -2011,27 +2012,54 @@ impl LuaRuntime {
         }
     }
 
-    async fn run_hint_callback(&self, plugin: &str, func: Function) -> Option<String> {
+    async fn run_hint_callback(
+        &self,
+        plugin: &Arc<str>,
+        func: Function,
+        identity: Option<&PluginStateIdentity>,
+    ) -> Option<String> {
+        let argument = match identity {
+            Some(identity) => match self.lua.create_userdata(PromptCtx::new(
+                Arc::clone(plugin),
+                identity.clone(),
+                Arc::clone(&self.state),
+            )) {
+                Ok(ctx) => LuaValue::UserData(ctx),
+                Err(error) => {
+                    tracing::warn!(plugin = %plugin, %error, "failed to create prompt hint context");
+                    return None;
+                }
+            },
+            None => LuaValue::Nil,
+        };
         let result: mlua::Result<LuaValue> = run_detached(&self.lua, async {
             let thread = self.lua.create_thread(func)?;
-            thread.into_async::<LuaValue>(())?.await
+            thread.into_async::<LuaValue>(argument)?.await
         })
         .await;
         match result {
-            Ok(LuaValue::String(s)) => Some(s.to_string_lossy()),
+            Ok(LuaValue::String(s)) => {
+                let content = s.to_string_lossy();
+                if content.len() > crate::api::tool::MAX_HINT_CONTENT_SIZE {
+                    tracing::warn!(plugin = %plugin, "prompt hint callback exceeded size limit");
+                    None
+                } else {
+                    Some(content)
+                }
+            }
             Ok(LuaValue::Nil) => None,
             Ok(_) => {
-                tracing::warn!(plugin, "prompt hint callback returned non-string");
+                tracing::warn!(plugin = %plugin, "prompt hint callback returned non-string");
                 None
             }
             Err(e) => {
-                tracing::warn!(plugin, error = %e, "prompt hint callback failed");
+                tracing::warn!(plugin = %plugin, error = %e, "prompt hint callback failed");
                 None
             }
         }
     }
 
-    async fn collect_prompt_slots(&self) -> ResolvedSlots {
+    async fn collect_prompt_slots(&self, identity: Option<&PluginStateIdentity>) -> ResolvedSlots {
         struct Pending {
             plugin: Arc<str>,
             prompts: Option<Vec<PromptId>>,
@@ -2075,7 +2103,9 @@ impl LuaRuntime {
         for item in pending {
             let content = match item.content {
                 PendingContent::Static(s) => Some(s),
-                PendingContent::Callback(func) => self.run_hint_callback(&item.plugin, func).await,
+                PendingContent::Callback(func) => {
+                    self.run_hint_callback(&item.plugin, func, identity).await
+                }
             };
             let Some(content) = content else { continue };
             let explicit = item.prompts.is_some();
@@ -3577,8 +3607,8 @@ pub fn spawn(
                             let res = rt.run_init_lua(&source, &source_name, plugin_dir).await;
                             let _ = reply.send(res);
                         }
-                        Request::CollectPromptSlots { reply } => {
-                            let slots = rt.collect_prompt_slots().await;
+                        Request::CollectPromptSlots { identity, reply } => {
+                            let slots = rt.collect_prompt_slots(identity.as_ref()).await;
                             let _ = reply.send(slots);
                         }
                         Request::CollectPluginOptions { reply } => {
