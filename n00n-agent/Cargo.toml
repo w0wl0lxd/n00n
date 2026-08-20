@@ -45,10 +45,14 @@ base64 = { workspace = true }
 getrandom = { workspace = true }
 tiktoken-rs = { workspace = true }
 
-
 [dev-dependencies]
 test-case = { workspace = true }
 tempfile = { workspace = true }
+criterion = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "diff_bench"
+harness = false
