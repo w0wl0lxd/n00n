@@ -10,8 +10,10 @@ fn generate_sample_text(lines: usize, change_frequency: usize) -> (String, Strin
             "line_{i}: sample text for unified diff benchmarking string formatting performance\n"
         );
         if i % change_frequency == 0 {
-            before.push_str(&format!("before_{line}"));
-            after.push_str(&format!("after_{line}"));
+            before.push_str("before_");
+            before.push_str(&line);
+            after.push_str("after_");
+            after.push_str(&line);
         } else {
             before.push_str(&line);
             after.push_str(&line);
