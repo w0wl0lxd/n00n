@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787221760082,
+  "lastUpdate": 1787223032425,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -21699,6 +21699,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 145500,
             "range": "± 15069",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f65290d87201c279ec6aa10c636d3c0f27dabaf",
+          "message": "fix(providers): report cache lifetimes accurately (#423)",
+          "timestamp": "2026-08-20T06:34:22-04:00",
+          "tree_id": "73f50ed0f769cc46bd5468c9c9198f80917d01f8",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/4f65290d87201c279ec6aa10c636d3c0f27dabaf"
+        },
+        "date": 1787223030333,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6910144,
+            "range": "± 19896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220502,
+            "range": "± 13531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2219759,
+            "range": "± 49310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8188722,
+            "range": "± 32764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4352638,
+            "range": "± 22485",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4317874,
+            "range": "± 10454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584464,
+            "range": "± 1890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191935,
+            "range": "± 416",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191919,
+            "range": "± 292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1083361,
+            "range": "± 12642",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 584161,
+            "range": "± 2130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 583908,
+            "range": "± 1649",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48018,
+            "range": "± 3553",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 131691,
+            "range": "± 9006",
             "unit": "ns/iter"
           }
         ]
