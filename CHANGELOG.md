@@ -4,6 +4,19 @@ All notable user-facing changes are documented in this file. Entries are
 generated from `changelog.d/` fragments at release time via `just changelog`.
 See `changelog.d/README.md` for the fragment convention.
 
+## [0.6.2] - 2026-08-20
+
+### Fixed
+
+- Fix post-0.6.1 review comments: remove heading markers inside changelog list items and deduplicate repeated block, handle CRLF and bullet prefixes correctly in build-changelog.sh, and replace em-dash in provider docs per tone rules.
+- Fix flaky `pre_execution_callback_timeout_starts_after_dispatch` test on Windows by increasing timeouts to 5s/2s.
+- Fix Lua API docs build with Zola 0.23: wrap generated markdown in Tera raw block to prevent `{#` and `{{` from being parsed as template syntax, which broke `zola build` on CI after the 0.23 upgrade.
+- Fix tool token analysis script to handle current zstd-compressed JSONL session format at `~/.local/state/n00n/sessions/*.jsonl` in addition to legacy `~/.n00n/sessions/*.json`.
+
+### Docs
+
+- Added unit test coverage for `branches` function in `n00n-git`.
+- Added unit tests for git blame operation in `n00n-git`.
 
 ## [0.6.1] - 2026-08-19
 
