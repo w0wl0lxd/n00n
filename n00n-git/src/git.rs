@@ -1734,7 +1734,10 @@ mod tests {
             .to_string();
 
         let updated_branch_list = branches(root).unwrap();
-        let updated_main = updated_branch_list.iter().find(|b| b.name == "main").unwrap();
+        let updated_main = updated_branch_list
+            .iter()
+            .find(|b| b.name == "main")
+            .unwrap();
         let updated_feature = updated_branch_list
             .iter()
             .find(|b| b.name == "feature")
