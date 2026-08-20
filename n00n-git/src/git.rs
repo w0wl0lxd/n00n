@@ -193,6 +193,10 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
 /// Returns `GitError` if the repository cannot be opened or commit operations fail.
 #[instrument(skip(path))]
 pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
     let repo = gix::open(path)
         .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
 
@@ -1993,5 +1997,63 @@ mod tests {
             blame(bare_root, "file.txt"),
             Err(GitError::BareRepo)
         ));
+    }
+    #[test]
+    fn log_returns_error_for_invalid_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let invalid_path = temp.path().join("nonexistent");
+        assert!(matches!(
+            log(&invalid_path, 10),
+            Err(GitError::GitOperation(_))
+        ));
+    }
+
+    #[test]
+    fn log_returns_error_for_repo_without_commits() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        assert!(matches!(log(root, 10), Err(GitError::GitOperation(_))));
+    }
+
+    #[test]
+    fn log_returns_commits_in_reverse_chronological_order_and_respects_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+        let first_id = commit(root, "first commit\n\nbody text").unwrap();
+
+        std::fs::write(root.join("file.txt"), "two\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+        let second_id = commit(root, "second commit").unwrap();
+
+        std::fs::write(root.join("file.txt"), "three\n").unwrap();
+        add(root, &["file.txt".to_string()]).unwrap();
+        let third_id = commit(root, "third commit").unwrap();
+
+        let history = log(root, 10).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].id, third_id);
+        assert_eq!(history[0].message, "third commit\n");
+        assert_eq!(history[0].author, "Test");
+        assert_eq!(history[0].email, "test@example.com");
+        assert!(history[0].time > 0);
+        assert_eq!(history[1].id, second_id);
+        assert_eq!(history[1].message, "second commit\n");
+        assert_eq!(history[2].id, first_id);
+        assert_eq!(history[2].message, "first commit\n\nbody text\n");
+
+        let limited = log(root, 2).unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].id, third_id);
+        assert_eq!(limited[1].id, second_id);
+
+        let single = log(root, 1).unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].id, third_id);
+        assert!(log(root, 0).unwrap().is_empty());
     }
 }
