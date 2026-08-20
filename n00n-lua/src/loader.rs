@@ -788,6 +788,39 @@ impl EventHandle {
             .map_err(|message| PluginError::State { message })
     }
 
+    /// Queues plugin state hydration without waiting for the Lua runtime.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn hydrate_state_background(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+    ) -> Result<(), PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::HydrateState {
+                identity: PluginStateIdentity::from(identity),
+                snapshot,
+                reply,
+            })
+            .map_err(|_| PluginError::HostDead)?;
+        let session_id = identity.session_id().id();
+        smol::spawn(async move {
+            match recv.recv_async().await {
+                Ok(Ok(())) => {}
+                Ok(Err(message)) => {
+                    tracing::warn!(%session_id, %message, "failed to restore plugin session state");
+                }
+                Err(error) => {
+                    tracing::warn!(%session_id, %error, "plugin state hydration response disconnected");
+                }
+            }
+        })
+        .detach();
+        Ok(())
+    }
+
     /// Captures host-owned plugin state after all in-flight Lua work drains.
     ///
     /// # Errors
@@ -849,6 +882,24 @@ impl EventHandle {
             .send(Request::DropStateOwner { owner, reply })
             .map_err(|_| PluginError::HostDead)?;
         recv.recv().map_err(|_| PluginError::HostDead)
+    }
+
+    /// Queues removal of one canonical state owner without waiting for the Lua runtime.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn drop_state_owner_background(&self, owner: n00nId) -> Result<(), PluginError> {
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::DropStateOwner { owner, reply })
+            .map_err(|_| PluginError::HostDead)?;
+        smol::spawn(async move {
+            if let Err(error) = recv.recv_async().await {
+                tracing::warn!(%owner, %error, "plugin state drop response disconnected");
+            }
+        })
+        .detach();
+        Ok(())
     }
 
     pub fn request_restore(&self, item: RestoreItem, event_tx: n00n_agent::EventSender) {
@@ -1025,6 +1076,33 @@ mod tests {
             handle.try_collect_prompt_slots(),
             Err(PluginError::HostDead)
         ));
+    }
+
+    #[test]
+    fn background_state_requests_return_before_runtime_replies() {
+        let (tx, rx) = flume::unbounded();
+        let handle = EventHandle::probed_for_test(tx);
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        handle
+            .hydrate_state_background(&identity, Some(StoredSessionStateSnapshot::new(1)))
+            .unwrap();
+        let Request::HydrateState { reply, .. } = rx.try_recv().unwrap() else {
+            panic!("expected hydrate request");
+        };
+
+        handle
+            .drop_state_owner_background(identity.session_id().id())
+            .unwrap();
+        let Request::DropStateOwner {
+            reply: drop_reply, ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("expected drop request");
+        };
+
+        reply.send(Ok(())).unwrap();
+        drop_reply.send(()).unwrap();
     }
 
     #[test]

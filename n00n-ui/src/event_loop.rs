@@ -693,7 +693,7 @@ impl SpawnCtx {
                 .is_none_or(|hydrated_revision| root_snapshot_revision > *hydrated_revision);
             if should_hydrate_root {
                 handle
-                    .hydrate_state(
+                    .hydrate_state_background(
                         &SessionIdentity::root(SessionRef::from_id(root_id)),
                         root_snapshot,
                     )
@@ -704,7 +704,7 @@ impl SpawnCtx {
             }
             if root_id != session.id {
                 handle
-                    .hydrate_state(&identity, session_snapshot)
+                    .hydrate_state_background(&identity, session_snapshot)
                     .map_err(|error| eyre!("failed to hydrate plugin session state: {error}"))?;
             }
         }

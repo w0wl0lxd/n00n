@@ -404,7 +404,7 @@ impl App {
         };
         let session_id = self.state.session.id;
         let identity = plugin_state_identity(&self.state.session);
-        match handle.hydrate_state(&identity, snapshot) {
+        match handle.hydrate_state_background(&identity, snapshot) {
             Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%session_id, %error, "failed to restore plugin session state");
@@ -457,7 +457,7 @@ impl App {
         let Some(handle) = &self.lua_event_handle else {
             return;
         };
-        if let Err(error) = handle.drop_state_owner(session_id) {
+        if let Err(error) = handle.drop_state_owner_background(session_id) {
             tracing::warn!(%session_id, %error, "failed to drop plugin session state");
         }
     }
