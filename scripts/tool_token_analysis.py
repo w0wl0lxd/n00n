@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Analyze tool token usage from ~/.n00n/sessions to identify optimization targets."""
+"""Analyze tool token usage from sessions to identify optimization targets.
+
+Supports current zstd-compressed JSONL at ~/.local/state/n00n/sessions/*.jsonl
+(handled via the zstd binary) and legacy plain JSON at ~/.n00n/sessions/*.json.
+Requires zstd on PATH for current sessions; see scripts/extract_n00n_sessions.py.
+"""
 
 import json
 import sys
@@ -108,7 +113,7 @@ def extract_batch_subtool_calls(session):
     return sub_calls
 
 
-def _decompress_zstd(path: Path) -> str:
+def _decompress_zstd(path: Path) -> str | None:
     import subprocess
 
     try:
@@ -119,14 +124,22 @@ def _decompress_zstd(path: Path) -> str:
             return ""
         return out.stdout.decode("utf-8", errors="replace")
     except FileNotFoundError:
-        return ""
+        print(
+            "error: zstd not found on PATH (required for ~/.local/state/n00n/sessions/*.jsonl); install zstd",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _load_new_format(path: Path) -> dict[str, Any] | None:
     txt = _decompress_zstd(path)
+    if txt is None:
+        return None
     if not txt:
         return None
     messages: list[dict[str, Any]] = []
+    tool_outputs: dict[str, Any] = {}
+    token_usage: dict[str, Any] = {}
     for line in txt.splitlines():
         line = line.strip()
         if not line:
@@ -135,20 +148,42 @@ def _load_new_format(path: Path) -> dict[str, Any] | None:
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if rec.get("t") == "msg":
-            d = rec.get("d", {})
+        if not isinstance(rec, dict):
+            continue
+        t = rec.get("t")
+        if t == "msg":
+            d = rec.get("d")
+            if not isinstance(d, dict):
+                continue
             content = d.get("content")
             if isinstance(content, list):
                 messages.append({"content": content})
-            elif isinstance(d.get("content"), list):
-                messages.append({"content": d.get("content")})
+        elif t == "out":
+            oid = rec.get("id")
+            d = rec.get("d")
+            if isinstance(oid, str) and d is not None:
+                tool_outputs[oid] = d
+        elif t == "meta":
+            tu = rec.get("token_usage")
+            if isinstance(tu, dict):
+                token_usage = tu
+            elif isinstance(rec.get("d"), dict) and isinstance(
+                rec["d"].get("token_usage"), dict
+            ):
+                token_usage = rec["d"]["token_usage"]
     if not messages:
         return None
-    return {"messages": messages, "_source": str(path)}
+    sess: dict[str, Any] = {"messages": messages, "_source": str(path)}
+    if tool_outputs:
+        sess["tool_outputs"] = tool_outputs
+    if token_usage:
+        sess["token_usage"] = token_usage
+    return sess
 
 
 def load_sessions():
     sessions: list[dict[str, Any]] = []
+    jsonl_seen = 0
     for base in SESSION_DIRS:
         if not base.exists():
             continue
@@ -156,14 +191,22 @@ def load_sessions():
             try:
                 with open(f) as fh:
                     data = json.load(fh)
+                    if not isinstance(data, dict):
+                        continue
                     if data.get("messages"):
                         sessions.append(data)
             except (json.JSONDecodeError, OSError):
                 continue
         for f in base.glob("*.jsonl"):
+            jsonl_seen += 1
             sess = _load_new_format(f)
             if sess is not None:
                 sessions.append(sess)
+    if not sessions and jsonl_seen > 0:
+        print(
+            f"warning: found {jsonl_seen} *.jsonl session(s) but none loaded (zstd missing or decompression failed)",
+            file=sys.stderr,
+        )
     return sessions
 
 
@@ -503,7 +546,10 @@ def print_session_summary(sessions, all_calls):
 def main():
     sessions = load_sessions()
     if not sessions:
-        print("No sessions found in", SESSION_DIR, file=sys.stderr)
+        print(
+            f"No sessions found in {', '.join(str(p) for p in SESSION_DIRS)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     all_calls = []
