@@ -3,8 +3,6 @@
 //! snapshots; display text, hunks, and syntax-aware rendering are all derived
 //! from them, so they cannot drift out of sync with what was written to disk.
 
-use std::fmt::Write;
-
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 
@@ -78,7 +76,8 @@ pub fn compute_hunks(before: &str, after: &str) -> Vec<DiffHunk> {
 pub fn unified_text(before: &str, after: &str, summary: &str, display_path: &str) -> String {
     let mut out = format!("{summary}\n--- {display_path}\n+++ {display_path}");
     let write_change = |out: &mut String, prefix: &str, spans: &[DiffSpan]| {
-        let _ = write!(out, "\n{prefix}");
+        out.push('\n');
+        out.push_str(prefix);
         for s in spans {
             out.push_str(&s.text);
         }
@@ -88,7 +87,8 @@ pub fn unified_text(before: &str, after: &str, summary: &str, display_path: &str
         for dl in &hunk.lines {
             match dl {
                 DiffLine::Unchanged(t) => {
-                    let _ = write!(out, "\n  {t}");
+                    out.push_str("\n  ");
+                    out.push_str(t);
                 }
                 DiffLine::Removed(spans) => write_change(&mut out, "- ", spans),
                 DiffLine::Added(spans) => write_change(&mut out, "+ ", spans),
