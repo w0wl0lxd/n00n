@@ -212,7 +212,7 @@ No hardcoded model catalog. Use any model ID supported by this provider.
 
 No hardcoded model catalog. Use any model ID supported by this provider.
 
-OpenCode Go (`https://opencode.ai/zen/go/v1`) is a separate models.dev catalog entry with its own curated model set — including `muse-spark-1.2-contributor` (the Go-only contributor variant of `muse-spark-1.2`), `gpt-5.3-codex-spark`, and Go-exclusive `qwen3.7-*`/`qwen3.8-max` models; select it with a spec like `opencode/opencode-go/<model>`, or `opencode/opencode-go` for the default model. The main Zen catalog (`https://opencode.ai/zen/v1`) includes `muse-spark-1.2` and `opencode-go` as selectable model prefixes.
+OpenCode Go (`https://opencode.ai/zen/go/v1`) is a separate models.dev catalog entry with its own curated model set, including `muse-spark-1.2-contributor` (the Go-only contributor variant of `muse-spark-1.2`), `gpt-5.3-codex-spark`, and Go-exclusive `qwen3.7-*`/`qwen3.8-max` models; select it with a spec like `opencode/opencode-go/<model>`, or `opencode/opencode-go` for the default model. The main Zen catalog (`https://opencode.ai/zen/v1`) includes `muse-spark-1.2` and `opencode-go` as selectable model prefixes.
 
 By default n00n hides free models from the Opencode catalog. To list free models (they use a public fallback, no API key needed), add this to `~/.config/n00n/providers.toml`:
 
