@@ -1676,4 +1676,113 @@ mod tests {
         assert!(!tracked.staged, "worktree-only edit reported as staged");
         assert!(staged.staged, "index edit not reported as staged");
     }
+
+    #[test]
+    fn branches_returns_single_branch_and_marks_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "hello\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial commit"]);
+
+        let branch_list = branches(root).unwrap();
+        assert_eq!(branch_list.len(), 1);
+
+        let main_branch = &branch_list[0];
+        assert_eq!(main_branch.name, "main");
+        assert!(main_branch.is_current);
+
+        let head_sha = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout).unwrap();
+        assert_eq!(main_branch.head, head_sha.trim());
+    }
+
+    #[test]
+    fn branches_lists_multiple_branches_and_identifies_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "hello\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial commit"]);
+        let main_sha = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        run(root, &["branch", "feature"]);
+
+        let branch_list = branches(root).unwrap();
+        assert_eq!(branch_list.len(), 2);
+
+        let main_b = branch_list.iter().find(|b| b.name == "main").unwrap();
+        let feature_b = branch_list.iter().find(|b| b.name == "feature").unwrap();
+
+        assert!(main_b.is_current);
+        assert!(!feature_b.is_current);
+        assert_eq!(main_b.head, main_sha);
+        assert_eq!(feature_b.head, main_sha);
+
+        // Switch to feature branch and commit
+        run(root, &["checkout", "feature"]);
+        std::fs::write(root.join("file.txt"), "feature update\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "feature commit"]);
+        let feature_sha = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let updated_branch_list = branches(root).unwrap();
+        let updated_main = updated_branch_list.iter().find(|b| b.name == "main").unwrap();
+        let updated_feature = updated_branch_list
+            .iter()
+            .find(|b| b.name == "feature")
+            .unwrap();
+
+        assert!(!updated_main.is_current);
+        assert!(updated_feature.is_current);
+        assert_eq!(updated_main.head, main_sha);
+        assert_eq!(updated_feature.head, feature_sha);
+    }
+
+    #[test]
+    fn branches_handles_detached_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "first\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "first commit"]);
+        let first_sha = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        std::fs::write(root.join("file.txt"), "second\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "second commit"]);
+
+        run(root, &["checkout", "--detach", &first_sha]);
+
+        let branch_list = branches(root).unwrap();
+        assert!(!branch_list.is_empty());
+        for branch in &branch_list {
+            assert!(
+                !branch.is_current,
+                "branch {} should not be current in detached HEAD state",
+                branch.name
+            );
+        }
+    }
+
+    #[test]
+    fn branches_returns_error_on_invalid_repo_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let non_repo = temp.path().join("not_a_repo");
+        std::fs::create_dir_all(&non_repo).unwrap();
+
+        let result = branches(&non_repo);
+        assert!(matches!(result, Err(GitError::GitOperation(_))));
+    }
 }
