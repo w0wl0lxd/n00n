@@ -4273,6 +4273,22 @@ fn bash_handler_proxies_managed_commands_without_a_specialized_rewrite(
         "managed command did not take the RTK proxy path: {rendered}"
     );
 }
+#[test_case::test_case("git rebase --show-current-patch" ; "implicit_proxy")]
+#[test_case::test_case("rtk proxy git rebase --show-current-patch" ; "explicit_proxy")]
+fn bash_handler_routes_git_rebase_through_rtk_proxy(command: &str) {
+    if skip_without_rtk("bash_handler_routes_git_rebase_through_rtk_proxy") {
+        return;
+    }
+    let (registry, _host) = builtins_host();
+
+    let error = exec_tool(&registry, "bash", serde_json::json!({ "command": command }))
+        .expect_err("git rebase unexpectedly found an active rebase");
+
+    assert!(
+        !error.contains("rtk is enabled"),
+        "documented RTK proxy route was rejected: {error}"
+    );
+}
 
 #[test_case::test_case("env N00N_RTK_TEST=lint printf go", "go" ; "env_script_argument")]
 #[test_case::test_case("timeout 5 printf lint", "lint" ; "timeout_script_argument")]

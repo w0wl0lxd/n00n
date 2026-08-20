@@ -1779,7 +1779,7 @@ impl App {
             match result {
                 ChatEventResult::Done => {
                     self.status_bar.clear_flash();
-                    self.save_session();
+                    self.save_session_with_plugin_state_capture();
                     self.chat_index.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
@@ -1792,7 +1792,7 @@ impl App {
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message.clone());
                     self.status_bar.clear_flash();
-                    self.save_session();
+                    self.save_session_with_plugin_state_capture();
                     self.queue.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
