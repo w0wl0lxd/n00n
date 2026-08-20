@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787196180783,
+  "lastUpdate": 1787197143582,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20835,6 +20835,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 144236,
             "range": "± 22611",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "32e0fad4af893836c2c8251eb0d715b34e4dacec",
+          "message": "chore(deps): bump Cargo.lock via cargo update (#404)\n\n* chore(deps): bump Cargo.lock via cargo update\n\n* fix(deps): pin get-size2 to 0.10.0 to avoid compact_str duplicate\n\nCargo update pulled get-size2 0.10.3 which requires compact_str 0.10.0,\nbut ruff_python_ast 0.0.3 still uses compact_str 0.9.1 via derive,\ncausing duplicate crate versions and GetSize trait error.\n\nPin get-size2 to 0.10.0 (as on main) to keep single compact_str version.\nKeeps other cargo update bumps (aho-corasick, bstr, clap, etc).",
+          "timestamp": "2026-08-20T03:26:12Z",
+          "tree_id": "762f9b9e35b41bade599d1df9b305687c05c9816",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/32e0fad4af893836c2c8251eb0d715b34e4dacec"
+        },
+        "date": 1787197141714,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 4988858,
+            "range": "± 29973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1896139,
+            "range": "± 19601",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1889681,
+            "range": "± 11746",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5981966,
+            "range": "± 123756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2957171,
+            "range": "± 80540",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2892223,
+            "range": "± 8470",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 430036,
+            "range": "± 628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130343,
+            "range": "± 1133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130357,
+            "range": "± 140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 817421,
+            "range": "± 5888",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 496886,
+            "range": "± 5117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 498645,
+            "range": "± 8307",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 47472,
+            "range": "± 6085",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 127344,
+            "range": "± 13254",
             "unit": "ns/iter"
           }
         ]
