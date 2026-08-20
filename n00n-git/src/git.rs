@@ -1723,7 +1723,6 @@ mod tests {
         assert_eq!(main_b.head, main_sha);
         assert_eq!(feature_b.head, main_sha);
 
-        // Switch to feature branch and commit
         run(root, &["checkout", "feature"]);
         std::fs::write(root.join("file.txt"), "feature update\n").unwrap();
         run(root, &["add", "file.txt"]);
