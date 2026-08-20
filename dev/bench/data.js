@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787197143582,
+  "lastUpdate": 1787203986477,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20943,6 +20943,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 127344,
             "range": "± 13254",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5f0df8aaeead7b96387c65db4435323ae62ffccb",
+          "message": "fix(lua): stabilize pre_execution_callback timeout test for Windows CI (#408)\n\n* fix(lua): stabilize pre_execution_callback timeout test for Windows CI\n\nIncrease timeouts from 100ms/30ms to 5s/2s. The 20ms sleeps plus Windows scheduling jitter made the tight deadline flaky, causing Rust Test (Windows) failure on main after #404.\n\nFixes flaky pre_execution_callback_timeout_starts_after_dispatch.\n\n* chore(changelog): add fragment for Windows timeout fix",
+          "timestamp": "2026-08-20T01:18:13-04:00",
+          "tree_id": "bee27e1b1073ab822ce20f08470e37e5ab56bcf8",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5f0df8aaeead7b96387c65db4435323ae62ffccb"
+        },
+        "date": 1787203984622,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6432234,
+            "range": "± 80418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2445944,
+            "range": "± 6858",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2451116,
+            "range": "± 11511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7857909,
+            "range": "± 166067",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3878596,
+            "range": "± 95119",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3808671,
+            "range": "± 140091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 556029,
+            "range": "± 20791",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168385,
+            "range": "± 550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 168149,
+            "range": "± 811",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1049263,
+            "range": "± 4374",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 625179,
+            "range": "± 10016",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 621253,
+            "range": "± 4077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 74281,
+            "range": "± 3954",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 173995,
+            "range": "± 14031",
             "unit": "ns/iter"
           }
         ]
