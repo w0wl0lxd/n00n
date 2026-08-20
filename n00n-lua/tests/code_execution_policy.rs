@@ -121,6 +121,25 @@ fn stub_ctx_for(reg: &Arc<ToolRegistry>, mode: &AgentMode) -> ToolContext {
 }
 
 #[test]
+fn invalid_timeout_returns_structured_tool_error() {
+    let (reg, _host) = setup();
+    let ctx = stub_ctx_for(&reg, &AgentMode::Build);
+    let invocation = reg
+        .get("code_execution")
+        .expect("code_execution registered")
+        .tool
+        .parse(&serde_json::json!({ "code": "print('unused')", "timeout": 1 }))
+        .expect("parse failed");
+
+    let result = smol::block_on(async { invocation.execute(&ctx).await });
+
+    assert_eq!(
+        result.output.expect_err("invalid timeout should fail"),
+        "error: timeout must be between 5 and 300 seconds"
+    );
+}
+
+#[test]
 fn describe_main_hides_workflow_and_sub_tools() {
     let (reg, _host) = setup();
     let desc = describe(&reg, &ToolFilter::All, ToolAudience::MAIN, false);
