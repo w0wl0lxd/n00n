@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, transcript_to_display};
 use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
-use crate::components::{Action, LoadedSession};
+use crate::components::{Action, LoadedSession, Status};
 use n00n_agent::tools::SessionIdentity;
 use n00n_agent::{AgentInput, AgentMode, McpPromptRef, ToolOutput};
 use n00n_providers::{Message, Model, TokenUsage};
@@ -234,6 +234,14 @@ impl App {
         session_has_content(&self.state.session)
     }
     pub(crate) fn save_session(&mut self) {
+        if self.plugin_state_capture_safe() {
+            self.save_session_with_plugin_state_capture();
+        } else {
+            self.save_session_without_plugin_state_capture();
+        }
+    }
+
+    pub(super) fn save_session_with_plugin_state_capture(&mut self) {
         let snapshot = self.session_snapshot_with_plugin_state();
         self.save_snapshot(snapshot);
     }
@@ -257,12 +265,10 @@ impl App {
         self.enforce_retention_budget();
     }
 
-    /// [`Self::save_session`] at most once per [`SAVE_COALESCE_INTERVAL`].
-    /// Snapshotting walks the whole session, so a save per tool or subagent
-    /// completion is quadratic over a long run.
+    /// Persists completion state at most once per [`SAVE_COALESCE_INTERVAL`].
     pub(crate) fn save_session_coalesced(&mut self) {
         if self.save_window_elapsed() {
-            self.save_session();
+            self.save_session_without_plugin_state_capture();
         } else {
             self.pending_save = true;
         }
@@ -272,13 +278,17 @@ impl App {
     /// stops.
     pub(crate) fn tick_pending_save(&mut self) {
         if self.pending_save && self.save_window_elapsed() {
-            self.save_session();
+            self.save_session_without_plugin_state_capture();
         }
     }
 
     fn save_window_elapsed(&self) -> bool {
         self.last_save_flush
             .is_none_or(|flushed| flushed.elapsed() >= SAVE_COALESCE_INTERVAL)
+    }
+
+    fn plugin_state_capture_safe(&self) -> bool {
+        self.status != Status::Streaming && !self.chats.iter().any(Chat::is_working)
     }
 
     /// Drops the oldest tool outputs and subagent histories past the budget.
@@ -353,7 +363,9 @@ impl App {
     }
 
     pub(crate) fn fire_session_focus_autocmd(&mut self) {
-        self.capture_plugin_state();
+        if self.plugin_state_capture_safe() {
+            self.capture_plugin_state();
+        }
         let state_snapshot = match self.state.session.meta.state_snapshot.as_ref() {
             Some(snapshot) => match serde_json::to_value(snapshot) {
                 Ok(value) => value,

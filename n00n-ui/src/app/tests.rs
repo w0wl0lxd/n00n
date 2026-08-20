@@ -4987,6 +4987,95 @@ fn burst_of_completions_coalesces_into_one_save() {
 }
 
 #[test]
+fn active_save_does_not_wait_for_plugin_state_capture() {
+    let mut app = test_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    app.lua_event_handle = host.event_handle();
+    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(3));
+    app.hydrate_plugin_state();
+    app.state
+        .session
+        .messages
+        .push(Message::user("active work".into()));
+    app.status = Status::Streaming;
+
+    app.save_session();
+
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        Some(3),
+        "an active save must reuse the last checkpoint instead of entering the Lua drain barrier"
+    );
+}
+
+#[test]
+fn terminal_save_captures_plugin_state_after_active_turn() {
+    let mut app = test_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    app.lua_event_handle = host.event_handle();
+    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(3));
+    app.hydrate_plugin_state();
+    app.state
+        .session
+        .messages
+        .push(Message::user("completed work".into()));
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+        fusion: None,
+    }));
+
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        Some(4),
+        "a terminal save must capture plugin state after active work drains"
+    );
+}
+
+#[test]
+fn completion_saves_do_not_capture_plugin_state() {
+    let mut app = test_app();
+    let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+    app.lua_event_handle = host.event_handle();
+    app.state.session.meta.state_snapshot = Some(StoredSessionStateSnapshot::new(3));
+    app.hydrate_plugin_state();
+    app.state
+        .session
+        .messages
+        .push(Message::user("parallel work".into()));
+
+    app.save_session_coalesced();
+    app.pending_save = true;
+    app.last_save_flush = None;
+    app.tick_pending_save();
+
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .state_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision),
+        Some(3),
+        "completion saves must not wait for sibling tools or question windows to drain"
+    );
+}
+
+#[test]
 fn deferred_save_lands_once_the_window_elapses() {
     let mut app = test_app();
     app.state
