@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787180322689,
+  "lastUpdate": 1787185424416,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -20619,6 +20619,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 166349,
             "range": "± 11234",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d75f99336fe472c9bc009d0d0cf5b697d9430b0b",
+          "message": "fix: address post-0.6.1 review comments (#402)\n\n* fix: address post-0.6.1 review comments from CodeRabbit and Devin\n\n- CHANGELOG.md: remove heading markers inside list items (# Skill system\n  v2, # Tool preference guidance) and deduplicate repeated reasoning-only\n  model fix block that appeared twice due to carryover fragments.\n- scripts/build-changelog.sh: move empty-line check after CR stripping so\n  blank CRLF lines do not become empty bullets, and handle already-prefixed\n  lines starting with '-' , '\"' or '*' correctly (previously \"*\" only\n  matched a solitary asterisk).\n- n00n-docgen/src/gen_providers.rs: replace em-dash with comma per docs\n  tone rules and regenerate providers docs.\n\nAddresses CodeRabbit findings on 401 and Devin analysis on changelog\ngeneration and docs tone.\n\n* chore(changelog): add fragment for post-0.6.1 review fixes\n\nFix Fragment required CI check for PR #402.\n\n* fix: address remaining review threads on #402\n\n- scripts/build-changelog.sh: restrict bullet detection to '-' only and\n  use printf instead of echo to handle -n/-e correctly, per CodeRabbit.\n  Drop double-quote and asterisk handling that broke quoted fragments.\n- CHANGELOG.md: remove list markers from markdownlint-disable comments\n  so they are not list items, addressing Devin remaining directive check.\n\nAddresses the 4 still-open threads on PR #402.\n\n* fix: handle asterisk bullets and remove stray markdown comments\n\n- build-changelog.sh: handle both '-' and '*' as already-bulleted to\n  avoid '- * ...' double bullets, using printf for -n/-e safety.\n- CHANGELOG.md: delete stray <!-- markdownlint-disable MD041 --> lines\n  that broke the bullet list (MD032) – they were fragment artifacts\n  and are inert for MD041. Heading-marker duplicates were already\n  removed in prior commit.\n\nAddresses remaining 4 open threads on #402.\n\n* fix(scripts): handle bold asterisk bullets correctly\n\nOnly treat '-' and '*' as already-bulleted when followed by space or\nalone ('- ', '* ', '-', '*'), so '**mise:**' gets a '- ' prefix and\ndoes not break the list. Keeps printf for -n/-e safety.\n\nFixes Devin BUG on build-changelog.sh:59.",
+          "timestamp": "2026-08-20T00:08:36Z",
+          "tree_id": "ff5f12271188b587920454e794060739e7b11a7b",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/d75f99336fe472c9bc009d0d0cf5b697d9430b0b"
+        },
+        "date": 1787185422796,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6658456,
+            "range": "± 106261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2234660,
+            "range": "± 9274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2288248,
+            "range": "± 25100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8041914,
+            "range": "± 37760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4380403,
+            "range": "± 7089",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4307981,
+            "range": "± 124063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584044,
+            "range": "± 1190",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192012,
+            "range": "± 444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192111,
+            "range": "± 275",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1060248,
+            "range": "± 5079",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582337,
+            "range": "± 1934",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581845,
+            "range": "± 1434",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 82314,
+            "range": "± 915",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 112294,
+            "range": "± 3324",
             "unit": "ns/iter"
           }
         ]
