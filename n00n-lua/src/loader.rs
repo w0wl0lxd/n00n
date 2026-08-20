@@ -1632,4 +1632,128 @@ mod tests {
             ["Dyn identity"]
         );
     }
+
+    #[test]
+    fn hydrate_state_applies_snapshot_and_restores_state() {
+        use n00n_storage::id::SessionRef;
+        use n00n_storage::sessions::StoredStateScope;
+
+        let reg = Arc::new(ToolRegistry::new());
+        let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        host.load_source(
+            "state_plugin",
+            r#"
+            n00n.api.register_tool({
+                name = "write_state",
+                description = "writes state",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function(input, ctx)
+                    ctx:state_replace("root", { count = 42 })
+                    return "ok"
+                end,
+            })
+            n00n.api.register_tool({
+                name = "read_state",
+                description = "reads state",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function(input, ctx)
+                    local s = ctx:state_get("root")
+                    return s and tostring(s.count) or "none"
+                end,
+            })
+            "#,
+        )
+        .unwrap();
+
+        let handle = host.event_handle().unwrap();
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        // Hydrating None should succeed on an empty state
+        handle.hydrate_state(&identity, None).unwrap();
+
+        // Create initial state
+        let entry = reg.get("write_state").unwrap();
+        let inv = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.identity = Some(identity.clone());
+        smol::block_on(inv.execute(&ctx)).output.unwrap();
+
+        let read_state = || {
+            let read_entry = reg.get("read_state").unwrap();
+            let read_inv = read_entry.tool.parse(&serde_json::json!({})).unwrap();
+            smol::block_on(read_inv.execute(&ctx))
+                .output
+                .unwrap()
+                .as_text()
+        };
+
+        // Verify state was set
+        assert_eq!(read_state(), "42");
+
+        // Capture snapshot
+        let snap = handle.capture_state(&identity, 1).unwrap();
+        assert_eq!(
+            snap.plugin_payload_for_apply("state_plugin", 1, StoredStateScope::Root)
+                .unwrap(),
+            Some(&serde_json::json!({ "count": 42 }))
+        );
+
+        // Reset state
+        handle.reset_state(&identity).unwrap();
+        assert_eq!(read_state(), "none");
+
+        // Hydrate from snapshot
+        handle.hydrate_state(&identity, Some(snap)).unwrap();
+        assert_eq!(read_state(), "42");
+    }
+
+    #[test]
+    fn hydrate_state_reports_host_dead() {
+        use n00n_storage::id::SessionRef;
+
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        // Test with disconnected EventHandle
+        let handle = EventHandle::disconnected_for_test();
+        assert!(matches!(
+            handle.hydrate_state(&identity, None),
+            Err(PluginError::HostDead)
+        ));
+
+        // Test with dropped PluginHost
+        let reg = Arc::new(ToolRegistry::new());
+        let host = PluginHost::new(reg).unwrap();
+        let handle = host.event_handle().unwrap();
+        drop(host);
+
+        assert!(matches!(
+            handle.hydrate_state(&identity, None),
+            Err(PluginError::HostDead)
+        ));
+    }
+
+    #[test]
+    fn hydrate_state_reports_state_error() {
+        use n00n_storage::id::SessionRef;
+        use n00n_storage::sessions::StoredStateScope;
+
+        let reg = Arc::new(ToolRegistry::new());
+        let host = PluginHost::new(reg).unwrap();
+        let handle = host.event_handle().unwrap();
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        // Create a snapshot containing an unrepresentable number that fails Lua conversion
+        let mut snapshot = StoredSessionStateSnapshot::new(1);
+        let unrepresentable =
+            serde_json::from_str::<serde_json::Value>("18446744073709551617").unwrap();
+        snapshot
+            .set_plugin_state("bad_plugin", 1, StoredStateScope::Session, unrepresentable)
+            .unwrap();
+
+        let err = handle.hydrate_state(&identity, Some(snapshot)).unwrap_err();
+        assert!(
+            matches!(err, PluginError::State { .. }),
+            "expected PluginError::State, got: {err:?}"
+        );
+    }
 }
