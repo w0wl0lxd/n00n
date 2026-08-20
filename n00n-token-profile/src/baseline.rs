@@ -135,7 +135,7 @@ mod tests {
 
     use tempfile::NamedTempFile;
 
-    use super::*;
+    use super::{Baseline, RegressionError};
 
     #[test]
     fn load_succeeds_for_valid_baseline_file() {
