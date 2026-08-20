@@ -4529,6 +4529,7 @@ dependencies = [
  "n00n-providers",
  "serde",
  "serde_json",
+ "tempfile",
  "test-case",
  "thiserror 2.0.20",
 ]
