@@ -175,7 +175,11 @@ pub(crate) fn virtual_module(lua: &Lua, modname: &str) -> Option<mlua::Result<Ta
 /// an overview table, plus the shared helper modules.
 #[must_use]
 pub fn site_page() -> String {
-    format!("{}\n{}", render(false), helpers_section())
+    format!(
+        "{{% raw %}}\n{}\n{}\n{{% endraw %}}\n",
+        render(false),
+        helpers_section()
+    )
 }
 
 /// The full API reference plus the shared helper modules: the exact document
