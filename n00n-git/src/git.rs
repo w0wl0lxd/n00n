@@ -1676,4 +1676,130 @@ mod tests {
         assert!(!tracked.staged, "worktree-only edit reported as staged");
         assert!(staged.staged, "index edit not reported as staged");
     }
+
+    #[test]
+    fn diff_file_addition_and_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file1.txt"), "hello\n").unwrap();
+        run(root, &["add", "file1.txt"]);
+        run(root, &["commit", "-m", "first"]);
+
+        std::fs::remove_file(root.join("file1.txt")).unwrap();
+        std::fs::write(root.join("file2.txt"), "world\n").unwrap();
+        run(root, &["add", "file1.txt", "file2.txt"]);
+        run(root, &["commit", "-m", "second"]);
+
+        let diff_result = diff(root, "HEAD~1", "HEAD").unwrap();
+        assert_eq!(diff_result.files.len(), 2);
+
+        let file1_diff = diff_result
+            .files
+            .iter()
+            .find(|f| f.path == "file1.txt")
+            .expect("file1.txt diff missing");
+        assert_eq!(file1_diff.deletions, 1);
+        assert_eq!(file1_diff.additions, 0);
+        assert_eq!(file1_diff.changes.len(), 1);
+        assert_eq!(file1_diff.changes[0].kind, "deleted");
+        assert_eq!(file1_diff.changes[0].old_line, Some(1));
+        assert_eq!(file1_diff.changes[0].new_line, None);
+        assert_eq!(file1_diff.changes[0].content, "hello");
+
+        let file2_diff = diff_result
+            .files
+            .iter()
+            .find(|f| f.path == "file2.txt")
+            .expect("file2.txt diff missing");
+        assert_eq!(file2_diff.additions, 1);
+        assert_eq!(file2_diff.deletions, 0);
+        assert_eq!(file2_diff.changes.len(), 1);
+        assert_eq!(file2_diff.changes[0].kind, "added");
+        assert_eq!(file2_diff.changes[0].old_line, None);
+        assert_eq!(file2_diff.changes[0].new_line, Some(1));
+        assert_eq!(file2_diff.changes[0].content, "world");
+    }
+
+    #[test]
+    fn diff_file_modification() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "line1\nline2\nline3\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial"]);
+
+        std::fs::write(
+            root.join("file.txt"),
+            "line1\nline2 modified\nline3\nline4\n",
+        )
+        .unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "modified"]);
+
+        let diff_result = diff(root, "HEAD~1", "HEAD").unwrap();
+        assert_eq!(diff_result.files.len(), 1);
+
+        let file_diff = &diff_result.files[0];
+        assert_eq!(file_diff.path, "file.txt");
+        assert_eq!(file_diff.deletions, 1);
+        assert_eq!(file_diff.additions, 2);
+
+        let deleted = file_diff
+            .changes
+            .iter()
+            .find(|c| c.kind == "deleted")
+            .unwrap();
+        assert_eq!(deleted.old_line, Some(2));
+        assert_eq!(deleted.content, "line2");
+
+        let added: Vec<_> = file_diff
+            .changes
+            .iter()
+            .filter(|c| c.kind == "added")
+            .collect();
+        assert_eq!(added.len(), 2);
+        assert_eq!(added[0].new_line, Some(2));
+        assert_eq!(added[0].content, "line2 modified");
+        assert_eq!(added[1].new_line, Some(4));
+        assert_eq!(added[1].content, "line4");
+    }
+
+    #[test]
+    fn diff_identical_refs_returns_empty_diff() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_repo(root);
+
+        std::fs::write(root.join("file.txt"), "content\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial"]);
+
+        let diff_result = diff(root, "HEAD", "HEAD").unwrap();
+        assert!(diff_result.files.is_empty());
+    }
+
+    #[test]
+    fn diff_invalid_repository_and_invalid_refs() {
+        let temp = tempfile::tempdir().unwrap();
+        let invalid_path = temp.path().join("nonexistent_repo");
+
+        let repo_err = diff(&invalid_path, "HEAD~1", "HEAD");
+        assert!(matches!(repo_err, Err(GitError::GitOperation(_))));
+
+        let root = temp.path();
+        init_repo(root);
+        std::fs::write(root.join("file.txt"), "content\n").unwrap();
+        run(root, &["add", "file.txt"]);
+        run(root, &["commit", "-m", "initial"]);
+
+        let err_invalid_a = diff(root, "nonexistent-ref-a", "HEAD");
+        assert!(matches!(err_invalid_a, Err(GitError::InvalidReference(_))));
+
+        let err_invalid_b = diff(root, "HEAD", "nonexistent-ref-b");
+        assert!(matches!(err_invalid_b, Err(GitError::InvalidReference(_))));
+    }
 }
