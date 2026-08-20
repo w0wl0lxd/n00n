@@ -128,3 +128,86 @@ fn parse_surface_name(name: &str) -> Result<SurfaceName, RegressionError> {
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    #[test]
+    fn load_succeeds_for_valid_baseline_file() {
+        let json_data = r#"{
+            "model_id": "test-model",
+            "mcp_excluded": true,
+            "surfaces": {
+                "system_prompt": {
+                    "name": "system_prompt",
+                    "bytes": 100,
+                    "tokens": 20
+                }
+            },
+            "tools": [
+                {
+                    "name": "test_tool",
+                    "deferred": false,
+                    "initially_active": true,
+                    "bytes": 50,
+                    "tokens": 10
+                }
+            ],
+            "limits": {
+                "system_prompt": {
+                    "tool_count_exact": false,
+                    "max_token_delta": 5,
+                    "max_byte_delta": 10,
+                    "warn_token_delta": null
+                }
+            }
+        }"#;
+
+        let mut file = NamedTempFile::new().expect("failed to create temp file");
+        file.write_all(json_data.as_bytes())
+            .expect("failed to write json");
+
+        let baseline = Baseline::load(file.path()).expect("baseline should load successfully");
+        assert_eq!(baseline.model_id, "test-model");
+        assert!(baseline.mcp_excluded);
+        assert_eq!(baseline.surfaces.len(), 1);
+        assert_eq!(baseline.surfaces["system_prompt"].bytes, 100);
+        assert_eq!(baseline.surfaces["system_prompt"].tokens, 20);
+        assert_eq!(baseline.tools.len(), 1);
+        assert_eq!(baseline.tools[0].name, "test_tool");
+        assert_eq!(baseline.limits.len(), 1);
+        assert_eq!(baseline.limits["system_prompt"].max_token_delta, Some(5));
+    }
+
+    #[test]
+    fn load_fails_when_file_does_not_exist() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let non_existent_path = temp_dir.path().join("missing_baseline.json");
+
+        let result = Baseline::load(&non_existent_path);
+        match result {
+            Err(RegressionError::BaselineIo(_)) => {}
+            res => panic!("expected RegressionError::BaselineIo, got {res:?}"),
+        }
+    }
+
+    #[test]
+    fn load_fails_when_file_has_invalid_json() {
+        let invalid_json = r#"{ "model_id": "test-model", "mcp_excluded": "#;
+
+        let mut file = NamedTempFile::new().expect("failed to create temp file");
+        file.write_all(invalid_json.as_bytes())
+            .expect("failed to write json");
+
+        let result = Baseline::load(file.path());
+        match result {
+            Err(RegressionError::BaselineParse(_)) => {}
+            res => panic!("expected RegressionError::BaselineParse, got {res:?}"),
+        }
+    }
+}

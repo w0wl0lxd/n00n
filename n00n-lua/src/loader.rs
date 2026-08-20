@@ -914,6 +914,7 @@ mod tests {
     use crate::api::util::command::{LuaCommandInfo, LuaCommandWriter};
     use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot};
     use n00n_agent::tools::ToolRegistry;
+    use n00n_storage::{id::SessionRef, sessions::StoredStateScope};
     use std::time::Instant;
     use test_case::test_case;
 
@@ -1631,5 +1632,183 @@ mod tests {
             contents(&slots, PromptId::System, Slot::Identity),
             ["Dyn identity"]
         );
+    }
+
+    #[test_case(())]
+    fn hydrate_state_applies_snapshot_and_restores_state(_unit: ()) {
+        let reg = Arc::new(ToolRegistry::new());
+        let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        host.load_source(
+            "state_plugin",
+            r#"
+            n00n.api.register_tool({
+                name = "write_state",
+                description = "writes state",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function(input, ctx)
+                    ctx:state_replace("root", { count = 42 })
+                    return "ok"
+                end,
+            })
+            n00n.api.register_tool({
+                name = "read_state",
+                description = "reads state",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function(input, ctx)
+                    local s = ctx:state_get("root")
+                    return s and tostring(s.count) or "none"
+                end,
+            })
+            "#,
+        )
+        .unwrap();
+
+        let handle = host.event_handle().unwrap();
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        handle.hydrate_state(&identity, None).unwrap();
+
+        let entry = reg.get("write_state").unwrap();
+        let inv = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.identity = Some(identity.clone());
+        smol::block_on(inv.execute(&ctx)).output.unwrap();
+
+        let read_state = || {
+            let read_entry = reg.get("read_state").unwrap();
+            let read_inv = read_entry.tool.parse(&serde_json::json!({})).unwrap();
+            smol::block_on(read_inv.execute(&ctx))
+                .output
+                .unwrap()
+                .as_text()
+        };
+
+        assert_eq!(read_state(), "42");
+
+        let snap = handle.capture_state(&identity, 1).unwrap();
+        assert_eq!(
+            snap.plugin_payload_for_apply("state_plugin", 1, StoredStateScope::Root)
+                .unwrap(),
+            Some(&serde_json::json!({ "count": 42 }))
+        );
+
+        handle.reset_state(&identity).unwrap();
+        assert_eq!(read_state(), "none");
+
+        handle.hydrate_state(&identity, Some(snap)).unwrap();
+        assert_eq!(read_state(), "42");
+    }
+
+    #[test_case(())]
+    fn hydrate_state_reports_host_dead(_unit: ()) {
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        let handle = EventHandle::disconnected_for_test();
+        assert!(matches!(
+            handle.hydrate_state(&identity, None),
+            Err(PluginError::HostDead)
+        ));
+
+        let reg = Arc::new(ToolRegistry::new());
+        let host = PluginHost::new(reg).unwrap();
+        let handle = host.event_handle().unwrap();
+        drop(host);
+
+        assert!(matches!(
+            handle.hydrate_state(&identity, None),
+            Err(PluginError::HostDead)
+        ));
+    }
+
+    #[test_case(())]
+    fn hydrate_state_reports_state_error(_unit: ()) {
+        let reg = Arc::new(ToolRegistry::new());
+        let host = PluginHost::new(reg).unwrap();
+        let handle = host.event_handle().unwrap();
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        let mut snapshot = StoredSessionStateSnapshot::new(1);
+        let unrepresentable =
+            serde_json::from_str::<serde_json::Value>("18446744073709551617").unwrap();
+        snapshot
+            .set_plugin_state("bad_plugin", 1, StoredStateScope::Session, unrepresentable)
+            .unwrap();
+
+        let err = handle.hydrate_state(&identity, Some(snapshot)).unwrap_err();
+        assert!(
+            matches!(err, PluginError::State { .. }),
+            "expected PluginError::State, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn load_source_with_permissions_passes_permissions() {
+        use crate::plugin_permissions::Permission;
+
+        let reg = Arc::new(ToolRegistry::new());
+        let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+
+        let mut perms = PluginPermissions::denied();
+        perms.set(Permission::FsRead, true);
+
+        let src = r#"
+            n00n.api.register_tool({
+                name = "perm_check_tool",
+                description = "check perms",
+                schema = { type = "object", properties = {}, additionalProperties = false },
+                handler = function(input, ctx)
+                    local read_ok = pcall(function() n00n.fs.read(".") end)
+                    local write_ok = pcall(function() n00n.fs.write(".", "x") end)
+                    return "read=" .. tostring(read_ok) .. ",write=" .. tostring(write_ok)
+                end,
+            })
+        "#;
+
+        host.load_source_with_permissions("perm_check_plugin", src, perms)
+            .unwrap();
+
+        let entry = reg
+            .get("perm_check_tool")
+            .expect("tool should be registered");
+        let inv = entry
+            .tool
+            .parse(&serde_json::json!({}))
+            .expect("parse input");
+        let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        let exec_res = smol::block_on(async { inv.execute(&ctx).await });
+        let output = exec_res.output.expect("execution should succeed");
+
+        match output {
+            n00n_agent::ToolOutput::Plain(s) => {
+                assert_eq!(s.text, "read=true,write=false");
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_source_with_permissions_fails_when_host_dead() {
+        let mut host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        host.begin_shutdown();
+
+        let err = host
+            .load_source_with_permissions("dead_host", "return {}", PluginPermissions::denied())
+            .unwrap_err();
+        assert!(matches!(err, PluginError::HostDead));
+    }
+
+    #[test]
+    fn load_plugin_file_nonexistent_returns_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent_path = dir.path().join("nonexistent_plugin.lua");
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+
+        match host.load_plugin_file(&nonexistent_path) {
+            Err(PluginError::Io { path, source }) => {
+                assert_eq!(path, nonexistent_path);
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+            }
+            result => panic!("expected PluginError::Io, got {result:?}"),
+        }
     }
 }
