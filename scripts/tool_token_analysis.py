@@ -16,8 +16,8 @@ SESSION_DIRS = [
     Path.home() / ".local" / "state" / "n00n" / "sessions",
     Path.home() / ".n00n" / "sessions",
 ]
-SESSION_DIR = SESSION_DIRS[0]
 CHARS_PER_TOKEN = 4  # rough estimate for token counting from char length
+_ZSTD_MISSING_WARNED = False
 
 
 def estimate_tokens(text):
@@ -116,18 +116,28 @@ def extract_batch_subtool_calls(session):
 def _decompress_zstd(path: Path) -> str | None:
     import subprocess
 
+    global _ZSTD_MISSING_WARNED
     try:
         out = subprocess.run(
             ["zstd", "-d", "-c", str(path)], capture_output=True, check=False
         )
+        text = out.stdout.decode("utf-8", errors="replace")
         if out.returncode != 0:
+            if text:
+                print(
+                    f"warning: zstd exited {out.returncode} for {path}; using {len(text)} recovered chars",
+                    file=sys.stderr,
+                )
+                return text
             return ""
-        return out.stdout.decode("utf-8", errors="replace")
+        return text
     except FileNotFoundError:
-        print(
-            "error: zstd not found on PATH (required for ~/.local/state/n00n/sessions/*.jsonl); install zstd",
-            file=sys.stderr,
-        )
+        if not _ZSTD_MISSING_WARNED:
+            print(
+                "error: zstd not found on PATH (required for ~/.local/state/n00n/sessions/*.jsonl); install zstd",
+                file=sys.stderr,
+            )
+            _ZSTD_MISSING_WARNED = True
         return None
 
 
