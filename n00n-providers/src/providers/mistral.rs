@@ -8,14 +8,12 @@ use tracing::warn;
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, CacheHealth, CacheKind, Message, ProviderEvent, RequestOptions, StreamResponse,
-    System, dialect,
+    AgentError, CacheHealth, Message, ProviderEvent, RequestOptions, StreamResponse, System,
+    TokenUsage, dialect,
 };
 
 use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
-
-const MISTRAL_CACHE_TTL_SECONDS: u64 = 300;
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/mistral.rs"));
 
@@ -188,6 +186,10 @@ impl Mistral {
     }
 }
 
+fn mistral_cache_health(usage: &TokenUsage) -> CacheHealth {
+    super::prompt_cache_health(usage, None)
+}
+
 impl Provider for Mistral {
     fn stream_message<'a>(
         &'a self,
@@ -237,20 +239,7 @@ impl Provider for Mistral {
                 .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
                 .await?;
 
-            let hit = response.usage.cache_read > 0;
-            let cached = response.usage.cache_read > 0 || response.usage.cache_creation > 0;
-            let valid_until = if cached {
-                n00n_storage::now_epoch().saturating_add(MISTRAL_CACHE_TTL_SECONDS)
-            } else {
-                0
-            };
-            let ttl_seconds = if cached { MISTRAL_CACHE_TTL_SECONDS } else { 0 };
-            let health = CacheHealth {
-                kind: CacheKind::Prompt,
-                valid_until,
-                ttl_seconds,
-                hit,
-            };
+            let health = mistral_cache_health(&response.usage);
             if let Err(error) = event_tx
                 .send_async(ProviderEvent::CacheHealth { cache: health })
                 .await
@@ -340,6 +329,7 @@ fn adjust_model(model: &mut Model) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CacheKind;
     use serde_json::{Value, json};
     use test_case::test_case;
 
@@ -429,6 +419,26 @@ mod tests {
         );
 
         assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    #[test_case(10, 0, true ; "hit")]
+    #[test_case(0, 10, false ; "write")]
+    #[test_case(0, 0, false ; "miss")]
+    fn cache_health_keeps_mistral_lifetime_unknown(
+        cache_read: u32,
+        cache_creation: u32,
+        expected_hit: bool,
+    ) {
+        let health = mistral_cache_health(&crate::TokenUsage {
+            cache_creation,
+            cache_read,
+            ..Default::default()
+        });
+
+        assert_eq!(health.kind, CacheKind::Prompt);
+        assert_eq!(health.valid_until, 0);
+        assert_eq!(health.ttl_seconds, 0);
+        assert_eq!(health.hit, expected_hit);
     }
 
     #[test_case("mistral/ministral-14b-latest", false ; "ministral_no_thinking")]

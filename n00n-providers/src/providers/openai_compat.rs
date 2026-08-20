@@ -1111,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_text_and_usage() {
+    fn parse_sse_text_usage_without_cache_health() {
         smol::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
@@ -1142,12 +1142,18 @@ data: [DONE]\n";
             assert!(!resp.message.has_tool_calls());
 
             let mut deltas = Vec::new();
-            while let Ok(e) = rx.try_recv() {
-                if let ProviderEvent::TextDelta { text } = e {
-                    deltas.push(text);
+            let mut emitted_cache_health = false;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    ProviderEvent::TextDelta { text } => deltas.push(text),
+                    ProviderEvent::CacheHealth { .. } => emitted_cache_health = true,
+                    ProviderEvent::ThinkingDelta { .. }
+                    | ProviderEvent::ToolUseStart { .. }
+                    | ProviderEvent::PromptProgress { .. } => {}
                 }
             }
             assert_eq!(deltas, vec!["Hello", " world"]);
+            assert!(!emitted_cache_health);
         });
     }
 
