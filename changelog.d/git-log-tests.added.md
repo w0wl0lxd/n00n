@@ -1,0 +1,1 @@
+- Added unit tests for git log function in n00n-git.
