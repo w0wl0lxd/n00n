@@ -4,10 +4,10 @@ use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::process::{Child, Command, Stdio};
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,8 @@ const MAX_JOBWAIT_RETAINED_BYTES: usize = 1024 * 1024;
 const JOBWAIT_TRUNCATION_MARKER: &str = "[... job output truncated ...]";
 #[cfg(target_os = "linux")]
 const JOB_RSS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(target_os = "linux")]
+const JOB_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(target_os = "linux")]
 const JOB_RSS_LIMIT_ENV: &str = "N00N_TOOL_MAX_RSS_MB";
 #[cfg(target_os = "linux")]
@@ -106,7 +108,8 @@ fn pump_job_output<R: BufRead>(
         let complete = newline.is_some_and(|position| consumed > position);
         if line.len() == MAX_JOB_LINE_BYTES || complete {
             if complete {
-                while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+                if line.last() == Some(&b'\r') {
                     line.pop();
                 }
             }
@@ -286,6 +289,7 @@ fn process_tree_rss(pid: u32) -> Result<u64, String> {
 fn spawn_resource_monitor(
     pid: u32,
     done: Arc<AtomicBool>,
+    exceeded: Arc<AtomicBool>,
     limit: u64,
 ) -> Result<thread::JoinHandle<()>, String> {
     thread::Builder::new()
@@ -300,7 +304,7 @@ fn spawn_resource_monitor(
                             limit,
                             "job exceeded RSS limit; killing process group"
                         );
-                        kill_process_group(pid);
+                        exceeded.store(true, Ordering::Release);
                         return;
                     }
                     Ok(_) => {}
@@ -313,6 +317,106 @@ fn spawn_resource_monitor(
             }
         })
         .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_monitored_child(child: &mut Child, pid: u32, exceeded: &AtomicBool) -> i32 {
+    loop {
+        if exceeded.swap(false, Ordering::AcqRel) {
+            kill_process_group(pid);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return status.code().unwrap_or_else(|| -1),
+            Ok(None) => thread::park_timeout(JOB_PROCESS_POLL_INTERVAL),
+            Err(error) => {
+                tracing::error!(%error, "job wait failed");
+                return -1;
+            }
+        }
+    }
+}
+
+fn terminate_failed_job_start(child: &mut Child, pid: u32) {
+    #[cfg(unix)]
+    kill_process_group(pid);
+    #[cfg(not(unix))]
+    if let Err(error) = child.kill() {
+        tracing::debug!(pid, %error, "failed to kill job after startup failure");
+    }
+    if let Err(error) = child.wait() {
+        tracing::debug!(pid, %error, "failed to reap job after startup failure");
+    }
+}
+
+struct JobWaitState {
+    child: Child,
+    pid: u32,
+    stdout_handle: Option<thread::JoinHandle<()>>,
+    stderr_handle: Option<thread::JoinHandle<()>>,
+    event_tx: flume::Sender<JobEvent>,
+    #[cfg(target_os = "linux")]
+    resource_done: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    resource_exceeded: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    resource_monitor: Option<thread::JoinHandle<()>>,
+}
+
+impl JobWaitState {
+    fn run(mut self) {
+        #[cfg(target_os = "linux")]
+        let code =
+            wait_for_monitored_child(&mut self.child, self.pid, self.resource_exceeded.as_ref());
+        #[cfg(not(target_os = "linux"))]
+        let code = self.child.wait().map_or_else(
+            |error| {
+                tracing::error!(%error, "job wait failed");
+                -1
+            },
+            |status| status.code().unwrap_or_else(|| -1),
+        );
+        self.stop_monitor();
+        self.join_readers();
+        let _ = self.event_tx.send(JobEvent::Exit(code));
+    }
+
+    fn cleanup_start_failure(mut self) {
+        #[cfg(unix)]
+        kill_process_group(self.pid);
+        #[cfg(not(unix))]
+        if let Err(error) = self.child.kill() {
+            tracing::debug!(pid = self.pid, %error, "failed to kill job after startup failure");
+        }
+        if let Err(error) = self.child.wait() {
+            tracing::debug!(pid = self.pid, %error, "failed to reap job after startup failure");
+        }
+        self.stop_monitor();
+        self.join_readers();
+    }
+
+    fn stop_monitor(&mut self) {
+        #[cfg(not(target_os = "linux"))]
+        let _ = self;
+        #[cfg(target_os = "linux")]
+        {
+            self.resource_done.store(true, Ordering::Release);
+            if let Some(handle) = self.resource_monitor.take() {
+                handle.thread().unpark();
+                if let Err(error) = handle.join() {
+                    tracing::debug!(?error, "job resource monitor panicked");
+                }
+            }
+        }
+    }
+
+    fn join_readers(&mut self) {
+        if let Some(handle) = self.stdout_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.stderr_handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -476,74 +580,104 @@ impl JobStore {
         }
         let id = self.next_id;
         self.next_id += 1;
-
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let (event_tx, event_rx) = flume::bounded(JOB_EVENT_CAPACITY);
-        #[cfg(target_os = "linux")]
-        let resource_done = Arc::new(AtomicBool::new(false));
-        #[cfg(target_os = "linux")]
-        let resource_monitor = match spawn_resource_monitor(
-            pid,
-            Arc::clone(&resource_done),
-            job_rss_limit(),
-        ) {
-            Ok(handle) => handle,
-            Err(error) => {
-                kill_process_group(pid);
-                if let Err(wait_error) = child.wait() {
-                    tracing::debug!(pid, %wait_error, "failed to reap job after monitor startup failure");
-                }
-                return Err(error);
-            }
-        };
 
         macro_rules! spawn_reader {
             ($stream:expr, $name:expr, $variant:ident) => {
                 if let Some(stream) = $stream {
                     let tx = event_tx.clone();
-                    Some(
-                        thread::Builder::new()
-                            .name($name.into())
-                            .spawn(move || {
-                                let reader = BufReader::with_capacity(READER_BUF_SIZE, stream);
-                                pump_job_output(reader, &tx, JobEvent::$variant);
-                            })
-                            .map_err(|e| e.to_string())?,
-                    )
+                    thread::Builder::new()
+                        .name($name.into())
+                        .spawn(move || {
+                            let reader = BufReader::with_capacity(READER_BUF_SIZE, stream);
+                            pump_job_output(reader, &tx, JobEvent::$variant);
+                        })
+                        .map(Some)
+                        .map_err(|error| error.to_string())
                 } else {
-                    None
+                    Ok(None)
                 }
             };
         }
-        let stdout_handle = spawn_reader!(stdout, "job-stdout", Stdout);
-        let stderr_handle = spawn_reader!(stderr, "job-stderr", Stderr);
+        let stdout_handle = match spawn_reader!(stdout, "job-stdout", Stdout) {
+            Ok(handle) => handle,
+            Err(error) => {
+                terminate_failed_job_start(&mut child, pid);
+                return Err(error);
+            }
+        };
+        let stderr_handle = match spawn_reader!(stderr, "job-stderr", Stderr) {
+            Ok(handle) => handle,
+            Err(error) => {
+                terminate_failed_job_start(&mut child, pid);
+                if let Some(handle) = stdout_handle {
+                    let _ = handle.join();
+                }
+                return Err(error);
+            }
+        };
 
-        thread::Builder::new()
+        #[cfg(target_os = "linux")]
+        let resource_done = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "linux")]
+        let resource_exceeded = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "linux")]
+        let resource_monitor = match spawn_resource_monitor(
+            pid,
+            Arc::clone(&resource_done),
+            Arc::clone(&resource_exceeded),
+            job_rss_limit(),
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                terminate_failed_job_start(&mut child, pid);
+                if let Some(handle) = stdout_handle {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = stderr_handle {
+                    let _ = handle.join();
+                }
+                return Err(error);
+            }
+        };
+
+        let wait_state = Arc::new(Mutex::new(Some(JobWaitState {
+            child,
+            pid,
+            stdout_handle,
+            stderr_handle,
+            event_tx,
+            #[cfg(target_os = "linux")]
+            resource_done,
+            #[cfg(target_os = "linux")]
+            resource_exceeded,
+            #[cfg(target_os = "linux")]
+            resource_monitor: Some(resource_monitor),
+        })));
+        let wait_state_for_thread = Arc::clone(&wait_state);
+        if let Err(error) = thread::Builder::new()
             .name("job-wait".into())
             .spawn(move || {
-                let code = match child.wait() {
-                    Ok(status) => status.code().unwrap_or_else(|| -1),
-                    Err(error) => {
-                        tracing::error!(error = %error, "job wait failed");
-                        -1
-                    }
-                };
-                #[cfg(target_os = "linux")]
-                {
-                    resource_done.store(true, Ordering::Release);
-                    resource_monitor.thread().unpark();
-                    let _ = resource_monitor.join();
+                let state = wait_state_for_thread
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(state) = state {
+                    state.run();
                 }
-                if let Some(h) = stdout_handle {
-                    let _ = h.join();
-                }
-                if let Some(h) = stderr_handle {
-                    let _ = h.join();
-                }
-                let _ = event_tx.send(JobEvent::Exit(code));
             })
-            .map_err(|e| e.to_string())?;
+        {
+            if let Some(state) = wait_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                state.cleanup_start_failure();
+            }
+            return Err(error.to_string());
+        }
 
         self.jobs.insert(
             id,
@@ -1316,6 +1450,19 @@ mod tests {
     }
 
     #[test]
+    fn output_pump_preserves_repeated_carriage_returns_before_newline() {
+        let (tx, rx) = flume::bounded(1);
+        pump_job_output(
+            std::io::Cursor::new(b"progress\r\r\n"),
+            &tx,
+            JobEvent::Stdout,
+        );
+        drop(tx);
+        let event = rx.recv().expect("output event");
+        assert!(matches!(event, JobEvent::Stdout(line) if line == "progress\r"));
+    }
+
+    #[test]
     fn output_pump_does_not_emit_empty_event_after_exact_size_line() {
         let mut input = vec![b'x'; MAX_JOB_LINE_BYTES];
         input.push(b'\n');
@@ -1381,12 +1528,19 @@ mod tests {
         let mut child = command.spawn().expect("memory probe process");
         let pid = child.id();
         let done = Arc::new(AtomicBool::new(false));
-        let monitor = spawn_resource_monitor(pid, Arc::clone(&done), 8 * 1024 * 1024)
-            .expect("resource monitor");
-        let status = child.wait().expect("memory probe status");
+        let exceeded = Arc::new(AtomicBool::new(false));
+        let monitor = spawn_resource_monitor(
+            pid,
+            Arc::clone(&done),
+            Arc::clone(&exceeded),
+            8 * 1024 * 1024,
+        )
+        .expect("resource monitor");
+        let code = wait_for_monitored_child(&mut child, pid, &exceeded);
         done.store(true, Ordering::Release);
+        monitor.thread().unpark();
         monitor.join().expect("resource monitor join");
-        assert!(!status.success(), "oversized process group was not killed");
+        assert_ne!(code, 0, "oversized process group was not killed");
     }
 
     #[cfg(unix)]
