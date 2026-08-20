@@ -17,7 +17,7 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::types::{ThinkingFieldConfig, ToggleEntry};
 use crate::{
-    AgentError, CacheHealth, CacheKind, ContentBlock, Message, ProviderEvent, RequestOptions, Role,
+    AgentError, CacheHealth, ContentBlock, Message, ProviderEvent, RequestOptions, Role,
     StopReason, StreamResponse, System, ThinkingConfig, TokenUsage, dialect,
 };
 
@@ -42,6 +42,16 @@ const FLASH_CACHE_WRITE_PRICE: f64 = 0.233_333_333_333_333_34;
 /// hard limits per family.
 fn supports_explicit_cache(model_id: &str) -> bool {
     !model_id.starts_with("gemini-2.0-flash-lite")
+}
+
+fn google_cache_health(usage: &TokenUsage, created_at_epoch: u64) -> CacheHealth {
+    super::prompt_cache_health(
+        usage,
+        Some((
+            created_at_epoch.saturating_add(CACHE_TTL_SECONDS),
+            CACHE_TTL_SECONDS,
+        )),
+    )
 }
 
 fn google_fields(model: &Model) -> ThinkingFieldConfig {
@@ -665,21 +675,8 @@ impl Provider for Google {
                     .cache_creation
                     .saturating_add(cache_creation_tokens);
 
-                let hit = stream_response.usage.cache_read > 0;
-                let cached = stream_response.usage.cache_read > 0
-                    || stream_response.usage.cache_creation > 0;
-                let valid_until = if cached {
-                    created_at_epoch.saturating_add(CACHE_TTL.as_secs())
-                } else {
-                    0
-                };
-                let ttl_seconds = if cached { CACHE_TTL.as_secs() } else { 0 };
-                let health = CacheHealth {
-                    kind: CacheKind::Prompt,
-                    valid_until,
-                    ttl_seconds,
-                    hit,
-                };
+                let health = google_cache_health(&stream_response.usage, created_at_epoch);
+
                 if let Err(error) = event_tx
                     .send_async(ProviderEvent::CacheHealth { cache: health })
                     .await
@@ -1092,6 +1089,7 @@ async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CacheKind;
     use test_case::test_case;
 
     #[test_case(ThinkingConfig::Off,           &json!({})                                                                  ; "off_sends_nothing")]
@@ -1148,6 +1146,41 @@ mod tests {
             thinking_fields: None,
             body_override: None,
         }
+    }
+
+    #[test_case(10, 0, true ; "hit")]
+    #[test_case(0, 10, false ; "write")]
+    #[test_case(0, 0, false ; "miss")]
+    fn cache_health_tracks_google_explicit_ttl(
+        cache_read: u32,
+        cache_creation: u32,
+        expected_hit: bool,
+    ) {
+        const CREATED_AT: u64 = 1_000;
+        let health = google_cache_health(
+            &TokenUsage {
+                cache_creation,
+                cache_read,
+                ..Default::default()
+            },
+            CREATED_AT,
+        );
+        let cached = cache_read > 0 || cache_creation > 0;
+
+        assert_eq!(health.kind, CacheKind::Prompt);
+        assert_eq!(
+            health.valid_until,
+            if cached {
+                CREATED_AT + CACHE_TTL_SECONDS
+            } else {
+                0
+            }
+        );
+        assert_eq!(
+            health.ttl_seconds,
+            if cached { CACHE_TTL_SECONDS } else { 0 }
+        );
+        assert_eq!(health.hit, expected_hit);
     }
 
     #[test]
