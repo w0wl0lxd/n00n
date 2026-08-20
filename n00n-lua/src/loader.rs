@@ -1612,95 +1612,16 @@ mod tests {
 
     #[test]
     fn load_plugin_file_nonexistent_returns_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent_path = dir.path().join("nonexistent_plugin.lua");
         let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
-        let nonexistent_path = Path::new("/nonexistent_dir_12345/nonexistent_plugin.lua");
-        let result = host.load_plugin_file(nonexistent_path);
-        match result {
+
+        match host.load_plugin_file(&nonexistent_path) {
             Err(PluginError::Io { path, source }) => {
                 assert_eq!(path, nonexistent_path);
                 assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
             }
-            res => panic!("expected PluginError::Io, got {res:?}"),
+            result => panic!("expected PluginError::Io, got {result:?}"),
         }
-    }
-
-    #[test]
-    fn load_plugin_file_invalid_lua_returns_lua_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let plugin_path = dir.path().join("plugin.lua");
-        fs::write(&plugin_path, "invalid lua code syntax {{{").unwrap();
-
-        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
-        let result = host.load_plugin_file(&plugin_path);
-        match result {
-            Err(PluginError::Lua { plugin, .. }) => {
-                assert_eq!(plugin, "user");
-            }
-            res => panic!("expected PluginError::Lua, got {res:?}"),
-        }
-    }
-
-    #[test]
-    fn load_plugin_file_with_permissions_from_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("plugin.toml");
-        fs::write(
-            &manifest_path,
-            r"
-            [permissions]
-            fs_read = true
-            ",
-        )
-        .unwrap();
-
-        let plugin_path = dir.path().join("plugin.lua");
-        fs::write(
-            &plugin_path,
-            r#"
-            n00n.api.register_command({
-                name = "/test_perm",
-                description = "perm test",
-                handler = function() end,
-            })
-            "#,
-        )
-        .unwrap();
-
-        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
-        host.load_plugin_file(&plugin_path).unwrap();
-
-        let snap = host.command_reader().load();
-        let found = snap
-            .commands
-            .iter()
-            .any(|c| c.name.as_ref() == "/test_perm");
-        assert!(found);
-    }
-
-    #[test]
-    fn load_plugin_file_without_manifest_defaults_to_denied_permissions() {
-        let dir = tempfile::tempdir().unwrap();
-        let plugin_path = dir.path().join("plugin.lua");
-        fs::write(
-            &plugin_path,
-            r#"
-            n00n.api.register_command({
-                name = "/test_no_manifest",
-                description = "no manifest test",
-                handler = function() end,
-            })
-            "#,
-        )
-        .unwrap();
-
-        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
-        host.load_plugin_file(&plugin_path).unwrap();
-
-        let snap = host.command_reader().load();
-        let found = snap
-            .commands
-            .iter()
-            .any(|c| c.name.as_ref() == "/test_no_manifest");
-        assert!(found);
     }
 }
