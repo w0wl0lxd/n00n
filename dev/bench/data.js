@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787223032425,
+  "lastUpdate": 1787224780818,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -21807,6 +21807,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 131691,
             "range": "± 9006",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9595009c652c633ed0706cd82e7667c20c1feaea",
+          "message": "test(n00n-lua): add tests for load_source_with_permissions (#415)\n\n* test(n00n-lua): add tests for load_source_with_permissions\n\nAdd unit tests for `PluginHost::load_source_with_permissions` verifying\nthat permissions are properly passed to loaded plugins and respected\nduring execution, and verifying proper error handling on a dead host.\n\n* test(n00n-lua): add tests for load_source_with_permissions\n\nAdd unit tests for `PluginHost::load_source_with_permissions` verifying\nthat permissions are properly passed to loaded plugins and respected\nduring execution, and verifying proper error handling on a dead host.\n\n* test(n00n-lua): add tests for load_source_with_permissions\n\nAdd unit tests for `PluginHost::load_source_with_permissions` verifying\nthat permissions are properly passed to loaded plugins and respected\nduring execution, and verifying proper error handling on a dead host.\n\n* test(lua): isolate permission loading tests\n\n* chore: remove invalid test changelog fragment\n\n* chore: rerun checks with no-changelog label\n\n* test(n00n-lua): add tests for load_source_with_permissions\n\nAdd unit tests for `PluginHost::load_source_with_permissions` verifying\nthat permissions are properly passed to loaded plugins and respected\nduring execution, and verifying proper error handling on a dead host.",
+          "timestamp": "2026-08-20T11:04:01Z",
+          "tree_id": "2fce568a4815116addf693140271eecde11a540e",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/9595009c652c633ed0706cd82e7667c20c1feaea"
+        },
+        "date": 1787224779723,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6630621,
+            "range": "± 16779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2225660,
+            "range": "± 40660",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218429,
+            "range": "± 26796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8005735,
+            "range": "± 108381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4421495,
+            "range": "± 19111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4360475,
+            "range": "± 90114",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 581352,
+            "range": "± 2734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191761,
+            "range": "± 418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191550,
+            "range": "± 588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1042225,
+            "range": "± 11736",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 584898,
+            "range": "± 4081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584558,
+            "range": "± 9232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 67089,
+            "range": "± 7715",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 144340,
+            "range": "± 28388",
             "unit": "ns/iter"
           }
         ]
