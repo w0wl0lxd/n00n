@@ -4,17 +4,31 @@ All notable user-facing changes are documented in this file. Entries are
 generated from `changelog.d/` fragments at release time via `just changelog`.
 See `changelog.d/README.md` for the fragment convention.
 
+
 ## [0.6.2] - 2026-08-20
+
+### Added
+
+- Added unit tests for `PluginHost::set_search_config` in `n00n-lua`.
 
 ### Fixed
 
 - Fix post-0.6.1 review comments: remove heading markers inside changelog list items and deduplicate repeated block, handle CRLF and bullet prefixes correctly in build-changelog.sh, and replace em-dash in provider docs per tone rules.
+- Prevent the built-in GitHub tool from crashing when a pull request or issue has a missing or non-string body.
+- Return an empty Git history when callers request zero commits.
+- Prevented large streamed `code_execution` output from panicking when the interpreter retains a shorter, UTF-8-truncated stdout buffer. Missing provider credentials are now treated as expected setup state instead of repeated warning-level failures.
+- Keep the TUI responsive while tools and question windows are active by avoiding synchronous plugin-state capture from live session saves.
 - Fix flaky `pre_execution_callback_timeout_starts_after_dispatch` test on Windows by increasing timeouts to 5s/2s.
 - Fix Lua API docs build with Zola 0.23: wrap generated markdown in Tera raw block to prevent `{#` and `{{` from being parsed as template syntax, which broke `zola build` on CI after the 0.23 upgrade.
 - Fix tool token analysis script to handle current zstd-compressed JSONL session format at `~/.local/state/n00n/sessions/*.jsonl` in addition to legacy `~/.n00n/sessions/*.json`.
 
+### Performance
+
+- Optimized string interpolation overhead in `unified_text` diff rendering loop.
+
 ### Docs
 
+- Added unit test coverage for `git::diff` in `n00n-git`.
 - Added unit test coverage for `branches` function in `n00n-git`.
 - Added unit tests for git blame operation in `n00n-git`.
 
