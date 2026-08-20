@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use n00n_agent::diff::{DiffLine, DiffSpan, compute_hunks, unified_text};
+use n00n_agent::diff::{DiffHunk, DiffLine, DiffSpan, compute_hunks, unified_text};
 
 fn generate_sample_text(lines: usize, change_frequency: usize) -> (String, String) {
     let mut before = String::new();
@@ -23,11 +23,7 @@ fn generate_sample_text(lines: usize, change_frequency: usize) -> (String, Strin
     (before, after)
 }
 
-fn render_hunks_string(
-    summary: &str,
-    display_path: &str,
-    hunks: &[n00n_agent::diff::DiffHunk],
-) -> String {
+fn render_hunks_string(summary: &str, display_path: &str, hunks: &[DiffHunk]) -> String {
     let mut out = format!("{summary}\n--- {display_path}\n+++ {display_path}");
     let write_change = |out: &mut String, prefix: &str, spans: &[DiffSpan]| {
         out.push('\n');
