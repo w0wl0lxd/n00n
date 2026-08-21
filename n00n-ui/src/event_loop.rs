@@ -627,7 +627,7 @@ struct SpawnCtx {
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
     picker: Arc<Picker>,
-    hydration_requested_roots: RefCell<HashMap<n00nId, Option<u64>>>,
+    hydration_requested_roots: Arc<Mutex<HashMap<n00nId, Option<u64>>>>,
     revision_allocators: RefCell<HashMap<n00nId, Arc<RevisionAllocator>>>,
 }
 
@@ -689,19 +689,38 @@ impl SpawnCtx {
                 .and_then(StoredSessionStateSnapshot::state_revision);
             let should_hydrate_root = self
                 .hydration_requested_roots
-                .borrow()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&root_id)
                 .is_none_or(|hydrated_revision| root_snapshot_revision > *hydrated_revision);
             if should_hydrate_root {
-                handle
-                    .hydrate_state_background(
-                        &SessionIdentity::root(SessionRef::from_id(root_id)),
-                        root_snapshot,
-                    )
-                    .map_err(|error| eyre!("failed to hydrate root plugin state: {error}"))?;
                 self.hydration_requested_roots
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(root_id, root_snapshot_revision);
+                let hydration_requested_roots = Arc::clone(&self.hydration_requested_roots);
+                let queue_result = handle.hydrate_state_background_with_completion(
+                    &SessionIdentity::root(SessionRef::from_id(root_id)),
+                    root_snapshot,
+                    move |result| {
+                        if let Err(error) = result {
+                            let mut requests = hydration_requested_roots
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if requests.get(&root_id) == Some(&root_snapshot_revision) {
+                                requests.remove(&root_id);
+                            }
+                            warn!(%root_id, %error, "failed to restore root plugin session state");
+                        }
+                    },
+                );
+                if let Err(error) = queue_result {
+                    self.hydration_requested_roots
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&root_id);
+                    return Err(eyre!("failed to hydrate root plugin state: {error}"));
+                }
             }
             if root_id != session.id {
                 handle
@@ -1216,7 +1235,7 @@ impl<'t> EventLoop<'t> {
             available_models: bg.available,
             storage_writer,
             picker,
-            hydration_requested_roots: RefCell::new(HashMap::new()),
+            hydration_requested_roots: Arc::new(Mutex::new(HashMap::new())),
             revision_allocators: RefCell::new(HashMap::new()),
         };
 
@@ -2725,7 +2744,8 @@ impl<'t> EventLoop<'t> {
         {
             self.ctx
                 .hydration_requested_roots
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&root_id);
             self.ctx.revision_allocators.borrow_mut().remove(&root_id);
         }
@@ -3127,7 +3147,8 @@ impl<'t> EventLoop<'t> {
                             .and_then(StoredSessionStateSnapshot::state_revision);
                         self.ctx
                             .hydration_requested_roots
-                            .borrow_mut()
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .insert(root_id, revision);
                     }
                 }

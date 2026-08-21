@@ -803,6 +803,24 @@ impl EventHandle {
         identity: &SessionIdentity,
         snapshot: Option<StoredSessionStateSnapshot>,
     ) -> Result<(), PluginError> {
+        let session_id = identity.session_id().id();
+        self.hydrate_state_background_with_completion(identity, snapshot, move |result| {
+            if let Err(error) = result {
+                tracing::warn!(%session_id, %error, "failed to restore plugin session state");
+            }
+        })
+    }
+
+    /// Queues plugin state hydration and reports its asynchronous result.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn hydrate_state_background_with_completion(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+        completion: impl FnOnce(Result<(), PluginError>) + Send + 'static,
+    ) -> Result<(), PluginError> {
         self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
@@ -812,17 +830,13 @@ impl EventHandle {
                 reply,
             })
             .map_err(|_| PluginError::HostDead)?;
-        let session_id = identity.session_id().id();
         smol::spawn(async move {
-            match recv.recv_async().await {
-                Ok(Ok(())) => {}
-                Ok(Err(message)) => {
-                    tracing::warn!(%session_id, %message, "failed to restore plugin session state");
-                }
-                Err(error) => {
-                    tracing::warn!(%session_id, %error, "plugin state hydration response disconnected");
-                }
-            }
+            let result = recv
+                .recv_async()
+                .await
+                .map_err(|_| PluginError::HostDead)
+                .and_then(|result| result.map_err(|message| PluginError::State { message }));
+            completion(result);
         })
         .detach();
         Ok(())
@@ -1135,6 +1149,31 @@ mod tests {
 
         reply.send(Ok(())).unwrap();
         drop_reply.send(()).unwrap();
+    }
+
+    #[test_case(())]
+    fn background_hydration_reports_completion(_unit: ()) {
+        const HYDRATION_ERROR: &str = "hydrate failed";
+
+        let (tx, rx) = flume::unbounded();
+        let handle = EventHandle::probed_for_test(tx);
+        let identity = SessionIdentity::root(SessionRef::generate());
+        let (completion_tx, completion_rx) = flume::bounded(1);
+
+        handle
+            .hydrate_state_background_with_completion(&identity, None, move |result| {
+                completion_tx.send(result).unwrap();
+            })
+            .unwrap();
+        let Request::HydrateState { reply, .. } = rx.try_recv().unwrap() else {
+            panic!("expected hydrate request");
+        };
+        reply.send(Err(HYDRATION_ERROR.to_string())).unwrap();
+
+        assert!(matches!(
+            completion_rx.recv().unwrap(),
+            Err(PluginError::State { message }) if message == HYDRATION_ERROR
+        ));
     }
 
     #[test]
