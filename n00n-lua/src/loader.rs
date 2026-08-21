@@ -656,6 +656,12 @@ impl SessionStatePersistence for EventHandle {
             .map_err(|error| error.to_string())
     }
 
+    fn prompt_slots(&self, identity: &SessionIdentity) -> Result<Option<ResolvedSlots>, String> {
+        self.try_collect_prompt_slots_for_identity(Some(identity))
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
     fn drop_owner(&self, owner: n00nId, lease: u64) -> Result<(), String> {
         let mut current = self
             .state_leases
@@ -720,12 +726,22 @@ impl EventHandle {
     /// # Errors
     /// Returns [`PluginError::HostDead`] if the plugin host is unavailable.
     pub fn try_collect_prompt_slots(&self) -> Result<ResolvedSlots, PluginError> {
+        self.try_collect_prompt_slots_for_identity(None)
+    }
+
+    fn try_collect_prompt_slots_for_identity(
+        &self,
+        identity: Option<&SessionIdentity>,
+    ) -> Result<ResolvedSlots, PluginError> {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(PluginError::HostDead);
         }
         let (reply, recv) = flume::bounded(1);
         self.tx
-            .send(Request::CollectPromptSlots { reply })
+            .send(Request::CollectPromptSlots {
+                identity: identity.map(PluginStateIdentity::from),
+                reply,
+            })
             .map_err(|_| PluginError::HostDead)?;
         recv.recv_timeout(SHUTDOWN_TIMEOUT)
             .map_err(|_| PluginError::HostDead)
@@ -739,12 +755,39 @@ impl EventHandle {
         })
     }
 
+    #[must_use]
+    pub fn collect_prompt_slots_for(&self, identity: &SessionIdentity) -> ResolvedSlots {
+        self.try_collect_prompt_slots_for_identity(Some(identity))
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "session prompt slots unavailable; using empty slots");
+                ResolvedSlots::default()
+            })
+    }
+
     pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
+        self.collect_prompt_slots_async_for_identity(None).await
+    }
+
+    pub async fn collect_prompt_slots_async_for(
+        &self,
+        identity: &SessionIdentity,
+    ) -> ResolvedSlots {
+        self.collect_prompt_slots_async_for_identity(Some(identity))
+            .await
+    }
+
+    async fn collect_prompt_slots_async_for_identity(
+        &self,
+        identity: Option<&SessionIdentity>,
+    ) -> ResolvedSlots {
         if self.shutdown.load(Ordering::Acquire) {
             return ResolvedSlots::default();
         }
         let (tx, rx) = flume::bounded(1);
-        if let Err(error) = self.tx.send(Request::CollectPromptSlots { reply: tx }) {
+        if let Err(error) = self.tx.send(Request::CollectPromptSlots {
+            identity: identity.map(PluginStateIdentity::from),
+            reply: tx,
+        }) {
             tracing::warn!(%error, "plugin prompt slot request failed");
             return ResolvedSlots::default();
         }
@@ -913,7 +956,7 @@ mod tests {
     use super::*;
     use crate::api::util::command::{LuaCommandInfo, LuaCommandWriter};
     use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot};
-    use n00n_agent::tools::ToolRegistry;
+    use n00n_agent::tools::{SessionIdentity, ToolRegistry};
     use n00n_storage::{id::SessionRef, sessions::StoredStateScope};
     use std::time::Instant;
     use test_case::test_case;
@@ -1357,6 +1400,54 @@ mod tests {
             [CONTENT]
         );
         assert!(contents(&slots, PromptId::General, Slot::ToolUsage).is_empty());
+    }
+
+    #[test_case(())]
+    fn prompt_callback_reads_state_for_requested_session(_unit: ()) {
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        host.load_source(
+            "stateful",
+            r#"
+            n00n.api.register_prompt_hint({
+                slot = "after_instructions",
+                prompt = "system",
+                content = function(ctx)
+                    if ctx == nil then return nil end
+                    local state, err = ctx:state_get("root")
+                    if err then error(err) end
+                    return state and state.label or nil
+                end,
+            })
+            "#,
+        )
+        .unwrap();
+        let handle = host.event_handle().unwrap();
+        let first = SessionIdentity::root(SessionRef::generate());
+        let second = SessionIdentity::root(SessionRef::generate());
+        for (identity, label) in [(&first, "first"), (&second, "second")] {
+            let mut snapshot = StoredSessionStateSnapshot::new(1);
+            snapshot
+                .set_plugin_state(
+                    "stateful",
+                    1,
+                    StoredStateScope::Root,
+                    serde_json::json!({ "label": label }),
+                )
+                .unwrap();
+            handle.hydrate_state(identity, Some(snapshot)).unwrap();
+        }
+
+        let first_slots = handle.collect_prompt_slots_for(&first);
+        let second_slots = handle.collect_prompt_slots_for(&second);
+
+        assert_eq!(
+            contents(&first_slots, PromptId::System, Slot::AfterInstructions),
+            ["first"]
+        );
+        assert_eq!(
+            contents(&second_slots, PromptId::System, Slot::AfterInstructions),
+            ["second"]
+        );
     }
 
     #[test]

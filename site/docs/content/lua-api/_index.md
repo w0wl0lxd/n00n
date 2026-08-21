@@ -336,7 +336,7 @@ Throws if you pass a singleton slot name.
 
 - `{spec}` (`table`) Hint specification:
   - `slot` (`string`) Required. Aggregate slot name (e.g. "tool_usage", "general").
-  - `content` (`string|function`) Required. Static text, or a `function()` that returns a string. Max 1 MiB.
+  - `content` (`string|function`) Required. Static text, or a `function(ctx)` that returns a string. The read-only ctx exposes `state_get(scope)` and `state_owner(scope)` when collected for a session. Max 1 MiB.
   - `prompt` (`string|string[]`) Optional. Restrict to specific prompt ids (e.g. "system").
 
 **Example:**
@@ -404,7 +404,7 @@ Throws if you pass an aggregate slot name.
 
 - `{spec}` (`table`) Spec fields mirror `register_prompt_hint`:
   - `slot` (`string`) Required. Singleton slot name (e.g. "identity", "tone").
-  - `content` (`string|function`) Required. Static text or a `function()` returning a string. Max 1 MiB.
+  - `content` (`string|function`) Required. Static text or a `function(ctx)` returning a string. The read-only ctx exposes `state_get(scope)` and `state_owner(scope)` when collected for a session. Max 1 MiB.
   - `prompt` (`string|string[]`) Optional. Restrict to specific prompt ids.
 
 **Example:**

@@ -43,7 +43,7 @@ const TOOL_NAME_MAX: usize = 64;
 const TOOL_HANDLER_RETURN_ERR: &str =
     "tool handler must return string or {output=string, is_error?=bool}";
 const TIMEOUT_PARSE_ERR: &str = "register_tool: 'timeout' must be a positive number, 0, or false";
-const MAX_HINT_CONTENT_SIZE: usize = 1024 * 1024;
+pub(crate) const MAX_HINT_CONTENT_SIZE: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PRE_EXEC_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 const PRE_EXEC_CALLBACK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -846,7 +846,7 @@ fn register_command(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaResul
 ///
 /// @param spec table Hint specification:
 ///   slot    (string)         Required. Aggregate slot name (e.g. "tool_usage", "general").
-///   content (string|function) Required. Static text, or a `function()` that returns a string. Max 1 MiB.
+///   content (string|function) Required. Static text, or a `function(ctx)` that returns a string. The read-only ctx exposes `state_get(scope)` and `state_owner(scope)` when collected for a session. Max 1 MiB.
 ///   prompt  (string|string[]) Optional. Restrict to specific prompt ids (e.g. "system").
 /// @return
 /// @example
@@ -891,7 +891,7 @@ fn register_prompt_hint(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaR
 ///
 /// @param spec table Spec fields mirror `register_prompt_hint`:
 ///   slot    (string)         Required. Singleton slot name (e.g. "identity", "tone").
-///   content (string|function) Required. Static text or a `function()` returning a string. Max 1 MiB.
+///   content (string|function) Required. Static text or a `function(ctx)` returning a string. The read-only ctx exposes `state_get(scope)` and `state_owner(scope)` when collected for a session. Max 1 MiB.
 ///   prompt  (string|string[]) Optional. Restrict to specific prompt ids.
 /// @return
 /// @example
