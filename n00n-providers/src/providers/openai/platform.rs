@@ -79,11 +79,10 @@ impl CodexCacheCapabilities {
         opts.message_cache_breakpoints = 0;
         opts.openai_prompt_cache_mode = None;
 
-        if self.accepts_prompt_cache_options_explicit
-            && self.accepts_prompt_cache_breakpoints
-            && requested_breakpoints > 0
-        {
+        if self.accepts_prompt_cache_breakpoints && requested_breakpoints > 0 {
             opts.message_cache_breakpoints = requested_breakpoints;
+        }
+        if self.accepts_prompt_cache_options_explicit && opts.message_cache_breakpoints > 0 {
             opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Explicit);
         } else if self.accepts_prompt_cache_options_implicit {
             opts.openai_prompt_cache_mode = Some(OpenAiPromptCacheMode::Implicit);
@@ -2832,6 +2831,21 @@ mod tests {
         });
 
         assert_eq!(opts.message_cache_breakpoints, 0);
+        assert_eq!(opts.openai_prompt_cache_mode, None);
+    }
+
+    #[test]
+    fn codex_cache_capabilities_gate_breakpoints_without_cache_options() {
+        let opts = CodexCacheCapabilities {
+            accepts_prompt_cache_breakpoints: true,
+            ..Default::default()
+        }
+        .apply_to_request_options(RequestOptions {
+            message_cache_breakpoints: 3,
+            ..Default::default()
+        });
+
+        assert_eq!(opts.message_cache_breakpoints, 3);
         assert_eq!(opts.openai_prompt_cache_mode, None);
     }
 
