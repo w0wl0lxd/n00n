@@ -207,7 +207,6 @@ pub(crate) fn spawn_shell(
     })
     .detach();
 }
-#[allow(unsafe_code)]
 async fn run_command(
     command: &str,
     id: &str,
@@ -220,13 +219,7 @@ async fn run_command(
     std_cmd.env("GIT_TERMINAL_PROMPT", "0");
 
     #[cfg(unix)]
-    unsafe {
-        // SAFETY: `setsid` is async-signal-safe on supported Unix targets.
-        std_cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
+    std_cmd.process_group(0);
 
     let mut cmd: Command = std_cmd.into();
     cmd.stdin(Stdio::null())
@@ -557,6 +550,7 @@ mod tests {
                 }
             }
             assert_eq!(outputs.last().map(String::as_str), Some("one\ntwo"));
+            assert!(outputs.windows(2).all(|pair| pair[0] != pair[1]));
         });
     }
 }

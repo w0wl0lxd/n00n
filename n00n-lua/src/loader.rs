@@ -926,7 +926,7 @@ impl EventHandle {
             })
             .await
             .map_err(|_| PluginError::HostDead)?;
-        futures_lite::future::race(
+        futures_lite::future::or(
             async {
                 recv.recv_async()
                     .await
