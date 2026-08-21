@@ -1043,11 +1043,7 @@ pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
             "repository operation is in progress: {state:?}"
         )));
     }
-    if repo.config_snapshot().boolean("commit.gpgSign") == Some(true) {
-        return Err(GitError::GitOperation(
-            "signed commits are not supported by native commit".to_string(),
-        ));
-    }
+    let sign_commit = repo.config_snapshot().boolean("commit.gpgSign") == Some(true);
     if let Some(hook) = active_commit_hook(&repo)? {
         return Err(GitError::GitOperation(format!(
             "commit hook is not supported by native commit: {}",
@@ -1055,7 +1051,7 @@ pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
         )));
     }
 
-    let _index_lock = acquire_index_lock(&repo)?;
+    let index_lock = acquire_index_lock(&repo)?;
     let index = repo
         .index_or_load_from_head_or_empty()
         .map_err(|e| GitError::GitOperation(format!("failed to load index: {e}")))?;
@@ -1116,6 +1112,16 @@ pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
         if parent_tree == tree_id {
             return Err(GitError::GitOperation("nothing to commit".to_string()));
         }
+    }
+
+    if sign_commit {
+        drop(index_lock);
+        run_git(
+            path,
+            &["commit", "--no-verify", "--gpg-sign", "--message", message],
+        )?;
+        let output = run_git(path, &["rev-parse", "HEAD"])?;
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
     }
 
     let message = if message.ends_with('\n') {
@@ -1515,26 +1521,38 @@ mod tests {
         assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), before);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn native_commit_rejects_required_signing() {
+    fn native_commit_supports_required_signing() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         init_repo(root);
+        let signer = root.join("signer.sh");
+        std::fs::write(
+            &signer,
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '-----BEGIN PGP SIGNATURE-----' '' 'ZmFrZQ==' '-----END PGP SIGNATURE-----'\nprintf '%s\\n' '[GNUPG:] SIG_CREATED D 1 10 00 0 0 0 0 0' >&2\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&signer).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&signer, permissions).unwrap();
         std::fs::write(root.join("file.txt"), "one\n").unwrap();
         run(root, &["add", "file.txt"]);
         run(root, &["config", "commit.gpgSign", "true"]);
+        run(root, &["config", "gpg.program", signer.to_str().unwrap()]);
 
-        assert!(matches!(
-            commit(root, "signed"),
-            Err(GitError::GitOperation(_))
-        ));
-        let verify = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(["rev-parse", "--verify", "HEAD"])
-            .output()
-            .unwrap();
-        assert!(!verify.status.success());
+        let id = commit(root, "signed").unwrap();
+        assert_eq!(
+            String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
+                .unwrap()
+                .trim(),
+            id
+        );
+        let commit = String::from_utf8(run(root, &["cat-file", "commit", "HEAD"]).stdout).unwrap();
+        assert!(commit.contains("gpgsig "));
+        assert!(commit.contains("-----BEGIN PGP SIGNATURE-----"));
     }
 
     #[cfg(unix)]
