@@ -3,7 +3,7 @@ use std::sync::Arc;
 use flume::Sender;
 use futures_lite::future;
 use n00n_providers::provider::Provider;
-use n00n_providers::{Message, Model, ProviderEvent, RequestOptions, System};
+use n00n_providers::{ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, System};
 use serde_json::Value;
 
 use crate::components::btw_modal::BtwEvent;
@@ -25,19 +25,89 @@ pub(crate) fn btw_question(question: &str) -> Message {
     Message::user(format!("{BTW_REMINDER}\n\n{question}"))
 }
 
+fn append_btw_message(messages: &mut Vec<Message>, message: Message) {
+    if let Some(last) = messages.last_mut()
+        && matches!(
+            (&last.role, &message.role),
+            (Role::User, Role::User) | (Role::Assistant, Role::Assistant)
+        )
+    {
+        last.content.extend(message.content);
+        last.control |= message.control;
+        return;
+    }
+    messages.push(message);
+}
+
+fn append_btw_question(messages: &mut Vec<Message>, question: &str) {
+    if let Some(last) = messages.last_mut()
+        && matches!(&last.role, Role::User)
+    {
+        let prior_content = std::mem::take(&mut last.content);
+        last.content.push(ContentBlock::Text {
+            text: BTW_REMINDER.to_owned(),
+        });
+        last.content.extend(prior_content);
+        last.content.push(ContentBlock::Text {
+            text: question.to_owned(),
+        });
+        return;
+    }
+    messages.push(btw_question(question));
+}
+
+fn btw_history(messages: &[Message]) -> Vec<Message> {
+    let mut sanitized = Vec::new();
+    for message in messages {
+        let content = message
+            .content
+            .iter()
+            .filter(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Text { .. }
+                        | ContentBlock::Image { .. }
+                        | ContentBlock::File { .. }
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !content.is_empty() {
+            append_btw_message(
+                &mut sanitized,
+                Message {
+                    role: message.role.clone(),
+                    content,
+                    display_text: None,
+                    control: message.control,
+                },
+            );
+        }
+    }
+    if let Some(first_user) = sanitized
+        .iter()
+        .position(|message| matches!(&message.role, Role::User))
+    {
+        sanitized.drain(..first_user);
+    } else {
+        sanitized.clear();
+    }
+    sanitized
+}
+
 impl App {
     pub(crate) fn start_btw(&mut self, question: &str, provider: Arc<dyn Provider>, model: Model) {
         let mut messages = self
             .shared_history
             .as_ref()
-            .map_or_else(Default::default, |h| Vec::clone(&h.load()));
+            .map_or_else(Vec::new, |history| btw_history(&history.load()));
         let system = self
             .btw_system
             .as_ref()
             .map(|s| System::clone(&s.load()))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| System::from(BTW_FALLBACK_SYSTEM));
-        messages.push(btw_question(question));
+        append_btw_question(&mut messages, question);
 
         let (tx, rx) = flume::bounded(64);
         self.btw_modal.open(question, rx);
@@ -200,6 +270,110 @@ mod tests {
             Ok(BtwEvent::TextDelta(text)) if text == "second"
         ));
         assert!(matches!(btw_rx.try_recv(), Ok(BtwEvent::Done)));
+    }
+
+    #[test_case::test_case(())]
+    fn provider_history_excludes_tool_and_provider_protocol_blocks(_unit: ()) {
+        let history = vec![
+            Message::user("context".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "working".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "read_file".into(),
+                        input: serde_json::json!({}),
+                    },
+                    ContentBlock::ProviderItem {
+                        provider: "openai".into(),
+                        data: serde_json::json!({"type":"reasoning","id":"reason-1"}),
+                    },
+                    ContentBlock::Thinking {
+                        thinking: "private".into(),
+                        signature: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            Message {
+                role: n00n_providers::Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+        ];
+
+        let sanitized = btw_history(&history);
+
+        assert_eq!(sanitized.len(), 2);
+        assert!(matches!(
+            sanitized[0].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "context"
+        ));
+        assert!(matches!(
+            sanitized[1].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "working"
+        ));
+    }
+
+    #[test]
+    fn provider_history_merges_roles_after_protocol_blocks_are_removed() {
+        let history = vec![
+            Message::user("context".into()),
+            Message {
+                role: n00n_providers::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "first".into(),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: n00n_providers::Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+            Message::assistant("second".into()),
+            Message::user("tail".into()),
+        ];
+
+        let mut sanitized = btw_history(&history);
+        append_btw_question(&mut sanitized, Q);
+
+        assert_eq!(sanitized.len(), 3);
+        assert_eq!(sanitized[1].content.len(), 2);
+        assert_eq!(sanitized[2].content.len(), 3);
+        assert!(matches!(
+            sanitized[2].content.first(),
+            Some(ContentBlock::Text { text }) if text == BTW_REMINDER
+        ));
+        assert!(matches!(
+            sanitized[2].content.last(),
+            Some(ContentBlock::Text { text }) if text == Q
+        ));
+    }
+
+    #[test]
+    fn provider_history_drops_leading_assistant_turns() {
+        let history = vec![
+            Message::assistant("orphan".into()),
+            Message::user("context".into()),
+            Message::assistant("answer".into()),
+        ];
+
+        let sanitized = btw_history(&history);
+
+        assert_eq!(sanitized.len(), 2);
+        assert!(matches!(&sanitized[0].role, Role::User));
     }
 
     #[test]
