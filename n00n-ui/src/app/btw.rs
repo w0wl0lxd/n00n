@@ -39,6 +39,23 @@ fn append_btw_message(messages: &mut Vec<Message>, message: Message) {
     messages.push(message);
 }
 
+fn append_btw_question(messages: &mut Vec<Message>, question: &str) {
+    if let Some(last) = messages.last_mut()
+        && matches!(&last.role, Role::User)
+    {
+        let prior_content = std::mem::take(&mut last.content);
+        last.content.push(ContentBlock::Text {
+            text: BTW_REMINDER.to_owned(),
+        });
+        last.content.extend(prior_content);
+        last.content.push(ContentBlock::Text {
+            text: question.to_owned(),
+        });
+        return;
+    }
+    messages.push(btw_question(question));
+}
+
 fn btw_history(messages: &[Message]) -> Vec<Message> {
     let mut sanitized = Vec::new();
     for message in messages {
@@ -67,6 +84,14 @@ fn btw_history(messages: &[Message]) -> Vec<Message> {
             );
         }
     }
+    if let Some(first_user) = sanitized
+        .iter()
+        .position(|message| matches!(&message.role, Role::User))
+    {
+        sanitized.drain(..first_user);
+    } else {
+        sanitized.clear();
+    }
     sanitized
 }
 
@@ -82,7 +107,7 @@ impl App {
             .map(|s| System::clone(&s.load()))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| System::from(BTW_FALLBACK_SYSTEM));
-        append_btw_message(&mut messages, btw_question(question));
+        append_btw_question(&mut messages, question);
 
         let (tx, rx) = flume::bounded(64);
         self.btw_modal.open(question, rx);
@@ -317,11 +342,33 @@ mod tests {
         ];
 
         let mut sanitized = btw_history(&history);
-        append_btw_message(&mut sanitized, btw_question(Q));
+        append_btw_question(&mut sanitized, Q);
 
         assert_eq!(sanitized.len(), 3);
         assert_eq!(sanitized[1].content.len(), 2);
-        assert_eq!(sanitized[2].content.len(), 2);
+        assert_eq!(sanitized[2].content.len(), 3);
+        assert!(matches!(
+            sanitized[2].content.first(),
+            Some(ContentBlock::Text { text }) if text == BTW_REMINDER
+        ));
+        assert!(matches!(
+            sanitized[2].content.last(),
+            Some(ContentBlock::Text { text }) if text == Q
+        ));
+    }
+
+    #[test]
+    fn provider_history_drops_leading_assistant_turns() {
+        let history = vec![
+            Message::assistant("orphan".into()),
+            Message::user("context".into()),
+            Message::assistant("answer".into()),
+        ];
+
+        let sanitized = btw_history(&history);
+
+        assert_eq!(sanitized.len(), 2);
+        assert!(matches!(&sanitized[0].role, Role::User));
     }
 
     #[test]
