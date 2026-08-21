@@ -25,6 +25,7 @@ const INTERP_ECHO_SIG: &str =
     "- interp_echo(msg: str, count?: int, flag?: bool, items?: list, raw?: any)";
 const WF_TASK_SIG: &str = "- wf_task(prompt: str, model_tier?: str)";
 const SUB_TOOL_SIG: &str = "- sub_tool()";
+const INVALID_TIMEOUT_ERROR: &str = "error: timeout must be between 5 and 300 seconds";
 
 fn fixture_plugin() -> String {
     format!(
@@ -118,6 +119,25 @@ fn stub_ctx_for(reg: &Arc<ToolRegistry>, mode: &AgentMode) -> ToolContext {
     let mut ctx = stub_ctx(mode);
     ctx.registry = Arc::clone(reg);
     ctx
+}
+
+#[test]
+fn invalid_timeout_returns_structured_tool_error() {
+    let (reg, _host) = setup();
+    let ctx = stub_ctx_for(&reg, &AgentMode::Build);
+    let invocation = reg
+        .get("code_execution")
+        .expect("code_execution registered")
+        .tool
+        .parse(&serde_json::json!({ "code": "print('unused')", "timeout": 1 }))
+        .expect("parse failed");
+
+    let result = smol::block_on(async { invocation.execute(&ctx).await });
+
+    assert_eq!(
+        result.output.expect_err("invalid timeout should fail"),
+        INVALID_TIMEOUT_ERROR
+    );
 }
 
 #[test]

@@ -209,10 +209,10 @@ Execute multiple independent tool calls concurrently. ALWAYS use run_batch for m
 
 Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read_file(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `timeout` | integer | no | 30 | Script timeout seconds |
-| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read_file(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timeout` | integer | no | Script timeout seconds (5-300, default 30) |
+| `code` | string | yes | Python code. Tools are async functions returning strings. MUST await every call: `result = await read_file(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `ask_user` *(lua plugin)*
 

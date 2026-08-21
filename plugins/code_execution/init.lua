@@ -99,7 +99,7 @@ local schema = {
     },
     timeout = {
       type = "integer",
-      description = "Script timeout seconds (default 30)",
+      description = "Script timeout seconds (5-300, default 30)",
     },
   },
 }
@@ -197,7 +197,7 @@ local function handler(input, ctx)
   local config = ctx:config()
   local timeout = input.timeout or opts.timeout_secs
   if timeout < 5 or timeout > 300 then
-    error("timeout must be between 5 and 300 seconds")
+    return { llm_output = "error: timeout must be between 5 and 300 seconds", is_error = true }
   end
 
   local buf, view, highlight = build_body(ctx, input.code)
