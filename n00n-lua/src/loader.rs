@@ -670,6 +670,13 @@ impl SessionStatePersistence for EventHandle {
 }
 
 impl EventHandle {
+    fn ensure_alive(&self) -> Result<(), PluginError> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(PluginError::HostDead);
+        }
+        Ok(())
+    }
+
     pub(crate) fn from_tx(tx: flume::Sender<Request>) -> Self {
         Self {
             tx,
@@ -773,6 +780,7 @@ impl EventHandle {
         identity: &SessionIdentity,
         snapshot: Option<StoredSessionStateSnapshot>,
     ) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::HydrateState {
@@ -795,6 +803,7 @@ impl EventHandle {
         identity: &SessionIdentity,
         snapshot: Option<StoredSessionStateSnapshot>,
     ) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::HydrateState {
@@ -850,6 +859,7 @@ impl EventHandle {
         revision: u64,
         timeout: Duration,
     ) -> Result<StoredSessionStateSnapshot, PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send_async(Request::CaptureState {
@@ -881,6 +891,7 @@ impl EventHandle {
     /// # Errors
     /// Returns an error when the host is unavailable.
     pub fn reset_state(&self, identity: &SessionIdentity) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::ResetState {
@@ -896,6 +907,7 @@ impl EventHandle {
     /// # Errors
     /// Returns an error when the host is unavailable.
     pub fn drop_state_owner(&self, owner: n00nId) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::DropStateOwner { owner, reply })
@@ -908,6 +920,7 @@ impl EventHandle {
     /// # Errors
     /// Returns an error when the host is unavailable.
     pub fn drop_state_owner_background(&self, owner: n00nId) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::DropStateOwner { owner, reply })
