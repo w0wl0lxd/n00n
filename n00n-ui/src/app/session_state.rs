@@ -347,7 +347,6 @@ pub(crate) fn stored_to_rules(stored: &[StoredRule]) -> Vec<n00n_config::Permiss
 mod tests {
     use super::*;
     use crate::components::test_model;
-    use test_case::test_case;
 
     fn make_plan_session(mode: Option<StoredMode>, plan_path: Option<String>) -> AppSession {
         let mut session = AppSession::new("test-model", "/tmp");
@@ -356,8 +355,8 @@ mod tests {
         session
     }
 
-    #[test_case(())]
-    fn changed_snapshot_fingerprints_session_once(_case: ()) {
+    #[test]
+    fn changed_snapshot_fingerprints_session_once() {
         let tmp = tempfile::tempdir().unwrap();
         let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session = AppSession::new("test-model", "/tmp");
@@ -376,8 +375,8 @@ mod tests {
         assert_eq!(state.session.updated_at, updated_at);
     }
 
-    #[test_case(())]
-    fn shared_history_clones_only_after_pointer_change(_case: ()) {
+    #[test]
+    fn shared_history_clones_only_after_pointer_change() {
         let tmp = tempfile::tempdir().unwrap();
         let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session = AppSession::new("test-model", "/tmp");
