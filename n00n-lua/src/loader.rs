@@ -23,6 +23,8 @@ use crate::state::PluginStateIdentity;
 use n00n_agent::prompt::ResolvedSlots;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const STATE_CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
+const STATE_CAPTURE_TIMEOUT_MESSAGE: &str = "plugin state capture timed out";
 
 struct BundledPlugin {
     name: &'static str,
@@ -185,15 +187,11 @@ impl Drop for PluginHost {
         };
         inner.shutdown.store(true, Ordering::Release);
         let _ = inner.tx.send(Request::Shutdown);
-        let (done_tx, done_rx) = flume::bounded(1);
         std::thread::spawn(move || {
-            let _ = done_tx.send(handle.join().is_err());
+            if handle.join().is_err() {
+                tracing::warn!("lua thread panicked on shutdown");
+            }
         });
-        match done_rx.recv_timeout(SHUTDOWN_TIMEOUT) {
-            Ok(true) => tracing::warn!("lua thread panicked on shutdown"),
-            Err(_) => tracing::warn!("lua thread did not stop within timeout, detaching"),
-            Ok(false) => {}
-        }
     }
 }
 
@@ -678,6 +676,13 @@ impl SessionStatePersistence for EventHandle {
 }
 
 impl EventHandle {
+    fn ensure_alive(&self) -> Result<(), PluginError> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(PluginError::HostDead);
+        }
+        Ok(())
+    }
+
     pub(crate) fn from_tx(tx: flume::Sender<Request>) -> Self {
         Self {
             tx,
@@ -818,6 +823,7 @@ impl EventHandle {
         identity: &SessionIdentity,
         snapshot: Option<StoredSessionStateSnapshot>,
     ) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::HydrateState {
@@ -831,6 +837,54 @@ impl EventHandle {
             .map_err(|message| PluginError::State { message })
     }
 
+    /// Queues plugin state hydration without waiting for the Lua runtime.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn hydrate_state_background(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+    ) -> Result<(), PluginError> {
+        let session_id = identity.session_id().id();
+        self.hydrate_state_background_with_completion(identity, snapshot, move |result| {
+            if let Err(error) = result {
+                tracing::warn!(%session_id, %error, "failed to restore plugin session state");
+            }
+        })
+    }
+
+    /// Queues plugin state hydration and reports its asynchronous result.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn hydrate_state_background_with_completion(
+        &self,
+        identity: &SessionIdentity,
+        snapshot: Option<StoredSessionStateSnapshot>,
+        completion: impl FnOnce(Result<(), PluginError>) + Send + 'static,
+    ) -> Result<(), PluginError> {
+        self.ensure_alive()?;
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::HydrateState {
+                identity: PluginStateIdentity::from(identity),
+                snapshot,
+                reply,
+            })
+            .map_err(|_| PluginError::HostDead)?;
+        smol::spawn(async move {
+            let result = recv
+                .recv_async()
+                .await
+                .map_err(|_| PluginError::HostDead)
+                .and_then(|result| result.map_err(|message| PluginError::State { message }));
+            completion(result);
+        })
+        .detach();
+        Ok(())
+    }
+
     /// Captures host-owned plugin state after all in-flight Lua work drains.
     ///
     /// # Errors
@@ -840,17 +894,53 @@ impl EventHandle {
         identity: &SessionIdentity,
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, PluginError> {
+        smol::block_on(self.capture_state_async(identity, revision))
+    }
+
+    /// Captures host-owned plugin state without blocking the calling thread.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable or capture validation fails.
+    pub async fn capture_state_async(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+    ) -> Result<StoredSessionStateSnapshot, PluginError> {
+        self.capture_state_async_with_timeout(identity, revision, STATE_CAPTURE_TIMEOUT)
+            .await
+    }
+
+    async fn capture_state_async_with_timeout(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+        timeout: Duration,
+    ) -> Result<StoredSessionStateSnapshot, PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
-            .send(Request::CaptureState {
+            .send_async(Request::CaptureState {
                 identity: PluginStateIdentity::from(identity),
                 revision,
                 reply,
             })
+            .await
             .map_err(|_| PluginError::HostDead)?;
-        recv.recv()
-            .map_err(|_| PluginError::HostDead)?
-            .map_err(|message| PluginError::State { message })
+        futures_lite::future::race(
+            async {
+                recv.recv_async()
+                    .await
+                    .map_err(|_| PluginError::HostDead)?
+                    .map_err(|message| PluginError::State { message })
+            },
+            async {
+                smol::Timer::after(timeout).await;
+                Err(PluginError::State {
+                    message: STATE_CAPTURE_TIMEOUT_MESSAGE.to_string(),
+                })
+            },
+        )
+        .await
     }
 
     /// Clears both scopes for an identity and records removals for the next capture.
@@ -858,6 +948,7 @@ impl EventHandle {
     /// # Errors
     /// Returns an error when the host is unavailable.
     pub fn reset_state(&self, identity: &SessionIdentity) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::ResetState {
@@ -873,11 +964,31 @@ impl EventHandle {
     /// # Errors
     /// Returns an error when the host is unavailable.
     pub fn drop_state_owner(&self, owner: n00nId) -> Result<(), PluginError> {
+        self.ensure_alive()?;
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::DropStateOwner { owner, reply })
             .map_err(|_| PluginError::HostDead)?;
         recv.recv().map_err(|_| PluginError::HostDead)
+    }
+
+    /// Queues removal of one canonical state owner without waiting for the Lua runtime.
+    ///
+    /// # Errors
+    /// Returns an error when the host is unavailable.
+    pub fn drop_state_owner_background(&self, owner: n00nId) -> Result<(), PluginError> {
+        self.ensure_alive()?;
+        let (reply, recv) = flume::bounded(1);
+        self.tx
+            .send(Request::DropStateOwner { owner, reply })
+            .map_err(|_| PluginError::HostDead)?;
+        smol::spawn(async move {
+            if let Err(error) = recv.recv_async().await {
+                tracing::warn!(%owner, %error, "plugin state drop response disconnected");
+            }
+        })
+        .detach();
+        Ok(())
     }
 
     pub fn request_restore(&self, item: RestoreItem, event_tx: n00n_agent::EventSender) {
@@ -1054,6 +1165,82 @@ mod tests {
             handle.try_collect_prompt_slots(),
             Err(PluginError::HostDead)
         ));
+    }
+
+    #[test]
+    fn background_state_requests_return_before_runtime_replies() {
+        let (tx, rx) = flume::unbounded();
+        let handle = EventHandle::probed_for_test(tx);
+        let identity = SessionIdentity::root(SessionRef::generate());
+
+        handle
+            .hydrate_state_background(&identity, Some(StoredSessionStateSnapshot::new(1)))
+            .unwrap();
+        let Request::HydrateState { reply, .. } = rx.try_recv().unwrap() else {
+            panic!("expected hydrate request");
+        };
+
+        handle
+            .drop_state_owner_background(identity.session_id().id())
+            .unwrap();
+        let Request::DropStateOwner {
+            reply: drop_reply, ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("expected drop request");
+        };
+
+        reply.send(Ok(())).unwrap();
+        drop_reply.send(()).unwrap();
+    }
+
+    #[test_case(())]
+    fn background_hydration_reports_completion(_unit: ()) {
+        const HYDRATION_ERROR: &str = "hydrate failed";
+
+        let (tx, rx) = flume::unbounded();
+        let handle = EventHandle::probed_for_test(tx);
+        let identity = SessionIdentity::root(SessionRef::generate());
+        let (completion_tx, completion_rx) = flume::bounded(1);
+
+        handle
+            .hydrate_state_background_with_completion(&identity, None, move |result| {
+                completion_tx.send(result).unwrap();
+            })
+            .unwrap();
+        let Request::HydrateState { reply, .. } = rx.try_recv().unwrap() else {
+            panic!("expected hydrate request");
+        };
+        reply.send(Err(HYDRATION_ERROR.to_string())).unwrap();
+
+        assert!(matches!(
+            completion_rx.recv().unwrap(),
+            Err(PluginError::State { message }) if message == HYDRATION_ERROR
+        ));
+    }
+
+    #[test]
+    fn capture_state_async_times_out_when_runtime_does_not_reply() {
+        smol::block_on(async {
+            let (tx, rx) = flume::unbounded();
+            let handle = EventHandle::probed_for_test(tx);
+            let identity = SessionIdentity::root(SessionRef::generate());
+            let task = smol::spawn(async move {
+                handle
+                    .capture_state_async_with_timeout(&identity, 1, Duration::ZERO)
+                    .await
+            });
+            let Request::CaptureState { reply, .. } = rx.recv_async().await.unwrap() else {
+                panic!("expected capture request");
+            };
+
+            let error = task.await.unwrap_err();
+            assert!(matches!(
+                error,
+                PluginError::State { message } if message == STATE_CAPTURE_TIMEOUT_MESSAGE
+            ));
+            drop(reply);
+        });
     }
 
     #[test]

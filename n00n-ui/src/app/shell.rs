@@ -221,6 +221,7 @@ async fn run_command(
 
     #[cfg(unix)]
     unsafe {
+        // SAFETY: `setsid` is async-signal-safe on supported Unix targets.
         std_cmd.pre_exec(|| {
             libc::setsid();
             Ok(())
@@ -250,6 +251,7 @@ async fn run_command(
     let mut pending_newline = false;
     let mut truncated = false;
     let mut last_flush = Instant::now();
+    let mut last_flushed_output = String::new();
     let deadline = Instant::now() + SHELL_TIMEOUT;
 
     macro_rules! race_deadline {
@@ -296,8 +298,12 @@ async fn run_command(
             }
         }
 
-        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && !output.is_empty() {
-            flush_output(tx, id, &output_text(&output));
+        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL {
+            let current_output = output_text(&output);
+            if current_output != last_flushed_output {
+                flush_output(tx, id, &current_output);
+                last_flushed_output = current_output;
+            }
             last_flush = Instant::now();
         }
     }
@@ -307,7 +313,9 @@ async fn run_command(
     match status {
         Ok(status) => {
             let mut output = output_text(&output);
-            flush_output(tx, id, &output);
+            if output != last_flushed_output {
+                flush_output(tx, id, &output);
+            }
             if truncated {
                 output.push_str("\n[truncated]");
             }
@@ -538,13 +546,17 @@ mod tests {
             .unwrap();
 
             assert_eq!(result, "one\ntwo\n[truncated]");
-            match rx.recv_async().await.unwrap() {
-                ShellEvent::Output { id, content } => {
-                    assert_eq!(id, "test-shell");
-                    assert_eq!(content, "one\ntwo");
+            let mut outputs = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    ShellEvent::Output { id, content } => {
+                        assert_eq!(id, "test-shell");
+                        outputs.push(content);
+                    }
+                    _ => panic!("expected output before completion"),
                 }
-                _ => panic!("expected output before completion"),
             }
+            assert_eq!(outputs.last().map(String::as_str), Some("one\ntwo"));
         });
     }
 }

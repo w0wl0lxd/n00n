@@ -1199,7 +1199,7 @@ impl App {
     }
 
     fn quit_with(&mut self, req: ExitRequest) -> Vec<Action> {
-        self.save_session();
+        self.save_session_without_plugin_state_capture();
         self.save_input_history();
         self.exit_request = req;
         vec![]
@@ -1504,7 +1504,9 @@ impl App {
             // Stale run_id after cancel: agent updates shared_history before sending
             // Done/Error, so this is the first moment the full conversation is available.
             match envelope.event {
-                AgentEvent::Done { .. } | AgentEvent::Error { .. } => self.save_session(),
+                AgentEvent::Done { .. } | AgentEvent::Error { .. } => {
+                    self.save_session_without_plugin_state_capture();
+                }
                 AgentEvent::SubagentHistory {
                     tool_use_id,
                     messages,
@@ -1779,7 +1781,7 @@ impl App {
             match result {
                 ChatEventResult::Done => {
                     self.status_bar.clear_flash();
-                    self.save_session_with_plugin_state_capture();
+                    self.save_session_without_plugin_state_capture();
                     self.chat_index.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
@@ -1792,7 +1794,7 @@ impl App {
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message.clone());
                     self.status_bar.clear_flash();
-                    self.save_session_with_plugin_state_capture();
+                    self.save_session_without_plugin_state_capture();
                     self.queue.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
