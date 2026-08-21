@@ -5014,7 +5014,7 @@ fn active_save_does_not_wait_for_plugin_state_capture() {
 }
 
 #[test]
-fn terminal_save_captures_plugin_state_after_active_turn() {
+fn terminal_save_reuses_plugin_state_until_event_loop_capture_completes() {
     let mut app = test_app();
     let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
     app.lua_event_handle = host.event_handle();
@@ -5041,8 +5041,8 @@ fn terminal_save_captures_plugin_state_after_active_turn() {
             .state_snapshot
             .as_ref()
             .and_then(StoredSessionStateSnapshot::state_revision),
-        Some(4),
-        "a terminal save must capture plugin state after active work drains"
+        Some(3),
+        "a terminal save must not enter the Lua drain barrier on the UI thread"
     );
 }
 

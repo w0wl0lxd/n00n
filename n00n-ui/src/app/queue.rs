@@ -304,7 +304,7 @@ impl App {
         let input = self.build_agent_input(&msg);
         let queued = self.queue_input(msg, input, Delivery::TurnEnd);
         if queued {
-            self.save_session();
+            self.save_session_without_plugin_state_capture();
         }
         queued
     }
@@ -375,7 +375,7 @@ impl App {
         } else {
             shared.push(item);
         }
-        self.save_session();
+        self.save_session_without_plugin_state_capture();
         true
     }
 

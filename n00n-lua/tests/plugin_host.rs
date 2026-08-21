@@ -7,10 +7,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::pin::pin;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures_lite::future::poll_once;
 use n00n_agent::AgentEvent;
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::prompt::{PromptId, Slot};
@@ -5857,11 +5859,12 @@ fn plugin_state_capture_waits_for_inflight_handler_callbacks() {
         }
     }
 
-    let snapshot = host
-        .event_handle()
-        .unwrap()
-        .capture_state(&identity, 1)
-        .unwrap();
+    let handle = host.event_handle().unwrap();
+    let snapshot = smol::block_on(async {
+        let mut capture = pin!(handle.capture_state_async(&identity, 1));
+        assert!(poll_once(capture.as_mut()).await.is_none());
+        capture.await.unwrap()
+    });
     assert_eq!(
         snapshot
             .plugin_payload_for_apply(
