@@ -3632,7 +3632,8 @@ fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
 fn workflow_malformed_table_reports_balance_hint(_unit: ()) {
     let (reg, _host) = builtins_host();
     let entry = reg.get("workflow").unwrap();
-    let schema_description = entry.tool.schema()["properties"]["script"]["description"]
+    let schema = entry.tool.schema();
+    let schema_description = schema["properties"]["script"]["description"]
         .as_str()
         .unwrap();
     assert!(schema_description.contains(WORKFLOW_SCRIPT_BALANCE_HINT));
