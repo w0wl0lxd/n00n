@@ -5,7 +5,7 @@
     "cache_prefix": {
       "name": "cache_prefix",
       "tool_count": 22,
-      "bytes": 19496,
+      "bytes": 19502,
       "tokens": 4776
     },
     "deferred_catalog_payload": {
@@ -23,26 +23,26 @@
     "full_catalog_payload": {
       "name": "full_catalog_payload",
       "tool_count": 35,
-      "bytes": 31835,
-      "tokens": 7958
+      "bytes": 31842,
+      "tokens": 7960
     },
     "full_catalog_schemas": {
       "name": "full_catalog_schemas",
       "tool_count": 35,
-      "bytes": 22523,
-      "tokens": 5630
+      "bytes": 22530,
+      "tokens": 5632
     },
     "main_tools_payload": {
       "name": "main_tools_payload",
       "tool_count": 22,
-      "bytes": 16096,
-      "tokens": 4024
+      "bytes": 16103,
+      "tokens": 4025
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
       "tool_count": 22,
-      "bytes": 10269,
-      "tokens": 2567
+      "bytes": 10276,
+      "tokens": 2569
     },
     "mcp_above_threshold_payload": {
       "name": "mcp_above_threshold_payload",
@@ -64,8 +64,8 @@
     },
     "system_prompt": {
       "name": "system_prompt",
-      "bytes": 3485,
-      "tokens": 779
+      "bytes": 3438,
+      "tokens": 765
     }
   },
   "tools": [
@@ -203,8 +203,8 @@
       "name": "run_python",
       "deferred": false,
       "initially_active": true,
-      "bytes": 2096,
-      "tokens": 533
+      "bytes": 2103,
+      "tokens": 537
     },
     {
       "name": "run_shell",
