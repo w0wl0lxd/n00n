@@ -3,7 +3,7 @@ use std::sync::Arc;
 use flume::Sender;
 use futures_lite::future;
 use n00n_providers::provider::Provider;
-use n00n_providers::{Message, Model, ProviderEvent, RequestOptions, System};
+use n00n_providers::{ContentBlock, Message, Model, ProviderEvent, RequestOptions, System};
 use serde_json::Value;
 
 use crate::components::btw_modal::BtwEvent;
@@ -25,12 +25,39 @@ pub(crate) fn btw_question(question: &str) -> Message {
     Message::user(format!("{BTW_REMINDER}\n\n{question}"))
 }
 
+fn btw_history(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let content = message
+                .content
+                .iter()
+                .filter(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::Text { .. }
+                            | ContentBlock::Image { .. }
+                            | ContentBlock::File { .. }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            (!content.is_empty()).then(|| Message {
+                role: message.role.clone(),
+                content,
+                display_text: None,
+                control: message.control,
+            })
+        })
+        .collect()
+}
+
 impl App {
     pub(crate) fn start_btw(&mut self, question: &str, provider: Arc<dyn Provider>, model: Model) {
         let mut messages = self
             .shared_history
             .as_ref()
-            .map_or_else(Default::default, |h| Vec::clone(&h.load()));
+            .map_or_else(Vec::new, |history| btw_history(&history.load()));
         let system = self
             .btw_system
             .as_ref()
@@ -200,6 +227,51 @@ mod tests {
             Ok(BtwEvent::TextDelta(text)) if text == "second"
         ));
         assert!(matches!(btw_rx.try_recv(), Ok(BtwEvent::Done)));
+    }
+
+    #[test_case::test_case(())]
+    fn provider_history_excludes_tool_and_provider_protocol_blocks(_unit: ()) {
+        let history = vec![
+            Message {
+                role: n00n_providers::Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "working".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "read_file".into(),
+                        input: serde_json::json!({}),
+                    },
+                    ContentBlock::ProviderItem {
+                        provider: "openai".into(),
+                        data: serde_json::json!({"type":"reasoning","id":"reason-1"}),
+                    },
+                    ContentBlock::Thinking {
+                        thinking: "private".into(),
+                        signature: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            Message {
+                role: n00n_providers::Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+        ];
+
+        let sanitized = btw_history(&history);
+
+        assert_eq!(sanitized.len(), 1);
+        assert!(matches!(
+            sanitized[0].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "working"
+        ));
     }
 
     #[test]
