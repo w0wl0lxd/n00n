@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787329352423,
+  "lastUpdate": 1787331098389,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -22563,6 +22563,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 114318,
             "range": "± 4294",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "086123b07ebbae86eb9a5f99da9acd4daff6a7d2",
+          "message": "fix(ui): avoid runtime freezes during Lua and shell work (#433)\n\n* fix(ui): avoid runtime freezes during Lua and shell work\n\n* fix(ui): queue plugin state lifecycle work\n\n* fix(ui): bound background state operations\n\n* fix(ui): treat shell renice as best effort\n\n* fix(ui): persist terminal session lifecycle\n\n* fix(ui): settle state work safely at shutdown\n\n* fix(lua): reject state requests after shutdown\n\n* fix(ui): retry failed root state hydration",
+          "timestamp": "2026-08-21T12:36:27-04:00",
+          "tree_id": "364bc87fd1c4bbcbe0fd22acc7237bc782993ec4",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/086123b07ebbae86eb9a5f99da9acd4daff6a7d2"
+        },
+        "date": 1787331096665,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6443929,
+            "range": "± 410837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2447737,
+            "range": "± 4411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2447665,
+            "range": "± 22537",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7685444,
+            "range": "± 157713",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3872658,
+            "range": "± 12125",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3779865,
+            "range": "± 12505",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 555067,
+            "range": "± 1005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167944,
+            "range": "± 463",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167895,
+            "range": "± 256",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1040669,
+            "range": "± 38753",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 615277,
+            "range": "± 6556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 612654,
+            "range": "± 12562",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 63395,
+            "range": "± 7313",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 137967,
+            "range": "± 25353",
             "unit": "ns/iter"
           }
         ]
