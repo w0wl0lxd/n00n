@@ -25,6 +25,7 @@ local subagent = require("n00n.subagent")
 local pipeline_args = require("pipeline_args")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
+local SCRIPT_BALANCE_HINT = "close `meta({...})` before declaring locals and match every `{` with `}`"
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
 local SCRIPT_REQUIRED_ERROR = "script (string) is required"
 local NAME_LABEL_MAX = 40
@@ -72,7 +73,7 @@ local schema = {
   properties = {
     script = {
       type = "string",
-      description = "Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs.",
+      description = "Lua script. Start with meta({...}); close `meta({...})` before declaring locals and match every `{` with `}`. Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs.",
     },
     inputs = {
       description = "Free-form object exposed as global `inputs`; defaults to `{}` when omitted.",
@@ -894,7 +895,10 @@ local function handler(input, ctx)
 
   local syntax_fn, syntax_err = n00n.workflow.compile(input.script, {})
   if not syntax_fn then
-    return { llm_output = SCRIPT_ERROR_PREFIX .. tostring(syntax_err), is_error = true }
+    return {
+      llm_output = SCRIPT_ERROR_PREFIX .. tostring(syntax_err) .. ". Hint: " .. SCRIPT_BALANCE_HINT,
+      is_error = true,
+    }
   end
 
   local run_id = input.resume
