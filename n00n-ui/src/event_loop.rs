@@ -80,6 +80,7 @@ const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_COMPACTION_CHECKPOINT_ATTEMPTS: u8 = 3;
+const COMPACTION_SHUTDOWN_TIMEOUT_ERROR: &str = "compaction checkpoint timed out during shutdown";
 const STORAGE_WRITER_REFS_ERR: &str =
     "storage writer has outstanding references, skipping graceful shutdown";
 const DIRECT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
@@ -2010,14 +2011,12 @@ impl<'t> EventLoop<'t> {
             root,
         } = completion;
         self.pending_state_captures.remove(&session_id);
-        let Some(idx) = self.position(session_id) else {
-            self.deferred_state_captures.remove(&session_id);
-            return;
-        };
         if let Some((root_id, captured)) = root {
-            self.sessions[idx]
-                .handles
-                .observe_state_revision(captured.revision);
+            if let Some(idx) = self.position(session_id) {
+                self.sessions[idx]
+                    .handles
+                    .observe_state_revision(captured.revision);
+            }
             if let Some(root_idx) = self.position(root_id) {
                 self.apply_captured_state(root_idx, captured, "root");
                 self.sessions[root_idx]
@@ -2027,6 +2026,10 @@ impl<'t> EventLoop<'t> {
                 self.persist_stored_root_capture(root_id, captured);
             }
         }
+        let Some(idx) = self.position(session_id) else {
+            self.deferred_state_captures.remove(&session_id);
+            return;
+        };
         self.apply_captured_state(idx, session, "session");
         self.sessions[idx]
             .app
@@ -3343,7 +3346,13 @@ impl<'t> EventLoop<'t> {
             warn!("plugin state capture shutdown deadline overflowed");
             return;
         };
-        while !self.pending_state_captures.is_empty() && Instant::now() < deadline {
+        while (!self.pending_state_captures.is_empty()
+            || self
+                .sessions
+                .iter()
+                .any(|runtime| !runtime.pending_compactions.is_empty()))
+            && Instant::now() < deadline
+        {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let timeout = remaining.min(Duration::from_millis(IDLE_POLL_INTERVAL_MS));
             if let Some(wake) = self.select_non_input_wake(timeout)
@@ -3352,11 +3361,23 @@ impl<'t> EventLoop<'t> {
                 warn!(%error, "failed to settle plugin state capture during shutdown");
             }
         }
-        if !self.pending_state_captures.is_empty() {
+        let pending_compactions = self
+            .sessions
+            .iter()
+            .map(|runtime| runtime.pending_compactions.len())
+            .sum::<usize>();
+        if !self.pending_state_captures.is_empty() || pending_compactions != 0 {
             warn!(
-                pending = self.pending_state_captures.len(),
-                "timed out waiting for plugin state capture during shutdown"
+                pending_state_captures = self.pending_state_captures.len(),
+                pending_compactions, "timed out waiting for state capture during shutdown"
             );
+        }
+        for idx in 0..self.sessions.len() {
+            while let Some(mut pending) = self.sessions[idx].pending_compactions.pop_front() {
+                pending.attempts = MAX_COMPACTION_CHECKPOINT_ATTEMPTS;
+                pending.stage = CompactionPersistStage::Ready;
+                self.handle_compaction_failure(idx, pending, COMPACTION_SHUTDOWN_TIMEOUT_ERROR);
+            }
         }
     }
 

@@ -23,6 +23,7 @@ use crate::state::PluginStateIdentity;
 use n00n_agent::prompt::ResolvedSlots;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const STATE_CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
 const STATE_CAPTURE_TIMEOUT_MESSAGE: &str = "plugin state capture timed out";
 
 struct BundledPlugin {
@@ -186,15 +187,11 @@ impl Drop for PluginHost {
         };
         inner.shutdown.store(true, Ordering::Release);
         let _ = inner.tx.send(Request::Shutdown);
-        let (done_tx, done_rx) = flume::bounded(1);
         std::thread::spawn(move || {
-            let _ = done_tx.send(handle.join().is_err());
+            if handle.join().is_err() {
+                tracing::warn!("lua thread panicked on shutdown");
+            }
         });
-        match done_rx.recv_timeout(SHUTDOWN_TIMEOUT) {
-            Ok(true) => tracing::warn!("lua thread panicked on shutdown"),
-            Err(_) => tracing::warn!("lua thread did not stop within timeout, detaching"),
-            Ok(false) => {}
-        }
     }
 }
 
@@ -843,7 +840,7 @@ impl EventHandle {
         identity: &SessionIdentity,
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, PluginError> {
-        self.capture_state_async_with_timeout(identity, revision, SHUTDOWN_TIMEOUT)
+        self.capture_state_async_with_timeout(identity, revision, STATE_CAPTURE_TIMEOUT)
             .await
     }
 

@@ -19,8 +19,6 @@ const SHELL_TIMEOUT: Duration = Duration::from_mins(5);
 const OUTPUT_QUEUE_CAPACITY: usize = 64;
 const OUTPUT_READ_CHUNK_SIZE: usize = 8 * 1024;
 const MAX_UTF8_SEQUENCE_BYTES: usize = 4;
-#[cfg(unix)]
-const SHELL_NICE_VALUE: libc::c_int = 10;
 
 struct OutputLimits {
     lines: usize,
@@ -223,10 +221,9 @@ async fn run_command(
 
     #[cfg(unix)]
     unsafe {
-        // SAFETY: the closure only calls async-signal-safe libc functions before exec.
+        // SAFETY: `setsid` is async-signal-safe on supported Unix targets.
         std_cmd.pre_exec(|| {
             libc::setsid();
-            libc::setpriority(libc::PRIO_PROCESS, 0, SHELL_NICE_VALUE);
             Ok(())
         });
     }

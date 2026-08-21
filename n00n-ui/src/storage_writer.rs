@@ -339,7 +339,7 @@ impl StorageWriter {
         }
     }
 
-    /// Deletes a session on the writer thread after superseded commands have
+    /// Persists this snapshot and waits for the writer result.
     #[cfg(test)]
     pub(crate) fn persist_and_wait(
         &self,
@@ -362,7 +362,8 @@ impl StorageWriter {
         }
     }
 
-    /// been rejected by generation. The caller never waits for filesystem I/O.
+    /// Deletes a session after superseded commands have been rejected by generation.
+    /// The caller never waits for filesystem I/O.
     pub fn delete(&self, id: n00nId, done: impl FnOnce(Result<(), SessionError>) + Send + 'static) {
         let generation = reserve_command(&self.tracker, id);
         let op = Op::Delete {
