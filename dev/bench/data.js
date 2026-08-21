@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787276010285,
+  "lastUpdate": 1787288367612,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -22347,6 +22347,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 135365,
             "range": "± 23603",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5c3b3f41e8506a6f209fde46f4f72fe4cbc65de2",
+          "message": "fix: restore plugin state in prompt context (#435)\n\n* fix: restore plugin state in prompt context\n\n* docs(lua): update state context reference\n\n* fix(lua): validate persisted todo prompt state",
+          "timestamp": "2026-08-21T00:43:17-04:00",
+          "tree_id": "b935ba16389c906fdfe28fca02126b135f820921",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5c3b3f41e8506a6f209fde46f4f72fe4cbc65de2"
+        },
+        "date": 1787288366099,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6728185,
+            "range": "± 67723",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220930,
+            "range": "± 88934",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218332,
+            "range": "± 80825",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8203167,
+            "range": "± 96512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4323431,
+            "range": "± 36291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4279888,
+            "range": "± 9622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 587342,
+            "range": "± 18440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192192,
+            "range": "± 4871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192096,
+            "range": "± 401",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1054548,
+            "range": "± 5564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 598194,
+            "range": "± 15188",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 598136,
+            "range": "± 12839",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79960,
+            "range": "± 3661",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 180909,
+            "range": "± 17325",
             "unit": "ns/iter"
           }
         ]
