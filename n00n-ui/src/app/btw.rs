@@ -25,31 +25,46 @@ pub(crate) fn btw_question(question: &str) -> Message {
     Message::user(format!("{BTW_REMINDER}\n\n{question}"))
 }
 
+fn append_btw_message(messages: &mut Vec<Message>, message: Message) {
+    if let Some(last) = messages.last_mut()
+        && last.role == message.role
+    {
+        last.content.extend(message.content);
+        last.control |= message.control;
+        return;
+    }
+    messages.push(message);
+}
+
 fn btw_history(messages: &[Message]) -> Vec<Message> {
-    messages
-        .iter()
-        .filter_map(|message| {
-            let content = message
-                .content
-                .iter()
-                .filter(|block| {
-                    matches!(
-                        block,
-                        ContentBlock::Text { .. }
-                            | ContentBlock::Image { .. }
-                            | ContentBlock::File { .. }
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            (!content.is_empty()).then(|| Message {
-                role: message.role.clone(),
-                content,
-                display_text: None,
-                control: message.control,
+    let mut sanitized = Vec::new();
+    for message in messages {
+        let content = message
+            .content
+            .iter()
+            .filter(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Text { .. }
+                        | ContentBlock::Image { .. }
+                        | ContentBlock::File { .. }
+                )
             })
-        })
-        .collect()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !content.is_empty() {
+            append_btw_message(
+                &mut sanitized,
+                Message {
+                    role: message.role.clone(),
+                    content,
+                    display_text: None,
+                    control: message.control,
+                },
+            );
+        }
+    }
+    sanitized
 }
 
 impl App {
@@ -64,7 +79,7 @@ impl App {
             .map(|s| System::clone(&s.load()))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| System::from(BTW_FALLBACK_SYSTEM));
-        messages.push(btw_question(question));
+        append_btw_message(&mut messages, btw_question(question));
 
         let (tx, rx) = flume::bounded(64);
         self.btw_modal.open(question, rx);
@@ -272,6 +287,38 @@ mod tests {
             sanitized[0].content.as_slice(),
             [ContentBlock::Text { text }] if text == "working"
         ));
+    }
+
+    #[test]
+    fn provider_history_merges_roles_after_protocol_blocks_are_removed() {
+        let history = vec![
+            Message::user("context"),
+            Message {
+                role: n00n_providers::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "first".into(),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: n00n_providers::Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+            Message::assistant("second"),
+            Message::user("tail"),
+        ];
+
+        let mut sanitized = btw_history(&history);
+        append_btw_message(&mut sanitized, btw_question(Q));
+
+        assert_eq!(sanitized.len(), 3);
+        assert_eq!(sanitized[1].content.len(), 2);
+        assert_eq!(sanitized[2].content.len(), 2);
     }
 
     #[test]
