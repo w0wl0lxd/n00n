@@ -109,6 +109,52 @@ struct PluginStateAccess {
     store: Arc<PluginStateStore>,
 }
 
+pub(crate) struct PromptCtx {
+    plugin: Arc<str>,
+    identity: PluginStateIdentity,
+    store: Arc<PluginStateStore>,
+}
+
+impl PromptCtx {
+    pub(crate) fn new(
+        plugin: Arc<str>,
+        identity: PluginStateIdentity,
+        store: Arc<PluginStateStore>,
+    ) -> Self {
+        Self {
+            plugin,
+            identity,
+            store,
+        }
+    }
+}
+
+impl UserData for PromptCtx {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("state_get", |lua, this, scope: String| {
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
+            };
+            let Some(value) = this.store.get(&this.plugin, scope, &this.identity) else {
+                return Ok((LuaValue::Nil, None));
+            };
+            match state_json_to_lua(lua, &value) {
+                Ok(value) => Ok((value, None)),
+                Err(error) => Ok((LuaValue::Nil, Some(error.to_string()))),
+            }
+        });
+        methods.add_method("state_owner", |lua, this, scope: String| {
+            let scope = match parse_state_scope(&scope) {
+                Ok(scope) => scope,
+                Err(error) => return Ok((LuaValue::Nil, Some(error.to_owned()))),
+            };
+            let owner = this.identity.owner(scope).to_string();
+            Ok((LuaValue::String(lua.create_string(owner)?), None))
+        });
+    }
+}
+
 enum Caps {
     Handler {
         agent: Box<AgentContext>,
