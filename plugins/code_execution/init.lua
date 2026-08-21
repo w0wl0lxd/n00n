@@ -23,7 +23,6 @@ local opts = n00n.api.register_options(output_limits.extend({
   timeout_secs = {
     default = 30,
     min = 5,
-    max = 300,
     desc = "Script execution time budget in seconds; waiting on tool calls does not count. A call's `timeout` param overrides it.",
   },
   max_memory_mb = { default = 50, min = 10, desc = "Memory limit for the Python sandbox (MB)." },
