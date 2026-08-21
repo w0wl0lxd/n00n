@@ -1114,21 +1114,27 @@ pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
         }
     }
 
-    if sign_commit {
-        drop(index_lock);
-        run_git(
-            path,
-            &["commit", "--no-verify", "--gpg-sign", "--message", message],
-        )?;
-        let output = run_git(path, &["rev-parse", "HEAD"])?;
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
-    }
-
     let message = if message.ends_with('\n') {
         std::borrow::Cow::Borrowed(message)
     } else {
         std::borrow::Cow::Owned(format!("{message}\n"))
     };
+    if sign_commit {
+        drop(index_lock);
+        run_git(
+            path,
+            &[
+                "commit",
+                "--no-verify",
+                "--gpg-sign",
+                "--cleanup=verbatim",
+                "--message",
+                message.as_ref(),
+            ],
+        )?;
+        let output = run_git(path, &["rev-parse", "HEAD"])?;
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    }
     let commit_id = repo
         .commit("HEAD", message.as_ref(), tree_id, parent)
         .map_err(|e| GitError::GitOperation(format!("failed to create commit: {e}")))?;
@@ -1543,7 +1549,8 @@ mod tests {
         run(root, &["config", "commit.gpgSign", "true"]);
         run(root, &["config", "gpg.program", signer.to_str().unwrap()]);
 
-        let id = commit(root, "signed").unwrap();
+        let message = "signed\n\nbody  \n";
+        let id = commit(root, message).unwrap();
         assert_eq!(
             String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout)
                 .unwrap()
@@ -1553,6 +1560,7 @@ mod tests {
         let commit = String::from_utf8(run(root, &["cat-file", "commit", "HEAD"]).stdout).unwrap();
         assert!(commit.contains("gpgsig "));
         assert!(commit.contains("-----BEGIN PGP SIGNATURE-----"));
+        assert!(commit.ends_with(&format!("\n\n{message}")));
     }
 
     #[cfg(unix)]
