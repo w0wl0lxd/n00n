@@ -226,9 +226,7 @@ async fn run_command(
         // SAFETY: the closure only calls async-signal-safe libc functions before exec.
         std_cmd.pre_exec(|| {
             libc::setsid();
-            if libc::setpriority(libc::PRIO_PROCESS, 0, SHELL_NICE_VALUE) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
+            libc::setpriority(libc::PRIO_PROCESS, 0, SHELL_NICE_VALUE);
             Ok(())
         });
     }
