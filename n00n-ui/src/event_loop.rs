@@ -1630,6 +1630,11 @@ impl<'t> EventLoop<'t> {
             }
         }
         self.dispatch(idx, actions);
+        if terminal {
+            self.sessions[idx]
+                .app
+                .save_session_without_plugin_state_capture();
+        }
         if capture && self.sessions[idx].pending_compactions.is_empty() {
             self.schedule_plugin_state_capture(idx);
         }
