@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, transcript_to_display};
 use crate::components::DisplayRole;
-#[cfg(test)]
 use crate::components::Status;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
@@ -292,9 +291,10 @@ impl App {
             .is_none_or(|flushed| flushed.elapsed() >= SAVE_COALESCE_INTERVAL)
     }
 
-    #[cfg(test)]
-    fn plugin_state_capture_safe(&self) -> bool {
-        self.status != Status::Streaming && !self.chats.iter().any(Chat::is_working)
+    pub(crate) fn plugin_state_capture_safe(&self) -> bool {
+        self.status != Status::Streaming
+            && !self.chats.iter().any(Chat::is_working)
+            && !self.chats.first().is_some_and(Chat::has_pending_compaction)
     }
 
     /// Drops the oldest tool outputs and subagent histories past the budget.

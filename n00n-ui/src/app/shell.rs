@@ -20,7 +20,7 @@ const OUTPUT_QUEUE_CAPACITY: usize = 64;
 const OUTPUT_READ_CHUNK_SIZE: usize = 8 * 1024;
 const MAX_UTF8_SEQUENCE_BYTES: usize = 4;
 #[cfg(unix)]
-const SHELL_NICE_ADJUSTMENT: libc::c_int = 10;
+const SHELL_NICE_VALUE: libc::c_int = 10;
 
 struct OutputLimits {
     lines: usize,
@@ -226,7 +226,7 @@ async fn run_command(
         // SAFETY: the closure only calls async-signal-safe libc functions before exec.
         std_cmd.pre_exec(|| {
             libc::setsid();
-            if libc::setpriority(libc::PRIO_PROCESS, 0, SHELL_NICE_ADJUSTMENT) != 0 {
+            if libc::setpriority(libc::PRIO_PROCESS, 0, SHELL_NICE_VALUE) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -256,7 +256,7 @@ async fn run_command(
     let mut pending_newline = false;
     let mut truncated = false;
     let mut last_flush = Instant::now();
-    let mut last_flushed_len = 0;
+    let mut last_flushed_output = String::new();
     let deadline = Instant::now() + SHELL_TIMEOUT;
 
     macro_rules! race_deadline {
@@ -303,9 +303,12 @@ async fn run_command(
             }
         }
 
-        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && output.len() != last_flushed_len {
-            flush_output(tx, id, &output_text(&output));
-            last_flushed_len = output.len();
+        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL {
+            let current_output = output_text(&output);
+            if current_output != last_flushed_output {
+                flush_output(tx, id, &current_output);
+                last_flushed_output = current_output;
+            }
             last_flush = Instant::now();
         }
     }
@@ -315,7 +318,7 @@ async fn run_command(
     match status {
         Ok(status) => {
             let mut output = output_text(&output);
-            if output.len() != last_flushed_len {
+            if output != last_flushed_output {
                 flush_output(tx, id, &output);
             }
             if truncated {
@@ -548,14 +551,17 @@ mod tests {
             .unwrap();
 
             assert_eq!(result, "one\ntwo\n[truncated]");
-            match rx.recv_async().await.unwrap() {
-                ShellEvent::Output { id, content } => {
-                    assert_eq!(id, "test-shell");
-                    assert_eq!(content, "one\ntwo");
+            let mut outputs = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    ShellEvent::Output { id, content } => {
+                        assert_eq!(id, "test-shell");
+                        outputs.push(content);
+                    }
+                    _ => panic!("expected output before completion"),
                 }
-                _ => panic!("expected output before completion"),
             }
-            assert!(rx.try_recv().is_err());
+            assert_eq!(outputs.last().map(String::as_str), Some("one\ntwo"));
         });
     }
 }

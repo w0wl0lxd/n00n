@@ -23,6 +23,7 @@ use crate::state::PluginStateIdentity;
 use n00n_agent::prompt::ResolvedSlots;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const STATE_CAPTURE_TIMEOUT_MESSAGE: &str = "plugin state capture timed out";
 
 struct BundledPlugin {
     name: &'static str,
@@ -842,6 +843,16 @@ impl EventHandle {
         identity: &SessionIdentity,
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, PluginError> {
+        self.capture_state_async_with_timeout(identity, revision, SHUTDOWN_TIMEOUT)
+            .await
+    }
+
+    async fn capture_state_async_with_timeout(
+        &self,
+        identity: &SessionIdentity,
+        revision: u64,
+        timeout: Duration,
+    ) -> Result<StoredSessionStateSnapshot, PluginError> {
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send_async(Request::CaptureState {
@@ -851,10 +862,21 @@ impl EventHandle {
             })
             .await
             .map_err(|_| PluginError::HostDead)?;
-        recv.recv_async()
-            .await
-            .map_err(|_| PluginError::HostDead)?
-            .map_err(|message| PluginError::State { message })
+        futures_lite::future::race(
+            async {
+                recv.recv_async()
+                    .await
+                    .map_err(|_| PluginError::HostDead)?
+                    .map_err(|message| PluginError::State { message })
+            },
+            async {
+                smol::Timer::after(timeout).await;
+                Err(PluginError::State {
+                    message: STATE_CAPTURE_TIMEOUT_MESSAGE.to_string(),
+                })
+            },
+        )
+        .await
     }
 
     /// Clears both scopes for an identity and records removals for the next capture.
@@ -1103,6 +1125,30 @@ mod tests {
 
         reply.send(Ok(())).unwrap();
         drop_reply.send(()).unwrap();
+    }
+
+    #[test]
+    fn capture_state_async_times_out_when_runtime_does_not_reply() {
+        smol::block_on(async {
+            let (tx, rx) = flume::unbounded();
+            let handle = EventHandle::probed_for_test(tx);
+            let identity = SessionIdentity::root(SessionRef::generate());
+            let task = smol::spawn(async move {
+                handle
+                    .capture_state_async_with_timeout(&identity, 1, Duration::ZERO)
+                    .await
+            });
+            let Request::CaptureState { reply, .. } = rx.recv_async().await.unwrap() else {
+                panic!("expected capture request");
+            };
+
+            let error = task.await.unwrap_err();
+            assert!(matches!(
+                error,
+                PluginError::State { message } if message == STATE_CAPTURE_TIMEOUT_MESSAGE
+            ));
+            drop(reply);
+        });
     }
 
     #[test]

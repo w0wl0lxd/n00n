@@ -626,7 +626,7 @@ struct SpawnCtx {
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
     picker: Arc<Picker>,
-    hydrated_roots: RefCell<HashMap<n00nId, Option<u64>>>,
+    hydration_requested_roots: RefCell<HashMap<n00nId, Option<u64>>>,
     revision_allocators: RefCell<HashMap<n00nId, Arc<RevisionAllocator>>>,
 }
 
@@ -687,7 +687,7 @@ impl SpawnCtx {
                 .as_ref()
                 .and_then(StoredSessionStateSnapshot::state_revision);
             let should_hydrate_root = self
-                .hydrated_roots
+                .hydration_requested_roots
                 .borrow()
                 .get(&root_id)
                 .is_none_or(|hydrated_revision| root_snapshot_revision > *hydrated_revision);
@@ -698,7 +698,7 @@ impl SpawnCtx {
                         root_snapshot,
                     )
                     .map_err(|error| eyre!("failed to hydrate root plugin state: {error}"))?;
-                self.hydrated_roots
+                self.hydration_requested_roots
                     .borrow_mut()
                     .insert(root_id, root_snapshot_revision);
             }
@@ -1215,7 +1215,7 @@ impl<'t> EventLoop<'t> {
             available_models: bg.available,
             storage_writer,
             picker,
-            hydrated_roots: RefCell::new(HashMap::new()),
+            hydration_requested_roots: RefCell::new(HashMap::new()),
             revision_allocators: RefCell::new(HashMap::new()),
         };
 
@@ -1909,6 +1909,11 @@ impl<'t> EventLoop<'t> {
     }
 
     fn schedule_plugin_state_capture(&mut self, idx: usize) {
+        if !self.sessions[idx].app.plugin_state_capture_safe()
+            || !self.sessions[idx].pending_compactions.is_empty()
+        {
+            return;
+        }
         let Some(handle) = self.ctx.lua_event_handle.clone() else {
             return;
         };
@@ -2710,7 +2715,10 @@ impl<'t> EventLoop<'t> {
             .iter()
             .any(|runtime| persisted_root_id(&runtime.app.state.session) == root_id)
         {
-            self.ctx.hydrated_roots.borrow_mut().remove(&root_id);
+            self.ctx
+                .hydration_requested_roots
+                .borrow_mut()
+                .remove(&root_id);
             self.ctx.revision_allocators.borrow_mut().remove(&root_id);
         }
         if let Err(error) = self.lineage.remove_runtime(rt.id()) {
@@ -3110,7 +3118,7 @@ impl<'t> EventLoop<'t> {
                             .as_ref()
                             .and_then(StoredSessionStateSnapshot::state_revision);
                         self.ctx
-                            .hydrated_roots
+                            .hydration_requested_roots
                             .borrow_mut()
                             .insert(root_id, revision);
                     }
