@@ -64,8 +64,8 @@
     },
     "system_prompt": {
       "name": "system_prompt",
-      "bytes": 3438,
-      "tokens": 765
+      "bytes": 3485,
+      "tokens": 779
     }
   },
   "tools": [
