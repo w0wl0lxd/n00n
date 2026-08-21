@@ -3,7 +3,7 @@ use std::sync::Arc;
 use flume::Sender;
 use futures_lite::future;
 use n00n_providers::provider::Provider;
-use n00n_providers::{ContentBlock, Message, Model, ProviderEvent, RequestOptions, System};
+use n00n_providers::{ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, System};
 use serde_json::Value;
 
 use crate::components::btw_modal::BtwEvent;
@@ -27,7 +27,10 @@ pub(crate) fn btw_question(question: &str) -> Message {
 
 fn append_btw_message(messages: &mut Vec<Message>, message: Message) {
     if let Some(last) = messages.last_mut()
-        && last.role == message.role
+        && matches!(
+            (&last.role, &message.role),
+            (Role::User, Role::User) | (Role::Assistant, Role::Assistant)
+        )
     {
         last.content.extend(message.content);
         last.control |= message.control;
@@ -292,7 +295,7 @@ mod tests {
     #[test]
     fn provider_history_merges_roles_after_protocol_blocks_are_removed() {
         let history = vec![
-            Message::user("context"),
+            Message::user("context".into()),
             Message {
                 role: n00n_providers::Role::Assistant,
                 content: vec![ContentBlock::Text {
@@ -309,8 +312,8 @@ mod tests {
                 }],
                 ..Default::default()
             },
-            Message::assistant("second"),
-            Message::user("tail"),
+            Message::assistant("second".into()),
+            Message::user("tail".into()),
         ];
 
         let mut sanitized = btw_history(&history);
