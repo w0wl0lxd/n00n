@@ -275,8 +275,9 @@ mod tests {
     #[test_case::test_case(())]
     fn provider_history_excludes_tool_and_provider_protocol_blocks(_unit: ()) {
         let history = vec![
+            Message::user("context".into()),
             Message {
-                role: n00n_providers::Role::Assistant,
+                role: Role::Assistant,
                 content: vec![
                     ContentBlock::Text {
                         text: "working".into(),
@@ -310,9 +311,13 @@ mod tests {
 
         let sanitized = btw_history(&history);
 
-        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized.len(), 2);
         assert!(matches!(
             sanitized[0].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "context"
+        ));
+        assert!(matches!(
+            sanitized[1].content.as_slice(),
             [ContentBlock::Text { text }] if text == "working"
         ));
     }
