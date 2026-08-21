@@ -608,6 +608,8 @@ const CAUGHT_DEADLINE_HOT_LOOP_TIMEOUT_ERR: &str =
 const WORKFLOW_TIMEOUT_SCHEMA_SUBSTR: &str = "minimum 60s";
 const WORKFLOW_TIMEOUT_REJECTED_SUBSTR: &str = "at least 60";
 const WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR: &str = "below minimum (60)";
+const WORKFLOW_SCRIPT_BALANCE_HINT: &str =
+    "close `meta({...})` before declaring locals and match every `{` with `}`";
 const TEAM_TIMEOUT_LIMIT_ERR_SUBSTR: &str = "at most 1800";
 const ALREADY_CALLED_ERR: &str = "already called";
 const UNKNOWN_FIELD_ERR: &str = "unknown field";
@@ -3626,6 +3628,29 @@ fn bash_timeout_cleanup_flushes_pending_buffered_tail() {
         "rendered: {rendered}"
     );
 }
+#[test_case::test_case(())]
+fn workflow_malformed_table_reports_balance_hint(_unit: ()) {
+    let (reg, _host) = builtins_host();
+    let entry = reg.get("workflow").unwrap();
+    let schema_description = entry.tool.schema()["properties"]["script"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(schema_description.contains(WORKFLOW_SCRIPT_BALANCE_HINT));
+
+    let error = exec_tool(
+        &reg,
+        "workflow",
+        serde_json::json!({
+            "script": "meta({\n  name = 'broken',\n  phases = { { title = 'plan' } }\nlocal jobs = { 'one' }\nreturn jobs[1]",
+        }),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains(WORKFLOW_SCRIPT_BALANCE_HINT),
+        "unexpected error: {error}"
+    );
+}
+
 #[test]
 fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
     let (reg, _host) = builtins_host();
