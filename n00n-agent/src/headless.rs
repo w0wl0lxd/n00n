@@ -1013,6 +1013,7 @@ fn extract_tool_names(tools: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use n00n_storage::sessions::{TranscriptEntry, generate_title};
+    use std::{slice::from_ref, sync::Mutex};
     use tempfile::TempDir;
 
     use super::*;
@@ -1025,13 +1026,13 @@ mod tests {
 
     #[derive(Default)]
     struct StatePersistenceProbe {
-        hydrated_revisions: std::sync::Mutex<Vec<Option<u64>>>,
-        hydrated_snapshots: std::sync::Mutex<Vec<Option<StoredSessionStateSnapshot>>>,
-        captured_revisions: std::sync::Mutex<Vec<u64>>,
-        captured_identities: std::sync::Mutex<Vec<SessionIdentity>>,
-        dropped_owners: std::sync::Mutex<Vec<(n00nId, u64)>>,
-        prompt_identities: std::sync::Mutex<Vec<SessionIdentity>>,
-        prompt_content: std::sync::Mutex<Option<String>>,
+        hydrated_revisions: Mutex<Vec<Option<u64>>>,
+        hydrated_snapshots: Mutex<Vec<Option<StoredSessionStateSnapshot>>>,
+        captured_revisions: Mutex<Vec<u64>>,
+        captured_identities: Mutex<Vec<SessionIdentity>>,
+        dropped_owners: Mutex<Vec<(n00nId, u64)>>,
+        prompt_identities: Mutex<Vec<SessionIdentity>>,
+        prompt_content: Mutex<Option<String>>,
         next_lease: std::sync::atomic::AtomicU64,
         fail_capture: std::sync::atomic::AtomicBool,
         fail_hydrate: std::sync::atomic::AtomicBool,
@@ -1137,8 +1138,8 @@ mod tests {
         StoredSession::load(session_id(), &StateDir::from_path(tmp.path().to_path_buf())).unwrap()
     }
 
-    #[test]
-    fn resolved_prompt_slots_uses_requested_session() {
+    #[test_case::test_case(())]
+    fn resolved_prompt_slots_uses_requested_session(_case: ()) {
         let probe = Arc::new(StatePersistenceProbe::default());
         *probe.prompt_content.lock().unwrap() = Some("restored todo".into());
         let persistence: Arc<dyn SessionStatePersistence> = Arc::clone(&probe) as Arc<_>;
@@ -1152,7 +1153,7 @@ mod tests {
 
         assert_eq!(
             probe.prompt_identities.lock().unwrap().as_slice(),
-            std::slice::from_ref(&identity)
+            from_ref(&identity)
         );
         assert_eq!(
             slots

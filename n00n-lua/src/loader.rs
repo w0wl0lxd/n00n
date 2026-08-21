@@ -1402,8 +1402,8 @@ mod tests {
         assert!(contents(&slots, PromptId::General, Slot::ToolUsage).is_empty());
     }
 
-    #[test]
-    fn prompt_callback_reads_state_for_requested_session() {
+    #[test_case(())]
+    fn prompt_callback_reads_state_for_requested_session(_unit: ()) {
         let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
         host.load_source(
             "stateful",
