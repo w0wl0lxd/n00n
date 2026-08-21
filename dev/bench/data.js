@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787288367612,
+  "lastUpdate": 1787329352423,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -22455,6 +22455,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 180909,
             "range": "± 17325",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6b90e484430bed90ae88ac1a7d4f6b9da549d1a7",
+          "message": "fix(workflow): guide malformed script correction (#437)\n\n* fix(workflow): guide malformed script correction\n\n* fix(workflow): retain schema value in regression test",
+          "timestamp": "2026-08-21T12:07:16-04:00",
+          "tree_id": "a058e477bc98de3d8aed1e1a626e622b39b32db4",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/6b90e484430bed90ae88ac1a7d4f6b9da549d1a7"
+        },
+        "date": 1787329350665,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6747580,
+            "range": "± 21319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2407880,
+            "range": "± 23842",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2394315,
+            "range": "± 24453",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8206905,
+            "range": "± 140014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4389569,
+            "range": "± 49620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4317267,
+            "range": "± 10292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 576974,
+            "range": "± 4800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191646,
+            "range": "± 342",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191539,
+            "range": "± 234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1050929,
+            "range": "± 6331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 598460,
+            "range": "± 4532",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 597504,
+            "range": "± 6309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81396,
+            "range": "± 550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 114318,
+            "range": "± 4294",
             "unit": "ns/iter"
           }
         ]
