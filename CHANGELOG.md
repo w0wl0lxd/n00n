@@ -4,7 +4,23 @@ All notable user-facing changes are documented in this file. Entries are
 generated from `changelog.d/` fragments at release time via `just changelog`.
 See `changelog.d/README.md` for the fragment convention.
 
+## [0.6.4] - 2026-08-22
 
+### Changed
+
+- Advanced the pinned Rust toolchain from `nightly-2026-08-14` to `nightly-2026-08-20` (rustc 1.100.0-nightly, f7d782a3b). The `rust-overlay` flake input moves with it: it was locked one day behind the new channel, so the dev shell could not resolve the toolchain at all until the input was updated. The five inline `nightly-2026-08-14` pins in the release, docs, rust and benchmarks workflows move too, since those steps name the channel directly rather than reading `rust-toolchain.toml`.
+
+### Fixed
+
+- Restored Codex prompt cache breakpoints when top-level cache options are unavailable.
+- Restored persisted plugin state, including todos, in prompt context after resume and compaction.
+- The `/btw` command now excludes tool-call and provider protocol blocks when reusing conversation context, preventing invalid provider requests.
+- Reject out-of-range code execution timeouts as structured tool errors instead of Lua runtime failures.
+- The native Git commit tool now honors `commit.gpgSign` and creates signed commits through the configured Git signer.
+- Plugin state captures now preserve completed responses at timeout boundaries and reject mismatched snapshot revisions.
+- Keep the UI responsive during questions, workflows, compaction, session changes, shutdown, and heavy shell commands by moving plugin-state capture off the event loop, coalescing repeated captures, reducing redundant output snapshots, and lowering shell child CPU priority.
+- Reduced TUI stalls while active sessions are saved under system load.
+- Malformed workflow scripts now return a concise table-balance hint, and the tool schema tells agents to close `meta({...})` before declaring local variables.
 
 ## [0.6.3] - 2026-08-20
 
