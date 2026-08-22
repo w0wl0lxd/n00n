@@ -53,6 +53,7 @@ const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const PROMPT_CACHE_SHARDS: u8 = 16;
 const CODEX_ORIGINATOR: &str = "n00n";
+const CODEX_ORIGINATOR_HEADER: &str = "originator";
 const CODEX_SESSION_HEADERS: [&str; 3] = ["session-id", "thread-id", "x-client-request-id"];
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
@@ -432,7 +433,7 @@ fn with_codex_session_headers(mut auth: ResolvedAuth, session_id: Option<n00nId>
         !CODEX_SESSION_HEADERS
             .iter()
             .any(|header| name.eq_ignore_ascii_case(header))
-            && !name.eq_ignore_ascii_case("originator")
+            && !name.eq_ignore_ascii_case(CODEX_ORIGINATOR_HEADER)
     });
     if let Some(session_id) = session_id {
         let session_id = session_id.to_string();
@@ -443,7 +444,7 @@ fn with_codex_session_headers(mut auth: ResolvedAuth, session_id: Option<n00nId>
         );
     }
     auth.headers
-        .push(("originator".into(), CODEX_ORIGINATOR.into()));
+        .push((CODEX_ORIGINATOR_HEADER.into(), CODEX_ORIGINATOR.into()));
     auth
 }
 
@@ -3976,7 +3977,7 @@ mod tests {
         assert_eq!(
             auth.headers
                 .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("originator"))
+                .find(|(name, _)| name.eq_ignore_ascii_case(CODEX_ORIGINATOR_HEADER))
                 .map(|(_, value)| value.as_str()),
             Some(CODEX_ORIGINATOR)
         );
@@ -3996,7 +3997,7 @@ mod tests {
                 base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
                 headers: vec![
                     ("session-id".into(), "stale".into()),
-                    ("originator".into(), "stale".into()),
+                    (CODEX_ORIGINATOR_HEADER.into(), "stale".into()),
                 ],
             },
             None,
@@ -4010,7 +4011,7 @@ mod tests {
         assert_eq!(
             auth.headers
                 .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("originator"))
+                .find(|(name, _)| name.eq_ignore_ascii_case(CODEX_ORIGINATOR_HEADER))
                 .map(|(_, value)| value.as_str()),
             Some(CODEX_ORIGINATOR)
         );
