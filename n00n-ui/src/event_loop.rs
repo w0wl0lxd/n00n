@@ -275,6 +275,10 @@ fn session_identity(session: &AppSession) -> std::result::Result<SessionIdentity
     }
 }
 
+fn capture_revision_matches(snapshot: &StoredSessionStateSnapshot, revision: u64) -> bool {
+    snapshot.state_revision() == Some(revision)
+}
+
 fn state_revision_or_initial(
     snapshot: Option<&n00n_storage::sessions::StoredSessionStateSnapshot>,
 ) -> u64 {
@@ -374,7 +378,7 @@ fn capture_state_at_revision(
     let snapshot = handle
         .capture_state(&identity, revision)
         .map_err(|error| error.to_string())?;
-    if snapshot.state_revision() != Some(revision) {
+    if !capture_revision_matches(&snapshot, revision) {
         return Err(format!(
             "captured plugin state revision does not match compaction revision {revision}"
         ));
@@ -435,7 +439,7 @@ async fn prepare_compaction_checkpoint_async(
         }
         None => capture_state_at_revision(None, session, revision)?,
     };
-    if snapshot.state_revision() != Some(revision) {
+    if !capture_revision_matches(&snapshot, revision) {
         return Err(format!(
             "captured plugin state revision does not match compaction revision {revision}"
         ));
@@ -2067,7 +2071,7 @@ impl<'t> EventLoop<'t> {
                 return;
             }
         };
-        if snapshot.state_revision() != Some(captured.revision) {
+        if !capture_revision_matches(&snapshot, captured.revision) {
             warn!(%session_id, scope, expected = captured.revision, actual = ?snapshot.state_revision(), "plugin state capture returned the wrong revision");
             return;
         }
@@ -2109,6 +2113,10 @@ impl<'t> EventLoop<'t> {
                 return;
             }
         };
+        if !capture_revision_matches(&snapshot, captured.revision) {
+            warn!(%root_id, expected = captured.revision, actual = ?snapshot.state_revision(), "root plugin state capture returned the wrong revision");
+            return;
+        }
         let mut root = match self.ctx.storage_writer.latest_snapshot(root_id) {
             Ok(Some(root)) => Arc::unwrap_or_clone(root),
             Ok(None) => match AppSession::load_with_retention(
@@ -3596,9 +3604,9 @@ mod tests {
         DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg,
         PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, SessionStatus, TEAM_TOOL_NAME,
         TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll, authorize_ui_delete, begin_state_capture,
-        bounded_direct_output, cancel_stored_session, coalesce_drag, complete_model_fetch_with,
-        direct_paused_team_payload, draw_then_post_terminal, handle_input_bounded,
-        initial_state_revision, merge_compaction_metadata, merge_model_batch,
+        bounded_direct_output, cancel_stored_session, capture_revision_matches, coalesce_drag,
+        complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
+        handle_input_bounded, initial_state_revision, merge_compaction_metadata, merge_model_batch,
         outer_compaction_state_revision, paused_team_payload, paused_team_run,
         prepare_compaction_checkpoint, publish_model_refresh, resolve_model_selection,
         resume_state_snapshot, should_save_periodically, startup_login_completed,
@@ -3638,6 +3646,21 @@ mod tests {
     };
     use tempfile::TempDir;
     use test_case::test_case;
+
+    #[test_case(5, 5, true; "matching revision")]
+    #[test_case(4, 5, false; "mismatched revision")]
+    fn stored_root_capture_revision_must_match(
+        snapshot_revision: u64,
+        captured_revision: u64,
+        expected: bool,
+    ) {
+        let snapshot = StoredSessionStateSnapshot::new(snapshot_revision);
+
+        assert_eq!(
+            capture_revision_matches(&snapshot, captured_revision),
+            expected
+        );
+    }
 
     #[test]
     fn state_capture_requests_are_coalesced() {
