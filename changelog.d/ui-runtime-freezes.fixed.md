@@ -1,1 +1,0 @@
-Keep the UI responsive during questions, workflows, compaction, session changes, shutdown, and heavy shell commands by moving plugin-state capture off the event loop, coalescing repeated captures, reducing redundant output snapshots, and lowering shell child CPU priority.
