@@ -439,7 +439,7 @@ async fn prepare_compaction_checkpoint_async(
         }
         None => capture_state_at_revision(None, session, revision)?,
     };
-    if snapshot.state_revision() != Some(revision) {
+    if !capture_revision_matches(&snapshot, revision) {
         return Err(format!(
             "captured plugin state revision does not match compaction revision {revision}"
         ));

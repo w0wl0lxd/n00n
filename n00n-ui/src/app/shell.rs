@@ -455,6 +455,8 @@ mod tests {
 
     use super::*;
 
+    const EXPECTED_STREAMED_OUTPUT_EVENTS_MESSAGE: &str = "expected streamed output events";
+
     #[test_case("! ls",                     Some(&ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "simple_visible")]
     #[test_case("!! ls",                    Some(&ShellPrefix { prefix_len: 3, command: "ls".into(), visible: false })          ; "simple_anonymous")]
     #[test_case("! cargo test --release",   Some(&ShellPrefix { prefix_len: 2, command: "cargo test --release".into(), visible: true })  ; "multi_word_command")]
@@ -572,7 +574,10 @@ mod tests {
                 }
             }
             assert_eq!(outputs.last().map(String::as_str), Some("one\ntwo"));
-            assert!(outputs.len() >= 2, "expected streamed output events");
+            assert!(
+                outputs.len() >= 2,
+                "{EXPECTED_STREAMED_OUTPUT_EVENTS_MESSAGE}"
+            );
             assert!(outputs.windows(2).all(|pair| pair[0] != pair[1]));
         });
     }
