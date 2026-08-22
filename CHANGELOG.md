@@ -17,6 +17,7 @@ See `changelog.d/README.md` for the fragment convention.
 - The `/btw` command now excludes tool-call and provider protocol blocks when reusing conversation context, preventing invalid provider requests.
 - Reject out-of-range code execution timeouts as structured tool errors instead of Lua runtime failures.
 - The native Git commit tool now honors `commit.gpgSign` and creates signed commits through the configured Git signer.
+- Git signing tests now isolate the signature format from the developer's global Git configuration.
 - Plugin state captures now preserve completed responses at timeout boundaries and reject mismatched snapshot revisions.
 - Keep the UI responsive during questions, workflows, compaction, session changes, shutdown, and heavy shell commands by moving plugin-state capture off the event loop, coalescing repeated captures, reducing redundant output snapshots, and lowering shell child CPU priority.
 - Reduced TUI stalls while active sessions are saved under system load.
