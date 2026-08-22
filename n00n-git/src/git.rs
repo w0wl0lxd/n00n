@@ -1547,6 +1547,7 @@ mod tests {
         std::fs::write(root.join("file.txt"), "one\n").unwrap();
         run(root, &["add", "file.txt"]);
         run(root, &["config", "commit.gpgSign", "true"]);
+        run(root, &["config", "gpg.format", "openpgp"]);
         run(root, &["config", "gpg.program", signer.to_str().unwrap()]);
 
         let message = "signed\n\nbody  \n";
