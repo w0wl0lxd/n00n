@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787368762302,
+  "lastUpdate": 1787401808217,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -22885,6 +22885,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 143906,
             "range": "± 14271",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b798f0762fb5697a130f16c87eeb087de45a41c9",
+          "message": "fix(ui): validate asynchronous state captures (#439)\n\n* fix(ui): validate asynchronous state captures\n\n* docs: record state capture validation fix\n\n* test(ui): make shell dedup coverage deterministic\n\n* refactor(ui): reuse capture validation helpers",
+          "timestamp": "2026-08-22T12:14:56Z",
+          "tree_id": "e8e333913287e37ca7015b8c20802f02fed50cdb",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b798f0762fb5697a130f16c87eeb087de45a41c9"
+        },
+        "date": 1787401806769,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6703595,
+            "range": "± 95185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2230019,
+            "range": "± 36896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2242549,
+            "range": "± 49709",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8473840,
+            "range": "± 220114",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4346335,
+            "range": "± 103243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4357120,
+            "range": "± 28945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585140,
+            "range": "± 1562",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191848,
+            "range": "± 2076",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191613,
+            "range": "± 4212",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1110025,
+            "range": "± 19127",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 599847,
+            "range": "± 1033",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 598662,
+            "range": "± 2814",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81023,
+            "range": "± 2184",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 114304,
+            "range": "± 6628",
             "unit": "ns/iter"
           }
         ]
