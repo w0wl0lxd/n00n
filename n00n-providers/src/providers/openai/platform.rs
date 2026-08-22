@@ -52,6 +52,9 @@ const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
 const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const PROMPT_CACHE_SHARDS: u8 = 16;
+const CODEX_ORIGINATOR: &str = "n00n";
+const CODEX_ORIGINATOR_HEADER: &str = "originator";
+const CODEX_SESSION_HEADERS: [&str; 3] = ["session-id", "thread-id", "x-client-request-id"];
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
 static RESPONSE_OPERATIONS: OnceLock<ResponseOperationRegistry> = OnceLock::new();
@@ -420,6 +423,29 @@ fn credential_hash(auth: &ResolvedAuth) -> String {
         digest.update(value.as_bytes());
     }
     format!("{:x}", digest.finalize())
+}
+
+fn with_codex_session_headers(mut auth: ResolvedAuth, session_id: Option<n00nId>) -> ResolvedAuth {
+    if auth.base_url.as_deref() != Some(auth::CODING_PLAN_BASE_URL) {
+        return auth;
+    }
+    auth.headers.retain(|(name, _)| {
+        !CODEX_SESSION_HEADERS
+            .iter()
+            .any(|header| name.eq_ignore_ascii_case(header))
+            && !name.eq_ignore_ascii_case(CODEX_ORIGINATOR_HEADER)
+    });
+    if let Some(session_id) = session_id {
+        let session_id = session_id.to_string();
+        auth.headers.extend(
+            CODEX_SESSION_HEADERS
+                .into_iter()
+                .map(|name| (name.to_owned(), session_id.clone())),
+        );
+    }
+    auth.headers
+        .push((CODEX_ORIGINATOR_HEADER.into(), CODEX_ORIGINATOR.into()));
+    auth
 }
 
 fn response_state_scope_hash(auth: &ResolvedAuth) -> String {
@@ -985,6 +1011,7 @@ impl OpenAi {
     async fn connect_current_websocket(
         &self,
         attempt_nonce: u64,
+        session_id: Option<n00nId>,
     ) -> Result<ScopedResponsesWebSocket, super::websocket::WebSocketAttemptError> {
         loop {
             let auth = self
@@ -994,8 +1021,9 @@ impl OpenAi {
             if auth.generation != self.auth_generation.load(Ordering::Acquire) {
                 continue;
             }
+            let websocket_auth = with_codex_session_headers(auth.resolved, session_id);
             let socket = super::websocket::ResponsesWebSocket::connect(
-                &auth.resolved,
+                &websocket_auth,
                 self.websocket_connect_timeout,
             )
             .await
@@ -1100,7 +1128,10 @@ impl OpenAi {
                     self.reset_connection_local_chain(chain_session);
                     cleared_connection_chain = true;
                 }
-                scoped = Some(self.connect_current_websocket(attempt_nonce).await?);
+                scoped = Some(
+                    self.connect_current_websocket(attempt_nonce, chain_session)
+                        .await?,
+                );
                 reused = false;
             }
             let send_auth = self
@@ -1767,12 +1798,16 @@ impl OpenAi {
                                 .await;
                         }
                     }
+                    let fallback_auth = with_codex_session_headers(
+                        fallback_auth.resolved,
+                        session_id.map(canonical_session_key),
+                    );
                     match super::responses::do_stream(
                         self.compat.client(),
                         model,
                         fallback_body,
                         event_tx,
-                        &fallback_auth.resolved,
+                        &fallback_auth,
                         stream_timeout,
                         &opts,
                     )
@@ -3910,6 +3945,88 @@ mod tests {
             assert_eq!(path_rx.recv_async().await.unwrap(), "/v1/responses");
             assert_eq!(path_rx.recv_async().await.unwrap(), "/v1/chat/completions");
         });
+    }
+
+    #[test]
+    fn coding_plan_session_headers_match_codex_routing_contract() {
+        let session_id = SessionRef::generate().id();
+        let auth = with_codex_session_headers(
+            ResolvedAuth {
+                base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
+                headers: vec![
+                    ("authorization".into(), "Bearer test".into()),
+                    ("Session-ID".into(), "stale".into()),
+                ],
+            },
+            Some(session_id),
+        );
+        let expected = session_id.to_string();
+
+        assert!(auth.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization") && value == "Bearer test"
+        }));
+        for header in CODEX_SESSION_HEADERS {
+            assert_eq!(
+                auth.headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(header))
+                    .map(|(_, value)| value.as_str()),
+                Some(expected.as_str())
+            );
+        }
+        assert_eq!(
+            auth.headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(CODEX_ORIGINATOR_HEADER))
+                .map(|(_, value)| value.as_str()),
+            Some(CODEX_ORIGINATOR)
+        );
+        assert_eq!(
+            auth.headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("session-id"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn coding_plan_without_session_replaces_protected_headers() {
+        let auth = with_codex_session_headers(
+            ResolvedAuth {
+                base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
+                headers: vec![
+                    ("session-id".into(), "stale".into()),
+                    (CODEX_ORIGINATOR_HEADER.into(), "stale".into()),
+                ],
+            },
+            None,
+        );
+
+        assert!(auth.headers.iter().all(|(name, _)| {
+            !CODEX_SESSION_HEADERS
+                .iter()
+                .any(|header| name.eq_ignore_ascii_case(header))
+        }));
+        assert_eq!(
+            auth.headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(CODEX_ORIGINATOR_HEADER))
+                .map(|(_, value)| value.as_str()),
+            Some(CODEX_ORIGINATOR)
+        );
+    }
+
+    #[test]
+    fn codex_session_headers_are_not_added_to_api_requests() {
+        let auth = ResolvedAuth {
+            base_url: Some("https://api.openai.com/v1".into()),
+            headers: vec![("authorization".into(), "Bearer test".into())],
+        };
+        let resolved = with_codex_session_headers(auth.clone(), Some(SessionRef::generate().id()));
+
+        assert_eq!(resolved.base_url, auth.base_url);
+        assert_eq!(resolved.headers, auth.headers);
     }
 
     #[test]
