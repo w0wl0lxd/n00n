@@ -215,6 +215,27 @@ async fn run_command(
     max_output_lines: usize,
     max_output_bytes: usize,
 ) -> Result<String, String> {
+    run_command_with_flush_interval(
+        command,
+        id,
+        tx,
+        cancel,
+        max_output_lines,
+        max_output_bytes,
+        STREAM_FLUSH_INTERVAL,
+    )
+    .await
+}
+
+async fn run_command_with_flush_interval(
+    command: &str,
+    id: &str,
+    tx: &flume::Sender<ShellEvent>,
+    cancel: &CancelToken,
+    max_output_lines: usize,
+    max_output_bytes: usize,
+    flush_interval: Duration,
+) -> Result<String, String> {
     let mut std_cmd: StdCommand = n00n_config::bash_command(command)?;
     std_cmd.env("GIT_TERMINAL_PROMPT", "0");
 
@@ -291,7 +312,7 @@ async fn run_command(
             }
         }
 
-        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL {
+        if last_flush.elapsed() >= flush_interval {
             let current_output = output_text(&output);
             if current_output != last_flushed_output {
                 flush_output(tx, id, &current_output);
@@ -527,13 +548,14 @@ mod tests {
         smol::block_on(async {
             let (_trigger, cancel) = CancelToken::new();
             let (tx, rx) = flume::unbounded();
-            let result = run_command(
+            let result = run_command_with_flush_interval(
                 "printf 'one\\ntwo\\nthree\\n'",
                 "test-shell",
                 &tx,
                 &cancel,
                 2,
                 usize::MAX,
+                Duration::ZERO,
             )
             .await
             .unwrap();
@@ -550,6 +572,7 @@ mod tests {
                 }
             }
             assert_eq!(outputs.last().map(String::as_str), Some("one\ntwo"));
+            assert!(outputs.len() >= 2, "expected streamed output events");
             assert!(outputs.windows(2).all(|pair| pair[0] != pair[1]));
         });
     }

@@ -378,7 +378,7 @@ fn capture_state_at_revision(
     let snapshot = handle
         .capture_state(&identity, revision)
         .map_err(|error| error.to_string())?;
-    if snapshot.state_revision() != Some(revision) {
+    if !capture_revision_matches(&snapshot, revision) {
         return Err(format!(
             "captured plugin state revision does not match compaction revision {revision}"
         ));
