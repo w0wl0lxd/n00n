@@ -4848,20 +4848,38 @@ fn bash_handler_preserves_supported_find_fallback() {
 }
 
 #[test]
-fn bash_handler_preserves_cargo_build_wrapper_command() {
-    let (reg, _host) = builtins_host();
+fn bash_handler_routes_cargo_through_rtk() {
+    if skip_without_rtk("bash_handler_routes_cargo_through_rtk") {
+        return;
+    }
+    let (registry, _host) = builtins_host();
+    let entry = registry.get("bash").expect("bash registered");
+    let invocation = entry
+        .tool
+        .parse(&serde_json::json!({ "command": "cargo --version" }))
+        .expect("parse failed");
+    let (ctx, event_rx) = warm_ctx("rtk-cargo-route");
 
-    let output = match exec_tool(
-        &reg,
-        "bash",
-        serde_json::json!({ "command": "cargo --version" }),
-    ) {
-        Ok(output) | Err(output) => output,
-    };
+    smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("cargo command was rejected");
 
+    let body = recv_live_buf(&event_rx, "rtk-cargo-route").expect("bash live buffer");
+    let rendered = body
+        .read()
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        !output.contains("rtk is enabled"),
-        "cargo command was sent through RTK instead of preserving shell wrappers: {output}"
+        rendered.contains("rtk cargo --version")
+            || rendered.contains("rtk proxy cargo --version"),
+        "cargo command did not take the RTK route: {rendered}"
     );
 }
 
