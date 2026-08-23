@@ -369,6 +369,96 @@ fn read_file_defaults_to_200_lines_and_honors_explicit_limit() {
     assert!(configured_output.text.contains("240: line 240"));
 }
 #[test]
+fn bundled_file_mutation_tools_return_written_diff() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("target.txt");
+    let before = "alpha\nbeta\n";
+    let cases = [
+        (
+            "edit_file",
+            serde_json::json!({
+                "path": path,
+                "old_string": "beta",
+                "new_string": "gamma",
+            }),
+        ),
+        (
+            "edit_file_bulk",
+            serde_json::json!({
+                "path": path,
+                "edits": [{ "old_string": "alpha", "new_string": "delta" }],
+            }),
+        ),
+        (
+            "edit_file_lines",
+            serde_json::json!({
+                "path": path,
+                "start": 2,
+                "end": 2,
+                "new_string": "gamma",
+            }),
+        ),
+        (
+            "insert_file_lines",
+            serde_json::json!({
+                "path": path,
+                "line": 2,
+                "new_string": "gamma",
+            }),
+        ),
+        (
+            "write_file",
+            serde_json::json!({ "path": path, "content": "gamma\n" }),
+        ),
+    ];
+
+    for (tool, input) in cases {
+        std::fs::write(&path, before).unwrap();
+        let output = exec_tool_output(&registry, tool, input).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        match output {
+            n00n_agent::ToolOutput::Diff {
+                path: output_path,
+                before: output_before,
+                after: output_after,
+                summary,
+                ..
+            } => {
+                assert_eq!(output_path, path.to_string_lossy());
+                assert_eq!(output_before, before, "{tool} before snapshot");
+                assert_eq!(output_after, after, "{tool} after snapshot");
+                assert!(!summary.is_empty(), "{tool} summary");
+            }
+            other => panic!("{tool} returned {other:?} instead of a diff"),
+        }
+    }
+}
+
+#[test]
+fn bundled_write_file_creation_returns_added_diff() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("created.txt");
+
+    let output = exec_tool_output(
+        &registry,
+        "write_file",
+        serde_json::json!({ "path": path, "content": "created\n" }),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        output,
+        n00n_agent::ToolOutput::Diff {
+            before,
+            after,
+            ..
+        } if before.is_empty() && after == "created\n"
+    ));
+}
+
+#[test]
 fn search_files_defaults_to_50_results_and_honors_explicit_limit() {
     let (registry, _host) = builtins_host();
     let dir = tempfile::tempdir().unwrap();

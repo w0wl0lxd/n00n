@@ -85,6 +85,15 @@ n00n.api.register_tool({
       return { llm_output = err, is_error = true }
     end
 
+    local before = ""
+    if n00n.fs.metadata(path) then
+      local existing, read_err = n00n.fs.read(path)
+      if not existing then
+        return { llm_output = "read error: " .. tostring(read_err), is_error = true }
+      end
+      before = existing
+    end
+
     local parent = n00n.fs.dirname(path)
     if parent then
       n00n.fs.mkdir(parent, { parents = true })
@@ -104,7 +113,9 @@ n00n.api.register_tool({
 
     return {
       llm_output = llm_output,
-      body = build_view(content, path, ctx),
+      diff_path = path,
+      diff_before = before,
+      diff_after = content,
       annotation = annotation,
       written_path = path,
     }
