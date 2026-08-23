@@ -54,9 +54,22 @@ impl TerminalMux {
     }
 }
 
+fn restore_failed_init<T, E>(
+    result: std::result::Result<T, E>,
+    restore: impl FnOnce(),
+) -> std::result::Result<T, E> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            restore();
+            Err(error)
+        }
+    }
+}
+
 impl TerminalGuard {
     pub(crate) fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
-        let terminal = ratatui::try_init()
+        let terminal = restore_failed_init(ratatui::try_init(), ratatui::restore)
             .wrap_err("n00n's TUI needs an interactive terminal (TTY); none is attached")?;
         let guard = Self;
         stdout().execute(EnableBracketedPaste)?;
@@ -223,6 +236,23 @@ mod tests {
     // at the start and in the middle of the payload.
     const OSC52_WITH_ST: &str = "\u{1b}]52;c;SGVsbG8=\u{1b}\\";
 
+    #[test]
+    fn failed_terminal_init_restores_partial_state() {
+        let restored = std::cell::Cell::new(false);
+        let result = restore_failed_init::<(), _>(Err("init failed"), || restored.set(true));
+
+        assert_eq!(result, Err("init failed"));
+        assert!(restored.get());
+    }
+
+    #[test]
+    fn successful_terminal_init_keeps_state_active() {
+        let restored = std::cell::Cell::new(false);
+        let result = restore_failed_init(Ok::<_, &str>(42), || restored.set(true));
+
+        assert_eq!(result, Ok(42));
+        assert!(!restored.get());
+    }
     #[test]
     fn none_is_identity() {
         assert_eq!(
