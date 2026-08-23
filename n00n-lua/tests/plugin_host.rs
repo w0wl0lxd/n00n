@@ -32,6 +32,69 @@ use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
+const RTK_MANAGED_ROUTE_CASES: &[&str] = &[
+    "aws --version",
+    "cargo --version",
+    "cat --version",
+    "curl --version",
+    "diff --version",
+    "docker --version",
+    "dotnet --version",
+    "du -d 0 .",
+    "ecs --version",
+    "find --version",
+    "gh --version",
+    "git --version",
+    "glab --version",
+    "go version",
+    "golangci-lint --version",
+    "gradle --version",
+    "gradlew --version",
+    "grep --version",
+    "head --version",
+    "jest --version",
+    "kubectl version --client",
+    "lint --version",
+    "ls --version",
+    "make --version",
+    "mvn --version",
+    "mypy --version",
+    "next --version",
+    "npm --version",
+    "npx --version",
+    "oc version --client",
+    "paratest --version",
+    "pest --version",
+    "php --version",
+    "phpstan --version",
+    "phpunit --version",
+    "pint --version",
+    "pip --version",
+    "pip3 --version",
+    "playwright --version",
+    "pnpm --version",
+    "podman --version",
+    "prettier --version",
+    "prisma --version",
+    "psql --version",
+    "pytest --version",
+    "python --version",
+    "python3 --version",
+    "rake --version",
+    "rg --version",
+    "rspec --version",
+    "rubocop --version",
+    "ruff --version",
+    "sbt --version",
+    "swift --version",
+    "tail --version",
+    "tree --version",
+    "tsc --version",
+    "uv --version",
+    "vitest --version",
+    "wc --version",
+    "wget --version",
+];
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
@@ -4848,39 +4911,41 @@ fn bash_handler_preserves_supported_find_fallback() {
 }
 
 #[test]
-fn bash_handler_routes_cargo_through_rtk() {
-    if skip_without_rtk("bash_handler_routes_cargo_through_rtk") {
+fn bash_handler_routes_every_managed_command_through_rtk() {
+    if skip_without_rtk("bash_handler_routes_every_managed_command_through_rtk") {
         return;
     }
     let (registry, _host) = builtins_host();
     let entry = registry.get("bash").expect("bash registered");
-    let invocation = entry
-        .tool
-        .parse(&serde_json::json!({ "command": "cargo --version" }))
-        .expect("parse failed");
-    let (ctx, event_rx) = warm_ctx("rtk-cargo-route");
 
-    smol::block_on(invocation.execute(&ctx))
-        .output
-        .expect("cargo command was rejected");
+    for command in RTK_MANAGED_ROUTE_CASES {
+        let bounded_command = format!("timeout 1 {command}");
+        let invocation = entry
+            .tool
+            .parse(&serde_json::json!({ "command": bounded_command }))
+            .unwrap_or_else(|error| panic!("failed to parse {command}: {error}"));
+        let (ctx, event_rx) = warm_ctx("rtk-managed-route");
 
-    let body = recv_live_buf(&event_rx, "rtk-cargo-route").expect("bash live buffer");
-    let rendered = body
-        .read()
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.text.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        rendered.contains("rtk cargo --version")
-            || rendered.contains("rtk proxy cargo --version"),
-        "cargo command did not take the RTK route: {rendered}"
-    );
+        let _execution = smol::block_on(invocation.execute(&ctx));
+
+        let body = recv_live_buf(&event_rx, "rtk-managed-route")
+            .unwrap_or_else(|| panic!("missing bash live buffer for {command}"));
+        let rendered = body
+            .read()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("rtk "),
+            "{command} did not take an RTK route: {rendered}"
+        );
+    }
 }
 
 fn exec_tool_with_perms(
