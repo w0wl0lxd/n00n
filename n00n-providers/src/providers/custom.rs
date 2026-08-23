@@ -37,6 +37,10 @@ fn is_builtin_slug(slug: &str) -> bool {
     ManifestRegistry::get(slug).is_some()
 }
 
+fn is_legacy_devin_account(slug: &str, def: &ProviderDef) -> bool {
+    def.protocol == Some(Protocol::Devin) && super::devin::legacy_account_name(slug).is_some()
+}
+
 pub fn base_kind(slug: &str) -> Option<ProviderKind> {
     let config = ProvidersConfig::load();
     Some(protocol_kind(config.get(slug)?.protocol?))
@@ -95,6 +99,15 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
     let kind = base_kind(slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown custom provider '{slug}'"),
     })?;
+    if kind == ProviderKind::Devin
+        && let Some(account) = super::devin::legacy_account_name(slug)
+    {
+        return Err(AgentError::Config {
+            message: format!(
+                "legacy Devin provider '{slug}' is an account alias; use devin/{account}::<model>"
+            ),
+        });
+    }
     let resolved = resolve_custom_auth(slug)?;
     let auth = Arc::new(Mutex::new(resolved));
 
@@ -127,6 +140,9 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     }
     let config = ProvidersConfig::load();
     let def = config.get(slug)?;
+    if is_legacy_devin_account(slug, def) {
+        return None;
+    }
     let kind = protocol_kind(def.protocol?);
     Some(model_from_def(def, kind, slug, model_id))
 }
@@ -202,7 +218,7 @@ pub fn declared_model_specs() -> Vec<String> {
 fn declared_specs_from(config: &ProvidersConfig) -> Vec<String> {
     let mut specs = Vec::new();
     for (slug, def) in &config.providers {
-        if is_builtin_slug(slug) {
+        if is_builtin_slug(slug) || is_legacy_devin_account(slug, def) {
             continue;
         }
         let Some(protocol) = resolve_protocol(slug, Some(def)) else {
@@ -251,6 +267,9 @@ pub fn resolve_tier(slug: &str, tier: ModelTier) -> TierLookup {
     let Some(def) = config.get(slug) else {
         return TierLookup::Unknown;
     };
+    if is_legacy_devin_account(slug, def) {
+        return TierLookup::Unknown;
+    }
     let Some(protocol) = def.protocol else {
         return TierLookup::Unknown;
     };
@@ -276,7 +295,7 @@ pub fn discover_models(timeouts: Timeouts) -> Vec<String> {
         let Some(def) = config.get(slug) else {
             continue;
         };
-        if !def.discover_models {
+        if is_legacy_devin_account(slug, def) || !def.discover_models {
             continue;
         }
         if resolve_protocol(slug, Some(def)).is_none() {

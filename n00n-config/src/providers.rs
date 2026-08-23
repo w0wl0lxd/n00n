@@ -150,6 +150,14 @@ pub struct BuiltInProvider {
 inventory::collect!(BuiltInProvider);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderAccountDef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -171,6 +179,8 @@ pub struct ProviderDef {
     /// entirely. Defaults to `false` when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_free_models: Option<bool>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub accounts: HashMap<String, ProviderAccountDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<ModelDef>,
 }
@@ -372,7 +382,10 @@ pub fn resolve_login_url(slug: &str, plan: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use test_case::test_case;
+
+    const ACCOUNT_CREDENTIAL_PATH: &str = "~/.local/share/devin-work/devin/credentials.toml";
 
     #[test]
     fn provider_def_roundtrip() {
@@ -402,6 +415,28 @@ mod tests {
             parsed.get("my-provider").unwrap().enable_free_models,
             Some(false)
         );
+    }
+
+    #[test]
+    fn provider_accounts_roundtrip() {
+        let config_text = format!(
+            r#"[devin.accounts.work]
+display_name = "Work"
+credential_path = "{ACCOUNT_CREDENTIAL_PATH}"
+"#
+        );
+        let config: ProvidersConfig = toml::from_str(&config_text).unwrap();
+        let account = config
+            .get("devin")
+            .and_then(|provider| provider.accounts.get("work"))
+            .unwrap();
+        assert_eq!(account.display_name.as_deref(), Some("Work"));
+        assert_eq!(
+            account.credential_path.as_deref(),
+            Some(Path::new(ACCOUNT_CREDENTIAL_PATH))
+        );
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(serialized.contains("[devin.accounts.work]"));
     }
 
     const EMPTY_PROVIDER_DEF_TOML: &str = "";
