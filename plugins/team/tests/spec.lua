@@ -825,6 +825,33 @@ case("team_memory_reports_invalid_resume_json", function()
   assert(err and err:find("decode", 1, true), "invalid resume JSON must return an explicit decode error")
 end)
 
+case("team_run_ids_are_unique_within_one_second", function()
+  local memory = require("mem")
+  local first = memory.new_run_id("same goal", 123)
+  local second = memory.new_run_id("same goal", 123)
+
+  assert(first ~= second, "same-goal runs started in one second must not share a run_id")
+  assert(#first == 64 and #second == 64, "run_ids must remain SHA-256 hex digests")
+end)
+
+case("team_resume_state_discards_the_failed_attempt_once", function()
+  local memory = require("mem")
+  local state = {
+    results = { "[1] planner:\nok", "[2] developer: ERROR compile failed" },
+    failures = 2,
+    failed_step = 2,
+    failed_role = "developer",
+  }
+
+  memory.prepare_resume_state(state)
+  memory.prepare_resume_state(state)
+
+  assert(#state.results == 1, "the failed attempt must not remain in resumed results")
+  assert(state.results[1] == "[1] planner:\nok", "successful prior results must be preserved")
+  assert(state.failures == 1, "only the paused failure must be removed from accounting")
+  assert(state.failed_step == nil and state.failed_role == nil, "cleanup must be idempotent")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end
