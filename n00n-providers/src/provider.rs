@@ -584,6 +584,9 @@ pub async fn fetch_all_models(
 
     for manifest in crate::manifest::ManifestRegistry::builtins() {
         let slug = manifest.slug;
+        if slug == "devin" && !crate::providers::devin::has_primary_credentials() {
+            continue;
+        }
         let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
             Ok(provider) => provider,
             Err(error) if is_expected_provider_absence(&error) => {

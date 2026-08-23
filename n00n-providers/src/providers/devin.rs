@@ -18,6 +18,7 @@ use futures_lite::io::{AsyncReadExt, BufReader};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use flume::Sender;
+use isahc::error::ErrorKind as HttpErrorKind;
 use isahc::{AsyncReadResponseExt, HttpClient};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -28,7 +29,8 @@ use crate::model::ModelEntry;
 use crate::provider::{BoxFuture, Provider};
 use crate::types::{ContentBlock, Role, System};
 use crate::{
-    AgentError, Message, ProviderEvent, RequestOptions, StopReason, StreamResponse, TokenUsage,
+    AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
+    RequestOptions, StopReason, StreamResponse, TokenUsage,
 };
 
 use super::ResolvedAuth;
@@ -45,7 +47,7 @@ use super::devin_proto::{
 };
 
 use n00n_config::providers::{
-    Protocol, ProviderDef, ProvidersConfig, resolve_api_key_env, resolve_base_url,
+    Protocol, ProviderDef, ProvidersConfig, resolve_api_key_env, resolve_base_url, slugify,
 };
 use n00n_redact::sanitize_text;
 use n00n_storage::StateDir;
@@ -96,9 +98,9 @@ struct TomlCredentials {
 
 impl DevinCredentials {
     fn from_env() -> Result<Option<Self>, AgentError> {
-        let session_token = match optional_env("WINDSURF_API_KEY")? {
+        let session_token = match optional_env_token("WINDSURF_API_KEY")? {
             Some(token) => Some(token),
-            None => optional_env("DEVIN_API_KEY")?,
+            None => optional_env_token("DEVIN_API_KEY")?,
         };
         Ok(session_token.map(|token| Self {
             session_token: normalize_session_token(&token),
@@ -107,14 +109,13 @@ impl DevinCredentials {
     }
 
     fn from_file() -> Result<Option<Self>, AgentError> {
-        let data_home = match optional_env("XDG_DATA_HOME")? {
-            Some(path) => PathBuf::from(path),
-            None => {
-                let Some(home) = optional_env("HOME")? else {
-                    return Ok(None);
-                };
-                PathBuf::from(home).join(".local/share")
-            }
+        let data_home = if let Some(path) = optional_env("XDG_DATA_HOME")? {
+            PathBuf::from(path)
+        } else {
+            let Some(home) = optional_env("HOME")? else {
+                return Ok(None);
+            };
+            PathBuf::from(home).join(".local/share")
         };
         Self::from_path(&data_home.join("devin/credentials.toml"))
     }
@@ -170,6 +171,16 @@ fn optional_env(name: &str) -> Result<Option<String>, AgentError> {
     }
 }
 
+fn optional_env_token(name: &str) -> Result<Option<String>, AgentError> {
+    Ok(optional_env(name)?.and_then(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .find(|token| !token.is_empty())
+            .map(str::to_string)
+    }))
+}
+
 /// API paths are appended to this value by string concatenation, so a query or
 /// fragment would swallow the path. `Url` also normalizes the scheme, which a
 /// prefix match does not: schemes are case-insensitive.
@@ -195,11 +206,41 @@ fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String 
     }
 }
 
+fn stored_credentials(
+    storage: &StateDir,
+    namespace: &str,
+    api_server_url: &str,
+) -> Option<DevinCredentials> {
+    load_provider_credentials(storage, namespace).and_then(|credentials| {
+        (!credentials.api_key.trim().is_empty()).then(|| DevinCredentials {
+            session_token: normalize_session_token(&credentials.api_key),
+            api_server_url: api_server_url.to_string(),
+        })
+    })
+}
+
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
-    match DevinCredentials::from_env()? {
-        Some(credentials) => Ok(Some(credentials)),
-        None => DevinCredentials::from_file(),
+    let config = ProvidersConfig::load();
+    let base_url =
+        resolve_base_url("devin", config.get("devin")).unwrap_or_else(|| DEVIN_API_URL.to_string());
+    if let Some(mut credentials) = DevinCredentials::from_env()? {
+        credentials.api_server_url = base_url;
+        return Ok(Some(credentials));
     }
+    if let Ok(storage) = StateDir::resolve()
+        && let Some(credentials) = stored_credentials(&storage, "devin", &base_url)
+    {
+        return Ok(Some(credentials));
+    }
+    let mut credentials = DevinCredentials::from_file()?;
+    if let Some(credentials) = credentials.as_mut()
+        && config
+            .get("devin")
+            .is_some_and(|definition| definition.base_url.is_some())
+    {
+        credentials.api_server_url = base_url;
+    }
+    Ok(credentials)
 }
 pub(crate) fn legacy_account_name(slug: &str) -> Option<&str> {
     let suffix = slug.strip_prefix("devin")?;
@@ -218,31 +259,40 @@ fn legacy_account_definition<'a>(
     (definition.protocol == Some(Protocol::Devin)).then_some((slug, definition))
 }
 
+fn is_valid_account_name(account: &str) -> bool {
+    !account.is_empty() && slugify(account) == account
+}
+
 pub fn configured_account_names(config: &ProvidersConfig) -> Vec<String> {
-    let mut accounts = config
-        .get("devin")
-        .map(|definition| definition.accounts.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_else(Vec::new);
+    let mut accounts = config.get("devin").map_or_else(Vec::new, |definition| {
+        definition
+            .accounts
+            .keys()
+            .filter(|account| is_valid_account_name(account))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
     accounts.extend(config.providers.iter().filter_map(|(slug, definition)| {
         (definition.protocol == Some(Protocol::Devin))
             .then(|| legacy_account_name(slug).map(str::to_string))
             .flatten()
+            .filter(|account| is_valid_account_name(account))
     }));
     accounts.sort();
     accounts.dedup();
     accounts
 }
 
-pub(crate) fn legacy_account_for_provider_slug(slug: &str) -> Option<String> {
-    let config = ProvidersConfig::load();
+fn legacy_account_for_provider_slug_in(config: &ProvidersConfig, slug: &str) -> Option<String> {
     let account = legacy_account_name(slug)?;
-    let canonical_account = config
-        .get("devin")
-        .is_some_and(|definition| definition.accounts.contains_key(account));
-    let legacy_alias = config
+    config
         .get(slug)
-        .is_some_and(|definition| definition.protocol == Some(Protocol::Devin));
-    (canonical_account || legacy_alias).then(|| account.to_string())
+        .is_some_and(|definition| definition.protocol == Some(Protocol::Devin))
+        .then(|| account.to_string())
+}
+
+pub(crate) fn legacy_account_for_provider_slug(slug: &str) -> Option<String> {
+    legacy_account_for_provider_slug_in(&ProvidersConfig::load(), slug)
 }
 
 fn expand_home(path: &Path) -> Result<PathBuf, AgentError> {
@@ -261,78 +311,119 @@ fn expand_home(path: &Path) -> Result<PathBuf, AgentError> {
 }
 
 fn inferred_account_credential_path(account: &str) -> Result<PathBuf, AgentError> {
-    let data_home = match optional_env("XDG_DATA_HOME")? {
-        Some(path) => PathBuf::from(format!("{path}/devin{account}")),
-        None => {
-            let home = optional_env("HOME")?.ok_or_else(|| AgentError::Config {
-                message: "HOME is required to locate Devin account credentials".to_string(),
-            })?;
-            PathBuf::from(home).join(format!(".local/share/devin{account}"))
-        }
+    let data_home = if let Some(path) = optional_env("XDG_DATA_HOME")? {
+        PathBuf::from(format!("{path}/devin{account}"))
+    } else {
+        let home = optional_env("HOME")?.ok_or_else(|| AgentError::Config {
+            message: "HOME is required to locate Devin account credentials".to_string(),
+        })?;
+        PathBuf::from(home).join(format!(".local/share/devin{account}"))
     };
     Ok(data_home.join("devin/credentials.toml"))
 }
 
+fn account_api_server_url(
+    config: &ProvidersConfig,
+    legacy: Option<(&str, &ProviderDef)>,
+) -> String {
+    legacy
+        .and_then(|(slug, definition)| resolve_base_url(slug, Some(definition)))
+        .or_else(|| resolve_base_url("devin", config.get("devin")))
+        .unwrap_or_else(|| DEVIN_API_URL.to_string())
+}
+
 fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials>, AgentError> {
+    if !is_valid_account_name(account) {
+        return Ok(None);
+    }
     let config = ProvidersConfig::load();
     let legacy = legacy_account_definition(&config, account);
-    let legacy_base_url = legacy
-        .and_then(|(slug, definition)| resolve_base_url(slug, Some(definition)))
-        .unwrap_or_else(|| DEVIN_API_URL.to_string());
-
-    if let Ok(storage) = StateDir::resolve() {
-        for storage_namespace in [format!("devin@{account}"), format!("devin{account}")] {
-            if let Some(credentials) = load_provider_credentials(&storage, &storage_namespace)
-                && !credentials.api_key.trim().is_empty()
-            {
-                return Ok(Some(DevinCredentials {
-                    session_token: normalize_session_token(&credentials.api_key),
-                    api_server_url: legacy_base_url.clone(),
-                }));
-            }
-        }
-    }
+    let account_base_url = account_api_server_url(&config, legacy);
 
     let explicit_path = config
         .get("devin")
         .and_then(|definition| definition.accounts.get(account))
         .and_then(|definition| definition.credential_path.as_deref());
     if let Some(path) = explicit_path {
-        return DevinCredentials::from_path(&expand_home(path)?);
+        let mut credentials = DevinCredentials::from_path(&expand_home(path)?)?;
+        if let Some(credentials) = credentials.as_mut() {
+            credentials.api_server_url = account_base_url;
+        }
+        return Ok(credentials);
     }
 
     if let Some((slug, definition)) = legacy {
-        if let Some(token) = definition
-            .api_key
-            .as_deref()
-            .filter(|token| !token.trim().is_empty())
-        {
-            return Ok(Some(DevinCredentials {
-                session_token: normalize_session_token(token),
-                api_server_url: legacy_base_url,
-            }));
-        }
         let env_name = resolve_api_key_env(slug, Some(definition));
-        if let Some(token) = optional_env(&env_name)? {
+        if let Some(token) = optional_env_token(&env_name)? {
             return Ok(Some(DevinCredentials {
                 session_token: normalize_session_token(&token),
-                api_server_url: legacy_base_url,
+                api_server_url: account_base_url,
             }));
         }
     }
 
+    if let Ok(storage) = StateDir::resolve() {
+        if let Some(credentials) =
+            stored_credentials(&storage, &format!("devin@{account}"), &account_base_url)
+        {
+            return Ok(Some(credentials));
+        }
+        if let Some((slug, _)) = legacy
+            && let Some(credentials) = stored_credentials(&storage, slug, &account_base_url)
+        {
+            return Ok(Some(credentials));
+        }
+    }
+
+    if let Some((_, definition)) = legacy
+        && let Some(token) = definition
+            .api_key
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+    {
+        return Ok(Some(DevinCredentials {
+            session_token: normalize_session_token(token),
+            api_server_url: account_base_url,
+        }));
+    }
+
     if account.chars().all(|character| character.is_ascii_digit()) {
-        return DevinCredentials::from_path(&inferred_account_credential_path(account)?);
+        let mut credentials =
+            DevinCredentials::from_path(&inferred_account_credential_path(account)?)?;
+        if let Some(credentials) = credentials.as_mut() {
+            credentials.api_server_url = account_base_url;
+        }
+        return Ok(credentials);
     }
     Ok(None)
 }
 
-fn account_and_model(model_id: &str) -> (Option<&str>, &str) {
-    model_id
-        .split_once('/')
-        .map_or((None, model_id), |(account, model)| (Some(account), model))
+fn account_and_model_with_config<'a>(
+    config: &ProvidersConfig,
+    model_id: &'a str,
+) -> (Option<&'a str>, &'a str) {
+    let Some((account, model)) = model_id.split_once('/') else {
+        return (None, model_id);
+    };
+    if configured_account_names(config)
+        .iter()
+        .any(|candidate| candidate == account)
+    {
+        (Some(account), model)
+    } else {
+        (None, model_id)
+    }
 }
 
+fn account_and_model(model_id: &str) -> (Option<&str>, &str) {
+    account_and_model_with_config(&ProvidersConfig::load(), model_id)
+}
+
+pub(crate) fn model_id_without_account(model_id: &str) -> &str {
+    account_and_model(model_id).1
+}
+
+#[must_use]
 pub fn account_has_credentials(account: &str) -> bool {
     discover_account_credentials(account).is_ok_and(|credentials| credentials.is_some())
 }
@@ -425,7 +516,39 @@ async fn read_stream_chunk(
 }
 
 fn map_chat_send_error(error: isahc::Error) -> AgentError {
-    AgentError::Http(error)
+    if matches!(
+        error.kind(),
+        HttpErrorKind::BadClientCertificate
+            | HttpErrorKind::BadServerCertificate
+            | HttpErrorKind::ClientInitialization
+            | HttpErrorKind::ConnectionFailed
+            | HttpErrorKind::InvalidRequest
+            | HttpErrorKind::NameResolution
+            | HttpErrorKind::TlsEngine
+    ) {
+        AgentError::Http(error)
+    } else {
+        AgentError::RequestSent {
+            message: format!("Devin chat transport failed: {error}"),
+            metadata: Some(RequestDeliveryMetadata::new(
+                RequestDeliveryPhase::SentAwaitingAcceptance,
+            )),
+        }
+    }
+}
+
+fn accepted_stream_error(error: AgentError, emitted_event: bool) -> AgentError {
+    let mut metadata = RequestDeliveryMetadata::new(RequestDeliveryPhase::Accepted);
+    metadata.emitted_event = emitted_event;
+    error.suppress_retry_after_send(Some(metadata))
+}
+
+fn accepted_protocol_error(error: AgentError, emitted_event: bool) -> AgentError {
+    if matches!(error, AgentError::Api { status, .. } if status >= 500) {
+        accepted_stream_error(error, emitted_event)
+    } else {
+        error
+    }
 }
 
 fn connect_code_status(code: &str) -> u16 {
@@ -437,7 +560,6 @@ fn connect_code_status(code: &str) -> u16 {
         "already_exists" | "aborted" => 409,
         "resource_exhausted" => 429,
         "canceled" => 499,
-        "unknown" | "internal" | "data_loss" => 500,
         "unimplemented" => 501,
         "unavailable" => 503,
         "deadline_exceeded" => 504,
@@ -447,7 +569,7 @@ fn connect_code_status(code: &str) -> u16 {
 
 fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
     if payload.iter().all(u8::is_ascii_whitespace) {
-        return Ok(None);
+        return Err(AgentError::api(502, "empty Devin end-stream trailer"));
     }
     let trailer = std::str::from_utf8(payload).map_err(|_| AgentError::Api {
         status: 502,
@@ -704,7 +826,8 @@ pub struct Devin {
     timeouts: super::Timeouts,
 }
 
-pub(crate) fn has_primary_credentials() -> bool {
+#[must_use]
+pub fn has_primary_credentials() -> bool {
     discover_credentials().is_ok_and(|credentials| credentials.is_some())
 }
 
@@ -1010,6 +1133,7 @@ impl Devin {
         let mut stop_reason = StopReason::EndTurn;
         let mut tool_calls: HashMap<String, (String, String)> = HashMap::new();
         let mut tool_call_order = Vec::new();
+        let mut emitted_event = false;
 
         let mut buffer = vec![0u8; 8192];
 
@@ -1020,7 +1144,8 @@ impl Devin {
                     secs: self.timeouts.stream.as_secs(),
                 })
             })
-            .await?;
+            .await
+            .map_err(|error| accepted_stream_error(error, emitted_event))?;
 
             if n == 0 {
                 let message = if frame_buffer.is_empty() {
@@ -1028,27 +1153,33 @@ impl Devin {
                 } else {
                     "truncated Devin Connect frame at end of stream"
                 };
-                return Err(AgentError::Api {
-                    status: 502,
-                    message: message.to_string(),
-                });
+                return Err(accepted_stream_error(
+                    AgentError::api(502, message),
+                    emitted_event,
+                ));
             }
             stream_deadline = Instant::now() + self.timeouts.stream;
 
             frame_buffer.push(&buffer[..n]);
 
             while let Some(frame_result) = frame_buffer.next_frame() {
-                let frame = frame_result.map_err(|e| AgentError::Api {
-                    status: 502,
-                    message: format!("invalid connect frame: {e}"),
+                let frame = frame_result.map_err(|error| {
+                    accepted_stream_error(
+                        AgentError::api(502, format!("invalid connect frame: {error}")),
+                        emitted_event,
+                    )
                 })?;
 
                 if frame.end_stream {
-                    let payload = decode_frame_payload(&frame).map_err(|e| AgentError::Api {
-                        status: 502,
-                        message: format!("failed to decode trailer: {e}"),
+                    let payload = decode_frame_payload(&frame).map_err(|error| {
+                        accepted_stream_error(
+                            AgentError::api(502, format!("failed to decode trailer: {error}")),
+                            emitted_event,
+                        )
                     })?;
-                    if let Some(code) = parse_devin_trailer(&payload)? {
+                    if let Some(code) = parse_devin_trailer(&payload)
+                        .map_err(|error| accepted_protocol_error(error, emitted_event))?
+                    {
                         debug!(
                             trailer_code = code,
                             trailer_bytes = payload.len(),
@@ -1063,16 +1194,19 @@ impl Devin {
                     break 'stream;
                 }
 
-                let payload = decode_frame_payload(&frame).map_err(|e| AgentError::Api {
-                    status: 502,
-                    message: format!("failed to decode frame payload: {e}"),
+                let payload = decode_frame_payload(&frame).map_err(|error| {
+                    accepted_stream_error(
+                        AgentError::api(502, format!("failed to decode frame payload: {error}")),
+                        emitted_event,
+                    )
                 })?;
 
-                let response =
-                    decode_get_chat_message_response(&payload).map_err(|e| AgentError::Api {
-                        status: 502,
-                        message: format!("failed to decode chat response: {e}"),
-                    })?;
+                let response = decode_get_chat_message_response(&payload).map_err(|error| {
+                    accepted_stream_error(
+                        AgentError::api(502, format!("failed to decode chat response: {error}")),
+                        emitted_event,
+                    )
+                })?;
 
                 if !response.delta_text.is_empty() {
                     let delta = response.delta_text;
@@ -1084,6 +1218,7 @@ impl Devin {
                             debug!("Devin event receiver closed; ending stream");
                             AgentError::Channel
                         })?;
+                    emitted_event = true;
                 }
 
                 if !response.delta_thinking.is_empty() {
@@ -1096,6 +1231,7 @@ impl Devin {
                             debug!("Devin event receiver closed; ending stream");
                             AgentError::Channel
                         })?;
+                    emitted_event = true;
                 }
                 signature.push_str(&response.delta_signature);
 
@@ -1111,6 +1247,7 @@ impl Devin {
                                 debug!("Devin event receiver closed; ending stream");
                                 AgentError::Channel
                             })?;
+                        emitted_event = true;
                     }
                 }
 
@@ -1211,6 +1348,7 @@ impl Provider for Devin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use n00n_storage::auth::{ProviderCredentials, save_provider_credentials};
     use prost::Message as ProstMessage;
 
     struct FailingReader;
@@ -1242,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_send_transport_error_remains_retryable_before_response_headers() {
+    fn known_preconnect_chat_failure_remains_retryable() {
         let error = isahc::Error::from(std::io::Error::new(
             ErrorKind::ConnectionRefused,
             "connection refused",
@@ -1251,6 +1389,91 @@ mod tests {
 
         assert!(error.is_retryable());
         assert!(matches!(error, AgentError::Http(_)));
+    }
+
+    #[test]
+    fn ambiguous_chat_send_io_failure_requires_explicit_replay() {
+        let error = map_chat_send_error(isahc::Error::from(HttpErrorKind::Io));
+
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error,
+            AgentError::RequestSent {
+                metadata: Some(RequestDeliveryMetadata {
+                    phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                    ..
+                }),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn accepted_stream_failures_require_explicit_replay() {
+        let error = accepted_stream_error(
+            AgentError::Io(std::io::Error::new(
+                ErrorKind::ConnectionReset,
+                "connection reset",
+            )),
+            false,
+        );
+
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error,
+            AgentError::RequestSent {
+                metadata: Some(RequestDeliveryMetadata {
+                    phase: RequestDeliveryPhase::Accepted,
+                    emitted_event: false,
+                    ..
+                }),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn accepted_server_and_protocol_failures_require_explicit_replay() {
+        let error = accepted_protocol_error(
+            AgentError::api(503, "Devin stream failed with trailer code unavailable"),
+            true,
+        );
+
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error,
+            AgentError::RequestSent {
+                metadata: Some(RequestDeliveryMetadata {
+                    phase: RequestDeliveryPhase::Accepted,
+                    emitted_event: true,
+                    ..
+                }),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stored_primary_credentials_are_available_to_builtin_devin() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let storage = StateDir::from_path(temp_dir.path().to_path_buf());
+        save_provider_credentials(
+            &storage,
+            "devin",
+            &ProviderCredentials {
+                api_key: "stored-primary-token".to_string(),
+                host: None,
+            },
+        )
+        .expect("save credentials");
+
+        let credentials = stored_credentials(&storage, "devin", DEVIN_API_URL)
+            .expect("stored credentials present");
+        assert_eq!(
+            credentials.session_token,
+            "devin-session-token$stored-primary-token"
+        );
+        assert_eq!(credentials.api_server_url, DEVIN_API_URL);
     }
 
     #[test]
@@ -1452,15 +1675,107 @@ mod tests {
     }
 
     #[test]
-    fn account_model_routing_is_explicit_and_legacy_aliases_are_numeric_only() {
-        assert_eq!(account_and_model("swe-1-7-max"), (None, "swe-1-7-max"));
+    fn canonical_accounts_do_not_hijack_non_devin_numeric_provider_slugs() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                accounts: HashMap::from([(
+                    "2".to_string(),
+                    n00n_config::providers::ProviderAccountDef::default(),
+                )]),
+                ..ProviderDef::default()
+            },
+        );
+        config.upsert(
+            "devin2".to_string(),
+            ProviderDef {
+                protocol: Some(Protocol::Openai),
+                ..ProviderDef::default()
+            },
+        );
+
+        assert_eq!(legacy_account_for_provider_slug_in(&config, "devin2"), None);
+        config
+            .providers
+            .get_mut("devin2")
+            .expect("provider exists")
+            .protocol = Some(Protocol::Devin);
         assert_eq!(
-            account_and_model("2/swe-1-7-max"),
+            legacy_account_for_provider_slug_in(&config, "devin2"),
+            Some("2".to_string())
+        );
+    }
+
+    #[test]
+    fn account_model_routing_requires_a_configured_account() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                accounts: HashMap::from([(
+                    "2".to_string(),
+                    n00n_config::providers::ProviderAccountDef::default(),
+                )]),
+                ..ProviderDef::default()
+            },
+        );
+
+        assert_eq!(
+            account_and_model_with_config(&config, "swe-1-7-max"),
+            (None, "swe-1-7-max")
+        );
+        assert_eq!(
+            account_and_model_with_config(&config, "2/swe-1-7-max"),
             (Some("2"), "swe-1-7-max")
+        );
+        assert_eq!(
+            account_and_model_with_config(&config, "org/custom-model"),
+            (None, "org/custom-model")
         );
         assert_eq!(legacy_account_name("devin2"), Some("2"));
         assert_eq!(legacy_account_name("devin-work"), None);
         assert_eq!(legacy_account_name("devin"), None);
+    }
+
+    #[test]
+    fn invalid_account_names_are_not_advertised() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                accounts: HashMap::from([
+                    (
+                        "work".to_string(),
+                        n00n_config::providers::ProviderAccountDef::default(),
+                    ),
+                    (
+                        "work/team".to_string(),
+                        n00n_config::providers::ProviderAccountDef::default(),
+                    ),
+                ]),
+                ..ProviderDef::default()
+            },
+        );
+
+        assert_eq!(configured_account_names(&config), vec!["work".to_string()]);
+    }
+
+    #[test]
+    fn canonical_account_uses_configured_devin_base_url() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                base_url: Some("https://private.example".to_string()),
+                ..ProviderDef::default()
+            },
+        );
+
+        assert_eq!(
+            account_api_server_url(&config, None),
+            "https://private.example"
+        );
     }
 
     #[test]
@@ -1611,6 +1926,12 @@ mod tests {
 
     #[test]
     fn trailer_parser_rejects_malformed_json_without_echoing_payload() {
+        let empty = parse_devin_trailer(b"   ").expect_err("empty trailer");
+        assert!(matches!(
+            empty,
+            AgentError::Api { status: 502, message } if message == "empty Devin end-stream trailer"
+        ));
+
         let error = parse_devin_trailer(b"secret raw payload").expect_err("malformed trailer");
         assert!(matches!(
             error,

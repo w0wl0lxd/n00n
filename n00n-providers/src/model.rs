@@ -270,7 +270,7 @@ impl Model {
     /// caught up to yet), fall back to the provider defaults so it still resolves.
     fn from_base(manifest: &ProviderManifest, slug: &str, model_id: &str) -> Self {
         let lookup_model_id = if manifest.slug == "devin" {
-            model_id.rsplit('/').next().unwrap_or(model_id)
+            crate::providers::devin::model_id_without_account(model_id)
         } else {
             model_id
         };
@@ -318,10 +318,7 @@ impl Model {
 
     fn metadata_model_id(&self) -> &str {
         if self.provider.as_ref() == "devin" {
-            self.id
-                .rsplit('/')
-                .next()
-                .unwrap_or_else(|| self.id.as_str())
+            crate::providers::devin::model_id_without_account(&self.id)
         } else {
             self.id.as_str()
         }
@@ -1058,19 +1055,12 @@ mod tests {
     }
 
     #[test]
-    fn devin_account_model_preserves_canonical_provider_and_metadata() {
-        let model = Model::from_spec("devin/2/swe-1-7-max").unwrap();
-        let canonical = Model::from_spec("devin/swe-1-7-max").unwrap();
+    fn devin_arbitrary_model_ids_preserve_slash_segments() {
+        let model = Model::from_spec("devin/org/custom-model").unwrap();
 
         assert_eq!(model.provider.as_ref(), "devin");
-        assert_eq!(model.id, "2/swe-1-7-max");
-        assert_eq!(model.spec(), "devin/2/swe-1-7-max");
-        assert_eq!(model.tier, canonical.tier);
-        assert_eq!(model.context_window, canonical.context_window);
-        assert_eq!(model.max_output_tokens, canonical.max_output_tokens);
-        assert_eq!(model.supports_vision(), canonical.supports_vision());
-        assert_eq!(model.supports_files(), canonical.supports_files());
-        assert_eq!(model.supports_thinking(), canonical.supports_thinking());
+        assert_eq!(model.id, "org/custom-model");
+        assert_eq!(model.spec(), "devin/org/custom-model");
     }
 
     #[test]

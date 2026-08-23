@@ -244,7 +244,7 @@ display_name = "Work"
 credential_path = "~/.local/share/devin-work/devin/credentials.toml"
 ```
 
-Use `n00n auth status` to list accounts and `n00n auth logout devin@work` to remove one. Legacy numeric provider aliases such as `devin2/model` are read as `devin/2/model`; new configuration should use `[devin.accounts.<name>]` instead of separate provider definitions.
+Use `n00n auth status` to list accounts and `n00n auth logout devin@work` to remove one. Account names must already be lowercase slugs such as `work` or `team-prod`. A legacy numeric provider alias such as `devin2/model` is read as `devin/2/model` only when `[devin2]` is explicitly configured with `protocol = "devin"`; new configuration should use `[devin.accounts.<name>]` instead of separate provider definitions.
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|
