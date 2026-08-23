@@ -265,6 +265,13 @@ pub fn assemble_system(id: PromptId, slots: &ResolvedSlots, instructions: &str) 
         });
 
         if content.is_empty() {
+            if is_dynamic {
+                if !pending.is_empty() {
+                    system.push_static(pending.clone());
+                }
+                pending.clear();
+                system.mark_dynamic_boundary();
+            }
             let marker_end = pos + marker.len();
             last_end = if template[marker_end..].starts_with('\n') {
                 marker_end + 1
@@ -416,6 +423,23 @@ mod tests {
                 .iter()
                 .any(|block| block.cache == n00n_providers::CacheControl::Dynamic)
         );
+    }
+
+    #[test]
+    fn empty_dynamic_slot_preserves_cache_boundary() {
+        let system = assemble_system(PromptId::System, &ResolvedSlots::default(), "INSTRUCTIONS");
+        let blocks = system.blocks();
+        let boundary = blocks
+            .iter()
+            .position(|block| block.cache == n00n_providers::CacheControl::Ephemeral)
+            .unwrap_or_else(|| panic!("missing cache boundary"));
+        let cacheable_prefix = blocks[..=boundary]
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<String>();
+
+        assert!(!cacheable_prefix.contains("# Tool usage"));
+        assert!(system.to_string().contains("# Tool usage"));
     }
 
     /// Regression: a `tool_usage` hint must land inside the `# Tool usage`
