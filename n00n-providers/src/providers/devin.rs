@@ -423,6 +423,11 @@ async fn read_stream_chunk(
 ) -> Result<usize, AgentError> {
     reader.read(buffer).await.map_err(AgentError::Io)
 }
+
+fn map_chat_send_error(error: isahc::Error) -> AgentError {
+    AgentError::Http(error)
+}
+
 fn connect_code_status(code: &str) -> u16 {
     match code {
         "invalid_argument" | "failed_precondition" | "out_of_range" => 400,
@@ -983,10 +988,7 @@ impl Devin {
             .http_client()
             .send_async(request)
             .await
-            .map_err(|error| AgentError::RequestSent {
-                message: format!("Devin chat transport failed: {error}"),
-                metadata: None,
-            })?;
+            .map_err(map_chat_send_error)?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -1237,6 +1239,18 @@ mod tests {
             assert!(err.is_retryable());
             assert!(matches!(err, AgentError::Io(_)));
         });
+    }
+
+    #[test]
+    fn chat_send_transport_error_remains_retryable_before_response_headers() {
+        let error = isahc::Error::from(std::io::Error::new(
+            ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        let error = map_chat_send_error(error);
+
+        assert!(error.is_retryable());
+        assert!(matches!(error, AgentError::Http(_)));
     }
 
     #[test]
