@@ -30,7 +30,8 @@ use crate::{
 };
 
 const SESSION_VERSION: u32 = 1;
-const LOG_FORMAT_VERSION: u32 = 3;
+const LOG_FORMAT_VERSION: u32 = 4;
+const PREVIOUS_LOG_FORMAT_VERSION: u32 = 3;
 const COMPRESS_LEVEL: i32 = 3;
 const MAX_INCREMENTAL_FRAMES: u64 = 16_384;
 const MAX_SESSION_RECORD_BYTES: usize = 16 * 1024 * 1024;
@@ -40,6 +41,8 @@ const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_LOG: u32 = 27;
 const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
+const TRANSCRIPT_COMPACTION_START_RECORD_TYPE: &str = "transcript_compaction_start";
+const TRANSCRIPT_COMPACTION_END_RECORD_TYPE: &str = "transcript_compaction_end";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const SCAN_CACHE_FILE: &str = "scan_cache_v3.json";
@@ -93,6 +96,8 @@ pub enum SessionError {
     DecodedBudgetExceeded { path: String, limit: usize },
     #[error("session log contains an unknown record type")]
     UnknownRecord,
+    #[error("session log contains malformed transcript structure")]
+    MalformedTranscript,
     #[error("session record exceeds the {maximum}-byte limit")]
     RecordTooLargeWrite { maximum: usize },
 }
@@ -2011,6 +2016,15 @@ enum LogRecord<M, U, T> {
     SubMsg { sub: String, d: M },
     #[serde(rename = "transcript")]
     Transcript { d: TranscriptEntry<M> },
+    #[serde(rename = "transcript_compaction_start")]
+    TranscriptCompactionStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generated_summary: Option<M>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_revision: Option<u64>,
+    },
+    #[serde(rename = "transcript_compaction_end")]
+    TranscriptCompactionEnd,
     #[serde(rename = "meta")]
     Meta {
         title: String,
@@ -2076,6 +2090,20 @@ fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> 
 struct TranscriptRecord<'a, M> {
     t: &'static str,
     d: &'a TranscriptEntry<M>,
+}
+
+#[derive(Serialize)]
+struct TranscriptCompactionStartRecord<'a, M> {
+    t: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_summary: Option<&'a M>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_revision: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct TranscriptCompactionEndRecord {
+    t: &'static str,
 }
 
 impl SessionLog {
@@ -2314,12 +2342,9 @@ impl SessionLog {
             )?;
 
             for entry in &session.transcript[self.saved_transcript.len()..] {
-                append_record_with_limits(
+                write_transcript_entry_with_limits(
                     &mut buf,
-                    &TranscriptRecord {
-                        t: TRANSCRIPT_RECORD_TYPE,
-                        d: entry,
-                    },
+                    entry,
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
@@ -2685,16 +2710,7 @@ where
         copy_evicted_records(writer, path, session, limits, &mut decoded_bytes)?;
     }
     for entry in &session.transcript {
-        write_record_with_limits(
-            writer,
-            &TranscriptRecord {
-                t: TRANSCRIPT_RECORD_TYPE,
-                d: entry,
-            },
-            path,
-            limits,
-            &mut decoded_bytes,
-        )?;
+        write_transcript_entry_with_limits(writer, entry, path, limits, &mut decoded_bytes)?;
     }
     write_record_with_limits(
         writer,
@@ -2904,6 +2920,59 @@ fn write_record_with_limits<W: Write, R: Serialize>(
     Ok(())
 }
 
+fn write_transcript_entry_with_limits<W: Write, M: Serialize>(
+    writer: &mut W,
+    entry: &TranscriptEntry<M>,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+) -> Result<(), SessionError> {
+    match entry {
+        TranscriptEntry::Message(_) | TranscriptEntry::GeneratedMessage(_) => {
+            write_record_with_limits(
+                writer,
+                &TranscriptRecord {
+                    t: TRANSCRIPT_RECORD_TYPE,
+                    d: entry,
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )?;
+        }
+        TranscriptEntry::Compaction {
+            entries,
+            generated_summary,
+            state_revision,
+        } => {
+            write_record_with_limits(
+                writer,
+                &TranscriptCompactionStartRecord {
+                    t: TRANSCRIPT_COMPACTION_START_RECORD_TYPE,
+                    generated_summary: generated_summary.as_ref(),
+                    state_revision: *state_revision,
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )?;
+            for child in entries {
+                write_transcript_entry_with_limits(writer, child, path, limits, decoded_bytes)?;
+            }
+            write_record_with_limits(
+                writer,
+                &TranscriptCompactionEndRecord {
+                    t: TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn append_record_with_limits<R: Serialize>(
     writer: &mut Vec<u8>,
     record: &R,
@@ -2985,6 +3054,12 @@ enum RawTag {
 
 type ParsedRecords<M, U, T> = (Session<M, U, T>, bool, bool, u64, usize);
 
+struct PendingTranscriptCompaction<M> {
+    entries: Vec<TranscriptEntry<M>>,
+    generated_summary: Option<M>,
+    state_revision: Option<u64>,
+}
+
 struct SessionBuilder<M, U, T> {
     id: Option<n00nId>,
     model: String,
@@ -2997,9 +3072,33 @@ struct SessionBuilder<M, U, T> {
     token_usage: U,
     updated_at: u64,
     transcript: Vec<TranscriptEntry<M>>,
+    transcript_compactions: Vec<PendingTranscriptCompaction<M>>,
     meta: SessionMeta,
     log_appends: u64,
     saw_legacy_transcript: bool,
+}
+
+impl<M, U, T> SessionBuilder<M, U, T> {
+    fn push_transcript_entry(&mut self, entry: TranscriptEntry<M>) {
+        if let Some(compaction) = self.transcript_compactions.last_mut() {
+            compaction.entries.push(entry);
+        } else {
+            self.transcript.push(entry);
+        }
+    }
+
+    fn finish_transcript_compaction(&mut self) -> Result<(), SessionError> {
+        let compaction = self
+            .transcript_compactions
+            .pop()
+            .ok_or(SessionError::MalformedTranscript)?;
+        self.push_transcript_entry(TranscriptEntry::Compaction {
+            entries: compaction.entries,
+            generated_summary: compaction.generated_summary,
+            state_revision: compaction.state_revision,
+        });
+        Ok(())
+    }
 }
 
 impl<M, U, T> Default for SessionBuilder<M, U, T>
@@ -3019,6 +3118,7 @@ where
             token_usage: U::default(),
             updated_at: 0,
             transcript: Vec::new(),
+            transcript_compactions: Vec::new(),
             meta: SessionMeta::default(),
             log_appends: 0,
             saw_legacy_transcript: false,
@@ -3140,6 +3240,9 @@ where
             apply_record(&mut builder, record, &mut got_header)
         })?;
 
+    if !builder.transcript_compactions.is_empty() {
+        return Err(SessionError::MalformedTranscript);
+    }
     let id = builder
         .id
         .ok_or(StorageError::NotFound(path.display().to_string()))?;
@@ -3213,11 +3316,14 @@ where
             created_at: h_created,
             parent_id: h_parent,
         } => {
-            if v != LOG_FORMAT_VERSION {
+            if !is_supported_log_format(v) {
                 return Err(SessionError::VersionMismatch {
                     found: v,
                     expected: LOG_FORMAT_VERSION,
                 });
+            }
+            if v != LOG_FORMAT_VERSION {
+                builder.saw_legacy_transcript = true;
             }
             builder.id = Some(h_id);
             builder.model = h_model;
@@ -3236,7 +3342,18 @@ where
         LogRecord::SubMsg { sub, d } => {
             builder.subagent_messages.entry(sub).or_default().push(d);
         }
-        LogRecord::Transcript { d } => builder.transcript.push(d),
+        LogRecord::Transcript { d } => builder.push_transcript_entry(d),
+        LogRecord::TranscriptCompactionStart {
+            generated_summary,
+            state_revision,
+        } => builder
+            .transcript_compactions
+            .push(PendingTranscriptCompaction {
+                entries: Vec::new(),
+                generated_summary,
+                state_revision,
+            }),
+        LogRecord::TranscriptCompactionEnd => builder.finish_transcript_compaction()?,
         LogRecord::Meta {
             title: m_title,
             token_usage: m_usage,
@@ -3258,6 +3375,10 @@ where
         LogRecord::Unknown => return Err(SessionError::UnknownRecord),
     }
     Ok(())
+}
+
+fn is_supported_log_format(version: u32) -> bool {
+    matches!(version, PREVIOUS_LOG_FORMAT_VERSION | LOG_FORMAT_VERSION)
 }
 
 fn encode_frame<W: Write>(file: &mut W, bytes: &[u8]) -> Result<(), SessionError> {
@@ -4124,7 +4245,7 @@ where
     M: TitleSource + DeserializeOwned + Default,
 {
     let header = try_decode_header_at(path, 0)?;
-    if header.v != LOG_FORMAT_VERSION {
+    if !is_supported_log_format(header.v) {
         return None;
     }
     let mut budget = DecodedWorkBudget::new(MAX_SCAN_DECODED_BYTES);
@@ -4701,10 +4822,14 @@ mod tests {
     use super::ThinkingParseError;
     use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
-        CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
-        SESSION_VERSION, StoredDelivery, StoredQueuedMessage, StoredSubagent, append_record,
-        classify_and_display, encode_frame, generate_title, jsonl_path, load_cwd_index, now_epoch,
-        update_cwd_index,
+        COMPRESS_LEVEL, CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord,
+        MAX_TITLE_LEN, PREVIOUS_LOG_FORMAT_VERSION, SESSION_VERSION, StoredDelivery,
+        StoredQueuedMessage, StoredSubagent, append_record, classify_and_display, encode_frame,
+        generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
+    };
+    use super::{
+        DecodeLimits, SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError,
+        StoredFusionUsage, StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
@@ -4712,10 +4837,6 @@ mod tests {
         delete_openai_response_chain, load_openai_response_chain, load_openai_response_chain_at,
         lock_openai_response_chain, openai_response_chain_path, save_openai_response_chain,
         try_lock_openai_response_chain,
-    };
-    use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredFusionUsage,
-        StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::n00nId;
@@ -5131,6 +5252,75 @@ mod tests {
             TranscriptEntry::Message(message)
                 if message["content"][0]["text"].as_str() == Some("second")
         ));
+    }
+
+    #[test]
+    fn nested_compaction_round_trips_below_per_record_limit() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let limits = DecodeLimits::new(2 * 1024, 1024 * 1024, super::MAX_ZSTD_WINDOW_LOG);
+        let archived = (0..64)
+            .map(|index| {
+                TranscriptEntry::Message(user_message(&format!(
+                    "archived message {index}: {}",
+                    "x".repeat(128)
+                )))
+            })
+            .collect();
+        let inner = TranscriptEntry::Compaction {
+            entries: archived,
+            generated_summary: Some(assistant_message("inner summary")),
+            state_revision: Some(1),
+        };
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![inner],
+            generated_summary: Some(assistant_message("outer summary")),
+            state_revision: Some(2),
+        }];
+
+        SessionLog::create_with_limits(dir, &session, limits).unwrap();
+        let (loaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(loaded.transcript).unwrap(),
+            serde_json::to_value(session.transcript).unwrap()
+        );
+    }
+
+    #[test]
+    fn previous_log_format_is_rewritten_on_open() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message("persisted")));
+        drop(SessionLog::create(dir, &session).unwrap());
+        let path = jsonl_path(dir, session.id);
+        let decoded = zstd::stream::decode_all(File::open(&path).unwrap()).unwrap();
+        let mut lines = decoded.split(|byte| *byte == b'\n');
+        let mut header: Value = serde_json::from_slice(lines.next().unwrap()).unwrap();
+        header["v"] = PREVIOUS_LOG_FORMAT_VERSION.into();
+        let mut previous = serde_json::to_vec(&header).unwrap();
+        previous.push(b'\n');
+        for line in lines.filter(|line| !line.is_empty()) {
+            previous.extend_from_slice(line);
+            previous.push(b'\n');
+        }
+        fs::write(
+            &path,
+            zstd::stream::encode_all(&previous[..], COMPRESS_LEVEL).unwrap(),
+        )
+        .unwrap();
+
+        drop(SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap());
+
+        let rewritten = zstd::stream::decode_all(File::open(path).unwrap()).unwrap();
+        let header: Value =
+            serde_json::from_slice(rewritten.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
+        assert_eq!(header["v"], LOG_FORMAT_VERSION);
     }
 
     #[test]
