@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787441761553,
+  "lastUpdate": 1787470439289,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -23317,6 +23317,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 158767,
             "range": "± 25532",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3fc18d0ad9be7bd36344b5c81a2f296664a03588",
+          "message": "perf(providers): preserve cache affinity across dynamic system state\n\nPreserve OpenAI prompt-cache affinity and response-chain continuity across dynamic system-state changes while retaining correct shared cache breakpoints for other providers.",
+          "timestamp": "2026-08-23T03:18:44-04:00",
+          "tree_id": "4b9e7c302d317ddcf8e2c63ddfbf3fe7c053f990",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/3fc18d0ad9be7bd36344b5c81a2f296664a03588"
+        },
+        "date": 1787470437910,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6627240,
+            "range": "± 199462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2256252,
+            "range": "± 2817",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2257189,
+            "range": "± 10852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8187756,
+            "range": "± 218331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4266178,
+            "range": "± 30762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4261286,
+            "range": "± 28694",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584773,
+            "range": "± 3064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191916,
+            "range": "± 350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 186837,
+            "range": "± 734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045776,
+            "range": "± 12109",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582404,
+            "range": "± 1640",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 580977,
+            "range": "± 1759",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 74548,
+            "range": "± 6455",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 186358,
+            "range": "± 11837",
             "unit": "ns/iter"
           }
         ]
