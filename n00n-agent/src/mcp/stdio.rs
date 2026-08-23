@@ -241,9 +241,10 @@ impl StdioTransport {
                 let terminal_err = result.err().unwrap_or_else(|| McpError::ServerDied {
                     server: (*name).into(),
                 });
-                warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
-                alive.store(false, Ordering::Release);
-                on_death(terminal_err.clone());
+                if alive.swap(false, Ordering::AcqRel) {
+                    warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
+                    on_death(terminal_err.clone());
+                }
                 for (_, sender) in pending.lock().await.drain() {
                     let _ = sender.send(Err(terminal_err.clone())).await;
                 }
@@ -680,6 +681,35 @@ mod tests {
         dedup.observe("only-once");
         assert!(dedup.flush().is_none());
     }
+    #[cfg(unix)]
+    #[test]
+    fn explicit_shutdown_does_not_invoke_death_callback() {
+        smol::block_on(async {
+            let death_called = Arc::new(AtomicBool::new(false));
+            let death_called_write = Arc::clone(&death_called);
+            let transport = StdioTransport::spawn(
+                "test",
+                "sleep",
+                &["60".into()],
+                &HashMap::new(),
+                Duration::from_secs(5),
+                Box::new(move |_| {
+                    death_called_write.store(true, Ordering::Release);
+                }),
+            )
+            .unwrap();
+
+            transport.shutdown().await;
+            let StdioTransport {
+                _reader_task: reader_task,
+                ..
+            } = transport;
+            reader_task.await;
+
+            assert!(!death_called.load(Ordering::Acquire));
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn reader_loop_end_invokes_death_callback() {
