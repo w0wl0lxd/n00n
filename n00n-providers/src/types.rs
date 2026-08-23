@@ -401,8 +401,9 @@ impl System {
         &self.blocks
     }
 
+    /// Return the stable block prefix before the first dynamic slot.
     #[must_use]
-    pub(crate) fn cacheable_prefix_blocks(&self) -> &[SystemBlock] {
+    pub fn cacheable_prefix_blocks(&self) -> &[SystemBlock] {
         let boundary = match self.dynamic_boundary {
             Some(boundary) => boundary,
             None => self.blocks.len(),
@@ -418,13 +419,19 @@ impl System {
     /// Mark where dynamic prompt content begins, even when it is currently empty.
     pub fn mark_dynamic_boundary(&mut self) {
         if self.dynamic_boundary.is_none() {
-            self.seal_static_boundary();
             self.dynamic_boundary = Some(self.blocks.len());
         }
     }
 
     pub fn push(&mut self, block: SystemBlock) {
         if block.cache == CacheControl::Dynamic {
+            if !self
+                .blocks
+                .iter()
+                .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
+            {
+                self.seal_static_boundary();
+            }
             self.mark_dynamic_boundary();
         }
         self.blocks.push(block);
@@ -459,11 +466,10 @@ impl System {
     /// added. This is a no-op after a dynamic block because caching a later
     /// static block would also cache the dynamic prefix.
     pub fn seal(&mut self) {
-        if self.dynamic_boundary.is_none()
-            && !self
-                .blocks
-                .iter()
-                .any(|block| block.cache == CacheControl::Ephemeral)
+        if !self
+            .blocks
+            .iter()
+            .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
         {
             self.seal_static_boundary();
         }

@@ -428,17 +428,23 @@ mod tests {
     #[test]
     fn empty_dynamic_slot_preserves_cache_boundary() {
         let system = assemble_system(PromptId::System, &ResolvedSlots::default(), "INSTRUCTIONS");
+        let openai_prefix = system
+            .cacheable_prefix_blocks()
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<String>();
         let blocks = system.blocks();
-        let boundary = blocks
+        let provider_boundary = blocks
             .iter()
             .position(|block| block.cache == n00n_providers::CacheControl::Ephemeral)
             .unwrap_or_else(|| panic!("missing cache boundary"));
-        let cacheable_prefix = blocks[..=boundary]
+        let provider_prefix = blocks[..=provider_boundary]
             .iter()
             .map(|block| block.text.as_str())
             .collect::<String>();
 
-        assert!(!cacheable_prefix.contains("# Tool usage"));
+        assert!(!openai_prefix.contains("# Tool usage"));
+        assert!(provider_prefix.contains("# Tool usage"));
         assert!(system.to_string().contains("# Tool usage"));
     }
 
