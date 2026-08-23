@@ -427,26 +427,15 @@ fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials
     Ok(None)
 }
 
-fn account_and_model_with_config<'a>(
-    config: &ProvidersConfig,
-    model_id: &'a str,
-) -> (Option<&'a str>, &'a str) {
+fn account_and_model(model_id: &str) -> (Option<&str>, &str) {
     let Some((account, model)) = model_id.split_once("::") else {
         return (None, model_id);
     };
-    if !model.is_empty()
-        && configured_account_names(config)
-            .iter()
-            .any(|candidate| candidate == account)
-    {
+    if is_valid_account_name(account) && !model.is_empty() {
         (Some(account), model)
     } else {
         (None, model_id)
     }
-}
-
-fn account_and_model(model_id: &str) -> (Option<&str>, &str) {
-    account_and_model_with_config(&ProvidersConfig::load(), model_id)
 }
 
 pub(crate) fn model_id_without_account(model_id: &str) -> &str {
@@ -576,8 +565,12 @@ fn accepted_stream_error(_error: &AgentError, emitted_event: bool) -> AgentError
     }
 }
 
-fn accepted_protocol_error(error: &AgentError, emitted_event: bool) -> AgentError {
-    accepted_stream_error(error, emitted_event)
+fn accepted_protocol_error(error: AgentError, emitted_event: bool) -> AgentError {
+    if emitted_event || error.is_retryable() {
+        accepted_stream_error(&error, emitted_event)
+    } else {
+        error
+    }
 }
 
 fn connect_code_status(code: &str) -> u16 {
@@ -612,11 +605,16 @@ fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
         .as_object()
         .ok_or_else(|| AgentError::api(502, "Devin end-stream trailer must be a JSON object"))?;
     let error = object.get("error");
-    let code = match error {
+    let code_value = match error {
         Some(error) => error.get("code"),
         None => object.get("code"),
+    };
+    let code = match code_value {
+        Some(value) => Some(value.as_str().ok_or_else(|| {
+            AgentError::api(502, "Devin end-stream trailer code must be a string")
+        })?),
+        None => None,
     }
-    .and_then(Value::as_str)
     .map(sanitize_trailer_code);
     match code {
         Some("ok") if error.is_none() => Ok(Some("ok".to_string())),
@@ -1227,7 +1225,7 @@ impl Devin {
                         )
                     })?;
                     if let Some(code) = parse_devin_trailer(&payload)
-                        .map_err(|error| accepted_protocol_error(&error, emitted_event))?
+                        .map_err(|error| accepted_protocol_error(error, emitted_event))?
                     {
                         debug!(
                             trailer_code = code,
@@ -1497,7 +1495,7 @@ mod tests {
     #[test]
     fn accepted_server_and_protocol_failures_require_explicit_replay() {
         let error = accepted_protocol_error(
-            &AgentError::api(
+            AgentError::api(
                 403,
                 "Devin stream failed with trailer code permission_denied",
             ),
@@ -1516,6 +1514,13 @@ mod tests {
                 ..
             }
         ));
+
+        let rejection = accepted_protocol_error(
+            AgentError::api(401, "Devin stream failed with trailer code unauthenticated"),
+            false,
+        );
+        assert!(matches!(rejection, AgentError::Api { status: 401, .. }));
+        assert!(rejection.is_auth_error());
     }
 
     #[test]
@@ -1797,35 +1802,20 @@ mod tests {
 
     #[test]
     fn account_model_routing_uses_an_unambiguous_separator() {
-        let mut config = ProvidersConfig::default();
-        config.upsert(
-            "devin".to_string(),
-            ProviderDef {
-                accounts: HashMap::from([(
-                    "2".to_string(),
-                    n00n_config::providers::ProviderAccountDef::default(),
-                )]),
-                ..ProviderDef::default()
-            },
-        );
-
+        assert_eq!(account_and_model("swe-1-7-max"), (None, "swe-1-7-max"));
         assert_eq!(
-            account_and_model_with_config(&config, "swe-1-7-max"),
-            (None, "swe-1-7-max")
-        );
-        assert_eq!(
-            account_and_model_with_config(&config, "2::swe-1-7-max"),
+            account_and_model("2::swe-1-7-max"),
             (Some("2"), "swe-1-7-max")
         );
         assert_eq!(
-            account_and_model_with_config(&config, "org/custom-model"),
+            account_and_model("org/custom-model"),
             (None, "org/custom-model")
         );
         assert_eq!(
-            account_and_model_with_config(&config, "org::custom-model"),
-            (None, "org::custom-model")
+            account_and_model("unknown::custom-model"),
+            (Some("unknown"), "custom-model")
         );
-        assert_eq!(account_and_model_with_config(&config, "2::"), (None, "2::"));
+        assert_eq!(account_and_model("work::"), (None, "work::"));
         assert_eq!(legacy_account_name("devin2"), Some("2"));
         assert_eq!(legacy_account_name("devin-work"), None);
         assert_eq!(legacy_account_name("devin"), None);
@@ -2086,7 +2076,12 @@ mod tests {
             AgentError::Api { status: 502, message } if message == TRAILER_JSON_ERROR
         ));
 
-        for payload in [b"null".as_slice(), b"[]".as_slice(), br#""garbage""#] {
+        for payload in [
+            b"null".as_slice(),
+            b"[]".as_slice(),
+            br#""garbage""#,
+            br#"{"code":42}"#,
+        ] {
             assert!(matches!(
                 parse_devin_trailer(payload),
                 Err(AgentError::Api { status: 502, .. })
