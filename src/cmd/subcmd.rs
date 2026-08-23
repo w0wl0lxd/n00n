@@ -165,14 +165,29 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
     Ok(())
 }
 
+fn validated_provider_account(account: &str) -> Result<String> {
+    let normalized = slugify(account);
+    if account.is_empty() || account != normalized {
+        bail!("provider account must already be a lowercase slug");
+    }
+    Ok(normalized)
+}
+
+fn configure_provider_account(definition: &mut ProviderDef, account: &str, has_api_key: bool) {
+    let account_definition = definition
+        .accounts
+        .entry(account.to_string())
+        .or_insert_with(ProviderAccountDef::default);
+    if has_api_key {
+        account_definition.credential_path = None;
+    }
+}
+
 fn login_provider_account(provider: &str, account: &str, storage: &StateDir) -> Result<()> {
     let provider = slugify(provider);
-    let account = slugify(account);
+    let account = validated_provider_account(account)?;
     if provider != "devin" {
         bail!("provider accounts are currently supported for Devin");
-    }
-    if account.is_empty() {
-        bail!("provider account cannot be empty");
     }
 
     let selector = format!("{provider}@{account}");
@@ -199,14 +214,11 @@ fn login_provider_account(provider: &str, account: &str, storage: &StateDir) -> 
         .get(&provider)
         .cloned()
         .unwrap_or_else(Default::default);
-    definition
-        .accounts
-        .entry(account.clone())
-        .or_insert_with(ProviderAccountDef::default);
+    configure_provider_account(&mut definition, &account, has_api_key);
     config.upsert(provider, definition);
     config.save().context("save providers.toml")?;
 
-    let model = format!("devin/{account}/swe-1-7-max");
+    let model = format!("devin/{account}::swe-1-7-max");
     persist_model(storage, &model);
     println!("  \x1b[32m✓\x1b[0m Configured: Devin (account {account})");
     println!("  Default model: {model}");
@@ -526,12 +538,9 @@ fn prompt_api_key(url: Option<&str>, display_name: &str, optional: bool) -> Resu
 pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
     if let Some((provider, account)) = provider.split_once('@') {
         let provider = slugify(provider);
-        let account = slugify(account);
+        let account = validated_provider_account(account)?;
         if provider != "devin" {
             bail!("provider accounts are currently supported for Devin");
-        }
-        if account.is_empty() {
-            bail!("provider account cannot be empty");
         }
         let selector = format!("{provider}@{account}");
         let deleted =
@@ -653,10 +662,12 @@ pub fn auth_status(storage: &StateDir) {
         } else {
             "\x1b[31m✗\x1b[0m"
         };
-        println!(
-            "  {status} {:<14} Devin (account {account})",
-            format!("devin/{account}")
-        );
+        let display = config
+            .get("devin")
+            .and_then(|definition| definition.accounts.get(&account))
+            .and_then(|definition| definition.display_name.as_deref())
+            .map_or_else(|| format!("Devin (account {account})"), str::to_string);
+        println!("  {status} {:<14} {display}", format!("devin@{account}"));
     }
 
     for (slug, def) in &config.providers {
@@ -895,6 +906,60 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_account_selectors_must_already_be_lowercase_slugs() {
+        assert_eq!(
+            validated_provider_account("team-prod").expect("valid account"),
+            "team-prod"
+        );
+        for invalid in ["", "Work", "work!", "work team"] {
+            assert!(validated_provider_account(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn api_key_login_clears_authoritative_credential_path() {
+        let mut definition = ProviderDef {
+            accounts: std::collections::HashMap::from([(
+                "work".to_string(),
+                ProviderAccountDef {
+                    display_name: Some("Work".to_string()),
+
+                    credential_path: Some("credentials.toml".into()),
+                },
+            )]),
+            ..ProviderDef::default()
+        };
+
+        configure_provider_account(&mut definition, "work", true);
+        let account = definition.accounts.get("work").expect("account exists");
+        assert_eq!(account.display_name.as_deref(), Some("Work"));
+        assert_eq!(account.credential_path, None);
+    }
+
+    #[test]
+    fn credential_file_login_preserves_authoritative_path() {
+        let mut definition = ProviderDef {
+            accounts: std::collections::HashMap::from([(
+                "work".to_string(),
+                ProviderAccountDef {
+                    display_name: None,
+                    credential_path: Some("credentials.toml".into()),
+                },
+            )]),
+            ..ProviderDef::default()
+        };
+
+        configure_provider_account(&mut definition, "work", false);
+        assert_eq!(
+            definition
+                .accounts
+                .get("work")
+                .and_then(|account| account.credential_path.as_deref()),
+            Some(Path::new("credentials.toml"))
+        );
+    }
 
     #[test]
     fn legacy_devin_logout_only_targets_devin_protocol_aliases() {

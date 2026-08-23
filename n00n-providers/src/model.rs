@@ -269,7 +269,7 @@ impl Model {
     /// When no static entry matches (a freshly released model the table has not
     /// caught up to yet), fall back to the provider defaults so it still resolves.
     fn from_base(manifest: &ProviderManifest, slug: &str, model_id: &str) -> Self {
-        let lookup_model_id = if manifest.slug == "devin" {
+        let lookup_model_id = if slug == "devin" {
             crate::providers::devin::model_id_without_account(model_id)
         } else {
             model_id
@@ -573,7 +573,7 @@ impl Model {
         };
 
         if let Some(account) = crate::providers::devin::legacy_account_for_provider_slug(slug) {
-            return Self::from_spec(&format!("devin/{account}/{model_id}"));
+            return Self::from_spec(&format!("devin/{account}::{model_id}"));
         }
 
         // Precedence: builtin, then dynamic script, then providers.toml custom.
@@ -1061,6 +1061,15 @@ mod tests {
         assert_eq!(model.provider.as_ref(), "devin");
         assert_eq!(model.id, "org/custom-model");
         assert_eq!(model.spec(), "devin/org/custom-model");
+    }
+
+    #[test]
+    fn devin_named_account_preserves_slash_segments_in_model_id() {
+        let model = Model::from_spec("devin/work::org/custom-model").unwrap();
+
+        assert_eq!(model.provider.as_ref(), "devin");
+        assert_eq!(model.id, "work::org/custom-model");
+        assert_eq!(model.spec(), "devin/work::org/custom-model");
     }
 
     #[test]

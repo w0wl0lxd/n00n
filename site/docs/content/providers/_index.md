@@ -233,7 +233,7 @@ The primary account uses normal model specs such as `devin/swe-1-7-max`. Configu
 
 ```bash
 n00n auth login devin@work
-n00n -m devin/work/swe-1-7-max
+n00n -m devin/work::swe-1-7-max
 ```
 
 or an existing Devin CLI credential file:
@@ -244,7 +244,7 @@ display_name = "Work"
 credential_path = "~/.local/share/devin-work/devin/credentials.toml"
 ```
 
-Use `n00n auth status` to list accounts and `n00n auth logout devin@work` to remove one. Account names must already be lowercase slugs such as `work` or `team-prod`. A legacy numeric provider alias such as `devin2/model` is read as `devin/2/model` only when `[devin2]` is explicitly configured with `protocol = "devin"`; new configuration should use `[devin.accounts.<name>]` instead of separate provider definitions.
+Use `n00n auth status` to list accounts and `n00n auth logout devin@work` to remove one. Account names must already be lowercase slugs such as `work` or `team-prod`. A legacy numeric provider alias such as `devin2/model` is read as `devin/2::model` only when `[devin2]` is explicitly configured with `protocol = "devin"`; new configuration should use `[devin.accounts.<name>]` instead of separate provider definitions.
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|

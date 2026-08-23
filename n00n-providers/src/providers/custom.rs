@@ -104,7 +104,7 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
     {
         return Err(AgentError::Config {
             message: format!(
-                "legacy Devin provider '{slug}' is an account alias; use devin/{account}/<model>"
+                "legacy Devin provider '{slug}' is an account alias; use devin/{account}::<model>"
             ),
         });
     }

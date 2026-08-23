@@ -515,7 +515,7 @@ fn devin_account_model_specs(config: &ProvidersConfig) -> Vec<String> {
                 entry
                     .prefixes
                     .iter()
-                    .map(move |prefix| format!("devin/{account}/{prefix}"))
+                    .map(move |prefix| format!("devin/{account}::{prefix}"))
             })
         })
         .collect()
