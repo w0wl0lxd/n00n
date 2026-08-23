@@ -332,7 +332,11 @@ fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, s
 
 fn system_hash(system: &System) -> String {
     let mut digest = Sha256::new();
-    for block in system.blocks() {
+    for block in system
+        .blocks()
+        .iter()
+        .take_while(|block| block.cache != CacheControl::Dynamic)
+    {
         digest.update(block.text.len().to_le_bytes());
         digest.update(block.text.as_bytes());
         digest.update([match block.cache {
@@ -342,6 +346,15 @@ fn system_hash(system: &System) -> String {
         }]);
     }
     format!("{:x}", digest.finalize())
+}
+
+fn cacheable_system_prefix(system: &System) -> String {
+    system
+        .blocks()
+        .iter()
+        .take_while(|block| block.cache != CacheControl::Dynamic)
+        .map(|block| block.text.as_str())
+        .collect()
 }
 
 fn short_hash(hash: &str) -> &str {
@@ -361,12 +374,12 @@ struct CachePrefixFingerprint {
 
 impl CachePrefixFingerprint {
     fn new(model_id: &str, system: &System, tools_hash: &str) -> Self {
-        let system_text = system.to_string();
+        let system_prefix = cacheable_system_prefix(system);
         let mut digest = Sha256::new();
         digest.update(model_id.len().to_le_bytes());
         digest.update(model_id.as_bytes());
-        digest.update(system_text.len().to_le_bytes());
-        digest.update(system_text.as_bytes());
+        digest.update(system_prefix.len().to_le_bytes());
+        digest.update(system_prefix.as_bytes());
         digest.update(tools_hash.as_bytes());
         Self {
             model_id: model_id.to_owned(),
@@ -3231,6 +3244,39 @@ mod tests {
     }
 
     #[test]
+    fn incremental_dynamic_system_change_preserves_state() {
+        let mut old_system = System::new();
+        old_system.push_static("stable system");
+        old_system.push_dynamic("old todo state");
+        let mut new_system = System::new();
+        new_system.push_static("stable system");
+        new_system.push_dynamic("new todo state");
+        let old_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &old_system, TOOLS_HASH);
+        let new_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &new_system, TOOLS_HASH);
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            &old_fingerprint,
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (previous, incremental) =
+            incremental_for_state(&mut state, &new_fingerprint, AUTH_SCOPE_HASH, &second).unwrap();
+
+        assert_eq!(previous.as_deref(), Some("resp_1"));
+        assert_eq!(incremental.len(), 1);
+    }
+
+    #[test]
     fn incremental_model_change_resets_state() {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("hello".into())];
@@ -4195,6 +4241,23 @@ mod tests {
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &system, "changed-tools")
         );
+    }
+
+    #[test]
+    fn prompt_cache_key_ignores_dynamic_system_suffix() {
+        let mut first = System::new();
+        first.push_static("stable instructions");
+        first.push_dynamic("todo state one");
+        let mut second = System::new();
+        second.push_static("stable instructions");
+        second.push_dynamic("todo state two");
+
+        let first = CachePrefixFingerprint::new("gpt-5.6", &first, TOOLS_HASH);
+        let second = CachePrefixFingerprint::new("gpt-5.6", &second, TOOLS_HASH);
+
+        assert_eq!(first.system_hash, second.system_hash);
+        assert_eq!(first.prefix_hash(), second.prefix_hash());
+        assert_eq!(first.prompt_cache_key(None), second.prompt_cache_key(None));
     }
 
     #[test]
