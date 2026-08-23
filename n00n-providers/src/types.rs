@@ -382,6 +382,7 @@ impl SystemBlock {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct System {
     blocks: Vec<SystemBlock>,
+    dynamic_boundary: Option<usize>,
 }
 
 impl System {
@@ -400,7 +401,39 @@ impl System {
         &self.blocks
     }
 
+    /// Return the stable block prefix before the first dynamic slot.
+    #[must_use]
+    pub fn cacheable_prefix_blocks(&self) -> &[SystemBlock] {
+        let boundary = match self.dynamic_boundary {
+            Some(boundary) => boundary,
+            None => self.blocks.len(),
+        };
+        &self.blocks[..boundary]
+    }
+
+    #[must_use]
+    pub(crate) fn dynamic_boundary(&self) -> Option<usize> {
+        self.dynamic_boundary
+    }
+
+    /// Mark where dynamic prompt content begins, even when it is currently empty.
+    pub fn mark_dynamic_boundary(&mut self) {
+        if self.dynamic_boundary.is_none() {
+            self.dynamic_boundary = Some(self.blocks.len());
+        }
+    }
+
     pub fn push(&mut self, block: SystemBlock) {
+        if block.cache == CacheControl::Dynamic {
+            if !self
+                .blocks
+                .iter()
+                .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
+            {
+                self.seal_static_boundary();
+            }
+            self.mark_dynamic_boundary();
+        }
         self.blocks.push(block);
     }
 
@@ -409,13 +442,6 @@ impl System {
     }
 
     pub fn push_dynamic(&mut self, text: impl Into<String>) {
-        if !self
-            .blocks
-            .iter()
-            .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
-        {
-            self.seal_static_boundary();
-        }
         self.push(SystemBlock::new(text, CacheControl::Dynamic));
     }
 
