@@ -3,6 +3,9 @@
 //! channel closed, user cancel. `user_message()` returns human-readable text for each variant.
 
 use isahc::AsyncReadResponseExt;
+use n00n_redact::sanitize_text;
+
+const MAX_PROVIDER_ERROR_CHARS: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryReplayReason {
@@ -161,7 +164,8 @@ impl AgentError {
         }
     }
 
-    /// Converts failures that may have occurred after the provider accepted the    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
+    /// Converts failures that may have occurred after the provider accepted the
+    /// request or emitted output into [`AgentError::RequestSent`]. Transport-level
     /// failures are treated as request-sent once the request has left the client.
     /// API/server errors are only suppressed when output has already been emitted
     /// or the request was accepted, preserving retryability when no output has been
@@ -287,6 +291,9 @@ impl AgentError {
             Self::Api { status: 401, .. } => {
                 "authentication failed, run `n00n auth login` or check your API key".into()
             }
+            Self::Api { status: 403, .. } => {
+                "permission denied; verify account, organization, and model access".into()
+            }
             Self::Api { status, message } => format!("API error ({status}): {message}"),
             Self::Tool { tool, message } => format!("{tool}: {message}"),
             Self::Io(e) => format!("I/O error: {e}"),
@@ -329,13 +336,20 @@ impl AgentError {
         }
     }
 
+    pub fn api(status: u16, message: impl AsRef<str>) -> Self {
+        Self::Api {
+            status,
+            message: sanitize_text(message.as_ref(), MAX_PROVIDER_ERROR_CHARS),
+        }
+    }
+
     pub async fn from_response(mut response: isahc::Response<isahc::AsyncBody>) -> Self {
         let status = response.status().as_u16();
         let message = response
             .text()
             .await
             .unwrap_or_else(|_| "unable to read error body".into());
-        Self::Api { status, message }
+        Self::api(status, message)
     }
 
     #[must_use]
@@ -438,6 +452,7 @@ mod tests {
     #[test_case(529, "provider is overloaded, try again later"                           ; "user_msg_529")]
     #[test_case(500, "server error (500)"                                                 ; "user_msg_500")]
     #[test_case(401, "authentication failed, run `n00n auth login` or check your API key" ; "user_msg_401")]
+    #[test_case(403, "permission denied; verify account, organization, and model access"   ; "user_msg_403")]
     #[test_case(400, "API error (400): bad input"                                         ; "user_msg_400")]
     fn user_message_api(status: u16, expected: &str) {
         let err = AgentError::Api {
@@ -445,6 +460,22 @@ mod tests {
             message: "bad input".into(),
         };
         assert_eq!(err.user_message(), expected);
+    }
+
+    #[test]
+    fn api_constructor_bounds_and_redacts_provider_details() {
+        let error = AgentError::api(
+            403,
+            format!(
+                "Authorization: Bearer fake-provider-token {}",
+                "x".repeat(2_000)
+            ),
+        );
+        let AgentError::Api { message, .. } = error else {
+            panic!("expected API error");
+        };
+        assert!(!message.contains("fake-provider-token"));
+        assert!(message.chars().count() <= MAX_PROVIDER_ERROR_CHARS);
     }
 
     #[test]

@@ -78,6 +78,7 @@ smooth at 60 FPS, light on memory. Even the splash animation uses SIMD.
 | Anthropic | `ANTHROPIC_API_KEY` | OAuth is against TOS. Bedrock via `CLAUDE_CODE_USE_BEDROCK=1` |
 | OpenAI | `OPENAI_API_KEY` or `n00n auth login openai` | OAuth supported |
 | Google | `GEMINI_API_KEY` | |
+| Devin | `DEVIN_API_KEY`, `WINDSURF_API_KEY`, or `n00n auth login devin@<account>` | Named accounts use `devin/<account>/<model>` |
 | Copilot | `GH_COPILOT_TOKEN` or `~/.config/github-copilot/` | Existing GitHub Copilot sign-in |
 | Ollama | `OLLAMA_HOST` | Local: `http://localhost:11434`. Cloud: `OLLAMA_API_KEY` |
 | llama.cpp | `LLAMA_CPP_HOST` | e.g. `http://localhost:8080`. Optional `LLAMA_CPP_API_KEY` |

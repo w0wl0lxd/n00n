@@ -1,0 +1,1 @@
+Mapped Devin Connect trailer failures to meaningful authentication, permission, quota, and server statuses; redacted and bounded provider diagnostics; and made transport failures retryable instead of reporting `API error (0)`.

@@ -227,7 +227,24 @@ The default is `false`.
 
 - **Authentication**: `DEVIN_API_KEY`, `WINDSURF_API_KEY`, or `~/.local/share/devin/credentials.toml`
 - **API**: `https://server.codeium.com (native Connect/gRPC-Web)`
-- **Features**: Native Connect/gRPC-Web transport with streamed text, thinking, and tool calls
+- **Features**: Native Connect/gRPC-Web transport with streamed text, thinking, tool calls, and named accounts
+
+The primary account uses normal model specs such as `devin/swe-1-7-max`. Configure additional named accounts with either stored credentials:
+
+```bash
+n00n auth login devin@work
+n00n -m devin/work/swe-1-7-max
+```
+
+or an existing Devin CLI credential file:
+
+```toml
+[devin.accounts.work]
+display_name = "Work"
+credential_path = "~/.local/share/devin-work/devin/credentials.toml"
+```
+
+Use `n00n auth status` to list accounts and `n00n auth logout devin@work` to remove one. Legacy numeric provider aliases such as `devin2/model` are read as `devin/2/model`; new configuration should use `[devin.accounts.<name>]` instead of separate provider definitions.
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|

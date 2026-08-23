@@ -502,6 +502,25 @@ pub struct ModelBatch {
     pub warnings: Vec<String>,
 }
 
+fn devin_account_model_specs(config: &ProvidersConfig) -> Vec<String> {
+    let Some(manifest) = crate::manifest::ManifestRegistry::get("devin") else {
+        return Vec::new();
+    };
+    crate::providers::devin::configured_account_names(config)
+        .into_iter()
+        .filter(|account| crate::providers::devin::account_has_credentials(account))
+        .flat_map(|account| {
+            manifest.models.iter().flat_map(move |entry| {
+                let account = account.clone();
+                entry
+                    .prefixes
+                    .iter()
+                    .map(move |prefix| format!("devin/{account}/{prefix}"))
+            })
+        })
+        .collect()
+}
+
 /// Offline version of model discovery: returns specs from static tables
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
 #[must_use]
@@ -509,7 +528,13 @@ pub fn available_model_specs() -> Vec<String> {
     let providers_config = ProvidersConfig::load();
     let mut specs: Vec<String> = crate::manifest::ManifestRegistry::builtins()
         .iter()
-        .filter(|m| provider_available_with_config(m.slug, Some(&providers_config)))
+        .filter(|manifest| {
+            if manifest.slug == "devin" {
+                crate::providers::devin::has_primary_credentials()
+            } else {
+                provider_available_with_config(manifest.slug, Some(&providers_config))
+            }
+        })
         .flat_map(|m| {
             m.models
                 .iter()
@@ -517,6 +542,7 @@ pub fn available_model_specs() -> Vec<String> {
                 .map(move |p| format!("{}/{}", m.slug, p))
         })
         .collect();
+    specs.extend(devin_account_model_specs(&providers_config));
     for slug in dynamic::discovered_slugs() {
         if provider_available_with_config(slug, Some(&providers_config)) {
             specs.extend(dynamic::dynamic_model_specs_for(slug));
@@ -619,6 +645,16 @@ pub async fn fetch_all_models(
             let _ = tx.send_async(batch).await;
         })
         .detach();
+    }
+
+    let account_models = devin_account_model_specs(&ProvidersConfig::load());
+    if !account_models.is_empty() {
+        let _ = tx
+            .send_async(ModelBatch {
+                models: account_models,
+                warnings: Vec::new(),
+            })
+            .await;
     }
 
     for slug in dynamic::discovered_slugs() {
