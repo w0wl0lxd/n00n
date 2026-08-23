@@ -159,7 +159,7 @@ impl ProviderKind {
                 "Dynamically discovered models via [models.dev](https://models.dev/) + all the models provided by Opencode Zen API",
             ),
             Self::Devin => Some(
-                "Native Connect/gRPC-Web transport with streamed text, thinking, and tool calls",
+                "Native Connect/gRPC-Web transport with streamed text, thinking, tool calls, and named accounts",
             ),
             Self::Cursor => Some(
                 "Cursor Agent CLI subprocess with stream-json parsing, session resume, and tool-call passthrough",

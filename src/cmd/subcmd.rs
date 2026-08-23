@@ -203,7 +203,7 @@ fn login_provider_account(provider: &str, account: &str, storage: &StateDir) -> 
         .accounts
         .entry(account.clone())
         .or_insert_with(ProviderAccountDef::default);
-    config.upsert(provider.clone(), definition);
+    config.upsert(provider, definition);
     config.save().context("save providers.toml")?;
 
     let model = format!("devin/{account}/swe-1-7-max");
