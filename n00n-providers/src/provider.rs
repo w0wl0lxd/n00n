@@ -650,7 +650,8 @@ pub async fn fetch_all_models(
         .detach();
     }
 
-    let account_models = devin_account_model_specs(&ProvidersConfig::load());
+    let account_models =
+        smol::unblock(|| devin_account_model_specs(&ProvidersConfig::load())).await;
     if !account_models.is_empty() {
         let _ = tx
             .send_async(ModelBatch {

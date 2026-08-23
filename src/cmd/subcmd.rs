@@ -16,7 +16,7 @@ use n00n_config::providers::{
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::provider::fetch_all_models;
-use n00n_providers::{ProviderData, catalog_providers};
+use n00n_providers::{ProviderData, catalog_providers, devin_legacy_account_name};
 use n00n_providers::{copilot_auth, dynamic, openai_auth};
 use n00n_storage::StateDir;
 use n00n_storage::auth::ProviderCredentials;
@@ -33,9 +33,16 @@ fn legacy_devin_account<'a>(slug: &'a str, definition: Option<&ProviderDef>) -> 
     if !definition.is_some_and(|definition| definition.protocol == Some(Protocol::Devin)) {
         return None;
     }
-    let suffix = slug.strip_prefix("devin")?;
-    (!suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()))
-        .then_some(suffix)
+    devin_legacy_account_name(slug)
+}
+
+fn resolved_devin_model_id(config: &ProvidersConfig) -> Result<String> {
+    let model = resolve_default_model("devin", config.get("devin"))
+        .ok_or_else(|| color_eyre::eyre::eyre!("no default model for Devin"))?;
+    Ok(match model.strip_prefix("devin/") {
+        Some(model_id) => model_id.to_string(),
+        None => model,
+    })
 }
 
 fn legacy_devin_slug_for_account(config: &ProvidersConfig, account: &str) -> Option<String> {
@@ -218,7 +225,8 @@ fn login_provider_account(provider: &str, account: &str, storage: &StateDir) -> 
     config.upsert(provider, definition);
     config.save().context("save providers.toml")?;
 
-    let model = format!("devin/{account}::swe-1-7-max");
+    let model_id = resolved_devin_model_id(&config)?;
+    let model = format!("devin/{account}::{model_id}");
     persist_model(storage, &model);
     println!("  \x1b[32m✓\x1b[0m Configured: Devin (account {account})");
     println!("  Default model: {model}");
@@ -410,13 +418,12 @@ fn login_custom(storage: &StateDir, slug: Option<&str>) -> Result<()> {
     io::stdin().read_line(&mut key_input)?;
     let api_key = key_input.trim().to_string();
 
+    let mut config = ProvidersConfig::load();
     let default_model = if protocol == "devin" {
-        Some(format!("{slug}/swe-1-7-max"))
+        Some(format!("{slug}/{}", resolved_devin_model_id(&config)?))
     } else {
         None
     };
-
-    let mut config = ProvidersConfig::load();
     let provider_def = ProviderDef {
         display_name: Some(display_name),
         protocol: Some(
@@ -906,6 +913,26 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn devin_default_model_resolution_preserves_nested_ids() {
+        let mut config = ProvidersConfig::default();
+        assert_eq!(
+            resolved_devin_model_id(&config).expect("builtin default model"),
+            "swe-1-7"
+        );
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                default_model: Some("devin/org/custom-model".to_string()),
+                ..ProviderDef::default()
+            },
+        );
+        assert_eq!(
+            resolved_devin_model_id(&config).expect("configured default model"),
+            "org/custom-model"
+        );
+    }
 
     #[test]
     fn provider_account_selectors_must_already_be_lowercase_slugs() {

@@ -382,7 +382,10 @@ pub fn resolve_login_url(slug: &str, plan: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use test_case::test_case;
+
+    const ACCOUNT_CREDENTIAL_PATH: &str = "~/.local/share/devin-work/devin/credentials.toml";
 
     #[test]
     fn provider_def_roundtrip() {
@@ -416,13 +419,13 @@ mod tests {
 
     #[test]
     fn provider_accounts_roundtrip() {
-        let config: ProvidersConfig = toml::from_str(
+        let config_text = format!(
             r#"[devin.accounts.work]
 display_name = "Work"
-credential_path = "~/.local/share/devin-work/devin/credentials.toml"
-"#,
-        )
-        .unwrap();
+credential_path = "{ACCOUNT_CREDENTIAL_PATH}"
+"#
+        );
+        let config: ProvidersConfig = toml::from_str(&config_text).unwrap();
         let account = config
             .get("devin")
             .and_then(|provider| provider.accounts.get("work"))
@@ -430,9 +433,7 @@ credential_path = "~/.local/share/devin-work/devin/credentials.toml"
         assert_eq!(account.display_name.as_deref(), Some("Work"));
         assert_eq!(
             account.credential_path.as_deref(),
-            Some(std::path::Path::new(
-                "~/.local/share/devin-work/devin/credentials.toml"
-            ))
+            Some(Path::new(ACCOUNT_CREDENTIAL_PATH))
         );
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("[devin.accounts.work]"));

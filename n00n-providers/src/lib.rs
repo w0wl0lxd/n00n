@@ -31,6 +31,7 @@ pub use providers::devin::{
     account_has_credentials as devin_account_has_credentials,
     configured_account_names as devin_account_names,
     has_primary_credentials as devin_primary_has_credentials,
+    legacy_account_name as devin_legacy_account_name,
 };
 pub use providers::dynamic;
 pub use providers::openai::auth as openai_auth;

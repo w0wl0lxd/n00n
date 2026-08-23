@@ -353,7 +353,7 @@ impl Model {
                 model_registry()
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .discovered(m.slug, &self.id)
+                    .discovered(m.slug, self.metadata_model_id())
                     .and_then(|d| d.supports_vision)
             })
             .or_else(|| {
@@ -395,7 +395,7 @@ impl Model {
                 model_registry()
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .discovered(m.slug, &self.id)
+                    .discovered(m.slug, self.metadata_model_id())
                     .and_then(|d| d.supports_files)
             })
             .or_else(|| {

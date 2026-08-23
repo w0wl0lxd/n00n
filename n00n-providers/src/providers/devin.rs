@@ -243,7 +243,8 @@ fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
     }
     Ok(credentials)
 }
-pub(crate) fn legacy_account_name(slug: &str) -> Option<&str> {
+#[must_use]
+pub fn legacy_account_name(slug: &str) -> Option<&str> {
     let suffix = slug.strip_prefix("devin")?;
     (!suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()))
         .then_some(suffix)
@@ -293,6 +294,7 @@ fn legacy_account_for_provider_slug_in(config: &ProvidersConfig, slug: &str) -> 
 }
 
 pub(crate) fn legacy_account_for_provider_slug(slug: &str) -> Option<String> {
+    legacy_account_name(slug)?;
     legacy_account_for_provider_slug_in(&ProvidersConfig::load(), slug)
 }
 
@@ -306,7 +308,11 @@ fn expand_home(path: &Path) -> Result<PathBuf, AgentError> {
         let home = optional_env("HOME")?.ok_or_else(|| AgentError::Config {
             message: "HOME is required for a ~/ Devin credential path".to_string(),
         })?;
-        return Ok(PathBuf::from(home).join(path_text.trim_start_matches("~/")));
+        let home = PathBuf::from(home);
+        return Ok(match path_text.strip_prefix("~/") {
+            Some(relative) => home.join(relative),
+            None => home,
+        });
     }
     Ok(path.to_path_buf())
 }
@@ -343,9 +349,8 @@ fn apply_account_url_override(
     mut credentials: DevinCredentials,
     account_url_override: Option<&str>,
 ) -> DevinCredentials {
-    if let Some(url) = account_url_override {
-        credentials.api_server_url = url.to_string();
-    }
+    credentials.api_server_url =
+        resolve_api_server_url(credentials.api_server_url, account_url_override);
     credentials
 }
 
@@ -364,10 +369,8 @@ fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials
     let config = ProvidersConfig::load();
     let legacy = legacy_account_definition(&config, account);
     let account_url_override = account_api_server_url_override(&config, legacy);
-    let account_base_url = match account_url_override.as_deref() {
-        Some(url) => url.to_string(),
-        None => DEVIN_API_URL.to_string(),
-    };
+    let account_base_url =
+        resolve_api_server_url(DEVIN_API_URL.to_string(), account_url_override.as_deref());
 
     let explicit_path = config
         .get("devin")
@@ -556,11 +559,21 @@ fn map_chat_send_error(error: isahc::Error) -> AgentError {
     }
 }
 
-fn accepted_stream_error(_error: &AgentError, emitted_event: bool) -> AgentError {
+fn accepted_stream_error(error: &AgentError, emitted_event: bool) -> AgentError {
+    let detail = if error.is_server_overloaded() {
+        match error {
+            AgentError::Api { status, .. } => {
+                format!("API error ({status}): provider reported overload")
+            }
+            _ => "provider reported overload".to_string(),
+        }
+    } else {
+        error.to_string()
+    };
     let mut metadata = RequestDeliveryMetadata::new(RequestDeliveryPhase::Accepted);
     metadata.emitted_event = emitted_event;
     AgentError::RequestSent {
-        message: "Devin request failed after acceptance".to_string(),
+        message: format!("Devin request failed after acceptance: {detail}"),
         metadata: Some(metadata),
     }
 }
@@ -1474,13 +1487,13 @@ mod tests {
         assert!(matches!(
             error,
             AgentError::RequestSent {
+                ref message,
                 metadata: Some(RequestDeliveryMetadata {
                     phase: RequestDeliveryPhase::Accepted,
                     emitted_event: false,
                     ..
                 }),
-                ..
-            }
+            } if message.contains("connection reset")
         ));
     }
 
@@ -1489,7 +1502,12 @@ mod tests {
         let error = accepted_stream_error(&AgentError::api(503, "server_is_overloaded"), false);
 
         assert!(!error.is_retryable());
-        assert!(matches!(error, AgentError::RequestSent { .. }));
+        assert!(matches!(
+            error,
+            AgentError::RequestSent { ref message, .. }
+                if message.contains("provider reported overload")
+                    && !message.contains("server_is_overloaded")
+        ));
     }
 
     #[test]
@@ -1872,6 +1890,39 @@ mod tests {
         assert_eq!(
             account_api_server_url_override(&config, None).as_deref(),
             Some("https://private.example")
+        );
+    }
+
+    #[test]
+    fn home_expansion_handles_home_and_one_prefix() {
+        let home = optional_env("HOME")
+            .expect("read HOME")
+            .expect("HOME is configured for tests");
+        assert_eq!(
+            expand_home(Path::new("~")).expect("expand home"),
+            PathBuf::from(&home)
+        );
+        assert_eq!(
+            expand_home(Path::new("~/~/credentials.toml")).expect("expand relative path"),
+            PathBuf::from(home).join("~/credentials.toml")
+        );
+    }
+
+    #[test]
+    fn account_url_override_is_validated() {
+        let credentials = DevinCredentials {
+            session_token: "token".to_string(),
+            api_server_url: "https://configured.example".to_string(),
+        };
+        assert_eq!(
+            apply_account_url_override(credentials.clone(), Some("https://account.example/path/"))
+                .api_server_url,
+            "https://account.example/path"
+        );
+        assert_eq!(
+            apply_account_url_override(credentials, Some("https://account.example/?ignored=true"))
+                .api_server_url,
+            "https://configured.example"
         );
     }
 
