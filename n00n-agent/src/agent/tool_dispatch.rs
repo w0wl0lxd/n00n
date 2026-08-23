@@ -12,19 +12,12 @@ use crate::mcp::{McpSession, TOOL_SEARCH_TOOL_NAME, UNKNOWN_MCP};
 use crate::permissions::PermissionCheckContext;
 use crate::skill_policy::SKILL_POLICY_DENIED_PREFIX;
 use crate::task_set::TaskSet;
-use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
+use crate::tools::registry::{ToolInvocation, ToolRegistry};
 use crate::tools::{LocalToolFn, ToolAdmissionClass, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::{ToolKey, canonical_tool_name};
 use n00n_redact::redact_json_value_for_log;
 
-const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
-const CANCELLED_SUBAGENT_OUTPUTS: &[&str] = &[
-    "cancelled",
-    "sub-agent error: cancelled",
-    "task failed: cancelled",
-    "task failed: plugin interrupted: task cancelled",
-];
 #[derive(Clone, Copy)]
 pub enum Emit {
     Notify,
@@ -282,31 +275,6 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
 fn is_skill_tool_call(name: &str) -> bool {
     let bare = name.strip_prefix("functions.").map_or(name, |value| value);
     canonical_tool_name(bare) == crate::skill_policy::SKILL_TOOL_NAME
-}
-
-fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
-    if !event.is_error {
-        return false;
-    }
-    // A local override (e.g. a test mock) should not be treated as a built-in
-    // subagent just because it shares a name with one.
-    if ctx.local_tools.contains_key(event.tool.as_ref()) {
-        return false;
-    }
-    let Some(entry) = ctx.registry.get(event.tool.as_ref()) else {
-        return false;
-    };
-    let is_subagent = matches!(
-        entry.source,
-        ToolSource::Lua { plugin } if SUBAGENT_PLUGINS.contains(&plugin.as_ref())
-    );
-    is_subagent
-        && (ctx.cancel.is_cancelled()
-            || !is_cancelled_subagent_output(event.output.as_text().as_str()))
-}
-
-fn is_cancelled_subagent_output(output: &str) -> bool {
-    CANCELLED_SUBAGENT_OUTPUTS.contains(&output.trim())
 }
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
@@ -1149,13 +1117,6 @@ pub(super) async fn process_tool_calls(
         message: Box::new(tool_msg.clone()),
     })?;
     history.push(tool_msg);
-
-    if let Some(failed) = all_results.iter().find(|r| is_subagent_failure(r, ctx)) {
-        return Err(AgentError::Tool {
-            tool: failed.tool.to_string(),
-            message: failed.output.as_text(),
-        });
-    }
 
     Ok(all_results)
 }
@@ -2320,53 +2281,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn child_cancelled_subagent_only_fails_when_parent_is_cancelled() {
-        const CANCELLED: &str = "cancelled";
-        let registry = ToolRegistry::new();
-        let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("task", CANCELLED));
-        registry
-            .register(
-                &tool,
-                &ToolSource::Lua {
-                    plugin: "task".into(),
-                },
-            )
-            .unwrap();
-        let (parent_cancel, parent_token) = crate::CancelToken::new();
-        let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
-        ctx.cancel = parent_token;
-        ctx.registry = Arc::new(registry);
-        let event = ToolDoneEvent {
-            id: "tu1".into(),
-            tool: "task".into(),
-            output: ToolOutput::Plain(CANCELLED.into()),
-            is_error: true,
-            annotation: None,
-            written_path: None,
-        };
-
-        assert!(!is_subagent_failure(&event, &ctx));
-        parent_cancel.cancel();
-        assert!(is_subagent_failure(&event, &ctx));
-    }
-
-    #[test]
-    fn failed_subagent_tool_aborts_process_tool_calls() {
+    #[test_case("task", "sub-agent error: API 500" ; "task")]
+    #[test_case("workflow", "sub-agent error: workflow 500" ; "workflow")]
+    fn failed_subagent_tool_returns_error_context(
+        tool_name: &'static str,
+        error_message: &'static str,
+    ) {
         smol::block_on(async {
             use n00n_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
 
-            const ERROR_MSG: &str = "sub-agent error: API 500";
             let (tx, _rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
             let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             let registry = ToolRegistry::new();
-            let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("task", ERROR_MSG));
+            let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new(tool_name, error_message));
             registry
                 .register(
                     &tool,
                     &ToolSource::Lua {
-                        plugin: "task".into(),
+                        plugin: tool_name.into(),
                     },
                 )
                 .unwrap();
@@ -2377,7 +2310,7 @@ mod tests {
                     role: Role::Assistant,
                     content: vec![ContentBlock::ToolUse {
                         id: "tu1".into(),
-                        name: "task".into(),
+                        name: tool_name.into(),
                         input: serde_json::json!({}),
                     }],
                     ..Default::default()
@@ -2386,7 +2319,7 @@ mod tests {
                 stop_reason: None,
             };
 
-            let err = process_tool_calls(
+            let results = process_tool_calls(
                 response,
                 &mut RecentCalls::new(),
                 None,
@@ -2396,62 +2329,16 @@ mod tests {
                 None,
             )
             .await
-            .expect_err("failed subagent must abort the turn");
+            .expect("subagent failure must be returned to the model");
 
-            assert!(matches!(err, AgentError::Tool { ref tool, .. } if tool == "task"));
-            assert!(err.to_string().contains(ERROR_MSG));
-        });
-    }
-
-    #[test]
-    fn failed_workflow_tool_aborts_process_tool_calls() {
-        smol::block_on(async {
-            use n00n_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
-
-            const ERROR_MSG: &str = "sub-agent error: workflow 500";
-            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
-            let event_tx = crate::EventSender::new(tx, 0);
-            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
-            let registry = ToolRegistry::new();
-            let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("workflow", ERROR_MSG));
-            registry
-                .register(
-                    &tool,
-                    &ToolSource::Lua {
-                        plugin: "workflow".into(),
-                    },
-                )
-                .unwrap();
-            ctx.registry = Arc::new(registry);
-            let mut history = crate::History::new(Vec::new());
-            let response = StreamResponse {
-                message: Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::ToolUse {
-                        id: "tu1".into(),
-                        name: "workflow".into(),
-                        input: serde_json::json!({}),
-                    }],
-                    ..Default::default()
-                },
-                usage: TokenUsage::default(),
-                stop_reason: None,
-            };
-
-            let err = process_tool_calls(
-                response,
-                &mut RecentCalls::new(),
-                None,
-                &mut history,
-                &event_tx,
-                &ctx,
-                None,
-            )
-            .await
-            .expect_err("failed workflow subagent must abort the turn");
-
-            assert!(matches!(err, AgentError::Tool { ref tool, .. } if tool == "workflow"));
-            assert!(err.to_string().contains(ERROR_MSG));
+            assert_eq!(results.len(), 1);
+            assert!(results[0].is_error);
+            assert_eq!(results[0].output.as_text(), error_message);
+            let tool_result = history.as_slice().last().expect("tool result history");
+            assert!(tool_result.content.iter().any(|block| matches!(
+                block,
+                ContentBlock::ToolResult { content, is_error: true, .. } if content == error_message
+            )));
         });
     }
 

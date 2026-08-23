@@ -63,11 +63,17 @@ pub(crate) enum LineageError {
     },
     #[error("session lineage contains a cycle at {0}")]
     Cycle(n00nId),
-    #[error("session lineage depth limit exceeded: {limit}")]
+    #[error(
+        "session lineage depth limit reached ({limit}); retry without a background session or increase agent.max_depth"
+    )]
     DepthExceeded { limit: usize },
-    #[error("session lineage total descendant limit exceeded: {limit}")]
+    #[error(
+        "session lineage retained descendant limit reached ({limit}); retry without background, reuse or delete a completed descendant in /sessions, or increase agent.max_total_descendants"
+    )]
     TotalDescendantsExceeded { limit: usize },
-    #[error("session lineage active descendant limit exceeded: {limit}")]
+    #[error(
+        "session lineage active descendant limit reached ({limit}); retry without background, wait for or stop an active descendant, or increase agent.max_active_descendants"
+    )]
     ActiveDescendantsExceeded { limit: usize },
     #[error("prompt target is outside the caller lineage")]
     UnauthorizedTarget,
@@ -761,6 +767,22 @@ mod tests {
             max_total_descendants,
             max_active_descendants,
         }
+    }
+
+    #[test]
+    fn lineage_limit_errors_explain_model_recovery() {
+        let total = LineageError::TotalDescendantsExceeded { limit: 16 }.to_string();
+        assert!(total.contains("retry without background"));
+        assert!(total.contains("/sessions"));
+        assert!(total.contains("agent.max_total_descendants"));
+
+        let active = LineageError::ActiveDescendantsExceeded { limit: 8 }.to_string();
+        assert!(active.contains("wait for or stop an active descendant"));
+        assert!(active.contains("agent.max_active_descendants"));
+
+        let depth = LineageError::DepthExceeded { limit: 4 }.to_string();
+        assert!(depth.contains("retry without a background session"));
+        assert!(depth.contains("agent.max_depth"));
     }
 
     #[test]
