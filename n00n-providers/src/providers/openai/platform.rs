@@ -332,16 +332,41 @@ fn stable_json_hash<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, s
 
 fn system_hash(system: &System) -> String {
     let mut digest = Sha256::new();
-    for block in system.blocks() {
-        digest.update(block.text.len().to_le_bytes());
+    for block in system
+        .blocks()
+        .iter()
+        .filter(|block| block.cache != CacheControl::Dynamic)
+    {
         digest.update(block.text.as_bytes());
-        digest.update([match block.cache {
-            CacheControl::None => 0,
-            CacheControl::Ephemeral => 1,
-            CacheControl::Dynamic => 2,
-        }]);
     }
     format!("{:x}", digest.finalize())
+}
+
+fn cacheable_system_prefix(system: &System) -> String {
+    system
+        .cacheable_prefix_blocks()
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect()
+}
+
+fn system_with_prefix(prefix: Option<&str>, system: &System) -> System {
+    let Some(prefix) = prefix else {
+        return system.clone();
+    };
+    let mut prefixed = System::new();
+    prefixed.push_static(format!("{prefix}\n\n"));
+    let dynamic_boundary = system.dynamic_boundary();
+    for (index, block) in system.blocks().iter().enumerate() {
+        if dynamic_boundary == Some(index) {
+            prefixed.mark_dynamic_boundary();
+        }
+        prefixed.push(block.clone());
+    }
+    if dynamic_boundary == Some(system.blocks().len()) {
+        prefixed.mark_dynamic_boundary();
+    }
+    prefixed
 }
 
 fn short_hash(hash: &str) -> &str {
@@ -361,12 +386,12 @@ struct CachePrefixFingerprint {
 
 impl CachePrefixFingerprint {
     fn new(model_id: &str, system: &System, tools_hash: &str) -> Self {
-        let system_text = system.to_string();
+        let system_prefix = cacheable_system_prefix(system);
         let mut digest = Sha256::new();
         digest.update(model_id.len().to_le_bytes());
         digest.update(model_id.as_bytes());
-        digest.update(system_text.len().to_le_bytes());
-        digest.update(system_text.as_bytes());
+        digest.update(system_prefix.len().to_le_bytes());
+        digest.update(system_prefix.as_bytes());
         digest.update(tools_hash.as_bytes());
         Self {
             model_id: model_id.to_owned(),
@@ -2269,13 +2294,9 @@ impl Provider for OpenAi {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let system_text = system.to_string();
-            let mut buf = String::new();
-            let prefixed_system =
-                super::super::with_prefix(self.system_prefix.as_deref(), &system_text, &mut buf);
+            let prefixed_system = system_with_prefix(self.system_prefix.as_deref(), system);
 
             if self.codex {
-                let codex_system = System::from(prefixed_system);
                 let operation_slot = self.response_operation_slot(session_id);
                 let _operation_guard = match operation_slot.as_ref() {
                     Some(operation) => Some(operation.lock().await),
@@ -2287,7 +2308,7 @@ impl Provider for OpenAi {
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        &codex_system,
+                        &prefixed_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -2317,7 +2338,7 @@ impl Provider for OpenAi {
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        &codex_system,
+                        &prefixed_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -2330,7 +2351,6 @@ impl Provider for OpenAi {
             }
 
             let tools_hash = request_tools_hash(tools, &opts)?;
-            let prefixed_system_obj = System::from(prefixed_system);
 
             // Try Responses API for supported models
             if model.supports_responses() {
@@ -2338,7 +2358,7 @@ impl Provider for OpenAi {
                     .run_responses_attempt(
                         model,
                         messages,
-                        &prefixed_system_obj,
+                        &prefixed_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -2360,8 +2380,7 @@ impl Provider for OpenAi {
             }
 
             // Fallback to Chat Completions
-            let fingerprint =
-                CachePrefixFingerprint::new(&model.id, &prefixed_system_obj, &tools_hash);
+            let fingerprint = CachePrefixFingerprint::new(&model.id, &prefixed_system, &tools_hash);
             let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
             let mut body = self.compat.build_body_with_session(
                 model,
@@ -3231,6 +3250,109 @@ mod tests {
     }
 
     #[test]
+    fn incremental_dynamic_system_change_preserves_state() {
+        let mut old_system = System::new();
+        old_system.push_static("stable system");
+        old_system.push_dynamic("old todo state");
+        let mut new_system = System::new();
+        new_system.push_static("stable system");
+        new_system.push_dynamic("new todo state");
+        let old_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &old_system, TOOLS_HASH);
+        let new_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &new_system, TOOLS_HASH);
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            &old_fingerprint,
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (previous, incremental) =
+            incremental_for_state(&mut state, &new_fingerprint, AUTH_SCOPE_HASH, &second).unwrap();
+
+        assert_eq!(previous.as_deref(), Some("resp_1"));
+        assert_eq!(incremental.len(), 1);
+    }
+
+    #[test]
+    fn incremental_dynamic_system_appearance_preserves_state() {
+        let mut old_system = System::new();
+        old_system.push_static("stable system");
+        old_system.mark_dynamic_boundary();
+        old_system.push_static("unchanged policy");
+        let mut new_system = System::new();
+        new_system.push_static("stable system");
+        new_system.push_dynamic("new todo state");
+        new_system.push_static("unchanged policy");
+        let old_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &old_system, TOOLS_HASH);
+        let new_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &new_system, TOOLS_HASH);
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            &old_fingerprint,
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (previous, incremental) =
+            incremental_for_state(&mut state, &new_fingerprint, AUTH_SCOPE_HASH, &second).unwrap();
+
+        assert_eq!(previous.as_deref(), Some("resp_1"));
+        assert_eq!(incremental.len(), 1);
+    }
+
+    #[test]
+    fn incremental_static_system_change_after_dynamic_block_resets_state() {
+        let mut old_system = System::new();
+        old_system.push_static("stable system");
+        old_system.push_dynamic("todo state");
+        old_system.push_static("old policy");
+        let mut new_system = System::new();
+        new_system.push_static("stable system");
+        new_system.push_dynamic("todo state");
+        new_system.push_static("new policy");
+        let old_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &old_system, TOOLS_HASH);
+        let new_fingerprint = CachePrefixFingerprint::new("gpt-5.6", &new_system, TOOLS_HASH);
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(
+            &mut state,
+            Some("resp_1".into()),
+            &old_fingerprint,
+            AUTH_SCOPE_HASH,
+            &first,
+        )
+        .unwrap();
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (previous, incremental) =
+            incremental_for_state(&mut state, &new_fingerprint, AUTH_SCOPE_HASH, &second).unwrap();
+
+        assert!(previous.is_none());
+        assert_eq!(incremental.len(), second.len());
+    }
+
+    #[test]
     fn incremental_model_change_resets_state() {
         let mut state = OpenAiSessionState::default();
         let first = vec![Message::user("hello".into())];
@@ -3258,7 +3380,7 @@ mod tests {
     }
 
     #[test]
-    fn system_hash_preserves_block_boundaries() {
+    fn system_hash_matches_equivalent_static_wire_text() {
         let combined = System::from("ab");
         let mut split = System::new();
         split.push_static("a");
@@ -3266,7 +3388,7 @@ mod tests {
         split.seal();
 
         assert_eq!(combined.to_string(), split.to_string());
-        assert_ne!(system_hash(&combined), system_hash(&split));
+        assert_eq!(system_hash(&combined), system_hash(&split));
     }
 
     #[test]
@@ -3533,12 +3655,16 @@ mod tests {
             let tools = serde_json::json!([]);
             let (event_tx, _event_rx) = flume::unbounded();
             let first_messages = vec![Message::user("hello".into())];
+            let mut first_system = System::new();
+            first_system.push_static("stable instructions");
+            first_system.push_dynamic("old todo state");
+            first_system.push_static("unchanged policy");
 
             provider
                 .stream_message(
                     &model,
                     &first_messages,
-                    &System::from(""),
+                    &first_system,
                     &tools,
                     &event_tx,
                     RequestOptions::default(),
@@ -3551,11 +3677,15 @@ mod tests {
                 assistant("hi"),
                 Message::user("again".into()),
             ];
+            let mut second_system = System::new();
+            second_system.push_static("stable instructions");
+            second_system.push_dynamic("new todo state");
+            second_system.push_static("unchanged policy");
             provider
                 .stream_message(
                     &model,
                     &second_messages,
-                    &System::from(""),
+                    &second_system,
                     &tools,
                     &event_tx,
                     RequestOptions {
@@ -3576,6 +3706,18 @@ mod tests {
             assert_eq!(second_body["previous_response_id"], "resp_first");
             assert_eq!(second_body["store"], false);
             assert_eq!(second_body["input"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                first_body["prompt_cache_key"],
+                second_body["prompt_cache_key"]
+            );
+            assert_eq!(
+                first_body["instructions"],
+                "stable instructionsold todo stateunchanged policy"
+            );
+            assert_eq!(
+                second_body["instructions"],
+                "stable instructionsnew todo stateunchanged policy"
+            );
 
             let lock = provider
                 .lock_response_chain(Some(&session_id))
@@ -4195,6 +4337,33 @@ mod tests {
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &system, "changed-tools")
         );
+    }
+
+    #[test]
+    fn prompt_cache_key_ignores_dynamic_system_suffix() {
+        let mut empty = System::new();
+        empty.push_static("stable instructions");
+        empty.mark_dynamic_boundary();
+        empty.push_static("unchanged policy");
+        let mut first = System::new();
+        first.push_static("stable instructions");
+        first.push_dynamic("todo state one");
+        first.push_static("unchanged policy");
+        let mut second = System::new();
+        second.push_static("stable instructions");
+        second.push_dynamic("todo state two");
+        second.push_static("unchanged policy");
+
+        let empty = CachePrefixFingerprint::new("gpt-5.6", &empty, TOOLS_HASH);
+        let first = CachePrefixFingerprint::new("gpt-5.6", &first, TOOLS_HASH);
+        let second = CachePrefixFingerprint::new("gpt-5.6", &second, TOOLS_HASH);
+
+        assert_eq!(empty.system_hash, first.system_hash);
+        assert_eq!(first.system_hash, second.system_hash);
+        assert_eq!(empty.prefix_hash(), first.prefix_hash());
+        assert_eq!(first.prefix_hash(), second.prefix_hash());
+        assert_eq!(empty.prompt_cache_key(None), first.prompt_cache_key(None));
+        assert_eq!(first.prompt_cache_key(None), second.prompt_cache_key(None));
     }
 
     #[test]
