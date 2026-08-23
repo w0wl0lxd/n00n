@@ -269,14 +269,19 @@ impl Model {
     /// When no static entry matches (a freshly released model the table has not
     /// caught up to yet), fall back to the provider defaults so it still resolves.
     fn from_base(manifest: &ProviderManifest, slug: &str, model_id: &str) -> Self {
-        let static_entry = lookup_entry(manifest.models, model_id).ok();
+        let lookup_model_id = if slug == "devin" {
+            crate::providers::devin::model_id_without_account(model_id)
+        } else {
+            model_id
+        };
+        let static_entry = lookup_entry(manifest.models, lookup_model_id).ok();
         let spec = format!("{slug}/{model_id}");
         // Discovery keys `known_models` by the builtin slug, so a dynamic or
         // custom slug reads positional tiers and metadata through its base.
         let guard = model_registry()
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let discovered = guard.discovered(manifest.slug, model_id);
+        let discovered = guard.discovered(manifest.slug, lookup_model_id);
         let tier = guard.tier_for(&spec, manifest.slug, static_entry.map(|e| e.tier));
         let family = static_entry.map_or(manifest.family, |entry| entry.family);
         let pricing = discovered
@@ -289,7 +294,7 @@ impl Model {
             .or(manifest.fallback_max_output);
         let context_window = discovered
             .and_then(|info| info.context_window)
-            .or_else(|| anthropic::shared::long_context_window(model_id))
+            .or_else(|| anthropic::shared::long_context_window(lookup_model_id))
             .or_else(|| static_entry.map(|entry| entry.context_window))
             .unwrap_or_else(|| manifest.fallback_context_window);
         drop(guard);
@@ -311,6 +316,14 @@ impl Model {
         }
     }
 
+    fn metadata_model_id(&self) -> &str {
+        if self.provider.as_ref() == "devin" {
+            crate::providers::devin::model_id_without_account(&self.id)
+        } else {
+            self.id.as_str()
+        }
+    }
+
     #[must_use]
     pub fn supports_thinking(&self) -> bool {
         if let Some(thinking) = self.supports_thinking_override {
@@ -324,7 +337,7 @@ impl Model {
         model_registry()
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .discovered(manifest.slug, &self.id)
+            .discovered(manifest.slug, self.metadata_model_id())
             .and_then(|d| d.supports_thinking)
             .unwrap_or_else(|| manifest.supports_thinking)
     }
@@ -340,12 +353,12 @@ impl Model {
                 model_registry()
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .discovered(m.slug, &self.id)
+                    .discovered(m.slug, self.metadata_model_id())
                     .and_then(|d| d.supports_vision)
             })
             .or_else(|| {
                 manifest
-                    .and_then(|m| lookup_entry(m.models, &self.id).ok())
+                    .and_then(|m| lookup_entry(m.models, self.metadata_model_id()).ok())
                     .map(|e| e.vision)
             })
             .unwrap_or_else(|| self.family.supports_vision())
@@ -382,7 +395,7 @@ impl Model {
                 model_registry()
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .discovered(m.slug, &self.id)
+                    .discovered(m.slug, self.metadata_model_id())
                     .and_then(|d| d.supports_files)
             })
             .or_else(|| {
@@ -390,15 +403,9 @@ impl Model {
                 if self.provider.as_ref() == "openai" && self.id.contains(GPT_CODEX_MARKER) {
                     return Some(false);
                 }
-                manifest.and_then(|m| {
-                    let lookup_id = match self.id.strip_prefix(&format!("{}/", self.provider)) {
-                        Some(stripped) => stripped,
-                        None => self.id.as_str(),
-                    };
-                    match lookup_entry(m.models, lookup_id) {
-                        Ok(entry) => Some(entry.files),
-                        Err(_) => None,
-                    }
+                manifest.and_then(|m| match lookup_entry(m.models, self.metadata_model_id()) {
+                    Ok(entry) => Some(entry.files),
+                    Err(_) => None,
                 })
             })
             .unwrap_or_else(|| {
@@ -564,6 +571,10 @@ impl Model {
             }
             return Err(ModelError::InvalidFormat);
         };
+
+        if let Some(account) = crate::providers::devin::legacy_account_for_provider_slug(slug) {
+            return Self::from_spec(&format!("devin/{account}::{model_id}"));
+        }
 
         // Precedence: builtin, then dynamic script, then providers.toml custom.
         // Discovery drops any script slug a builtin or custom entry already owns,
@@ -1038,8 +1049,27 @@ mod tests {
         let spec = "opencode/nvidia/openai/gpt-oss-120b";
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.provider, Arc::<str>::from("opencode"));
+
         assert_eq!(model.id, "nvidia/openai/gpt-oss-120b");
         assert_eq!(model.spec(), spec);
+    }
+
+    #[test]
+    fn devin_arbitrary_model_ids_preserve_slash_segments() {
+        let model = Model::from_spec("devin/org/custom-model").unwrap();
+
+        assert_eq!(model.provider.as_ref(), "devin");
+        assert_eq!(model.id, "org/custom-model");
+        assert_eq!(model.spec(), "devin/org/custom-model");
+    }
+
+    #[test]
+    fn devin_named_account_preserves_slash_segments_in_model_id() {
+        let model = Model::from_spec("devin/work::org/custom-model").unwrap();
+
+        assert_eq!(model.provider.as_ref(), "devin");
+        assert_eq!(model.id, "work::org/custom-model");
+        assert_eq!(model.spec(), "devin/work::org/custom-model");
     }
 
     #[test]

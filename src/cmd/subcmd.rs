@@ -9,14 +9,14 @@ use color_eyre::eyre::{Context, bail};
 use n00n_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
 use n00n_agent::tools::ToolRegistry;
 use n00n_config::providers::{
-    BuiltInProvider, ProviderDef, ProvidersConfig, all_builtins, builtin_provider,
-    resolve_api_key_env, resolve_base_url, resolve_default_model, resolve_display_name,
-    resolve_login_url, slugify,
+    BuiltInProvider, Protocol, ProviderAccountDef, ProviderDef, ProvidersConfig, all_builtins,
+    builtin_provider, resolve_api_key_env, resolve_base_url, resolve_default_model,
+    resolve_display_name, resolve_login_url, slugify,
 };
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::provider::fetch_all_models;
-use n00n_providers::{ProviderData, catalog_providers};
+use n00n_providers::{ProviderData, catalog_providers, devin_legacy_account_name};
 use n00n_providers::{copilot_auth, dynamic, openai_auth};
 use n00n_storage::StateDir;
 use n00n_storage::auth::ProviderCredentials;
@@ -29,6 +29,31 @@ fn env_key_populated(var: &str) -> bool {
     env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
 }
 
+fn legacy_devin_account<'a>(slug: &'a str, definition: Option<&ProviderDef>) -> Option<&'a str> {
+    if !definition.is_some_and(|definition| definition.protocol == Some(Protocol::Devin)) {
+        return None;
+    }
+    devin_legacy_account_name(slug)
+}
+
+fn resolved_devin_model_id(config: &ProvidersConfig) -> Result<String> {
+    let model = resolve_default_model("devin", config.get("devin"))
+        .ok_or_else(|| color_eyre::eyre::eyre!("no default model for Devin"))?;
+    Ok(match model.strip_prefix("devin/") {
+        Some(model_id) => model_id.to_string(),
+        None => model,
+    })
+}
+
+fn legacy_devin_slug_for_account(config: &ProvidersConfig, account: &str) -> Option<String> {
+    let slug = format!("devin{account}");
+    if legacy_devin_account(&slug, config.get(&slug)).is_some() {
+        Some(slug)
+    } else {
+        None
+    }
+}
+
 fn builtin_env_key(b: &BuiltInProvider) -> Option<&'static str> {
     env_key_populated(b.default_api_key_env).then_some(b.default_api_key_env)
 }
@@ -37,6 +62,12 @@ pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
     match provider {
         Some("openai" | "codex") => openai_auth::login(storage)?,
         Some("copilot") => copilot_auth::login(storage)?,
+        Some(selector) if selector.split_once('@').is_some() => {
+            let (provider, account) = selector.split_once('@').ok_or_else(|| {
+                color_eyre::eyre::eyre!("provider account must use provider@account")
+            })?;
+            login_provider_account(provider, account, storage)?;
+        }
         Some(slug) => {
             let slug = slugify(slug);
             if builtin_provider(&slug).is_some()
@@ -141,13 +172,85 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
     Ok(())
 }
 
+fn validated_provider_account(account: &str) -> Result<String> {
+    let normalized = slugify(account);
+    if account.is_empty() || account != normalized {
+        bail!("provider account must already be a lowercase slug");
+    }
+    Ok(normalized)
+}
+
+fn configure_provider_account(definition: &mut ProviderDef, account: &str, has_api_key: bool) {
+    let account_definition = definition
+        .accounts
+        .entry(account.to_string())
+        .or_insert_with(ProviderAccountDef::default);
+    if has_api_key {
+        account_definition.credential_path = None;
+    }
+}
+
+fn login_provider_account(provider: &str, account: &str, storage: &StateDir) -> Result<()> {
+    let provider = slugify(provider);
+    let account = validated_provider_account(account)?;
+    if provider != "devin" {
+        bail!("provider accounts are currently supported for Devin");
+    }
+
+    let selector = format!("{provider}@{account}");
+    let mut config = ProvidersConfig::load();
+    let api_key = prompt_api_key(None, &format!("Devin account {account}"), true)?;
+    let has_api_key = !api_key.is_empty();
+    if has_api_key {
+        save_provider_credentials(
+            storage,
+            &selector,
+            &ProviderCredentials {
+                api_key,
+                host: None,
+            },
+        )
+        .context("save account credentials")?;
+    } else if !n00n_providers::devin_account_has_credentials(&account) {
+        bail!(
+            "Devin account '{account}' has no usable stored, configured, legacy, or CLI credentials"
+        );
+    }
+
+    let mut definition = config
+        .get(&provider)
+        .cloned()
+        .unwrap_or_else(Default::default);
+    configure_provider_account(&mut definition, &account, has_api_key);
+    config.upsert(provider, definition);
+    config.save().context("save providers.toml")?;
+
+    let model_id = resolved_devin_model_id(&config)?;
+    let model = format!("devin/{account}::{model_id}");
+    persist_model(storage, &model);
+    println!("  \x1b[32m✓\x1b[0m Configured: Devin (account {account})");
+    println!("  Default model: {model}");
+    if has_api_key {
+        println!("  Credentials: ~/.local/state/n00n/auth/{selector}.json");
+    } else {
+        println!(
+            "  Using configured credential_path or the standard ~/.local/share/devin{account}/devin/credentials.toml path"
+        );
+    }
+    Ok(())
+}
+
 fn login_interactive(storage: &StateDir) -> Result<()> {
     let builtins = all_builtins();
     let config = ProvidersConfig::load();
     let custom_slugs: Vec<&String> = config
         .providers
         .keys()
-        .filter(|s| builtin_provider(s).is_none() && *s != "opencode")
+        .filter(|s| {
+            builtin_provider(s).is_none()
+                && *s != "opencode"
+                && legacy_devin_account(s, config.get(s)).is_none()
+        })
         .collect();
 
     println!();
@@ -315,13 +418,12 @@ fn login_custom(storage: &StateDir, slug: Option<&str>) -> Result<()> {
     io::stdin().read_line(&mut key_input)?;
     let api_key = key_input.trim().to_string();
 
+    let mut config = ProvidersConfig::load();
     let default_model = if protocol == "devin" {
-        Some(format!("{slug}/swe-1-7-max"))
+        Some(format!("{slug}/{}", resolved_devin_model_id(&config)?))
     } else {
         None
     };
-
-    let mut config = ProvidersConfig::load();
     let provider_def = ProviderDef {
         display_name: Some(display_name),
         protocol: Some(
@@ -441,8 +543,41 @@ fn prompt_api_key(url: Option<&str>, display_name: &str, optional: bool) -> Resu
 }
 
 pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
+    if let Some((provider, account)) = provider.split_once('@') {
+        let provider = slugify(provider);
+        let account = validated_provider_account(account)?;
+        if provider != "devin" {
+            bail!("provider accounts are currently supported for Devin");
+        }
+        let selector = format!("{provider}@{account}");
+        let deleted =
+            delete_provider_credentials(storage, &selector).context("delete credentials")?;
+        let mut config = ProvidersConfig::load();
+        let legacy_slug = legacy_devin_slug_for_account(&config, &account);
+        let legacy_deleted = match legacy_slug.as_deref() {
+            Some(slug) => {
+                delete_provider_credentials(storage, slug).context("delete legacy credentials")?
+            }
+            None => false,
+        };
+        let removed = config
+            .providers
+            .get_mut(&provider)
+            .is_some_and(|definition| definition.accounts.remove(&account).is_some());
+        let legacy_removed = legacy_slug.is_some_and(|slug| config.remove(&slug));
+        if removed || legacy_removed {
+            config.save().context("save providers.toml")?;
+        }
+        if deleted || legacy_deleted || removed || legacy_removed {
+            println!("Removed credentials for '{selector}'.");
+        } else {
+            println!("No stored credentials for '{selector}'.");
+        }
+        return Ok(());
+    }
+
     let slug = slugify(provider);
-    match provider {
+    match slug.as_str() {
         "openai" | "codex" => openai_auth::logout(storage)?,
         "copilot" => copilot_auth::logout(storage)?,
         _ => {
@@ -484,6 +619,18 @@ pub fn auth_status(storage: &StateDir) {
             continue;
         }
 
+        if b.slug == "devin" {
+            if n00n_providers::devin_primary_has_credentials() {
+                println!("  \x1b[32m✓\x1b[0m {:<14} {}", b.slug, display);
+            } else {
+                println!(
+                    "  \x1b[31m✗\x1b[0m {:<14} {} (run: n00n auth login {})",
+                    b.slug, display, b.slug
+                );
+            }
+            continue;
+        }
+
         if let Some(creds) = load_provider_credentials(storage, b.slug) {
             let plan_info = def
                 .and_then(|d| d.plan.as_deref())
@@ -516,9 +663,24 @@ pub fn auth_status(storage: &StateDir) {
         }
     }
 
+    for account in n00n_providers::devin_account_names(&config) {
+        let status = if n00n_providers::devin_account_has_credentials(&account) {
+            "\x1b[32m✓\x1b[0m"
+        } else {
+            "\x1b[31m✗\x1b[0m"
+        };
+        let display = config
+            .get("devin")
+            .and_then(|definition| definition.accounts.get(&account))
+            .and_then(|definition| definition.display_name.as_deref())
+            .map_or_else(|| format!("Devin (account {account})"), str::to_string);
+        println!("  {status} {:<14} {display}", format!("devin@{account}"));
+    }
+
     for (slug, def) in &config.providers {
         // 'opencode' could show up here, when the user configured free models on that provider.
         if builtin_provider(slug).is_some()
+            || legacy_devin_account(slug, Some(def)).is_some()
             || (slug == "opencode" && def.enable_free_models.is_some())
         {
             continue;
@@ -746,4 +908,107 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
 
     print!("{output}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devin_default_model_resolution_preserves_nested_ids() {
+        let mut config = ProvidersConfig::default();
+        assert_eq!(
+            resolved_devin_model_id(&config).expect("builtin default model"),
+            "swe-1-7"
+        );
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                default_model: Some("devin/org/custom-model".to_string()),
+                ..ProviderDef::default()
+            },
+        );
+        assert_eq!(
+            resolved_devin_model_id(&config).expect("configured default model"),
+            "org/custom-model"
+        );
+    }
+
+    #[test]
+    fn provider_account_selectors_must_already_be_lowercase_slugs() {
+        assert_eq!(
+            validated_provider_account("team-prod").expect("valid account"),
+            "team-prod"
+        );
+        for invalid in ["", "Work", "work!", "work team"] {
+            assert!(validated_provider_account(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn api_key_login_clears_authoritative_credential_path() {
+        let mut definition = ProviderDef {
+            accounts: std::collections::HashMap::from([(
+                "work".to_string(),
+                ProviderAccountDef {
+                    display_name: Some("Work".to_string()),
+
+                    credential_path: Some("credentials.toml".into()),
+                },
+            )]),
+            ..ProviderDef::default()
+        };
+
+        configure_provider_account(&mut definition, "work", true);
+        let account = definition.accounts.get("work").expect("account exists");
+        assert_eq!(account.display_name.as_deref(), Some("Work"));
+        assert_eq!(account.credential_path, None);
+    }
+
+    #[test]
+    fn credential_file_login_preserves_authoritative_path() {
+        let mut definition = ProviderDef {
+            accounts: std::collections::HashMap::from([(
+                "work".to_string(),
+                ProviderAccountDef {
+                    display_name: None,
+                    credential_path: Some("credentials.toml".into()),
+                },
+            )]),
+            ..ProviderDef::default()
+        };
+
+        configure_provider_account(&mut definition, "work", false);
+        assert_eq!(
+            definition
+                .accounts
+                .get("work")
+                .and_then(|account| account.credential_path.as_deref()),
+            Some(Path::new("credentials.toml"))
+        );
+    }
+
+    #[test]
+    fn legacy_devin_logout_only_targets_devin_protocol_aliases() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin2".to_string(),
+            ProviderDef {
+                protocol: Some(Protocol::Openai),
+                ..ProviderDef::default()
+            },
+        );
+        assert_eq!(legacy_devin_slug_for_account(&config, "2"), None);
+
+        config
+            .providers
+            .get_mut("devin2")
+            .expect("provider exists")
+            .protocol = Some(Protocol::Devin);
+        assert_eq!(
+            legacy_devin_slug_for_account(&config, "2"),
+            Some("devin2".to_string())
+        );
+        assert_eq!(legacy_devin_slug_for_account(&config, "work"), None);
+    }
 }

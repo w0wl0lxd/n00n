@@ -1,0 +1,1 @@
+Added named Devin accounts under the canonical `devin` provider, including account-aware login, logout, status, credential paths, model selection, and compatibility for legacy numeric aliases such as `devin2`.

@@ -513,10 +513,7 @@ async fn run_text_turn_mode_tokio(
             Ok(body) => body,
             Err(error) => format!("failed to read error body: {error}"),
         };
-        return Err(AgentError::Api {
-            status: http_status,
-            message: err_body,
-        });
+        return Err(AgentError::api(http_status, err_body));
     }
 
     let mut frame_buf = FrameBuffer::default();
