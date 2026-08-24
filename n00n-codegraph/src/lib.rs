@@ -377,7 +377,7 @@ impl Client {
             not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
         ))]
         {
-            use rustix::process::{kill_process_group, Pid, Signal};
+            use rustix::process::{Pid, Signal, kill_process_group};
 
             let raw_pid = i32::try_from(child.id()).map_err(|source| {
                 Error::new(
