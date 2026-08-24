@@ -349,6 +349,7 @@ pub struct AgentRunOptions<'a> {
     pub yolo: bool,
     pub no_jit: bool,
     pub fusion: bool,
+    pub project_trusted: bool,
 }
 
 struct PreparedEnv {
@@ -373,6 +374,7 @@ fn prepare_agent_env(
     yolo: bool,
     no_jit: bool,
     fusion: bool,
+    project_trusted: bool,
 ) -> Result<PreparedEnv> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
@@ -384,14 +386,15 @@ fn prepare_agent_env(
         .context("initialize lua plugin host")?;
 
     let raw_config = plugin_host
-        .load_init_files(&cwd)
+        .load_init_files(&cwd, project_trusted)
         .context("load init.lua files")?;
 
     let mut config = raw_config
         .unwrap_or_else(Default::default)
         .into_config(false)
         .context("invalid config")?;
-    config.permissions = load_permissions(&cwd);
+    config.permissions = load_permissions(&cwd, project_trusted);
+    config.project_trusted = project_trusted;
 
     setup::init_logging(&config.storage);
 
@@ -426,6 +429,7 @@ fn prepare_agent_env(
     let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
         &cwd,
         config.agent.mcp_tool_desc_max_chars,
+        config.project_trusted,
     ));
 
     let event_handle = plugin_host
@@ -465,7 +469,13 @@ async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Res
 }
 
 pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
-    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit, opts.fusion)?;
+    let env = prepare_agent_env(
+        opts.model,
+        opts.yolo,
+        opts.no_jit,
+        opts.fusion,
+        opts.project_trusted,
+    )?;
     let message = build_message(
         opts.mode,
         opts.prompt,
@@ -717,7 +727,13 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         _ => return Err(eyre!("fork failed")),
     }
 
-    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit, opts.fusion)?;
+    let env = prepare_agent_env(
+        opts.model,
+        opts.yolo,
+        opts.no_jit,
+        opts.fusion,
+        opts.project_trusted,
+    )?;
     let message = build_message(
         opts.mode,
         opts.prompt,

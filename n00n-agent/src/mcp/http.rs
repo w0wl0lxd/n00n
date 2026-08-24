@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -18,6 +17,7 @@ use serde_json::Value;
 use super::error::McpError;
 use super::oauth;
 use super::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use super::response::{ResponseReadError, read_bounded_text};
 use super::transport::{BoxFuture, McpTransport};
 use tracing::{info, warn};
 
@@ -29,6 +29,7 @@ const PROTOCOL_VERSION_KEY: &str = "protocolVersion";
 const CT_JSON: &str = "application/json";
 const CT_SSE: &str = "text/event-stream";
 const ACCEPT_VALUE: &str = "application/json, text/event-stream";
+const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct HttpTransport {
     name: Arc<str>,
@@ -135,7 +136,9 @@ impl HttpTransport {
         }
 
         if let Some(auth) = auth {
-            builder = builder.header(AUTHORIZATION, auth);
+            builder = builder
+                .header(AUTHORIZATION, auth)
+                .redirect_policy(RedirectPolicy::None);
         }
 
         for (name, value) in &self.headers {
@@ -153,26 +156,29 @@ impl HttpTransport {
         http_req: Request<Vec<u8>>,
     ) -> Result<(StatusCode, HeaderMap, String), McpError> {
         let server = self.server();
-        smol::unblock({
-            let client = self.client.clone();
-            move || {
-                let mut response = client.send(http_req).map_err(|e| McpError::WriteFailed {
+        let mut response =
+            self.client
+                .send_async(http_req)
+                .await
+                .map_err(|error| McpError::WriteFailed {
                     server: server.clone(),
-                    reason: e.to_string(),
+                    reason: error.to_string(),
                 })?;
-                let status = response.status();
-                let headers = response.headers().clone();
-                let mut body = String::new();
-                response.body_mut().read_to_string(&mut body).map_err(|e| {
-                    McpError::InvalidResponse {
-                        server,
-                        reason: e.to_string(),
-                    }
-                })?;
-                Ok((status, headers, body))
-            }
-        })
-        .await
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = read_bounded_text(response.body_mut(), MAX_HTTP_RESPONSE_BYTES)
+            .await
+            .map_err(|error| match error {
+                ResponseReadError::TooLarge { limit_bytes } => McpError::ResponseTooLarge {
+                    server: server.clone(),
+                    limit_bytes,
+                },
+                other => McpError::InvalidResponse {
+                    server,
+                    reason: other.to_string(),
+                },
+            })?;
+        Ok((status, headers, body))
     }
 
     fn parse_rpc_response(&self, body_str: &str, is_sse: bool, id: u64) -> Result<Value, McpError> {
@@ -275,6 +281,9 @@ impl McpTransport for HttpTransport {
 
                 if status == StatusCode::UNAUTHORIZED
                     && !refreshed
+                    && headers
+                        .get("www-authenticate")
+                        .is_some_and(|value| value.to_str().is_ok_and(bearer_invalid_token))
                     && let Some(new_auth) = self.refreshed_auth(auth.as_deref()).await
                 {
                     auth = Some(new_auth);
@@ -372,8 +381,7 @@ impl McpTransport for HttpTransport {
                 return;
             };
 
-            let client = self.client.clone();
-            let _ = smol::unblock(move || client.send(req)).await;
+            let _ = self.client.send_async(req).await;
         })
     }
 
@@ -384,6 +392,22 @@ impl McpTransport for HttpTransport {
     fn transport_kind(&self) -> &'static str {
         "http"
     }
+}
+fn bearer_invalid_token(header: &str) -> bool {
+    let Some(parameters) = header
+        .trim()
+        .strip_prefix("Bearer ")
+        .or_else(|| header.trim().strip_prefix("bearer "))
+    else {
+        return false;
+    };
+    parameters.split(',').any(|parameter| {
+        let Some((name, value)) = parameter.trim().split_once('=') else {
+            return false;
+        };
+        name.trim().eq_ignore_ascii_case("error")
+            && value.trim().trim_matches('"') == "invalid_token"
+    })
 }
 
 /// A null or missing id only counts for errors: that is what JSON-RPC sends
@@ -444,6 +468,15 @@ mod tests {
     use std::io::{BufRead, BufReader, Write as IoWrite};
     use std::net::TcpListener;
     use std::sync::atomic::AtomicUsize;
+
+    #[test_case(r#"Bearer error="invalid_token""#, true ; "invalid_token")]
+    #[test_case(r#"Bearer realm="mcp", error="invalid_token""#, true ; "with_realm")]
+    #[test_case(r#"Bearer error="insufficient_scope""#, false ; "other_bearer_error")]
+    #[test_case(r#"Basic realm="mcp""#, false ; "basic")]
+    #[test_case("invalid_token", false ; "unparsed_text")]
+    fn bearer_refresh_classification(header: &str, expected: bool) {
+        assert_eq!(bearer_invalid_token(header), expected);
+    }
 
     const NOTIFICATION: &str =
         "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n";
@@ -522,8 +555,13 @@ mod tests {
                     protocol,
                 });
 
+                let authenticate = if status == 401 {
+                    "WWW-Authenticate: Bearer error=\"invalid_token\"\r\n"
+                } else {
+                    ""
+                };
                 let response = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{authenticate}Content-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
                     resp_body.len(),
                 );
 

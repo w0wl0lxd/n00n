@@ -1,10 +1,11 @@
-use std::io::Read;
-
 use isahc::HttpClient;
+use isahc::config::{Configurable, RedirectPolicy};
 use isahc::http::Request;
 use n00n_storage::auth::{OAuthTokens, now_millis};
 
 use super::OAuthError;
+use super::discovery::MAX_RESPONSE_BODY;
+use crate::mcp::response::read_bounded_text;
 
 pub struct OAuthCodeExchange<'a> {
     pub client: &'a HttpClient,
@@ -79,35 +80,27 @@ async fn token_request(
 
     let req = Request::post(token_endpoint)
         .header("Content-Type", "application/x-www-form-urlencoded")
+        .redirect_policy(RedirectPolicy::None)
         .body(body.into_bytes())
         .map_err(|e| OAuthError::Other(e.to_string()))?;
 
-    let mut response = smol::unblock({
-        let client = client.clone();
-        move || {
-            client
-                .send(req)
-                .map_err(|e| OAuthError::Network(e.to_string()))
-        }
-    })
-    .await?;
+    let mut response = client
+        .send_async(req)
+        .await
+        .map_err(|error| OAuthError::Network(error.to_string()))?;
+    let status = response.status();
+    let body = read_bounded_text(response.body_mut(), MAX_RESPONSE_BODY)
+        .await
+        .map_err(|error| OAuthError::InvalidResponse(error.to_string()))?;
 
-    if !response.status().is_success() {
-        let mut body_str = String::new();
-        let _ = response.body_mut().read_to_string(&mut body_str);
+    if !status.is_success() {
         return Err(OAuthError::ServerRejected {
-            status: response.status().as_u16(),
-            body: body_str,
+            status: status.as_u16(),
+            body,
         });
     }
 
-    let mut body_str = String::new();
-    response
-        .body_mut()
-        .read_to_string(&mut body_str)
-        .map_err(|e| OAuthError::Network(e.to_string()))?;
-
-    parse_token_response(&body_str)
+    parse_token_response(&body)
 }
 
 fn parse_token_response(body: &str) -> Result<OAuthTokens, OAuthError> {

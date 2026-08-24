@@ -13,7 +13,7 @@ use n00n_storage::StateDir;
 
 use crate::setup;
 
-pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
+pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool, project_trusted: bool) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
 
@@ -24,14 +24,15 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
         .context("initialize lua plugin host")?;
 
     let raw_config = plugin_host
-        .load_init_files(&cwd)
+        .load_init_files(&cwd, project_trusted)
         .context("load init.lua files")?;
 
     let mut config = raw_config
         .unwrap_or_else(Default::default)
         .into_config(false)
         .context("invalid config")?;
-    config.permissions = load_permissions(&cwd);
+    config.permissions = load_permissions(&cwd, project_trusted);
+    config.project_trusted = project_trusted;
 
     setup::init_logging(&config.storage);
 
@@ -60,6 +61,7 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
     let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
         &cwd,
         config.agent.mcp_tool_desc_max_chars,
+        config.project_trusted,
     ));
 
     let event_handle = plugin_host.event_handle();

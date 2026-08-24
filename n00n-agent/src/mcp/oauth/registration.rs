@@ -1,10 +1,11 @@
-use std::io::Read;
-
 use isahc::HttpClient;
+use isahc::config::{Configurable, RedirectPolicy};
 use isahc::http::Request;
 use serde_json::json;
 
 use super::OAuthError;
+use super::discovery::MAX_RESPONSE_BODY;
+use crate::mcp::response::read_bounded_text;
 
 pub struct ClientRegistration {
     pub client_id: String,
@@ -32,36 +33,28 @@ pub async fn register_client(
 
     let req = Request::post(registration_endpoint)
         .header("Content-Type", "application/json")
+        .redirect_policy(RedirectPolicy::None)
         .body(serde_json::to_vec(&body).map_err(|e| OAuthError::Other(e.to_string()))?)
         .map_err(|e| OAuthError::Other(e.to_string()))?;
 
-    let mut response = smol::unblock({
-        let client = client.clone();
-        move || {
-            client
-                .send(req)
-                .map_err(|e| OAuthError::Network(e.to_string()))
-        }
-    })
-    .await?;
+    let mut response = client
+        .send_async(req)
+        .await
+        .map_err(|error| OAuthError::Network(error.to_string()))?;
+    let status = response.status();
+    let body = read_bounded_text(response.body_mut(), MAX_RESPONSE_BODY)
+        .await
+        .map_err(|error| OAuthError::InvalidResponse(error.to_string()))?;
 
-    if !response.status().is_success() {
-        let mut body_str = String::new();
-        let _ = response.body_mut().read_to_string(&mut body_str);
+    if !status.is_success() {
         return Err(OAuthError::ServerRejected {
-            status: response.status().as_u16(),
-            body: body_str,
+            status: status.as_u16(),
+            body,
         });
     }
 
-    let mut body_str = String::new();
-    response
-        .body_mut()
-        .read_to_string(&mut body_str)
-        .map_err(|e| OAuthError::Network(e.to_string()))?;
-
     let resp: serde_json::Value =
-        serde_json::from_str(&body_str).map_err(|e| OAuthError::InvalidResponse(e.to_string()))?;
+        serde_json::from_str(&body).map_err(|e| OAuthError::InvalidResponse(e.to_string()))?;
 
     let client_id = resp["client_id"]
         .as_str()

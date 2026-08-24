@@ -84,14 +84,15 @@ fn discover_commands(disable: bool) -> Vec<CustomCommand> {
 
 fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config> {
     let raw_config = plugin_host
-        .load_init_files(cwd)
+        .load_init_files(cwd, cli.trust_project)
         .context("load init.lua files")?;
 
     let mut config = raw_config
         .unwrap_or_else(Default::default)
         .into_config(cli.plugin_flags.no_rtk)
         .context("invalid config")?;
-    config.permissions = load_permissions(cwd);
+    config.permissions = load_permissions(cwd, cli.trust_project);
+    config.project_trusted = cli.trust_project;
 
     if cli.permission_flags.yolo || config.always_yolo {
         config.permissions.yolo = true;
@@ -369,6 +370,7 @@ fn run_sdk_mode(
         cli,
         model: stack.model,
         config: Arc::new(stack.config.agent),
+        project_trusted: stack.config.project_trusted,
         permissions_config: stack.config.permissions,
         timeouts,
         openai_options,
@@ -395,6 +397,7 @@ fn run_print_mode(
             format: cli.output_format,
             verbose: cli.run_flags.verbose,
             config: stack.config.agent,
+            project_trusted: stack.config.project_trusted,
             permissions_config: stack.config.permissions,
             timeouts,
             openai_options,
@@ -467,6 +470,7 @@ fn run_ui_loop(
                 startup_warnings: std::mem::take(&mut warnings),
                 storage: storage.clone(),
                 config: stack.config.agent.clone(),
+                project_trusted: stack.config.project_trusted,
                 ui_config: stack.config.ui.clone(),
                 input_history_size: stack.config.storage.input_history_size,
                 retention_budget: stack.config.storage.retention_budget(),

@@ -310,7 +310,7 @@ fn merge_config(merged: &mut McpConfig, errors: &mut McpConfigErrors, path: &Pat
 }
 
 #[must_use]
-pub fn load_config(cwd: &Path) -> (McpConfig, McpConfigErrors) {
+pub fn load_config(cwd: &Path, project_trusted: bool) -> (McpConfig, McpConfigErrors) {
     let mut merged = McpConfig::default();
     let mut errors = McpConfigErrors::new(cwd.to_path_buf());
 
@@ -318,8 +318,10 @@ pub fn load_config(cwd: &Path) -> (McpConfig, McpConfigErrors) {
         let global_path = global_dir.join(MCP_CONFIG_FILE);
         merge_config(&mut merged, &mut errors, &global_path);
     }
-    let project_path = cwd.join(".n00n").join(MCP_CONFIG_FILE);
-    merge_config(&mut merged, &mut errors, &project_path);
+    if project_trusted {
+        let project_path = cwd.join(".n00n").join(MCP_CONFIG_FILE);
+        merge_config(&mut merged, &mut errors, &project_path);
+    }
     (merged, errors)
 }
 

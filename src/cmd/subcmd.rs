@@ -745,7 +745,7 @@ pub fn models() {
     ));
 }
 
-pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
+pub fn index(path: &str, no_plugins: bool, no_jit: bool, project_trusted: bool) -> Result<()> {
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
 
@@ -756,13 +756,16 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
             .context("initialize lua plugin host")?
     };
 
-    let raw_config = host.load_init_files(&cwd).context("load init.lua files")?;
+    let raw_config = host
+        .load_init_files(&cwd, project_trusted)
+        .context("load init.lua files")?;
 
     let mut config = raw_config
         .unwrap_or_else(Default::default)
         .into_config(false)
         .context("invalid config")?;
-    config.permissions = load_permissions(&cwd);
+    config.permissions = load_permissions(&cwd, project_trusted);
+    config.project_trusted = project_trusted;
 
     host.set_search_config(Arc::new(config.search.clone()))
         .context("configure lua search services")?;
@@ -792,10 +795,10 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
+pub fn mcp_auth(server: &str, storage: &StateDir, project_trusted: bool) -> Result<()> {
     smol::block_on(async {
         let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-        let (config, _) = mcp_config::load_config(&cwd);
+        let (config, _) = mcp_config::load_config(&cwd, project_trusted);
         let raw = config
             .mcp
             .get(server)
@@ -827,6 +830,7 @@ pub struct PromptFlags {
     pub tools: bool,
     pub names: bool,
     pub no_jit: bool,
+    pub project_trusted: bool,
 }
 
 pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result<()> {
@@ -848,7 +852,9 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
     let reg = ToolRegistry::global_arc();
     let mut host = PluginHost::with_jit(Arc::clone(reg), !flags.no_jit)
         .context("initialize lua plugin host")?;
-    let raw_config = host.load_init_files(&cwd).context("load init.lua files")?;
+    let raw_config = host
+        .load_init_files(&cwd, flags.project_trusted)
+        .context("load init.lua files")?;
     let config = raw_config
         .unwrap_or_else(Default::default)
         .into_config(false)

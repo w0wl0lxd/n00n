@@ -4163,6 +4163,7 @@ dependencies = [
  "isahc",
  "jiff",
  "jsonrepair",
+ "jsonschema",
  "libc",
  "n00n-config",
  "n00n-providers",
@@ -4184,6 +4185,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracing",
+ "url",
 ]
 
 [[package]]
