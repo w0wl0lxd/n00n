@@ -528,7 +528,10 @@ async fn run_authorized(
             Ok(guard) => guard,
             Err(error) => return tool_done_error(id, Arc::clone(&tool_id), error.to_string()),
         };
-        let result = invocation.execute(ctx).await;
+        let result = match ctx.cancel.race(invocation.execute(ctx)).await {
+            Ok(result) => result,
+            Err(error) => return tool_done_error(id, Arc::clone(&tool_id), error),
+        };
 
         let elapsed = started.elapsed();
         match result.output {
@@ -1704,7 +1707,103 @@ mod tests {
 
             let done = result.expect("MCP tool call ignored agent cancellation");
             assert!(done.is_error);
+
             assert_eq!(done.output.as_text(), "cancelled");
+        });
+    }
+
+    #[test]
+    fn native_tool_execution_observes_agent_cancellation() {
+        struct PendingInvocation;
+
+        impl crate::tools::registry::ToolInvocation for PendingInvocation {
+            fn start_header(&self) -> crate::tools::HeaderFuture {
+                crate::tools::HeaderFuture::Ready(crate::tools::HeaderResult::plain(
+                    "pending".into(),
+                ))
+            }
+
+            fn execute(
+                self: Box<Self>,
+                _ctx: &crate::tools::ToolContext,
+            ) -> crate::tools::ExecFuture<'_> {
+                Box::pin(std::future::pending())
+            }
+        }
+
+        struct PendingTool;
+
+        impl crate::tools::Tool for PendingTool {
+            fn name(&self) -> &'static str {
+                "pending_native"
+            }
+
+            fn description(
+                &self,
+                _ctx: &crate::tools::DescriptionContext,
+            ) -> std::borrow::Cow<'_, str> {
+                "pending native tool".into()
+            }
+
+            fn schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+
+            fn parse(
+                &self,
+                _input: &Value,
+            ) -> Result<Box<dyn crate::tools::registry::ToolInvocation>, crate::tools::ParseError>
+            {
+                Ok(Box::new(PendingInvocation))
+            }
+        }
+
+        smol::block_on(async {
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn crate::tools::Tool> = Arc::new(PendingTool);
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "pending".into(),
+                    },
+                )
+                .unwrap();
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.registry = Arc::new(registry);
+            let (trigger, cancel) = crate::CancelToken::new();
+            ctx.cancel = cancel;
+            smol::spawn(async move {
+                smol::Timer::after(Duration::from_millis(10)).await;
+                trigger.cancel();
+            })
+            .detach();
+
+            let result = futures_lite::future::race(
+                async {
+                    Some(
+                        run(
+                            &ctx.registry,
+                            None,
+                            "pending-1".into(),
+                            "pending_native",
+                            &serde_json::json!({}),
+                            &ctx,
+                            Emit::Silent,
+                        )
+                        .await,
+                    )
+                },
+                async {
+                    smol::Timer::after(Duration::from_millis(200)).await;
+                    None
+                },
+            )
+            .await
+            .expect("native tool execution ignored agent cancellation");
+
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), "cancelled");
         });
     }
 

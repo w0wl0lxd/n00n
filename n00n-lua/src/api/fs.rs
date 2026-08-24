@@ -126,6 +126,18 @@ fn result_pair<T: mlua::IntoLua, E: std::fmt::Display>(
     }
 }
 
+fn optional_bool(table: &Table, field: &str) -> LuaResult<Option<bool>> {
+    match table.get::<Value>(field)? {
+        Value::Nil => Ok(None),
+        Value::Boolean(value) => Ok(Some(value)),
+        value => Err(mlua::Error::FromLuaConversionError {
+            from: value.type_name(),
+            to: "Boolean".to_owned(),
+            message: Some(format!("{field} must be a boolean")),
+        }),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum ReadBytesLimitedError {
     #[error("cannot open file: {0}")]
@@ -765,14 +777,20 @@ async fn rm(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Va
     const DEFAULT_RECURSIVE: bool = false;
     const DEFAULT_FORCE: bool = false;
     let abs = make_absolute(&path)?;
-    let recursive = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("recursive").ok())
-        .unwrap_or_else(|| DEFAULT_RECURSIVE);
-    let force = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("force").ok())
-        .unwrap_or_else(|| DEFAULT_FORCE);
+    let recursive = match opts.as_ref() {
+        Some(opts) => match optional_bool(opts, "recursive")? {
+            Some(recursive) => recursive,
+            None => DEFAULT_RECURSIVE,
+        },
+        None => DEFAULT_RECURSIVE,
+    };
+    let force = match opts.as_ref() {
+        Some(opts) => match optional_bool(opts, "force")? {
+            Some(force) => force,
+            None => DEFAULT_FORCE,
+        },
+        None => DEFAULT_FORCE,
+    };
     let result = smol::unblock(move || -> std::io::Result<()> {
         let meta = match std::fs::symlink_metadata(&abs) {
             Ok(m) => m,
@@ -809,10 +827,13 @@ async fn rm(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Va
 async fn mkdir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Value)> {
     const DEFAULT_PARENTS: bool = false;
     let abs = make_absolute(&path)?;
-    let parents = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("parents").ok())
-        .unwrap_or_else(|| DEFAULT_PARENTS);
+    let parents = match opts.as_ref() {
+        Some(opts) => match optional_bool(opts, "parents")? {
+            Some(parents) => parents,
+            None => DEFAULT_PARENTS,
+        },
+        None => DEFAULT_PARENTS,
+    };
     let result = if parents {
         smol::fs::create_dir_all(&abs).await
     } else {
@@ -850,14 +871,27 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
         }
     };
 
-    let path = opts.as_ref().and_then(|t| t.get::<String>("path").ok());
-    let limit = opts.as_ref().and_then(|t| t.get::<usize>("limit").ok());
-    let gitignore = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("gitignore").ok())
-        .unwrap_or_else(|| true);
-    let sort = opts.as_ref().and_then(|t| t.get::<String>("sort").ok());
-    let sort_mtime = sort.as_deref() == Some("mtime");
+    let (path, limit, gitignore, sort) = match opts.as_ref() {
+        Some(opts) => (
+            opts.get::<Option<String>>("path")?,
+            opts.get::<Option<usize>>("limit")?,
+            match optional_bool(opts, "gitignore")? {
+                Some(gitignore) => gitignore,
+                None => true,
+            },
+            opts.get::<Option<String>>("sort")?,
+        ),
+        None => (None, None, true, None),
+    };
+    let sort_mtime = match sort.as_deref() {
+        None => false,
+        Some("mtime") => true,
+        Some(value) => {
+            return Err(mlua::Error::runtime(format!(
+                "glob: unsupported sort mode {value:?}; expected \"mtime\""
+            )));
+        }
+    };
 
     let result: Result<Vec<String>, String> = smol::unblock(move || {
         let root = n00n_agent::tools::resolve_search_path(path.as_deref())?;
@@ -1383,6 +1417,42 @@ mod tests {
         let error = atomic_write(&link, b"rejected").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+    }
+
+    #[test_case::test_case("rm", "recursive", r#""yes""# ; "rm_recursive")]
+    #[test_case::test_case("rm", "force", r#""yes""# ; "rm_force")]
+    #[test_case::test_case("mkdir", "parents", r#""yes""# ; "mkdir_parents")]
+    #[test_case::test_case("glob", "path", "true" ; "glob_path")]
+    #[test_case::test_case("glob", "limit", "true" ; "glob_limit")]
+    #[test_case::test_case("glob", "gitignore", r#""yes""# ; "glob_gitignore")]
+    #[test_case::test_case("glob", "sort", "true" ; "glob_sort")]
+    fn present_option_with_wrong_type_errors(api: &str, field: &str, bad_value: &str) {
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let function: mlua::Function = tbl.get(api).unwrap();
+        let opts = lua.create_table().unwrap();
+        let value: mlua::Value = lua.load(format!("return {bad_value}")).eval().unwrap();
+        opts.set(field, value).unwrap();
+
+        let result = smol::block_on(function.call_async::<mlua::MultiValue>(("*.rs", opts)));
+
+        assert!(
+            result.is_err(),
+            "{api}.{field} accepted a wrong option type"
+        );
+    }
+
+    #[test]
+    fn glob_unknown_sort_errors() {
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let glob: mlua::Function = tbl.get("glob").unwrap();
+        let opts = lua.create_table().unwrap();
+        opts.set("sort", "name").unwrap();
+
+        let result = smol::block_on(glob.call_async::<mlua::MultiValue>(("*.rs", opts)));
+
+        assert!(result.is_err(), "glob accepted an unknown sort mode");
     }
 
     #[test]

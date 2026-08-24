@@ -492,13 +492,13 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         .unwrap_or_else(|| false);
     let spec_str: Option<String> = opts.get("spec")?;
 
-    let parsed = spec_str
-        .as_deref()
-        .and_then(|spec| Model::from_spec(spec).ok());
-    let model = if let Some(ref m) = parsed {
-        m
-    } else {
-        &agent.model
+    let parsed_model = match spec_str.as_deref() {
+        Some(spec) => Some(try_pair!(Model::from_spec(spec))),
+        None => None,
+    };
+    let model = match parsed_model.as_ref() {
+        Some(model) => model,
+        None => &agent.model,
     };
 
     let mcp_base = match (&only, &except) {

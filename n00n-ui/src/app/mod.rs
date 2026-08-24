@@ -715,6 +715,10 @@ impl App {
         }
         if key::QUIT.matches(key) {
             self.command_palette.close();
+            if self.queue.cancel_editing() {
+                self.input_box.discard();
+                return Some(vec![]);
+            }
             return Some(if !self.is_main_chat() || self.input_box.is_empty() {
                 if self.status == Status::Streaming {
                     return Some(self.handle_cancel());

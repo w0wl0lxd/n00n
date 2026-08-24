@@ -1,6 +1,6 @@
 use super::session::message_tool_use_ids;
 use super::*;
-use crate::agent::shared_queue;
+use crate::agent::{Delivery, shared_queue};
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{KeybindContext, key as kb};
@@ -2213,6 +2213,35 @@ fn queue_enter_edits_selected_in_place_without_duplication() {
 
     assert_eq!(app.queue.text_messages(), ["edited", "second"]);
     assert_eq!(app.queue.len(), 2);
+}
+
+#[test]
+fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
+    let mut app = app_with_queued_message();
+    let image = ImageSource::new(ImageMediaType::Png, Arc::from("b3JpZ2luYWw="));
+    assert!(app.queue_steering(QueuedMessage {
+        text: "original".into(),
+        images: vec![image],
+        control: true,
+    }));
+    app.queue_and_notify(queued_msg("after"));
+    app.queue.set_focus_at(1);
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    app.input_box.set_input("replacement");
+    app.update(Msg::Key(kb::QUIT.to_key_event()));
+
+    assert_eq!(app.queue.text_messages(), ["queued", "original", "after"]);
+    assert!(app.queue.editing().is_none());
+    assert!(app.input_box.is_empty());
+    let queued = app.queue.queued_inputs();
+    let (input, delivery) = &queued[1];
+    assert_eq!(input.message, "original");
+    assert_eq!(*delivery, Delivery::Steering);
+    assert!(input.control);
+    assert_eq!(input.images.len(), 1);
+    assert_eq!(input.images[0].media_type, ImageMediaType::Png);
+    assert_eq!(&*input.images[0].data, "b3JpZ2luYWw=");
 }
 
 #[test]

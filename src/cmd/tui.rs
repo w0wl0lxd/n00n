@@ -107,7 +107,8 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
         config.agent.disabled_tools.extend(
             cli.disallowed_tools
                 .iter()
-                .filter_map(|t| normalize_tool_name(t).ok()),
+                .map(|t| normalize_tool_name(t))
+                .collect::<Result<Vec<_>>>()?,
         );
     }
     config.agent.fusion.enabled = super::resolve_fusion_opt_in(
@@ -580,6 +581,7 @@ fn warn_stale_config_toml(cwd: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use color_eyre::eyre::eyre;
     use n00n_config::RawConfig;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -624,6 +626,25 @@ mod tests {
         RawConfig::default()
             .into_config(false)
             .expect("default config")
+    }
+
+    #[test]
+    fn invalid_disallowed_tool_errors_like_invalid_allowed_tool() {
+        let directory = tempfile::tempdir().expect("temporary config directory");
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).expect("plugin host");
+        let allowed = Cli::parse_from(["n00n", "--allowed-tools", "NotATool"]);
+        let disallowed = Cli::parse_from(["n00n", "--disallowed-tools", "NotATool"]);
+
+        let allowed_error = match load_config(&host, &allowed, directory.path()) {
+            Ok(_) => panic!("invalid allowed tool was accepted"),
+            Err(error) => error.to_string(),
+        };
+        let disallowed_error = match load_config(&host, &disallowed, directory.path()) {
+            Ok(_) => panic!("invalid disallowed tool was accepted"),
+            Err(error) => error.to_string(),
+        };
+
+        assert_eq!(disallowed_error, allowed_error);
     }
 
     #[test]

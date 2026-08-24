@@ -1138,13 +1138,14 @@ fn agent_api_value_failures_return_err_pairs() {
                 parts[1] = pair_err(n00n.agent.system_prompt(ctx, {{ prompt_id = "nope" }})) and "prompt_err" or "prompt_ok"
                 parts[2] = pair_err(n00n.agent.tools(ctx, {{ audience = "nope" }})) and "tools_err" or "tools_ok"
                 parts[3] = pair_err(n00n.agent.resolve_model(ctx, {{ spec = "not-a-spec" }})) and "model_err" or "model_ok"
+                parts[4] = pair_err(n00n.agent.tools(ctx, {{ audience = "general", spec = "not-a-spec" }})) and "tools_spec_err" or "tools_spec_ok"
                 return table.concat(parts, " ")
             end
         }})"#
     );
     host.load_source("agent_pairs_plugin", &src).unwrap();
     let out = exec_tool(&reg, "agent_pairs_probe", serde_json::json!({})).unwrap();
-    assert_eq!(out, "prompt_err tools_err model_err");
+    assert_eq!(out, "prompt_err tools_err model_err tools_spec_err");
 }
 
 /// Restore used to lose anything drawn via `n00n.async.run`: those tasks
@@ -8372,6 +8373,28 @@ fn jobstart_list_mode_multiple_args() {
     assert_eq!(out, "a b c");
 }
 
+#[test]
+fn jobstart_list_mode_preserves_empty_args() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "job_empty_arg",
+            description = "preserves empty args in list mode",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                n00n.fn.jobstart({{"printf", "[%s][%s]", "", "tail"}})
+                local res = n00n.fn.jobwait(1)
+                return res.stdout
+            end
+        }})"#
+    );
+    host.load_source("job_empty_arg", &src).unwrap();
+    let out = exec_tool(&reg, "job_empty_arg", serde_json::json!({})).unwrap();
+    assert_eq!(out, "[][tail]");
+}
+
 /// Empty table for list mode errors appropriately.
 #[test]
 fn jobstart_list_mode_empty_table_errors() {
@@ -8406,15 +8429,14 @@ fn jobstart_list_mode_non_string_arg_errors() {
             schema = {MINIMAL_SCHEMA},
             audiences = {{ "main" }},
             handler = function(input, ctx)
-                local _, err = pcall(n00n.fn.jobstart, {{123, "echo"}})
+                local _, err = pcall(n00n.fn.jobstart, {{"echo", 123}})
                 return tostring(err)
             end
         }})"#
     );
     host.load_source("job_nonstr", &src).unwrap();
     let out = exec_tool(&reg, "job_nonstr", serde_json::json!({})).unwrap();
-    // When a non-string is in the array, mlua's get::<String> will error
-    assert!(!out.is_empty(), "got empty error string");
+    assert!(out.contains("string"), "got: {out}");
 }
 
 #[test]

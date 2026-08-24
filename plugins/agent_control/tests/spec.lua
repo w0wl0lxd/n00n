@@ -1,4 +1,5 @@
 local helpers = require("agent_control_helpers")
+local policy_store = require("n00n.policy_store")
 
 local failures = {}
 
@@ -66,6 +67,34 @@ case("policy_scope_rejects_unknown_key", function()
   local ok, err = helpers.policy_scope_keys({ scope = { foo = "bar" } })
   eq(ok, nil)
   assert(err:find("unknown key"), err)
+end)
+
+local policy_fixture = n00n.fs.joinpath(n00n.env.state_dir(), "agent-control-policy-store-test")
+
+case("policy_store_treats_only_missing_file_as_empty", function()
+  n00n.fs.rm(policy_fixture, { recursive = true })
+  local policies, err = policy_store.load(n00n.fs.joinpath(policy_fixture, "policy.json"))
+  assert(policies, err)
+  eq(#policies.rules, 0)
+
+  assert(n00n.fs.mkdir(policy_fixture, { parents = true }))
+  local path = n00n.fs.joinpath(policy_fixture, "policy.json")
+  assert(n00n.fs.write(path, "{"))
+  policies, err = policy_store.load(path)
+  eq(policies, nil)
+  assert(err:find("invalid policy JSON", 1, true), err)
+
+  assert(n00n.fs.write(path, [[{"rules":{"tool":"bash"}}]]))
+  policies, err = policy_store.load(path)
+  eq(policies, nil)
+  assert(err:find("policy rules must be an array", 1, true), err)
+
+  assert(n00n.fs.rm(path))
+  assert(n00n.fs.mkdir(path))
+  policies, err = policy_store.load(path)
+  eq(policies, nil)
+  assert(err:find("not a file", 1, true), err)
+  assert(n00n.fs.rm(policy_fixture, { recursive = true }))
 end)
 
 if #failures > 0 then
