@@ -1,12 +1,25 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Error;
+use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use async_process::Command;
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
+use std::io::ErrorKind;
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
+use std::os::unix::process::CommandExt;
+
+use async_process::{Child, Command, Stdio};
 use flume::Sender;
 use futures_lite::StreamExt;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
+use futures_lite::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use n00n_storage::id::SessionRef;
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -81,6 +94,25 @@ pub(crate) struct Cursor {
     sessions: Mutex<HashMap<String, CursorSession>>,
 }
 
+fn cursor_command(path: &Path) -> Command {
+    let command = std::process::Command::new(path);
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    let command = {
+        let mut command = command;
+        command.process_group(0);
+        command
+    };
+    let mut command = Command::from(command);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command
+}
 impl Cursor {
     fn api_key_from_auth(auth: &ResolvedAuth) -> Option<String> {
         auth.headers
@@ -235,14 +267,12 @@ impl Cursor {
         );
 
         let result = match parse.await {
-            Err(e @ AgentError::Timeout { .. }) => {
-                if let Err(kill_err) = child.kill() {
-                    warn!(error = %kill_err, "failed to kill cursor-agent after timeout");
-                }
+            Ok(result) => result,
+            Err(error) => {
+                terminate_cursor_child(&mut child).await;
                 let () = stderr_task.await;
-                return Err(e);
+                return Err(error);
             }
-            other => other?,
         };
 
         let status = child.status().await?;
@@ -323,22 +353,24 @@ impl Cursor {
     }
 
     async fn do_list_models(&self) -> Result<Vec<ModelInfo>, AgentError> {
-        let mut cmd = Command::new(&self.command);
+        let mut cmd = cursor_command(&self.command);
         cmd.arg("--list-models");
         if let Some(api_key) = &self.api_key {
             cmd.env(API_KEY_ENV, api_key);
         }
 
-        let output = cmd.output().await?;
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr).into_owned();
+        let child = cmd.spawn()?;
+        let (status, stdout, stderr) =
+            child_output_with_timeout(child, self.timeouts.connect).await?;
+        if !status.success() {
+            let message = String::from_utf8_lossy(&stderr).into_owned();
             return Err(AgentError::Api {
                 status: 500,
                 message: format!("cursor-agent --list-models failed: {message}"),
             });
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = String::from_utf8_lossy(&stdout);
         let mut models = Vec::new();
         for line in stdout.lines() {
             let Some((id, display)) = line.split_once(" - ") else {
@@ -428,7 +460,7 @@ impl Cursor {
         prompt: String,
         session_id: Option<&SessionRef>,
     ) -> Result<Command, AgentError> {
-        let mut cmd = Command::new(&self.command);
+        let mut cmd = cursor_command(&self.command);
         cmd.arg("--print")
             .arg("--output-format")
             .arg("stream-json")
@@ -783,6 +815,95 @@ fn extract_text_content(value: &Value) -> String {
     out
 }
 
+async fn read_child_pipe(mut reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await?;
+    Ok(bytes)
+}
+
+async fn child_output_with_timeout(
+    mut child: Child,
+    timeout: Duration,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), AgentError> {
+    let stdout = child.stdout.take().ok_or_else(|| AgentError::Config {
+        message: STDOUT_MISSING.into(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| AgentError::Config {
+        message: STDERR_MISSING.into(),
+    })?;
+    let stdout_task = smol::spawn(read_child_pipe(stdout));
+    let stderr_task = smol::spawn(read_child_pipe(stderr));
+    let status = futures_lite::future::or(async { child.status().await.map(Some) }, async {
+        smol::Timer::after(timeout).await;
+        Ok(None)
+    })
+    .await;
+
+    let status = match status {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            terminate_cursor_child(&mut child).await;
+            log_pipe_read_error("stdout", stdout_task.await);
+            log_pipe_read_error("stderr", stderr_task.await);
+            return Err(AgentError::Timeout {
+                secs: timeout.as_secs(),
+            });
+        }
+        Err(error) => {
+            terminate_cursor_child(&mut child).await;
+            log_pipe_read_error("stdout", stdout_task.await);
+            log_pipe_read_error("stderr", stderr_task.await);
+            return Err(error.into());
+        }
+    };
+    let stdout = stdout_task.await?;
+    let stderr = stderr_task.await?;
+    Ok((status, stdout, stderr))
+}
+
+fn log_pipe_read_error(pipe: &str, result: Result<Vec<u8>, Error>) {
+    if let Err(error) = result {
+        debug!(pipe, %error, "failed to drain cursor-agent pipe during cleanup");
+    }
+}
+
+fn kill_cursor_child(child: &mut Child) -> Result<(), Error> {
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    {
+        use rustix::process::{Pid, Signal, kill_process_group};
+
+        let raw_pid = i32::try_from(child.id()).map_err(|source| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("invalid child pid: {source}"),
+            )
+        })?;
+        let process_group = Pid::from_raw(raw_pid).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, "child process id cannot be zero")
+        })?;
+        kill_process_group(process_group, Signal::KILL).map_err(Error::from)
+    }
+    #[cfg(not(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    )))]
+    {
+        child.kill()
+    }
+}
+
+async fn terminate_cursor_child(child: &mut Child) {
+    if let Err(error) = kill_cursor_child(child) {
+        debug!(%error, "failed to kill cursor-agent after error");
+    }
+    if let Err(error) = child.status().await {
+        warn!(%error, "failed to reap cursor-agent after error");
+    }
+}
+
 async fn collect_stderr(reader: async_process::ChildStderr, buffer: Arc<Mutex<String>>) {
     let mut lines = BufReader::new(reader).lines();
     while let Some(line) = lines.next().await {
@@ -1006,6 +1127,119 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn cursor_script(body: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cursor-agent");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write cursor fixture");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("cursor fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("make cursor fixture executable");
+        (dir, path)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fixture_pid_path(command: &std::path::Path) -> PathBuf {
+        PathBuf::from(format!("{}.pid", command.display()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_fixture_reaped(command: &std::path::Path) {
+        let pid = std::fs::read_to_string(fixture_pid_path(command))
+            .expect("read cursor fixture pid")
+            .trim()
+            .parse::<u32>()
+            .expect("parse cursor fixture pid");
+        assert!(!std::path::Path::new("/proc").join(pid.to_string()).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_command_captures_output() {
+        smol::block_on(async {
+            let (dir, command) = cursor_script("sleep 2");
+            let mut cursor = test_cursor();
+            cursor.command.clone_from(&command);
+            let mut command = cursor
+                .build_command(
+                    &test_model("composer-2.5"),
+                    &RequestOptions::default(),
+                    "hello".into(),
+                    None,
+                )
+                .expect("build Cursor command");
+            let mut child = command.spawn().expect("spawn Cursor fixture");
+
+            assert!(child.stdout.take().is_some());
+            assert!(child.stderr.take().is_some());
+            terminate_cursor_child(&mut child).await;
+            drop(dir);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stream_error_kills_and_reaps_cursor_child() {
+        smol::block_on(async {
+            let (dir, command) = cursor_script(
+                r#"echo $$ > "$0.pid"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}'
+sleep 2"#,
+            );
+            let mut cursor = test_cursor();
+            cursor.command.clone_from(&command);
+            let (event_tx, event_rx) = flume::bounded(1);
+            drop(event_rx);
+
+            let started = Instant::now();
+            let result = cursor
+                .do_stream(
+                    &test_model("composer-2.5"),
+                    &[user_message("hello")],
+                    &System::new(),
+                    &serde_json::json!({}),
+                    &event_tx,
+                    RequestOptions::default(),
+                    None,
+                )
+                .await;
+
+            assert!(result.is_err());
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_fixture_reaped(&command);
+            drop(dir);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn model_discovery_times_out_and_reaps_cursor_child() {
+        smol::block_on(async {
+            let (dir, command) = cursor_script(
+                r#"echo $$ > "$0.pid"
+sleep 2
+printf '%s\n' 'composer-2.5 - Composer 2.5'"#,
+            );
+            let mut cursor = test_cursor();
+            cursor.command.clone_from(&command);
+            cursor.timeouts.connect = Duration::from_millis(100);
+            let started = Instant::now();
+
+            let result = cursor.do_list_models().await;
+
+            assert!(
+                matches!(result, Err(AgentError::Timeout { .. })),
+                "result: {result:?}"
+            );
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_fixture_reaped(&command);
+            drop(dir);
+        });
+    }
     #[test_case(false, false => false; "neither")]
     #[test_case(true, false => false; "trust_only")]
     #[test_case(false, true => false; "yolo_only")]

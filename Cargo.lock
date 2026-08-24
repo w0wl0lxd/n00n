@@ -4432,6 +4432,7 @@ dependencies = [
  "prost",
  "reqwest",
  "rusqlite",
+ "rustix 1.1.4",
  "rustls",
  "serde",
  "serde_json",
