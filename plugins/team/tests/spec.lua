@@ -869,6 +869,26 @@ case("team_checkpoint_prep_preserves_live_results", function()
   assert(checkpoint_state.failures == 0, "checkpoint must remove the failed attempt from accounting")
 end)
 
+case("team_resume_state_removes_nonfinal_failed_attempt", function()
+  local memory = require("mem")
+  local state = {
+    results = {
+      "[1] planner:\nok",
+      "[2] developer: ERROR compile failed",
+      "[3] reviewer:\nreviewed",
+    },
+    failures = 1,
+    failed_step = 2,
+    failed_role = "developer",
+  }
+
+  memory.prepare_resume_state(state)
+
+  assert(#state.results == 2, "the failed attempt must be removed wherever it appears")
+  assert(state.results[2] == "[3] reviewer:\nreviewed", "later successful results must be preserved")
+  assert(state.failures == 0, "failure accounting must match removed results")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

@@ -14,15 +14,20 @@ function M.prepare_resume_state(state)
     return state
   end
 
+  local removed = false
   local results = state.results
   if type(results) == "table" and #results > 0 then
     local prefix = string.format("[%d] %s: ERROR ", state.failed_step, tostring(state.failed_role or ""))
-    local last = results[#results]
-    if type(last) == "string" and last:sub(1, #prefix) == prefix then
-      table.remove(results)
+    for index = #results, 1, -1 do
+      local result = results[index]
+      if type(result) == "string" and result:sub(1, #prefix) == prefix then
+        table.remove(results, index)
+        removed = true
+        break
+      end
     end
   end
-  if type(state.failures) == "number" and state.failures > 0 then
+  if removed and type(state.failures) == "number" and state.failures > 0 then
     state.failures = state.failures - 1
   end
   state.failed_step = nil
