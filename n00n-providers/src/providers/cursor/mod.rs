@@ -95,12 +95,16 @@ pub(crate) struct Cursor {
 }
 
 fn cursor_command(path: &Path) -> Command {
-    let mut command = std::process::Command::new(path);
+    let command = std::process::Command::new(path);
     #[cfg(all(
         unix,
         not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
     ))]
-    command.process_group(0);
+    let command = {
+        let mut command = command;
+        command.process_group(0);
+        command
+    };
     let mut command = Command::from(command);
     command
         .stdin(Stdio::null())
