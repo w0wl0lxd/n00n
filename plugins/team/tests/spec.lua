@@ -852,6 +852,23 @@ case("team_resume_state_discards_the_failed_attempt_once", function()
   assert(state.failed_step == nil and state.failed_role == nil, "cleanup must be idempotent")
 end)
 
+case("team_checkpoint_prep_preserves_live_results", function()
+  local memory = require("mem")
+  local live_results = { "[1] planner:\nok", "[2] developer: ERROR compile failed" }
+  local state = {
+    results = live_results,
+    failures = 1,
+    failed_step = 2,
+    failed_role = "developer",
+  }
+
+  local checkpoint_state = memory.prepare_checkpoint_state(state)
+
+  assert(#live_results == 2, "checkpoint prep must not mutate live results")
+  assert(#checkpoint_state.results == 1, "checkpoint must discard the failed attempt")
+  assert(checkpoint_state.failures == 0, "checkpoint must remove the failed attempt from accounting")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

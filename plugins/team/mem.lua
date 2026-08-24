@@ -30,6 +30,20 @@ function M.prepare_resume_state(state)
   return state
 end
 
+function M.prepare_checkpoint_state(state)
+  local checkpoint_state = {}
+  for key, value in pairs(state) do
+    checkpoint_state[key] = value
+  end
+  if type(state.results) == "table" then
+    checkpoint_state.results = {}
+    for index, result in ipairs(state.results) do
+      checkpoint_state.results[index] = result
+    end
+  end
+  return M.prepare_resume_state(checkpoint_state)
+end
+
 local function base_dir()
   local state = n00n.env.state_dir()
   if not state then

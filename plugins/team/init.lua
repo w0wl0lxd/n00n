@@ -784,7 +784,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           ckpt_state.failed_step = failed_step_index
           ckpt_state.failed_role = failed_role
         end
-        memory.prepare_resume_state(ckpt_state)
+        ckpt_state = memory.prepare_checkpoint_state(ckpt_state)
         local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state, wave_idx)
         if not save_ok then
           if logger then
