@@ -866,8 +866,8 @@ async fn execute_mcp_tool(
     // A permitted call to a deferred tool counts as loading it, so its full
     // definition joins the next request; a denied call must not load anything.
     mcp.mark_loaded(tool_name);
-    match mcp.call_tool(tool_name, input).await {
-        Ok(text) => tool_done_plain(
+    match ctx.cancel.race(mcp.call_tool(tool_name, input)).await {
+        Ok(Ok(text)) => tool_done_plain(
             id.to_owned(),
             tool_id,
             crate::tools::truncate_output(
@@ -876,15 +876,16 @@ async fn execute_mcp_tool(
                 ctx.config.max_output_bytes,
             ),
         ),
-        Err(e) => tool_done_error(
+        Ok(Err(error)) => tool_done_error(
             id.to_owned(),
             tool_id,
             crate::tools::truncate_output(
-                &e.to_string(),
+                &error.to_string(),
                 ctx.config.max_output_lines,
                 ctx.config.max_output_bytes,
             ),
         ),
+        Err(error) => tool_done_error(id.to_owned(), tool_id, error),
     }
 }
 
@@ -1181,6 +1182,7 @@ mod tests {
     use std::borrow::Cow;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use n00n_config::{Effect, PermissionRule, PermissionsConfig, ToolKey};
     use n00n_providers::{ContentBlock, Message, StopReason, StreamResponse, TokenUsage};
@@ -1199,6 +1201,39 @@ mod tests {
             rc.record(n.to_string(), v);
         }
         rc
+    }
+
+    struct PendingMcpTransport(Arc<str>);
+
+    impl crate::mcp::transport::McpTransport for PendingMcpTransport {
+        fn send_request<'a>(
+            &'a self,
+            _method: &'a str,
+            _params: Option<Value>,
+        ) -> crate::mcp::transport::BoxFuture<'a, Result<Value, crate::mcp::error::McpError>>
+        {
+            Box::pin(std::future::pending())
+        }
+
+        fn send_notification<'a>(
+            &'a self,
+            _method: &'a str,
+            _params: Option<Value>,
+        ) -> crate::mcp::transport::BoxFuture<'a, Result<(), crate::mcp::error::McpError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn shutdown(&self) -> crate::mcp::transport::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+
+        fn server_name(&self) -> &Arc<str> {
+            &self.0
+        }
+
+        fn transport_kind(&self) -> &'static str {
+            "pending-test"
+        }
     }
 
     #[test_case("read", &[("read", "/a"), ("read", "/a")], true  ; "triggers_at_threshold")]
@@ -1638,6 +1673,41 @@ mod tests {
             assert_eq!(result.output.as_text(), CODE_EXECUTION_BLOCKED_IN_PLAN);
         });
     }
+    #[test]
+    fn mcp_tool_call_observes_agent_cancellation() {
+        smol::block_on(async {
+            let session = crate::mcp::stub_session_with_transport(
+                &[("myserver.mytool", "pending")],
+                false,
+                Arc::new(PendingMcpTransport(Arc::from("pending"))),
+            );
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.mcp = Some(session);
+            let (trigger, cancel) = crate::CancelToken::new();
+            ctx.cancel = cancel;
+            let cancellation = smol::spawn(async move {
+                smol::Timer::after(Duration::from_millis(10)).await;
+                trigger.cancel();
+            });
+
+            let result = futures_lite::future::race(
+                async {
+                    Some(dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await)
+                },
+                async {
+                    smol::Timer::after(Duration::from_millis(100)).await;
+                    None
+                },
+            )
+            .await;
+            cancellation.await;
+
+            let done = result.expect("MCP tool call ignored agent cancellation");
+            assert!(done.is_error);
+            assert_eq!(done.output.as_text(), "cancelled");
+        });
+    }
+
     #[test]
     fn mcp_unannotated_tool_blocked_in_plan_mode() {
         smol::block_on(async {
