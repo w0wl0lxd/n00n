@@ -1,10 +1,10 @@
 use std::fmt::Write;
+use std::io::{Error as IoError, ErrorKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use futures_lite::StreamExt;
-use futures_lite::io::AsyncBufRead;
+use futures_lite::io::{AsyncBufRead, AsyncBufReadExt};
 use isahc::config::Configurable;
 use isahc::http::request::Builder;
 use serde::Deserialize;
@@ -40,6 +40,8 @@ pub(crate) mod tensorx;
 pub(crate) mod zai;
 
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
+const MAX_SSE_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_SSE_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const REASONING_EFFORT_FIELD: &str = "reasoning_effort";
 pub(crate) const MESSAGES_FIELD: &str = "messages";
 
@@ -248,26 +250,173 @@ impl SseErrorPayload {
     }
 }
 
-pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
-    lines: &mut futures_lite::io::Lines<R>,
-    deadline: &mut Instant,
+#[derive(Debug)]
+pub(crate) struct SseEvent {
+    pub event: Option<String>,
+    pub data: String,
+}
+
+pub(crate) struct SseStream<R> {
+    reader: R,
+    deadline: Instant,
+    deadline_cap: Option<Instant>,
     stream_timeout: Duration,
-) -> Result<Option<String>, AgentError> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let result = futures_lite::future::or(
-        async { lines.next().await.transpose().map_err(AgentError::from) },
-        async {
-            smol::Timer::after(remaining).await;
-            Err(AgentError::Timeout {
-                secs: stream_timeout.as_secs(),
-            })
-        },
-    )
-    .await;
-    if let Ok(Some(_)) = &result {
-        *deadline = Instant::now() + stream_timeout;
+    frame_limit: usize,
+    stream_limit: usize,
+    bytes_read: usize,
+}
+
+impl<R: AsyncBufRead + Unpin> SseStream<R> {
+    pub(crate) fn new(reader: R, stream_timeout: Duration) -> Self {
+        Self::with_limits(
+            reader,
+            stream_timeout,
+            MAX_SSE_FRAME_BYTES,
+            MAX_SSE_STREAM_BYTES,
+        )
     }
-    result
+
+    fn with_limits(
+        reader: R,
+        stream_timeout: Duration,
+        frame_limit: usize,
+        stream_limit: usize,
+    ) -> Self {
+        Self {
+            reader,
+            deadline: Instant::now() + stream_timeout,
+            deadline_cap: None,
+            stream_timeout,
+            frame_limit,
+            stream_limit,
+            bytes_read: 0,
+        }
+    }
+
+    pub(crate) fn set_deadline_cap(&mut self, deadline_cap: Instant) {
+        self.deadline_cap = Some(deadline_cap);
+        self.deadline = self.deadline.min(deadline_cap);
+    }
+
+    async fn next_line(
+        &mut self,
+        remaining_frame_bytes: usize,
+    ) -> Result<Option<String>, AgentError> {
+        let mut line = Vec::new();
+        loop {
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            let stream_timeout = self.stream_timeout;
+            let read = futures_lite::future::or(
+                async {
+                    let buffer = self.reader.fill_buf().await.map_err(AgentError::from)?;
+                    if buffer.is_empty() {
+                        return Ok(None);
+                    }
+                    let newline = buffer.iter().position(|byte| *byte == b'\n');
+                    let consumed = newline.map_or(buffer.len(), |index| index + 1);
+                    #[allow(clippy::manual_unwrap_or)]
+                    let content_len = match newline {
+                        Some(index) => index,
+                        None => buffer.len(),
+                    };
+                    if line.len().saturating_add(content_len) > remaining_frame_bytes {
+                        return Err(sse_limit_error("frame", self.frame_limit));
+                    }
+                    if self.bytes_read.saturating_add(consumed) > self.stream_limit {
+                        return Err(sse_limit_error("stream", self.stream_limit));
+                    }
+                    line.extend_from_slice(&buffer[..content_len]);
+                    self.reader.consume(consumed);
+                    self.bytes_read += consumed;
+                    Ok(Some(newline.is_some()))
+                },
+                async {
+                    smol::Timer::after(remaining).await;
+                    Err(AgentError::Timeout {
+                        secs: stream_timeout.as_secs(),
+                    })
+                },
+            )
+            .await?;
+
+            match read {
+                Some(true) => {
+                    let next_deadline = Instant::now() + self.stream_timeout;
+                    self.deadline = self
+                        .deadline_cap
+                        .map_or(next_deadline, |cap| next_deadline.min(cap));
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    return String::from_utf8(line).map(Some).map_err(|error| {
+                        AgentError::Io(IoError::new(ErrorKind::InvalidData, error))
+                    });
+                }
+                Some(false) => {}
+                None if line.is_empty() => return Ok(None),
+                None => {
+                    return String::from_utf8(line).map(Some).map_err(|error| {
+                        AgentError::Io(IoError::new(ErrorKind::InvalidData, error))
+                    });
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn next_event(&mut self) -> Result<Option<SseEvent>, AgentError> {
+        let mut event = None;
+        let mut data = String::new();
+        let mut frame_bytes = 0usize;
+        let mut has_data = false;
+
+        loop {
+            let remaining = self.frame_limit.saturating_sub(frame_bytes);
+            let line = self.next_line(remaining).await?;
+            let Some(line) = line else {
+                return if has_data {
+                    Ok(Some(SseEvent { event, data }))
+                } else {
+                    Ok(None)
+                };
+            };
+            frame_bytes = frame_bytes.saturating_add(line.len());
+
+            if line.is_empty() {
+                if has_data {
+                    return Ok(Some(SseEvent { event, data }));
+                }
+                event = None;
+                frame_bytes = 0;
+                continue;
+            }
+            if line.starts_with(':') {
+                continue;
+            }
+            let (field, value) = line
+                .split_once(':')
+                .map_or((line.as_str(), ""), |(field, value)| {
+                    (field, value.strip_prefix(' ').map_or(value, |value| value))
+                });
+            match field {
+                "event" => event = Some(value.to_owned()),
+                "data" => {
+                    if has_data {
+                        data.push('\n');
+                    }
+                    data.push_str(value);
+                    has_data = true;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn sse_limit_error(scope: &str, limit: usize) -> AgentError {
+    AgentError::Io(IoError::new(
+        ErrorKind::InvalidData,
+        format!("SSE {scope} exceeds {limit} byte limit"),
+    ))
 }
 
 pub(crate) fn http_client(timeouts: Timeouts) -> Result<isahc::HttpClient, AgentError> {
@@ -399,7 +548,7 @@ impl KeyPool {
 mod tests {
     use super::*;
     use crate::types::BodyOverride;
-    use futures_lite::io::AsyncBufReadExt;
+    use futures_lite::io::Cursor;
     use serde_json::json;
     use test_case::test_case;
 
@@ -526,15 +675,62 @@ mod tests {
     }
 
     #[test]
-    fn next_sse_line_expired_deadline_returns_timeout() {
+    fn sse_stream_expired_deadline_returns_timeout() {
         smol::block_on(async {
-            let mut lines = NeverReader.lines();
-            let mut past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
             let stream_timeout = Duration::from_mins(5);
-            let err = next_sse_line(&mut lines, &mut past, stream_timeout)
-                .await
-                .unwrap_err();
+            let mut stream = SseStream::with_limits(NeverReader, stream_timeout, 1024, 4096);
+            stream.deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+            let err = stream.next_event().await.unwrap_err();
             assert!(matches!(err, AgentError::Timeout { .. }));
+        });
+    }
+
+    #[test]
+    fn sse_stream_joins_legal_multiline_data() {
+        smol::block_on(async {
+            let input = b"event: update\ndata: {\"value\":\ndata: 1}\n\n";
+            let mut stream =
+                SseStream::with_limits(Cursor::new(input), Duration::from_mins(5), 1024, 4096);
+            let event = stream.next_event().await.unwrap().unwrap();
+            assert_eq!(event.event.as_deref(), Some("update"));
+            assert_eq!(event.data, "{\"value\":\n1}");
+        });
+    }
+
+    #[test]
+    fn sse_stream_enforces_frame_boundary() {
+        smol::block_on(async {
+            let mut accepted = SseStream::with_limits(
+                Cursor::new(b"data: 1234\n\n"),
+                Duration::from_mins(5),
+                10,
+                1024,
+            );
+            assert_eq!(accepted.next_event().await.unwrap().unwrap().data, "1234");
+
+            let mut rejected = SseStream::with_limits(
+                Cursor::new(b"data: 12345\n\n"),
+                Duration::from_mins(5),
+                10,
+                1024,
+            );
+            let error = rejected.next_event().await.unwrap_err();
+            assert!(error.to_string().contains("SSE frame exceeds"));
+        });
+    }
+
+    #[test]
+    fn sse_stream_enforces_aggregate_boundary_across_frames() {
+        smol::block_on(async {
+            let mut stream = SseStream::with_limits(
+                Cursor::new(b"data: a\n\ndata: b\n\n"),
+                Duration::from_mins(5),
+                1024,
+                17,
+            );
+            assert_eq!(stream.next_event().await.unwrap().unwrap().data, "a");
+            let error = stream.next_event().await.unwrap_err();
+            assert!(error.to_string().contains("SSE stream exceeds"));
         });
     }
 

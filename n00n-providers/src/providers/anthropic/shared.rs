@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::ops::ControlFlow;
 
 use flume::Sender;
-use n00n_redact::{redact_json_arg, redact_json_value_for_log};
+use n00n_redact::redact_json_value_for_log;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -299,6 +299,7 @@ pub(crate) fn build_request_body_with_system(
 pub(super) struct EventParser {
     content_blocks: Vec<ContentBlock>,
     current_tool_json: String,
+    current_tool_block_idx: Option<usize>,
     current_block_idx: usize,
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
@@ -311,6 +312,7 @@ impl EventParser {
         Self {
             content_blocks: Vec::new(),
             current_tool_json: String::new(),
+            current_tool_block_idx: None,
             current_block_idx: 0,
             usage: TokenUsage::default(),
             stop_reason: None,
@@ -360,7 +362,16 @@ impl EventParser {
                                 .push(ContentBlock::RedactedThinking { data });
                         }
                         SseContentBlock::ToolUse { id, name } => {
+                            if let Some(index) = self.current_tool_block_idx {
+                                return Err(AgentError::Api {
+                                    status: 400,
+                                    message: format!(
+                                        "truncated streamed tool arguments at index {index}"
+                                    ),
+                                });
+                            }
                             self.current_tool_json.clear();
+                            self.current_tool_block_idx = Some(ev.index);
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: id.clone(),
@@ -415,26 +426,40 @@ impl EventParser {
                 Err(e) => warn!(error = %e, "failed to parse content_block_delta"),
             },
             "content_block_stop" => {
-                if let Some(ContentBlock::ToolUse { name, input, .. }) =
-                    self.content_blocks.get_mut(self.current_block_idx)
-                {
-                    *input = match serde_json::from_str(&self.current_tool_json) {
-                        Ok(v) => {
-                            debug!(
-                                tool_index = self.current_block_idx,
-                                has_tool_name = !name.is_empty(),
-                                tool_name_length = name.len(),
-                                json = %redact_json_value_for_log(&v),
-                                "tool input JSON"
-                            );
-                            v
-                        }
-                        Err(e) => {
-                            warn!(error = %e, json = %redact_json_arg(&self.current_tool_json), "malformed tool JSON, falling back to {{}}");
-                            Value::Object(serde_json::Map::default())
-                        }
+                if let Some(tool_index) = self.current_tool_block_idx {
+                    let Some(ContentBlock::ToolUse { name, input, .. }) =
+                        self.content_blocks.get_mut(tool_index)
+                    else {
+                        return Err(AgentError::Api {
+                            status: 400,
+                            message: format!("invalid streamed tool block index {tool_index}"),
+                        });
                     };
+                    *input = serde_json::from_str(&self.current_tool_json).map_err(|error| {
+                        warn!(
+                            error = %error,
+                            tool_index,
+                            has_tool_name = !name.is_empty(),
+                            tool_name_length = name.len(),
+                            argument_bytes = self.current_tool_json.len(),
+                            "rejecting malformed streamed tool arguments"
+                        );
+                        AgentError::Api {
+                            status: 400,
+                            message: format!(
+                                "malformed streamed tool arguments at index {tool_index}"
+                            ),
+                        }
+                    })?;
+                    debug!(
+                        tool_index,
+                        has_tool_name = !name.is_empty(),
+                        tool_name_length = name.len(),
+                        json = %redact_json_value_for_log(input),
+                        "tool input JSON"
+                    );
                     self.current_tool_json.clear();
+                    self.current_tool_block_idx = None;
                 }
             }
             "message_delta" => {
@@ -462,6 +487,12 @@ impl EventParser {
                 });
             }
             "message_stop" => {
+                if let Some(index) = self.current_tool_block_idx {
+                    return Err(AgentError::Api {
+                        status: 400,
+                        message: format!("truncated streamed tool arguments at index {index}"),
+                    });
+                }
                 self.terminated = true;
                 return Ok(ControlFlow::Break(()));
             }
