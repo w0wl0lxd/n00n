@@ -23,6 +23,7 @@ local structured_output = require("n00n.structured_output")
 local guard = require("n00n.guard")
 local subagent = require("n00n.subagent")
 local pipeline_args = require("pipeline_args")
+local saga_runner = require("saga_runner")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local SCRIPT_BALANCE_HINT = "close `meta({...})` before declaring locals and match every `{` with `}`"
@@ -943,29 +944,9 @@ local function handler(input, ctx)
     logger.log("run_started", { run_id = run_id })
   end
 
-  local function run_compensations(err)
-    if not saga or #saga.compensations == 0 then
-      return err
-    end
-    local comp_failures = {}
-    for i = #saga.compensations, 1, -1 do
-      local cok, cerr = pcall(saga.compensations[i])
-      if not cok then
-        table.insert(comp_failures, tostring(cerr))
-      end
-    end
-    for _, eh in ipairs(saga.error_handlers) do
-      pcall(eh, err)
-    end
-    if #comp_failures > 0 then
-      return tostring(err) .. "\ncompensation failures: " .. table.concat(comp_failures, "; ")
-    end
-    return err
-  end
-
   local function on_finish(err, result)
     if err then
-      local final_err = run_compensations(err)
+      local final_err = saga_runner.run(saga, err)
       if logger then
         logger.log("run_error", { error = tostring(final_err) })
       end
