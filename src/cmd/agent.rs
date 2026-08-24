@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(unix)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -468,6 +468,21 @@ async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Res
     Ok(())
 }
 
+#[cfg(unix)]
+async fn write_line_until_disconnect<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    connected: &mut bool,
+    line: &str,
+) {
+    if !*connected {
+        return;
+    }
+    if let Err(error) = write_line(writer, line).await {
+        tracing::debug!(%error, "daemon client disconnected while run continued");
+        *connected = false;
+    }
+}
+
 pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
     let env = prepare_agent_env(
         opts.model,
@@ -808,14 +823,22 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
 
     let message_lock = Arc::new(Mutex::new(()));
     let paused = Arc::new(AtomicBool::new(false));
+    let task = Arc::new(Mutex::new(Some(handle.task)));
+    let next_run_id = Arc::new(AtomicU64::new(u64::from(!opts.prompt.is_empty())));
+    let (server_stop_tx, server_stop_rx) = flume::bounded(1);
 
     if !opts.prompt.is_empty() {
-        let _lock = smol::block_on(message_lock.lock());
         state.status = "working".to_string();
         write_agent_state(&storage, &state)?;
 
+        let input_tx = handle.input_tx.clone();
+        let event_rx = handle.event_rx.clone();
+        let message_lock = Arc::clone(&message_lock);
+        let storage = storage.clone();
+        let agent_id = agent_id.clone();
         let plan_path = mode.plan_path().map(PathBuf::from);
-        let _ = handle.input_tx.send(AgentInput {
+        let (initial_started_tx, initial_started_rx) = flume::bounded(1);
+        let input = AgentInput {
             message,
             mode,
             images: Vec::new(),
@@ -826,30 +849,57 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
             prompt: None,
             control: false,
             plan_path,
-        });
-
-        // Wait for the initial run to complete.
-        wait_for_run_done(&handle.event_rx);
-
-        state.status = "running".to_string();
-        state.updated_at = now_epoch();
-        write_agent_state(&storage, &state)?;
+        };
+        smol::spawn(async move {
+            let _lock = message_lock.lock().await;
+            while event_rx.try_recv().is_ok() {}
+            let queued = input_tx.send(input).is_ok();
+            let _ = initial_started_tx.send(());
+            if queued {
+                wait_for_run_done(&event_rx, 0).await;
+            }
+            match read_agent_state(&storage, &agent_id) {
+                Ok(mut state) => {
+                    state.status = "running".to_string();
+                    state.updated_at = now_epoch();
+                    if let Err(error) = write_agent_state(&storage, &state) {
+                        tracing::warn!(%error, "failed to update initial agent run state");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "failed to read initial agent run state"),
+            }
+        })
+        .detach();
+        smol::block_on(initial_started_rx.recv_async())
+            .wrap_err("initial background run failed to start")?;
     }
 
-    let task = Arc::new(Mutex::new(Some(handle.task)));
-
     smol::block_on(async {
-        while let Ok(stream) = listener.accept().await {
-            let stream = stream.0;
+        loop {
+            let accepted = futures_lite::future::or(
+                async {
+                    let _ = server_stop_rx.recv_async().await;
+                    None
+                },
+                async { Some(listener.accept().await) },
+            )
+            .await;
+            let Some(accepted) = accepted else {
+                break;
+            };
+            let (stream, _) = accepted.wrap_err("failed to accept agent connection")?;
             let input_tx = handle.input_tx.clone();
             let event_rx = handle.event_rx.clone();
             let cancel_tx = handle.cancel_tx.clone();
+            let shutdown_tx = handle.shutdown_tx.clone();
             let message_lock = Arc::clone(&message_lock);
             let paused = Arc::clone(&paused);
             let storage_clone = storage.clone();
             let agent_id_clone = agent_id.clone();
             let mode_clone = opts.mode;
             let task = Arc::clone(&task);
+            let next_run_id = Arc::clone(&next_run_id);
+            let server_stop_tx = server_stop_tx.clone();
 
             smol::spawn(async move {
                 if let Err(e) = handle_connection(
@@ -857,12 +907,15 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
                     input_tx,
                     event_rx,
                     cancel_tx,
+                    shutdown_tx,
                     message_lock,
                     paused,
                     &storage_clone,
                     &agent_id_clone,
                     mode_clone,
                     task,
+                    next_run_id,
+                    server_stop_tx,
                 )
                 .await
                 {
@@ -871,7 +924,8 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
             })
             .detach();
         }
-    });
+        Ok::<(), color_eyre::Report>(())
+    })?;
 
     Ok(())
 }
@@ -884,14 +938,82 @@ pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<
 }
 
 #[cfg(unix)]
-fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
-    while let Ok(envelope) = event_rx.recv() {
-        if matches!(
-            envelope.event,
-            AgentEvent::Done { .. } | AgentEvent::Error { .. }
-        ) {
+async fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>, run_id: u64) {
+    while let Ok(envelope) = event_rx.recv_async().await {
+        if envelope.run_id == run_id
+            && matches!(
+                envelope.event,
+                AgentEvent::Done { .. } | AgentEvent::Error { .. }
+            )
+        {
             break;
         }
+    }
+}
+
+#[cfg(unix)]
+async fn collect_owned_run_events(
+    event_rx: &flume::Receiver<Envelope>,
+    run_id: u64,
+    output_tx: &Sender<ServerEvent>,
+) {
+    let mut accumulated_text = String::new();
+    let mut final_usage: Option<serde_json::Value> = None;
+    let mut error_message: Option<String> = None;
+
+    while let Ok(envelope) = event_rx.recv_async().await {
+        if envelope.run_id != run_id {
+            continue;
+        }
+
+        match envelope.event {
+            AgentEvent::TextDelta { text } => {
+                accumulated_text.push_str(&text);
+                let _ = output_tx.send(ServerEvent::TextDelta { text });
+            }
+            AgentEvent::ToolOutput { id, content } => {
+                let _ = output_tx.send(ServerEvent::ToolOutput { id, content });
+            }
+            AgentEvent::Error { message } => {
+                error_message = Some(message.clone());
+                let _ = output_tx.send(ServerEvent::Error { message });
+                break;
+            }
+            AgentEvent::Done { usage, .. } => {
+                final_usage = Some(match serde_json::to_value(usage) {
+                    Ok(usage) => usage,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to serialize worker usage");
+                        serde_json::Value::Null
+                    }
+                });
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let usage = match final_usage {
+        Some(usage) => usage,
+        None => serde_json::Value::Null,
+    };
+    let _ = output_tx.send(ServerEvent::Done {
+        text: accumulated_text,
+        usage,
+        error: error_message,
+    });
+}
+
+#[cfg(unix)]
+async fn stop_interactive_task(
+    cancel_tx: &Sender<()>,
+    shutdown_tx: &Sender<()>,
+    task: &Arc<Mutex<Option<smol::Task<()>>>>,
+) {
+    let _ = cancel_tx.try_send(());
+    let _ = shutdown_tx.try_send(());
+    if let Some(task) = task.lock().await.take() {
+        task.await;
     }
 }
 
@@ -901,12 +1023,15 @@ async fn handle_connection(
     input_tx: Sender<AgentInput>,
     event_rx: flume::Receiver<Envelope>,
     cancel_tx: Sender<()>,
+    shutdown_tx: Sender<()>,
     message_lock: Arc<Mutex<()>>,
     paused: Arc<AtomicBool>,
     storage: &StateDir,
     agent_id: &str,
     mode: CliAgentMode,
     task: Arc<Mutex<Option<smol::Task<()>>>>,
+    next_run_id: Arc<AtomicU64>,
+    server_stop_tx: Sender<()>,
 ) -> Result<()> {
     let (reader, mut writer) = split(stream);
     let mut reader = BufReader::new(reader);
@@ -942,6 +1067,7 @@ async fn handle_connection(
             write_agent_state(storage, &state)?;
 
             while event_rx.try_recv().is_ok() {}
+            let current_run_id = next_run_id.fetch_add(1, Ordering::Relaxed);
 
             let plan_path = message_mode.plan_path().map(PathBuf::from);
             input_tx
@@ -959,67 +1085,26 @@ async fn handle_connection(
                 })
                 .wrap_err("failed to send input")?;
 
-            let mut current_run_id: Option<u64> = None;
-            let mut accumulated_text = String::new();
-            let mut final_usage: Option<serde_json::Value> = None;
-            let mut error_message: Option<String> = None;
-
-            while let Ok(envelope) = event_rx.recv_async().await {
-                if current_run_id.is_none() {
-                    current_run_id = Some(envelope.run_id);
-                }
-
-                if current_run_id != Some(envelope.run_id) {
-                    continue;
-                }
-
-                match envelope.event {
-                    AgentEvent::TextDelta { text } => {
-                        accumulated_text.push_str(&text);
-                        let event = ServerEvent::TextDelta { text };
-                        let json =
-                            serde_json::to_string(&event).wrap_err("failed to serialize event")?;
-                        write_line(&mut writer, &json)
-                            .await
-                            .wrap_err("failed to write event")?;
-                    }
-                    AgentEvent::ToolOutput { id, content } => {
-                        let event = ServerEvent::ToolOutput { id, content };
-                        let json =
-                            serde_json::to_string(&event).wrap_err("failed to serialize event")?;
-                        write_line(&mut writer, &json)
-                            .await
-                            .wrap_err("failed to write event")?;
-                    }
-                    AgentEvent::Error { message } => {
-                        error_message = Some(message.clone());
-                        let event = ServerEvent::Error { message };
-                        let json =
-                            serde_json::to_string(&event).wrap_err("failed to serialize event")?;
-                        write_line(&mut writer, &json)
-                            .await
-                            .wrap_err("failed to write event")?;
+            let (output_tx, output_rx) = flume::unbounded();
+            let writer_task = smol::spawn(async move {
+                while let Ok(event) = output_rx.recv_async().await {
+                    let json = match serde_json::to_string(&event) {
+                        Ok(json) => json,
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to serialize worker event");
+                            break;
+                        }
+                    };
+                    if let Err(error) = write_line(&mut writer, &json).await {
+                        tracing::debug!(%error, "daemon client disconnected while run continued");
                         break;
                     }
-                    AgentEvent::Done { usage, .. } => {
-                        final_usage = Some(
-                            serde_json::to_value(usage).unwrap_or_else(|_| serde_json::Value::Null),
-                        );
-                        break;
-                    }
-                    _ => {}
                 }
-            }
+            });
 
-            let event = ServerEvent::Done {
-                text: accumulated_text,
-                usage: final_usage.unwrap_or_else(|| serde_json::Value::Null),
-                error: error_message,
-            };
-            let json = serde_json::to_string(&event).wrap_err("failed to serialize event")?;
-            write_line(&mut writer, &json)
-                .await
-                .wrap_err("failed to write event")?;
+            collect_owned_run_events(&event_rx, current_run_id, &output_tx).await;
+            drop(output_tx);
+            writer_task.await;
 
             let mut state = read_agent_state(storage, agent_id)?;
             if paused.load(Ordering::Relaxed) {
@@ -1062,32 +1147,29 @@ async fn handle_connection(
         ClientCommand::Stop => {
             let mut state = read_agent_state(storage, agent_id)?;
             state.status = "stopping".to_string();
+            state.updated_at = now_epoch();
             write_agent_state(storage, &state)?;
 
-            // Cancel the current run and close the input channel
-            let _ = cancel_tx.send(());
-            drop(input_tx);
+            stop_interactive_task(&cancel_tx, &shutdown_tx, &task).await;
+            let _run = message_lock.lock().await;
 
-            // Cancel the outer interactive task to ensure cleanup
-            if let Some(t) = task.lock().await.take() {
-                t.cancel().await;
+            let agent_dir_path = agent_dir(storage, agent_id)?;
+            if let Err(error) = fs::remove_file(&state.socket_path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, path = %state.socket_path, "failed to remove agent socket");
+            }
+            if let Err(error) = fs::remove_dir_all(&agent_dir_path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, path = %agent_dir_path.display(), "failed to remove agent state directory");
             }
 
             let response = serde_json::json!({ "ok": true });
             let response_json = serde_json::to_string(&response)?;
-            write_line(&mut writer, &response_json)
-                .await
-                .wrap_err("failed to write response")?;
-
-            let agent_dir_path = agent_dir(storage, agent_id)?;
-            if let Err(e) = fs::remove_file(&state.socket_path) {
-                tracing::warn!(error = %e, path = %state.socket_path, "failed to remove agent socket");
-            }
-            if let Err(e) = fs::remove_dir_all(&agent_dir_path) {
-                tracing::warn!(error = %e, path = %agent_dir_path.display(), "failed to remove agent state directory");
-            }
-
-            std::process::exit(0);
+            let mut connected = true;
+            write_line_until_disconnect(&mut writer, &mut connected, &response_json).await;
+            let _ = server_stop_tx.try_send(());
         }
     }
 
@@ -1559,6 +1641,68 @@ fn control_command_client(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    fn done_envelope(run_id: u64) -> Envelope {
+        Envelope {
+            event: AgentEvent::Done {
+                usage: n00n_providers::TokenUsage::default(),
+                num_turns: 1,
+                stop_reason: None,
+                fusion: None,
+            },
+            subagent: None,
+            run_id,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_client_does_not_release_run_event_ownership() {
+        smol::block_on(async {
+            let (event_tx, event_rx) = flume::unbounded();
+            event_tx.send(done_envelope(6)).unwrap();
+            event_tx
+                .send(Envelope {
+                    event: AgentEvent::TextDelta {
+                        text: "owned".into(),
+                    },
+                    subagent: None,
+                    run_id: 7,
+                })
+                .unwrap();
+            event_tx.send(done_envelope(7)).unwrap();
+            let (output_tx, output_rx) = flume::unbounded();
+            drop(output_rx);
+
+            collect_owned_run_events(&event_rx, 7, &output_tx).await;
+
+            assert!(event_rx.is_empty());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_control_bypasses_initial_run_lock_and_waits_for_cleanup() {
+        smol::block_on(async {
+            let initial_run_lock = Arc::new(Mutex::new(()));
+            let _initial_run = initial_run_lock.lock().await;
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
+            let (shutdown_tx, shutdown_rx) = flume::bounded(1);
+            let (cleanup_tx, cleanup_rx) = flume::bounded(1);
+            let interactive = smol::spawn(async move {
+                shutdown_rx.recv_async().await.unwrap();
+                cleanup_tx.send_async(()).await.unwrap();
+            });
+            let task = Arc::new(Mutex::new(Some(interactive)));
+
+            stop_interactive_task(&cancel_tx, &shutdown_tx, &task).await;
+
+            assert_eq!(cancel_rx.try_recv(), Ok(()));
+            assert_eq!(cleanup_rx.try_recv(), Ok(()));
+            assert!(task.lock().await.is_none());
+        });
+    }
 
     #[test]
     fn agent_state_serialization_roundtrip() {
