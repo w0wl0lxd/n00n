@@ -7,10 +7,20 @@ mod db;
 use std::ffi::OsStr;
 use std::io::{Error, Read};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
+use std::io::ErrorKind;
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
+use std::os::unix::process::CommandExt;
 use wait_timeout::ChildExt;
 
 const CODEGRAPH_BINARY: &str = "codegraph";
@@ -280,10 +290,17 @@ impl Client {
     ) -> Result<String, CodegraphError> {
         let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
-        let child = Command::new(CODEGRAPH_BINARY)
+        let mut command = Command::new(CODEGRAPH_BINARY);
+        command
             .args(Self::cli_args(subcommand, project, positionals))
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(all(
+            unix,
+            not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+        ))]
+        command.process_group(0);
+        let child = command
             .spawn()
             .map_err(|source| CodegraphError::Exec { source })?;
 
@@ -354,6 +371,34 @@ impl Client {
         Self::run_cli(FILES_SUBCOMMAND, project, &[], timeout_secs)
     }
 
+    fn kill_child_tree(child: &mut Child) -> Result<(), Error> {
+        #[cfg(all(
+            unix,
+            not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+        ))]
+        {
+            use rustix::process::{Pid, Signal, kill_process_group};
+
+            let raw_pid = i32::try_from(child.id()).map_err(|source| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid child pid: {source}"),
+                )
+            })?;
+            let process_group = Pid::from_raw(raw_pid).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "child process id cannot be zero")
+            })?;
+            kill_process_group(process_group, Signal::KILL).map_err(Error::from)
+        }
+        #[cfg(not(all(
+            unix,
+            not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+        )))]
+        {
+            child.kill()
+        }
+    }
+
     fn wait_for_output(
         mut child: std::process::Child,
         timeout: Duration,
@@ -380,7 +425,7 @@ impl Client {
             .map_err(|source| CodegraphError::Exec { source })?;
 
         let Some(status) = status else {
-            if let Err(source) = child.kill() {
+            if let Err(source) = Self::kill_child_tree(&mut child) {
                 let _ = child.wait();
                 let _ = stdout_handle.join();
                 let _ = stderr_handle.join();
@@ -628,5 +673,35 @@ mod tests {
     fn files_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert_cli_error(Client::files(dir.path(), None), NO_INDEX);
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    #[test]
+    fn timeout_kills_descendants_before_joining_pipe_readers() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 2 & wait"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let child = command.spawn().expect("spawn timeout fixture");
+        let started = Instant::now();
+
+        assert_cli_error(
+            Client::wait_for_output(child, Duration::from_millis(100), "fixture"),
+            "timed out",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "pipe readers remained blocked for {:?}",
+            started.elapsed()
+        );
     }
 }
