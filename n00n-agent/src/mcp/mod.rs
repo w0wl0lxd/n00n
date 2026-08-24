@@ -1309,6 +1309,15 @@ pub(crate) fn stub_session(tools: &[(&str, &str)]) -> McpSession {
 
 #[cfg(test)]
 pub(crate) fn stub_session_with_read_only(tools: &[(&str, &str)], read_only: bool) -> McpSession {
+    stub_session_with_transport(tools, read_only, Arc::new(StubTransport(Arc::from("stub"))))
+}
+
+#[cfg(test)]
+pub(crate) fn stub_session_with_transport(
+    tools: &[(&str, &str)],
+    read_only: bool,
+    transport: Arc<dyn McpTransport>,
+) -> McpSession {
     let entry = ServerEntry {
         name: "stub".into(),
         config: None,
@@ -1316,7 +1325,7 @@ pub(crate) fn stub_session_with_read_only(tools: &[(&str, &str)], read_only: boo
         origin: PathBuf::new(),
         status: McpServerStatus::Running,
         connection_id: 1,
-        transport: Some(Arc::new(StubTransport(Arc::from("stub")))),
+        transport: Some(transport),
         tools: tools
             .iter()
             .map(|(qualified, description)| McpToolDef {
