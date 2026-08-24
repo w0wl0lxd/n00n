@@ -336,7 +336,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
     output_result(
         format,
         std::mem::take(&mut verbose_out),
-        std::mem::take(&mut result_text),
+        &result_text,
         ResultSummary {
             is_error,
             duration_ms,
@@ -347,7 +347,8 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
             total_cost_usd,
             fusion,
         },
-    )
+    )?;
+    ensure_successful_result(is_error, &result_text)
 }
 
 fn handle_print_event(
@@ -458,7 +459,7 @@ fn handle_print_event(
 fn output_result(
     format: OutputFormat,
     verbose_out: Option<VerboseOutput>,
-    result_text: String,
+    result_text: &str,
     summary: ResultSummary,
 ) -> Result<()> {
     let ResultSummary {
@@ -505,7 +506,7 @@ fn output_result(
                 is_error,
                 duration_ms,
                 num_turns,
-                result: result_text,
+                result: result_text.to_owned(),
                 stop_reason,
                 session_id,
                 total_cost_usd,
@@ -545,6 +546,13 @@ fn output_result(
         }
     }
 
+    Ok(())
+}
+
+fn ensure_successful_result(is_error: bool, result_text: &str) -> Result<()> {
+    if is_error {
+        return Err(eyre!(result_text.to_owned()));
+    }
     Ok(())
 }
 
@@ -622,5 +630,12 @@ mod tests {
         for field in RETRY_EVENT_FIELDS {
             assert!(json.get(field).is_some(), "RetryEvent missing: {field}");
         }
+    }
+
+    #[test]
+    fn agent_error_produces_a_failed_print_result() {
+        let error = ensure_successful_result(true, "provider failed").unwrap_err();
+        assert_eq!(error.to_string(), "provider failed");
+        assert!(ensure_successful_result(false, "done").is_ok());
     }
 }
