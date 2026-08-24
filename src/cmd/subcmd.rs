@@ -72,7 +72,7 @@ pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
             let slug = slugify(slug);
             if builtin_provider(&slug).is_some()
                 || dynamic::display_name(&slug).is_some()
-                || ProvidersConfig::load().get(&slug).is_some()
+                || ProvidersConfig::load_or_exit().get(&slug).is_some()
             {
                 login_provider(&slug, storage)?;
             } else if let Some(provider_data) = n00n_providers::catalog_provider(&slug) {
@@ -88,7 +88,7 @@ pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
 
 fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
     let builtin = builtin_provider(slug);
-    let is_custom = ProvidersConfig::load().get(slug).is_some();
+    let is_custom = ProvidersConfig::load_or_exit().get(slug).is_some();
     if builtin.is_none() && dynamic::display_name(slug).is_none() && !is_custom {
         bail!("unknown provider '{slug}'");
     }
@@ -98,7 +98,7 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
         return Ok(());
     }
 
-    let mut config = ProvidersConfig::load();
+    let mut config = ProvidersConfig::load().context("read providers.toml")?;
     let def = config.get(slug).cloned();
 
     let plan = select_plan(slug, builtin, def.as_ref())?;
@@ -198,7 +198,7 @@ fn login_provider_account(provider: &str, account: &str, storage: &StateDir) -> 
     }
 
     let selector = format!("{provider}@{account}");
-    let mut config = ProvidersConfig::load();
+    let mut config = ProvidersConfig::load().context("read providers.toml")?;
     let api_key = prompt_api_key(None, &format!("Devin account {account}"), true)?;
     let has_api_key = !api_key.is_empty();
     if has_api_key {
@@ -242,7 +242,7 @@ fn login_provider_account(provider: &str, account: &str, storage: &StateDir) -> 
 
 fn login_interactive(storage: &StateDir) -> Result<()> {
     let builtins = all_builtins();
-    let config = ProvidersConfig::load();
+    let config = ProvidersConfig::load_or_exit();
     let custom_slugs: Vec<&String> = config
         .providers
         .keys()
@@ -418,7 +418,7 @@ fn login_custom(storage: &StateDir, slug: Option<&str>) -> Result<()> {
     io::stdin().read_line(&mut key_input)?;
     let api_key = key_input.trim().to_string();
 
-    let mut config = ProvidersConfig::load();
+    let mut config = ProvidersConfig::load().context("read providers.toml")?;
     let default_model = if protocol == "devin" {
         Some(format!("{slug}/{}", resolved_devin_model_id(&config)?))
     } else {
@@ -552,7 +552,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
         let selector = format!("{provider}@{account}");
         let deleted =
             delete_provider_credentials(storage, &selector).context("delete credentials")?;
-        let mut config = ProvidersConfig::load();
+        let mut config = ProvidersConfig::load().context("read providers.toml")?;
         let legacy_slug = legacy_devin_slug_for_account(&config, &account);
         let legacy_deleted = match legacy_slug.as_deref() {
             Some(slug) => {
@@ -581,7 +581,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
         "openai" | "codex" => openai_auth::logout(storage)?,
         "copilot" => copilot_auth::logout(storage)?,
         _ => {
-            let mut config = ProvidersConfig::load();
+            let mut config = ProvidersConfig::load().context("read providers.toml")?;
             let deleted =
                 delete_provider_credentials(storage, &slug).context("delete credentials")?;
             if deleted {
@@ -599,7 +599,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
 }
 
 pub fn auth_status(storage: &StateDir) {
-    let config = ProvidersConfig::load();
+    let config = ProvidersConfig::load_or_exit();
     let builtins = all_builtins();
 
     println!();

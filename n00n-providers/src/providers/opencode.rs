@@ -308,7 +308,7 @@ struct CatalogData {
 }
 
 fn enable_free_models_config() -> bool {
-    n00n_config::providers::ProvidersConfig::load()
+    n00n_config::providers::ProvidersConfig::load_or_exit()
         .get("opencode")
         .and_then(|d| d.enable_free_models)
         .unwrap_or_else(|| false)

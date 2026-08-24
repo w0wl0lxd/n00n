@@ -34,7 +34,7 @@ pub(crate) struct LocalEndpointConfig {
 fn resolve_protocol_for_local(slug: &str) -> Option<Protocol> {
     n00n_config::providers::resolve_protocol(
         slug,
-        n00n_config::providers::ProvidersConfig::load().get(slug),
+        n00n_config::providers::ProvidersConfig::load_or_exit().get(slug),
     )
 }
 
@@ -77,7 +77,7 @@ impl LocalEndpoint {
         timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
         let key_pool = KeyPool::resolve(cfg.slug, cfg.api_key_env).ok();
-        let provider_config = n00n_config::providers::ProvidersConfig::load();
+        let provider_config = n00n_config::providers::ProvidersConfig::load_or_exit();
         let provider_entry = provider_config.get(cfg.slug);
         let host = provider_entry
             .and_then(|d| d.base_url.clone())

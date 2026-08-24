@@ -236,7 +236,7 @@ fn build_stack(
     }
 
     let commands = discover_commands(cli.plugin_flags.no_commands);
-    let providers_toml = ProvidersConfig::load();
+    let providers_toml = ProvidersConfig::load_or_exit();
 
     let model_result = setup::resolve_model_with_fusion(
         cli.model.as_deref(),

@@ -415,7 +415,7 @@ fn prepare_agent_env(
         stream: config.provider.stream_timeout,
     };
 
-    let providers_toml = ProvidersConfig::load();
+    let providers_toml = ProvidersConfig::load_or_exit();
     let model = setup::resolve_model_with_fusion(
         model_arg,
         &config.provider,

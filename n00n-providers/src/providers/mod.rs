@@ -487,7 +487,7 @@ impl KeyPool {
     }
 
     fn key_from_config(slug: &str) -> Option<String> {
-        n00n_config::providers::ProvidersConfig::load()
+        n00n_config::providers::ProvidersConfig::load_or_exit()
             .get(slug)
             .and_then(|d| d.api_key.clone())
     }

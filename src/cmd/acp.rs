@@ -54,7 +54,7 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool, project_trusted: b
         stream: config.provider.stream_timeout,
     };
 
-    let providers_toml = ProvidersConfig::load();
+    let providers_toml = ProvidersConfig::load_or_exit();
     let model = setup::resolve_model(model_arg, &config.provider, &providers_toml, &storage)?;
     setup::install_panic_log_hook();
 

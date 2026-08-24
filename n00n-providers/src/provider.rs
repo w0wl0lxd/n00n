@@ -347,7 +347,7 @@ fn provider_available_with_config(slug: &str, config: Option<&ProvidersConfig>) 
     let config = if let Some(config) = config {
         config
     } else {
-        loaded_config = ProvidersConfig::load();
+        loaded_config = ProvidersConfig::load_or_exit();
         &loaded_config
     };
 
@@ -525,7 +525,7 @@ fn devin_account_model_specs(config: &ProvidersConfig) -> Vec<String> {
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
 #[must_use]
 pub fn available_model_specs() -> Vec<String> {
-    let providers_config = ProvidersConfig::load();
+    let providers_config = ProvidersConfig::load_or_exit();
     let mut specs: Vec<String> = crate::manifest::ManifestRegistry::builtins()
         .iter()
         .filter(|manifest| {
@@ -651,7 +651,7 @@ pub async fn fetch_all_models(
     }
 
     let account_models =
-        smol::unblock(|| devin_account_model_specs(&ProvidersConfig::load())).await;
+        smol::unblock(|| devin_account_model_specs(&ProvidersConfig::load_or_exit())).await;
     if !account_models.is_empty() {
         let _ = tx
             .send_async(ModelBatch {

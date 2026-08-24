@@ -256,7 +256,7 @@ impl Zai {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
         let pool = KeyPool::resolve("zai", CONFIG.api_key_env)?;
         let mut auth = ResolvedAuth::bearer(pool.current());
-        let provider_config = n00n_config::providers::ProvidersConfig::load();
+        let provider_config = n00n_config::providers::ProvidersConfig::load_or_exit();
         if let Some(url) =
             n00n_config::providers::resolve_base_url("zai", provider_config.get("zai"))
         {
