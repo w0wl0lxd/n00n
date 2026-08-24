@@ -1,4 +1,5 @@
 local pipeline_args = require("pipeline_args")
+local saga_runner = require("saga_runner")
 
 local failures = {}
 
@@ -182,13 +183,26 @@ case("workflow_saga_compensations_run_in_reverse_on_error", function()
   assert(tostring(result):find("agent failed", 1, true), "original error must propagate")
   eq(#compensations, 2, "both compensations must be registered")
 
-  -- Simulate the saga rollback handler: run compensations LIFO.
-  for i = #compensations, 1, -1 do
-    compensations[i]()
-  end
+  local final_err = saga_runner.run({ compensations = compensations, error_handlers = {} }, result)
+  assert(tostring(final_err):find("agent failed", 1, true), "original error must propagate")
   eq(#env.ran, 2, "both compensations ran")
   eq(env.ran[1], "second", "second compensation must run first (LIFO)")
   eq(env.ran[2], "first", "first compensation must run second")
+end)
+
+case("workflow_saga_on_error_runs_without_compensations", function()
+  local calls = 0
+  local result = saga_runner.run({
+    compensations = {},
+    error_handlers = {
+      function(err)
+        eq(err, "agent failed")
+        calls = calls + 1
+      end,
+    },
+  }, "agent failed")
+  eq(result, "agent failed", "original error must propagate")
+  eq(calls, 1, "on_error handler must run exactly once")
 end)
 
 case("workflow_schema_validator_available", function()
