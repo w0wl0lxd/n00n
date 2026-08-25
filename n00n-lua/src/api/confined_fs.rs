@@ -10,6 +10,8 @@ use rustix::fs::{
     AtFlags, Dir, FileType, Mode, OFlags, Stat, fsync, open, openat, renameat, statat, unlinkat,
 };
 
+const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
+
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct Metadata {
@@ -170,7 +172,7 @@ fn metadata_from_stat(stat: &Stat) -> std::io::Result<Metadata> {
         .map_err(|_| Error::other("modification time is out of range"))?;
     let mtime = stat
         .st_mtime
-        .checked_mul(1_000_000_000)
+        .checked_mul(NANOSECONDS_PER_SECOND)
         .and_then(|seconds| seconds.checked_add(nanoseconds))
         .ok_or_else(|| Error::other("modification time is out of range"))?;
     Ok(Metadata {

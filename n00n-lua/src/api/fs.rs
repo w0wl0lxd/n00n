@@ -1,9 +1,9 @@
 use std::collections::{HashSet, VecDeque};
 #[cfg(unix)]
 use std::fs::File;
+use std::fs::FileType;
 #[cfg(unix)]
-use std::fs::Permissions;
-use std::fs::{FileType, OpenOptions};
+use std::fs::{OpenOptions, Permissions};
 use std::io::{Error, ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt};
@@ -15,8 +15,11 @@ use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use futures_lite::stream::StreamExt;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(unix)]
 use fs2::FileExt as _;
-use mlua::{Function, IntoLua, Lua, Result as LuaResult, Table, Value};
+#[cfg(unix)]
+use mlua::Function;
+use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
 
 #[cfg(unix)]

@@ -245,12 +245,14 @@ fn worker_command() -> io::Result<Command> {
 }
 
 fn spawn_worker() -> io::Result<(ChildGuard, ChildStdin, BufReader<ChildStdout>)> {
-    let mut command = worker_command()?;
+    let command = worker_command()?;
     #[cfg(unix)]
-    {
+    let command = {
         use std::os::unix::process::CommandExt;
+        let mut command = command;
         command.process_group(0);
-    }
+        command
+    };
     let mut command: async_process::Command = command.into();
     command
         .stdin(Stdio::piped())

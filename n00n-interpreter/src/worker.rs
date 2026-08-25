@@ -263,28 +263,28 @@ mod tests {
     }
 
     #[test_case(
-        json!({"type": "start", "code": "pass", "tool_names": [], "timeout_millis": 1, "max_memory_bytes": 1}),
+        &json!({"type": "start", "code": "pass", "tool_names": [], "timeout_millis": 1, "max_memory_bytes": 1}),
         "start";
         "start"
     )]
     #[test_case(
-        json!({"type": "call_results", "request_id": 4, "results": []}),
+        &json!({"type": "call_results", "request_id": 4, "results": []}),
         "call_results";
         "call_results"
     )]
-    fn worker_request_round_trips_with_type_tag(expected: Value, expected_type: &str) {
+    fn worker_request_round_trips_with_type_tag(expected: &Value, expected_type: &str) {
         let mut frame = serde_json::to_vec(&expected).unwrap();
         frame.push(b'\n');
         let request = read_request_frame(&mut Cursor::new(frame), TEST_FRAME_LIMIT).unwrap();
         let encoded = serde_json::to_value(request).unwrap();
         assert_eq!(encoded["type"], expected_type);
-        assert_eq!(encoded, expected);
+        assert_eq!(&encoded, expected);
     }
 
-    #[test_case(WorkerEvent::Started, "started" ; "started")]
-    #[test_case(WorkerEvent::Output { line: "hello".into() }, "output" ; "output")]
-    #[test_case(WorkerEvent::Complete { output: None, stdout: "done".into() }, "complete" ; "complete")]
-    fn worker_event_round_trips_with_type_tag(event: WorkerEvent, expected_type: &str) {
+    #[test_case(&WorkerEvent::Started, "started" ; "started")]
+    #[test_case(&WorkerEvent::Output { line: "hello".into() }, "output" ; "output")]
+    #[test_case(&WorkerEvent::Complete { output: None, stdout: "done".into() }, "complete" ; "complete")]
+    fn worker_event_round_trips_with_type_tag(event: &WorkerEvent, expected_type: &str) {
         let mut frame = serde_json::to_vec(&event).unwrap();
         frame.push(b'\n');
         assert_eq!(frame.last(), Some(&b'\n'));

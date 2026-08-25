@@ -1797,6 +1797,7 @@ impl App {
                 }
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message.clone());
+                    self.queue.cancel_editing();
                     self.queue.unfocus();
                     self.status_bar.clear_flash();
                     self.save_session_without_plugin_state_capture();

@@ -11,6 +11,7 @@ use base64::Engine;
 use flume::Sender;
 use hmac::{Hmac, Mac};
 use isahc::config::{Configurable, RedirectPolicy, ResolveMap};
+use isahc::http::{Method, header::AUTHORIZATION};
 use isahc::{HttpClient, Request};
 use n00n_storage::id::SessionRef;
 use serde_json::{Value, json};
@@ -363,9 +364,11 @@ fn fetch_container_credentials(
     }
     let client = client_builder.build()?;
 
-    let mut builder = Request::builder().method("GET").uri(endpoint.url.as_str());
+    let mut builder = Request::builder()
+        .method(Method::GET)
+        .uri(endpoint.url.as_str());
     if let Some(token) = &auth_header {
-        builder = builder.header("Authorization", token);
+        builder = builder.header(AUTHORIZATION, token);
     }
     let request = builder.body(Vec::<u8>::new())?;
     let mut response = client.send(request)?;

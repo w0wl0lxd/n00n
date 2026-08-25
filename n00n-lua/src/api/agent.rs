@@ -1743,10 +1743,10 @@ mod tests {
 
     #[test]
     fn oversized_nested_timeout_is_rejected() {
-        assert_eq!(
+        assert!(matches!(
             cap_nested_deadline(Deadline::None, Duration::MAX),
             Err(TIMEOUT_OUT_OF_RANGE_ERR)
-        );
+        ));
     }
 
     #[test]

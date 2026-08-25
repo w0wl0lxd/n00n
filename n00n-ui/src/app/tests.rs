@@ -2926,6 +2926,10 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
         }),
         SubmitOutcome::Queued
     ));
+    app.queue.set_focus();
+    assert!(app.queue.take_focused_for_edit().is_some());
+    assert!(app.queue.text_messages().is_empty());
+
     app.update(agent_msg(AgentEvent::Error {
         message: "provider failed".into(),
     }));

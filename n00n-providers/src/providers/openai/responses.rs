@@ -1246,21 +1246,25 @@ impl ResponseAccumulator {
         }));
 
         for acc in self.tool_accumulators.drain(..) {
-            let input: Value = serde_json::from_str(&acc.arguments).map_err(|error| {
-                warn!(
-                    error = %error,
-                    tool = %acc.name,
-                    argument_bytes = acc.arguments.len(),
-                    "rejecting malformed streamed tool arguments"
-                );
-                AgentError::Api {
-                    status: 400,
-                    message: format!(
-                        "malformed streamed tool arguments at output index {}",
-                        acc.output_index
-                    ),
-                }
-            })?;
+            let input: Value = if acc.arguments.is_empty() {
+                json!({})
+            } else {
+                serde_json::from_str(&acc.arguments).map_err(|error| {
+                    warn!(
+                        error = %error,
+                        tool = %acc.name,
+                        argument_bytes = acc.arguments.len(),
+                        "rejecting malformed streamed tool arguments"
+                    );
+                    AgentError::Api {
+                        status: 400,
+                        message: format!(
+                            "malformed streamed tool arguments at output index {}",
+                            acc.output_index
+                        ),
+                    }
+                })?
+            };
             debug!(
                 tool = %acc.name,
                 argument_bytes = acc.arguments.len(),
@@ -1945,6 +1949,25 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 
             assert!(resp.message.content.is_empty());
             assert_eq!(resp.usage.output, 5);
+        });
+    }
+
+    #[test]
+    fn parse_sse_empty_tool_arguments_use_empty_object() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.added\n\
+data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\"}}\n\
+\n\
+event: response.completed\n\
+data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\
+\n";
+
+            let (response, _) = run_sse(sse).await;
+            let (_, response) = response.unwrap();
+            let tools: Vec<_> = response.message.tool_uses().collect();
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].2, &json!({}));
         });
     }
 
