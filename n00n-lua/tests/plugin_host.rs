@@ -6360,6 +6360,14 @@ fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
 }
 
 #[test]
+fn agent_control_policy_list_uses_loaded_rules() {
+    let source = include_str!("../../plugins/agent_control/init.lua");
+    assert!(source.contains("for _, rule in ipairs(policies.rules) do"));
+    assert!(source.contains("local count = #policies.rules"));
+    assert!(!source.contains("ipairs(rules)"));
+}
+
+#[test]
 fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
     smol::block_on(async {
         let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

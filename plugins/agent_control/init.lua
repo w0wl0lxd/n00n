@@ -409,14 +409,15 @@ local function control_handler(input)
         return { llm_output = "Error: encode failed", is_error = true }
       end
       local lines = {}
-      for _, rule in ipairs(rules) do
+      for _, rule in ipairs(policies.rules) do
         lines[#lines + 1] = tostring(rule.id) .. " · priority " .. tostring(rule.priority)
       end
       if #lines == 0 then
         lines[1] = "(no policies)"
       end
-      local body = card(string.format("policies · %d", #rules), lines, tostring(#rules))
-      return { llm_output = encoded, body = body, annotation = tostring(#rules) .. " (" .. fmt .. ")" }
+      local count = #policies.rules
+      local body = card(string.format("policies · %d", count), lines, tostring(count))
+      return { llm_output = encoded, body = body, annotation = tostring(count) .. " (" .. fmt .. ")" }
     end
     return { llm_output = "Error: unknown policy action " .. tostring(paction), is_error = true }
   end
