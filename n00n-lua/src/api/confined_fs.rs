@@ -7,7 +7,8 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{
-    AtFlags, Dir, FileType, Mode, OFlags, Stat, fsync, open, openat, renameat, statat, unlinkat,
+    AtFlags, Dir, FileType, Mode, OFlags, Stat, fchmod, fsync, open, openat, renameat, statat,
+    unlinkat,
 };
 
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
@@ -131,7 +132,15 @@ pub(crate) fn dir(base: &Path) -> std::io::Result<Vec<DirEntry>> {
 
 pub(crate) fn write(base: &Path, relative: &Path, content: &[u8]) -> std::io::Result<()> {
     let (parent, name) = open_parent(base, relative)?;
-    if metadata_at(&parent, name.as_os_str())?.is_some_and(|metadata| metadata.is_symlink) {
+    let existing = match statat(&parent, name.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => Some(stat),
+        Err(rustix::io::Errno::NOENT) => None,
+        Err(error) => return Err(Error::from(error)),
+    };
+    if existing
+        .as_ref()
+        .is_some_and(|stat| FileType::from_raw_mode(stat.st_mode).is_symlink())
+    {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "destination must not be a symbolic link",
@@ -154,6 +163,9 @@ pub(crate) fn write(base: &Path, relative: &Path, content: &[u8]) -> std::io::Re
     let (temporary_name, fd) = temporary_name;
     let mut temporary = File::from(fd);
     let result = (|| {
+        if let Some(stat) = existing {
+            fchmod(&temporary, Mode::from_raw_mode(stat.st_mode)).map_err(Error::from)?;
+        }
         temporary.write_all(content)?;
         temporary.sync_all()?;
         renameat(&parent, temporary_name.as_str(), &parent, name.as_os_str())
@@ -212,7 +224,7 @@ pub(crate) fn remove(base: &Path, relative: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use tempfile::TempDir;
 
@@ -237,6 +249,21 @@ mod tests {
             .mtime;
 
         assert_eq!(u128::try_from(actual).unwrap(), expected);
+    }
+
+    #[test]
+    fn write_preserves_existing_permissions() {
+        let base = TempDir::new().unwrap();
+        let path = base.path().join("existing.md");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+
+        write(base.path(), Path::new("existing.md"), b"new").unwrap();
+
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
     }
 
     #[test]
