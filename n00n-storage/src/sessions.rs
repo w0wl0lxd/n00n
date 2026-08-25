@@ -12,6 +12,8 @@ use std::hash::BuildHasher;
 use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Take, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::UNIX_EPOCH;
@@ -42,6 +44,7 @@ const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
+const CWD_INDEX_LOCK_FILE: &str = "cwd_latest.lock";
 const SCAN_CACHE_FILE: &str = "scan_cache_v3.json";
 const SCAN_CACHE_FILE_V2: &str = "scan_cache_v2.json";
 const DEFAULT_TITLE: &str = "New session";
@@ -2039,9 +2042,17 @@ struct SessionMutationLock {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionFileRevision {
-    device: u64,
-    inode: u64,
     len: u64,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume_serial_number: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+    #[cfg(windows)]
+    creation_time: u64,
 }
 
 impl SessionFileRevision {
@@ -2055,9 +2066,17 @@ impl SessionFileRevision {
 
     fn from_metadata(metadata: &fs::Metadata) -> Self {
         Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
             len: metadata.len(),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(windows)]
+            volume_serial_number: metadata.volume_serial_number(),
+            #[cfg(windows)]
+            file_index: metadata.file_index(),
+            #[cfg(windows)]
+            creation_time: metadata.creation_time(),
         }
     }
 }
@@ -3556,6 +3575,15 @@ fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
 }
 
 fn update_cwd_index(dir: &Path, cwd: &str, session_id: n00nId) -> Result<(), StorageError> {
+    let _lock = lock_cwd_index(dir)?;
+    update_cwd_index_unlocked(dir, cwd, session_id)
+}
+
+fn update_cwd_index_unlocked(
+    dir: &Path,
+    cwd: &str,
+    session_id: n00nId,
+) -> Result<(), StorageError> {
     let mut index = load_cwd_index(dir);
     let id_str = session_id.to_string();
     if index.get(cwd).is_some_and(|v| *v == id_str) {
@@ -3575,21 +3603,34 @@ fn session_lock_path(dir: &Path, id: n00nId) -> PathBuf {
 
 fn lock_session_in(dir: &Path, id: n00nId) -> Result<SessionMutationLock, StorageError> {
     fs::create_dir_all(dir)?;
-    let path = session_lock_path(dir, id);
+    lock_storage_file(
+        &session_lock_path(dir, id),
+        "session lock is not a regular file",
+    )
+}
+
+fn lock_cwd_index(dir: &Path) -> Result<SessionMutationLock, StorageError> {
+    fs::create_dir_all(dir)?;
+    lock_storage_file(
+        &dir.join(CWD_INDEX_LOCK_FILE),
+        "cwd index lock is not a regular file",
+    )
+}
+
+fn lock_storage_file(
+    path: &Path,
+    invalid_file_message: &'static str,
+) -> Result<SessionMutationLock, StorageError> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
     options
         .mode(SESSION_LOCK_FILE_MODE)
         .custom_flags(libc::O_NOFOLLOW);
-    let file = options.open(&path)?;
+    let file = options.open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidData,
-            "session lock is not a regular file",
-        )
-        .into());
+        return Err(std::io::Error::new(ErrorKind::InvalidData, invalid_file_message).into());
     }
     #[cfg(unix)]
     file.set_permissions(fs::Permissions::from_mode(SESSION_LOCK_FILE_MODE))?;
@@ -3776,6 +3817,7 @@ fn try_remove(path: &Path) -> Result<bool, StorageError> {
 }
 
 fn remove_from_cwd_index(dir: &Path, session_id: n00nId) -> Result<(), StorageError> {
+    let _lock = lock_cwd_index(dir)?;
     let mut index = load_cwd_index(dir);
     let before = index.len();
     let session_id = session_id.to_string();
@@ -6770,14 +6812,14 @@ mod tests {
         const CHILD_ENV: &str = "N00N_SESSION_LOCK_CHILD";
         const DIR_ENV: &str = "N00N_SESSION_LOCK_DIR";
         const ID_ENV: &str = "N00N_SESSION_LOCK_ID";
-        const SOCKET_ENV: &str = "N00N_SESSION_LOCK_SOCKET";
+        const ADDRESS_ENV: &str = "N00N_SESSION_LOCK_ADDRESS";
 
         if std::env::var_os(CHILD_ENV).is_some() {
             let dir = std::env::var_os(DIR_ENV).unwrap();
             let id = std::env::var(ID_ENV).unwrap().parse::<n00nId>().unwrap();
-            let socket = std::env::var_os(SOCKET_ENV).unwrap();
+            let address = std::env::var(ADDRESS_ENV).unwrap();
             let _lock = super::lock_session_in(Path::new(&dir), id).unwrap();
-            let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
             stream.write_all(b"ready").unwrap();
             let mut release = [0_u8; 1];
             stream.read_exact(&mut release).unwrap();
@@ -6786,8 +6828,8 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let dir = temp.path();
-        let socket = temp.path().join("session-lock.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
         let session: TestSession = Session::new("model", "/project");
         SessionLog::create(dir, &session).unwrap();
         let executable = std::env::current_exe().unwrap();
@@ -6800,7 +6842,7 @@ mod tests {
             .env(CHILD_ENV, "1")
             .env(DIR_ENV, dir)
             .env(ID_ENV, session.id.to_string())
-            .env(SOCKET_ENV, &socket)
+            .env(ADDRESS_ENV, address)
             .spawn()
             .unwrap();
         let (mut coordination, _) = listener.accept().unwrap();
@@ -6829,6 +6871,75 @@ mod tests {
             .unwrap();
         delete_thread.join().unwrap();
         assert!(!jsonl_path(dir, session.id).exists());
+    }
+
+    #[test]
+    fn cwd_index_updates_are_serialized_across_session_processes() {
+        const CHILD_ENV: &str = "N00N_CWD_INDEX_LOCK_CHILD";
+        const DIR_ENV: &str = "N00N_CWD_INDEX_LOCK_DIR";
+        const ID_ENV: &str = "N00N_CWD_INDEX_LOCK_ID";
+        const ADDRESS_ENV: &str = "N00N_CWD_INDEX_LOCK_ADDRESS";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let dir = std::env::var_os(DIR_ENV).unwrap();
+            let id = std::env::var(ID_ENV).unwrap().parse::<n00nId>().unwrap();
+            let address = std::env::var(ADDRESS_ENV).unwrap();
+            let _lock = super::lock_cwd_index(Path::new(&dir)).unwrap();
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream.write_all(b"ready").unwrap();
+            let mut release = [0_u8; 1];
+            stream.read_exact(&mut release).unwrap();
+            super::update_cwd_index_unlocked(Path::new(&dir), "/child", id).unwrap();
+            return;
+        }
+
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let child_id: n00nId = "01965087-4c71-7f00-8000-000000000010".parse().unwrap();
+        let parent_id: n00nId = "01965087-4c71-7f00-8000-000000000011".parse().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(executable)
+            .args([
+                "--exact",
+                "sessions::tests::cwd_index_updates_are_serialized_across_session_processes",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env(DIR_ENV, dir)
+            .env(ID_ENV, child_id.to_string())
+            .env(ADDRESS_ENV, address)
+            .spawn()
+            .unwrap();
+        let (mut coordination, _) = listener.accept().unwrap();
+        let mut ready = [0_u8; 5];
+        coordination.read_exact(&mut ready).unwrap();
+        assert_eq!(&ready, b"ready");
+
+        let (updated_tx, updated_rx) = std::sync::mpsc::channel();
+        let update_dir = dir.to_path_buf();
+        let update_thread = std::thread::spawn(move || {
+            let result = update_cwd_index(&update_dir, "/parent", parent_id);
+            updated_tx.send(result).unwrap();
+        });
+        assert!(
+            updated_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
+
+        coordination.write_all(b"r").unwrap();
+        assert!(child.wait().unwrap().success());
+        updated_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        update_thread.join().unwrap();
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/child"), Some(&child_id.to_string()));
+        assert_eq!(index.get("/parent"), Some(&parent_id.to_string()));
     }
 
     #[test]

@@ -470,7 +470,7 @@ impl KeyPool {
             debug!(slug, "resolved API key from saved credentials");
             return Ok(Self::from_keys(vec![key]));
         }
-        if let Some(key) = Self::key_from_config(slug) {
+        if let Some(key) = Self::key_from_config(slug)? {
             debug!(slug, "resolved API key from providers.toml");
             return Ok(Self::from_keys(vec![key]));
         }
@@ -486,10 +486,10 @@ impl KeyPool {
         n00n_storage::auth::load_provider_credentials(&dir, slug).map(|c| c.api_key)
     }
 
-    fn key_from_config(slug: &str) -> Option<String> {
-        n00n_config::providers::ProvidersConfig::load_or_exit()
+    fn key_from_config(slug: &str) -> Result<Option<String>, AgentError> {
+        Ok(n00n_config::providers::ProvidersConfig::load()?
             .get(slug)
-            .and_then(|d| d.api_key.clone())
+            .and_then(|definition| definition.api_key.clone()))
     }
 
     pub(crate) fn from_keys(keys: Vec<String>) -> Self {

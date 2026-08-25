@@ -445,9 +445,13 @@ static DISCOVERED: OnceLock<Vec<DynamicProviderMeta>> = OnceLock::new();
 
 fn discover() -> &'static [DynamicProviderMeta] {
     DISCOVERED.get_or_init(|| {
-        // Load config first: it hard-exits on malformed providers.toml, so fail
-        // before spawning every provider script.
-        let custom = ProvidersConfig::load_or_exit();
+        let custom = match ProvidersConfig::load() {
+            Ok(config) => config,
+            Err(error) => {
+                warn!(%error, "cannot load provider config while discovering scripts");
+                ProvidersConfig::default()
+            }
+        };
         let mut metas = providers_dir().map_or_else(Vec::new, |d| discover_in(&d));
         // A script and a providers.toml entry must not share a slug. The script
         // loses, the same way it already loses to a builtin, and we say so
