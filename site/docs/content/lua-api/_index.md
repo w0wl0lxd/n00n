@@ -1798,6 +1798,128 @@ n00n.fs.abspath("src/main.rs") -- "/home/user/project/src/main.rs"
 
 ---
 
+### `n00n.fs.resolve_within()` {#n00n-fs-resolve_within}
+
+```lua
+n00n.fs.resolve_within({base}, {candidate})
+```
+
+Resolve a candidate path physically and require it to remain below a base directory.
+Existing symbolic links are followed before the boundary comparison. Non-existent tail
+components are preserved below the last existing physical parent.
+
+**Parameters:**
+
+- `{base}` (`string`) Boundary directory.
+- `{candidate}` (`string`) Candidate path.
+
+**Returns:** (`string?`, `string?`) Resolved path, or nil and an error.
+
+---
+
+### `n00n.fs.read_within()` {#n00n-fs-read_within}
+
+```lua
+n00n.fs.read_within({base}, {relative})
+```
+
+Read a UTF-8 file relative to an opened base directory without following symbolic links.
+
+**Parameters:**
+
+- `{base}` (`string`) Trusted base directory.
+- `{relative}` (`string`) Relative file path.
+
+**Returns:** (`string?`, `string?`) File contents, or nil plus an error.
+
+---
+
+### `n00n.fs.metadata_within()` {#n00n-fs-metadata_within}
+
+```lua
+n00n.fs.metadata_within({base}, {relative})
+```
+
+Get no-follow metadata for a path relative to an opened base directory.
+
+**Parameters:**
+
+- `{base}` (`string`) Trusted base directory.
+- `{relative}` (`string`) Relative path.
+
+**Returns:** (`table?`, `string?`) Metadata, nil if missing, or nil plus an error.
+
+---
+
+### `n00n.fs.dir_within()` {#n00n-fs-dir_within}
+
+```lua
+n00n.fs.dir_within({base})
+```
+
+List one opened base directory without following symbolic links.
+
+**Parameters:**
+
+- `{base}` (`string`) Trusted base directory.
+
+**Returns:** (`table?`, `string?`) Directory entries, or nil plus an error.
+
+---
+
+### `n00n.fs.write_within()` {#n00n-fs-write_within}
+
+```lua
+n00n.fs.write_within({base}, {relative}, {content})
+```
+
+Atomically write a file relative to an opened base directory without following symbolic links.
+
+**Parameters:**
+
+- `{base}` (`string`) Trusted base directory.
+- `{relative}` (`string`) Relative destination path.
+- `{content}` (`string`) Text to write.
+
+**Returns:** (`true?`, `string?`) True on success, or nil plus an error.
+
+---
+
+### `n00n.fs.rm_within()` {#n00n-fs-rm_within}
+
+```lua
+n00n.fs.rm_within({base}, {relative})
+```
+
+Delete a file or symbolic link relative to an opened base directory without following links.
+
+**Parameters:**
+
+- `{base}` (`string`) Trusted base directory.
+- `{relative}` (`string`) Relative path.
+
+**Returns:** (`true?`, `string?`) True on success, or nil plus an error.
+
+---
+
+### `n00n.fs.with_lock()` {#n00n-fs-with_lock}
+
+```lua
+n00n.fs.with_lock({path}, {callback})
+```
+
+Run a callback while holding an exclusive advisory lock on a file.
+The lock is shared across independent Lua hosts and operating-system processes.
+
+**Parameters:**
+
+- `{path}` (`string`) Lock file path. Its parent directory must exist.
+- `{callback}` (`function`) Callback returning a `(value, err)` pair.
+
+**Returns:** (`any?`, `string?`) Callback result, or nil and a lock error.
+
+---
+
 ### `n00n.fs.parents()` {#n00n-fs-parents}
 
 ```lua
@@ -5889,6 +6011,12 @@ function M.resolve_capped(opts, ctx, default_max_bytes)
 M.canonical_tool_name = canonical_tool_name
 function M.evaluate_policy(agent_id, session_type, tags, tool_name)
 function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
+```
+
+### `require("n00n.policy_store")`
+
+```lua
+function M.load(path)
 ```
 
 ### `require("n00n.route_tier")`

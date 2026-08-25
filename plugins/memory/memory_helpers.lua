@@ -113,12 +113,19 @@ function M.safe_resolve(memories_dir, relative)
   if relative:match("^%a:") then
     return nil, "path must be relative"
   end
+  local components = {}
   for component in relative:gmatch("[^/\\]+") do
-    if component == "." or component == ".." then
+    if component == ".." then
       return nil, "path traversal outside memories directory is not allowed"
     end
+    if component ~= "." then
+      table.insert(components, component)
+    end
   end
-  return relative
+  if #components == 0 then
+    return nil, "path is required"
+  end
+  return table.concat(components, "/")
 end
 
 function M.collect_file_entries(dir)

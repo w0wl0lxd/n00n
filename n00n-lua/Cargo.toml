@@ -7,6 +7,11 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "n00n-interpreter-worker"
+path = "src/bin/n00n-interpreter-worker.rs"
+doc = false
+
 [dependencies]
 arc-swap = { workspace = true }
 async-process = { workspace = true }

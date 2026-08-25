@@ -6352,7 +6352,7 @@ fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
         "SubagentInfo must carry generated child_id, not the containing task/team/workflow tool-call id"
     );
     assert!(
-        source.contains(".insert(child_id.clone(), child_trigger)")
+        source.contains("parent_cancels.insert(s.child_id.clone(), child_trigger)")
             && source.contains("parent_cancels.remove(&self.child_id)")
             && source.contains("tool_use_id: self.child_id.clone()"),
         "cancellation and SubagentHistory must use the same generated child_id"

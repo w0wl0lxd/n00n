@@ -20,6 +20,7 @@ bench = false
 name = "n00n-interpreter-worker"
 path = "src/interpreter_worker.rs"
 bench = false
+doc = false
 
 [[bin]]
 name = "anthropic_cache_benchmark"

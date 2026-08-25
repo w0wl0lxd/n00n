@@ -139,6 +139,11 @@ impl Bridge {
     }
 }
 
+/// Runs the framed interpreter worker protocol over standard input and output.
+///
+/// # Errors
+///
+/// Returns an error when protocol input is invalid or standard I/O fails.
 pub fn run_stdio() -> Result<(), WorkerError> {
     let bridge = Rc::new(Bridge {
         reader: RefCell::new(BufReader::new(std::io::stdin())),
