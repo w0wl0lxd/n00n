@@ -222,6 +222,7 @@ impl QueueSender {
         let mut items = lock(&self.items);
         let item_index = Self::panel_index(&items, index)?;
         let removed = items.remove(item_index);
+        self.generation.fetch_add(1, Ordering::Release);
         drop(items);
         self.wake();
         removed
@@ -541,6 +542,16 @@ mod tests {
         assert!(!tx.is_drained(drained));
         let latest = rx.drain_generation().expect("latest generation");
         assert!(tx.is_drained(latest));
+    }
+
+    #[test]
+    fn remove_panel_advances_generation() {
+        let (tx, _rx) = queue();
+        tx.push(msg(false));
+        let generation = tx.generation.load(Ordering::Acquire);
+
+        assert!(tx.remove_panel(0).is_some());
+        assert!(tx.generation.load(Ordering::Acquire) > generation);
     }
 
     #[test]

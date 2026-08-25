@@ -638,6 +638,10 @@ enum ServerEvent {
 
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
+const STATUS_PAUSED: &str = "paused";
+const STATUS_RUNNING: &str = "running";
+const STATUS_STOPPING: &str = "stopping";
+const STATUS_WORKING: &str = "working";
 #[cfg(unix)]
 const SOCKET_FILE: &str = "control.sock";
 const DIR_PERMISSIONS: u32 = 0o700;
@@ -807,7 +811,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         session_id: handle.session_id.to_string(),
         socket_path: socket_path_value.to_string_lossy().into_owned(),
         pid: std::process::id(),
-        status: "running".to_string(),
+        status: STATUS_RUNNING.to_string(),
         prompt: opts.prompt.to_string(),
         model: model_spec,
         created_at: now_epoch(),
@@ -830,7 +834,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
     let (server_stop_tx, server_stop_rx) = flume::bounded(1);
 
     if !opts.prompt.is_empty() {
-        state.status = "working".to_string();
+        state.status = STATUS_WORKING.to_string();
         write_agent_state(&storage, &state)?;
 
         let input_tx = handle.input_tx.clone();
@@ -866,7 +870,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
             }
             match read_agent_state(&storage, &agent_id) {
                 Ok(mut state) => {
-                    state.status = "running".to_string();
+                    state.status = STATUS_RUNNING.to_string();
                     state.updated_at = now_epoch();
                     if let Err(error) = write_agent_state(&storage, &state) {
                         tracing::warn!(%error, "failed to update initial agent run state");
@@ -1063,7 +1067,7 @@ async fn handle_connection(
 
             let mut state = read_agent_state(&storage, &agent_id)?;
             let message_mode = runtime_mode_from_str(&state.mode);
-            state.status = "working".to_string();
+            state.status = STATUS_WORKING.to_string();
             state.updated_at = now_epoch();
             write_agent_state(&storage, &state)?;
 
@@ -1109,9 +1113,9 @@ async fn handle_connection(
 
             let mut state = read_agent_state(&storage, &agent_id)?;
             if paused.load(Ordering::Relaxed) {
-                state.status = "paused".to_string();
+                state.status = STATUS_PAUSED.to_string();
             } else {
-                state.status = "running".to_string();
+                state.status = STATUS_RUNNING.to_string();
             }
             state.updated_at = now_epoch();
             write_agent_state(&storage, &state)?;
@@ -1121,7 +1125,7 @@ async fn handle_connection(
             let _ = cancel_tx.send(());
 
             let mut state = read_agent_state(&storage, &agent_id)?;
-            state.status = "paused".to_string();
+            state.status = STATUS_PAUSED.to_string();
             state.updated_at = now_epoch();
             write_agent_state(&storage, &state)?;
 
@@ -1135,7 +1139,7 @@ async fn handle_connection(
             paused.store(false, Ordering::Relaxed);
 
             let mut state = read_agent_state(&storage, &agent_id)?;
-            state.status = "running".to_string();
+            state.status = STATUS_RUNNING.to_string();
             state.updated_at = now_epoch();
             write_agent_state(&storage, &state)?;
 
@@ -1147,7 +1151,7 @@ async fn handle_connection(
         }
         ClientCommand::Stop => {
             let mut state = read_agent_state(&storage, &agent_id)?;
-            state.status = "stopping".to_string();
+            state.status = STATUS_STOPPING.to_string();
             state.updated_at = now_epoch();
             write_agent_state(&storage, &state)?;
 
