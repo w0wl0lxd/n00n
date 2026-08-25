@@ -634,17 +634,20 @@ mod tests {
 
     #[test]
     fn invalid_disallowed_tool_errors_like_invalid_allowed_tool() {
+        const ALLOWED_ACCEPTED: &str = "invalid allowed tool was accepted";
+        const DISALLOWED_ACCEPTED: &str = "invalid disallowed tool was accepted";
+
         let directory = tempfile::tempdir().expect("temporary config directory");
         let host = PluginHost::new(Arc::new(ToolRegistry::new())).expect("plugin host");
         let allowed = Cli::parse_from(["n00n", "--allowed-tools", "NotATool"]);
         let disallowed = Cli::parse_from(["n00n", "--disallowed-tools", "NotATool"]);
 
         let allowed_error = match load_config(&host, &allowed, directory.path()) {
-            Ok(_) => panic!("invalid allowed tool was accepted"),
+            Ok(_) => panic!("{ALLOWED_ACCEPTED}"),
             Err(error) => error.to_string(),
         };
         let disallowed_error = match load_config(&host, &disallowed, directory.path()) {
-            Ok(_) => panic!("invalid disallowed tool was accepted"),
+            Ok(_) => panic!("{DISALLOWED_ACCEPTED}"),
             Err(error) => error.to_string(),
         };
 

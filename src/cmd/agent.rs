@@ -824,7 +824,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
     let message_lock = Arc::new(Mutex::new(()));
     let paused = Arc::new(AtomicBool::new(false));
     let task = Arc::new(Mutex::new(Some(handle.task)));
-    let next_run_id = Arc::new(AtomicU64::new(u64::from(!opts.prompt.is_empty())));
+    let next_run_id = Arc::new(AtomicU64::new(0));
     let (server_stop_tx, server_stop_rx) = flume::bounded(1);
 
     if !opts.prompt.is_empty() {
@@ -834,6 +834,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         let input_tx = handle.input_tx.clone();
         let event_rx = handle.event_rx.clone();
         let message_lock = Arc::clone(&message_lock);
+        let next_run_id = Arc::clone(&next_run_id);
         let storage = storage.clone();
         let agent_id = agent_id.clone();
         let plan_path = mode.plan_path().map(PathBuf::from);
@@ -854,6 +855,9 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
             let _lock = message_lock.lock().await;
             while event_rx.try_recv().is_ok() {}
             let queued = input_tx.send(input).is_ok();
+            if queued {
+                next_run_id.store(1, Ordering::Release);
+            }
             let _ = initial_started_tx.send(());
             if queued {
                 wait_for_run_done(&event_rx, 0).await;
@@ -887,7 +891,13 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
             let Some(accepted) = accepted else {
                 break;
             };
-            let (stream, _) = accepted.wrap_err("failed to accept agent connection")?;
+            let (stream, _) = match accepted {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to accept agent connection");
+                    continue;
+                }
+            };
             let input_tx = handle.input_tx.clone();
             let event_rx = handle.event_rx.clone();
             let cancel_tx = handle.cancel_tx.clone();

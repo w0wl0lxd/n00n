@@ -435,22 +435,26 @@ impl EventParser {
                             message: format!("invalid streamed tool block index {tool_index}"),
                         });
                     };
-                    *input = serde_json::from_str(&self.current_tool_json).map_err(|error| {
-                        warn!(
-                            error = %error,
-                            tool_index,
-                            has_tool_name = !name.is_empty(),
-                            tool_name_length = name.len(),
-                            argument_bytes = self.current_tool_json.len(),
-                            "rejecting malformed streamed tool arguments"
-                        );
-                        AgentError::Api {
-                            status: 400,
-                            message: format!(
-                                "malformed streamed tool arguments at index {tool_index}"
-                            ),
-                        }
-                    })?;
+                    *input = if self.current_tool_json.is_empty() {
+                        serde_json::json!({})
+                    } else {
+                        serde_json::from_str(&self.current_tool_json).map_err(|error| {
+                            warn!(
+                                error = %error,
+                                tool_index,
+                                has_tool_name = !name.is_empty(),
+                                tool_name_length = name.len(),
+                                argument_bytes = self.current_tool_json.len(),
+                                "rejecting malformed streamed tool arguments"
+                            );
+                            AgentError::Api {
+                                status: 400,
+                                message: format!(
+                                    "malformed streamed tool arguments at index {tool_index}"
+                                ),
+                            }
+                        })?
+                    };
                     debug!(
                         tool_index,
                         has_tool_name = !name.is_empty(),

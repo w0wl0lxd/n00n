@@ -41,12 +41,16 @@ pub mod test_support {
         }
     }
 
-    #[must_use]
+    /// Overrides the interpreter worker executable for debug tests.
+    ///
+    /// # Errors
+    /// Returns the path when a worker override was already installed.
     #[cfg(debug_assertions)]
     pub fn set_interpreter_worker_executable(path: PathBuf) -> Result<(), PathBuf> {
         crate::api::interpreter::set_worker_executable_for_tests(path)
     }
 
+    #[must_use]
     pub fn lua_command_writer_pair() -> (LuaCommandWriterHandle, LuaCommandReader) {
         let (writer, reader) = LuaCommandWriter::new();
         (LuaCommandWriterHandle(writer), reader)

@@ -4,8 +4,7 @@ use isahc::http::Request;
 use serde_json::json;
 
 use super::OAuthError;
-use super::discovery::MAX_RESPONSE_BODY;
-use crate::mcp::response::read_bounded_text;
+use crate::mcp::response::{MAX_RESPONSE_BODY, read_bounded_text};
 
 pub struct ClientRegistration {
     pub client_id: String,

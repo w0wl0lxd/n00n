@@ -19,6 +19,7 @@ async-lock = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 crossterm = { workspace = true }
+color-eyre = { workspace = true }
 n00n-agent = { workspace = true }
 n00n-config = { workspace = true }
 n00n-highlight = { workspace = true }

@@ -4,8 +4,9 @@ use isahc::http::Request;
 use n00n_storage::auth::{OAuthTokens, now_millis};
 
 use super::OAuthError;
-use super::discovery::MAX_RESPONSE_BODY;
-use crate::mcp::response::read_bounded_text;
+use crate::mcp::response::{MAX_RESPONSE_BODY, read_bounded_text};
+
+const TOKEN_REJECTION_BODY: &str = "token endpoint rejected request";
 
 pub struct OAuthCodeExchange<'a> {
     pub client: &'a HttpClient,
@@ -96,7 +97,7 @@ async fn token_request(
     if !status.is_success() {
         return Err(OAuthError::ServerRejected {
             status: status.as_u16(),
-            body,
+            body: TOKEN_REJECTION_BODY.into(),
         });
     }
 
@@ -166,5 +167,38 @@ mod tests {
     #[test]
     fn parse_token_response_missing_access_is_error() {
         assert!(parse_token_response(r#"{"refresh_token":"r1"}"#).is_err());
+    }
+
+    #[test]
+    fn token_rejection_body_is_sanitized() {
+        smol::block_on(async {
+            use std::io::{Read, Write as IoWrite};
+            use std::net::TcpListener;
+
+            const SECRET_BODY: &str = r#"{"error_description":"secret-token"}"#;
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                write!(
+                    stream,
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{SECRET_BODY}",
+                    SECRET_BODY.len()
+                )
+                .unwrap();
+            });
+            let client = HttpClient::new().unwrap();
+
+            let error = token_request(&client, &endpoint, &[]).await.unwrap_err();
+            server.join().unwrap();
+
+            assert!(matches!(
+                error,
+                OAuthError::ServerRejected { status: 400, ref body }
+                    if body == TOKEN_REJECTION_BODY && !body.contains("secret-token")
+            ));
+        });
     }
 }

@@ -4,7 +4,7 @@ local function empty_policies()
   return { version = 1, rules = {} }
 end
 
-local function validate_array(values, label)
+local function validate_array(values, label, validate_value)
   local count = 0
   for key in pairs(values) do
     if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
@@ -13,8 +13,12 @@ local function validate_array(values, label)
     count = count + 1
   end
   for index = 1, count do
-    if rawget(values, index) == nil then
+    local value = rawget(values, index)
+    if value == nil then
       return nil, label .. " must not be sparse"
+    end
+    if validate_value and not validate_value(value) then
+      return nil, label .. " entries must be non-empty strings"
     end
   end
   return true
@@ -32,14 +36,30 @@ local function validate_policies(policies)
     if type(rule) ~= "table" then
       return nil, "policy rule " .. index .. " must be an object"
     end
-    if rule.scope ~= nil and type(rule.scope) ~= "table" then
-      return nil, "policy rule " .. index .. " scope must be an object"
+    if rule.scope ~= nil then
+      if type(rule.scope) ~= "table" then
+        return nil, "policy rule " .. index .. " scope must be an object"
+      end
+      for _, field in ipairs({ "agent_id", "session_type", "tag" }) do
+        if rule.scope[field] ~= nil and type(rule.scope[field]) ~= "string" then
+          return nil, "policy rule " .. index .. " scope." .. field .. " must be a string"
+        end
+      end
+    end
+    if rule.priority ~= nil and type(rule.priority) ~= "number" then
+      return nil, "policy rule " .. index .. " priority must be a number"
     end
     if rule.restricted_tools ~= nil then
       if type(rule.restricted_tools) ~= "table" then
         return nil, "policy rule " .. index .. " restricted_tools must be an array"
       end
-      local tools_ok, tools_err = validate_array(rule.restricted_tools, "policy rule " .. index .. " restricted_tools")
+      local tools_ok, tools_err = validate_array(
+        rule.restricted_tools,
+        "policy rule " .. index .. " restricted_tools",
+        function(value)
+          return type(value) == "string" and value ~= ""
+        end
+      )
       if not tools_ok then
         return nil, tools_err
       end
@@ -48,7 +68,13 @@ local function validate_policies(policies)
       if type(rule.allowed_tools) ~= "table" then
         return nil, "policy rule " .. index .. " allowed_tools must be an array"
       end
-      local tools_ok, tools_err = validate_array(rule.allowed_tools, "policy rule " .. index .. " allowed_tools")
+      local tools_ok, tools_err = validate_array(
+        rule.allowed_tools,
+        "policy rule " .. index .. " allowed_tools",
+        function(value)
+          return type(value) == "string" and value ~= ""
+        end
+      )
       if not tools_ok then
         return nil, tools_err
       end

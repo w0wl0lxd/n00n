@@ -4,9 +4,7 @@ use serde::Deserialize;
 use url::{Host, Url};
 
 use super::OAuthError;
-use crate::mcp::response::read_bounded_text;
-
-pub(super) const MAX_RESPONSE_BODY: usize = 1_048_576;
+use crate::mcp::response::{MAX_RESPONSE_BODY, read_bounded_text};
 
 #[derive(Debug)]
 pub struct WwwAuthenticateInfo {

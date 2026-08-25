@@ -1,6 +1,9 @@
 use futures_lite::AsyncReadExt;
 use isahc::AsyncBody;
 
+pub const MAX_RESPONSE_BODY: usize = 1_048_576;
+const INITIAL_BODY_CAPACITY: usize = 8 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ResponseReadError {
     #[error("response body exceeded the {limit_bytes} byte limit")]
@@ -18,7 +21,7 @@ pub async fn read_bounded_text(
     let read_limit = u64::try_from(limit_bytes)
         .unwrap_or_else(|_| u64::MAX)
         .saturating_add(1);
-    let mut bytes = Vec::with_capacity(limit_bytes.min(8192));
+    let mut bytes = Vec::with_capacity(limit_bytes.min(INITIAL_BODY_CAPACITY));
     body.take(read_limit)
         .read_to_end(&mut bytes)
         .await

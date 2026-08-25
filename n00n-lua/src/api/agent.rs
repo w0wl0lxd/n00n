@@ -66,6 +66,7 @@ const LIVE_EVENT_QUEUE_CAPACITY: usize = 256;
 const SUBAGENT_EVENT_QUEUE_CAPACITY: usize = 1024;
 const STEERING_QUEUE_CAPACITY: usize = 32;
 const TOOL_EXCLUSIONS_META_FIELD: &str = "__n00n_tool_exclusions";
+const TIMEOUT_OUT_OF_RANGE_ERR: &str = "timeout is out of range";
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
     let Some(tier_str) = tier else {
@@ -546,12 +547,14 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     Ok((Some(definitions), None))
 }
 
-fn cap_nested_deadline(parent: Deadline, timeout: Duration) -> Deadline {
-    let requested = Instant::now() + timeout;
-    match parent {
+fn cap_nested_deadline(parent: Deadline, timeout: Duration) -> Result<Deadline, &'static str> {
+    let requested = Instant::now()
+        .checked_add(timeout)
+        .ok_or(TIMEOUT_OUT_OF_RANGE_ERR)?;
+    Ok(match parent {
         Deadline::At(parent) => Deadline::At(parent.min(requested)),
         Deadline::None => Deadline::At(requested),
-    }
+    })
 }
 
 /// Run a tool by name and wait for the result. This is how you call built-in
@@ -591,7 +594,10 @@ async fn call_tool(
     let (mut on_buf, mut on_ann, mut rx) = (None, None, None);
     if let Some(o) = opts {
         if let Some(secs) = o.get::<Option<u64>>("timeout")? {
-            tctx.deadline = cap_nested_deadline(tctx.deadline, Duration::from_secs(secs));
+            tctx.deadline = try_pair!(cap_nested_deadline(
+                tctx.deadline,
+                Duration::from_secs(secs)
+            ));
         }
         on_buf = o.get::<Option<Function>>("on_live_buf")?;
         on_ann = o.get::<Option<Function>>("on_annotation")?;
@@ -1715,7 +1721,7 @@ mod tests {
     fn nested_timeout_cannot_extend_parent_deadline() {
         let parent = Instant::now() + Duration::from_secs(5);
         let Deadline::At(actual) =
-            cap_nested_deadline(Deadline::At(parent), Duration::from_secs(300))
+            cap_nested_deadline(Deadline::At(parent), Duration::from_secs(300)).unwrap()
         else {
             panic!("nested deadline missing");
         };
@@ -1727,12 +1733,20 @@ mod tests {
         let parent = Instant::now() + Duration::from_secs(300);
         let before = Instant::now();
         let Deadline::At(actual) =
-            cap_nested_deadline(Deadline::At(parent), Duration::from_secs(5))
+            cap_nested_deadline(Deadline::At(parent), Duration::from_secs(5)).unwrap()
         else {
             panic!("nested deadline missing");
         };
         assert!(actual >= before + Duration::from_secs(5));
         assert!(actual < parent);
+    }
+
+    #[test]
+    fn oversized_nested_timeout_is_rejected() {
+        assert_eq!(
+            cap_nested_deadline(Deadline::None, Duration::MAX),
+            Err(TIMEOUT_OUT_OF_RANGE_ERR)
+        );
     }
 
     #[test]

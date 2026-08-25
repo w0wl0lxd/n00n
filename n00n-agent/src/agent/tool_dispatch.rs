@@ -1185,7 +1185,6 @@ mod tests {
     use std::borrow::Cow;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use n00n_config::{Effect, PermissionRule, PermissionsConfig, ToolKey};
     use n00n_providers::{ContentBlock, Message, StopReason, StreamResponse, TokenUsage};
@@ -1198,6 +1197,8 @@ mod tests {
     use crate::tools::registry::ToolSource;
     use crate::tools::test_support::{GUARDED_TOOL_NAME, GuardedMock};
 
+    const CANCELLED_STATUS: &str = "cancelled";
+
     fn recent_calls(entries: &[(&str, Value)]) -> RecentCalls {
         let mut rc = RecentCalls::new();
         for (n, v) in entries {
@@ -1206,7 +1207,10 @@ mod tests {
         rc
     }
 
-    struct PendingMcpTransport(Arc<str>);
+    struct PendingMcpTransport {
+        name: Arc<str>,
+        started: flume::Sender<()>,
+    }
 
     impl crate::mcp::transport::McpTransport for PendingMcpTransport {
         fn send_request<'a>(
@@ -1215,7 +1219,10 @@ mod tests {
             _params: Option<Value>,
         ) -> crate::mcp::transport::BoxFuture<'a, Result<Value, crate::mcp::error::McpError>>
         {
-            Box::pin(std::future::pending())
+            Box::pin(async {
+                let _ = self.started.send_async(()).await;
+                std::future::pending().await
+            })
         }
 
         fn send_notification<'a>(
@@ -1231,7 +1238,7 @@ mod tests {
         }
 
         fn server_name(&self) -> &Arc<str> {
-            &self.0
+            &self.name
         }
 
         fn transport_kind(&self) -> &'static str {
@@ -1679,42 +1686,36 @@ mod tests {
     #[test]
     fn mcp_tool_call_observes_agent_cancellation() {
         smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(1);
             let session = crate::mcp::stub_session_with_transport(
                 &[("myserver.mytool", "pending")],
                 false,
-                Arc::new(PendingMcpTransport(Arc::from("pending"))),
+                Arc::new(PendingMcpTransport {
+                    name: Arc::from("pending"),
+                    started: started_tx,
+                }),
             );
             let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             ctx.mcp = Some(session);
             let (trigger, cancel) = crate::CancelToken::new();
             ctx.cancel = cancel;
-            let cancellation = smol::spawn(async move {
-                smol::Timer::after(Duration::from_millis(10)).await;
-                trigger.cancel();
+            let execution = smol::spawn(async move {
+                dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await
             });
+            started_rx.recv_async().await.unwrap();
+            trigger.cancel();
 
-            let result = futures_lite::future::race(
-                async {
-                    Some(dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await)
-                },
-                async {
-                    smol::Timer::after(Duration::from_millis(100)).await;
-                    None
-                },
-            )
-            .await;
-            cancellation.await;
-
-            let done = result.expect("MCP tool call ignored agent cancellation");
+            let done = execution.await;
             assert!(done.is_error);
-
-            assert_eq!(done.output.as_text(), "cancelled");
+            assert_eq!(done.output.as_text(), CANCELLED_STATUS);
         });
     }
 
     #[test]
     fn native_tool_execution_observes_agent_cancellation() {
-        struct PendingInvocation;
+        struct PendingInvocation {
+            started: flume::Sender<()>,
+        }
 
         impl crate::tools::registry::ToolInvocation for PendingInvocation {
             fn start_header(&self) -> crate::tools::HeaderFuture {
@@ -1727,11 +1728,16 @@ mod tests {
                 self: Box<Self>,
                 _ctx: &crate::tools::ToolContext,
             ) -> crate::tools::ExecFuture<'_> {
-                Box::pin(std::future::pending())
+                Box::pin(async move {
+                    let _ = self.started.send_async(()).await;
+                    std::future::pending().await
+                })
             }
         }
 
-        struct PendingTool;
+        struct PendingTool {
+            started: flume::Sender<()>,
+        }
 
         impl crate::tools::Tool for PendingTool {
             fn name(&self) -> &'static str {
@@ -1754,13 +1760,18 @@ mod tests {
                 _input: &Value,
             ) -> Result<Box<dyn crate::tools::registry::ToolInvocation>, crate::tools::ParseError>
             {
-                Ok(Box::new(PendingInvocation))
+                Ok(Box::new(PendingInvocation {
+                    started: self.started.clone(),
+                }))
             }
         }
 
         smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(1);
             let registry = ToolRegistry::new();
-            let tool: Arc<dyn crate::tools::Tool> = Arc::new(PendingTool);
+            let tool: Arc<dyn crate::tools::Tool> = Arc::new(PendingTool {
+                started: started_tx,
+            });
             registry
                 .register(
                     &tool,
@@ -1773,37 +1784,24 @@ mod tests {
             ctx.registry = Arc::new(registry);
             let (trigger, cancel) = crate::CancelToken::new();
             ctx.cancel = cancel;
-            smol::spawn(async move {
-                smol::Timer::after(Duration::from_millis(10)).await;
-                trigger.cancel();
-            })
-            .detach();
+            let execution = smol::spawn(async move {
+                run(
+                    &ctx.registry,
+                    None,
+                    "pending-1".into(),
+                    "pending_native",
+                    &serde_json::json!({}),
+                    &ctx,
+                    Emit::Silent,
+                )
+                .await
+            });
+            started_rx.recv_async().await.unwrap();
+            trigger.cancel();
 
-            let result = futures_lite::future::race(
-                async {
-                    Some(
-                        run(
-                            &ctx.registry,
-                            None,
-                            "pending-1".into(),
-                            "pending_native",
-                            &serde_json::json!({}),
-                            &ctx,
-                            Emit::Silent,
-                        )
-                        .await,
-                    )
-                },
-                async {
-                    smol::Timer::after(Duration::from_millis(200)).await;
-                    None
-                },
-            )
-            .await
-            .expect("native tool execution ignored agent cancellation");
-
+            let result = execution.await;
             assert!(result.is_error);
-            assert_eq!(result.output.as_text(), "cancelled");
+            assert_eq!(result.output.as_text(), CANCELLED_STATUS);
         });
     }
 

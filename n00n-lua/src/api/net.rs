@@ -16,6 +16,9 @@ const DEFAULT_MAX_BYTES: usize = 5 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RETRIES: u32 = 3;
 const MAX_REDIRECTS: usize = 10;
+const STATUS_MOVED_PERMANENTLY: u16 = 301;
+const STATUS_FOUND: u16 = 302;
+const STATUS_SEE_OTHER: u16 = 303;
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const CF_MITIGATED: &str = "cf-mitigated";
 const CF_CHALLENGE: &str = "challenge";
@@ -97,7 +100,6 @@ lua_table! {
 
 fn extract_request_params(url: &str, opts: Option<&Table>) -> Result<RequestParams, String> {
     let url = validate_and_upgrade_url(url)?;
-    validate_destination(&url)?;
 
     let method = opts
         .and_then(|o| o.get::<String>("method").ok())
@@ -259,9 +261,11 @@ async fn send_with_redirects(
     initial_request: Request<AsyncBody>,
 ) -> Result<Response<AsyncBody>, String> {
     let mut current_url = params.url.clone();
+    let mut current_method = params.method.clone();
+    let mut current_body = params.body.clone();
     let mut request = initial_request;
     for redirects in 0..=MAX_REDIRECTS {
-        let resolved_addresses = validate_destination(&current_url)?;
+        let resolved_addresses = validate_destination(&current_url).await?;
         let client = pinned_client(&current_url, &resolved_addresses, params.timeout)?;
         let response = client
             .send_async(request)
@@ -280,19 +284,23 @@ async fn send_with_redirects(
             .to_str()
             .map_err(|error| format!("invalid redirect location: {error}"))?;
         let redirect_url = redirect_url(&current_url, location)?;
-        validate_destination(&redirect_url)?;
+        validate_destination(&redirect_url).await?;
         let headers = if same_origin(&current_url, &redirect_url) {
             params.headers.as_slice()
         } else {
             &[]
         };
+        if redirect_switches_to_get(response.status().as_u16(), &current_method) {
+            "GET".clone_into(&mut current_method);
+            current_body.clear();
+        }
         current_url = redirect_url;
         request = build_request(
             &current_url,
             user_agent,
-            &params.method,
+            &current_method,
             headers,
-            params.body.clone(),
+            current_body.clone(),
         )?;
     }
     Err(format!("too many redirects (max {MAX_REDIRECTS})"))
@@ -326,6 +334,12 @@ fn pinned_client(
         .map_err(|error| format!("client error: {error}"))
 }
 
+fn redirect_switches_to_get(status: u16, method: &str) -> bool {
+    status == STATUS_SEE_OTHER
+        || matches!(status, STATUS_MOVED_PERMANENTLY | STATUS_FOUND)
+            && method.eq_ignore_ascii_case("POST")
+}
+
 fn same_origin(left: &Url, right: &Url) -> bool {
     left.scheme() == right.scheme()
         && left.host() == right.host()
@@ -339,7 +353,7 @@ fn redirect_url(current: &Url, location: &str) -> Result<Url, String> {
     validate_and_upgrade_url(joined.as_str())
 }
 
-fn validate_destination(url: &Url) -> Result<Vec<IpAddr>, String> {
+async fn validate_destination(url: &Url) -> Result<Vec<IpAddr>, String> {
     if url.scheme() != "https" {
         return Err(format!("blocked URL scheme: {}", url.scheme()));
     }
@@ -362,10 +376,15 @@ fn validate_destination(url: &Url) -> Result<Vec<IpAddr>, String> {
             Ok(Vec::new())
         }
         Host::Domain(host) => {
-            let addrs = (host, port)
-                .to_socket_addrs()
-                .map_err(|error| format!("failed to resolve {host}: {error}"))?
-                .collect::<Vec<_>>();
+            let host = host.to_owned();
+            let resolved_host = host.clone();
+            let addrs = smol::unblock(move || {
+                (resolved_host.as_str(), port)
+                    .to_socket_addrs()
+                    .map(Iterator::collect::<Vec<_>>)
+            })
+            .await
+            .map_err(|error| format!("failed to resolve {host}: {error}"))?;
             if addrs.is_empty() {
                 return Err(format!("failed to resolve {host}: no addresses"));
             }
@@ -443,6 +462,10 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
     use test_case::test_case;
 
+    fn validate_test_destination(url: &Url) -> Result<Vec<IpAddr>, String> {
+        smol::block_on(validate_destination(url))
+    }
+
     #[test_case("https://example.com", "https://example.com/" ; "https_passthrough")]
     #[test_case("http://example.com", "https://example.com/" ; "http_upgraded_to_https")]
     fn validate_and_upgrade_url_valid(input: &str, expected: &str) {
@@ -469,11 +492,11 @@ mod tests {
         let url = validate_and_upgrade_url(url).unwrap();
         match expected {
             Ok(()) => assert!(
-                validate_destination(&url).is_ok(),
+                validate_test_destination(&url).is_ok(),
                 "{url} should be allowed"
             ),
             Err(()) => assert!(
-                validate_destination(&url).is_err(),
+                validate_test_destination(&url).is_err(),
                 "{url} should be blocked"
             ),
         }
@@ -482,14 +505,25 @@ mod tests {
     #[test]
     fn query_suffixed_loopback_is_blocked() {
         let url = validate_and_upgrade_url("https://127.0.0.1?next=example.com").unwrap();
-        assert!(validate_destination(&url).is_err());
+        assert!(validate_test_destination(&url).is_err());
     }
 
     #[test]
     fn public_to_private_redirect_is_blocked_before_request() {
         let current = validate_and_upgrade_url("https://8.8.8.8/start").unwrap();
         let redirected = redirect_url(&current, "https://127.0.0.1/private").unwrap();
-        assert!(validate_destination(&redirected).is_err());
+        assert!(validate_test_destination(&redirected).is_err());
+    }
+
+    #[test_case(STATUS_SEE_OTHER, "GET", true ; "see_other_get")]
+    #[test_case(STATUS_SEE_OTHER, "POST", true ; "see_other_post")]
+    #[test_case(STATUS_MOVED_PERMANENTLY, "POST", true ; "moved_permanently_post")]
+    #[test_case(STATUS_FOUND, "post", true ; "found_post_case_insensitive")]
+    #[test_case(STATUS_MOVED_PERMANENTLY, "PUT", false ; "moved_permanently_put")]
+    #[test_case(307, "POST", false ; "temporary_redirect_post")]
+    #[test_case(308, "POST", false ; "permanent_redirect_post")]
+    fn redirect_method_semantics(status: u16, method: &str, expected: bool) {
+        assert_eq!(redirect_switches_to_get(status, method), expected);
     }
 
     #[test_case("https://example.com/start", "https://example.com/next", true ; "same_origin")]

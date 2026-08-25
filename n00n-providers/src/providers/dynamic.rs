@@ -449,7 +449,7 @@ fn discover() -> &'static [DynamicProviderMeta] {
             Ok(config) => config,
             Err(error) => {
                 warn!(%error, "cannot load provider config while discovering scripts");
-                ProvidersConfig::default()
+                return Vec::new();
             }
         };
         let mut metas = providers_dir().map_or_else(Vec::new, |d| discover_in(&d));

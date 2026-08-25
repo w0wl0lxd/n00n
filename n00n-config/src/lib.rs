@@ -2920,6 +2920,19 @@ mod tests {
         ));
     }
 
+    #[test_case(false, DefaultEffect::Prompt ; "untrusted_project_ignored")]
+    #[test_case(true, DefaultEffect::Deny ; "trusted_project_loaded")]
+    fn project_permissions_respect_trust(project_trusted: bool, expected_default: DefaultEffect) {
+        let dir = TempDir::new().unwrap();
+        let project_dir = dir.path().join(PROJECT_DIR);
+        fs::create_dir(&project_dir).unwrap();
+        fs::write(project_dir.join(PERMISSIONS_FILE), "default = \"deny\"\n").unwrap();
+
+        let permissions = load_permissions_inner(dir.path(), &[], project_trusted);
+
+        assert_eq!(permissions.default, expected_default);
+    }
+
     #[test]
     fn permissions_loaded_from_permissions_file() {
         let dir = TempDir::new().unwrap();

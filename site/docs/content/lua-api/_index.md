@@ -1824,6 +1824,7 @@ n00n.fs.read_within({base}, {relative})
 ```
 
 Read a UTF-8 file relative to an opened base directory without following symbolic links.
+Available only on Unix targets.
 
 **Parameters:**
 
@@ -1841,6 +1842,8 @@ n00n.fs.metadata_within({base}, {relative})
 ```
 
 Get no-follow metadata for a path relative to an opened base directory.
+Available only on Unix targets. The returned table contains `size`, `is_file`, `is_dir`,
+`is_symlink`, and `mtime`; `mtime` is nanoseconds since the Unix epoch.
 
 **Parameters:**
 
@@ -1858,6 +1861,7 @@ n00n.fs.dir_within({base})
 ```
 
 List one opened base directory without following symbolic links.
+Available only on Unix targets.
 
 **Parameters:**
 
@@ -1874,6 +1878,7 @@ n00n.fs.write_within({base}, {relative}, {content})
 ```
 
 Atomically write a file relative to an opened base directory without following symbolic links.
+Available only on Unix targets.
 
 **Parameters:**
 
@@ -1892,6 +1897,7 @@ n00n.fs.rm_within({base}, {relative})
 ```
 
 Delete a file or symbolic link relative to an opened base directory without following links.
+Available only on Unix targets.
 
 **Parameters:**
 
@@ -1910,6 +1916,7 @@ n00n.fs.with_lock({path}, {callback})
 
 Run a callback while holding an exclusive advisory lock on a file.
 The lock is shared across independent Lua hosts and operating-system processes.
+Available only on Unix targets.
 
 **Parameters:**
 

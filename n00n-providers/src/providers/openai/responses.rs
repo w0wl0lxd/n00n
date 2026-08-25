@@ -1314,7 +1314,12 @@ pub(crate) async fn parse_sse(
     stream_timeout: Duration,
     idempotency_key: Option<String>,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
-    let mut stream = SseStream::new(reader, stream_timeout);
+    let mut stream = SseStream::with_limits(
+        reader,
+        stream_timeout,
+        super::super::OPENAI_RESPONSES_MAX_SSE_FRAME_BYTES,
+        super::super::MAX_SSE_STREAM_BYTES,
+    );
     stream.set_deadline_cap(Instant::now() + response_in_flight_timeout(stream_timeout));
 
     let mut acc = ResponseAccumulator::new(idempotency_key);

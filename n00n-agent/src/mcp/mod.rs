@@ -1448,15 +1448,12 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
         match value {
             Value::Object(map) => {
                 for reference_key in ["$ref", "$dynamicRef"] {
-                    if let Some(reference) = map.get(reference_key) {
-                        let reference = reference
-                            .as_str()
-                            .ok_or_else(|| format!("{reference_key} must be a string"))?;
-                        if !reference.starts_with('#') {
-                            return Err(format!(
-                                "remote or relative {reference_key} is not allowed: {reference}"
-                            ));
-                        }
+                    if let Some(reference) = map.get(reference_key).and_then(Value::as_str)
+                        && !reference.starts_with('#')
+                    {
+                        return Err(format!(
+                            "remote or relative {reference_key} is not allowed: {reference}"
+                        ));
                     }
                 }
                 stack.extend(map.values().map(|child| (child, depth.saturating_add(1))));
@@ -1468,16 +1465,16 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
         }
     }
 
-    let mut draft_schema = schema.clone();
-    if let Some(object) = draft_schema.as_object_mut() {
-        object.insert("$schema".into(), Value::String(JSON_SCHEMA_2020_12.into()));
+    if let Some(declared_draft) = schema.get("$schema").and_then(Value::as_str)
+        && declared_draft != JSON_SCHEMA_2020_12
+    {
+        return Err(format!("unsupported JSON Schema draft: {declared_draft}"));
     }
-    let meta_result = jsonschema::meta::try_validate(&draft_schema)
-        .map_err(|error| format!("could not validate JSON Schema 2020-12: {error}"))?;
-    meta_result.map_err(|error| format!("invalid JSON Schema 2020-12: {error}"))?;
+    jsonschema::draft202012::meta::validate(schema)
+        .map_err(|error| format!("invalid JSON Schema 2020-12: {error}"))?;
     jsonschema::options()
         .with_draft(Draft::Draft202012)
-        .build(&draft_schema)
+        .build(schema)
         .map_err(|error| format!("could not compile JSON Schema 2020-12: {error}"))?;
     Ok(())
 }
@@ -1620,6 +1617,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[test_case(json!({"type": "object", "properties": {"name": {"type": "string"}}}) ; "simple_object")]
     #[test_case(json!({"type": "object", "$defs": {"item": {"type": "string"}}, "properties": {"value": {"$ref": "#/$defs/item"}}}) ; "local_ref")]
+    #[test_case(json!({"type": "object", "properties": {"$ref": {"type": "string"}}}) ; "property_named_ref")]
+    #[test_case(json!({"$schema": JSON_SCHEMA_2020_12, "type": "object"}) ; "explicit_2020_12")]
     fn mcp_schema_validation_accepts_draft_2020_12(schema: Value) {
         assert!(validate_mcp_input_schema(&schema).is_ok());
     }
@@ -1628,6 +1627,7 @@ mod tests {
     #[test_case(json!({"type": "invalid"}) ; "invalid_type")]
     #[test_case(json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
     #[test_case(json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
+    #[test_case(json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}) ; "unsupported_draft")]
     fn mcp_schema_validation_rejects_invalid_or_remote(schema: Value) {
         assert!(validate_mcp_input_schema(&schema).is_err());
     }

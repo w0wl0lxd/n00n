@@ -32,6 +32,10 @@ const MAX_INTERPRETER_TIMEOUT_SECS: u64 = 300;
 const INTERPRETER_TIMEOUT_ERR: &str = "interpreter timed out";
 const INTERPRETER_WORKER_NAME: &str = "n00n-interpreter-worker";
 const INTERPRETER_WORKER_TEST: &str = "interpreter_worker_entry";
+#[cfg(debug_assertions)]
+const INTERPRETER_TEST_BINARY_PREFIX: &str = "plugin_host-";
+#[cfg(debug_assertions)]
+const CARGO_DEPS_DIR: &str = "deps";
 
 #[cfg(debug_assertions)]
 static INTERPRETER_WORKER_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -49,18 +53,22 @@ fn run_ruff(args: &[&str], code: &str, pid_tx: &flume::Sender<u32>) -> Option<St
         command.process_group(0);
     }
     let mut child = command.spawn().ok()?;
-    let _ = pid_tx.send(child.id());
-    let write_result = child
-        .stdin
-        .take()
-        .ok_or(())
-        .and_then(|mut stdin| stdin.write_all(code.as_bytes()).map_err(|_| ()));
-    if write_result.is_err() {
-        terminate_process_tree(child.id());
+    let pid = child.id();
+    let _ = pid_tx.send(pid);
+    let Some(mut stdin) = child.stdin.take() else {
+        terminate_process_tree(pid);
         let _ = child.wait();
         return None;
+    };
+    let payload = code.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || stdin.write_all(&payload));
+    let output = child.wait_with_output();
+    let write_succeeded = matches!(writer.join(), Ok(Ok(())));
+    if !write_succeeded {
+        terminate_process_tree(pid);
+        return None;
     }
-    let output = child.wait_with_output().ok()?;
+    let output = output.ok()?;
     let fixed = String::from_utf8(output.stdout).ok()?;
     (!fixed.is_empty()).then_some(fixed)
 }
@@ -108,6 +116,11 @@ async fn run_ruff_guarded(
     cancel: &CancelToken,
     deadline: Instant,
 ) -> Result<Option<String>, StopReason> {
+    enum RuffOutcome {
+        Done(Option<String>),
+        Stopped(StopReason),
+    }
+
     if cancel.is_cancelled() {
         return Err(StopReason::Cancelled);
     }
@@ -116,14 +129,9 @@ async fn run_ruff_guarded(
     }
     let (pid_tx, pid_rx) = flume::bounded(1);
     let mut task = smol::unblock(move || run_ruff(args, &code, &pid_tx));
-    let pid = match pid_rx.recv_async().await {
-        Ok(pid) => pid,
-        Err(_) => return Ok(task.await),
+    let Ok(pid) = pid_rx.recv_async().await else {
+        return Ok(task.await);
     };
-    enum RuffOutcome {
-        Done(Option<String>),
-        Stopped(StopReason),
-    }
     match futures_lite::future::race(async { RuffOutcome::Done((&mut task).await) }, async {
         RuffOutcome::Stopped(wait_for_stop(cancel, deadline).await)
     })
@@ -143,7 +151,7 @@ async fn ruff_fix(
     cancel: &CancelToken,
     deadline: Instant,
 ) -> Result<String, StopReason> {
-    let fixed = run_ruff_guarded(
+    let fixed = match run_ruff_guarded(
         &[
             "check",
             "--fix",
@@ -158,8 +166,11 @@ async fn ruff_fix(
         deadline,
     )
     .await?
-    .unwrap_or_else(|| code.clone());
-    Ok(run_ruff_guarded(
+    {
+        Some(fixed) => fixed,
+        None => code,
+    };
+    let formatted = run_ruff_guarded(
         &[
             "format",
             "--isolated",
@@ -171,8 +182,11 @@ async fn ruff_fix(
         cancel,
         deadline,
     )
-    .await?
-    .unwrap_or(fixed))
+    .await?;
+    match formatted {
+        Some(formatted) => Ok(formatted),
+        None => Ok(fixed),
+    }
 }
 
 fn required<T: mlua::FromLua>(opts: &Table, key: &str) -> LuaResult<T> {
@@ -185,6 +199,23 @@ pub(crate) fn set_worker_executable_for_tests(path: PathBuf) -> Result<(), PathB
     INTERPRETER_WORKER_OVERRIDE.set(path)
 }
 
+#[cfg(debug_assertions)]
+fn is_harness_binary(current: &std::path::Path) -> bool {
+    current
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(INTERPRETER_TEST_BINARY_PREFIX))
+        || current
+            .parent()
+            .and_then(|directory| directory.file_name())
+            .is_some_and(|name| name == CARGO_DEPS_DIR)
+}
+
+#[cfg(not(debug_assertions))]
+const fn is_harness_binary(_current: &std::path::Path) -> bool {
+    false
+}
+
 fn worker_command() -> io::Result<Command> {
     #[cfg(debug_assertions)]
     if let Some(worker) = INTERPRETER_WORKER_OVERRIDE.get() {
@@ -192,13 +223,7 @@ fn worker_command() -> io::Result<Command> {
     }
 
     let current = std::env::current_exe()?;
-    let file_name = current.file_name().and_then(|name| name.to_str());
-    let is_test_binary = cfg!(test)
-        || file_name.is_some_and(|name| name.starts_with("plugin_host-"))
-        || current
-            .parent()
-            .and_then(|directory| directory.file_name())
-            .is_some_and(|name| name == "deps");
+    let is_test_binary = cfg!(test) || is_harness_binary(&current);
     if is_test_binary {
         let mut command = Command::new(current);
         command.args([INTERPRETER_WORKER_TEST, "--ignored", "--nocapture"]);

@@ -41,6 +41,7 @@ pub(crate) mod zai;
 
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
 const MAX_SSE_FRAME_BYTES: usize = 1024 * 1024;
+const OPENAI_RESPONSES_MAX_SSE_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SSE_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const REASONING_EFFORT_FIELD: &str = "reasoning_effort";
 pub(crate) const MESSAGES_FIELD: &str = "messages";

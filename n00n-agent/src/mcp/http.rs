@@ -170,7 +170,7 @@ impl HttpTransport {
             .await
             .map_err(|error| match error {
                 ResponseReadError::TooLarge { limit_bytes } => McpError::ResponseTooLarge {
-                    server: server.clone(),
+                    server,
                     limit_bytes,
                 },
                 other => McpError::InvalidResponse {
@@ -281,9 +281,6 @@ impl McpTransport for HttpTransport {
 
                 if status == StatusCode::UNAUTHORIZED
                     && !refreshed
-                    && headers
-                        .get("www-authenticate")
-                        .is_some_and(|value| value.to_str().is_ok_and(bearer_invalid_token))
                     && let Some(new_auth) = self.refreshed_auth(auth.as_deref()).await
                 {
                     auth = Some(new_auth);
@@ -393,22 +390,6 @@ impl McpTransport for HttpTransport {
         "http"
     }
 }
-fn bearer_invalid_token(header: &str) -> bool {
-    let Some(parameters) = header
-        .trim()
-        .strip_prefix("Bearer ")
-        .or_else(|| header.trim().strip_prefix("bearer "))
-    else {
-        return false;
-    };
-    parameters.split(',').any(|parameter| {
-        let Some((name, value)) = parameter.trim().split_once('=') else {
-            return false;
-        };
-        name.trim().eq_ignore_ascii_case("error")
-            && value.trim().trim_matches('"') == "invalid_token"
-    })
-}
 
 /// A null or missing id only counts for errors: that is what JSON-RPC sends
 /// back when it could not parse the request itself.
@@ -469,15 +450,6 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::atomic::AtomicUsize;
 
-    #[test_case(r#"Bearer error="invalid_token""#, true ; "invalid_token")]
-    #[test_case(r#"Bearer realm="mcp", error="invalid_token""#, true ; "with_realm")]
-    #[test_case(r#"Bearer error="insufficient_scope""#, false ; "other_bearer_error")]
-    #[test_case(r#"Basic realm="mcp""#, false ; "basic")]
-    #[test_case("invalid_token", false ; "unparsed_text")]
-    fn bearer_refresh_classification(header: &str, expected: bool) {
-        assert_eq!(bearer_invalid_token(header), expected);
-    }
-
     const NOTIFICATION: &str =
         "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n";
     const REQUEST_ID: u64 = 7;
@@ -501,6 +473,16 @@ mod tests {
     }
 
     fn spawn_server<F>(make_handler: impl FnOnce(String) -> F) -> String
+    where
+        F: Fn(&Req) -> (u16, String) + Send + 'static,
+    {
+        spawn_server_with_challenge(make_handler, true)
+    }
+
+    fn spawn_server_with_challenge<F>(
+        make_handler: impl FnOnce(String) -> F,
+        include_authenticate: bool,
+    ) -> String
     where
         F: Fn(&Req) -> (u16, String) + Send + 'static,
     {
@@ -555,7 +537,7 @@ mod tests {
                     protocol,
                 });
 
-                let authenticate = if status == 401 {
+                let authenticate = if status == 401 && include_authenticate {
                     "WWW-Authenticate: Bearer error=\"invalid_token\"\r\n"
                 } else {
                     ""
@@ -739,6 +721,40 @@ mod tests {
         let tokens = saved.tokens.unwrap();
         assert_eq!(tokens.access, "new-token");
         assert_eq!(tokens.refresh, "r1");
+    }
+
+    #[test]
+    fn refreshes_token_once_for_unlabelled_401() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let protected_hits = Arc::new(AtomicUsize::new(0));
+        let server_hits = Arc::clone(&protected_hits);
+
+        let base = spawn_server_with_challenge(
+            |base| {
+                move |req: &Req| {
+                    if let Some(resp) = oauth_routes(&base, req) {
+                        return resp;
+                    }
+                    server_hits.fetch_add(1, Ordering::SeqCst);
+                    if req.auth.as_deref() == Some(NEW_BEARER) {
+                        (200, rpc_ok(1))
+                    } else {
+                        (401, String::new())
+                    }
+                }
+            },
+            false,
+        );
+
+        let url = format!("{base}/mcp");
+        save_mcp_auth(&storage, "srv", &stored_auth(&url, "old-token", "r1")).unwrap();
+
+        let transport = transport_with(&url, &HashMap::new(), Some(storage));
+        let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
+
+        assert_eq!(result, json!({"ok": true}));
+        assert_eq!(protected_hits.load(Ordering::SeqCst), 2);
     }
 
     #[test]

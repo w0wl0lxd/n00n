@@ -4307,6 +4307,7 @@ dependencies = [
  "async-lock",
  "async-process",
  "base64",
+ "color-eyre",
  "cortexkit-tree-sitter-scss",
  "criterion",
  "crossterm",

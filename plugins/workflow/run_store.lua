@@ -20,11 +20,11 @@ function M.create(dir, journal_path, meta)
   end
 
   local dir_metadata, dir_inspect_err = n00n.fs.metadata(dir)
-  if dir_inspect_err then
-    return nil, "failed to inspect workflow run directory: " .. tostring(dir_inspect_err)
-  end
   if dir_metadata and not dir_metadata.is_dir then
     return nil, "workflow run path is not a directory"
+  end
+  if dir_inspect_err then
+    return nil, "failed to inspect workflow run directory: " .. tostring(dir_inspect_err)
   end
   local created_dir = not dir_metadata
   if created_dir then
@@ -52,10 +52,15 @@ function M.create(dir, journal_path, meta)
 
   local meta_ok, meta_err = n00n.fs.write(meta_path, content)
   if not meta_ok then
+    local cleanup_err
     if created_dir then
-      n00n.fs.rm(dir)
+      cleanup_err = remove_created(dir, "run directory")
     end
-    return nil, "failed to write workflow metadata: " .. tostring(meta_err)
+    local err = "failed to write workflow metadata: " .. tostring(meta_err)
+    if cleanup_err then
+      err = err .. "; " .. cleanup_err
+    end
+    return nil, err
   end
 
   local journal_ok, journal_err = n00n.fs.write(journal_path, "")

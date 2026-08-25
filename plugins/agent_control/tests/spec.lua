@@ -89,6 +89,18 @@ case("policy_store_treats_only_missing_file_as_empty", function()
   eq(policies, nil)
   assert(err:find("policy rules must be an array", 1, true), err)
 
+  for _, invalid in ipairs({
+    { [[{"rules":[{"scope":{"agent_id":{}}}]}]], "scope.agent_id must be a string" },
+    { [[{"rules":[{"priority":"high"}]}]], "priority must be a number" },
+    { [[{"rules":[{"allowed_tools":[""]}]}]], "entries must be non-empty strings" },
+    { [[{"rules":[{"restricted_tools":[1]}]}]], "entries must be non-empty strings" },
+  }) do
+    assert(n00n.fs.write(path, invalid[1]))
+    policies, err = policy_store.load(path)
+    eq(policies, nil)
+    assert(err:find(invalid[2], 1, true), err)
+  end
+
   assert(n00n.fs.rm(path))
   assert(n00n.fs.mkdir(path))
   policies, err = policy_store.load(path)

@@ -7,7 +7,9 @@ use std::fs::{FileType, OpenOptions};
 use std::io::{Error, ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt};
-use std::time::{Duration, UNIX_EPOCH};
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
 use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use futures_lite::stream::StreamExt;
@@ -21,6 +23,9 @@ use n00n_lua_macro::{lua_fn, lua_table};
 use crate::api::confined_fs;
 use crate::api::util::convert::err_pair;
 use crate::plugin_permissions::PluginPermissions;
+
+#[cfg(unix)]
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -82,12 +87,13 @@ fn open_lock_file(parent: &File, name: &std::ffi::OsStr) -> std::io::Result<File
     .map_err(Error::from)
 }
 
+#[cfg(unix)]
 async fn acquire_lock(lock: &File) -> std::io::Result<()> {
     loop {
         match lock.try_lock_exclusive() {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                smol::Timer::after(Duration::from_millis(10)).await;
+                smol::Timer::after(LOCK_RETRY_DELAY).await;
             }
             Err(error) => return Err(error),
         }
@@ -596,12 +602,13 @@ fn resolve_within(lua: &Lua, base: String, candidate: String) -> LuaResult<(Valu
     result_pair(lua, result)
 }
 
+#[cfg(unix)]
 /// Read a UTF-8 file relative to an opened base directory without following symbolic links.
+/// Available only on Unix targets.
 ///
 /// @param base string Trusted base directory.
 /// @param relative string Relative file path.
 /// @return (string?, string?) File contents, or nil plus an error.
-#[cfg(unix)]
 #[lua_fn(guard = FsRead)]
 async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -609,12 +616,14 @@ async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Val
     result_pair(&lua, result)
 }
 
+#[cfg(unix)]
 /// Get no-follow metadata for a path relative to an opened base directory.
+/// Available only on Unix targets. The returned table contains `size`, `is_file`, `is_dir`,
+/// `is_symlink`, and `mtime`; `mtime` is nanoseconds since the Unix epoch.
 ///
 /// @param base string Trusted base directory.
 /// @param relative string Relative path.
 /// @return (table?, string?) Metadata, nil if missing, or nil plus an error.
-#[cfg(unix)]
 #[lua_fn(guard = FsRead)]
 async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -634,11 +643,12 @@ async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<
     }
 }
 
+#[cfg(unix)]
 /// List one opened base directory without following symbolic links.
+/// Available only on Unix targets.
 ///
 /// @param base string Trusted base directory.
 /// @return (table?, string?) Directory entries, or nil plus an error.
-#[cfg(unix)]
 #[lua_fn(guard = FsRead)]
 async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -658,13 +668,14 @@ async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
     }
 }
 
+#[cfg(unix)]
 /// Atomically write a file relative to an opened base directory without following symbolic links.
+/// Available only on Unix targets.
 ///
 /// @param base string Trusted base directory.
 /// @param relative string Relative destination path.
 /// @param content string Text to write.
 /// @return (true?, string?) True on success, or nil plus an error.
-#[cfg(unix)]
 #[lua_fn(guard = FsWrite)]
 async fn write_within(
     lua: Lua,
@@ -679,12 +690,13 @@ async fn write_within(
     result_pair(&lua, result.map(|()| true))
 }
 
+#[cfg(unix)]
 /// Delete a file or symbolic link relative to an opened base directory without following links.
+/// Available only on Unix targets.
 ///
 /// @param base string Trusted base directory.
 /// @param relative string Relative path.
 /// @return (true?, string?) True on success, or nil plus an error.
-#[cfg(unix)]
 #[lua_fn(guard = FsWrite)]
 async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -692,8 +704,10 @@ async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value
     result_pair(&lua, result.map(|()| true))
 }
 
+#[cfg(unix)]
 /// Run a callback while holding an exclusive advisory lock on a file.
 /// The lock is shared across independent Lua hosts and operating-system processes.
+/// Available only on Unix targets.
 ///
 /// @param path string Lock file path. Its parent directory must exist.
 /// @param callback function Callback returning a `(value, err)` pair.
@@ -1281,6 +1295,7 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Valu
     }
 }
 
+#[cfg(unix)]
 lua_table! {
     /// File-system utilities, modelled after `vim.fs` and `vim.uv`.
     ///
@@ -1295,6 +1310,24 @@ lua_table! {
         read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
         joinpath, normalize, abspath, resolve_within(perms), read_within(perms), metadata_within(perms),
         dir_within(perms), write_within(perms), rm_within(perms), with_lock(perms), parents, root(perms), relpath, ext,
+        dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
+    ]
+}
+
+#[cfg(not(unix))]
+lua_table! {
+    /// File-system utilities, modelled after `vim.fs` and `vim.uv`.
+    ///
+    /// Fallible operations return `(value, err)` pairs and never throw.
+    /// Paths support `~/` expansion. Relative paths resolve from the current working directory.
+    ///
+    /// ```lua
+    /// local text, err = n00n.fs.read("init.lua")
+    /// if err then return end
+    /// ```
+    "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
+        read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
+        joinpath, normalize, abspath, resolve_within(perms), parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
     ]
 }
@@ -1320,7 +1353,10 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let (parent, name) = open_lock_parent(&link).unwrap();
 
-        assert!(open_lock_file(&parent, &name).is_err());
+        assert_eq!(
+            open_lock_file(&parent, &name).unwrap_err().raw_os_error(),
+            Some(libc::ELOOP)
+        );
     }
 
     #[cfg(unix)]
@@ -1442,6 +1478,40 @@ mod tests {
             panic!("expected regular-file error");
         };
         assert_eq!(error.to_str().unwrap(), EXPECTED_ERROR);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_bytes_limited_rejects_fifo_without_blocking() {
+        const EXPECTED_ERROR: &str = "file is not a regular file";
+        const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+        let temp = TempDir::new().unwrap();
+        let fifo = temp.path().join("pipe");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            rustix::fs::makedev(0, 0),
+        )
+        .unwrap();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = smol::block_on(read_regular_file_limited(&fifo, 1));
+            sender
+                .send(result.map_err(|error| error.to_string()))
+                .unwrap();
+        });
+
+        assert_eq!(
+            receiver
+                .recv_timeout(RESPONSE_TIMEOUT)
+                .unwrap()
+                .unwrap_err(),
+            EXPECTED_ERROR
+        );
+        worker.join().unwrap();
     }
 
     #[test]

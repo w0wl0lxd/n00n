@@ -7,7 +7,7 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, fsync, open, openat, renameat, statat, unlinkat,
+    AtFlags, Dir, FileType, Mode, OFlags, Stat, fsync, open, openat, renameat, statat, unlinkat,
 };
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -76,7 +76,7 @@ pub(crate) fn read(base: &Path, relative: &Path) -> std::io::Result<String> {
     let fd = openat(
         &parent,
         name.as_os_str(),
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
     .map_err(Error::from)?;
@@ -99,22 +99,10 @@ pub(crate) fn metadata(base: &Path, relative: &Path) -> std::io::Result<Option<M
         Err(rustix::io::Errno::NOENT) => return Ok(None),
         Err(error) => return Err(Error::from(error)),
     };
-    let file_type = FileType::from_raw_mode(stat.st_mode);
-    Ok(Some(Metadata {
-        size: stat
-            .st_size
-            .try_into()
-            .map_err(|_| Error::other("negative file size"))?,
-        is_file: file_type.is_file(),
-        is_dir: file_type.is_dir(),
-        is_symlink: file_type.is_symlink(),
-        mtime: stat.st_mtime,
-    }))
+    metadata_from_stat(&stat).map(Some)
 }
 
 pub(crate) fn dir(base: &Path) -> std::io::Result<Vec<DirEntry>> {
-    use rustix::fs::Dir;
-
     let directory = open_base(base)?;
     let iterator = Dir::new(directory).map_err(Error::from)?;
     let mut entries = Vec::new();
@@ -176,14 +164,16 @@ pub(crate) fn write(base: &Path, relative: &Path, content: &[u8]) -> std::io::Re
     result
 }
 
-fn metadata_at(parent: &OwnedFd, name: &OsStr) -> std::io::Result<Option<Metadata>> {
-    let stat = match statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(stat) => stat,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(Error::from(error)),
-    };
+fn metadata_from_stat(stat: &Stat) -> std::io::Result<Metadata> {
     let file_type = FileType::from_raw_mode(stat.st_mode);
-    Ok(Some(Metadata {
+    let nanoseconds = i64::try_from(stat.st_mtime_nsec)
+        .map_err(|_| Error::other("modification time is out of range"))?;
+    let mtime = stat
+        .st_mtime
+        .checked_mul(1_000_000_000)
+        .and_then(|seconds| seconds.checked_add(nanoseconds))
+        .ok_or_else(|| Error::other("modification time is out of range"))?;
+    Ok(Metadata {
         size: stat
             .st_size
             .try_into()
@@ -191,8 +181,17 @@ fn metadata_at(parent: &OwnedFd, name: &OsStr) -> std::io::Result<Option<Metadat
         is_file: file_type.is_file(),
         is_dir: file_type.is_dir(),
         is_symlink: file_type.is_symlink(),
-        mtime: stat.st_mtime,
-    }))
+        mtime,
+    })
+}
+
+fn metadata_at(parent: &OwnedFd, name: &OsStr) -> std::io::Result<Option<Metadata>> {
+    let stat = match statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(Error::from(error)),
+    };
+    metadata_from_stat(&stat).map(Some)
 }
 
 pub(crate) fn remove(base: &Path, relative: &Path) -> std::io::Result<()> {
@@ -217,6 +216,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_reports_nanoseconds_since_epoch() {
+        let base = TempDir::new().unwrap();
+        let path = base.path().join("timestamped.md");
+        fs::write(&path, "content").unwrap();
+        let expected = fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        let actual = metadata(base.path(), Path::new("timestamped.md"))
+            .unwrap()
+            .unwrap()
+            .mtime;
+
+        assert_eq!(u128::try_from(actual).unwrap(), expected);
+    }
+
+    #[test]
     fn remove_unlinks_symlink_instead_of_target() {
         let base = TempDir::new().unwrap();
         fs::write(base.path().join("target.md"), "target").unwrap();
@@ -229,6 +249,36 @@ mod tests {
             "target"
         );
         assert!(!base.path().join("link.md").exists());
+    }
+
+    #[test]
+    fn read_rejects_fifo_without_blocking() {
+        const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+        let base = TempDir::new().unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            base.path().join("pipe"),
+            FileType::Fifo,
+            Mode::RUSR | Mode::WUSR,
+            rustix::fs::makedev(0, 0),
+        )
+        .unwrap();
+        let path = base.path().to_owned();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = read(&path, Path::new("pipe")).map_err(|error| error.kind());
+            sender.send(result).unwrap();
+        });
+
+        assert_eq!(
+            receiver
+                .recv_timeout(RESPONSE_TIMEOUT)
+                .unwrap()
+                .unwrap_err(),
+            ErrorKind::InvalidInput
+        );
+        worker.join().unwrap();
     }
 
     #[test]

@@ -1018,21 +1018,25 @@ pub async fn parse_sse(
         .enumerate()
         .filter_map(|(idx, acc)| acc.map(|acc| (idx, acc)))
     {
-        let input: Value = serde_json::from_str(&acc.arguments).map_err(|error| {
-            warn!(
-                error = %error,
-                tool_index = idx,
-                has_tool_name = !acc.name.is_empty(),
-                tool_name_length = acc.name.len(),
-                argument_bytes = acc.arguments.len(),
-                "rejecting malformed streamed tool arguments"
-            );
-            AgentError::Api {
-                status: 400,
-                message: format!("malformed streamed tool arguments at index {idx}"),
-            }
-            .suppress_retry_after_send(Some(delivery_metadata(emitted_event)))
-        })?;
+        let input = if acc.arguments.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&acc.arguments).map_err(|error| {
+                warn!(
+                    error = %error,
+                    tool_index = idx,
+                    has_tool_name = !acc.name.is_empty(),
+                    tool_name_length = acc.name.len(),
+                    argument_bytes = acc.arguments.len(),
+                    "rejecting malformed streamed tool arguments"
+                );
+                AgentError::Api {
+                    status: 400,
+                    message: format!("malformed streamed tool arguments at index {idx}"),
+                }
+                .suppress_retry_after_send(Some(delivery_metadata(emitted_event)))
+            })?
+        };
         debug!(
             tool_index = idx,
             has_tool_name = !acc.name.is_empty(),

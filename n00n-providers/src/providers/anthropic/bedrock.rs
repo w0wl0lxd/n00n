@@ -1,5 +1,6 @@
 use std::env;
 use std::fmt::Write;
+use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use base64::Engine;
 use flume::Sender;
 use hmac::{Hmac, Mac};
 use isahc::config::{Configurable, RedirectPolicy, ResolveMap};
-use isahc::{HttpClient, ReadResponseExt, Request};
+use isahc::{HttpClient, Request};
 use n00n_storage::id::SessionRef;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -35,6 +36,7 @@ const EVENTSTREAM_CRC_LEN: usize = 4;
 /// treated as corrupt rather than buffered.
 const MAX_EVENTSTREAM_FRAME_LEN: usize = 16 * 1024 * 1024;
 const CONTAINER_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONTAINER_CREDENTIALS_BODY_LEN: usize = 64 * 1024;
 const CONTAINER_CREDENTIALS_BASE_URL: &str = "http://169.254.170.2";
 const ECS_CONTAINER_CREDENTIALS_IPV4: [u8; 4] = [169, 254, 170, 2];
 const EKS_CONTAINER_CREDENTIALS_IPV4: [u8; 4] = [169, 254, 170, 23];
@@ -309,9 +311,7 @@ fn load_container_authorization_token(
                 message: "AWS container authorization token file path must be absolute".into(),
             });
         }
-        std::fs::read_to_string(path).map_err(|_| AgentError::Config {
-            message: "AWS container authorization token file could not be read".into(),
-        })?
+        std::fs::read_to_string(path).map_err(|error| io_error(error.kind(), error))?
     } else if let Some(token) = token {
         token.to_owned()
     } else {
@@ -361,22 +361,14 @@ fn fetch_container_credentials(
             });
         client_builder = client_builder.dns_resolve(resolve_map);
     }
-    let client = client_builder.build().map_err(|_| AgentError::Config {
-        message: "AWS container credentials HTTP client could not be created".into(),
-    })?;
+    let client = client_builder.build()?;
 
     let mut builder = Request::builder().method("GET").uri(endpoint.url.as_str());
     if let Some(token) = &auth_header {
         builder = builder.header("Authorization", token);
     }
-    let request = builder
-        .body(Vec::<u8>::new())
-        .map_err(|_| AgentError::Config {
-            message: "AWS container credentials request could not be created".into(),
-        })?;
-    let mut response = client.send(request).map_err(|_| AgentError::Config {
-        message: "AWS container credentials request failed".into(),
-    })?;
+    let request = builder.body(Vec::<u8>::new())?;
+    let mut response = client.send(request)?;
     if response.status().as_u16() != 200 {
         return Err(AgentError::Config {
             message: format!(
@@ -386,10 +378,27 @@ fn fetch_container_credentials(
         });
     }
 
-    let body = response.text().map_err(|_| AgentError::Config {
-        message: "AWS container credentials response could not be read".into(),
-    })?;
+    let body = read_container_credentials_body(response.body_mut())?;
     parse_container_credentials_response(&body)
+}
+
+fn read_container_credentials_body(reader: impl Read) -> Result<String, AgentError> {
+    let read_limit =
+        u64::try_from(MAX_CONTAINER_CREDENTIALS_BODY_LEN.saturating_add(1)).map_err(|_| {
+            AgentError::Config {
+                message: "AWS container credentials response limit is invalid".into(),
+            }
+        })?;
+    let mut body = Vec::new();
+    reader.take(read_limit).read_to_end(&mut body)?;
+    if body.len() > MAX_CONTAINER_CREDENTIALS_BODY_LEN {
+        return Err(AgentError::Config {
+            message: format!(
+                "AWS container credentials response exceeds {MAX_CONTAINER_CREDENTIALS_BODY_LEN} bytes"
+            ),
+        });
+    }
+    String::from_utf8(body).map_err(|error| io_error(std::io::ErrorKind::InvalidData, error))
 }
 
 fn parse_container_credentials_response(

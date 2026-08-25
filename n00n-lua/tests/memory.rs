@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const MEMORY_SOURCE: &str = include_str!("../../plugins/memory/init.lua");
+const CONFINEMENT_ERROR: &str = "Too many levels of symbolic links";
+const NO_MATCHING_MEMORIES: &str = "No matching memories";
 
 fn fixture_host(state_dir: &Path) -> (Arc<ToolRegistry>, PluginHost) {
     let registry = Arc::new(ToolRegistry::new());
@@ -83,7 +85,10 @@ fn memory_rejects_physical_symlink_escapes_across_all_storage_paths() {
         json!({ "command": "write", "path": "escape/new.md", "content": "escaped" }),
     ] {
         let error = exec_tool(&registry, input).expect_err("symlink escape must be rejected");
-        assert!(!error.is_empty(), "confinement error must be reported");
+        assert!(
+            error.contains(CONFINEMENT_ERROR),
+            "unexpected error: {error}"
+        );
     }
 
     exec_tool(&registry, json!({ "command": "delete", "path": "leak.md" }))
@@ -98,7 +103,7 @@ fn memory_rejects_physical_symlink_escapes_across_all_storage_paths() {
         json!({ "command": "search", "query": "outside-secret" }),
     )
     .expect("search succeeds");
-    assert!(search.contains("No matching memories"));
+    assert!(search.contains(NO_MATCHING_MEMORIES));
     assert_eq!(fs::read_to_string(&secret_path).unwrap(), "outside-secret");
     assert!(!outside.path().join("new.md").exists());
 }
