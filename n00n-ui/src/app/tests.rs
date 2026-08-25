@@ -31,6 +31,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use test_case::test_case;
 
+const PROVIDER_FAILED_ERR: &str = "provider failed";
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
@@ -2931,7 +2932,7 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
     assert!(app.queue.text_messages().is_empty());
 
     app.update(agent_msg(AgentEvent::Error {
-        message: "provider failed".into(),
+        message: PROVIDER_FAILED_ERR.into(),
     }));
 
     assert_eq!(app.queue.text_messages(), vec!["queued through turn error"]);

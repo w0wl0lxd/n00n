@@ -509,7 +509,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    #[ignore]
+    #[ignore = "worker entrypoint fixture invoked by the integration harness"]
     fn interpreter_worker_entry() {
         n00n_interpreter::worker::run_stdio().unwrap();
     }

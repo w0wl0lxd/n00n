@@ -1092,10 +1092,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
         Some(opts) => (
             opts.get::<Option<String>>("path")?,
             opts.get::<Option<usize>>("limit")?,
-            match optional_bool(opts, "gitignore")? {
-                Some(gitignore) => gitignore,
-                None => true,
-            },
+            !matches!(optional_bool(opts, "gitignore")?, Some(false)),
             opts.get::<Option<String>>("sort")?,
         ),
         None => (None, None, true, None),

@@ -1615,20 +1615,20 @@ mod tests {
     use config::{RawServerConfig, RawStdioFields, RawTransport};
     use n00n_providers::Role;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    #[test_case(json!({"type": "object", "properties": {"name": {"type": "string"}}}) ; "simple_object")]
-    #[test_case(json!({"type": "object", "$defs": {"item": {"type": "string"}}, "properties": {"value": {"$ref": "#/$defs/item"}}}) ; "local_ref")]
-    #[test_case(json!({"type": "object", "properties": {"$ref": {"type": "string"}}}) ; "property_named_ref")]
-    #[test_case(json!({"$schema": JSON_SCHEMA_2020_12, "type": "object"}) ; "explicit_2020_12")]
-    fn mcp_schema_validation_accepts_draft_2020_12(schema: Value) {
+    #[test_case(&json!({"type": "object", "properties": {"name": {"type": "string"}}}) ; "simple_object")]
+    #[test_case(&json!({"type": "object", "$defs": {"item": {"type": "string"}}, "properties": {"value": {"$ref": "#/$defs/item"}}}) ; "local_ref")]
+    #[test_case(&json!({"type": "object", "properties": {"$ref": {"type": "string"}}}) ; "property_named_ref")]
+    #[test_case(&json!({"$schema": JSON_SCHEMA_2020_12, "type": "object"}) ; "explicit_2020_12")]
+    fn mcp_schema_validation_accepts_draft_2020_12(schema: &Value) {
         assert!(validate_mcp_input_schema(&schema).is_ok());
     }
 
-    #[test_case(json!(null) ; "not_object")]
-    #[test_case(json!({"type": "invalid"}) ; "invalid_type")]
-    #[test_case(json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
-    #[test_case(json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
-    #[test_case(json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}) ; "unsupported_draft")]
-    fn mcp_schema_validation_rejects_invalid_or_remote(schema: Value) {
+    #[test_case(&json!(null) ; "not_object")]
+    #[test_case(&json!({"type": "invalid"}) ; "invalid_type")]
+    #[test_case(&json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
+    #[test_case(&json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}) ; "unsupported_draft")]
+    fn mcp_schema_validation_rejects_invalid_or_remote(schema: &Value) {
         assert!(validate_mcp_input_schema(&schema).is_err());
     }
 

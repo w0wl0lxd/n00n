@@ -67,6 +67,7 @@ const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
 const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
 const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
 const SESSION_LOCK_SUFFIX: &str = "session.lock";
+#[cfg(unix)]
 const SESSION_LOCK_FILE_MODE: u32 = 0o600;
 pub const OPENAI_RESPONSE_CHAIN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// Tool outputs a live session keeps resident before the oldest are evicted.

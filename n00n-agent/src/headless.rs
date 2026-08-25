@@ -1218,16 +1218,15 @@ mod tests {
         let corrupt_history = &persisted[..5];
         std::fs::write(&path, corrupt_history).unwrap();
 
-        let error = match SessionStore::open_in_with_state(
+        let Err(error) = SessionStore::open_in_with_state(
             dir,
             session_id(),
             CWD,
             MODEL_SPEC,
             &AgentMode::Build,
             None,
-        ) {
-            Ok(_) => panic!("corrupt session unexpectedly opened"),
-            Err(error) => error,
+        ) else {
+            panic!("corrupt session unexpectedly opened");
         };
 
         assert!(error.contains("load session"));

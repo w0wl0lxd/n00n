@@ -253,6 +253,7 @@ mod tests {
         assert!(!base.path().join("link.md").exists());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn read_rejects_fifo_without_blocking() {
         const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);

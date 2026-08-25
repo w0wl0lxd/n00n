@@ -131,6 +131,7 @@ async fn read_stdin_frame(
             break;
         }
         let delimiter = available.iter().position(|byte| *byte == LINE_DELIMITER);
+        #[allow(clippy::map_or_identity)]
         let frame_part_len = delimiter.map_or(available.len(), |position| position);
         let consumed = delimiter.map_or(available.len(), |position| position + 1);
         frame_bytes = frame_bytes.saturating_add(frame_part_len);
