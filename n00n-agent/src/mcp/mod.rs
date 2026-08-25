@@ -1620,7 +1620,7 @@ mod tests {
     #[test_case(&json!({"type": "object", "properties": {"$ref": {"type": "string"}}}) ; "property_named_ref")]
     #[test_case(&json!({"$schema": JSON_SCHEMA_2020_12, "type": "object"}) ; "explicit_2020_12")]
     fn mcp_schema_validation_accepts_draft_2020_12(schema: &Value) {
-        assert!(validate_mcp_input_schema(&schema).is_ok());
+        assert!(validate_mcp_input_schema(schema).is_ok());
     }
 
     #[test_case(&json!(null) ; "not_object")]
@@ -1629,7 +1629,7 @@ mod tests {
     #[test_case(&json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
     #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}) ; "unsupported_draft")]
     fn mcp_schema_validation_rejects_invalid_or_remote(schema: &Value) {
-        assert!(validate_mcp_input_schema(&schema).is_err());
+        assert!(validate_mcp_input_schema(schema).is_err());
     }
 
     #[test]

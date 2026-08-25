@@ -202,7 +202,7 @@ pub enum ProvidersConfigError {
     Parse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 }
 
@@ -249,7 +249,7 @@ impl ProvidersConfig {
         };
         let config = toml::from_str(&content).map_err(|source| ProvidersConfigError::Parse {
             path: path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })?;
         debug!(path = %path.display(), "loaded providers config");
         Ok(config)

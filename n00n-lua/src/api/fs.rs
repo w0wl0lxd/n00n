@@ -1,23 +1,17 @@
 use std::collections::{HashSet, VecDeque};
 #[cfg(unix)]
-use std::fs::File;
-use std::fs::FileType;
-#[cfg(unix)]
-use std::fs::{OpenOptions, Permissions};
+use std::fs::Permissions;
+use std::fs::{File, FileType, OpenOptions};
 use std::io::{Error, ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt};
-#[cfg(unix)]
-use std::time::Duration;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use futures_lite::stream::StreamExt;
 use std::path::{Component, Path, PathBuf};
 
-#[cfg(unix)]
 use fs2::FileExt as _;
-#[cfg(unix)]
 use mlua::Function;
 use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
@@ -27,7 +21,6 @@ use crate::api::confined_fs;
 use crate::api::util::convert::err_pair;
 use crate::plugin_permissions::PluginPermissions;
 
-#[cfg(unix)]
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 pub(crate) fn expand_tilde(path: &str) -> PathBuf {
@@ -90,7 +83,6 @@ fn open_lock_file(parent: &File, name: &std::ffi::OsStr) -> std::io::Result<File
     .map_err(Error::from)
 }
 
-#[cfg(unix)]
 async fn acquire_lock(lock: &File) -> std::io::Result<()> {
     loop {
         match lock.try_lock_exclusive() {
@@ -738,6 +730,198 @@ async fn with_lock(lua: Lua, path: String, callback: Function) -> LuaResult<(Val
     result
 }
 
+#[cfg(not(unix))]
+fn portable_path_within(base: &Path, relative: &Path) -> std::io::Result<PathBuf> {
+    if relative.is_absolute() {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "path must be relative",
+        ));
+    }
+    let base = std::fs::canonicalize(base)?;
+    let mut candidate = base.clone();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => candidate.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "path traversal outside base directory is not allowed",
+                ));
+            }
+        }
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "symbolic links are not allowed in confined paths",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if candidate == base || !candidate.starts_with(&base) {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "path traversal outside base directory is not allowed",
+        ));
+    }
+    Ok(candidate)
+}
+
+#[cfg(not(unix))]
+#[lua_fn(guard = FsRead)]
+async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        std::fs::read_to_string(path)
+    })
+    .await;
+    result_pair(&lua, result)
+}
+
+#[cfg(not(unix))]
+#[lua_fn(guard = FsRead)]
+async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+    match result {
+        Ok(Some(metadata)) => {
+            let table = lua.create_table()?;
+            table.set("size", metadata.len())?;
+            table.set("is_file", metadata.is_file())?;
+            table.set("is_dir", metadata.is_dir())?;
+            table.set("is_symlink", metadata.file_type().is_symlink())?;
+            let mtime = match metadata.modified() {
+                Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+                    Ok(duration) => duration.as_nanos(),
+                    Err(error) => {
+                        tracing::warn!(%error, "confined file mtime predates Unix epoch");
+                        0
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "failed to read confined file mtime");
+                    0
+                }
+            };
+            table.set("mtime", mtime)?;
+            Ok((Value::Table(table), Value::Nil))
+        }
+        Ok(None) => Ok((Value::Nil, Value::Nil)),
+        Err(error) => result_pair(&lua, Err::<Value, _>(error)),
+    }
+}
+
+#[cfg(not(unix))]
+#[lua_fn(guard = FsRead)]
+async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let base = std::fs::canonicalize(base)?;
+        std::fs::read_dir(base)?
+            .map(|entry| {
+                let entry = entry?;
+                let name = entry.file_name().into_string().map_err(|_| {
+                    Error::new(ErrorKind::InvalidData, "directory entry is not valid UTF-8")
+                })?;
+                Ok((name, filetype_str(entry.file_type()?)))
+            })
+            .collect::<std::io::Result<Vec<_>>>()
+    })
+    .await;
+    match result {
+        Ok(entries) => {
+            let table = lua.create_table()?;
+            for (index, (name, kind)) in entries.iter().enumerate() {
+                let row = lua.create_table()?;
+                row.set(1, name.as_str())?;
+                row.set(2, *kind)?;
+                table.set(index + 1, row)?;
+            }
+            Ok((Value::Table(table), Value::Nil))
+        }
+        Err(error) => result_pair(&lua, Err::<Value, _>(error)),
+    }
+}
+
+#[cfg(not(unix))]
+#[lua_fn(guard = FsWrite)]
+async fn write_within(
+    lua: Lua,
+    base: String,
+    relative: String,
+    content: String,
+) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        atomic_write(&path, content.as_bytes())
+    })
+    .await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+#[cfg(not(unix))]
+#[lua_fn(guard = FsWrite)]
+async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        std::fs::remove_file(path)
+    })
+    .await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+#[cfg(not(unix))]
+#[lua_fn(guard = FsWrite)]
+async fn with_lock(lua: Lua, path: String, callback: Function) -> LuaResult<(Value, Value)> {
+    let path = make_absolute(&path)?;
+    let lock = match smol::unblock(move || {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "symbolic links are not allowed for lock files",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+    })
+    .await
+    {
+        Ok(lock) => lock,
+        Err(error) => return result_pair(&lua, Err::<Value, _>(error)),
+    };
+    if let Err(error) = acquire_lock(&lock).await {
+        return result_pair(&lua, Err::<Value, _>(error));
+    }
+    let result = callback.call_async::<(Value, Value)>(()).await;
+    drop(lock);
+    result
+}
+
 /// Return all ancestor directories of {path}, from the immediate parent up to the root.
 /// Handy for walking up a directory tree.
 ///
@@ -1327,7 +1511,8 @@ lua_table! {
     /// ```
     "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
         read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
-        joinpath, normalize, abspath, resolve_within(perms), parents, root(perms), relpath, ext,
+        joinpath, normalize, abspath, resolve_within(perms), read_within(perms), metadata_within(perms),
+        dir_within(perms), write_within(perms), rm_within(perms), with_lock(perms), parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
     ]
 }
@@ -1342,6 +1527,22 @@ mod tests {
     use crate::plugin_permissions::PluginPermissions;
     use mlua::Lua;
     use tempfile::TempDir;
+
+    #[test]
+    fn confined_functions_are_registered() {
+        let lua = Lua::new();
+        let table = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        for name in [
+            "read_within",
+            "metadata_within",
+            "dir_within",
+            "write_within",
+            "rm_within",
+            "with_lock",
+        ] {
+            assert!(table.get::<mlua::Function>(name).is_ok(), "missing {name}");
+        }
+    }
 
     #[cfg(unix)]
     #[test]
