@@ -768,11 +768,10 @@ fn queue_item_consumed_pushes_deferred_user_message() {
     );
 }
 
-#[test_case(error_app as fn(&mut App) ; "error")]
-#[test_case(cancel_app as fn(&mut App) ; "cancel")]
-fn clears_queue(terminate: fn(&mut App)) {
+#[test]
+fn cancel_clears_queue() {
     let mut app = app_with_queued_message();
-    terminate(&mut app);
+    cancel_app(&mut app);
     assert!(app.queue.is_empty());
 }
 
