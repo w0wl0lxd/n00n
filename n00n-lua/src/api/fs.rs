@@ -774,6 +774,10 @@ fn portable_path_within(base: &Path, relative: &Path) -> std::io::Result<PathBuf
 
 #[cfg(not(unix))]
 /// Read a UTF-8 file relative to a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative file path.
+/// @return (string?, string?) File contents, or nil plus an error.
 #[lua_fn(guard = FsRead)]
 async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -787,6 +791,12 @@ async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Val
 
 #[cfg(not(unix))]
 /// Get metadata for a path relative to a confined base directory.
+/// The returned table contains `size`, `is_file`, `is_dir`, `is_symlink`, and `mtime`;
+/// `mtime` is nanoseconds since the Unix epoch.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative path.
+/// @return (table?, string?) Metadata, nil if missing, or nil plus an error.
 #[lua_fn(guard = FsRead)]
 async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -829,6 +839,9 @@ async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<
 
 #[cfg(not(unix))]
 /// List a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @return (table?, string?) Directory entries, or nil plus an error.
 #[lua_fn(guard = FsRead)]
 async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -862,6 +875,11 @@ async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
 
 #[cfg(not(unix))]
 /// Atomically write a file relative to a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative destination path.
+/// @param content string Text to write.
+/// @return (true?, string?) True on success, or nil plus an error.
 #[lua_fn(guard = FsWrite)]
 async fn write_within(
     lua: Lua,
@@ -879,7 +897,11 @@ async fn write_within(
 }
 
 #[cfg(not(unix))]
-/// Delete a file relative to a confined base directory.
+/// Delete a file or empty directory relative to a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative path.
+/// @return (true?, string?) True on success, or nil plus an error.
 #[lua_fn(guard = FsWrite)]
 async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -897,6 +919,11 @@ async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value
 
 #[cfg(not(unix))]
 /// Run a callback while holding an exclusive advisory file lock.
+/// The lock is shared across independent Lua hosts and operating-system processes.
+///
+/// @param path string Lock file path. Its parent directory must exist.
+/// @param callback function Callback returning a `(value, err)` pair.
+/// @return (any?, string?) Callback result, or nil and a lock error.
 #[lua_fn(guard = FsWrite)]
 async fn with_lock(lua: Lua, path: String, callback: Function) -> LuaResult<(Value, Value)> {
     let path = make_absolute(&path)?;

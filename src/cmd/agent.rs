@@ -369,40 +369,54 @@ struct PreparedEnv {
     _plugin_host: PluginHost,
 }
 
-fn prepare_agent_env(
-    model_arg: Option<&str>,
-    yolo: bool,
-    no_jit: bool,
-    fusion: bool,
-    project_trusted: bool,
-) -> Result<PreparedEnv> {
+#[cfg(unix)]
+struct ConnectionContext {
+    input_tx: Sender<AgentInput>,
+    event_rx: flume::Receiver<Envelope>,
+    cancel_tx: Sender<()>,
+    shutdown_tx: Sender<()>,
+    message_lock: Arc<Mutex<()>>,
+    paused: Arc<AtomicBool>,
+    storage: StateDir,
+    agent_id: String,
+    mode: CliAgentMode,
+    task: Arc<Mutex<Option<smol::Task<()>>>>,
+    next_run_id: Arc<AtomicU64>,
+    server_stop_tx: Sender<()>,
+}
+
+fn prepare_agent_env(opts: &AgentRunOptions<'_>) -> Result<PreparedEnv> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
 
-    let mut plugin_host = PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !no_jit)
-        .context("initialize lua plugin host")?;
+    let mut plugin_host =
+        PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !opts.no_jit)
+            .context("initialize lua plugin host")?;
 
     let raw_config = plugin_host
-        .load_init_files(&cwd, project_trusted)
+        .load_init_files(&cwd, opts.project_trusted)
         .context("load init.lua files")?;
 
     let mut config = raw_config
         .unwrap_or_else(Default::default)
         .into_config(false)
         .context("invalid config")?;
-    config.permissions = load_permissions(&cwd, project_trusted);
-    config.project_trusted = project_trusted;
+    config.permissions = load_permissions(&cwd, opts.project_trusted);
+    config.project_trusted = opts.project_trusted;
 
     setup::init_logging(&config.storage);
 
-    if yolo || config.always_yolo {
+    if opts.yolo || config.always_yolo {
         config.permissions.yolo = true;
     }
-    config.agent.fusion.enabled =
-        super::resolve_fusion_opt_in(fusion, config.always_fusion, config.agent.fusion.enabled);
+    config.agent.fusion.enabled = super::resolve_fusion_opt_in(
+        opts.fusion,
+        config.always_fusion,
+        config.agent.fusion.enabled,
+    );
     config.validate()?;
 
     plugin_host
@@ -417,7 +431,7 @@ fn prepare_agent_env(
 
     let providers_toml = ProvidersConfig::load_or_exit();
     let model = setup::resolve_model_with_fusion(
-        model_arg,
+        opts.model,
         &config.provider,
         &providers_toml,
         &storage,
@@ -484,13 +498,7 @@ async fn write_line_until_disconnect<W: AsyncWriteExt + Unpin>(
 }
 
 pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
-    let env = prepare_agent_env(
-        opts.model,
-        opts.yolo,
-        opts.no_jit,
-        opts.fusion,
-        opts.project_trusted,
-    )?;
+    let env = prepare_agent_env(opts)?;
     let message = build_message(
         opts.mode,
         opts.prompt,
@@ -742,13 +750,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         _ => return Err(eyre!("fork failed")),
     }
 
-    let env = prepare_agent_env(
-        opts.model,
-        opts.yolo,
-        opts.no_jit,
-        opts.fusion,
-        opts.project_trusted,
-    )?;
+    let env = prepare_agent_env(opts)?;
     let message = build_message(
         opts.mode,
         opts.prompt,
@@ -898,37 +900,23 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
                     continue;
                 }
             };
-            let input_tx = handle.input_tx.clone();
-            let event_rx = handle.event_rx.clone();
-            let cancel_tx = handle.cancel_tx.clone();
-            let shutdown_tx = handle.shutdown_tx.clone();
-            let message_lock = Arc::clone(&message_lock);
-            let paused = Arc::clone(&paused);
-            let storage_clone = storage.clone();
-            let agent_id_clone = agent_id.clone();
-            let mode_clone = opts.mode;
-            let task = Arc::clone(&task);
-            let next_run_id = Arc::clone(&next_run_id);
-            let server_stop_tx = server_stop_tx.clone();
+            let context = ConnectionContext {
+                input_tx: handle.input_tx.clone(),
+                event_rx: handle.event_rx.clone(),
+                cancel_tx: handle.cancel_tx.clone(),
+                shutdown_tx: handle.shutdown_tx.clone(),
+                message_lock: Arc::clone(&message_lock),
+                paused: Arc::clone(&paused),
+                storage: storage.clone(),
+                agent_id: agent_id.clone(),
+                mode: opts.mode,
+                task: Arc::clone(&task),
+                next_run_id: Arc::clone(&next_run_id),
+                server_stop_tx: server_stop_tx.clone(),
+            };
 
             smol::spawn(async move {
-                if let Err(e) = handle_connection(
-                    stream,
-                    input_tx,
-                    event_rx,
-                    cancel_tx,
-                    shutdown_tx,
-                    message_lock,
-                    paused,
-                    &storage_clone,
-                    &agent_id_clone,
-                    mode_clone,
-                    task,
-                    next_run_id,
-                    server_stop_tx,
-                )
-                .await
-                {
+                if let Err(e) = handle_connection(stream, context).await {
                     eprintln!("Connection error: {e}");
                 }
             })
@@ -1030,19 +1018,22 @@ async fn stop_interactive_task(
 #[cfg(unix)]
 async fn handle_connection(
     stream: smol::net::unix::UnixStream,
-    input_tx: Sender<AgentInput>,
-    event_rx: flume::Receiver<Envelope>,
-    cancel_tx: Sender<()>,
-    shutdown_tx: Sender<()>,
-    message_lock: Arc<Mutex<()>>,
-    paused: Arc<AtomicBool>,
-    storage: &StateDir,
-    agent_id: &str,
-    mode: CliAgentMode,
-    task: Arc<Mutex<Option<smol::Task<()>>>>,
-    next_run_id: Arc<AtomicU64>,
-    server_stop_tx: Sender<()>,
+    context: ConnectionContext,
 ) -> Result<()> {
+    let ConnectionContext {
+        input_tx,
+        event_rx,
+        cancel_tx,
+        shutdown_tx,
+        message_lock,
+        paused,
+        storage,
+        agent_id,
+        mode,
+        task,
+        next_run_id,
+        server_stop_tx,
+    } = context;
     let (reader, mut writer) = split(stream);
     let mut reader = BufReader::new(reader);
 
@@ -1070,11 +1061,11 @@ async fn handle_connection(
                 return Ok(());
             }
 
-            let mut state = read_agent_state(storage, agent_id)?;
+            let mut state = read_agent_state(&storage, &agent_id)?;
             let message_mode = runtime_mode_from_str(&state.mode);
             state.status = "working".to_string();
             state.updated_at = now_epoch();
-            write_agent_state(storage, &state)?;
+            write_agent_state(&storage, &state)?;
 
             while event_rx.try_recv().is_ok() {}
             let current_run_id = next_run_id.fetch_add(1, Ordering::Relaxed);
@@ -1116,23 +1107,23 @@ async fn handle_connection(
             drop(output_tx);
             writer_task.await;
 
-            let mut state = read_agent_state(storage, agent_id)?;
+            let mut state = read_agent_state(&storage, &agent_id)?;
             if paused.load(Ordering::Relaxed) {
                 state.status = "paused".to_string();
             } else {
                 state.status = "running".to_string();
             }
             state.updated_at = now_epoch();
-            write_agent_state(storage, &state)?;
+            write_agent_state(&storage, &state)?;
         }
         ClientCommand::Pause => {
             paused.store(true, Ordering::Relaxed);
             let _ = cancel_tx.send(());
 
-            let mut state = read_agent_state(storage, agent_id)?;
+            let mut state = read_agent_state(&storage, &agent_id)?;
             state.status = "paused".to_string();
             state.updated_at = now_epoch();
-            write_agent_state(storage, &state)?;
+            write_agent_state(&storage, &state)?;
 
             let response = serde_json::json!({ "ok": true });
             let response_json = serde_json::to_string(&response)?;
@@ -1143,10 +1134,10 @@ async fn handle_connection(
         ClientCommand::Resume => {
             paused.store(false, Ordering::Relaxed);
 
-            let mut state = read_agent_state(storage, agent_id)?;
+            let mut state = read_agent_state(&storage, &agent_id)?;
             state.status = "running".to_string();
             state.updated_at = now_epoch();
-            write_agent_state(storage, &state)?;
+            write_agent_state(&storage, &state)?;
 
             let response = serde_json::json!({ "ok": true });
             let response_json = serde_json::to_string(&response)?;
@@ -1155,15 +1146,15 @@ async fn handle_connection(
                 .wrap_err("failed to write response")?;
         }
         ClientCommand::Stop => {
-            let mut state = read_agent_state(storage, agent_id)?;
+            let mut state = read_agent_state(&storage, &agent_id)?;
             state.status = "stopping".to_string();
             state.updated_at = now_epoch();
-            write_agent_state(storage, &state)?;
+            write_agent_state(&storage, &state)?;
 
             stop_interactive_task(&cancel_tx, &shutdown_tx, &task).await;
             let _run = message_lock.lock().await;
 
-            let agent_dir_path = agent_dir(storage, agent_id)?;
+            let agent_dir_path = agent_dir(&storage, &agent_id)?;
             if let Err(error) = fs::remove_file(&state.socket_path)
                 && error.kind() != std::io::ErrorKind::NotFound
             {

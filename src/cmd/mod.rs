@@ -29,15 +29,17 @@ pub(super) const fn resolve_fusion_opt_in(
 pub fn dispatch(cli: Cli) -> Result<()> {
     let uses_project_config = matches!(
         &cli.command,
-        None | Some(Command::Acp { .. })
-            | Some(Command::Index { .. })
-            | Some(Command::Prompt { .. })
-            | Some(Command::Mcp {
-                action: McpAction::Auth { .. },
-            })
-            | Some(Command::Agent {
-                action: AgentCommand::Run { .. },
-            })
+        None | Some(
+            Command::Acp { .. }
+                | Command::Index { .. }
+                | Command::Prompt { .. }
+                | Command::Mcp {
+                    action: McpAction::Auth { .. },
+                }
+                | Command::Agent {
+                    action: AgentCommand::Run { .. },
+                },
+        )
     );
     let project_trusted = if uses_project_config {
         let cwd = std::env::current_dir().context("resolve working directory")?;
