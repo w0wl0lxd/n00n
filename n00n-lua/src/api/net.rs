@@ -2,7 +2,7 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use futures_lite::io::AsyncReadExt;
-use isahc::config::{Configurable, RedirectPolicy};
+use isahc::config::{Configurable, RedirectPolicy, ResolveMap};
 use isahc::{AsyncBody, HttpClient, Request, Response};
 use mlua::{Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
@@ -13,6 +13,7 @@ use crate::plugin_permissions::PluginPermissions;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MAX_BYTES: usize = 5 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RETRIES: u32 = 3;
 const MAX_REDIRECTS: usize = 10;
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -126,6 +127,9 @@ fn extract_request_params(url: &str, opts: Option<&Table>) -> Result<RequestPara
     let max_bytes = opts
         .and_then(|o| o.get::<usize>("max_bytes").ok())
         .unwrap_or_else(|| DEFAULT_MAX_BYTES);
+    if max_bytes > MAX_RESPONSE_BYTES {
+        return Err(format!("max_bytes exceeds {MAX_RESPONSE_BYTES} byte limit"));
+    }
 
     let retries = opts
         .and_then(|o| o.get::<u32>("retry").ok())
@@ -164,12 +168,6 @@ fn build_request(
 }
 
 async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
-    let client = HttpClient::builder()
-        .timeout(params.timeout)
-        .redirect_policy(RedirectPolicy::None)
-        .build()
-        .map_err(|e| format!("client error: {e}"))?;
-
     let is_get = params.method.eq_ignore_ascii_case("GET");
     let mut last_err = String::new();
 
@@ -182,7 +180,7 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
                 &params.headers,
                 params.body.clone(),
             )?;
-            match send_with_redirects(&client, &params, USER_AGENT, req).await {
+            match send_with_redirects(&params, USER_AGENT, req).await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let is_cf_challenge = status == 403
@@ -200,8 +198,7 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
                             &params.headers,
                             params.body.clone(),
                         )?;
-                        match send_with_redirects(&client, &params, FALLBACK_USER_AGENT, req).await
-                        {
+                        match send_with_redirects(&params, FALLBACK_USER_AGENT, req).await {
                             Ok(resp) => break 'retry resp,
                             Err(e) => last_err = format!("request failed: {e}"),
                         }
@@ -257,7 +254,6 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
 }
 
 async fn send_with_redirects(
-    client: &HttpClient,
     params: &RequestParams,
     user_agent: &str,
     initial_request: Request<AsyncBody>,
@@ -265,7 +261,8 @@ async fn send_with_redirects(
     let mut current_url = params.url.clone();
     let mut request = initial_request;
     for redirects in 0..=MAX_REDIRECTS {
-        validate_destination(&current_url)?;
+        let resolved_addresses = validate_destination(&current_url)?;
+        let client = pinned_client(&current_url, &resolved_addresses, params.timeout)?;
         let response = client
             .send_async(request)
             .await
@@ -282,17 +279,57 @@ async fn send_with_redirects(
         let location = location
             .to_str()
             .map_err(|error| format!("invalid redirect location: {error}"))?;
-        current_url = redirect_url(&current_url, location)?;
-        validate_destination(&current_url)?;
+        let redirect_url = redirect_url(&current_url, location)?;
+        validate_destination(&redirect_url)?;
+        let headers = if same_origin(&current_url, &redirect_url) {
+            params.headers.as_slice()
+        } else {
+            &[]
+        };
+        current_url = redirect_url;
         request = build_request(
             &current_url,
             user_agent,
             &params.method,
-            &params.headers,
+            headers,
             params.body.clone(),
         )?;
     }
     Err(format!("too many redirects (max {MAX_REDIRECTS})"))
+}
+
+fn pinned_client(
+    url: &Url,
+    resolved_addresses: &[IpAddr],
+    timeout: Duration,
+) -> Result<HttpClient, String> {
+    let mut builder = HttpClient::builder()
+        .timeout(timeout)
+        .redirect_policy(RedirectPolicy::None);
+    if !resolved_addresses.is_empty() {
+        let host = url
+            .host_str()
+            .ok_or_else(|| "URL host is required".to_owned())?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| "URL has no usable port".to_owned())?;
+        let resolve_map = resolved_addresses
+            .iter()
+            .copied()
+            .fold(ResolveMap::new(), |map, address| {
+                map.add(host, port, address)
+            });
+        builder = builder.dns_resolve(resolve_map);
+    }
+    builder
+        .build()
+        .map_err(|error| format!("client error: {error}"))
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host() == right.host()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 fn redirect_url(current: &Url, location: &str) -> Result<Url, String> {
@@ -302,7 +339,7 @@ fn redirect_url(current: &Url, location: &str) -> Result<Url, String> {
     validate_and_upgrade_url(joined.as_str())
 }
 
-fn validate_destination(url: &Url) -> Result<(), String> {
+fn validate_destination(url: &Url) -> Result<Vec<IpAddr>, String> {
     if url.scheme() != "https" {
         return Err(format!("blocked URL scheme: {}", url.scheme()));
     }
@@ -316,8 +353,14 @@ fn validate_destination(url: &Url) -> Result<(), String> {
         .host()
         .ok_or_else(|| "URL host is required".to_owned())?
     {
-        Host::Ipv4(ip) => validate_ip(IpAddr::V4(ip)),
-        Host::Ipv6(ip) => validate_ip(IpAddr::V6(ip)),
+        Host::Ipv4(ip) => {
+            validate_ip(IpAddr::V4(ip))?;
+            Ok(Vec::new())
+        }
+        Host::Ipv6(ip) => {
+            validate_ip(IpAddr::V6(ip))?;
+            Ok(Vec::new())
+        }
         Host::Domain(host) => {
             let addrs = (host, port)
                 .to_socket_addrs()
@@ -326,6 +369,7 @@ fn validate_destination(url: &Url) -> Result<(), String> {
             if addrs.is_empty() {
                 return Err(format!("failed to resolve {host}: no addresses"));
             }
+            let mut resolved_addresses = Vec::with_capacity(addrs.len());
             for address in addrs {
                 if is_private_ip(&address.ip()) {
                     return Err(format!(
@@ -333,8 +377,11 @@ fn validate_destination(url: &Url) -> Result<(), String> {
                         address.ip()
                     ));
                 }
+                resolved_addresses.push(address.ip());
             }
-            Ok(())
+            resolved_addresses.sort_unstable();
+            resolved_addresses.dedup();
+            Ok(resolved_addresses)
         }
     }
 }
@@ -445,6 +492,15 @@ mod tests {
         assert!(validate_destination(&redirected).is_err());
     }
 
+    #[test_case("https://example.com/start", "https://example.com/next", true ; "same_origin")]
+    #[test_case("https://example.com/start", "https://other.example/next", false ; "different_host")]
+    #[test_case("https://example.com/start", "https://example.com:8443/next", false ; "different_port")]
+    fn redirect_origin_matching(current: &str, redirect: &str, expected: bool) {
+        let current = Url::parse(current).unwrap();
+        let redirect = Url::parse(redirect).unwrap();
+        assert_eq!(same_origin(&current, &redirect), expected);
+    }
+
     #[test_case(IpAddr::V4(Ipv4Addr::UNSPECIFIED), true ; "v4_unspecified")]
     #[test_case(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), true ; "v4_rfc1918_class_b")]
     #[test_case(IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255)), true ; "v4_rfc1918_class_b_upper")]
@@ -526,6 +582,17 @@ mod tests {
         opts.set("timeout", MAX_TIMEOUT_SECS + 100).unwrap();
         let params = extract_request_params("https://8.8.8.8", Some(&opts)).unwrap();
         assert_eq!(params.timeout, Duration::from_secs(MAX_TIMEOUT_SECS));
+    }
+
+    #[test]
+    fn extract_params_rejects_oversized_response_budget() {
+        let lua = Lua::new();
+        let opts = lua.create_table().unwrap();
+        opts.set("max_bytes", MAX_RESPONSE_BYTES + 1).unwrap();
+        let Err(error) = extract_request_params("https://8.8.8.8", Some(&opts)) else {
+            panic!("oversized response budget must be rejected");
+        };
+        assert!(error.contains("max_bytes exceeds"));
     }
 
     #[test]
