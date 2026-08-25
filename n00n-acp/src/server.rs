@@ -29,13 +29,18 @@ use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{Session, TranscriptEntry};
 use serde::Serialize;
-use serde_json::{Deserializer, Result as JsonResult, Value};
+use serde_json::{Result as JsonResult, Value};
 use smol::io::AsyncBufReadExt;
 use tracing::{debug, warn};
 
 use crate::{AcpParams, methods, permissions, translate};
 
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
+const LINE_DELIMITER: u8 = b'\n';
+#[cfg(not(test))]
+const MAX_STDIN_FRAME_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(test)]
+const MAX_STDIN_FRAME_BYTES: usize = 128;
 
 type PendingPrompt = Arc<Mutex<PendingPromptState>>;
 type PendingPermission = Arc<Mutex<Option<RequestId>>>;
@@ -63,6 +68,12 @@ struct Server {
     model_specs: Vec<String>,
     session: Option<SessionState>,
     next_outgoing_request_id: RequestIdCounter,
+}
+
+enum StdinFrame {
+    Eof,
+    Line(Vec<u8>),
+    Oversized { frame_bytes: usize },
 }
 
 impl Server {
@@ -104,6 +115,48 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     Ok(())
 }
 
+async fn read_stdin_frame(
+    reader: &mut (impl smol::io::AsyncBufRead + Unpin),
+    max_bytes: usize,
+) -> std::io::Result<StdinFrame> {
+    let mut bytes = Vec::new();
+    let mut frame_bytes = 0usize;
+    let mut last_frame_byte = None;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if frame_bytes == 0 {
+                return Ok(StdinFrame::Eof);
+            }
+            break;
+        }
+        let delimiter = available.iter().position(|byte| *byte == LINE_DELIMITER);
+        let frame_part_len = delimiter.map_or(available.len(), |position| position);
+        let consumed = delimiter.map_or(available.len(), |position| position + 1);
+        frame_bytes = frame_bytes.saturating_add(frame_part_len);
+        if frame_part_len > 0 {
+            last_frame_byte = available.get(frame_part_len - 1).copied();
+        }
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        let copied = frame_part_len.min(remaining);
+        bytes.extend_from_slice(&available[..copied]);
+        reader.consume(consumed);
+        if delimiter.is_some() {
+            break;
+        }
+    }
+
+    let had_carriage_return = last_frame_byte == Some(b'\r');
+    let payload_bytes = frame_bytes.saturating_sub(usize::from(had_carriage_return));
+    if payload_bytes > max_bytes {
+        return Ok(StdinFrame::Oversized { frame_bytes });
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    Ok(StdinFrame::Line(bytes))
+}
+
 async fn serve_reader<R>(
     params: &AcpParams,
     mut reader: R,
@@ -112,62 +165,67 @@ async fn serve_reader<R>(
 where
     R: smol::io::AsyncBufRead + Unpin,
 {
-    let mut line = String::new();
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                warn!(error = %e, "invalid UTF-8 on stdin");
+        let frame = read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
+            .await
+            .context("read stdin")?;
+        let bytes = match frame {
+            StdinFrame::Eof => break,
+            StdinFrame::Line(bytes) => bytes,
+            StdinFrame::Oversized { frame_bytes } => {
+                warn!(
+                    frame_bytes,
+                    limit_bytes = MAX_STDIN_FRAME_BYTES,
+                    "oversized ACP stdin frame rejected"
+                );
                 server.respond(RequestId::Null, Err(AcpError::parse_error()));
                 continue;
             }
-            Err(e) => return Err(e).context("read stdin"),
+        };
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            continue;
         }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if std::str::from_utf8(&bytes).is_err() {
+            warn!(frame_bytes = bytes.len(), "invalid UTF-8 on ACP stdin");
+            server.respond(RequestId::Null, Err(AcpError::parse_error()));
             continue;
         }
 
-        for result in parse_stdin_line(trimmed) {
-            let raw = match result {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(error = %e, "invalid JSON on stdin");
-                    server.respond(RequestId::Null, Err(AcpError::parse_error()));
-                    break;
-                }
-            };
+        let raw = match parse_stdin_line(&bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(error = %error, frame_bytes = bytes.len(), "invalid JSON on ACP stdin");
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
+            }
+        };
 
-            let id = match raw.get("id") {
-                Some(value) => {
-                    let Ok(id) = request_id(value) else {
-                        server.respond(RequestId::Null, Err(AcpError::invalid_request()));
-                        continue;
-                    };
-                    Some(id)
-                }
-                None => None,
-            };
-
-            if raw.get("result").is_some() || raw.get("error").is_some() {
-                if let Some(id) = id {
-                    handle_incoming_response(&server, &id, &raw);
-                } else {
+        let id = match raw.get("id") {
+            Some(value) => {
+                let Ok(id) = request_id(value) else {
                     server.respond(RequestId::Null, Err(AcpError::invalid_request()));
-                }
-            } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
-                match id {
-                    Some(id) => handle_request(&mut server, method, id, &raw, params).await,
-                    None => handle_notification(&server, method),
-                }
-            } else if let Some(id) = id {
-                server.respond(id, Err(AcpError::invalid_request()));
+                    continue;
+                };
+                Some(id)
+            }
+            None => None,
+        };
+
+        if raw.get("result").is_some() || raw.get("error").is_some() {
+            if let Some(id) = id {
+                handle_incoming_response(&server, &id, &raw);
             } else {
                 server.respond(RequestId::Null, Err(AcpError::invalid_request()));
             }
+        } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
+            match id {
+                Some(id) => handle_request(&mut server, method, id, &raw, params).await,
+                None => handle_notification(&server, method),
+            }
+        } else if let Some(id) = id {
+            server.respond(id, Err(AcpError::invalid_request()));
+        } else {
+            server.respond(RequestId::Null, Err(AcpError::invalid_request()));
         }
     }
 
@@ -175,9 +233,8 @@ where
     Ok(())
 }
 
-/// Parses one or more JSON-RPC messages concatenated on a single stdin line.
-fn parse_stdin_line(line: &str) -> impl Iterator<Item = JsonResult<Value>> + '_ {
-    Deserializer::from_str(line).into_iter::<Value>()
+fn parse_stdin_line(line: &[u8]) -> JsonResult<Value> {
+    serde_json::from_slice(line)
 }
 
 fn request_id(value: &Value) -> Result<RequestId, ()> {
@@ -975,30 +1032,129 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test_case::test_case(())]
-    fn parse_stdin_line_splits_multiple_json_rpc_messages_on_one_line(_case: ()) {
-        let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}{"jsonrpc":"2.0","id":2,"method":"b"}"#;
-        let values: Vec<Value> = parse_stdin_line(line)
-            .map(|result| result.expect("each message is valid JSON"))
-            .collect();
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0]["id"], 1);
-        assert_eq!(values[1]["id"], 2);
+    #[test]
+    fn serve_loop_rejects_concatenated_messages_and_recovers() {
+        let input = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}
+"#;
+
+        let responses = run_serve_reader(input.to_vec());
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], Value::Null);
+        assert_eq!(responses[0]["error"]["code"], -32_700);
+        assert_initialize_processed(&responses);
     }
 
-    #[test_case::test_case(())]
-    fn parse_stdin_line_parses_single_message(_case: ()) {
-        let line = r#"{"jsonrpc":"2.0","id":1,"method":"a"}"#;
-        let values: Vec<Value> = parse_stdin_line(line)
-            .map(|result| result.expect("message is valid JSON"))
-            .collect();
-        assert_eq!(values.len(), 1);
-        assert_eq!(values[0]["id"], 1);
+    #[test]
+    fn parse_stdin_line_parses_single_message() {
+        let line = br#"{"jsonrpc":"2.0","id":1,"method":"a"}"#;
+        let value = parse_stdin_line(line).expect("message is valid JSON");
+        assert_eq!(value["id"], 1);
     }
 
-    #[test_case::test_case(())]
-    fn parse_stdin_line_reports_error_for_invalid_json(_case: ()) {
-        let mut values = parse_stdin_line("not json");
-        assert!(values.next().expect("one item").is_err());
+    #[test]
+    fn parse_stdin_line_rejects_trailing_json_value() {
+        let line = br#"{"jsonrpc":"2.0","id":1}{"jsonrpc":"2.0","id":2}"#;
+        assert!(parse_stdin_line(line).is_err());
+    }
+
+    #[test]
+    fn parse_stdin_line_reports_error_for_invalid_json() {
+        assert!(parse_stdin_line(b"not json").is_err());
+    }
+
+    #[test]
+    fn parse_stdin_line_accepts_escaped_newline() {
+        let value = parse_stdin_line(br#"{"jsonrpc":"2.0","id":1,"value":"first\nsecond"}"#)
+            .expect("escaped newline is valid JSON");
+        assert_eq!(value["value"], "first\nsecond");
+    }
+
+    #[test]
+    fn serve_loop_accepts_crlf_framing() {
+        let input = b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\r\n";
+        let responses = run_serve_reader(input.to_vec());
+        assert_eq!(responses.len(), 1);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn serve_loop_processes_unterminated_final_frame() {
+        let input = br#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}"#;
+        let responses = run_serve_reader(input.to_vec());
+        assert_eq!(responses.len(), 1);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn serve_loop_rejects_oversized_frame_and_recovers() {
+        let mut input = vec![b'x'; MAX_STDIN_FRAME_BYTES + 1];
+        input.extend_from_slice(
+            b"\n{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\n",
+        );
+
+        let responses = run_serve_reader(input);
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], Value::Null);
+        assert_eq!(responses[0]["error"]["code"], -32_700);
+        assert_initialize_processed(&responses);
+    }
+
+    #[test]
+    fn read_stdin_frame_accepts_crlf_payload_at_limit() {
+        smol::block_on(async {
+            let mut input = vec![b' '; MAX_STDIN_FRAME_BYTES];
+            input.extend_from_slice(b"\r\n");
+            let mut reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
+            let frame = read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
+                .await
+                .expect("read frame");
+            assert!(
+                matches!(frame, StdinFrame::Line(bytes) if bytes.len() == MAX_STDIN_FRAME_BYTES)
+            );
+        });
+    }
+
+    #[test]
+    fn read_stdin_frame_bounds_allocation_and_resynchronizes() {
+        smol::block_on(async {
+            let mut input = vec![b'x'; MAX_STDIN_FRAME_BYTES * 2];
+            input.extend_from_slice(b"\nok\n");
+            let mut reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
+            let frame = read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
+                .await
+                .expect("read oversized frame");
+            assert!(matches!(
+                frame,
+                StdinFrame::Oversized { frame_bytes }
+                    if frame_bytes == MAX_STDIN_FRAME_BYTES * 2
+            ));
+            let next = read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
+                .await
+                .expect("read next frame");
+            assert!(matches!(next, StdinFrame::Line(bytes) if bytes == b"ok"));
+        });
+    }
+
+    #[test]
+    fn read_stdin_frame_rejects_oversized_unterminated_frame() {
+        smol::block_on(async {
+            let input = vec![b'x'; MAX_STDIN_FRAME_BYTES + 1];
+            let mut reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
+            let frame = read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
+                .await
+                .expect("read oversized frame at EOF");
+            assert!(matches!(
+                frame,
+                StdinFrame::Oversized { frame_bytes }
+                    if frame_bytes == MAX_STDIN_FRAME_BYTES + 1
+            ));
+            let next = read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
+                .await
+                .expect("read EOF");
+            assert!(matches!(next, StdinFrame::Eof));
+        });
     }
 }
