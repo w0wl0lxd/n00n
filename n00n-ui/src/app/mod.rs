@@ -1799,7 +1799,6 @@ impl App {
                     self.status = Status::error(message.clone());
                     self.status_bar.clear_flash();
                     self.save_session_without_plugin_state_capture();
-                    self.queue.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
                     self.finish_subagents(&DisplayRole::Error, ERROR_TEXT);

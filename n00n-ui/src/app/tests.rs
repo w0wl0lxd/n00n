@@ -2912,6 +2912,51 @@ fn loaded_metadata_consumption_survives_crash_restore() {
 }
 
 #[test]
+fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    assert!(matches!(
+        app.submit_prompt(QueuedMessage {
+            text: "queued through turn error".into(),
+            images: Vec::new(),
+            control: false,
+        }),
+        SubmitOutcome::Queued
+    ));
+    app.update(agent_msg(AgentEvent::Error {
+        message: "provider failed".into(),
+    }));
+
+    assert_eq!(app.queue.text_messages(), vec!["queued through turn error"]);
+    app.save_session();
+    let session_id = app.state.session.id;
+    drain_writer(app, writer);
+
+    let saved = AppSession::load(session_id, &dir).expect("saved session loads");
+    assert_eq!(
+        saved.meta.queued_messages,
+        vec!["queued through turn error"]
+    );
+    assert_eq!(saved.meta.queued_submissions.len(), 1);
+
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
+    let mut restarted = build_app(dir, Arc::clone(&writer));
+    let (shared, receiver) = shared_queue::queue();
+    restarted.queue.set_shared(shared);
+    restarted.apply_loaded_session(saved, &test_model());
+
+    let Some(shared_queue::QueueItem::Message { input, .. }) = receiver.pop() else {
+        panic!("queued prompt must be restored after turn error");
+    };
+    assert_eq!(input.message, "queued through turn error");
+    drain_writer(restarted, writer);
+}
+
+#[test]
 fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restart() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let (shared, receiver) = shared_queue::queue();
