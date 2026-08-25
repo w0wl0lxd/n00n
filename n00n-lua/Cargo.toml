@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 arc-swap = { workspace = true }
+async-process = { workspace = true }
 async-lock = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }

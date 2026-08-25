@@ -26,6 +26,9 @@ pub use plugin_permissions::{Permission, PluginPermissions};
 pub use runtime::{CANCEL_INTERRUPT_GRACE, RestoreItem, WARM_TOOL_CAP};
 
 pub mod test_support {
+    #[cfg(debug_assertions)]
+    use std::path::PathBuf;
+
     use crate::KeymapReader;
     use crate::api::keymap::{KeymapEntry, KeymapWriter};
     use crate::api::util::command::{LuaCommandInfo, LuaCommandReader, LuaCommandWriter};
@@ -39,6 +42,11 @@ pub mod test_support {
     }
 
     #[must_use]
+    #[cfg(debug_assertions)]
+    pub fn set_interpreter_worker_executable(path: PathBuf) -> Result<(), PathBuf> {
+        crate::api::interpreter::set_worker_executable_for_tests(path)
+    }
+
     pub fn lua_command_writer_pair() -> (LuaCommandWriterHandle, LuaCommandReader) {
         let (writer, reader) = LuaCommandWriter::new();
         (LuaCommandWriterHandle(writer), reader)

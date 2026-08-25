@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::pin::pin;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,6 +35,9 @@ use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
+    let _ = n00n_lua::test_support::set_interpreter_worker_executable(std::path::PathBuf::from(
+        env!("CARGO_BIN_EXE_n00n-interpreter-worker"),
+    ));
     Arc::new(ToolRegistry::new())
 }
 
@@ -5450,9 +5454,19 @@ impl Provider for ScriptedSessionProvider {
     }
 }
 
-struct PendingSessionProvider;
+struct PendingThenReadySessionProvider {
+    calls: AtomicUsize,
+}
 
-impl Provider for PendingSessionProvider {
+impl PendingThenReadySessionProvider {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Provider for PendingThenReadySessionProvider {
     fn stream_message<'a>(
         &'a self,
         _: &'a Model,
@@ -5463,7 +5477,19 @@ impl Provider for PendingSessionProvider {
         _: RequestOptions,
         _: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
-        Box::pin(std::future::pending())
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            Box::pin(std::future::pending())
+        } else {
+            Box::pin(async {
+                Ok(session_response(
+                    vec![ContentBlock::Text {
+                        text: "second prompt succeeded".to_owned(),
+                    }],
+                    TokenUsage::default(),
+                    StopReason::EndTurn,
+                ))
+            })
+        }
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
@@ -5625,10 +5651,12 @@ fn session_cancel_interrupts_inflight_prompt_without_waiting_for_session_lock() 
                         return "cancel requested"
                     end,
                 }})
-                sess:close()
                 if not results[1].ok then error(results[1].err, 0) end
                 if not results[2].ok then error(results[2].err, 0) end
-                return results[2].value .. "|" .. results[1].value
+                local second, second_err = sess:prompt("reuse after cancellation")
+                sess:close()
+                if second_err then error(second_err, 0) end
+                return results[2].value .. "|" .. results[1].value .. "|" .. second.text
             end
         }})"#,
     );
@@ -5643,7 +5671,7 @@ fn session_cancel_interrupts_inflight_prompt_without_waiting_for_session_lock() 
         Some(&event_tx),
         None,
     );
-    ctx.provider = Arc::new(PendingSessionProvider);
+    ctx.provider = Arc::new(PendingThenReadySessionProvider::new());
     ctx.registry = Arc::clone(&registry);
     ctx.deadline = Deadline::after(Duration::from_secs(5));
 
@@ -5653,6 +5681,10 @@ fn session_cancel_interrupts_inflight_prompt_without_waiting_for_session_lock() 
         .as_text();
 
     assert!(output.starts_with("cancel requested|"), "got: {output}");
+    assert!(
+        output.ends_with("|second prompt succeeded"),
+        "got: {output}"
+    );
     assert!(
         !output.contains("prompt was not cancelled"),
         "got: {output}"

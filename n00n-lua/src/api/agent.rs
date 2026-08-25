@@ -546,6 +546,14 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     Ok((Some(definitions), None))
 }
 
+fn cap_nested_deadline(parent: Deadline, timeout: Duration) -> Deadline {
+    let requested = Instant::now() + timeout;
+    match parent {
+        Deadline::At(parent) => Deadline::At(parent.min(requested)),
+        Deadline::None => Deadline::At(requested),
+    }
+}
+
 /// Run a tool by name and wait for the result. This is how you call built-in
 /// tools (like `read`, `bash`, `glob`) from Lua without going through the LLM.
 ///
@@ -583,7 +591,7 @@ async fn call_tool(
     let (mut on_buf, mut on_ann, mut rx) = (None, None, None);
     if let Some(o) = opts {
         if let Some(secs) = o.get::<Option<u64>>("timeout")? {
-            tctx.deadline = Deadline::after(Duration::from_secs(secs));
+            tctx.deadline = cap_nested_deadline(tctx.deadline, Duration::from_secs(secs));
         }
         on_buf = o.get::<Option<Function>>("on_live_buf")?;
         on_ann = o.get::<Option<Function>>("on_annotation")?;
@@ -853,11 +861,6 @@ async fn session(
         .detach();
     }
 
-    let (child_trigger, child_cancel) = agent_ctx.cancel.child();
-    agent_ctx
-        .subagent_cancels
-        .insert(child_id.clone(), child_trigger);
-
     let name = name.unwrap_or_else(|| format!("session-{child_id}"));
     info!(name = %name, model = %model.id, "subagent session opened");
 
@@ -898,7 +901,7 @@ async fn session(
         ),
         history: History::new(Vec::new()),
         sub_event_tx,
-        child_cancel,
+        parent_cancel: agent_ctx.cancel.clone(),
         answer_rx: Arc::new(AsyncMutex::new(answer_rx)),
         answer_tx: Some(answer_tx),
         prompt_rx,
@@ -1326,7 +1329,7 @@ struct SessionState {
     mcp: Option<n00n_agent::mcp::McpSession>,
     history: History,
     sub_event_tx: EventSender,
-    child_cancel: n00n_agent::cancel::CancelToken,
+    parent_cancel: n00n_agent::cancel::CancelToken,
     answer_rx: Arc<AsyncMutex<flume::Receiver<String>>>,
     answer_tx: Option<flume::Sender<String>>,
     prompt_rx: flume::Receiver<SubagentPrompt>,
@@ -1482,6 +1485,8 @@ async fn prompt(
         images: Vec::new(),
     });
     while let Some(message) = next_message.take() {
+        let (child_trigger, child_cancel) = s.parent_cancel.child();
+        s.parent_cancels.insert(s.child_id.clone(), child_trigger);
         let mut agent = Agent::new(
             s.params.clone(),
             AgentRunParams {
@@ -1499,7 +1504,7 @@ async fn prompt(
             fast: s.fast,
             mode: s.mode.clone(),
         }))
-        .with_cancel(s.child_cancel.clone())
+        .with_cancel(child_cancel)
         .with_mcp(s.mcp.clone())
         .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
         .with_local_tools(Arc::clone(&s.local_tools));
@@ -1704,6 +1709,30 @@ mod tests {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
         call_local_tool(&lua.weak(), &f, input)
+    }
+
+    #[test]
+    fn nested_timeout_cannot_extend_parent_deadline() {
+        let parent = Instant::now() + Duration::from_secs(5);
+        let Deadline::At(actual) =
+            cap_nested_deadline(Deadline::At(parent), Duration::from_secs(300))
+        else {
+            panic!("nested deadline missing");
+        };
+        assert_eq!(actual, parent);
+    }
+
+    #[test]
+    fn nested_timeout_can_shorten_parent_deadline() {
+        let parent = Instant::now() + Duration::from_secs(300);
+        let before = Instant::now();
+        let Deadline::At(actual) =
+            cap_nested_deadline(Deadline::At(parent), Duration::from_secs(5))
+        else {
+            panic!("nested deadline missing");
+        };
+        assert!(actual >= before + Duration::from_secs(5));
+        assert!(actual < parent);
     }
 
     #[test]

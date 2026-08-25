@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use futures_lite::io::AsyncReadExt;
 use isahc::config::{Configurable, RedirectPolicy};
-use isahc::{AsyncBody, HttpClient, Request};
+use isahc::{AsyncBody, HttpClient, Request, Response};
 use mlua::{Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
+use url::{Host, Url};
 
 use crate::plugin_permissions::PluginPermissions;
 
@@ -13,13 +14,14 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MAX_BYTES: usize = 5 * 1024 * 1024;
 const MAX_RETRIES: u32 = 3;
+const MAX_REDIRECTS: usize = 10;
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const CF_MITIGATED: &str = "cf-mitigated";
 const CF_CHALLENGE: &str = "challenge";
 const FALLBACK_USER_AGENT: &str = "n00n";
 
 struct RequestParams {
-    url: String,
+    url: Url,
     method: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
@@ -94,7 +96,7 @@ lua_table! {
 
 fn extract_request_params(url: &str, opts: Option<&Table>) -> Result<RequestParams, String> {
     let url = validate_and_upgrade_url(url)?;
-    check_ssrf(&url)?;
+    validate_destination(&url)?;
 
     let method = opts
         .and_then(|o| o.get::<String>("method").ok())
@@ -141,7 +143,7 @@ fn extract_request_params(url: &str, opts: Option<&Table>) -> Result<RequestPara
 }
 
 fn build_request(
-    url: &str,
+    url: &Url,
     user_agent: &str,
     method: &str,
     headers: &[(String, String)],
@@ -149,7 +151,7 @@ fn build_request(
 ) -> Result<Request<AsyncBody>, String> {
     let mut builder = Request::builder()
         .method(method)
-        .uri(url)
+        .uri(url.as_str())
         .header("User-Agent", user_agent);
 
     for (k, v) in headers {
@@ -164,7 +166,7 @@ fn build_request(
 async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
     let client = HttpClient::builder()
         .timeout(params.timeout)
-        .redirect_policy(RedirectPolicy::Follow)
+        .redirect_policy(RedirectPolicy::None)
         .build()
         .map_err(|e| format!("client error: {e}"))?;
 
@@ -180,7 +182,7 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
                 &params.headers,
                 params.body.clone(),
             )?;
-            match client.send_async(req).await {
+            match send_with_redirects(&client, &params, USER_AGENT, req).await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let is_cf_challenge = status == 403
@@ -198,7 +200,8 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
                             &params.headers,
                             params.body.clone(),
                         )?;
-                        match client.send_async(req).await {
+                        match send_with_redirects(&client, &params, FALLBACK_USER_AGENT, req).await
+                        {
                             Ok(resp) => break 'retry resp,
                             Err(e) => last_err = format!("request failed: {e}"),
                         }
@@ -253,40 +256,95 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
     })
 }
 
-fn extract_host(url: &str) -> Option<&str> {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    let host_port = rest.split('/').next()?;
-    if let Some(bracketed) = host_port.strip_prefix('[') {
-        bracketed.split(']').next()
-    } else {
-        host_port.split(':').next()
+async fn send_with_redirects(
+    client: &HttpClient,
+    params: &RequestParams,
+    user_agent: &str,
+    initial_request: Request<AsyncBody>,
+) -> Result<Response<AsyncBody>, String> {
+    let mut current_url = params.url.clone();
+    let mut request = initial_request;
+    for redirects in 0..=MAX_REDIRECTS {
+        validate_destination(&current_url)?;
+        let response = client
+            .send_async(request)
+            .await
+            .map_err(|error| format!("request failed: {error}"))?;
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        let Some(location) = response.headers().get("location") else {
+            return Ok(response);
+        };
+        if redirects == MAX_REDIRECTS {
+            return Err(format!("too many redirects (max {MAX_REDIRECTS})"));
+        }
+        let location = location
+            .to_str()
+            .map_err(|error| format!("invalid redirect location: {error}"))?;
+        current_url = redirect_url(&current_url, location)?;
+        validate_destination(&current_url)?;
+        request = build_request(
+            &current_url,
+            user_agent,
+            &params.method,
+            &params.headers,
+            params.body.clone(),
+        )?;
+    }
+    Err(format!("too many redirects (max {MAX_REDIRECTS})"))
+}
+
+fn redirect_url(current: &Url, location: &str) -> Result<Url, String> {
+    let joined = current
+        .join(location)
+        .map_err(|error| format!("invalid redirect URL: {error}"))?;
+    validate_and_upgrade_url(joined.as_str())
+}
+
+fn validate_destination(url: &Url) -> Result<(), String> {
+    if url.scheme() != "https" {
+        return Err(format!("blocked URL scheme: {}", url.scheme()));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("URL credentials are not allowed".to_owned());
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "URL has no usable port".to_owned())?;
+    match url
+        .host()
+        .ok_or_else(|| "URL host is required".to_owned())?
+    {
+        Host::Ipv4(ip) => validate_ip(IpAddr::V4(ip)),
+        Host::Ipv6(ip) => validate_ip(IpAddr::V6(ip)),
+        Host::Domain(host) => {
+            let addrs = (host, port)
+                .to_socket_addrs()
+                .map_err(|error| format!("failed to resolve {host}: {error}"))?
+                .collect::<Vec<_>>();
+            if addrs.is_empty() {
+                return Err(format!("failed to resolve {host}: no addresses"));
+            }
+            for address in addrs {
+                if is_private_ip(&address.ip()) {
+                    return Err(format!(
+                        "blocked: {host} resolves to private address {}",
+                        address.ip()
+                    ));
+                }
+            }
+            Ok(())
+        }
     }
 }
 
-fn check_ssrf(url: &str) -> Result<(), String> {
-    let host = extract_host(url).ok_or("cannot extract host from URL")?;
-
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_ip(&ip) {
-            return Err(format!("blocked: {ip} is a private/metadata address"));
-        }
-        return Ok(());
+fn validate_ip(ip: IpAddr) -> Result<(), String> {
+    if is_private_ip(&ip) {
+        Err(format!("blocked: {ip} is a private/metadata address"))
+    } else {
+        Ok(())
     }
-
-    let addr = format!("{host}:443");
-    if let Ok(addrs) = addr.to_socket_addrs() {
-        for sa in addrs {
-            if is_private_ip(&sa.ip()) {
-                return Err(format!(
-                    "blocked: {host} resolves to private address {}",
-                    sa.ip()
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn is_private_ip(ip: &IpAddr) -> bool {
@@ -316,16 +374,19 @@ fn is_private_ip(ip: &IpAddr) -> bool {
     }
 }
 
-fn validate_and_upgrade_url(url: &str) -> Result<String, String> {
-    if let Some(rest) = url.strip_prefix("http://") {
-        return Ok(format!("https://{rest}"));
+fn validate_and_upgrade_url(input: &str) -> Result<Url, String> {
+    let mut url = Url::parse(input).map_err(|error| format!("invalid URL: {error}"))?;
+    match url.scheme() {
+        "http" => url
+            .set_scheme("https")
+            .map_err(|()| "failed to upgrade URL to HTTPS".to_owned())?,
+        "https" => {}
+        scheme => return Err(format!("URL scheme must be http or https, got: {scheme}")),
     }
-    if url.starts_with("https://") {
-        return Ok(url.to_string());
+    if url.host().is_none() {
+        return Err("URL host is required".to_owned());
     }
-    Err(format!(
-        "URL must start with http:// or https://, got: {url}"
-    ))
+    Ok(url)
 }
 
 #[cfg(test)]
@@ -335,10 +396,10 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
     use test_case::test_case;
 
-    #[test_case("https://example.com", "https://example.com" ; "https_passthrough")]
-    #[test_case("http://example.com", "https://example.com" ; "http_upgraded_to_https")]
+    #[test_case("https://example.com", "https://example.com/" ; "https_passthrough")]
+    #[test_case("http://example.com", "https://example.com/" ; "http_upgraded_to_https")]
     fn validate_and_upgrade_url_valid(input: &str, expected: &str) {
-        assert_eq!(validate_and_upgrade_url(input).unwrap(), expected);
+        assert_eq!(validate_and_upgrade_url(input).unwrap().as_str(), expected);
     }
 
     #[test_case("ftp://example.com" ; "unsupported_scheme")]
@@ -357,11 +418,31 @@ mod tests {
     #[test_case("https://[::ffff:127.0.0.1]", Err(()) ; "ipv4_mapped_loopback_blocked")]
     #[test_case("https://0.0.0.0", Err(()) ; "unspecified_blocked")]
     #[test_case("https://[::ffff:169.254.169.254]", Err(()) ; "ipv4_mapped_metadata_blocked")]
-    fn check_ssrf_cases(url: &str, expected: Result<(), ()>) {
+    fn validate_destination_cases(url: &str, expected: Result<(), ()>) {
+        let url = validate_and_upgrade_url(url).unwrap();
         match expected {
-            Ok(()) => assert!(check_ssrf(url).is_ok(), "{url} should be allowed"),
-            Err(()) => assert!(check_ssrf(url).is_err(), "{url} should be blocked"),
+            Ok(()) => assert!(
+                validate_destination(&url).is_ok(),
+                "{url} should be allowed"
+            ),
+            Err(()) => assert!(
+                validate_destination(&url).is_err(),
+                "{url} should be blocked"
+            ),
         }
+    }
+
+    #[test]
+    fn query_suffixed_loopback_is_blocked() {
+        let url = validate_and_upgrade_url("https://127.0.0.1?next=example.com").unwrap();
+        assert!(validate_destination(&url).is_err());
+    }
+
+    #[test]
+    fn public_to_private_redirect_is_blocked_before_request() {
+        let current = validate_and_upgrade_url("https://8.8.8.8/start").unwrap();
+        let redirected = redirect_url(&current, "https://127.0.0.1/private").unwrap();
+        assert!(validate_destination(&redirected).is_err());
     }
 
     #[test_case(IpAddr::V4(Ipv4Addr::UNSPECIFIED), true ; "v4_unspecified")]
@@ -379,19 +460,10 @@ mod tests {
         assert_eq!(is_private_ip(&ip), expected);
     }
 
-    #[test_case("https://example.com", Some("example.com") ; "simple_domain")]
-    #[test_case("https://example.com:8080/path", Some("example.com") ; "domain_with_port")]
-    #[test_case("https://[::1]/path", Some("::1") ; "bracketed_ipv6")]
-    #[test_case("https://[::1]:8080/path", Some("::1") ; "bracketed_ipv6_with_port")]
-    #[test_case("https://192.168.1.1:443", Some("192.168.1.1") ; "ipv4_with_port")]
-    #[test_case("not-a-url", None ; "no_scheme")]
-    fn extract_host_cases(url: &str, expected: Option<&str>) {
-        assert_eq!(extract_host(url), expected);
-    }
-
     #[test]
     fn build_request_get_no_opts() {
-        let req = build_request("https://example.com", "agent", "GET", &[], vec![]).unwrap();
+        let url = validate_and_upgrade_url("https://example.com").unwrap();
+        let req = build_request(&url, "agent", "GET", &[], vec![]).unwrap();
         assert_eq!(req.method(), "GET");
         assert_eq!(req.body().len(), Some(0));
         assert_eq!(req.headers()["User-Agent"], "agent");
@@ -400,14 +472,8 @@ mod tests {
     #[test]
     fn build_request_post_with_body_and_headers() {
         let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-        let req = build_request(
-            "https://example.com",
-            "agent",
-            "POST",
-            &headers,
-            b"hello world".to_vec(),
-        )
-        .unwrap();
+        let url = validate_and_upgrade_url("https://example.com").unwrap();
+        let req = build_request(&url, "agent", "POST", &headers, b"hello world".to_vec()).unwrap();
         assert_eq!(req.method(), "POST");
         assert_eq!(req.body().len(), Some(b"hello world".len() as u64));
         assert_eq!(req.headers()["Content-Type"], "application/json");
@@ -419,15 +485,10 @@ mod tests {
             ("Accept".to_string(), "text/html".to_string()),
             ("X-Custom".to_string(), "foo".to_string()),
         ];
-        let req = build_request("https://example.com", "agent", "GET", &headers, vec![]).unwrap();
+        let url = validate_and_upgrade_url("https://example.com").unwrap();
+        let req = build_request(&url, "agent", "GET", &headers, vec![]).unwrap();
         assert_eq!(req.headers()["Accept"], "text/html");
         assert_eq!(req.headers()["X-Custom"], "foo");
-    }
-
-    #[test]
-    fn build_request_invalid_uri_errors() {
-        let result = build_request("not a valid uri \x00", "agent", "GET", &[], vec![]);
-        assert!(result.is_err());
     }
 
     #[test_case(r#"net.request("https://127.0.0.1")"# ; "ssrf_blocked")]
@@ -448,8 +509,8 @@ mod tests {
 
     #[test]
     fn extract_params_defaults_no_opts() {
-        let params = extract_request_params("https://example.com", None).unwrap();
-        assert_eq!(params.url, "https://example.com");
+        let params = extract_request_params("https://8.8.8.8", None).unwrap();
+        assert_eq!(params.url.as_str(), "https://8.8.8.8/");
         assert_eq!(params.method, "GET");
         assert!(params.headers.is_empty());
         assert!(params.body.is_empty());
@@ -463,7 +524,7 @@ mod tests {
         let lua = Lua::new();
         let opts = lua.create_table().unwrap();
         opts.set("timeout", MAX_TIMEOUT_SECS + 100).unwrap();
-        let params = extract_request_params("https://example.com", Some(&opts)).unwrap();
+        let params = extract_request_params("https://8.8.8.8", Some(&opts)).unwrap();
         assert_eq!(params.timeout, Duration::from_secs(MAX_TIMEOUT_SECS));
     }
 
@@ -473,15 +534,15 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("method", "POST").unwrap();
         opts.set("body", r#"{"key":"val"}"#).unwrap();
-        let params = extract_request_params("https://example.com", Some(&opts)).unwrap();
+        let params = extract_request_params("https://8.8.8.8", Some(&opts)).unwrap();
         assert_eq!(params.method, "POST");
         assert_eq!(params.body, br#"{"key":"val"}"#);
     }
 
     #[test]
     fn extract_params_http_upgraded_to_https() {
-        let params = extract_request_params("http://example.com", None).unwrap();
-        assert_eq!(params.url, "https://example.com");
+        let params = extract_request_params("http://8.8.8.8", None).unwrap();
+        assert_eq!(params.url.as_str(), "https://8.8.8.8/");
     }
 
     #[test]
@@ -492,7 +553,7 @@ mod tests {
         headers.set("Accept", "text/html").unwrap();
         let opts = lua.create_table().unwrap();
         opts.set("headers", headers).unwrap();
-        let params = extract_request_params("https://example.com", Some(&opts)).unwrap();
+        let params = extract_request_params("https://8.8.8.8", Some(&opts)).unwrap();
         assert_eq!(params.headers.len(), 2);
         assert!(
             params

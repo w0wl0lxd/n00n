@@ -17,6 +17,11 @@ path = "src/main.rs"
 bench = false
 
 [[bin]]
+name = "n00n-interpreter-worker"
+path = "src/interpreter_worker.rs"
+bench = false
+
+[[bin]]
 name = "anthropic_cache_benchmark"
 path = "scripts/anthropic_cache_benchmark.rs"
 
@@ -32,6 +37,7 @@ n00n-config = { workspace = true }
 n00n-providers = { workspace = true }
 n00n-storage = { workspace = true }
 n00n-lua = { workspace = true }
+n00n-interpreter = { workspace = true }
 n00n-daemon = { workspace = true }
 n00n-git = { workspace = true }
 n00n-smell = { workspace = true }

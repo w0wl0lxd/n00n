@@ -1,67 +1,149 @@
-//! Runs Python in the monty sandbox with Lua fns as tools. Monty blocks on
-//! a `smol::unblock` thread. Stdout and tool-call batches share one FIFO
-//! channel so ordering is preserved and cancellation (dropped channel) makes
-//! the blocked thread unwind instead of leaking.
+//! Runs Python in a killable Monty worker process. Newline-delimited JSON
+//! preserves ordered stdout and tool callbacks while cancellation terminates
+//! and reaps the worker process group.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{self, Write};
+#[cfg(debug_assertions)]
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use async_process::{ChildStdin, ChildStdout};
 use futures::future::join_all;
+use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use mlua::{Function, Lua, Result as LuaResult, Table};
+use n00n_agent::ChildGuard;
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::interpreter_bridge::build_tool_input;
-use n00n_interpreter::error::InterpreterError;
-use n00n_interpreter::runner::{self, ToolFn};
-use n00n_interpreter::{AsyncResolver, PendingCall};
+use n00n_interpreter::worker::{
+    StartRequest, WireCall, WireCallResult, WorkerEvent, WorkerRequest,
+};
 use n00n_lua_macro::{lua_fn, lua_table};
 use serde_json::Value;
-use tracing::debug;
 
 use crate::runtime::run_non_yieldable;
 
 use crate::api::util::convert::{json_to_lua, lua_tool_result};
 use crate::plugin_permissions::PluginPermissions;
-use crate::runtime::{TaskHandle, lock_cell};
+use crate::runtime::{TaskHandle, lock_cell, task_deadline};
 
-const BRIDGE_CLOSED: &str = "tool bridge closed (cancelled)";
+const MAX_INTERPRETER_TIMEOUT_SECS: u64 = 300;
+const INTERPRETER_TIMEOUT_ERR: &str = "interpreter timed out";
+const INTERPRETER_WORKER_NAME: &str = "n00n-interpreter-worker";
+const INTERPRETER_WORKER_TEST: &str = "interpreter_worker_entry";
 
-type CallResults = Vec<(u32, Result<Value, String>)>;
+#[cfg(debug_assertions)]
+static INTERPRETER_WORKER_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-fn unstreamed_stdout(stdout: &str, streamed_bytes: usize) -> Option<&str> {
-    if streamed_bytes > stdout.len() {
-        debug!(
-            streamed_bytes,
-            stdout_bytes = stdout.len(),
-            "skipping already-streamed truncated interpreter stdout"
-        );
-        return None;
-    }
-    if let Some(remaining) = stdout.get(streamed_bytes..) {
-        return (!remaining.is_empty()).then_some(remaining);
-    }
-    stdout
-        .get(stdout.ceil_char_boundary(streamed_bytes)..)
-        .filter(|remaining| !remaining.is_empty())
-}
-
-fn run_ruff(args: &[&str], code: &str) -> Option<String> {
-    let mut child = Command::new("ruff")
+fn run_ruff(args: &[&str], code: &str, pid_tx: &flume::Sender<u32>) -> Option<String> {
+    let mut command = Command::new("ruff");
+    command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(code.as_bytes()).ok()?;
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
+    let _ = pid_tx.send(child.id());
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or(())
+        .and_then(|mut stdin| stdin.write_all(code.as_bytes()).map_err(|_| ()));
+    if write_result.is_err() {
+        terminate_process_tree(child.id());
+        let _ = child.wait();
+        return None;
+    }
     let output = child.wait_with_output().ok()?;
     let fixed = String::from_utf8(output.stdout).ok()?;
     (!fixed.is_empty()).then_some(fixed)
 }
 
-fn ruff_fix(code: String) -> String {
-    let fixed = run_ruff(
+#[cfg(unix)]
+fn terminate_process_tree(pid: u32) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+
+    let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+        return;
+    };
+    let _ = kill_process_group(pid, Signal::KILL);
+}
+
+#[cfg(not(unix))]
+fn terminate_process_tree(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .status();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StopReason {
+    Cancelled,
+    Deadline,
+}
+
+async fn wait_for_stop(cancel: &CancelToken, deadline: Instant) -> StopReason {
+    futures_lite::future::race(
+        async {
+            cancel.cancelled().await;
+            StopReason::Cancelled
+        },
+        async {
+            smol::Timer::at(deadline).await;
+            StopReason::Deadline
+        },
+    )
+    .await
+}
+
+async fn run_ruff_guarded(
+    args: &'static [&'static str],
+    code: String,
+    cancel: &CancelToken,
+    deadline: Instant,
+) -> Result<Option<String>, StopReason> {
+    if cancel.is_cancelled() {
+        return Err(StopReason::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(StopReason::Deadline);
+    }
+    let (pid_tx, pid_rx) = flume::bounded(1);
+    let mut task = smol::unblock(move || run_ruff(args, &code, &pid_tx));
+    let pid = match pid_rx.recv_async().await {
+        Ok(pid) => pid,
+        Err(_) => return Ok(task.await),
+    };
+    enum RuffOutcome {
+        Done(Option<String>),
+        Stopped(StopReason),
+    }
+    match futures_lite::future::race(async { RuffOutcome::Done((&mut task).await) }, async {
+        RuffOutcome::Stopped(wait_for_stop(cancel, deadline).await)
+    })
+    .await
+    {
+        RuffOutcome::Done(output) => Ok(output),
+        RuffOutcome::Stopped(reason) => {
+            terminate_process_tree(pid);
+            let _ = task.await;
+            Err(reason)
+        }
+    }
+}
+
+async fn ruff_fix(
+    code: String,
+    cancel: &CancelToken,
+    deadline: Instant,
+) -> Result<String, StopReason> {
+    let fixed = run_ruff_guarded(
         &[
             "check",
             "--fix",
@@ -71,10 +153,13 @@ fn ruff_fix(code: String) -> String {
             "code_execution.py",
             "-",
         ],
-        &code,
+        code.clone(),
+        cancel,
+        deadline,
     )
+    .await?
     .unwrap_or_else(|| code.clone());
-    run_ruff(
+    Ok(run_ruff_guarded(
         &[
             "format",
             "--isolated",
@@ -82,14 +167,12 @@ fn ruff_fix(code: String) -> String {
             "code_execution.py",
             "-",
         ],
-        &fixed,
+        fixed.clone(),
+        cancel,
+        deadline,
     )
-    .unwrap_or_else(|| fixed.clone())
-}
-
-enum BridgeMsg {
-    Line(String),
-    Calls(Vec<PendingCall>, flume::Sender<CallResults>),
+    .await?
+    .unwrap_or(fixed))
 }
 
 fn required<T: mlua::FromLua>(opts: &Table, key: &str) -> LuaResult<T> {
@@ -97,19 +180,93 @@ fn required<T: mlua::FromLua>(opts: &Table, key: &str) -> LuaResult<T> {
         .ok_or_else(|| mlua::Error::runtime(format!("interpreter.run: '{key}' is required")))
 }
 
-fn forward_calls(
-    tx: &flume::Sender<BridgeMsg>,
-    calls: Vec<PendingCall>,
-) -> Result<CallResults, InterpreterError> {
-    let (reply_tx, reply_rx) = flume::bounded(1);
-    tx.send(BridgeMsg::Calls(calls, reply_tx))
-        .map_err(|_| InterpreterError::Runtime(BRIDGE_CLOSED.into()))?;
-    reply_rx
-        .recv()
-        .map_err(|_| InterpreterError::Runtime(BRIDGE_CLOSED.into()))
+#[cfg(debug_assertions)]
+pub(crate) fn set_worker_executable_for_tests(path: PathBuf) -> Result<(), PathBuf> {
+    INTERPRETER_WORKER_OVERRIDE.set(path)
 }
 
-async fn call_lua_tool(lua: Lua, f: Option<Function>, pc: &PendingCall) -> Result<Value, String> {
+fn worker_command() -> io::Result<Command> {
+    #[cfg(debug_assertions)]
+    if let Some(worker) = INTERPRETER_WORKER_OVERRIDE.get() {
+        return Ok(Command::new(worker));
+    }
+
+    let current = std::env::current_exe()?;
+    let file_name = current.file_name().and_then(|name| name.to_str());
+    let is_test_binary = cfg!(test)
+        || file_name.is_some_and(|name| name.starts_with("plugin_host-"))
+        || current
+            .parent()
+            .and_then(|directory| directory.file_name())
+            .is_some_and(|name| name == "deps");
+    if is_test_binary {
+        let mut command = Command::new(current);
+        command.args([INTERPRETER_WORKER_TEST, "--ignored", "--nocapture"]);
+        return Ok(command);
+    }
+
+    let worker_name = format!("{INTERPRETER_WORKER_NAME}{}", std::env::consts::EXE_SUFFIX);
+    let worker = current
+        .parent()
+        .map(|directory| directory.join(&worker_name))
+        .filter(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("could not find {INTERPRETER_WORKER_NAME} beside the current executable"),
+            )
+        })?;
+    Ok(Command::new(worker))
+}
+
+fn spawn_worker() -> io::Result<(ChildGuard, ChildStdin, BufReader<ChildStdout>)> {
+    let mut command = worker_command()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut command: async_process::Command = command.into();
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("interpreter worker stdin was not piped"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("interpreter worker stdout was not piped"))?;
+    Ok((ChildGuard::new(child), stdin, BufReader::new(stdout)))
+}
+
+async fn send_worker_request(stdin: &mut ChildStdin, request: &WorkerRequest) -> io::Result<()> {
+    let mut encoded = serde_json::to_vec(request)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    encoded.push(b'\n');
+    stdin.write_all(&encoded).await?;
+    stdin.flush().await
+}
+
+async fn read_worker_event(stdout: &mut BufReader<ChildStdout>) -> io::Result<Option<WorkerEvent>> {
+    loop {
+        let mut line = String::new();
+        if stdout.read_line(&mut line).await? == 0 {
+            return Ok(None);
+        }
+        if !line.trim_start().starts_with('{') {
+            continue;
+        }
+        return serde_json::from_str(&line)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+    }
+}
+
+async fn call_lua_tool(lua: Lua, f: Option<Function>, pc: &WireCall) -> Result<Value, String> {
     let Some(f) = f else {
         return Err(format!("unknown tool: {}", pc.name));
     };
@@ -161,14 +318,35 @@ async fn interpreter_run(
     opts: Table,
 ) -> LuaResult<(Table, Option<String>)> {
     let timeout_secs: u64 = required(&opts, "timeout")?;
+    if !(1..=MAX_INTERPRETER_TIMEOUT_SECS).contains(&timeout_secs) {
+        return Err(mlua::Error::runtime(format!(
+            "interpreter.run: 'timeout' must be between 1 and {MAX_INTERPRETER_TIMEOUT_SECS} seconds"
+        )));
+    }
     let max_memory_mb: usize = required(&opts, "max_memory_mb")?;
     let on_output: Function = required(&opts, "on_output")?;
     let tools_tbl: Option<Table> = opts.get("tools")?;
     let fix_with_ruff = opts
         .get::<Option<bool>>("ruff_fix")?
         .unwrap_or_else(|| false);
+    let (cancel, parent_deadline) = {
+        let task_handle = lua.app_data_ref::<TaskHandle>();
+        task_handle.as_ref().map_or_else(
+            || (CancelToken::none(), None),
+            |handle| (lock_cell(handle).cancel.clone(), task_deadline(handle)),
+        )
+    };
+    let requested_deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let deadline =
+        parent_deadline.map_or(requested_deadline, |parent| parent.min(requested_deadline));
     let code = if fix_with_ruff {
-        smol::unblock(move || ruff_fix(code)).await
+        match ruff_fix(code, &cancel, deadline).await {
+            Ok(code) => code,
+            Err(StopReason::Cancelled) => return Err(mlua::Error::runtime("cancelled")),
+            Err(StopReason::Deadline) => {
+                return Err(mlua::Error::runtime(INTERPRETER_TIMEOUT_ERR));
+            }
+        }
     } else {
         code
     };
@@ -182,121 +360,131 @@ async fn interpreter_run(
     }
     let names: Vec<String> = fns.keys().cloned().collect();
 
-    let cancel = lua
-        .app_data_ref::<TaskHandle>()
-        .map_or_else(CancelToken::none, |h| lock_cell(&h).cancel.clone());
-
-    let timeout = Duration::from_secs(timeout_secs);
-    let limits = runner::limits(timeout, max_memory_mb * 1024 * 1024);
-
-    let (tx, rx) = flume::unbounded::<BridgeMsg>();
-    let run = smol::unblock(move || {
-        let tools: HashMap<String, ToolFn> = names
-            .into_iter()
-            .map(|name| {
-                let tx = tx.clone();
-                let f: ToolFn = Box::new(
-                    move |fn_name: &str, args: Vec<Value>, kwargs: Vec<(String, Value)>| {
-                        let call = PendingCall {
-                            call_id: 0,
-                            name: fn_name.to_owned(),
-                            args,
-                            kwargs,
-                        };
-                        forward_calls(&tx, vec![call])
-                            .map_err(|e| e.to_string())?
-                            .pop()
-                            .map_or_else(|| Err(BRIDGE_CLOSED.into()), |(_, r)| r)
-                    },
-                );
-                (name, f)
-            })
-            .collect();
-        let resolver: AsyncResolver = {
-            let tx = tx.clone();
-            Box::new(move |pending| forward_calls(&tx, pending))
-        };
-
-        let mut flushed = 0usize;
-        let result = runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |chunk| {
-            flushed += chunk.len();
-            for line in chunk.lines() {
-                let _ = tx.send(BridgeMsg::Line(line.to_owned()));
-            }
-        })
-        .map_err(|e| e.to_string());
-        if let Ok(ir) = &result
-            && let Some(remaining) = unstreamed_stdout(&ir.stdout, flushed)
-        {
-            for line in remaining.lines() {
-                let _ = tx.send(BridgeMsg::Line(line.to_owned()));
-            }
-        }
-        result
+    if cancel.is_cancelled() {
+        return Err(mlua::Error::runtime("cancelled"));
+    }
+    let timeout = deadline.saturating_duration_since(Instant::now());
+    if timeout.is_zero() {
+        return Err(mlua::Error::runtime(INTERPRETER_TIMEOUT_ERR));
+    }
+    let timeout_millis = u64::try_from(timeout.as_millis())
+        .map_err(|_| mlua::Error::runtime("interpreter timeout is too large"))?;
+    let max_memory_bytes = max_memory_mb
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| mlua::Error::runtime("interpreter memory limit is too large"))?;
+    let (mut worker, mut worker_stdin, mut worker_stdout) =
+        spawn_worker().map_err(mlua::Error::external)?;
+    let start = WorkerRequest::Start(StartRequest {
+        code,
+        tool_names: names,
+        timeout_millis,
+        max_memory_bytes,
     });
+    if let Err(error) = send_worker_request(&mut worker_stdin, &start).await {
+        worker.kill_and_reap().await;
+        return Err(mlua::Error::external(error));
+    }
 
-    let recv_loop = async {
-        while let Ok(msg) = rx.recv_async().await {
-            match msg {
-                BridgeMsg::Line(line) => {
-                    run_non_yieldable(&lua, || on_output.call::<()>(line))?;
-                }
-                BridgeMsg::Calls(batch, reply) => {
-                    let futs = batch.into_iter().map(|pc| {
-                        let f = fns.get(&pc.name).cloned();
-                        let lua = lua.clone();
-                        async move { (pc.call_id, call_lua_tool(lua, f, &pc).await) }
-                    });
-                    let _ = reply.send(join_all(futs).await);
+    let result = loop {
+        enum WorkerOutcome {
+            Read(io::Result<Option<WorkerEvent>>),
+            Stopped(StopReason),
+        }
+
+        let outcome = futures_lite::future::race(
+            async { WorkerOutcome::Read(read_worker_event(&mut worker_stdout).await) },
+            async { WorkerOutcome::Stopped(wait_for_stop(&cancel, deadline).await) },
+        )
+        .await;
+        let event = match outcome {
+            WorkerOutcome::Read(Ok(Some(event))) => event,
+            WorkerOutcome::Read(Ok(None)) => {
+                worker.kill_and_reap().await;
+                return Err(mlua::Error::runtime(
+                    "interpreter worker exited without a result",
+                ));
+            }
+            WorkerOutcome::Read(Err(error)) => {
+                worker.kill_and_reap().await;
+                return Err(mlua::Error::external(error));
+            }
+            WorkerOutcome::Stopped(reason) => {
+                worker.kill_and_reap().await;
+                return Err(mlua::Error::runtime(match reason {
+                    StopReason::Cancelled => "cancelled",
+                    StopReason::Deadline => INTERPRETER_TIMEOUT_ERR,
+                }));
+            }
+        };
+        match event {
+            WorkerEvent::Started => {}
+            WorkerEvent::Output { line } => {
+                if let Err(error) = run_non_yieldable(&lua, || on_output.call::<()>(line)) {
+                    worker.kill_and_reap().await;
+                    return Err(error);
                 }
             }
+            WorkerEvent::ToolCalls { request_id, calls } => {
+                let futures = calls.into_iter().map(|call| {
+                    let function = fns.get(&call.name).cloned();
+                    let lua = lua.clone();
+                    async move {
+                        WireCallResult {
+                            call_id: call.call_id,
+                            value: call_lua_tool(lua, function, &call).await,
+                        }
+                    }
+                });
+                let response = WorkerRequest::CallResults {
+                    request_id,
+                    results: join_all(futures).await,
+                };
+                if let Err(error) = send_worker_request(&mut worker_stdin, &response).await {
+                    worker.kill_and_reap().await;
+                    return Err(mlua::Error::external(error));
+                }
+            }
+            WorkerEvent::Complete { output, stdout } => {
+                worker.kill_and_reap().await;
+                break Ok((output, stdout));
+            }
+            WorkerEvent::Failed { error } => {
+                worker.kill_and_reap().await;
+                break Err(error);
+            }
         }
-        Ok::<(), mlua::Error>(())
     };
-
-    let (result, cb) = cancel
-        .race(futures_lite::future::zip(run, recv_loop))
-        .await
-        .map_err(mlua::Error::runtime)?;
-    cb?;
 
     let tbl = lua.create_table()?;
     match result {
-        Ok(ir) => {
-            if !ir.stdout.is_empty() {
-                tbl.set("stdout", ir.stdout.trim_end())?;
+        Ok((output, stdout)) => {
+            if !stdout.is_empty() {
+                tbl.set("stdout", stdout.trim_end())?;
             }
-            if let Some(val) = ir.output {
-                tbl.set("output", val.to_string())?;
+            if let Some(value) = output {
+                tbl.set("output", value.to_string())?;
             }
             Ok((tbl, None))
         }
-        Err(e) => Ok((tbl, Some(e))),
+        Err(error) => Ok((tbl, Some(error))),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ruff_fix, unstreamed_stdout};
-    use n00n_interpreter::runner;
+    use super::{
+        MAX_INTERPRETER_TIMEOUT_SECS, interpreter_run, read_worker_event, ruff_fix,
+        send_worker_request, spawn_worker,
+    };
+    use mlua::Lua;
+    use n00n_agent::cancel::CancelToken;
+    use n00n_interpreter::worker::{StartRequest, WorkerEvent, WorkerRequest};
+    use std::time::{Duration, Instant};
 
     #[test]
-    fn streamed_output_past_retained_stdout_is_not_sliced() {
-        let stdout = "é".repeat(runner::MAX_STDOUT_BYTES / "é".len());
-        assert_eq!(stdout.len(), runner::MAX_STDOUT_BYTES);
-        assert_eq!(
-            unstreamed_stdout(
-                &stdout,
-                runner::MAX_STDOUT_BYTES + runner::TRUNCATED_STDOUT_MARKER.len()
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn streamed_output_offset_recovers_to_next_utf8_boundary() {
-        assert_eq!(unstreamed_stdout("é-rest", 1), Some("-rest"));
-        assert_eq!(unstreamed_stdout("é-rest", 2), Some("-rest"));
+    #[ignore]
+    fn interpreter_worker_entry() {
+        n00n_interpreter::worker::run_stdio().unwrap();
     }
 
     #[test]
@@ -308,8 +496,14 @@ mod tests {
         {
             return;
         }
+        let cancel = CancelToken::none();
         assert_eq!(
-            ruff_fix("import os\nx= 1\nprint(x)\n".into()),
+            smol::block_on(ruff_fix(
+                "import os\nx= 1\nprint(x)\n".into(),
+                &cancel,
+                Instant::now() + Duration::from_secs(5),
+            ))
+            .unwrap(),
             "x = 1\nprint(x)\n"
         );
     }
@@ -324,9 +518,100 @@ mod tests {
             return;
         }
         let code = "result = await read(path='x')\nprint(result)\n";
-        let fixed = ruff_fix(code.into());
+        let cancel = CancelToken::none();
+        let fixed = smol::block_on(ruff_fix(
+            code.into(),
+            &cancel,
+            Instant::now() + Duration::from_secs(5),
+        ))
+        .unwrap();
         assert!(fixed.contains("await read"));
         assert!(fixed.contains("print(result)"));
+    }
+
+    #[test]
+    fn interpreter_subprocess_streams_and_completes() {
+        smol::block_on(async {
+            let lua = Lua::new();
+            let opts = lua.create_table().unwrap();
+            opts.set("timeout", 10).unwrap();
+            opts.set("max_memory_mb", 16).unwrap();
+            opts.set(
+                "on_output",
+                lua.create_function(|_, _: String| Ok(())).unwrap(),
+            )
+            .unwrap();
+            let _keepalive = lua.clone();
+            let (result, error) = interpreter_run(lua, "print('ok')".to_owned(), opts)
+                .await
+                .unwrap();
+            assert_eq!(error, None);
+            assert_eq!(result.get::<String>("stdout").unwrap(), "ok");
+        });
+    }
+
+    #[test]
+    fn interpreter_rejects_timeout_above_finite_upper_bound() {
+        smol::block_on(async {
+            let lua = Lua::new();
+            let opts = lua.create_table().unwrap();
+            opts.set("timeout", MAX_INTERPRETER_TIMEOUT_SECS + 1)
+                .unwrap();
+            opts.set("max_memory_mb", 16).unwrap();
+            opts.set(
+                "on_output",
+                lua.create_function(|_, _: String| Ok(())).unwrap(),
+            )
+            .unwrap();
+            let error = interpreter_run(lua, "pass".to_owned(), opts)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("must be between 1 and 300"));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_waits_until_cpu_worker_has_terminated() {
+        use rustix::process::{Pid, test_kill_process};
+
+        smol::block_on(async {
+            let (mut worker, mut stdin, mut stdout) = spawn_worker().unwrap();
+            let pid = worker.id();
+            send_worker_request(
+                &mut stdin,
+                &WorkerRequest::Start(StartRequest {
+                    code: "while True:\n    pass".to_owned(),
+                    tool_names: Vec::new(),
+                    timeout_millis: 10_000,
+                    max_memory_bytes: 16 * 1024 * 1024,
+                }),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                read_worker_event(&mut stdout).await.unwrap(),
+                Some(WorkerEvent::Started)
+            ));
+            worker.kill_and_reap().await;
+            let pid = Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
+            assert_eq!(test_kill_process(pid), Err(rustix::io::Errno::SRCH));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_tree_termination_reaps_guarded_process() {
+        use std::os::unix::process::CommandExt;
+
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "while :; do :; done"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        super::terminate_process_tree(child.id());
+        let status = child.wait().unwrap();
+        assert!(!status.success());
     }
 }
 
