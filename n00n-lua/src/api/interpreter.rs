@@ -499,12 +499,12 @@ async fn interpreter_run(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MAX_INTERPRETER_TIMEOUT_SECS, interpreter_run, read_worker_event, ruff_fix,
-        send_worker_request, spawn_worker,
-    };
+    use super::{MAX_INTERPRETER_TIMEOUT_SECS, interpreter_run, ruff_fix};
+    #[cfg(unix)]
+    use super::{read_worker_event, send_worker_request, spawn_worker};
     use mlua::Lua;
     use n00n_agent::cancel::CancelToken;
+    #[cfg(unix)]
     use n00n_interpreter::worker::{StartRequest, WorkerEvent, WorkerRequest};
     use std::time::{Duration, Instant};
 

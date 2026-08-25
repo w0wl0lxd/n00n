@@ -168,6 +168,7 @@ pub(crate) fn write(base: &Path, relative: &Path, content: &[u8]) -> std::io::Re
 
 fn metadata_from_stat(stat: &Stat) -> std::io::Result<Metadata> {
     let file_type = FileType::from_raw_mode(stat.st_mode);
+    #[allow(clippy::useless_conversion)]
     let nanoseconds = i64::try_from(stat.st_mtime_nsec)
         .map_err(|_| Error::other("modification time is out of range"))?;
     let mtime = stat

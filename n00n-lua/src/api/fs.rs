@@ -773,6 +773,7 @@ fn portable_path_within(base: &Path, relative: &Path) -> std::io::Result<PathBuf
 }
 
 #[cfg(not(unix))]
+/// Read a UTF-8 file relative to a confined base directory.
 #[lua_fn(guard = FsRead)]
 async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -785,6 +786,7 @@ async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Val
 }
 
 #[cfg(not(unix))]
+/// Get metadata for a path relative to a confined base directory.
 #[lua_fn(guard = FsRead)]
 async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -826,6 +828,7 @@ async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<
 }
 
 #[cfg(not(unix))]
+/// List a confined base directory.
 #[lua_fn(guard = FsRead)]
 async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
@@ -858,6 +861,7 @@ async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
 }
 
 #[cfg(not(unix))]
+/// Atomically write a file relative to a confined base directory.
 #[lua_fn(guard = FsWrite)]
 async fn write_within(
     lua: Lua,
@@ -875,18 +879,24 @@ async fn write_within(
 }
 
 #[cfg(not(unix))]
+/// Delete a file relative to a confined base directory.
 #[lua_fn(guard = FsWrite)]
 async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
     let base = make_absolute(&base)?;
     let result = smol::unblock(move || {
         let path = portable_path_within(&base, Path::new(&relative))?;
-        std::fs::remove_file(path)
+        if std::fs::symlink_metadata(&path)?.is_dir() {
+            std::fs::remove_dir(path)
+        } else {
+            std::fs::remove_file(path)
+        }
     })
     .await;
     result_pair(&lua, result.map(|()| true))
 }
 
 #[cfg(not(unix))]
+/// Run a callback while holding an exclusive advisory file lock.
 #[lua_fn(guard = FsWrite)]
 async fn with_lock(lua: Lua, path: String, callback: Function) -> LuaResult<(Value, Value)> {
     let path = make_absolute(&path)?;
@@ -1681,7 +1691,7 @@ mod tests {
         assert_eq!(error.to_str().unwrap(), EXPECTED_ERROR);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn read_bytes_limited_rejects_fifo_without_blocking() {
         const EXPECTED_ERROR: &str = "file is not a regular file";
