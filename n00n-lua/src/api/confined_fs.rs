@@ -1,0 +1,248 @@
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::io::{Error, ErrorKind, Read, Write};
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Component, Path};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use rustix::fs::{
+    AtFlags, FileType, Mode, OFlags, fsync, open, openat, renameat, statat, unlinkat,
+};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) struct Metadata {
+    pub(crate) size: u64,
+    pub(crate) is_file: bool,
+    pub(crate) is_dir: bool,
+    pub(crate) is_symlink: bool,
+    pub(crate) mtime: i64,
+}
+
+pub(crate) struct DirEntry {
+    pub(crate) name: String,
+    pub(crate) kind: &'static str,
+}
+
+fn invalid_path() -> Error {
+    Error::new(
+        ErrorKind::PermissionDenied,
+        "path traversal outside base directory is not allowed",
+    )
+}
+
+fn components(path: &Path) -> std::io::Result<Vec<OsString>> {
+    let components: Vec<_> = path
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Ok(name.to_os_string()),
+            _ => Err(invalid_path()),
+        })
+        .collect::<Result<_, _>>()?;
+    if components.is_empty() {
+        return Err(invalid_path());
+    }
+    Ok(components)
+}
+
+fn open_base(base: &Path) -> std::io::Result<OwnedFd> {
+    open(
+        base,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(Error::from)
+}
+
+fn open_parent(base: &Path, relative: &Path) -> std::io::Result<(OwnedFd, OsString)> {
+    let mut components = components(relative)?;
+    let name = components.pop().ok_or_else(invalid_path)?;
+    let mut directory = open_base(base)?;
+    for component in components {
+        directory = openat(
+            &directory,
+            component.as_os_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(Error::from)?;
+    }
+    Ok((directory, name))
+}
+
+pub(crate) fn read(base: &Path, relative: &Path) -> std::io::Result<String> {
+    let (parent, name) = open_parent(base, relative)?;
+    let fd = openat(
+        &parent,
+        name.as_os_str(),
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(Error::from)?;
+    let mut file = File::from(fd);
+    if !file.metadata()?.is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "path is not a regular file",
+        ));
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+pub(crate) fn metadata(base: &Path, relative: &Path) -> std::io::Result<Option<Metadata>> {
+    let (parent, name) = open_parent(base, relative)?;
+    let stat = match statat(&parent, name.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(Error::from(error)),
+    };
+    let file_type = FileType::from_raw_mode(stat.st_mode);
+    Ok(Some(Metadata {
+        size: stat
+            .st_size
+            .try_into()
+            .map_err(|_| Error::other("negative file size"))?,
+        is_file: file_type.is_file(),
+        is_dir: file_type.is_dir(),
+        is_symlink: file_type.is_symlink(),
+        mtime: stat.st_mtime,
+    }))
+}
+
+pub(crate) fn dir(base: &Path) -> std::io::Result<Vec<DirEntry>> {
+    use rustix::fs::Dir;
+
+    let directory = open_base(base)?;
+    let iterator = Dir::new(directory).map_err(Error::from)?;
+    let mut entries = Vec::new();
+    for entry in iterator {
+        let entry = entry.map_err(Error::from)?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        let name = OsStr::from_bytes(name)
+            .to_str()
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "non-utf8 path"))?
+            .to_owned();
+        let kind = match entry.file_type() {
+            FileType::RegularFile => "file",
+            FileType::Directory => "directory",
+            FileType::Symlink => "link",
+            _ => "unknown",
+        };
+        entries.push(DirEntry { name, kind });
+    }
+    Ok(entries)
+}
+
+pub(crate) fn write(base: &Path, relative: &Path, content: &[u8]) -> std::io::Result<()> {
+    let (parent, name) = open_parent(base, relative)?;
+    if metadata_at(&parent, name.as_os_str())?.is_some_and(|metadata| metadata.is_symlink) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "destination must not be a symbolic link",
+        ));
+    }
+    let temporary_name = loop {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = format!(".n00n-tmp-{}-{sequence}", std::process::id());
+        match openat(
+            &parent,
+            candidate.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        ) {
+            Ok(fd) => break (candidate, fd),
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(Error::from(error)),
+        }
+    };
+    let (temporary_name, fd) = temporary_name;
+    let mut temporary = File::from(fd);
+    let result = (|| {
+        temporary.write_all(content)?;
+        temporary.sync_all()?;
+        renameat(&parent, temporary_name.as_str(), &parent, name.as_os_str())
+            .map_err(Error::from)?;
+        fsync(&parent).map_err(Error::from)
+    })();
+    if result.is_err() {
+        let _ = unlinkat(&parent, temporary_name.as_str(), AtFlags::empty());
+    }
+    result
+}
+
+fn metadata_at(parent: &OwnedFd, name: &OsStr) -> std::io::Result<Option<Metadata>> {
+    let stat = match statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(Error::from(error)),
+    };
+    let file_type = FileType::from_raw_mode(stat.st_mode);
+    Ok(Some(Metadata {
+        size: stat
+            .st_size
+            .try_into()
+            .map_err(|_| Error::other("negative file size"))?,
+        is_file: file_type.is_file(),
+        is_dir: file_type.is_dir(),
+        is_symlink: file_type.is_symlink(),
+        mtime: stat.st_mtime,
+    }))
+}
+
+pub(crate) fn remove(base: &Path, relative: &Path) -> std::io::Result<()> {
+    let (parent, name) = open_parent(base, relative)?;
+    let metadata = metadata_at(&parent, name.as_os_str())?
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "path does not exist"))?;
+    let flags = if metadata.is_dir {
+        AtFlags::REMOVEDIR
+    } else {
+        AtFlags::empty()
+    };
+    unlinkat(&parent, name.as_os_str(), flags).map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn remove_unlinks_symlink_instead_of_target() {
+        let base = TempDir::new().unwrap();
+        fs::write(base.path().join("target.md"), "target").unwrap();
+        symlink("target.md", base.path().join("link.md")).unwrap();
+
+        remove(base.path(), Path::new("link.md")).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(base.path().join("target.md")).unwrap(),
+            "target"
+        );
+        assert!(!base.path().join("link.md").exists());
+    }
+
+    #[test]
+    fn operations_reject_symlinked_parent() {
+        let base = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        symlink(outside.path(), base.path().join("escape")).unwrap();
+
+        let error = write(base.path(), Path::new("escape/new.md"), b"escaped").unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::NotADirectory | ErrorKind::Other
+        ));
+        assert!(!outside.path().join("new.md").exists());
+    }
+}

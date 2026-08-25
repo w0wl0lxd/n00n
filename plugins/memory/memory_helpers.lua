@@ -113,16 +113,16 @@ function M.safe_resolve(memories_dir, relative)
   if relative:match("^%a:") then
     return nil, "path must be relative"
   end
-  local candidate = n00n.fs.joinpath(memories_dir, relative)
-  local resolved, resolve_err = n00n.fs.resolve_within(memories_dir, candidate)
-  if not resolved then
-    return nil, "path traversal outside memories directory is not allowed: " .. tostring(resolve_err)
+  for component in relative:gmatch("[^/\\]+") do
+    if component == "." or component == ".." then
+      return nil, "path traversal outside memories directory is not allowed"
+    end
   end
-  return resolved
+  return relative
 end
 
 function M.collect_file_entries(dir)
-  local entries = n00n.fs.dir(dir)
+  local entries = n00n.fs.dir_within(dir)
   if not entries then
     return {}
   end
@@ -131,7 +131,7 @@ function M.collect_file_entries(dir)
     if entry[2] == "file" then
       local path = M.safe_resolve(dir, entry[1])
       if path then
-        local meta = n00n.fs.metadata(path)
+        local meta = n00n.fs.metadata_within(dir, path)
         if meta then
           files[#files + 1] = { entry[1], meta.size, meta.mtime or 0 }
         end
@@ -492,7 +492,7 @@ function M.load_entries(dir)
   for _, f in ipairs(M.collect_file_entries(dir)) do
     local rel = f[1]
     local file_path = M.safe_resolve(dir, rel)
-    local raw = file_path and n00n.fs.read(file_path)
+    local raw = file_path and n00n.fs.read_within(dir, file_path)
     if raw then
       local entry = M.parse_memory_file(rel, raw)
       if entry then

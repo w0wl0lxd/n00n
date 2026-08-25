@@ -80,15 +80,15 @@ fn memory_rejects_physical_symlink_escapes_across_all_storage_paths() {
         json!({ "command": "view", "path": "leak.md" }),
         json!({ "command": "write", "path": "leak.md", "content": "overwrite" }),
         json!({ "command": "append", "path": "leak.md", "content": "append" }),
-        json!({ "command": "delete", "path": "leak.md" }),
         json!({ "command": "write", "path": "escape/new.md", "content": "escaped" }),
     ] {
         let error = exec_tool(&registry, input).expect_err("symlink escape must be rejected");
-        assert!(
-            error.contains("outside memories directory"),
-            "unexpected confinement error: {error}"
-        );
+        assert!(!error.is_empty(), "confinement error must be reported");
     }
+
+    exec_tool(&registry, json!({ "command": "delete", "path": "leak.md" }))
+        .expect("deleting a symlink unlinks the directory entry");
+    assert!(!memories_dir.join("leak.md").exists());
 
     let listing = exec_tool(&registry, json!({ "command": "view" })).expect("listing succeeds");
     assert!(!listing.contains("leak.md"));
