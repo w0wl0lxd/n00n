@@ -815,19 +815,8 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
             let mut tool_filter = tool_filter.clone();
 
             loop {
-                let Some(input) = futures_lite::future::or(
-                    async {
-                        let _ = shutdown_rx.recv_async().await;
-                        None
-                    },
-                    async {
-                        match input_rx.recv_async().await {
-                            Ok(input) => Some(input),
-                            Err(_) => None,
-                        }
-                    },
-                )
-                .await
+                let Some((input, cancel, cancel_task)) =
+                    next_interactive_run(&input_rx, &cancel_rx, &shutdown_rx).await
                 else {
                     break;
                 };
@@ -853,6 +842,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     Err(message) => {
                         let _ = error_tx.send(AgentEvent::Error { message });
                         run_id += 1;
+                        cancel_task.cancel().await;
                         continue;
                     }
                 }
@@ -910,12 +900,12 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         .is_err()
                     {
                         error!("event receiver closed while reporting plan prompt error");
+                        cancel_task.cancel().await;
                         break;
                     }
+                    cancel_task.cancel().await;
                     continue;
                 }
-
-                let (cancel, cancel_task) = cancellation_for_run(&cancel_rx);
 
                 while answer_rx.lock().await.try_recv().is_ok() {}
 
@@ -1019,8 +1009,56 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     }
 }
 
+async fn next_interactive_run<T>(
+    input_rx: &Receiver<T>,
+    cancel_rx: &Receiver<()>,
+    shutdown_rx: &Receiver<()>,
+) -> Option<(T, CancelToken, smol::Task<()>)> {
+    enum RunBoundary<T> {
+        Input(Result<T, flume::RecvError>),
+        Cancel(Result<(), flume::RecvError>),
+        Shutdown,
+    }
+
+    let mut cancel_open = true;
+    loop {
+        while cancel_rx.try_recv().is_ok() {}
+        let boundary = if cancel_open {
+            futures_lite::future::or(
+                async {
+                    let _ = shutdown_rx.recv_async().await;
+                    RunBoundary::Shutdown
+                },
+                futures_lite::future::or(
+                    async { RunBoundary::Cancel(cancel_rx.recv_async().await) },
+                    async { RunBoundary::Input(input_rx.recv_async().await) },
+                ),
+            )
+            .await
+        } else {
+            futures_lite::future::or(
+                async {
+                    let _ = shutdown_rx.recv_async().await;
+                    RunBoundary::Shutdown
+                },
+                async { RunBoundary::Input(input_rx.recv_async().await) },
+            )
+            .await
+        };
+
+        match boundary {
+            RunBoundary::Input(Ok(input)) => {
+                let (cancel, cancel_task) = cancellation_for_run(cancel_rx);
+                return Some((input, cancel, cancel_task));
+            }
+            RunBoundary::Input(Err(_)) | RunBoundary::Shutdown => return None,
+            RunBoundary::Cancel(Ok(())) => {}
+            RunBoundary::Cancel(Err(_)) => cancel_open = false,
+        }
+    }
+}
+
 fn cancellation_for_run(cancel_rx: &Receiver<()>) -> (CancelToken, smol::Task<()>) {
-    while cancel_rx.try_recv().is_ok() {}
     let (trigger, cancel) = CancelToken::new();
     let cancel_rx = cancel_rx.clone();
     let task = smol::spawn(async move {
@@ -1199,11 +1237,40 @@ mod tests {
     #[test]
     fn idle_cancellation_does_not_cancel_the_next_run() {
         smol::block_on(async {
+            let (input_tx, input_rx) = flume::bounded(1);
             let (cancel_tx, cancel_rx) = flume::bounded(1);
+            let (_shutdown_tx, shutdown_rx) = flume::bounded(1);
             cancel_tx.send(()).unwrap();
+            input_tx.send(7).unwrap();
 
-            let (cancel, cancel_task) = cancellation_for_run(&cancel_rx);
+            let (input, cancel, cancel_task) =
+                next_interactive_run(&input_rx, &cancel_rx, &shutdown_rx)
+                    .await
+                    .unwrap();
+
+            assert_eq!(input, 7);
             assert!(!cancel.is_cancelled());
+
+            cancel_tx.send_async(()).await.unwrap();
+            cancel.cancelled().await;
+            assert!(cancel.is_cancelled());
+            cancel_task.await;
+        });
+    }
+
+    #[test]
+    fn cancellation_after_input_dequeue_cancels_run_during_setup() {
+        smol::block_on(async {
+            let (input_tx, input_rx) = flume::bounded(1);
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
+            let (_shutdown_tx, shutdown_rx) = flume::bounded(1);
+            input_tx.send(7).unwrap();
+
+            let (input, cancel, cancel_task) =
+                next_interactive_run(&input_rx, &cancel_rx, &shutdown_rx)
+                    .await
+                    .unwrap();
+            assert_eq!(input, 7);
 
             cancel_tx.send_async(()).await.unwrap();
             cancel.cancelled().await;
