@@ -422,18 +422,28 @@ n00n.api.register_command({
       if event.type == "choice" then
         local item = entries[event.index]
         if item then
-          local path = n00n.fs.joinpath(dir, item[1])
-          local code = n00n.ui.open_editor(path)
-          if code == 0 then
-            local meta = n00n.fs.metadata(path)
-            if meta then
-              item[2] = meta.size
+          local path, resolve_err = helpers.safe_resolve(dir, item[1])
+          if path then
+            local code = n00n.ui.open_editor(path)
+            if code == 0 then
+              local meta = n00n.fs.metadata(path)
+              if meta then
+                item[2] = meta.size
+              end
             end
+          else
+            n00n.ui.flash("Open failed: " .. tostring(resolve_err))
           end
         end
       elseif event.type == "delete" then
         local item = entries[event.index]
-        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item[1]))
+        local path, resolve_err = helpers.safe_resolve(dir, item[1])
+        local ok, err
+        if path then
+          ok, err = n00n.fs.rm(path)
+        else
+          err = resolve_err
+        end
         if ok then
           n00n.ui.flash("Deleted " .. item[1])
           table.remove(entries, event.index)

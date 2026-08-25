@@ -39,6 +39,7 @@ tracing = { workspace = true }
 smol = { workspace = true }
 event-listener = { workspace = true }
 flume = { workspace = true }
+fs2 = { workspace = true }
 futures = { workspace = true }
 futures-lite = { workspace = true }
 libc = { workspace = true }

@@ -1,19 +1,20 @@
 use std::collections::{HashSet, VecDeque};
 #[cfg(unix)]
 use std::fs::File;
-use std::fs::FileType;
 #[cfg(unix)]
 use std::fs::Permissions;
+use std::fs::{FileType, OpenOptions};
 use std::io::{Error, ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use futures_lite::stream::StreamExt;
 use std::path::{Component, Path, PathBuf};
 
-use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
+use fs2::FileExt as _;
+use mlua::{Function, IntoLua, Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::convert::err_pair;
@@ -47,6 +48,21 @@ fn path_to_string(p: &Path) -> LuaResult<String> {
     p.to_str()
         .map(std::borrow::ToOwned::to_owned)
         .ok_or_else(|| mlua::Error::runtime("non-utf8 path"))
+}
+
+fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "lock path must not be a symbolic link",
+        ));
+    }
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
 }
 
 fn filetype_str(ft: FileType) -> &'static str {
@@ -519,6 +535,63 @@ fn normalize(_lua: &Lua, path: String) -> LuaResult<String> {
 #[lua_fn]
 fn abspath(_lua: &Lua, path: String) -> LuaResult<String> {
     path_to_string(&make_absolute(&path)?)
+}
+
+/// Resolve a candidate path physically and require it to remain below a base directory.
+/// Existing symbolic links are followed before the boundary comparison. Non-existent tail
+/// components are preserved below the last existing physical parent.
+///
+/// @param base string Boundary directory.
+/// @param candidate string Candidate path.
+/// @return (string?, string?) Resolved path, or nil and an error.
+#[lua_fn(guard = FsRead)]
+fn resolve_within(lua: &Lua, base: String, candidate: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let candidate = make_absolute(&candidate)?;
+    let result = n00n_storage::paths::incremental_canonicalize(&base)
+        .zip(n00n_storage::paths::incremental_canonicalize(&candidate))
+        .and_then(|(base, candidate)| {
+            (candidate != base && candidate.starts_with(&base)).then_some(candidate)
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::PermissionDenied,
+                "path traversal outside base directory is not allowed",
+            )
+        })
+        .and_then(|path| {
+            path.into_os_string()
+                .into_string()
+                .map_err(|_| Error::new(ErrorKind::InvalidData, "non-utf8 path"))
+        });
+    result_pair(lua, result)
+}
+
+/// Run a callback while holding an exclusive advisory lock on a file.
+/// The lock is shared across independent Lua hosts and operating-system processes.
+///
+/// @param path string Lock file path. Its parent directory must exist.
+/// @param callback function Callback returning a `(value, err)` pair.
+/// @return (any?, string?) Callback result, or nil and a lock error.
+#[lua_fn(guard = FsWrite)]
+async fn with_lock(lua: Lua, path: String, callback: Function) -> LuaResult<(Value, Value)> {
+    let path = make_absolute(&path)?;
+    let lock = match smol::unblock(move || open_lock_file(&path)).await {
+        Ok(lock) => lock,
+        Err(error) => return result_pair(&lua, Err::<Value, _>(error)),
+    };
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => break,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                smol::Timer::after(Duration::from_millis(10)).await;
+            }
+            Err(error) => return result_pair(&lua, Err::<Value, _>(error)),
+        }
+    }
+    let result = callback.call_async::<(Value, Value)>(()).await;
+    drop(lock);
+    result
 }
 
 /// Return all ancestor directories of {path}, from the immediate parent up to the root.
@@ -1093,7 +1166,7 @@ lua_table! {
     /// ```
     "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
         read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
-        joinpath, normalize, abspath, parents, root(perms), relpath, ext,
+        joinpath, normalize, abspath, resolve_within(perms), with_lock(perms), parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
     ]
 }

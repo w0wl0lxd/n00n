@@ -4312,6 +4312,7 @@ dependencies = [
  "crossterm",
  "event-listener",
  "flume",
+ "fs2",
  "futures",
  "futures-lite",
  "htmd",
