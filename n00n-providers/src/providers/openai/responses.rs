@@ -598,12 +598,36 @@ pub(crate) async fn do_stream(
     stream_timeout: Duration,
     opts: &RequestOptions,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
-    let base_url = base_url(auth);
+    let request_url = format!("{}{RESPONSES_PATH}", base_url(auth));
+    do_stream_at(
+        client,
+        model,
+        body,
+        event_tx,
+        auth,
+        stream_timeout,
+        opts,
+        &request_url,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn do_stream_at(
+    client: &HttpClient,
+    model: &crate::model::Model,
+    body: &Value,
+    event_tx: &Sender<ProviderEvent>,
+    auth: &ResolvedAuth,
+    stream_timeout: Duration,
+    opts: &RequestOptions,
+    request_url: &str,
+) -> Result<(Option<String>, StreamResponse), AgentError> {
     let json_body = serde_json::to_vec(body)?;
 
     let mut builder = Request::builder()
         .method("POST")
-        .uri(format!("{base_url}{RESPONSES_PATH}"))
+        .uri(request_url)
         .header("content-type", "application/json")
         .header("user-agent", super::super::user_agent());
     if let Some(key) = opts.idempotency_key.as_deref() {

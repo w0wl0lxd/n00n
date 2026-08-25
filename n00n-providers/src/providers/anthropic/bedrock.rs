@@ -1,19 +1,21 @@
 use std::env;
 use std::fmt::Write;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::ops::ControlFlow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use flume::Sender;
 use hmac::{Hmac, Mac};
-use isahc::config::Configurable;
+use isahc::config::{Configurable, RedirectPolicy, ResolveMap};
 use isahc::{HttpClient, ReadResponseExt, Request};
 use n00n_storage::id::SessionRef;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
+use url::{Host, Url};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
@@ -33,6 +35,10 @@ const EVENTSTREAM_CRC_LEN: usize = 4;
 /// treated as corrupt rather than buffered.
 const MAX_EVENTSTREAM_FRAME_LEN: usize = 16 * 1024 * 1024;
 const CONTAINER_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTAINER_CREDENTIALS_BASE_URL: &str = "http://169.254.170.2";
+const ECS_CONTAINER_CREDENTIALS_IPV4: [u8; 4] = [169, 254, 170, 2];
+const EKS_CONTAINER_CREDENTIALS_IPV4: [u8; 4] = [169, 254, 170, 23];
+const EKS_CONTAINER_CREDENTIALS_IPV6: [u16; 8] = [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x23];
 const REFRESH_MARGIN: Duration = Duration::from_mins(5);
 
 fn io_error(
@@ -67,6 +73,16 @@ pub(crate) fn is_enabled() -> bool {
     env::var("CLAUDE_CODE_USE_BEDROCK").is_ok_and(|v| v == "1")
 }
 
+fn optional_env_var(name: &'static str) -> Result<Option<String>, AgentError> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(AgentError::Config {
+            message: format!("{name} contains invalid Unicode"),
+        }),
+    }
+}
+
 fn resolve_bedrock_auth() -> Result<BedrockAuth, AgentError> {
     let region = env::var("AWS_REGION").map_err(|_| AgentError::Config {
         message: "AWS_REGION must be set when using Bedrock".into(),
@@ -90,9 +106,13 @@ fn resolve_bedrock_auth() -> Result<BedrockAuth, AgentError> {
             session_token,
             expires_at: None,
         }
-    } else if let Ok(url) = env::var("AWS_CONTAINER_CREDENTIALS_FULL_URI") {
+    } else if let Some(endpoint) = resolve_container_credentials_endpoint(
+        optional_env_var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")?.as_deref(),
+        optional_env_var("AWS_CONTAINER_CREDENTIALS_FULL_URI")?.as_deref(),
+        &resolve_host_addresses,
+    )? {
         let (access_key, secret_key, session_token, expires_at) =
-            fetch_container_credentials(&url)?;
+            fetch_container_credentials(&endpoint)?;
         debug!("using Bedrock SigV4 auth from container credentials endpoint");
         AuthKind::SigV4 {
             access_key,
@@ -119,7 +139,7 @@ fn resolve_bedrock_auth() -> Result<BedrockAuth, AgentError> {
             }
         } else {
             return Err(AgentError::Config {
-                message: "no AWS credentials found: set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, AWS_CONTAINER_CREDENTIALS_FULL_URI, or AWS_BEARER_TOKEN_BEDROCK".into(),
+                message: "no AWS credentials found: set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, AWS_CONTAINER_CREDENTIALS_RELATIVE_URI, AWS_CONTAINER_CREDENTIALS_FULL_URI, or AWS_BEARER_TOKEN_BEDROCK".into(),
             });
         }
     };
@@ -166,49 +186,210 @@ fn parse_aws_credentials_file(
     }
 }
 
-fn fetch_container_credentials(
-    url: &str,
-) -> Result<(String, String, Option<String>, Option<u64>), AgentError> {
-    // file rotates, so don't cache it.
-    let auth_header = match env::var("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE") {
-        Ok(path) => Some(
-            std::fs::read_to_string(&path).map_err(|e| AgentError::Config {
-                message: format!("read container auth token file {path}: {e}"),
-            })?,
-        ),
-        Err(_) => env::var("AWS_CONTAINER_AUTHORIZATION_TOKEN").ok(),
+#[derive(Debug)]
+struct ContainerCredentialsEndpoint {
+    url: Url,
+    resolved_addresses: Vec<IpAddr>,
+    allows_authorization: bool,
+}
+
+fn resolve_host_addresses(host: &str, port: u16) -> Result<Vec<IpAddr>, std::io::Error> {
+    (host, port)
+        .to_socket_addrs()
+        .map(|addresses| addresses.map(|address| address.ip()).collect::<Vec<_>>())
+}
+
+fn resolve_container_credentials_endpoint<F>(
+    relative_uri: Option<&str>,
+    full_uri: Option<&str>,
+    resolver: &F,
+) -> Result<Option<ContainerCredentialsEndpoint>, AgentError>
+where
+    F: Fn(&str, u16) -> Result<Vec<IpAddr>, std::io::Error>,
+{
+    let relative_uri = relative_uri.filter(|value| !value.is_empty());
+    let full_uri = full_uri.filter(|value| !value.is_empty());
+    let (url, allows_authorization) = if let Some(relative_uri) = relative_uri {
+        if !relative_uri.starts_with('/') || relative_uri.starts_with("//") {
+            return Err(AgentError::Config {
+                message: "AWS container credentials relative URI is invalid".into(),
+            });
+        }
+        let base = Url::parse(CONTAINER_CREDENTIALS_BASE_URL).map_err(|_| AgentError::Config {
+            message: "AWS container credentials base URL is invalid".into(),
+        })?;
+        let url = base.join(relative_uri).map_err(|_| AgentError::Config {
+            message: "AWS container credentials relative URI is invalid".into(),
+        })?;
+        (url, false)
+    } else if let Some(full_uri) = full_uri {
+        let url = Url::parse(full_uri).map_err(|_| AgentError::Config {
+            message: "AWS container credentials full URI is invalid".into(),
+        })?;
+        (url, true)
+    } else {
+        return Ok(None);
     };
 
-    let client = HttpClient::builder()
-        .connect_timeout(CONTAINER_METADATA_TIMEOUT)
-        .timeout(CONTAINER_METADATA_TIMEOUT)
-        .build()
-        .map_err(|e| AgentError::Config {
-            message: format!("container creds http client: {e}"),
-        })?;
-
-    let mut builder = Request::builder().method("GET").uri(url);
-    if let Some(token) = &auth_header {
-        builder = builder.header("Authorization", token.trim());
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(AgentError::Config {
+            message: "AWS container credentials URI contains forbidden components".into(),
+        });
     }
-    let request = builder.body(Vec::<u8>::new())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(AgentError::Config {
+            message: "AWS container credentials URI must be an absolute HTTP or HTTPS URL".into(),
+        });
+    }
 
-    let mut resp = client.send(request).map_err(|e| AgentError::Config {
-        message: format!("container creds request: {e}"),
+    let resolved_addresses = if url.scheme() == "http" {
+        let (addresses, pin_resolution) = match url.host() {
+            Some(Host::Ipv4(address)) => (vec![IpAddr::V4(address)], false),
+            Some(Host::Ipv6(address)) => (vec![IpAddr::V6(address)], false),
+            Some(Host::Domain(host)) => {
+                let port = url
+                    .port_or_known_default()
+                    .ok_or_else(|| AgentError::Config {
+                        message: "AWS container credentials URI is missing a port".into(),
+                    })?;
+                let addresses = resolver(host, port).map_err(|_| AgentError::Config {
+                    message: "AWS container credentials host could not be resolved".into(),
+                })?;
+                (addresses, true)
+            }
+            None => {
+                return Err(AgentError::Config {
+                    message: "AWS container credentials URI is missing a host".into(),
+                });
+            }
+        };
+        if addresses.is_empty() || !addresses.iter().copied().all(is_allowed_container_address) {
+            return Err(AgentError::Config {
+                message: "AWS container credentials HTTP endpoint is not allowed".into(),
+            });
+        }
+        if pin_resolution {
+            addresses
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    Ok(Some(ContainerCredentialsEndpoint {
+        url,
+        resolved_addresses,
+        allows_authorization,
+    }))
+}
+
+fn is_allowed_container_address(address: IpAddr) -> bool {
+    if address.is_loopback() {
+        return true;
+    }
+    match address {
+        IpAddr::V4(address) => {
+            matches!(
+                address.octets(),
+                ECS_CONTAINER_CREDENTIALS_IPV4 | EKS_CONTAINER_CREDENTIALS_IPV4
+            )
+        }
+        IpAddr::V6(address) => address.segments() == EKS_CONTAINER_CREDENTIALS_IPV6,
+    }
+}
+
+fn load_container_authorization_token(
+    token_file: Option<&Path>,
+    token: Option<&str>,
+) -> Result<Option<String>, AgentError> {
+    let value = if let Some(path) = token_file {
+        if !path.is_absolute() {
+            return Err(AgentError::Config {
+                message: "AWS container authorization token file path must be absolute".into(),
+            });
+        }
+        std::fs::read_to_string(path).map_err(|_| AgentError::Config {
+            message: "AWS container authorization token file could not be read".into(),
+        })?
+    } else if let Some(token) = token {
+        token.to_owned()
+    } else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AgentError::Config {
+            message: "AWS container authorization token is empty".into(),
+        });
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn fetch_container_credentials(
+    endpoint: &ContainerCredentialsEndpoint,
+) -> Result<(String, String, Option<String>, Option<u64>), AgentError> {
+    let token_file = env::var_os("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE").map(PathBuf::from);
+    let environment_token = optional_env_var("AWS_CONTAINER_AUTHORIZATION_TOKEN")?;
+    let auth_header = if endpoint.allows_authorization {
+        load_container_authorization_token(token_file.as_deref(), environment_token.as_deref())?
+    } else {
+        None
+    };
+
+    let mut client_builder = HttpClient::builder()
+        .redirect_policy(RedirectPolicy::None)
+        .proxy(None::<isahc::http::Uri>)
+        .connect_timeout(CONTAINER_METADATA_TIMEOUT)
+        .timeout(CONTAINER_METADATA_TIMEOUT);
+    if !endpoint.resolved_addresses.is_empty() {
+        let host = endpoint.url.host_str().ok_or_else(|| AgentError::Config {
+            message: "AWS container credentials URI is missing a host".into(),
+        })?;
+        let port = endpoint
+            .url
+            .port_or_known_default()
+            .ok_or_else(|| AgentError::Config {
+                message: "AWS container credentials URI is missing a port".into(),
+            })?;
+        let resolve_map = endpoint
+            .resolved_addresses
+            .iter()
+            .copied()
+            .fold(ResolveMap::new(), |map, address| {
+                map.add(host, port, address)
+            });
+        client_builder = client_builder.dns_resolve(resolve_map);
+    }
+    let client = client_builder.build().map_err(|_| AgentError::Config {
+        message: "AWS container credentials HTTP client could not be created".into(),
     })?;
 
-    if resp.status().as_u16() != 200 {
-        let body_text = resp.text().unwrap_or_else(|_| "unknown error".into());
+    let mut builder = Request::builder().method("GET").uri(endpoint.url.as_str());
+    if let Some(token) = &auth_header {
+        builder = builder.header("Authorization", token);
+    }
+    let request = builder
+        .body(Vec::<u8>::new())
+        .map_err(|_| AgentError::Config {
+            message: "AWS container credentials request could not be created".into(),
+        })?;
+    let mut response = client.send(request).map_err(|_| AgentError::Config {
+        message: "AWS container credentials request failed".into(),
+    })?;
+    if response.status().as_u16() != 200 {
         return Err(AgentError::Config {
             message: format!(
-                "container creds endpoint returned {}: {body_text}",
-                resp.status().as_u16()
+                "AWS container credentials endpoint returned HTTP {}",
+                response.status().as_u16()
             ),
         });
     }
 
-    let body_text = resp.text()?;
-    parse_container_credentials_response(&body_text)
+    let body = response.text().map_err(|_| AgentError::Config {
+        message: "AWS container credentials response could not be read".into(),
+    })?;
+    parse_container_credentials_response(&body)
 }
 
 fn parse_container_credentials_response(
@@ -999,6 +1180,98 @@ aws_session_token = MYTOKEN\n";
     fn parse_aws_credentials_missing_profile_errors() {
         let content = "[default]\naws_access_key_id = AKID\naws_secret_access_key = SECRET\n";
         assert!(parse_aws_credentials_file(content, "nonexistent").is_err());
+    }
+
+    #[test]
+    fn container_credentials_relative_uri_takes_precedence() {
+        let endpoint = resolve_container_credentials_endpoint(
+            Some("/v2/credentials/task"),
+            Some("https://credentials.example/ignored"),
+            &|_, _| Ok(Vec::new()),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            endpoint.url.as_str(),
+            "http://169.254.170.2/v2/credentials/task"
+        );
+    }
+
+    #[test]
+    fn container_credentials_rejects_remote_http_endpoint() {
+        let error = resolve_container_credentials_endpoint(
+            None,
+            Some("http://credentials.example/creds"),
+            &|_, _| Ok(vec!["203.0.113.10".parse().unwrap()]),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AgentError::Config { .. }));
+    }
+
+    #[test]
+    fn container_credentials_accepts_eks_ipv6_endpoint() {
+        let endpoint = resolve_container_credentials_endpoint(
+            None,
+            Some("http://[fd00:ec2::23]/creds"),
+            &|_, _| panic!("IPv6 literal must not require DNS resolution"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(endpoint.url.as_str(), "http://[fd00:ec2::23]/creds");
+        assert!(endpoint.resolved_addresses.is_empty());
+    }
+
+    #[test]
+    fn container_credentials_accepts_https_endpoint_without_dns_policy() {
+        let endpoint = resolve_container_credentials_endpoint(
+            None,
+            Some("https://credentials.example/creds"),
+            &|_, _| panic!("HTTPS endpoint must not require policy DNS resolution"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(endpoint.url.as_str(), "https://credentials.example/creds");
+        assert!(endpoint.resolved_addresses.is_empty());
+    }
+
+    #[test]
+    fn container_authorization_token_file_takes_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("token");
+        std::fs::write(&path, "file-token\n").unwrap();
+
+        let token = load_container_authorization_token(Some(&path), Some("environment-token"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(token, "file-token");
+    }
+
+    #[test]
+    fn container_authorization_token_file_must_be_absolute() {
+        let error = load_container_authorization_token(
+            Some(std::path::Path::new("relative-token")),
+            Some("environment-token"),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AgentError::Config { .. }));
+    }
+
+    #[test]
+    fn container_authorization_token_file_must_not_be_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("token");
+        std::fs::write(&path, " \n").unwrap();
+
+        let error =
+            load_container_authorization_token(Some(&path), Some("environment-token")).unwrap_err();
+
+        assert!(matches!(error, AgentError::Config { .. }));
     }
 
     #[test]
