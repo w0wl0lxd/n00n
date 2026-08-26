@@ -3056,7 +3056,57 @@ type ParsedRecords<M, U, T> = (Session<M, U, T>, bool, bool, u64, usize);
 /// recursive tree and its consumers walk it recursively, so an unbounded chain
 /// of start records in a corrupt or hostile log would overflow the stack on
 /// load, traversal, or drop. Compactions beyond this depth are flattened.
-const MAX_TRANSCRIPT_COMPACTION_DEPTH: usize = 64;
+///
+/// Each compaction wraps the whole prior transcript, so a session's nesting
+/// depth is its compaction count. Writers must hold the same cap — see
+/// [`flatten_deepest_compaction`] — or a long-lived session would cross it
+/// with valid data and be flattened on every reload.
+pub const MAX_TRANSCRIPT_COMPACTION_DEPTH: usize = 64;
+
+/// Depth of the deepest compaction chain in `entries`; 0 when there is none.
+#[must_use]
+pub fn transcript_compaction_depth<M>(entries: &[TranscriptEntry<M>]) -> usize {
+    entries.iter().fold(0, |deepest, entry| match entry {
+        TranscriptEntry::Compaction { entries, .. } => {
+            deepest.max(1 + transcript_compaction_depth(entries))
+        }
+        _ => deepest,
+    })
+}
+
+/// Splices the innermost compaction of the deepest chain into its parent,
+/// reducing nesting depth by one.
+///
+/// The oldest boundary is the one dropped. Its archived entries and its
+/// summary text both survive: a compaction records the summary as a
+/// [`TranscriptEntry::GeneratedMessage`] beside itself, so only the redundant
+/// `generated_summary` and `state_revision` fields are lost. Callers use this
+/// to stay under [`MAX_TRANSCRIPT_COMPACTION_DEPTH`] before writing.
+pub fn flatten_deepest_compaction<M>(entries: &mut Vec<TranscriptEntry<M>>) {
+    let Some(index) = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| matches!(entry, TranscriptEntry::Compaction { .. }))
+        .max_by_key(|(_, entry)| match entry {
+            TranscriptEntry::Compaction { entries, .. } => transcript_compaction_depth(entries),
+            _ => 0,
+        })
+        .map(|(index, _)| index)
+    else {
+        return;
+    };
+    let TranscriptEntry::Compaction { entries: inner, .. } = &mut entries[index] else {
+        return;
+    };
+    if transcript_compaction_depth(inner) > 0 {
+        flatten_deepest_compaction(inner);
+        return;
+    }
+    let TranscriptEntry::Compaction { entries: inner, .. } = entries.remove(index) else {
+        return;
+    };
+    entries.splice(index..index, inner);
+}
 
 struct PendingTranscriptCompaction<M> {
     entries: Vec<TranscriptEntry<M>>,
@@ -4909,7 +4959,8 @@ mod tests {
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
         MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
-        TRANSCRIPT_COMPACTION_START_RECORD_TYPE,
+        TRANSCRIPT_COMPACTION_START_RECORD_TYPE, flatten_deepest_compaction,
+        transcript_compaction_depth,
     };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
@@ -5425,15 +5476,6 @@ mod tests {
     }
 
     /// Deepest chain of nested compactions in a transcript.
-    fn compaction_depth(entries: &[TranscriptEntry<Value>]) -> usize {
-        entries.iter().fold(0, |deepest, entry| match entry {
-            TranscriptEntry::Compaction { entries, .. } => {
-                deepest.max(1 + compaction_depth(entries))
-            }
-            _ => deepest,
-        })
-    }
-
     /// Counts how many records of `tag` the on-disk log holds.
     fn count_record_type(dir: &Path, id: n00nId, tag: &str) -> usize {
         let decoded = zstd::stream::decode_all(File::open(jsonl_path(dir, id)).unwrap()).unwrap();
@@ -5540,6 +5582,51 @@ mod tests {
     /// an unbounded chain of start records in a corrupt log would overflow the
     /// stack. Compactions past the depth cap are flattened instead.
     #[test]
+    fn flatten_deepest_compaction_drops_the_oldest_boundary_only() {
+        let mut entries = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![
+                    TranscriptEntry::Compaction {
+                        entries: vec![TranscriptEntry::Message(Value::from("oldest"))],
+                        generated_summary: Some(Value::from("inner summary")),
+                        state_revision: Some(1),
+                    },
+                    TranscriptEntry::GeneratedMessage(Value::from("inner summary")),
+                ],
+                generated_summary: Some(Value::from("outer summary")),
+                state_revision: Some(2),
+            },
+            TranscriptEntry::Message(Value::from("live")),
+        ];
+
+        flatten_deepest_compaction(&mut entries);
+
+        assert_eq!(transcript_compaction_depth(&entries), 1);
+        let TranscriptEntry::Compaction {
+            entries: outer,
+            generated_summary,
+            state_revision,
+        } = &entries[0]
+        else {
+            panic!("outer compaction was not preserved: {entries:?}");
+        };
+        // The outer boundary keeps its own metadata; the inner one's archived
+        // entries are spliced in ahead of the summary it left beside itself.
+        assert_eq!(
+            generated_summary.as_ref(),
+            Some(&Value::from("outer summary"))
+        );
+        assert_eq!(*state_revision, Some(2));
+        assert!(matches!(
+            outer.as_slice(),
+            [
+                TranscriptEntry::Message(oldest),
+                TranscriptEntry::GeneratedMessage(summary),
+            ] if oldest == &Value::from("oldest") && summary == &Value::from("inner summary")
+        ));
+    }
+
+    #[test]
     fn transcript_compaction_nesting_is_depth_bounded() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -5575,9 +5662,9 @@ mod tests {
         let loaded = TestSession::load_from(session.id, dir).unwrap();
 
         assert!(
-            compaction_depth(&loaded.transcript) <= MAX_TRANSCRIPT_COMPACTION_DEPTH,
+            transcript_compaction_depth(&loaded.transcript) <= MAX_TRANSCRIPT_COMPACTION_DEPTH,
             "nesting was not bounded: {}",
-            compaction_depth(&loaded.transcript)
+            transcript_compaction_depth(&loaded.transcript)
         );
     }
 
