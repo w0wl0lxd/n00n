@@ -4916,6 +4916,57 @@ fn bash_handler_preserves_supported_find_fallback() {
 }
 
 #[test]
+fn bash_handler_preserves_bash_env_cargo_wrapper() {
+    const CHILD_ENV: &str = "N00N_BASH_ENV_CARGO_WRAPPER_CHILD";
+    const WRAPPER_MARKER: &str = "bash-env-cargo-wrapper-invoked";
+
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let (registry, _host) = builtins_host();
+        let output = exec_tool(
+            &registry,
+            "bash",
+            serde_json::json!({ "command": "cargo --version" }),
+        )
+        .expect("Cargo command failed");
+        assert!(
+            output.contains(WRAPPER_MARKER),
+            "BASH_ENV Cargo wrapper was bypassed: {output}"
+        );
+        println!("{WRAPPER_MARKER}");
+        return;
+    }
+
+    let directory = tempfile::tempdir().expect("temporary BASH_ENV directory");
+    let bash_env = directory.path().join("cargo-wrapper.sh");
+    std::fs::write(
+        &bash_env,
+        format!("cargo() {{ printf '{WRAPPER_MARKER}\\n'; }}\n"),
+    )
+    .expect("write BASH_ENV Cargo wrapper");
+    let child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "bash_handler_preserves_bash_env_cargo_wrapper",
+            "--nocapture",
+        ])
+        .env(CHILD_ENV, "1")
+        .env("BASH_ENV", bash_env)
+        .output()
+        .expect("run isolated BASH_ENV probe");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    let stderr = String::from_utf8_lossy(&child.stderr);
+
+    assert!(
+        child.status.success(),
+        "isolated BASH_ENV probe failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains(WRAPPER_MARKER),
+        "isolated BASH_ENV probe did not run:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn bash_handler_routes_every_managed_command_through_rtk() {
     if skip_without_rtk("bash_handler_routes_every_managed_command_through_rtk") {
         return;
@@ -4946,6 +4997,10 @@ fn bash_handler_routes_every_managed_command_through_rtk() {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(
+            !rendered.contains("error: rtk is enabled"),
+            "{command} was rejected instead of routed through RTK: {rendered}"
+        );
         assert!(
             rendered.contains("rtk "),
             "{command} did not take an RTK route: {rendered}"
