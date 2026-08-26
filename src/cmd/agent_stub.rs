@@ -21,6 +21,7 @@ pub struct AgentRunOptions<'a> {
     pub yolo: bool,
     pub no_jit: bool,
     pub fusion: bool,
+    pub project_trusted: bool,
 }
 
 fn unsupported() -> Result<()> {

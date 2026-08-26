@@ -23,6 +23,8 @@ local structured_output = require("n00n.structured_output")
 local guard = require("n00n.guard")
 local subagent = require("n00n.subagent")
 local pipeline_args = require("pipeline_args")
+local run_store = require("run_store")
+local saga_runner = require("saga_runner")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local SCRIPT_BALANCE_HINT = "close `meta({...})` before declaring locals and match every `{` with `}`"
@@ -362,40 +364,7 @@ local function write_run_meta(run_id, meta, journal_path)
   if not dir or not journal_path then
     return nil, "cannot resolve workflow run paths"
   end
-  local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
-  if not mkdir_ok then
-    return nil, "failed to create workflow run directory: " .. tostring(mkdir_err)
-  end
-
-  local meta_path = n00n.fs.joinpath(dir, META_FILENAME)
-  local existing_meta, meta_inspect_err = n00n.fs.metadata(meta_path)
-  if existing_meta then
-    return nil, "workflow metadata already exists"
-  end
-  if meta_inspect_err then
-    return nil, "failed to inspect workflow metadata: " .. tostring(meta_inspect_err)
-  end
-  local existing_journal, journal_inspect_err = n00n.fs.metadata(journal_path)
-  if existing_journal then
-    return nil, "workflow journal already exists"
-  end
-  if journal_inspect_err then
-    return nil, "failed to inspect workflow journal: " .. tostring(journal_inspect_err)
-  end
-
-  local journal_ok, journal_err = n00n.fs.write(journal_path, "")
-  if not journal_ok then
-    return nil, "failed to create workflow journal: " .. tostring(journal_err)
-  end
-  local content, encode_err = n00n.json.encode(meta)
-  if not content then
-    return nil, "failed to encode workflow metadata: " .. tostring(encode_err)
-  end
-  local write_ok, write_err = n00n.fs.write(meta_path, content)
-  if not write_ok then
-    return nil, "failed to write workflow metadata: " .. tostring(write_err)
-  end
-  return true
+  return run_store.create(dir, journal_path, meta)
 end
 
 local run_seq = 0
@@ -800,9 +769,13 @@ local function build_env(ctx, progress, inputs, journal, captured, saga, logger,
     if captured.meta then
       error("meta() must be called exactly once", 0)
     end
-    if type(t) ~= "table" or type(t.name) ~= "string" then
-      error("meta({...}) requires a `name` string", 0)
+    if type(t) ~= "table" or type(t.name) ~= "string" or t.name == "" then
+      error("meta({...}) requires a non-empty `name` string", 0)
     end
+    if t.description ~= nil and type(t.description) ~= "string" then
+      error("meta({...}) `description` must be a string", 0)
+    end
+
     if not journal.initialized then
       local meta_ok, meta_err = write_run_meta(journal.run_id, {
         name = t.name,
@@ -943,29 +916,9 @@ local function handler(input, ctx)
     logger.log("run_started", { run_id = run_id })
   end
 
-  local function run_compensations(err)
-    if not saga or #saga.compensations == 0 then
-      return err
-    end
-    local comp_failures = {}
-    for i = #saga.compensations, 1, -1 do
-      local cok, cerr = pcall(saga.compensations[i])
-      if not cok then
-        table.insert(comp_failures, tostring(cerr))
-      end
-    end
-    for _, eh in ipairs(saga.error_handlers) do
-      pcall(eh, err)
-    end
-    if #comp_failures > 0 then
-      return tostring(err) .. "\ncompensation failures: " .. table.concat(comp_failures, "; ")
-    end
-    return err
-  end
-
   local function on_finish(err, result)
     if err then
-      local final_err = run_compensations(err)
+      local final_err = saga_runner.run(saga, err)
       if logger then
         logger.log("run_error", { error = tostring(final_err) })
       end

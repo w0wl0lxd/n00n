@@ -168,6 +168,44 @@ impl StderrDedup {
     }
 }
 
+struct PendingRequestGuard {
+    pending: Arc<Mutex<PendingMap>>,
+    id: u64,
+    armed: bool,
+}
+
+impl PendingRequestGuard {
+    fn new(pending: Arc<Mutex<PendingMap>>, id: u64) -> Self {
+        Self {
+            pending,
+            id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(mut pending) = self.pending.try_lock() {
+            pending.remove(&self.id);
+            return;
+        }
+        let pending = Arc::clone(&self.pending);
+        let id = self.id;
+        smol::spawn(async move {
+            pending.lock().await.remove(&id);
+        })
+        .detach();
+    }
+}
+
 pub struct StdioTransport {
     name: Arc<str>,
     stdin: Mutex<async_process::ChildStdin>,
@@ -241,9 +279,10 @@ impl StdioTransport {
                 let terminal_err = result.err().unwrap_or_else(|| McpError::ServerDied {
                     server: (*name).into(),
                 });
-                warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
-                alive.store(false, Ordering::Release);
-                on_death(terminal_err.clone());
+                if alive.swap(false, Ordering::AcqRel) {
+                    warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
+                    on_death(terminal_err.clone());
+                }
                 for (_, sender) in pending.lock().await.drain() {
                     let _ = sender.send(Err(terminal_err.clone())).await;
                 }
@@ -437,8 +476,10 @@ impl McpTransport for StdioTransport {
 
             let (tx, rx) = smol::channel::bounded(1);
             self.pending.lock().await.insert(id, tx);
+            let mut pending_guard = PendingRequestGuard::new(Arc::clone(&self.pending), id);
             if let Err(e) = self.write_line(&self.serialize(&req)?).await {
                 self.pending.lock().await.remove(&id);
+                pending_guard.disarm();
                 return Err(e);
             }
 
@@ -462,6 +503,7 @@ impl McpTransport for StdioTransport {
                     u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
                 info!(server = %self.server(), method, id, duration_ms, "MCP stdio response");
             }
+            pending_guard.disarm();
 
             result
         })
@@ -522,6 +564,19 @@ mod tests {
                 server: "no response received".into(),
             })
         })
+    }
+
+    #[test]
+    fn dropped_pending_request_removes_pending_entry() {
+        smol::block_on(async {
+            let pending = Arc::new(Mutex::new(HashMap::new()));
+            let (sender, _receiver) = channel::bounded(1);
+            pending.lock().await.insert(1, sender);
+
+            drop(PendingRequestGuard::new(Arc::clone(&pending), 1));
+
+            assert!(pending.lock().await.is_empty());
+        });
     }
 
     #[test_case("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n" ; "lf_terminated")]
@@ -680,6 +735,35 @@ mod tests {
         dedup.observe("only-once");
         assert!(dedup.flush().is_none());
     }
+    #[cfg(unix)]
+    #[test]
+    fn explicit_shutdown_does_not_invoke_death_callback() {
+        smol::block_on(async {
+            let death_called = Arc::new(AtomicBool::new(false));
+            let death_called_write = Arc::clone(&death_called);
+            let transport = StdioTransport::spawn(
+                "test",
+                "sleep",
+                &["60".into()],
+                &HashMap::new(),
+                Duration::from_secs(5),
+                Box::new(move |_| {
+                    death_called_write.store(true, Ordering::Release);
+                }),
+            )
+            .unwrap();
+
+            transport.shutdown().await;
+            let StdioTransport {
+                _reader_task: reader_task,
+                ..
+            } = transport;
+            reader_task.await;
+
+            assert!(!death_called.load(Ordering::Acquire));
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn reader_loop_end_invokes_death_callback() {

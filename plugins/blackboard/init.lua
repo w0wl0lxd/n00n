@@ -125,6 +125,18 @@ local function claims_dir()
   return n00n.fs.joinpath(bb, "claims")
 end
 
+local function with_claims_transaction(callback)
+  local bb, err = blackboard_dir()
+  if not bb then
+    return nil, err
+  end
+  local mkdir_ok, mkdir_err = n00n.fs.mkdir(bb, { parents = true })
+  if not mkdir_ok then
+    return nil, "transaction directory error: " .. tostring(mkdir_err)
+  end
+  return n00n.fs.with_lock(n00n.fs.joinpath(bb, "claims.lock"), callback)
+end
+
 local function validate_id(id)
   if not id or id == "" then
     return nil, "id is required"
@@ -225,7 +237,7 @@ local function is_active_claim(claim)
   return claim.expires_at >= os.time()
 end
 
-local function clean_expired_claims()
+local function clean_expired_claims_locked()
   local dir, err = claims_dir()
   if not dir then
     return nil, err
@@ -291,7 +303,7 @@ local function list_claims(only_active)
   return claims
 end
 
-local function claim_task(task_id, expires_in)
+local function claim_task_locked(task_id, expires_in)
   local ok, vid = validate_id(task_id)
   if not ok then
     return nil, vid
@@ -311,7 +323,7 @@ local function claim_task(task_id, expires_in)
   end
   n00n.fs.mkdir(dir, { parents = true })
 
-  local clean_ok, clean_err = clean_expired_claims()
+  local clean_ok, clean_err = clean_expired_claims_locked()
   if not clean_ok then
     return nil, "cleanup error: " .. tostring(clean_err)
   end
@@ -364,7 +376,13 @@ local function claim_task(task_id, expires_in)
   return claim
 end
 
-local function release_task(task_id)
+local function claim_task(task_id, expires_in)
+  return with_claims_transaction(function()
+    return claim_task_locked(task_id, expires_in)
+  end)
+end
+
+local function release_task_locked(task_id)
   local ok, vid = validate_id(task_id)
   if not ok then
     return nil, vid
@@ -409,7 +427,13 @@ local function release_task(task_id)
   return true
 end
 
-local function update_task(task_id, status)
+local function release_task(task_id)
+  return with_claims_transaction(function()
+    return release_task_locked(task_id)
+  end)
+end
+
+local function update_task_locked(task_id, status)
   local ok, vid = validate_id(task_id)
   if not ok then
     return nil, vid
@@ -454,6 +478,12 @@ local function update_task(task_id, status)
   end
 
   return true
+end
+
+local function update_task(task_id, status)
+  return with_claims_transaction(function()
+    return update_task_locked(task_id, status)
+  end)
 end
 
 local function query_posts(filters)

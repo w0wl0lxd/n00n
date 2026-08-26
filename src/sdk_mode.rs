@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
-use flume::{Receiver, Sender};
+use flume::{Receiver, Sender, TrySendError};
 use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams, SessionStatePersistence};
 use n00n_agent::mcp;
 use n00n_agent::permissions::PermissionAnswer;
@@ -32,7 +32,7 @@ use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{Session, TranscriptEntry};
 use serde::Serialize;
 use serde_json::Value;
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::cli::Cli;
@@ -444,6 +444,7 @@ pub struct SdkParams {
     pub cli: Cli,
     pub model: Model,
     pub config: Arc<AgentConfig>,
+    pub project_trusted: bool,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -465,6 +466,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         cli,
         model,
         config,
+        project_trusted,
         permissions_config,
         timeouts,
         openai_options,
@@ -486,8 +488,11 @@ pub fn run(params: SdkParams) -> Result<()> {
     let working_dir = cwd.to_string_lossy().into_owned();
     let (session_id, initial_history, initial_transcript) = resolve_session(&cli, &working_dir)?;
 
-    let (mcp_handle, mcp_config_errors) =
-        smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
+    let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(
+        &cwd,
+        config.mcp_tool_desc_max_chars,
+        project_trusted,
+    ));
     if !mcp_config_errors.is_empty() {
         eprintln!("MCP config error: {mcp_config_errors}");
     }
@@ -617,13 +622,28 @@ fn spawn_pump(
     .spawn(event_rx)
 }
 
+fn request_cancel(cancel_tx: &Sender<()>) {
+    match cancel_tx.try_send(()) {
+        Ok(()) | Err(TrySendError::Full(())) => {}
+        Err(TrySendError::Disconnected(())) => {
+            debug!("interactive agent already stopped before cancellation");
+        }
+    }
+}
+
 fn shutdown(
     handle: InteractiveHandle,
     writer: SdkWriter,
     writer_thread: thread::JoinHandle<()>,
     pump: smol::Task<()>,
 ) {
-    let InteractiveHandle { input_tx, task, .. } = handle;
+    let InteractiveHandle {
+        input_tx,
+        cancel_tx,
+        task,
+        ..
+    } = handle;
+    request_cancel(&cancel_tx);
     drop(input_tx);
     smol::block_on(async {
         task.await;
@@ -896,7 +916,7 @@ fn handle_control_request(
             )
         }
         "interrupt" => {
-            let _ = handle.cancel_tx.try_send(());
+            request_cancel(&handle.cancel_tx);
             writer.emit_control_response(&cr.request_id, ok, None)
         }
         "set_permission_mode" => {
@@ -1289,6 +1309,18 @@ mod tests {
             .iter()
             .find(|(_, c)| *c == name)
             .map_or(name, |(m, _)| *m)
+    }
+
+    #[test]
+    fn shutdown_cancels_an_in_flight_turn() {
+        smol::block_on(async {
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
+            let waiting_turn = smol::spawn(async move { cancel_rx.recv_async().await });
+
+            request_cancel(&cancel_tx);
+
+            assert_eq!(waiting_turn.await, Ok(()));
+        });
     }
 
     #[test_case("run_shell", "Bash")]
