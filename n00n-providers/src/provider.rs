@@ -347,7 +347,13 @@ fn provider_available_with_config(slug: &str, config: Option<&ProvidersConfig>) 
     let config = if let Some(config) = config {
         config
     } else {
-        loaded_config = ProvidersConfig::load();
+        loaded_config = match ProvidersConfig::load() {
+            Ok(config) => config,
+            Err(error) => {
+                warn!(%error, slug, "cannot load provider configuration while checking availability");
+                return false;
+            }
+        };
         &loaded_config
     };
 
@@ -525,7 +531,13 @@ fn devin_account_model_specs(config: &ProvidersConfig) -> Vec<String> {
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
 #[must_use]
 pub fn available_model_specs() -> Vec<String> {
-    let providers_config = ProvidersConfig::load();
+    let providers_config = match ProvidersConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            warn!(%error, "cannot load configured provider models");
+            ProvidersConfig::default()
+        }
+    };
     let mut specs: Vec<String> = crate::manifest::ManifestRegistry::builtins()
         .iter()
         .filter(|manifest| {
@@ -650,8 +662,14 @@ pub async fn fetch_all_models(
         .detach();
     }
 
-    let account_models =
-        smol::unblock(|| devin_account_model_specs(&ProvidersConfig::load())).await;
+    let account_models = smol::unblock(|| match ProvidersConfig::load() {
+        Ok(config) => devin_account_model_specs(&config),
+        Err(error) => {
+            warn!(%error, "cannot load configured Devin account models");
+            Vec::new()
+        }
+    })
+    .await;
     if !account_models.is_empty() {
         let _ = tx
             .send_async(ModelBatch {

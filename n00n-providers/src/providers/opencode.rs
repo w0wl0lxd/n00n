@@ -308,10 +308,16 @@ struct CatalogData {
 }
 
 fn enable_free_models_config() -> bool {
-    n00n_config::providers::ProvidersConfig::load()
-        .get("opencode")
-        .and_then(|d| d.enable_free_models)
-        .unwrap_or_else(|| false)
+    match n00n_config::providers::ProvidersConfig::load() {
+        Ok(config) => config
+            .get("opencode")
+            .and_then(|def| def.enable_free_models)
+            .unwrap_or_else(|| false),
+        Err(error) => {
+            warn!(%error, "cannot load provider configuration for OpenCode free models");
+            false
+        }
+    }
 }
 
 impl CatalogData {

@@ -1,24 +1,25 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use flume::Sender;
-use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
+use futures_lite::io::{AsyncBufRead, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use n00n_redact::redact_json_arg;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
-use super::ResolvedAuth;
 use super::anthropic::shared::stream_truncated_error;
+use super::{ResolvedAuth, SseStream};
 use crate::types::{ImageDetail, TOOL_RESULT_ERROR_PREFIX};
 use crate::{
     AgentError, CacheControl, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
     RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
+const MAX_TOOL_CALL_INDEX: usize = 127;
 const STREAM_DONE: &str = "[DONE]";
 
 fn contains_prompt_cache_breakpoint(value: &Value) -> bool {
@@ -782,18 +783,16 @@ pub async fn parse_sse(
     stream_timeout: Duration,
     opts: &RequestOptions,
 ) -> Result<StreamResponse, AgentError> {
-    let mut lines = reader.lines();
+    let mut stream = SseStream::new(reader, stream_timeout);
 
     let mut text = String::new();
     let mut reasoning_text = String::new();
-    let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
+    let mut tool_accumulators: Vec<Option<ToolAccumulator>> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
     let mut is_first_content = true;
     let mut emitted_event = false;
     let mut terminated = false;
-    let mut deadline = Instant::now() + stream_timeout;
-
     let idempotency_key = opts
         .idempotency_supported
         .then(|| opts.idempotency_key.clone())
@@ -807,18 +806,14 @@ pub async fn parse_sse(
     };
 
     loop {
-        let line = match super::next_sse_line(&mut lines, &mut deadline, stream_timeout).await {
-            Ok(Some(line)) => line,
+        let event = match stream.next_event().await {
+            Ok(Some(event)) => event,
             Ok(None) => break,
             Err(error) => {
                 return Err(error.suppress_retry_after_send(Some(delivery_metadata(emitted_event))));
             }
         };
-
-        let data = match line.strip_prefix("data:") {
-            Some(d) => d.trim(),
-            None => continue,
-        };
+        let data = event.data.trim();
 
         if data == STREAM_DONE {
             terminated = true;
@@ -962,14 +957,24 @@ pub async fn parse_sse(
 
         if let Some(tc_deltas) = delta.tool_calls {
             for tc in tc_deltas {
-                while tool_accumulators.len() <= tc.index {
-                    tool_accumulators.push(ToolAccumulator {
-                        id: String::new(),
-                        name: String::new(),
-                        arguments: String::new(),
-                    });
+                if tc.index > MAX_TOOL_CALL_INDEX {
+                    return Err(AgentError::Api {
+                        status: 400,
+                        message: format!(
+                            "provider tool-call index {} exceeds maximum {MAX_TOOL_CALL_INDEX}",
+                            tc.index
+                        ),
+                    }
+                    .suppress_retry_after_send(Some(delivery_metadata(emitted_event))));
                 }
-                let acc = &mut tool_accumulators[tc.index];
+                if tool_accumulators.len() <= tc.index {
+                    tool_accumulators.resize_with(tc.index + 1, || None);
+                }
+                let acc = tool_accumulators[tc.index].get_or_insert_with(|| ToolAccumulator {
+                    id: String::new(),
+                    name: String::new(),
+                    arguments: String::new(),
+                });
                 let was_unnamed = acc.name.is_empty();
                 if let Some(id) = tc.id {
                     acc.id = id;
@@ -1008,30 +1013,37 @@ pub async fn parse_sse(
         content_blocks.push(ContentBlock::Text { text });
     }
 
-    for (idx, acc) in tool_accumulators.into_iter().enumerate() {
-        let input: Value = match serde_json::from_str(&acc.arguments) {
-            Ok(v) => {
-                debug!(
-                    tool_index = idx,
-                    has_tool_name = !acc.name.is_empty(),
-                    tool_name_length = acc.name.len(),
-                    json = %redact_json_arg(&acc.arguments),
-                    "tool input JSON"
-                );
-                v
-            }
-            Err(e) => {
+    for (idx, acc) in tool_accumulators
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, acc)| acc.map(|acc| (idx, acc)))
+    {
+        let input = if acc.arguments.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&acc.arguments).map_err(|error| {
                 warn!(
-                    error = %e,
+                    error = %error,
                     tool_index = idx,
                     has_tool_name = !acc.name.is_empty(),
                     tool_name_length = acc.name.len(),
-                    json = %redact_json_arg(&acc.arguments),
-                    "malformed tool JSON, falling back to {{}}"
+                    argument_bytes = acc.arguments.len(),
+                    "rejecting malformed streamed tool arguments"
                 );
-                Value::Object(serde_json::Map::default())
-            }
+                AgentError::Api {
+                    status: 400,
+                    message: format!("malformed streamed tool arguments at index {idx}"),
+                }
+                .suppress_retry_after_send(Some(delivery_metadata(emitted_event)))
+            })?
         };
+        debug!(
+            tool_index = idx,
+            has_tool_name = !acc.name.is_empty(),
+            tool_name_length = acc.name.len(),
+            json = %redact_json_arg(&acc.arguments),
+            "tool input JSON"
+        );
         let id = if acc.id.is_empty() {
             warn!(
                 tool_index = idx,
@@ -1162,9 +1174,9 @@ data: [DONE]\n";
         smol::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-|\n\
+\n\
 data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_tokens_details\":{\"cached_tokens\":30,\"cache_write_tokens\":20}}}\n\
-|\n\
+\n\
 data: [DONE]\n";
 
             let (tx, _rx) = flume::unbounded();
@@ -1546,7 +1558,7 @@ data: [DONE]\n";
     }
 
     #[test]
-    fn parse_sse_malformed_tool_json_yields_empty_object() {
+    fn parse_sse_malformed_tool_json_is_rejected() {
         smol::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
@@ -1558,7 +1570,59 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 data: [DONE]\n";
 
             let (tx, _rx) = flume::unbounded();
-            let resp = parse_sse(
+            let error = parse_sse(
+                Cursor::new(sse.as_bytes()),
+                &tx,
+                TEST_STREAM_TIMEOUT,
+                &RequestOptions::default(),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(!error.is_retryable());
+            assert!(matches!(
+                error,
+                AgentError::RequestSent {
+                    metadata: Some(RequestDeliveryMetadata {
+                        emitted_event: true,
+                        ..
+                    }),
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn parse_sse_rejects_tool_call_index_above_limit_before_allocation() {
+        smol::block_on(async {
+            let index = MAX_TOOL_CALL_INDEX + 1;
+            let sse = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":{index},\"id\":\"c1\",\"function\":{{\"name\":\"bash\",\"arguments\":\"{{}}\"}}}}]}}}}]}}\n\ndata: [DONE]\n"
+            );
+            let (tx, _rx) = flume::unbounded();
+            let error = parse_sse(
+                Cursor::new(sse.as_bytes()),
+                &tx,
+                TEST_STREAM_TIMEOUT,
+                &RequestOptions::default(),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(error, AgentError::Api { status: 400, .. }));
+            assert!(error.to_string().contains("tool-call index"));
+        });
+    }
+
+    #[test]
+    fn parse_sse_accepts_tool_call_index_at_limit_without_sparse_placeholders() {
+        smol::block_on(async {
+            let sse = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":{MAX_TOOL_CALL_INDEX},\"id\":\"c1\",\"function\":{{\"name\":\"bash\",\"arguments\":\"{{}}\"}}}}]}}}}]}}\n\ndata: {{\"choices\":[{{\"finish_reason\":\"tool_calls\",\"delta\":{{}}}}]}}\n\ndata: [DONE]\n"
+            );
+            let (tx, _rx) = flume::unbounded();
+            let response = parse_sse(
                 Cursor::new(sse.as_bytes()),
                 &tx,
                 TEST_STREAM_TIMEOUT,
@@ -1567,10 +1631,9 @@ data: [DONE]\n";
             .await
             .unwrap();
 
-            let tools: Vec<_> = resp.message.tool_uses().collect();
+            let tools: Vec<_> = response.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);
-            assert_eq!(tools[0].1, "bash");
-            assert_eq!(*tools[0].2, Value::Object(Default::default()));
+            assert_eq!(tools[0].0, "c1");
         });
     }
 

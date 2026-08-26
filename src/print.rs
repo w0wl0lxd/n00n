@@ -145,6 +145,7 @@ pub struct PrintArgs<'a> {
     pub format: OutputFormat,
     pub verbose: bool,
     pub config: AgentConfig,
+    pub project_trusted: bool,
     pub permissions_config: PermissionsConfig,
     pub timeouts: n00n_providers::Timeouts,
     pub openai_options: OpenAiOptions,
@@ -226,6 +227,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
         format,
         verbose,
         config,
+        project_trusted,
         permissions_config,
         timeouts,
         openai_options,
@@ -239,8 +241,11 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
     let prompt_slots = lua_handle.map_or_else(Default::default, EventHandle::collect_prompt_slots);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let (mcp_handle, mcp_config_errors) =
-        smol::block_on(n00n_agent::mcp::start(&cwd, config.mcp_tool_desc_max_chars));
+    let (mcp_handle, mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
+        &cwd,
+        config.mcp_tool_desc_max_chars,
+        project_trusted,
+    ));
     if !mcp_config_errors.is_empty() {
         eprintln!("MCP config error: {mcp_config_errors}");
     }

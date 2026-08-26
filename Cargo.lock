@@ -4106,6 +4106,7 @@ dependencies = [
  "n00n-config",
  "n00n-daemon",
  "n00n-git",
+ "n00n-interpreter",
  "n00n-lua",
  "n00n-providers",
  "n00n-smell",
@@ -4163,6 +4164,7 @@ dependencies = [
  "isahc",
  "jiff",
  "jsonrepair",
+ "jsonschema",
  "libc",
  "n00n-config",
  "n00n-providers",
@@ -4184,6 +4186,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -4289,6 +4292,7 @@ version = "0.7.0"
 dependencies = [
  "monty",
  "monty-types",
+ "serde",
  "serde_json",
  "test-case",
  "thiserror 2.0.20",
@@ -4301,12 +4305,15 @@ version = "0.7.0"
 dependencies = [
  "arc-swap",
  "async-lock",
+ "async-process",
  "base64",
+ "color-eyre",
  "cortexkit-tree-sitter-scss",
  "criterion",
  "crossterm",
  "event-listener",
  "flume",
+ "fs2",
  "futures",
  "futures-lite",
  "htmd",

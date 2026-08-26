@@ -167,7 +167,7 @@ enum StepAction {
     Close,
 }
 fn plan_key_action(slug: &str, item: PlanItem, api_key_optional: bool) -> StepAction {
-    let config = providers::ProvidersConfig::load();
+    let config = providers::ProvidersConfig::load_or_exit();
     StepAction::GoEnterKey {
         slug: slug.to_owned(),
         plan: Some(item.key),
@@ -195,7 +195,7 @@ impl LoginPicker {
 
     pub fn open(&mut self, storage: n00n_storage::StateDir) {
         let builtins = providers::all_builtins();
-        let config = providers::ProvidersConfig::load();
+        let config = providers::ProvidersConfig::load_or_exit();
         let mut items: Vec<ProviderItem> = builtins
             .iter()
             .map(|b| {
@@ -310,7 +310,7 @@ impl LoginPicker {
                         StepAction::GoCustomName
                     } else {
                         let slug = item.slug.clone();
-                        let config = providers::ProvidersConfig::load();
+                        let config = providers::ProvidersConfig::load_or_exit();
                         let def = config.get(&slug);
                         let has_plans = providers::builtin_provider(&slug)
                             .and_then(|b| b.plans)
@@ -453,7 +453,16 @@ impl LoginPicker {
                         }
                     }
 
-                    let mut config = ProvidersConfig::load();
+                    let mut config = match ProvidersConfig::load() {
+                        Ok(config) => config,
+                        Err(error) => {
+                            return self.transition(StepAction::GoDone {
+                                message: format!("Error reading config: {error}"),
+                                model_spec: None,
+                                slug: slug_c,
+                            });
+                        }
+                    };
 
                     if let Some(info) = &custom_c {
                         let api_key_env =
@@ -603,7 +612,7 @@ impl LoginPicker {
                 LoginPickerAction::Consumed
             }
             StepAction::GoBuiltinUrl { slug, display_name } => {
-                let config = providers::ProvidersConfig::load();
+                let config = providers::ProvidersConfig::load_or_exit();
                 let default = providers::resolve_base_url(&slug, config.get(&slug))
                     .unwrap_or_else(Default::default);
                 self.step = Step::BuiltinUrl {

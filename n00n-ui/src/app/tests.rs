@@ -1,6 +1,6 @@
 use super::session::message_tool_use_ids;
 use super::*;
-use crate::agent::shared_queue;
+use crate::agent::{Delivery, shared_queue};
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{KeybindContext, key as kb};
@@ -31,6 +31,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use test_case::test_case;
 
+const PROVIDER_FAILED_ERR: &str = "provider failed";
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
@@ -768,11 +769,10 @@ fn queue_item_consumed_pushes_deferred_user_message() {
     );
 }
 
-#[test_case(error_app as fn(&mut App) ; "error")]
-#[test_case(cancel_app as fn(&mut App) ; "cancel")]
-fn clears_queue(terminate: fn(&mut App)) {
+#[test]
+fn cancel_clears_queue() {
     let mut app = app_with_queued_message();
-    terminate(&mut app);
+    cancel_app(&mut app);
     assert!(app.queue.is_empty());
 }
 
@@ -2216,6 +2216,35 @@ fn queue_enter_edits_selected_in_place_without_duplication() {
 }
 
 #[test]
+fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
+    let mut app = app_with_queued_message();
+    let image = ImageSource::new(ImageMediaType::Png, Arc::from("b3JpZ2luYWw="));
+    assert!(app.queue_steering(QueuedMessage {
+        text: "original".into(),
+        images: vec![image],
+        control: true,
+    }));
+    app.queue_and_notify(queued_msg("after"));
+    app.queue.set_focus_at(1);
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    app.input_box.set_input("replacement");
+    app.update(Msg::Key(kb::QUIT.to_key_event()));
+
+    assert_eq!(app.queue.text_messages(), ["queued", "original", "after"]);
+    assert!(app.queue.editing().is_none());
+    assert!(app.input_box.is_empty());
+    let queued = app.queue.queued_inputs();
+    let (input, delivery) = &queued[1];
+    assert_eq!(input.message, "original");
+    assert_eq!(*delivery, Delivery::Steering);
+    assert!(input.control);
+    assert_eq!(input.images.len(), 1);
+    assert_eq!(input.images[0].media_type, ImageMediaType::Png);
+    assert_eq!(&*input.images[0].data, "b3JpZ2luYWw=");
+}
+
+#[test]
 fn queue_delete_removes_selected_visible_item() {
     let mut app = app_with_queued_message();
     app.queue_and_notify(queued_msg("second"));
@@ -2880,6 +2909,63 @@ fn loaded_metadata_consumption_survives_crash_restore() {
         Some("draft before crash")
     );
     assert_eq!(restored.meta.queued_messages, vec!["queued before crash"]);
+}
+
+#[test]
+fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    assert!(matches!(
+        app.submit_prompt(QueuedMessage {
+            text: "queued through turn error".into(),
+            images: Vec::new(),
+            control: false,
+        }),
+        SubmitOutcome::Queued
+    ));
+    app.queue.set_focus();
+    let Some((_, edited, _)) = app.queue.take_focused_for_edit() else {
+        panic!("queued prompt must enter edit mode");
+    };
+    app.input_box.set_submission(Submission {
+        text: edited.text,
+        images: edited.images,
+        control: edited.control,
+    });
+    assert!(app.queue.text_messages().is_empty());
+
+    app.update(agent_msg(AgentEvent::Error {
+        message: PROVIDER_FAILED_ERR.into(),
+    }));
+
+    assert_eq!(app.queue.text_messages(), vec!["queued through turn error"]);
+    assert!(app.input_box.is_empty());
+    app.save_session();
+    let session_id = app.state.session.id;
+    drain_writer(app, writer);
+
+    let saved = AppSession::load(session_id, &dir).expect("saved session loads");
+    assert_eq!(
+        saved.meta.queued_messages,
+        vec!["queued through turn error"]
+    );
+    assert_eq!(saved.meta.queued_submissions.len(), 1);
+
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
+    let mut restarted = build_app(dir, Arc::clone(&writer));
+    let (shared, receiver) = shared_queue::queue();
+    restarted.queue.set_shared(shared);
+    restarted.apply_loaded_session(saved, &test_model());
+
+    let Some(shared_queue::QueueItem::Message { input, .. }) = receiver.pop() else {
+        panic!("queued prompt must be restored after turn error");
+    };
+    assert_eq!(input.message, "queued through turn error");
+    drain_writer(restarted, writer);
 }
 
 #[test]

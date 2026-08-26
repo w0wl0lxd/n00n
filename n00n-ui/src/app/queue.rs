@@ -22,7 +22,7 @@ pub(crate) enum SubmitOutcome {
 pub(crate) struct MessageQueue {
     shared: Option<QueueSender>,
     focus: Option<usize>,
-    editing: Option<(usize, Delivery)>,
+    editing: Option<(usize, QueueItem)>,
 }
 
 impl MessageQueue {
@@ -55,6 +55,7 @@ impl MessageQueue {
             shared.clear();
         }
         self.focus = None;
+        self.editing = None;
     }
 
     pub(crate) fn remove_submission(&self, submission_id: u64) {
@@ -107,30 +108,44 @@ impl MessageQueue {
 
     pub(crate) fn take_focused_for_edit(&mut self) -> Option<(usize, QueuedMessage, Delivery)> {
         let index = self.focus?;
+        let item = self.shared.as_ref()?.remove_panel(index)?;
         let QueueItem::Message {
             text,
             input,
             delivery,
             ..
-        } = self.shared.as_ref()?.remove_panel(index)?
+        } = &item
         else {
+            self.shared.as_ref()?.insert_panel(index, item);
             return None;
         };
+        let message = QueuedMessage {
+            text: text.clone(),
+            images: input.images.clone(),
+            control: input.control,
+        };
+        let delivery = *delivery;
         self.focus = None;
-        self.editing = Some((index, delivery));
-        Some((
-            index,
-            QueuedMessage {
-                text,
-                images: input.images,
-                control: input.control,
-            },
-            delivery,
-        ))
+        self.editing = Some((index, item));
+        Some((index, message, delivery))
     }
 
     pub(crate) fn editing(&self) -> Option<Delivery> {
-        self.editing.map(|(_, delivery)| delivery)
+        self.editing.as_ref().and_then(|(_, item)| match item {
+            QueueItem::Message { delivery, .. } => Some(*delivery),
+            QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => None,
+        })
+    }
+
+    pub(crate) fn cancel_editing(&mut self) -> bool {
+        let Some((index, item)) = self.editing.take() else {
+            return false;
+        };
+        let Some(shared) = self.shared.as_ref() else {
+            return false;
+        };
+        shared.insert_panel(index, item);
+        true
     }
 
     pub(crate) fn promote_latest_steering(&self) -> bool {

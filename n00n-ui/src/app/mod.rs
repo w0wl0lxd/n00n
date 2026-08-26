@@ -715,6 +715,10 @@ impl App {
         }
         if key::QUIT.matches(key) {
             self.command_palette.close();
+            if self.queue.cancel_editing() {
+                self.input_box.discard();
+                return Some(vec![]);
+            }
             return Some(if !self.is_main_chat() || self.input_box.is_empty() {
                 if self.status == Status::Streaming {
                     return Some(self.handle_cancel());
@@ -1793,9 +1797,12 @@ impl App {
                 }
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message.clone());
+                    if self.queue.cancel_editing() {
+                        self.input_box.discard();
+                    }
+                    self.queue.unfocus();
                     self.status_bar.clear_flash();
                     self.save_session_without_plugin_state_capture();
-                    self.queue.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
                     self.finish_subagents(&DisplayRole::Error, ERROR_TEXT);

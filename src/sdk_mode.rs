@@ -444,6 +444,7 @@ pub struct SdkParams {
     pub cli: Cli,
     pub model: Model,
     pub config: Arc<AgentConfig>,
+    pub project_trusted: bool,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -465,6 +466,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         cli,
         model,
         config,
+        project_trusted,
         permissions_config,
         timeouts,
         openai_options,
@@ -486,8 +488,11 @@ pub fn run(params: SdkParams) -> Result<()> {
     let working_dir = cwd.to_string_lossy().into_owned();
     let (session_id, initial_history, initial_transcript) = resolve_session(&cli, &working_dir)?;
 
-    let (mcp_handle, mcp_config_errors) =
-        smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
+    let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(
+        &cwd,
+        config.mcp_tool_desc_max_chars,
+        project_trusted,
+    ));
     if !mcp_config_errors.is_empty() {
         eprintln!("MCP config error: {mcp_config_errors}");
     }

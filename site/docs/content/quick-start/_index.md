@@ -60,7 +60,7 @@ Both install to `%LOCALAPPDATA%\maki` and add it to your user PATH. Override wit
 ### Living on the edge (main branch)
 
 ```sh
-cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n --bin n00n
+cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n --bins
 ```
 
 Git and smell tooling is included in the `n00n` executable.

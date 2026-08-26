@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use serde::{Deserialize, Serialize};
@@ -185,6 +185,27 @@ pub struct ProviderDef {
     pub models: Vec<ModelDef>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProvidersConfigError {
+    #[error("cannot determine providers configuration path: {source}")]
+    ConfigPath {
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot read provider configuration {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("invalid provider configuration {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: Box<toml::de::Error>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProvidersConfig {
     #[serde(flatten)]
@@ -192,31 +213,46 @@ pub struct ProvidersConfig {
 }
 
 impl ProvidersConfig {
-    /// Read and parse `providers.toml`. Hard-exits on parse errors so a typo
-    /// in tier or pricing surfaces immediately instead of silently dropping
-    /// every provider and starting n00n with an empty registry.
-    pub fn load() -> Self {
-        let path = providers_file_path();
-        if !path.exists() {
-            return Self::default();
-        }
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "cannot read providers.toml");
-                return Self::default();
-            }
-        };
-        match toml::from_str(&content) {
-            Ok(config) => {
-                debug!(path = %path.display(), "loaded providers config");
-                config
-            }
-            Err(e) => {
-                eprintln!("error: invalid {}: {e}", path.display());
+    /// Read and parse `providers.toml`.
+    ///
+    /// # Errors
+    /// Returns a typed error when the configuration path cannot be resolved, the file cannot be
+    /// read as UTF-8, or its TOML is invalid. A missing file produces an empty registry.
+    pub fn load() -> Result<Self, ProvidersConfigError> {
+        let path = providers_file_path()?;
+        Self::load_from(&path)
+    }
+
+    #[must_use]
+    pub fn load_or_exit() -> Self {
+        match Self::load() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("error: {error}");
                 process::exit(BAD_CONFIG_EXIT_CODE);
             }
         }
+    }
+
+    fn load_from(path: &Path) -> Result<Self, ProvidersConfigError> {
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(source) => {
+                return Err(ProvidersConfigError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        };
+        let config = toml::from_str(&content).map_err(|source| ProvidersConfigError::Parse {
+            path: path.to_path_buf(),
+            source: Box::new(source),
+        })?;
+        debug!(path = %path.display(), "loaded providers config");
+        Ok(config)
     }
 
     /// Saves the providers config to disk.
@@ -224,7 +260,9 @@ impl ProvidersConfig {
     /// # Errors
     /// Returns an I/O error if the directory cannot be created or the file cannot be written.
     pub fn save(&self) -> Result<(), std::io::Error> {
-        let path = providers_file_path();
+        let path = providers_file_path().map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, error.to_string())
+        })?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -250,10 +288,10 @@ impl ProvidersConfig {
     }
 }
 
-fn providers_file_path() -> PathBuf {
+fn providers_file_path() -> Result<PathBuf, ProvidersConfigError> {
     paths::config_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(PROVIDERS_FILE)
+        .map(|path| path.join(PROVIDERS_FILE))
+        .map_err(|source| ProvidersConfigError::ConfigPath { source })
 }
 
 #[must_use]
@@ -445,6 +483,28 @@ credential_path = "{ACCOUNT_CREDENTIAL_PATH}"
     fn provider_def_enable_free_models_defaults_none() {
         let def: ProviderDef = toml::from_str(EMPTY_PROVIDER_DEF_TOML).unwrap();
         assert_eq!(def.enable_free_models, None);
+    }
+
+    #[test]
+    fn provider_config_read_rejects_non_utf8_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(PROVIDERS_FILE);
+        fs::write(&path, [0xff]).unwrap();
+
+        let error = ProvidersConfig::load_from(&path).unwrap_err();
+
+        assert!(matches!(error, ProvidersConfigError::Read { .. }));
+    }
+
+    #[test]
+    fn provider_config_read_rejects_unreadable_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(PROVIDERS_FILE);
+        fs::create_dir(&path).unwrap();
+
+        let error = ProvidersConfig::load_from(&path).unwrap_err();
+
+        assert!(matches!(error, ProvidersConfigError::Read { .. }));
     }
 
     const UNKNOWN_TIER_TOML: &str = r#"id = "x"
