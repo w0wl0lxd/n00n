@@ -1539,7 +1539,9 @@ pub fn estimate_tool_tokens(tools: &Value, model_id: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::borrow::Cow;
+    use std::collections::{HashMap, VecDeque};
+    use std::future;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -1557,6 +1559,11 @@ mod tests {
 
     use super::*;
     use crate::permissions::{PermissionAnswer, PermissionManager};
+    use crate::tools::registry::ToolInvocation;
+    use crate::tools::{
+        DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, LocalToolFn, ParseError, Tool,
+        ToolContext, ToolRegistry, ToolSource,
+    };
     use crate::{Envelope, ToolOutput};
     use serde_json::json;
 
@@ -2950,13 +2957,13 @@ mod tests {
             ]);
             let calls = Arc::new(AtomicUsize::new(0));
             let call_counter = Arc::clone(&calls);
-            let mut local = std::collections::HashMap::new();
+            let mut local = HashMap::new();
             local.insert(
                 tool_name.to_owned(),
                 Arc::new(move |_: &Value| {
                     call_counter.fetch_add(1, Ordering::Relaxed);
                     Err(FAILURE.to_owned())
-                }) as crate::tools::LocalToolFn,
+                }) as LocalToolFn,
             );
             let mut history = History::new(Vec::new());
             let (agent, _event_rx) = make_agent(provider, &mut history);
@@ -2990,20 +2997,15 @@ mod tests {
             started: flume::Sender<()>,
         }
 
-        impl crate::tools::registry::ToolInvocation for PendingInvocation {
-            fn start_header(&self) -> crate::tools::HeaderFuture {
-                crate::tools::HeaderFuture::Ready(crate::tools::HeaderResult::plain(
-                    "pending subagent".into(),
-                ))
+        impl ToolInvocation for PendingInvocation {
+            fn start_header(&self) -> HeaderFuture {
+                HeaderFuture::Ready(HeaderResult::plain("pending subagent".into()))
             }
 
-            fn execute(
-                self: Box<Self>,
-                _ctx: &crate::tools::ToolContext,
-            ) -> crate::tools::ExecFuture<'_> {
+            fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
                 Box::pin(async move {
                     let _ = self.started.send_async(()).await;
-                    std::future::pending().await
+                    future::pending().await
                 })
             }
         }
@@ -3012,15 +3014,12 @@ mod tests {
             started: flume::Sender<()>,
         }
 
-        impl crate::tools::Tool for PendingTask {
+        impl Tool for PendingTask {
             fn name(&self) -> &'static str {
                 "task"
             }
 
-            fn description(
-                &self,
-                _ctx: &crate::tools::DescriptionContext,
-            ) -> std::borrow::Cow<'_, str> {
+            fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
                 "pending task".into()
             }
 
@@ -3028,11 +3027,7 @@ mod tests {
                 serde_json::json!({"type": "object"})
             }
 
-            fn parse(
-                &self,
-                _input: &Value,
-            ) -> Result<Box<dyn crate::tools::registry::ToolInvocation>, crate::tools::ParseError>
-            {
+            fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
                 Ok(Box::new(PendingInvocation {
                     started: self.started.clone(),
                 }))
@@ -3045,14 +3040,14 @@ mod tests {
                 text_response(StopReason::EndTurn),
             ]);
             let (started_tx, started_rx) = flume::bounded(1);
-            let registry = crate::tools::ToolRegistry::new();
-            let tool: Arc<dyn crate::tools::Tool> = Arc::new(PendingTask {
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(PendingTask {
                 started: started_tx,
             });
             registry
                 .register(
                     &tool,
-                    &crate::tools::ToolSource::Lua {
+                    &ToolSource::Lua {
                         plugin: "task".into(),
                     },
                 )

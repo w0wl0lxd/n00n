@@ -736,7 +736,13 @@ fn limit_reached(committed: usize, reserved: usize, limit: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
+
+    const DEPTH_RECOVERY: &str = "session lineage depth limit reached (4); retry without a background session or increase agent.max_depth";
+    const TOTAL_DESCENDANTS_RECOVERY: &str = "session lineage retained descendant limit reached (16); retry without background, reuse or delete a completed descendant in /sessions, or increase agent.max_total_descendants";
+    const ACTIVE_DESCENDANTS_RECOVERY: &str = "session lineage active descendant limit reached (8); retry without background, wait for or stop an active descendant, or increase agent.max_active_descendants";
 
     fn id(value: u16) -> n00nId {
         format!("00000000-0000-7000-8000-{value:012x}")
@@ -769,20 +775,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lineage_limit_errors_explain_model_recovery() {
-        let total = LineageError::TotalDescendantsExceeded { limit: 16 }.to_string();
-        assert!(total.contains("retry without background"));
-        assert!(total.contains("/sessions"));
-        assert!(total.contains("agent.max_total_descendants"));
-
-        let active = LineageError::ActiveDescendantsExceeded { limit: 8 }.to_string();
-        assert!(active.contains("wait for or stop an active descendant"));
-        assert!(active.contains("agent.max_active_descendants"));
-
-        let depth = LineageError::DepthExceeded { limit: 4 }.to_string();
-        assert!(depth.contains("retry without a background session"));
-        assert!(depth.contains("agent.max_depth"));
+    #[test_case(LineageError::DepthExceeded { limit: 4 }, DEPTH_RECOVERY ; "depth")]
+    #[test_case(
+        LineageError::TotalDescendantsExceeded { limit: 16 },
+        TOTAL_DESCENDANTS_RECOVERY;
+        "total descendants"
+    )]
+    #[test_case(
+        LineageError::ActiveDescendantsExceeded { limit: 8 },
+        ACTIVE_DESCENDANTS_RECOVERY;
+        "active descendants"
+    )]
+    fn lineage_limit_errors_explain_model_recovery(error: LineageError, expected: &str) {
+        assert_eq!(error.to_string(), expected);
     }
 
     #[test]
