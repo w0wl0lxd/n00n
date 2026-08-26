@@ -3,6 +3,7 @@
 mod cli;
 mod cmd;
 mod print;
+mod project_trust;
 mod sdk_mode;
 mod setup;
 mod update;

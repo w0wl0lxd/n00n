@@ -1,4 +1,6 @@
 local pipeline_args = require("pipeline_args")
+local run_store = require("run_store")
+local saga_runner = require("saga_runner")
 
 local failures = {}
 
@@ -182,13 +184,26 @@ case("workflow_saga_compensations_run_in_reverse_on_error", function()
   assert(tostring(result):find("agent failed", 1, true), "original error must propagate")
   eq(#compensations, 2, "both compensations must be registered")
 
-  -- Simulate the saga rollback handler: run compensations LIFO.
-  for i = #compensations, 1, -1 do
-    compensations[i]()
-  end
+  local final_err = saga_runner.run({ compensations = compensations, error_handlers = {} }, result)
+  assert(tostring(final_err):find("agent failed", 1, true), "original error must propagate")
   eq(#env.ran, 2, "both compensations ran")
   eq(env.ran[1], "second", "second compensation must run first (LIFO)")
   eq(env.ran[2], "first", "first compensation must run second")
+end)
+
+case("workflow_saga_on_error_runs_without_compensations", function()
+  local calls = 0
+  local result = saga_runner.run({
+    compensations = {},
+    error_handlers = {
+      function(err)
+        eq(err, "agent failed")
+        calls = calls + 1
+      end,
+    },
+  }, "agent failed")
+  eq(result, "agent failed", "original error must propagate")
+  eq(calls, 1, "on_error handler must run exactly once")
 end)
 
 case("workflow_schema_validator_available", function()
@@ -337,6 +352,22 @@ case("workflow_json_encode_reports_errors", function()
   local encoded, err = n00n.json.encode(function() end)
   eq(encoded, nil, "unsupported values must not produce JSON")
   assert(err ~= nil, "JSON encoding failures must be returned")
+end)
+
+case("workflow_metadata_is_encoded_before_journal_creation", function()
+  local fixture = n00n.fs.joinpath(n00n.env.state_dir(), "workflow-run-store-test")
+  n00n.fs.rm(fixture, { recursive = true })
+  assert(n00n.fs.mkdir(fixture, { parents = true }))
+  local journal_path = n00n.fs.joinpath(fixture, "journal.jsonl")
+  local ok, err = run_store.create(fixture, journal_path, {
+    name = "invalid",
+    description = function() end,
+  })
+  eq(ok, nil)
+  assert(err:find("failed to encode workflow metadata", 1, true), err)
+  local journal = n00n.fs.metadata(journal_path)
+  eq(journal, nil, "invalid metadata must not create a journal")
+  assert(n00n.fs.rm(fixture, { recursive = true }))
 end)
 
 case("pipeline_accepts_variadic_stages_with_optional_trailing_opts", function()

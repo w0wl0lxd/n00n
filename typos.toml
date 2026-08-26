@@ -30,6 +30,7 @@ extend-ignore-re = [
 
 [default.extend-identifiers]
 inh = "inh"
+WRONLY = "WRONLY"
 
 [default.extend-words]
 unparseable = "unparseable"

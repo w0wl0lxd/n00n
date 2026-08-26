@@ -10,6 +10,7 @@ use super::error::McpError;
 use n00n_config::{global_config_dir, is_valid_server_name};
 
 const MCP_CONFIG_FILE: &str = "mcp.toml";
+const PROJECT_DIR: &str = ".n00n";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 300_000;
 
@@ -310,16 +311,26 @@ fn merge_config(merged: &mut McpConfig, errors: &mut McpConfigErrors, path: &Pat
 }
 
 #[must_use]
-pub fn load_config(cwd: &Path) -> (McpConfig, McpConfigErrors) {
+pub fn load_config(cwd: &Path, project_trusted: bool) -> (McpConfig, McpConfigErrors) {
+    let global_path = global_config_dir().map(|dir| dir.join(MCP_CONFIG_FILE));
+    load_config_inner(cwd, global_path.as_deref(), project_trusted)
+}
+
+fn load_config_inner(
+    cwd: &Path,
+    global_path: Option<&Path>,
+    project_trusted: bool,
+) -> (McpConfig, McpConfigErrors) {
     let mut merged = McpConfig::default();
     let mut errors = McpConfigErrors::new(cwd.to_path_buf());
 
-    if let Some(global_dir) = global_config_dir() {
-        let global_path = global_dir.join(MCP_CONFIG_FILE);
-        merge_config(&mut merged, &mut errors, &global_path);
+    if let Some(path) = global_path {
+        merge_config(&mut merged, &mut errors, path);
     }
-    let project_path = cwd.join(".n00n").join(MCP_CONFIG_FILE);
-    merge_config(&mut merged, &mut errors, &project_path);
+    if project_trusted {
+        let project_path = cwd.join(PROJECT_DIR).join(MCP_CONFIG_FILE);
+        merge_config(&mut merged, &mut errors, &project_path);
+    }
     (merged, errors)
 }
 
@@ -651,6 +662,25 @@ enabled = true
         assert!(errors.is_empty());
         assert_eq!(merged.defer_tools, expected);
         assert_eq!(merged.origins["srv"], project, "later config must win");
+    }
+
+    #[test_case(false, false ; "untrusted_project_ignored")]
+    #[test_case(true, true ; "trusted_project_loaded")]
+    fn project_config_respects_trust(project_trusted: bool, expected_loaded: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join(PROJECT_DIR);
+        fs::create_dir(&project_dir).unwrap();
+        fs::write(
+            project_dir.join(MCP_CONFIG_FILE),
+            "[mcp.project]\ncommand = [\"echo\"]\n",
+        )
+        .unwrap();
+
+        let (config, errors) = load_config_inner(dir.path(), None, project_trusted);
+
+        assert!(errors.is_empty());
+        assert_eq!(config.mcp.contains_key("project"), expected_loaded);
+        assert_eq!(config.is_empty(), !expected_loaded);
     }
 
     #[test]

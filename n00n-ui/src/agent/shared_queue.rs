@@ -180,12 +180,16 @@ pub(crate) fn queue() -> (QueueSender, QueueReceiver) {
 }
 
 impl QueueSender {
+    fn wake(&self) {
+        let _ = self.notify_tx.try_send(());
+    }
+
     pub(crate) fn push(&self, entry: QueueItem) {
         let mut items = lock(&self.items);
         items.push_back(entry);
         self.generation.fetch_add(1, Ordering::Release);
         drop(items);
-        let _ = self.notify_tx.try_send(());
+        self.wake();
     }
 
     pub(crate) fn push_front_if_missing(&self, entry: QueueItem) {
@@ -202,7 +206,7 @@ impl QueueSender {
         items.push_front(entry);
         self.generation.fetch_add(1, Ordering::Release);
         drop(items);
-        let _ = self.notify_tx.try_send(());
+        self.wake();
     }
 
     fn panel_index(items: &VecDeque<QueueItem>, index: usize) -> Option<usize> {
@@ -217,7 +221,11 @@ impl QueueSender {
     pub(crate) fn remove_panel(&self, index: usize) -> Option<QueueItem> {
         let mut items = lock(&self.items);
         let item_index = Self::panel_index(&items, index)?;
-        items.remove(item_index)
+        let removed = items.remove(item_index);
+        self.generation.fetch_add(1, Ordering::Release);
+        drop(items);
+        self.wake();
+        removed
     }
 
     pub(crate) fn insert_panel(&self, index: usize, entry: QueueItem) {
@@ -225,6 +233,8 @@ impl QueueSender {
         let item_index = Self::panel_index(&items, index).unwrap_or_else(|| items.len());
         items.insert(item_index, entry);
         self.generation.fetch_add(1, Ordering::Release);
+        drop(items);
+        self.wake();
     }
 
     pub(crate) fn promote_latest_steering(&self) -> bool {
@@ -242,6 +252,8 @@ impl QueueSender {
         };
         *delivery = Delivery::Immediate;
         self.generation.fetch_add(1, Ordering::Release);
+        drop(items);
+        self.wake();
         true
     }
 
@@ -262,7 +274,7 @@ impl QueueSender {
         let mut items = lock(&self.items);
         let drained = std::mem::take(&mut *items);
         drop(items);
-        let _ = self.notify_tx.try_send(());
+        self.wake();
         drained.into()
     }
 
@@ -281,7 +293,7 @@ impl QueueSender {
         let removed = items.len() != before;
         drop(items);
         if removed {
-            let _ = self.notify_tx.try_send(());
+            self.wake();
         }
     }
 
@@ -301,7 +313,7 @@ impl QueueSender {
         ready.store(true, Ordering::Release);
         self.generation.fetch_add(1, Ordering::Release);
         drop(items);
-        let _ = self.notify_tx.try_send(());
+        self.wake();
         true
     }
 
@@ -533,6 +545,16 @@ mod tests {
     }
 
     #[test]
+    fn remove_panel_advances_generation() {
+        let (tx, _rx) = queue();
+        tx.push(msg(false));
+        let generation = tx.generation.load(Ordering::Acquire);
+
+        assert!(tx.remove_panel(0).is_some());
+        assert!(tx.generation.load(Ordering::Acquire) > generation);
+    }
+
+    #[test]
     fn direct_tools_are_available_for_persistence() {
         let (tx, _rx) = queue();
         tx.push(QueueItem::DirectTool {
@@ -546,6 +568,40 @@ mod tests {
             vec![("task".into(), serde_json::json!({"prompt": "ship"}))]
         );
         assert!(tx.queued_inputs().is_empty());
+    }
+
+    fn assert_single_wake(rx: &QueueReceiver) {
+        assert!(rx.notify_rx.try_recv().is_ok());
+        assert!(rx.notify_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatchable_queue_mutations_coalesce_receiver_wakes() {
+        let (tx, rx) = queue();
+        tx.insert_panel(0, msg(false));
+        tx.insert_panel(1, msg(false));
+        assert_single_wake(&rx);
+
+        let (tx, rx) = queue();
+        let blocker = msg(false);
+        if let QueueItem::Message { ready, .. } = &blocker {
+            ready.store(false, Ordering::Release);
+        }
+        tx.push(blocker);
+        tx.push(msg(false));
+        assert_single_wake(&rx);
+        assert!(tx.remove_panel(0).is_some());
+        assert_single_wake(&rx);
+
+        let (tx, rx) = queue();
+        let mut steering = msg(false);
+        if let QueueItem::Message { delivery, .. } = &mut steering {
+            *delivery = Delivery::Steering;
+        }
+        tx.push(steering);
+        assert_single_wake(&rx);
+        assert!(tx.promote_latest_steering());
+        assert_single_wake(&rx);
     }
 
     #[test]

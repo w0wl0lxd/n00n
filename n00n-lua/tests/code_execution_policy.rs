@@ -9,7 +9,8 @@
 //! gates both `describe` text and the handler's fn-map, so what the model
 //! sees is exactly what the interpreter can call.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Once};
 
 use n00n_agent::AgentMode;
 use n00n_agent::tools::test_support::stub_ctx;
@@ -26,6 +27,8 @@ const INTERP_ECHO_SIG: &str =
 const WF_TASK_SIG: &str = "- wf_task(prompt: str, model_tier?: str)";
 const SUB_TOOL_SIG: &str = "- sub_tool()";
 const INVALID_TIMEOUT_ERROR: &str = "error: timeout must be between 5 and 300 seconds";
+
+static INTERPRETER_WORKER_SETUP: Once = Once::new();
 
 fn fixture_plugin() -> String {
     format!(
@@ -73,6 +76,12 @@ n00n.api.register_tool({{
 }
 
 fn setup() -> (Arc<ToolRegistry>, PluginHost) {
+    INTERPRETER_WORKER_SETUP.call_once(|| {
+        n00n_lua::test_support::set_interpreter_worker_executable(PathBuf::from(env!(
+            "CARGO_BIN_EXE_n00n-interpreter-worker"
+        )))
+        .expect("interpreter worker override should be installed once");
+    });
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     host.load_source("code_execution", CODE_EXECUTION_SRC)

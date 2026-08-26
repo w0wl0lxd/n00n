@@ -7,10 +7,10 @@ pub(crate) mod shared;
 
 use std::fmt::Write;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use flume::Sender;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
+use futures_lite::io::BufReader;
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use n00n_storage::id::SessionRef;
 use serde::Deserialize;
@@ -24,7 +24,7 @@ use crate::{
     StreamResponse, System, UsageLimit,
 };
 
-use super::KeyPool;
+use super::{KeyPool, SseStream};
 
 const API_VERSION: &str = "2023-06-01";
 const API_ORIGIN: &str = "https://api.anthropic.com";
@@ -498,24 +498,17 @@ pub(crate) async fn parse_sse(
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
     let reader = BufReader::new(response.into_body());
-    let mut lines = reader.lines();
+    let mut stream = SseStream::new(reader, stream_timeout);
     let mut parser = shared::EventParser::new();
-    let mut current_event = String::new();
-    let mut deadline = Instant::now() + stream_timeout;
 
-    while let Some(line) = super::next_sse_line(&mut lines, &mut deadline, stream_timeout).await? {
-        if let Some(rest) = line.strip_prefix("event:") {
-            current_event = rest.strip_prefix(' ').unwrap_or_else(|| rest).to_string();
-            continue;
-        }
-
-        let data = match line.strip_prefix("data:") {
-            Some(d) => d.strip_prefix(' ').unwrap_or_else(|| d),
-            None => continue,
+    while let Some(event) = stream.next_event().await? {
+        #[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
+        let event_type = match event.event.as_deref() {
+            Some(event_type) => event_type,
+            None => "",
         };
-
         if parser
-            .process(&current_event, data, event_tx)
+            .process(event_type, &event.data, event_tx)
             .await?
             .is_break()
         {
@@ -980,7 +973,7 @@ data: {\"type\":\"message_stop\"}\n";
     }
 
     #[test]
-    fn parse_sse_malformed_tool_json_yields_empty_object() {
+    fn parse_sse_malformed_tool_json_is_rejected() {
         smol::block_on(async {
             let sse_data = "\
 event: message_start\n\
@@ -1002,14 +995,42 @@ event: message_stop\n\
 data: {\"type\":\"message_stop\"}\n";
 
             let (tx, _rx) = flume::unbounded();
-            let resp = parse_sse(mock_response(sse_data.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+            let error = parse_sse(mock_response(sse_data.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
                 .await
-                .unwrap();
+                .unwrap_err();
 
-            let tools: Vec<_> = resp.message.tool_uses().collect();
-            assert_eq!(tools.len(), 1);
-            assert_eq!(tools[0].1, "read");
-            assert_eq!(*tools[0].2, Value::Object(Default::default()));
+            assert!(matches!(error, AgentError::Api { status: 400, .. }));
+            assert!(
+                error
+                    .to_string()
+                    .contains("malformed streamed tool arguments")
+            );
+        });
+    }
+
+    #[test]
+    fn parse_sse_rejects_tool_arguments_without_content_block_stop() {
+        smol::block_on(async {
+            let sse_data = "\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_2\",\"name\":\"read\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n";
+            let (tx, _rx) = flume::unbounded();
+            let error = parse_sse(mock_response(sse_data.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(error, AgentError::Api { status: 400, .. }));
+            assert!(
+                error
+                    .to_string()
+                    .contains("truncated streamed tool arguments")
+            );
         });
     }
 

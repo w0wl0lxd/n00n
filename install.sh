@@ -39,4 +39,5 @@ tar -xzf "$tmp/$asset" -C "$tmp"
 
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$tmp/n00n" "$INSTALL_DIR/n00n"
+install -m 0755 "$tmp/n00n-interpreter-worker" "$INSTALL_DIR/n00n-interpreter-worker"
 echo "Installed n00n to ${INSTALL_DIR}"

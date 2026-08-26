@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use async_lock::RwLock;
 use flume::Sender;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
+use futures_lite::io::BufReader;
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use n00n_storage::id::{SessionRef, n00nId};
 use serde::Deserialize;
@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::anthropic::shared::stream_truncated_error;
-use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
+use super::{KeyPool, ResolvedAuth, SseStream, http_client};
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const ENV_VAR: &str = "GEMINI_API_KEY";
@@ -981,20 +981,14 @@ async fn parse_sse(
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
     let reader = BufReader::new(response.into_body());
-    let mut lines = reader.lines();
+    let mut stream = SseStream::new(reader, stream_timeout);
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
-    let mut deadline = Instant::now() + stream_timeout;
 
-    while let Some(line) = next_sse_line(&mut lines, &mut deadline, stream_timeout).await? {
-        let data = match line.strip_prefix("data:") {
-            Some(d) => d.strip_prefix(' ').unwrap_or_else(|| d),
-            _ => continue,
-        };
-
-        let chunk: SseResponse = match serde_json::from_str(data) {
+    while let Some(event) = stream.next_event().await? {
+        let chunk: SseResponse = match serde_json::from_str(&event.data) {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "failed to parse Gemini SSE chunk");

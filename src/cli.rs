@@ -165,6 +165,10 @@ pub struct Cli {
     #[command(flatten)]
     pub permission_flags: PermissionFlags,
 
+    /// Trust and execute project-local .n00n configuration
+    #[arg(long, global = true)]
+    pub trust_project: bool,
+
     /// Permission prompt tool (accepted for compat, used in SDK mode)
     #[arg(long, hide = true)]
     pub permission_prompt_tool: Option<String>,
