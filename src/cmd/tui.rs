@@ -84,14 +84,15 @@ fn discover_commands(disable: bool) -> Vec<CustomCommand> {
 
 fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config> {
     let raw_config = plugin_host
-        .load_init_files(cwd)
+        .load_init_files(cwd, cli.trust_project)
         .context("load init.lua files")?;
 
     let mut config = raw_config
         .unwrap_or_else(Default::default)
         .into_config(cli.plugin_flags.no_rtk)
         .context("invalid config")?;
-    config.permissions = load_permissions(cwd);
+    config.permissions = load_permissions(cwd, cli.trust_project);
+    config.project_trusted = cli.trust_project;
 
     if cli.permission_flags.yolo || config.always_yolo {
         config.permissions.yolo = true;
@@ -107,7 +108,8 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
         config.agent.disabled_tools.extend(
             cli.disallowed_tools
                 .iter()
-                .filter_map(|t| normalize_tool_name(t).ok()),
+                .map(|t| normalize_tool_name(t))
+                .collect::<Result<Vec<_>>>()?,
         );
     }
     config.agent.fusion.enabled = super::resolve_fusion_opt_in(
@@ -234,7 +236,7 @@ fn build_stack(
     }
 
     let commands = discover_commands(cli.plugin_flags.no_commands);
-    let providers_toml = ProvidersConfig::load();
+    let providers_toml = ProvidersConfig::load_or_exit();
 
     let model_result = setup::resolve_model_with_fusion(
         cli.model.as_deref(),
@@ -368,6 +370,7 @@ fn run_sdk_mode(
         cli,
         model: stack.model,
         config: Arc::new(stack.config.agent),
+        project_trusted: stack.config.project_trusted,
         permissions_config: stack.config.permissions,
         timeouts,
         openai_options,
@@ -394,6 +397,7 @@ fn run_print_mode(
             format: cli.output_format,
             verbose: cli.run_flags.verbose,
             config: stack.config.agent,
+            project_trusted: stack.config.project_trusted,
             permissions_config: stack.config.permissions,
             timeouts,
             openai_options,
@@ -466,6 +470,7 @@ fn run_ui_loop(
                 startup_warnings: std::mem::take(&mut warnings),
                 storage: storage.clone(),
                 config: stack.config.agent.clone(),
+                project_trusted: stack.config.project_trusted,
                 ui_config: stack.config.ui.clone(),
                 input_history_size: stack.config.storage.input_history_size,
                 retention_budget: stack.config.storage.retention_budget(),
@@ -580,6 +585,7 @@ fn warn_stale_config_toml(cwd: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use color_eyre::eyre::eyre;
     use n00n_config::RawConfig;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -624,6 +630,28 @@ mod tests {
         RawConfig::default()
             .into_config(false)
             .expect("default config")
+    }
+
+    #[test]
+    fn invalid_disallowed_tool_errors_like_invalid_allowed_tool() {
+        const ALLOWED_ACCEPTED: &str = "invalid allowed tool was accepted";
+        const DISALLOWED_ACCEPTED: &str = "invalid disallowed tool was accepted";
+
+        let directory = tempfile::tempdir().expect("temporary config directory");
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).expect("plugin host");
+        let allowed = Cli::parse_from(["n00n", "--allowed-tools", "NotATool"]);
+        let disallowed = Cli::parse_from(["n00n", "--disallowed-tools", "NotATool"]);
+
+        let allowed_error = match load_config(&host, &allowed, directory.path()) {
+            Ok(_) => panic!("{ALLOWED_ACCEPTED}"),
+            Err(error) => error.to_string(),
+        };
+        let disallowed_error = match load_config(&host, &disallowed, directory.path()) {
+            Ok(_) => panic!("{DISALLOWED_ACCEPTED}"),
+            Err(error) => error.to_string(),
+        };
+
+        assert_eq!(disallowed_error, allowed_error);
     }
 
     #[test]

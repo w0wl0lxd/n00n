@@ -47,6 +47,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 async-process = { workspace = true }
 url = { workspace = true }
 
+[target.'cfg(all(unix, not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))))'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 test-case = { workspace = true }
 tempfile = { workspace = true }

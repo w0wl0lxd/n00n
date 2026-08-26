@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -18,6 +17,7 @@ use serde_json::Value;
 use super::error::McpError;
 use super::oauth;
 use super::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use super::response::{ResponseReadError, read_bounded_text};
 use super::transport::{BoxFuture, McpTransport};
 use tracing::{info, warn};
 
@@ -29,6 +29,7 @@ const PROTOCOL_VERSION_KEY: &str = "protocolVersion";
 const CT_JSON: &str = "application/json";
 const CT_SSE: &str = "text/event-stream";
 const ACCEPT_VALUE: &str = "application/json, text/event-stream";
+const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct HttpTransport {
     name: Arc<str>,
@@ -135,7 +136,9 @@ impl HttpTransport {
         }
 
         if let Some(auth) = auth {
-            builder = builder.header(AUTHORIZATION, auth);
+            builder = builder
+                .header(AUTHORIZATION, auth)
+                .redirect_policy(RedirectPolicy::None);
         }
 
         for (name, value) in &self.headers {
@@ -153,26 +156,29 @@ impl HttpTransport {
         http_req: Request<Vec<u8>>,
     ) -> Result<(StatusCode, HeaderMap, String), McpError> {
         let server = self.server();
-        smol::unblock({
-            let client = self.client.clone();
-            move || {
-                let mut response = client.send(http_req).map_err(|e| McpError::WriteFailed {
+        let mut response =
+            self.client
+                .send_async(http_req)
+                .await
+                .map_err(|error| McpError::WriteFailed {
                     server: server.clone(),
-                    reason: e.to_string(),
+                    reason: error.to_string(),
                 })?;
-                let status = response.status();
-                let headers = response.headers().clone();
-                let mut body = String::new();
-                response.body_mut().read_to_string(&mut body).map_err(|e| {
-                    McpError::InvalidResponse {
-                        server,
-                        reason: e.to_string(),
-                    }
-                })?;
-                Ok((status, headers, body))
-            }
-        })
-        .await
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = read_bounded_text(response.body_mut(), MAX_HTTP_RESPONSE_BYTES)
+            .await
+            .map_err(|error| match error {
+                ResponseReadError::TooLarge { limit_bytes } => McpError::ResponseTooLarge {
+                    server,
+                    limit_bytes,
+                },
+                other => McpError::InvalidResponse {
+                    server,
+                    reason: other.to_string(),
+                },
+            })?;
+        Ok((status, headers, body))
     }
 
     fn parse_rpc_response(&self, body_str: &str, is_sse: bool, id: u64) -> Result<Value, McpError> {
@@ -372,8 +378,7 @@ impl McpTransport for HttpTransport {
                 return;
             };
 
-            let client = self.client.clone();
-            let _ = smol::unblock(move || client.send(req)).await;
+            let _ = self.client.send_async(req).await;
         })
     }
 
@@ -471,6 +476,16 @@ mod tests {
     where
         F: Fn(&Req) -> (u16, String) + Send + 'static,
     {
+        spawn_server_with_challenge(make_handler, true)
+    }
+
+    fn spawn_server_with_challenge<F>(
+        make_handler: impl FnOnce(String) -> F,
+        include_authenticate: bool,
+    ) -> String
+    where
+        F: Fn(&Req) -> (u16, String) + Send + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handler = make_handler(base.clone());
@@ -522,8 +537,13 @@ mod tests {
                     protocol,
                 });
 
+                let authenticate = if status == 401 && include_authenticate {
+                    "WWW-Authenticate: Bearer error=\"invalid_token\"\r\n"
+                } else {
+                    ""
+                };
                 let response = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{authenticate}Content-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
                     resp_body.len(),
                 );
 
@@ -701,6 +721,40 @@ mod tests {
         let tokens = saved.tokens.unwrap();
         assert_eq!(tokens.access, "new-token");
         assert_eq!(tokens.refresh, "r1");
+    }
+
+    #[test]
+    fn refreshes_token_once_for_unlabelled_401() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let protected_hits = Arc::new(AtomicUsize::new(0));
+        let server_hits = Arc::clone(&protected_hits);
+
+        let base = spawn_server_with_challenge(
+            |base| {
+                move |req: &Req| {
+                    if let Some(resp) = oauth_routes(&base, req) {
+                        return resp;
+                    }
+                    server_hits.fetch_add(1, Ordering::SeqCst);
+                    if req.auth.as_deref() == Some(NEW_BEARER) {
+                        (200, rpc_ok(1))
+                    } else {
+                        (401, String::new())
+                    }
+                }
+            },
+            false,
+        );
+
+        let url = format!("{base}/mcp");
+        save_mcp_auth(&storage, "srv", &stored_auth(&url, "old-token", "r1")).unwrap();
+
+        let transport = transport_with(&url, &HashMap::new(), Some(storage));
+        let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
+
+        assert_eq!(result, json!({"ok": true}));
+        assert_eq!(protected_hits.load(Ordering::SeqCst), 2);
     }
 
     #[test]

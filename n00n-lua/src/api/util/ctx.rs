@@ -10,7 +10,7 @@ use mlua::{Function, LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value a
 use n00n_agent::agent::LoadedInstructions;
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::{
-    Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext, ToolLive,
+    FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext, ToolLive,
 };
 use n00n_config::{AgentConfig, ToolOutputLines};
 
@@ -61,7 +61,6 @@ impl From<&ToolContext> for AgentContext {
     fn from(ctx: &ToolContext) -> Self {
         let mut c = ctx.clone();
         c.loaded_instructions = LoadedInstructions::new();
-        c.deadline = Deadline::None;
         c.tool_output_lines = ToolOutputLines::default();
         c.local_tools = LocalTools::default();
         Self(c)
@@ -683,8 +682,8 @@ mod tests {
     use std::collections::HashMap;
 
     use n00n_agent::AgentMode;
-    use n00n_agent::tools::LocalToolFn;
     use n00n_agent::tools::test_support::stub_ctx_with;
+    use n00n_agent::tools::{Deadline, LocalToolFn};
 
     use super::*;
 
@@ -714,13 +713,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_context_keeps_tool_use_id_and_identity_and_resets_per_call_state() {
+    fn agent_context_keeps_tool_use_id_identity_and_deadline_and_resets_other_state() {
         let ctx = populated_ctx();
         let expected_identity = ctx.identity.clone();
+        let Deadline::At(expected_deadline) = ctx.deadline else {
+            panic!("fixture deadline missing");
+        };
         let agent = AgentContext::from(&ctx);
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
         assert_eq!(agent.identity, expected_identity);
-        assert!(matches!(agent.deadline, Deadline::None));
+        let Deadline::At(actual_deadline) = agent.deadline else {
+            panic!("nested deadline missing");
+        };
+        assert_eq!(actual_deadline, expected_deadline);
         assert_eq!(agent.tool_output_lines, ToolOutputLines::default());
         assert!(agent.local_tools.is_empty());
         assert!(

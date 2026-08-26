@@ -9,6 +9,8 @@ pub(crate) mod r#async;
 pub(crate) mod autocmd;
 pub(crate) mod base64;
 pub(crate) mod codegraph;
+#[cfg(unix)]
+pub(crate) mod confined_fs;
 pub(crate) mod env;
 pub(crate) mod firecrawl;
 pub(crate) mod r#fn;

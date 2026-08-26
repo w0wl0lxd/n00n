@@ -270,7 +270,11 @@ impl PluginHost {
     ///
     /// # Errors
     /// Returns an error if init files cannot be read or parsed.
-    pub fn load_init_files(&self, cwd: &Path) -> Result<Option<RawConfig>, PluginError> {
+    pub fn load_init_files(
+        &self,
+        cwd: &Path,
+        project_trusted: bool,
+    ) -> Result<Option<RawConfig>, PluginError> {
         if self.inner.is_none() {
             return Ok(None);
         }
@@ -282,7 +286,9 @@ impl PluginHost {
                 break;
             }
         }
-        self.run_init_file(&cwd.join(".n00n/init.lua"), "project/init.lua", &mut merged)?;
+        if project_trusted {
+            self.run_init_file(&cwd.join(".n00n/init.lua"), "project/init.lua", &mut merged)?;
+        }
 
         Ok(merged)
     }
@@ -1458,7 +1464,7 @@ mod tests {
         }
         let host = PluginHost::disabled();
         let config = host
-            .load_init_files(dir.path())
+            .load_init_files(dir.path(), true)
             .expect("disabled host skips init");
         assert!(config.is_none(), "disabled host returns no config");
     }
