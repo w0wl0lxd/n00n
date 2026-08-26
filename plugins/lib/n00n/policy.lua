@@ -1,4 +1,6 @@
 -- Policy enforcement wrapper for tool calls.
+local policy_store = require("n00n.policy_store")
+
 local M = {}
 
 local TOOL_ALIASES = {
@@ -64,28 +66,20 @@ local function policies_path()
 end
 
 local function load_policies()
-  local path, err = policies_path()
+  local path, path_err = policies_path()
   if not path then
-    return { version = 1, rules = {} }
+    return nil, path_err
   end
-
-  local content, read_err = n00n.fs.read(path)
-  if not content then
-    return { version = 1, rules = {} }
-  end
-
-  local decoded, dec_err = n00n.json.decode(content)
-  if not decoded then
-    return { version = 1, rules = {} }
-  end
-
-  return decoded
+  return policy_store.load(path)
 end
 
 function M.evaluate_policy(agent_id, session_type, tags, tool_name)
   tool_name = canonical_tool_name(tool_name)
-  local policies = load_policies()
-  if not policies or not policies.rules or #policies.rules == 0 then
+  local policies, load_err = load_policies()
+  if not policies then
+    return { allowed = false, reason = "policy unavailable: " .. tostring(load_err) }
+  end
+  if #policies.rules == 0 then
     return { allowed = true }
   end
 

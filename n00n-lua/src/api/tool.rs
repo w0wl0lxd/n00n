@@ -1554,9 +1554,13 @@ impl ToolCallReply {
         };
         let state = match t.get::<LuaValue>("state") {
             Ok(LuaValue::Nil) | Err(_) => None,
-            Ok(v) => crate::api::util::convert::lua_to_json(lua, &v)
-                .inspect_err(|e| tracing::warn!(error = %e, "tool state is not JSON-serializable, dropping it"))
-                .ok(),
+            Ok(v) => match crate::api::util::state_convert::lua_to_json(lua, &v) {
+                Ok(state) => Some(state),
+                Err(error) => {
+                    result = Err(format!("tool state is not JSON-serializable: {error}"));
+                    None
+                }
+            },
         };
         let telemetry = match extract_telemetry(t) {
             Ok(telemetry) => telemetry,
@@ -1849,6 +1853,21 @@ mod tests {
         assert!(reply.image.is_none());
         let err = reply.result.expect_err("malformed image must error");
         assert!(err.contains(expected), "got: {err}");
+    }
+
+    #[test]
+    fn malformed_non_nil_state_reply_fails_the_call() {
+        let lua = Lua::new();
+        let val: LuaValue = lua
+            .load("return { llm_output = 'done', state = function() end }")
+            .eval()
+            .unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &val);
+
+        assert!(reply.state.is_none());
+        let error = reply.result.expect_err("malformed state must error");
+        assert!(error.contains("tool state"), "got: {error}");
     }
 
     fn invocation(input: Value) -> LuaToolInvocation {

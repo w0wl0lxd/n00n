@@ -3,6 +3,7 @@
 -- on-disk policy.json stays JSON. No raw JSON dumps in the TUI body.
 
 local helpers = require("agent_control_helpers")
+local policy_store = require("n00n.policy_store")
 local validate_id = helpers.validate_id
 local agent_line = helpers.agent_line
 
@@ -62,19 +63,11 @@ local function policies_path()
 end
 
 local function load_policies()
-  local path = policies_path()
+  local path, path_err = policies_path()
   if not path then
-    return { version = 1, rules = {} }
+    return nil, path_err
   end
-  local content = n00n.fs.read(path)
-  if not content then
-    return { version = 1, rules = {} }
-  end
-  local decoded = n00n.json.decode(content)
-  if not decoded then
-    return { version = 1, rules = {} }
-  end
-  return decoded
+  return policy_store.load(path)
 end
 
 local function save_policies(policies)
@@ -82,7 +75,10 @@ local function save_policies(policies)
   if not dir then
     return nil, err
   end
-  n00n.fs.mkdir(dir, { parents = true })
+  local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
+  if not mkdir_ok then
+    return nil, "mkdir error: " .. tostring(mkdir_err)
+  end
   local path = n00n.fs.joinpath(dir, "policy.json")
   local content, enc_err = n00n.json.encode(policies)
   if not content then
@@ -116,7 +112,10 @@ local function policy_set(rule)
   if rule.restricted_tools and rule.allowed_tools then
     return nil, "restricted_tools and allowed_tools are mutually exclusive"
   end
-  local policies = load_policies()
+  local policies, load_err = load_policies()
+  if not policies then
+    return nil, load_err
+  end
   local found = false
   for i, existing in ipairs(policies.rules) do
     if existing.id == rule.id then
@@ -139,7 +138,11 @@ local function policy_get(rule_id)
   if not rule_id or rule_id == "" then
     return nil, "rule_id is required"
   end
-  for _, rule in ipairs(load_policies().rules) do
+  local policies, load_err = load_policies()
+  if not policies then
+    return nil, load_err
+  end
+  for _, rule in ipairs(policies.rules) do
     if rule.id == rule_id then
       return rule
     end
@@ -151,7 +154,10 @@ local function policy_delete(rule_id)
   if not rule_id or rule_id == "" then
     return nil, "rule_id is required"
   end
-  local policies = load_policies()
+  local policies, load_err = load_policies()
+  if not policies then
+    return nil, load_err
+  end
   local new_rules = {}
   local found = false
   for _, rule in ipairs(policies.rules) do
@@ -393,20 +399,25 @@ local function control_handler(input)
       local body = card(msg, {}, "deleted")
       return { llm_output = msg, body = body, annotation = "deleted" }
     elseif paction == "list" then
-      local rules = load_policies().rules
-      local encoded, fmt = encode_structured(rules)
+      local policies, load_err = load_policies()
+      if not policies then
+        return { llm_output = "Error: " .. tostring(load_err), is_error = true }
+      end
+      local encoded, fmt = encode_structured(policies.rules)
+
       if not encoded then
         return { llm_output = "Error: encode failed", is_error = true }
       end
       local lines = {}
-      for _, rule in ipairs(rules) do
+      for _, rule in ipairs(policies.rules) do
         lines[#lines + 1] = tostring(rule.id) .. " · priority " .. tostring(rule.priority)
       end
       if #lines == 0 then
         lines[1] = "(no policies)"
       end
-      local body = card(string.format("policies · %d", #rules), lines, tostring(#rules))
-      return { llm_output = encoded, body = body, annotation = tostring(#rules) .. " (" .. fmt .. ")" }
+      local count = #policies.rules
+      local body = card(string.format("policies · %d", count), lines, tostring(count))
+      return { llm_output = encoded, body = body, annotation = tostring(count) .. " (" .. fmt .. ")" }
     end
     return { llm_output = "Error: unknown policy action " .. tostring(paction), is_error = true }
   end

@@ -7,12 +7,19 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "n00n-interpreter-worker"
+path = "src/bin/n00n-interpreter-worker.rs"
+doc = false
+
 [dependencies]
 arc-swap = { workspace = true }
+async-process = { workspace = true }
 async-lock = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 crossterm = { workspace = true }
+color-eyre = { workspace = true }
 n00n-agent = { workspace = true }
 n00n-config = { workspace = true }
 n00n-highlight = { workspace = true }
@@ -38,6 +45,7 @@ tracing = { workspace = true }
 smol = { workspace = true }
 event-listener = { workspace = true }
 flume = { workspace = true }
+fs2 = { workspace = true }
 futures = { workspace = true }
 futures-lite = { workspace = true }
 libc = { workspace = true }

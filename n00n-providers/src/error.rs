@@ -72,6 +72,8 @@ pub enum AgentError {
     Api { status: u16, message: String },
     #[error("{message}")]
     Config { message: String },
+    #[error(transparent)]
+    ProviderConfig(#[from] n00n_config::providers::ProvidersConfigError),
     #[error("{message}")]
     SetupRequired { message: String },
     #[error("tool error in {tool}: {message}")]
@@ -147,6 +149,7 @@ impl AgentError {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
             Self::Config { .. }
+            | Self::ProviderConfig(_)
             | Self::SetupRequired { .. }
             | Self::Tool { .. }
             | Self::Storage
@@ -233,6 +236,7 @@ impl AgentError {
             }
             Self::Api { .. }
             | Self::Config { .. }
+            | Self::ProviderConfig(_)
             | Self::Tool { .. }
             | Self::Io(_)
             | Self::Http(_)
@@ -282,6 +286,7 @@ impl AgentError {
     pub fn user_message(&self) -> String {
         match self {
             Self::Config { message } | Self::SetupRequired { message } => message.clone(),
+            Self::ProviderConfig(error) => error.to_string(),
             Self::Api { status: 429, .. } => "rate limited, try again in a moment".into(),
             Self::Api { status: 529, .. } => "provider is overloaded, try again later".into(),
             Self::Api { message, .. } if Self::is_overload_message(message) => {

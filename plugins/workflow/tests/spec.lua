@@ -1,4 +1,5 @@
 local pipeline_args = require("pipeline_args")
+local run_store = require("run_store")
 local saga_runner = require("saga_runner")
 
 local failures = {}
@@ -351,6 +352,22 @@ case("workflow_json_encode_reports_errors", function()
   local encoded, err = n00n.json.encode(function() end)
   eq(encoded, nil, "unsupported values must not produce JSON")
   assert(err ~= nil, "JSON encoding failures must be returned")
+end)
+
+case("workflow_metadata_is_encoded_before_journal_creation", function()
+  local fixture = n00n.fs.joinpath(n00n.env.state_dir(), "workflow-run-store-test")
+  n00n.fs.rm(fixture, { recursive = true })
+  assert(n00n.fs.mkdir(fixture, { parents = true }))
+  local journal_path = n00n.fs.joinpath(fixture, "journal.jsonl")
+  local ok, err = run_store.create(fixture, journal_path, {
+    name = "invalid",
+    description = function() end,
+  })
+  eq(ok, nil)
+  assert(err:find("failed to encode workflow metadata", 1, true), err)
+  local journal = n00n.fs.metadata(journal_path)
+  eq(journal, nil, "invalid metadata must not create a journal")
+  assert(n00n.fs.rm(fixture, { recursive = true }))
 end)
 
 case("pipeline_accepts_variadic_stages_with_optional_trailing_opts", function()

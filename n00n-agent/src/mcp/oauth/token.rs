@@ -1,10 +1,12 @@
-use std::io::Read;
-
 use isahc::HttpClient;
+use isahc::config::{Configurable, RedirectPolicy};
 use isahc::http::Request;
 use n00n_storage::auth::{OAuthTokens, now_millis};
 
 use super::OAuthError;
+use crate::mcp::response::{MAX_RESPONSE_BODY, read_bounded_text};
+
+const TOKEN_REJECTION_BODY: &str = "token endpoint rejected request";
 
 pub struct OAuthCodeExchange<'a> {
     pub client: &'a HttpClient,
@@ -79,35 +81,27 @@ async fn token_request(
 
     let req = Request::post(token_endpoint)
         .header("Content-Type", "application/x-www-form-urlencoded")
+        .redirect_policy(RedirectPolicy::None)
         .body(body.into_bytes())
         .map_err(|e| OAuthError::Other(e.to_string()))?;
 
-    let mut response = smol::unblock({
-        let client = client.clone();
-        move || {
-            client
-                .send(req)
-                .map_err(|e| OAuthError::Network(e.to_string()))
-        }
-    })
-    .await?;
+    let mut response = client
+        .send_async(req)
+        .await
+        .map_err(|error| OAuthError::Network(error.to_string()))?;
+    let status = response.status();
+    let body = read_bounded_text(response.body_mut(), MAX_RESPONSE_BODY)
+        .await
+        .map_err(|error| OAuthError::InvalidResponse(error.to_string()))?;
 
-    if !response.status().is_success() {
-        let mut body_str = String::new();
-        let _ = response.body_mut().read_to_string(&mut body_str);
+    if !status.is_success() {
         return Err(OAuthError::ServerRejected {
-            status: response.status().as_u16(),
-            body: body_str,
+            status: status.as_u16(),
+            body: TOKEN_REJECTION_BODY.into(),
         });
     }
 
-    let mut body_str = String::new();
-    response
-        .body_mut()
-        .read_to_string(&mut body_str)
-        .map_err(|e| OAuthError::Network(e.to_string()))?;
-
-    parse_token_response(&body_str)
+    parse_token_response(&body)
 }
 
 fn parse_token_response(body: &str) -> Result<OAuthTokens, OAuthError> {
@@ -173,5 +167,38 @@ mod tests {
     #[test]
     fn parse_token_response_missing_access_is_error() {
         assert!(parse_token_response(r#"{"refresh_token":"r1"}"#).is_err());
+    }
+
+    #[test]
+    fn token_rejection_body_is_sanitized() {
+        smol::block_on(async {
+            use std::io::{Read, Write as IoWrite};
+            use std::net::TcpListener;
+
+            const SECRET_BODY: &str = r#"{"error_description":"secret-token"}"#;
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                write!(
+                    stream,
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{SECRET_BODY}",
+                    SECRET_BODY.len()
+                )
+                .unwrap();
+            });
+            let client = HttpClient::new().unwrap();
+
+            let error = token_request(&client, &endpoint, &[]).await.unwrap_err();
+            server.join().unwrap();
+
+            assert!(matches!(
+                error,
+                OAuthError::ServerRejected { status: 400, ref body }
+                    if body == TOKEN_REJECTION_BODY && !body.contains("secret-token")
+            ));
+        });
     }
 }

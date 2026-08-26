@@ -1,23 +1,27 @@
 use std::collections::{HashSet, VecDeque};
 #[cfg(unix)]
-use std::fs::File;
-use std::fs::FileType;
-#[cfg(unix)]
 use std::fs::Permissions;
+use std::fs::{File, FileType, OpenOptions};
 use std::io::{Error, ErrorKind, Write};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::time::UNIX_EPOCH;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt};
+use std::time::{Duration, UNIX_EPOCH};
 
 use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use futures_lite::stream::StreamExt;
 use std::path::{Component, Path, PathBuf};
 
+use fs2::FileExt as _;
+use mlua::Function;
 use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
 
+#[cfg(unix)]
+use crate::api::confined_fs;
 use crate::api::util::convert::err_pair;
 use crate::plugin_permissions::PluginPermissions;
+
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -47,6 +51,48 @@ fn path_to_string(p: &Path) -> LuaResult<String> {
     p.to_str()
         .map(std::borrow::ToOwned::to_owned)
         .ok_or_else(|| mlua::Error::runtime("non-utf8 path"))
+}
+
+#[cfg(unix)]
+fn open_lock_parent(path: &Path) -> std::io::Result<(File, std::ffi::OsString)> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "lock path has no parent directory"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "lock path has no file name"))?;
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)?;
+    Ok((directory, name.to_os_string()))
+}
+
+#[cfg(unix)]
+fn open_lock_file(parent: &File, name: &std::ffi::OsStr) -> std::io::Result<File> {
+    rustix::fs::openat(
+        parent,
+        name,
+        rustix::fs::OFlags::RDWR
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .map(File::from)
+    .map_err(Error::from)
+}
+
+async fn acquire_lock(lock: &File) -> std::io::Result<()> {
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                smol::Timer::after(LOCK_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn filetype_str(ft: FileType) -> &'static str {
@@ -123,6 +169,18 @@ fn result_pair<T: mlua::IntoLua, E: std::fmt::Display>(
             mlua::Value::Nil,
             mlua::Value::String(lua.create_string(e.to_string())?),
         )),
+    }
+}
+
+fn optional_bool(table: &Table, field: &str) -> LuaResult<Option<bool>> {
+    match table.get::<Value>(field)? {
+        Value::Nil => Ok(None),
+        Value::Boolean(value) => Ok(Some(value)),
+        value => Err(mlua::Error::FromLuaConversionError {
+            from: value.type_name(),
+            to: "Boolean".to_owned(),
+            message: Some(format!("{field} must be a boolean")),
+        }),
     }
 }
 
@@ -509,6 +567,398 @@ fn abspath(_lua: &Lua, path: String) -> LuaResult<String> {
     path_to_string(&make_absolute(&path)?)
 }
 
+/// Resolve a candidate path physically and require it to remain below a base directory.
+/// Existing symbolic links are followed before the boundary comparison. Non-existent tail
+/// components are preserved below the last existing physical parent.
+///
+/// @param base string Boundary directory.
+/// @param candidate string Candidate path.
+/// @return (string?, string?) Resolved path, or nil and an error.
+#[lua_fn(guard = FsRead)]
+fn resolve_within(lua: &Lua, base: String, candidate: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let candidate = make_absolute(&candidate)?;
+    let result = n00n_storage::paths::incremental_canonicalize(&base)
+        .zip(n00n_storage::paths::incremental_canonicalize(&candidate))
+        .and_then(|(base, candidate)| {
+            (candidate != base && candidate.starts_with(&base)).then_some(candidate)
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::PermissionDenied,
+                "path traversal outside base directory is not allowed",
+            )
+        })
+        .and_then(|path| {
+            path.into_os_string()
+                .into_string()
+                .map_err(|_| Error::new(ErrorKind::InvalidData, "non-utf8 path"))
+        });
+    result_pair(lua, result)
+}
+
+#[cfg(unix)]
+/// Read a UTF-8 file relative to an opened base directory without following symbolic links.
+/// Available only on Unix targets.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative file path.
+/// @return (string?, string?) File contents, or nil plus an error.
+#[lua_fn(guard = FsRead)]
+async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || confined_fs::read(&base, Path::new(&relative))).await;
+    result_pair(&lua, result)
+}
+
+#[cfg(unix)]
+/// Get no-follow metadata for a path relative to an opened base directory.
+/// Available only on Unix targets. The returned table contains `size`, `is_file`, `is_dir`,
+/// `is_symlink`, and `mtime`; `mtime` is nanoseconds since the Unix epoch.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative path.
+/// @return (table?, string?) Metadata, nil if missing, or nil plus an error.
+#[lua_fn(guard = FsRead)]
+async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || confined_fs::metadata(&base, Path::new(&relative))).await;
+    match result {
+        Ok(Some(metadata)) => {
+            let table = lua.create_table()?;
+            table.set("size", metadata.size)?;
+            table.set("is_file", metadata.is_file)?;
+            table.set("is_dir", metadata.is_dir)?;
+            table.set("is_symlink", metadata.is_symlink)?;
+            table.set("mtime", metadata.mtime)?;
+            Ok((Value::Table(table), Value::Nil))
+        }
+        Ok(None) => Ok((Value::Nil, Value::Nil)),
+        Err(error) => result_pair(&lua, Err::<Value, _>(error)),
+    }
+}
+
+#[cfg(unix)]
+/// List one opened base directory without following symbolic links.
+/// Available only on Unix targets.
+///
+/// @param base string Trusted base directory.
+/// @return (table?, string?) Directory entries, or nil plus an error.
+#[lua_fn(guard = FsRead)]
+async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || confined_fs::dir(&base)).await;
+    match result {
+        Ok(entries) => {
+            let table = lua.create_table()?;
+            for (index, entry) in entries.iter().enumerate() {
+                let row = lua.create_table()?;
+                row.set(1, entry.name.as_str())?;
+                row.set(2, entry.kind)?;
+                table.set(index + 1, row)?;
+            }
+            Ok((Value::Table(table), Value::Nil))
+        }
+        Err(error) => result_pair(&lua, Err::<Value, _>(error)),
+    }
+}
+
+#[cfg(unix)]
+/// Atomically write a file relative to an opened base directory without following symbolic links.
+/// Available only on Unix targets.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative destination path.
+/// @param content string Text to write.
+/// @return (true?, string?) True on success, or nil plus an error.
+#[lua_fn(guard = FsWrite)]
+async fn write_within(
+    lua: Lua,
+    base: String,
+    relative: String,
+    content: String,
+) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result =
+        smol::unblock(move || confined_fs::write(&base, Path::new(&relative), content.as_bytes()))
+            .await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+#[cfg(unix)]
+/// Delete a file or symbolic link relative to an opened base directory without following links.
+/// Available only on Unix targets.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative path.
+/// @return (true?, string?) True on success, or nil plus an error.
+#[lua_fn(guard = FsWrite)]
+async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || confined_fs::remove(&base, Path::new(&relative))).await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+#[cfg(unix)]
+/// Run a callback while holding an exclusive advisory lock on a file.
+/// The lock is shared across independent Lua hosts and operating-system processes.
+/// Available only on Unix targets.
+///
+/// @param path string Lock file path. Its parent directory must exist.
+/// @param callback function Callback returning a `(value, err)` pair.
+/// @return (any?, string?) Callback result, or nil and a lock error.
+#[lua_fn(guard = FsWrite)]
+async fn with_lock(lua: Lua, path: String, callback: Function) -> LuaResult<(Value, Value)> {
+    let path = make_absolute(&path)?;
+    let (directory, name) = match smol::unblock(move || open_lock_parent(&path)).await {
+        Ok(lock) => lock,
+        Err(error) => return result_pair(&lua, Err::<Value, _>(error)),
+    };
+    if let Err(error) = acquire_lock(&directory).await {
+        return result_pair(&lua, Err::<Value, _>(error));
+    }
+    let lock = match open_lock_file(&directory, &name) {
+        Ok(lock) => lock,
+        Err(error) => return result_pair(&lua, Err::<Value, _>(error)),
+    };
+    if let Err(error) = acquire_lock(&lock).await {
+        return result_pair(&lua, Err::<Value, _>(error));
+    }
+    let result = callback.call_async::<(Value, Value)>(()).await;
+    drop(lock);
+    drop(directory);
+    result
+}
+
+#[cfg(not(unix))]
+fn portable_path_within(base: &Path, relative: &Path) -> std::io::Result<PathBuf> {
+    if relative.is_absolute() {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "path must be relative",
+        ));
+    }
+    let base = std::fs::canonicalize(base)?;
+    let mut candidate = base.clone();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => candidate.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "path traversal outside base directory is not allowed",
+                ));
+            }
+        }
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "symbolic links are not allowed in confined paths",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if candidate == base || !candidate.starts_with(&base) {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "path traversal outside base directory is not allowed",
+        ));
+    }
+    Ok(candidate)
+}
+
+#[cfg(not(unix))]
+/// Read a UTF-8 file relative to a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative file path.
+/// @return (string?, string?) File contents, or nil plus an error.
+#[lua_fn(guard = FsRead)]
+async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        std::fs::read_to_string(path)
+    })
+    .await;
+    result_pair(&lua, result)
+}
+
+#[cfg(not(unix))]
+/// Get metadata for a path relative to a confined base directory.
+/// The returned table contains `size`, `is_file`, `is_dir`, `is_symlink`, and `mtime`;
+/// `mtime` is nanoseconds since the Unix epoch.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative path.
+/// @return (table?, string?) Metadata, nil if missing, or nil plus an error.
+#[lua_fn(guard = FsRead)]
+async fn metadata_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+    match result {
+        Ok(Some(metadata)) => {
+            let table = lua.create_table()?;
+            table.set("size", metadata.len())?;
+            table.set("is_file", metadata.is_file())?;
+            table.set("is_dir", metadata.is_dir())?;
+            table.set("is_symlink", metadata.file_type().is_symlink())?;
+            let mtime = match metadata.modified() {
+                Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+                    Ok(duration) => duration.as_nanos(),
+                    Err(error) => {
+                        tracing::warn!(%error, "confined file mtime predates Unix epoch");
+                        0
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "failed to read confined file mtime");
+                    0
+                }
+            };
+            table.set("mtime", mtime)?;
+            Ok((Value::Table(table), Value::Nil))
+        }
+        Ok(None) => Ok((Value::Nil, Value::Nil)),
+        Err(error) => result_pair(&lua, Err::<Value, _>(error)),
+    }
+}
+
+#[cfg(not(unix))]
+/// List a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @return (table?, string?) Directory entries, or nil plus an error.
+#[lua_fn(guard = FsRead)]
+async fn dir_within(lua: Lua, base: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let base = std::fs::canonicalize(base)?;
+        std::fs::read_dir(base)?
+            .map(|entry| {
+                let entry = entry?;
+                let name = entry.file_name().into_string().map_err(|_| {
+                    Error::new(ErrorKind::InvalidData, "directory entry is not valid UTF-8")
+                })?;
+                Ok((name, filetype_str(entry.file_type()?)))
+            })
+            .collect::<std::io::Result<Vec<_>>>()
+    })
+    .await;
+    match result {
+        Ok(entries) => {
+            let table = lua.create_table()?;
+            for (index, (name, kind)) in entries.iter().enumerate() {
+                let row = lua.create_table()?;
+                row.set(1, name.as_str())?;
+                row.set(2, *kind)?;
+                table.set(index + 1, row)?;
+            }
+            Ok((Value::Table(table), Value::Nil))
+        }
+        Err(error) => result_pair(&lua, Err::<Value, _>(error)),
+    }
+}
+
+#[cfg(not(unix))]
+/// Atomically write a file relative to a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative destination path.
+/// @param content string Text to write.
+/// @return (true?, string?) True on success, or nil plus an error.
+#[lua_fn(guard = FsWrite)]
+async fn write_within(
+    lua: Lua,
+    base: String,
+    relative: String,
+    content: String,
+) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        atomic_write(&path, content.as_bytes())
+    })
+    .await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+#[cfg(not(unix))]
+/// Delete a file or empty directory relative to a confined base directory.
+///
+/// @param base string Trusted base directory.
+/// @param relative string Relative path.
+/// @return (true?, string?) True on success, or nil plus an error.
+#[lua_fn(guard = FsWrite)]
+async fn rm_within(lua: Lua, base: String, relative: String) -> LuaResult<(Value, Value)> {
+    let base = make_absolute(&base)?;
+    let result = smol::unblock(move || {
+        let path = portable_path_within(&base, Path::new(&relative))?;
+        if std::fs::symlink_metadata(&path)?.is_dir() {
+            std::fs::remove_dir(path)
+        } else {
+            std::fs::remove_file(path)
+        }
+    })
+    .await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+#[cfg(not(unix))]
+/// Run a callback while holding an exclusive advisory file lock.
+/// The lock is shared across independent Lua hosts and operating-system processes.
+///
+/// @param path string Lock file path. Its parent directory must exist.
+/// @param callback function Callback returning a `(value, err)` pair.
+/// @return (any?, string?) Callback result, or nil and a lock error.
+#[lua_fn(guard = FsWrite)]
+async fn with_lock(lua: Lua, path: String, callback: Function) -> LuaResult<(Value, Value)> {
+    let path = make_absolute(&path)?;
+    let lock = match smol::unblock(move || {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "symbolic links are not allowed for lock files",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+    })
+    .await
+    {
+        Ok(lock) => lock,
+        Err(error) => return result_pair(&lua, Err::<Value, _>(error)),
+    };
+    if let Err(error) = acquire_lock(&lock).await {
+        return result_pair(&lua, Err::<Value, _>(error));
+    }
+    let result = callback.call_async::<(Value, Value)>(()).await;
+    drop(lock);
+    result
+}
+
 /// Return all ancestor directories of {path}, from the immediate parent up to the root.
 /// Handy for walking up a directory tree.
 ///
@@ -765,14 +1215,20 @@ async fn rm(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Va
     const DEFAULT_RECURSIVE: bool = false;
     const DEFAULT_FORCE: bool = false;
     let abs = make_absolute(&path)?;
-    let recursive = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("recursive").ok())
-        .unwrap_or_else(|| DEFAULT_RECURSIVE);
-    let force = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("force").ok())
-        .unwrap_or_else(|| DEFAULT_FORCE);
+    let recursive = match opts.as_ref() {
+        Some(opts) => match optional_bool(opts, "recursive")? {
+            Some(recursive) => recursive,
+            None => DEFAULT_RECURSIVE,
+        },
+        None => DEFAULT_RECURSIVE,
+    };
+    let force = match opts.as_ref() {
+        Some(opts) => match optional_bool(opts, "force")? {
+            Some(force) => force,
+            None => DEFAULT_FORCE,
+        },
+        None => DEFAULT_FORCE,
+    };
     let result = smol::unblock(move || -> std::io::Result<()> {
         let meta = match std::fs::symlink_metadata(&abs) {
             Ok(m) => m,
@@ -809,10 +1265,13 @@ async fn rm(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Va
 async fn mkdir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Value)> {
     const DEFAULT_PARENTS: bool = false;
     let abs = make_absolute(&path)?;
-    let parents = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("parents").ok())
-        .unwrap_or_else(|| DEFAULT_PARENTS);
+    let parents = match opts.as_ref() {
+        Some(opts) => match optional_bool(opts, "parents")? {
+            Some(parents) => parents,
+            None => DEFAULT_PARENTS,
+        },
+        None => DEFAULT_PARENTS,
+    };
     let result = if parents {
         smol::fs::create_dir_all(&abs).await
     } else {
@@ -850,14 +1309,24 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
         }
     };
 
-    let path = opts.as_ref().and_then(|t| t.get::<String>("path").ok());
-    let limit = opts.as_ref().and_then(|t| t.get::<usize>("limit").ok());
-    let gitignore = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("gitignore").ok())
-        .unwrap_or_else(|| true);
-    let sort = opts.as_ref().and_then(|t| t.get::<String>("sort").ok());
-    let sort_mtime = sort.as_deref() == Some("mtime");
+    let (path, limit, gitignore, sort) = match opts.as_ref() {
+        Some(opts) => (
+            opts.get::<Option<String>>("path")?,
+            opts.get::<Option<usize>>("limit")?,
+            !matches!(optional_bool(opts, "gitignore")?, Some(false)),
+            opts.get::<Option<String>>("sort")?,
+        ),
+        None => (None, None, true, None),
+    };
+    let sort_mtime = match sort.as_deref() {
+        None => false,
+        Some("mtime") => true,
+        Some(value) => {
+            return Err(mlua::Error::runtime(format!(
+                "glob: unsupported sort mode {value:?}; expected \"mtime\""
+            )));
+        }
+    };
 
     let result: Result<Vec<String>, String> = smol::unblock(move || {
         let root = n00n_agent::tools::resolve_search_path(path.as_deref())?;
@@ -1047,6 +1516,7 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Valu
     }
 }
 
+#[cfg(unix)]
 lua_table! {
     /// File-system utilities, modelled after `vim.fs` and `vim.uv`.
     ///
@@ -1059,7 +1529,27 @@ lua_table! {
     /// ```
     "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
         read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
-        joinpath, normalize, abspath, parents, root(perms), relpath, ext,
+        joinpath, normalize, abspath, resolve_within(perms), read_within(perms), metadata_within(perms),
+        dir_within(perms), write_within(perms), rm_within(perms), with_lock(perms), parents, root(perms), relpath, ext,
+        dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
+    ]
+}
+
+#[cfg(not(unix))]
+lua_table! {
+    /// File-system utilities, modelled after `vim.fs` and `vim.uv`.
+    ///
+    /// Fallible operations return `(value, err)` pairs and never throw.
+    /// Paths support `~/` expansion. Relative paths resolve from the current working directory.
+    ///
+    /// ```lua
+    /// local text, err = n00n.fs.read("init.lua")
+    /// if err then return end
+    /// ```
+    "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
+        read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
+        joinpath, normalize, abspath, resolve_within(perms), read_within(perms), metadata_within(perms),
+        dir_within(perms), write_within(perms), rm_within(perms), with_lock(perms), parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
     ]
 }
@@ -1074,6 +1564,107 @@ mod tests {
     use crate::plugin_permissions::PluginPermissions;
     use mlua::Lua;
     use tempfile::TempDir;
+
+    #[test]
+    fn confined_functions_are_registered() {
+        let lua = Lua::new();
+        let table = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        for name in [
+            "read_within",
+            "metadata_within",
+            "dir_within",
+            "write_within",
+            "rm_within",
+            "with_lock",
+        ] {
+            assert!(table.get::<mlua::Function>(name).is_ok(), "missing {name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_open_rejects_symlink_atomically() {
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("target.lock");
+        let link = temp.path().join("link.lock");
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let (parent, name) = open_lock_parent(&link).unwrap();
+
+        assert_eq!(
+            open_lock_file(&parent, &name).unwrap_err().raw_os_error(),
+            Some(libc::ELOOP)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_lock_prevents_rename_unlink_bypass() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("resource.lock");
+        let (first_parent, name) = open_lock_parent(&path).unwrap();
+        smol::block_on(acquire_lock(&first_parent)).unwrap();
+        let first_lock = open_lock_file(&first_parent, &name).unwrap();
+        smol::block_on(acquire_lock(&first_lock)).unwrap();
+        let moved = temp.path().join("moved.lock");
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::remove_file(&moved).unwrap();
+
+        let (second_parent, _) = open_lock_parent(&path).unwrap();
+        assert_eq!(
+            second_parent.try_lock_exclusive().unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+
+        drop(first_lock);
+        drop(first_parent);
+        smol::block_on(acquire_lock(&second_parent)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_wait_and_callback_error_allow_reacquisition() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("resource.lock");
+        let (first_parent, _) = open_lock_parent(&path).unwrap();
+        smol::block_on(acquire_lock(&first_parent)).unwrap();
+        let (second_parent, _) = open_lock_parent(&path).unwrap();
+        let timed_out = smol::block_on(futures_lite::future::race(
+            async {
+                acquire_lock(&second_parent).await.unwrap();
+                false
+            },
+            async {
+                smol::Timer::after(Duration::from_millis(30)).await;
+                true
+            },
+        ));
+        assert!(timed_out);
+        drop(first_parent);
+        smol::block_on(acquire_lock(&second_parent)).unwrap();
+        drop(second_parent);
+
+        let lua = Lua::new();
+        let table = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let with_lock: mlua::Function = table.get("with_lock").unwrap();
+        let failed_callback: mlua::Function = lua
+            .load("return function() return nil, 'callback failed' end")
+            .eval()
+            .unwrap();
+        let (_, error): (Value, Value) =
+            smol::block_on(with_lock.call_async((path.to_str().unwrap(), failed_callback)))
+                .unwrap();
+        assert!(matches!(error, Value::String(_)));
+        let successful_callback: mlua::Function = lua
+            .load("return function() return true, nil end")
+            .eval()
+            .unwrap();
+        let (value, error): (Value, Value) =
+            smol::block_on(with_lock.call_async((path.to_str().unwrap(), successful_callback)))
+                .unwrap();
+        assert!(matches!(value, Value::Boolean(true)));
+        assert!(matches!(error, Value::Nil));
+    }
 
     #[test]
     fn read_file_ok() {
@@ -1125,6 +1716,40 @@ mod tests {
             panic!("expected regular-file error");
         };
         assert_eq!(error.to_str().unwrap(), EXPECTED_ERROR);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_bytes_limited_rejects_fifo_without_blocking() {
+        const EXPECTED_ERROR: &str = "file is not a regular file";
+        const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+        let temp = TempDir::new().unwrap();
+        let fifo = temp.path().join("pipe");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            rustix::fs::makedev(0, 0),
+        )
+        .unwrap();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = smol::block_on(read_regular_file_limited(&fifo, 1));
+            sender
+                .send(result.map_err(|error| error.to_string()))
+                .unwrap();
+        });
+
+        assert_eq!(
+            receiver
+                .recv_timeout(RESPONSE_TIMEOUT)
+                .unwrap()
+                .unwrap_err(),
+            EXPECTED_ERROR
+        );
+        worker.join().unwrap();
     }
 
     #[test]
@@ -1383,6 +2008,42 @@ mod tests {
         let error = atomic_write(&link, b"rejected").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+    }
+
+    #[test_case::test_case("rm", "recursive", r#""yes""# ; "rm_recursive")]
+    #[test_case::test_case("rm", "force", r#""yes""# ; "rm_force")]
+    #[test_case::test_case("mkdir", "parents", r#""yes""# ; "mkdir_parents")]
+    #[test_case::test_case("glob", "path", "true" ; "glob_path")]
+    #[test_case::test_case("glob", "limit", "true" ; "glob_limit")]
+    #[test_case::test_case("glob", "gitignore", r#""yes""# ; "glob_gitignore")]
+    #[test_case::test_case("glob", "sort", "true" ; "glob_sort")]
+    fn present_option_with_wrong_type_errors(api: &str, field: &str, bad_value: &str) {
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let function: mlua::Function = tbl.get(api).unwrap();
+        let opts = lua.create_table().unwrap();
+        let value: mlua::Value = lua.load(format!("return {bad_value}")).eval().unwrap();
+        opts.set(field, value).unwrap();
+
+        let result = smol::block_on(function.call_async::<mlua::MultiValue>(("*.rs", opts)));
+
+        assert!(
+            result.is_err(),
+            "{api}.{field} accepted a wrong option type"
+        );
+    }
+
+    #[test]
+    fn glob_unknown_sort_errors() {
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let glob: mlua::Function = tbl.get("glob").unwrap();
+        let opts = lua.create_table().unwrap();
+        opts.set("sort", "name").unwrap();
+
+        let result = smol::block_on(glob.call_async::<mlua::MultiValue>(("*.rs", opts)));
+
+        assert!(result.is_err(), "glob accepted an unknown sort mode");
     }
 
     #[test]

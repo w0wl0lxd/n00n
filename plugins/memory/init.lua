@@ -122,7 +122,7 @@ local function cmd_view(path, query, focus_path, dir, ctx)
   if not file_path then
     return nil, err
   end
-  local content, read_err = n00n.fs.read(file_path)
+  local content, read_err = n00n.fs.read_within(dir, file_path)
   if not content then
     return nil, "read error: " .. tostring(read_err)
   end
@@ -162,10 +162,11 @@ local function cmd_write(path, content, metadata, dir, ctx, input)
   if not file_path then
     return nil, err
   end
-  local meta = n00n.fs.metadata(file_path)
+  n00n.fs.mkdir(dir, { parents = true })
+  local meta = n00n.fs.metadata_within(dir, file_path)
   local existing_size = meta and meta.size or 0
   if meta then
-    local text, read_err = n00n.fs.read(file_path)
+    local text, read_err = n00n.fs.read_within(dir, file_path)
     if not text then
       return nil, "read error: " .. tostring(read_err)
     end
@@ -187,8 +188,7 @@ local function cmd_write(path, content, metadata, dir, ctx, input)
   if not capacity_ok then
     return nil, capacity_err
   end
-  n00n.fs.mkdir(dir, { parents = true })
-  local ok, write_err = n00n.fs.write(file_path, payload)
+  local ok, write_err = n00n.fs.write_within(dir, file_path, payload)
   if not ok then
     return nil, "write error: " .. tostring(write_err)
   end
@@ -210,9 +210,10 @@ local function cmd_append(path, content, dir, ctx)
     return nil, err
   end
   local existing = ""
-  local meta = n00n.fs.metadata(file_path)
+  n00n.fs.mkdir(dir, { parents = true })
+  local meta = n00n.fs.metadata_within(dir, file_path)
   if meta then
-    local text, read_err = n00n.fs.read(file_path)
+    local text, read_err = n00n.fs.read_within(dir, file_path)
     if not text then
       return nil, "read error: " .. tostring(read_err)
     end
@@ -231,8 +232,7 @@ local function cmd_append(path, content, dir, ctx)
   if not capacity_ok then
     return nil, capacity_err
   end
-  n00n.fs.mkdir(dir, { parents = true })
-  local ok, write_err = n00n.fs.write(file_path, payload)
+  local ok, write_err = n00n.fs.write_within(dir, file_path, payload)
   if not ok then
     return nil, "write error: " .. tostring(write_err)
   end
@@ -251,10 +251,14 @@ local function cmd_delete(path, dir)
   if not file_path then
     return nil, err
   end
-  if not n00n.fs.metadata(file_path) then
+  local meta, meta_err = n00n.fs.metadata_within(dir, file_path)
+  if meta_err then
+    return nil, "delete error: " .. tostring(meta_err)
+  end
+  if not meta then
     return nil, "'" .. path .. "' does not exist"
   end
-  local ok, rm_err = n00n.fs.rm(file_path)
+  local ok, rm_err = n00n.fs.rm_within(dir, file_path)
   if not ok then
     return nil, "delete error: " .. tostring(rm_err)
   end
@@ -314,7 +318,7 @@ n00n.api.register_tool({
       if dir then
         local file_path, resolve_err = helpers.safe_resolve(dir, input.path)
         if file_path then
-          local raw, read_err = n00n.fs.read(file_path)
+          local raw, read_err = n00n.fs.read_within(dir, file_path)
           if raw then
             local entry = helpers.parse_memory_file(input.path, raw)
             return render_content(entry.body, input.path, ctx)
@@ -406,10 +410,8 @@ n00n.api.register_command({
       local event = ListPicker.open(build_items(), {
         title = " Memory Files ",
         cursor = last_cursor,
-        submit_keys = { "ctrl+o" },
         footer = {
-          { "Enter", "open" },
-          { "Ctrl+O", "edit" },
+          { "Enter", "details" },
           { "Ctrl+D", "delete" },
         },
       })
@@ -422,18 +424,27 @@ n00n.api.register_command({
       if event.type == "choice" then
         local item = entries[event.index]
         if item then
-          local path = n00n.fs.joinpath(dir, item[1])
-          local code = n00n.ui.open_editor(path)
-          if code == 0 then
-            local meta = n00n.fs.metadata(path)
+          local path, resolve_err = helpers.safe_resolve(dir, item[1])
+          if path then
+            local meta, meta_err = n00n.fs.metadata_within(dir, path)
             if meta then
-              item[2] = meta.size
+              n00n.ui.flash(item[1] .. " (" .. meta.size .. " bytes); use the memory tool to view or edit")
+            else
+              n00n.ui.flash("Open failed: " .. tostring(meta_err or "file missing"))
             end
+          else
+            n00n.ui.flash("Open failed: " .. tostring(resolve_err))
           end
         end
       elseif event.type == "delete" then
         local item = entries[event.index]
-        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item[1]))
+        local path, resolve_err = helpers.safe_resolve(dir, item[1])
+        local ok, err
+        if path then
+          ok, err = n00n.fs.rm_within(dir, path)
+        else
+          err = resolve_err
+        end
         if ok then
           n00n.ui.flash("Deleted " .. item[1])
           table.remove(entries, event.index)

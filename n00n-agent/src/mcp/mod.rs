@@ -18,6 +18,7 @@ pub mod error;
 pub mod http;
 pub mod oauth;
 pub mod protocol;
+mod response;
 pub mod stdio;
 pub mod transport;
 
@@ -28,6 +29,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use arc_swap::{ArcSwap, Guard};
+use jsonschema::Draft;
 use n00n_providers::{ContentBlock, Message};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
@@ -93,6 +95,10 @@ pub fn hosted_namespace_for_wire(wire_name: &str) -> Option<String> {
     Some(format!("mcp_{server}"))
 }
 const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_MCP_SCHEMA_BYTES: usize = 256 * 1024;
+const MAX_MCP_SCHEMA_DEPTH: usize = 64;
+const MAX_MCP_SCHEMA_NODES: usize = 4096;
+const JSON_SCHEMA_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
 struct McpToolDef {
     qualified_name: Arc<str>,
@@ -179,6 +185,10 @@ impl ServerEntry {
             .filter(|info| {
                 if !config::is_valid_tool_name(&info.name) {
                     warn!(tool = %info.name, server = %self.name, "skipping tool with invalid name");
+                    return false;
+                }
+                if let Err(error) = validate_mcp_input_schema(&info.input_schema) {
+                    warn!(tool = %info.name, server = %self.name, %error, "skipping tool with invalid input schema");
                     return false;
                 }
                 // Wire format is server__tool — check total length fits LLM API limits
@@ -720,10 +730,14 @@ impl McpHandle {
     }
 }
 
-pub async fn start(cwd: &Path, max_desc_chars: usize) -> (Option<McpHandle>, McpConfigErrors) {
+pub async fn start(
+    cwd: &Path,
+    max_desc_chars: usize,
+    project_trusted: bool,
+) -> (Option<McpHandle>, McpConfigErrors) {
     tracing::info!(cwd = %cwd.display(), "starting MCP");
     let cwd = cwd.to_owned();
-    let (config, config_errors) = smol::unblock(move || load_config(&cwd)).await;
+    let (config, config_errors) = smol::unblock(move || load_config(&cwd, project_trusted)).await;
     let handle = start_with_config(config, max_desc_chars).await;
     (handle, config_errors)
 }
@@ -1397,12 +1411,72 @@ impl McpTransport for StubTransport {
     fn shutdown(&self) -> transport::BoxFuture<'_, ()> {
         Box::pin(async {})
     }
+
     fn server_name(&self) -> &Arc<str> {
         &self.0
     }
     fn transport_kind(&self) -> &'static str {
         "stub"
     }
+}
+fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
+    if !schema.is_object() {
+        return Err("inputSchema must be a JSON object".into());
+    }
+    let encoded = serde_json::to_vec(schema)
+        .map_err(|error| format!("inputSchema could not be encoded: {error}"))?;
+    if encoded.len() > MAX_MCP_SCHEMA_BYTES {
+        return Err(format!(
+            "inputSchema exceeds the {MAX_MCP_SCHEMA_BYTES} byte limit"
+        ));
+    }
+
+    let mut stack = vec![(schema, 0usize)];
+    let mut nodes = 0usize;
+    while let Some((value, depth)) = stack.pop() {
+        nodes = nodes.saturating_add(1);
+        if nodes > MAX_MCP_SCHEMA_NODES {
+            return Err(format!(
+                "inputSchema exceeds the {MAX_MCP_SCHEMA_NODES} node limit"
+            ));
+        }
+        if depth > MAX_MCP_SCHEMA_DEPTH {
+            return Err(format!(
+                "inputSchema exceeds the {MAX_MCP_SCHEMA_DEPTH} level depth limit"
+            ));
+        }
+        match value {
+            Value::Object(map) => {
+                for reference_key in ["$ref", "$dynamicRef"] {
+                    if let Some(reference) = map.get(reference_key).and_then(Value::as_str)
+                        && !reference.starts_with('#')
+                    {
+                        return Err(format!(
+                            "remote or relative {reference_key} is not allowed: {reference}"
+                        ));
+                    }
+                }
+                stack.extend(map.values().map(|child| (child, depth.saturating_add(1))));
+            }
+            Value::Array(values) => {
+                stack.extend(values.iter().map(|child| (child, depth.saturating_add(1))));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(declared_draft) = schema.get("$schema").and_then(Value::as_str)
+        && declared_draft != JSON_SCHEMA_2020_12
+    {
+        return Err(format!("unsupported JSON Schema draft: {declared_draft}"));
+    }
+    jsonschema::draft202012::meta::validate(schema)
+        .map_err(|error| format!("invalid JSON Schema 2020-12: {error}"))?;
+    jsonschema::options()
+        .with_draft(Draft::Draft202012)
+        .build(schema)
+        .map_err(|error| format!("could not compile JSON Schema 2020-12: {error}"))?;
+    Ok(())
 }
 
 fn build_haystack(definition: &Value) -> String {
@@ -1541,6 +1615,32 @@ mod tests {
     use config::{RawServerConfig, RawStdioFields, RawTransport};
     use n00n_providers::Role;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test_case(&json!({"type": "object", "properties": {"name": {"type": "string"}}}) ; "simple_object")]
+    #[test_case(&json!({"type": "object", "$defs": {"item": {"type": "string"}}, "properties": {"value": {"$ref": "#/$defs/item"}}}) ; "local_ref")]
+    #[test_case(&json!({"type": "object", "properties": {"$ref": {"type": "string"}}}) ; "property_named_ref")]
+    #[test_case(&json!({"$schema": JSON_SCHEMA_2020_12, "type": "object"}) ; "explicit_2020_12")]
+    fn mcp_schema_validation_accepts_draft_2020_12(schema: &Value) {
+        assert!(validate_mcp_input_schema(schema).is_ok());
+    }
+
+    #[test_case(&json!(null) ; "not_object")]
+    #[test_case(&json!({"type": "invalid"}) ; "invalid_type")]
+    #[test_case(&json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
+    #[test_case(&json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}) ; "unsupported_draft")]
+    fn mcp_schema_validation_rejects_invalid_or_remote(schema: &Value) {
+        assert!(validate_mcp_input_schema(schema).is_err());
+    }
+
+    #[test]
+    fn mcp_schema_validation_rejects_excessive_depth() {
+        let mut schema = json!({"type": "string"});
+        for _ in 0..=MAX_MCP_SCHEMA_DEPTH {
+            schema = json!({"type": "array", "items": schema});
+        }
+        assert!(validate_mcp_input_schema(&schema).is_err());
+    }
+
     use test_case::test_case;
 
     const DEFAULT_TIMEOUT_MS: u64 = 30_000;

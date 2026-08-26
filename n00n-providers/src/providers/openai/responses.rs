@@ -5,12 +5,12 @@ use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
 use flume::Sender;
-use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
+use futures_lite::io::{AsyncBufRead, BufReader};
 use isahc::{HttpClient, Request};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
-use crate::providers::ResolvedAuth;
+use crate::providers::{ResolvedAuth, SseStream};
 use crate::types::{
     ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX, ThinkingFieldConfig,
 };
@@ -598,12 +598,36 @@ pub(crate) async fn do_stream(
     stream_timeout: Duration,
     opts: &RequestOptions,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
-    let base_url = base_url(auth);
+    let request_url = format!("{}{RESPONSES_PATH}", base_url(auth));
+    do_stream_at(
+        client,
+        model,
+        body,
+        event_tx,
+        auth,
+        stream_timeout,
+        opts,
+        &request_url,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn do_stream_at(
+    client: &HttpClient,
+    model: &crate::model::Model,
+    body: &Value,
+    event_tx: &Sender<ProviderEvent>,
+    auth: &ResolvedAuth,
+    stream_timeout: Duration,
+    opts: &RequestOptions,
+    request_url: &str,
+) -> Result<(Option<String>, StreamResponse), AgentError> {
     let json_body = serde_json::to_vec(body)?;
 
     let mut builder = Request::builder()
         .method("POST")
-        .uri(format!("{base_url}{RESPONSES_PATH}"))
+        .uri(request_url)
         .header("content-type", "application/json")
         .header("user-agent", super::super::user_agent());
     if let Some(key) = opts.idempotency_key.as_deref() {
@@ -1198,7 +1222,7 @@ impl ResponseAccumulator {
         Ok(false)
     }
 
-    pub fn into_stream_response(mut self) -> StreamResponse {
+    pub fn into_stream_response(mut self) -> Result<StreamResponse, AgentError> {
         let mut ordered_blocks = Vec::with_capacity(
             self.reasoning_items.len() + self.provider_items.len() + self.tool_accumulators.len(),
         );
@@ -1222,25 +1246,30 @@ impl ResponseAccumulator {
         }));
 
         for acc in self.tool_accumulators.drain(..) {
-            let input: Value = match serde_json::from_str(&acc.arguments) {
-                Ok(v) => {
-                    debug!(
-                        tool = %acc.name,
-                        argument_bytes = acc.arguments.len(),
-                        "parsed tool input JSON"
-                    );
-                    v
-                }
-                Err(e) => {
+            let input: Value = if acc.arguments.is_empty() {
+                json!({})
+            } else {
+                serde_json::from_str(&acc.arguments).map_err(|error| {
                     warn!(
-                        error = %e,
+                        error = %error,
                         tool = %acc.name,
                         argument_bytes = acc.arguments.len(),
-                        "malformed tool JSON, falling back to {{}}"
+                        "rejecting malformed streamed tool arguments"
                     );
-                    Value::Object(Default::default())
-                }
+                    AgentError::Api {
+                        status: 400,
+                        message: format!(
+                            "malformed streamed tool arguments at output index {}",
+                            acc.output_index
+                        ),
+                    }
+                })?
             };
+            debug!(
+                tool = %acc.name,
+                argument_bytes = acc.arguments.len(),
+                "parsed tool input JSON"
+            );
             let block = match acc.namespace {
                 Some(namespace) => ContentBlock::NamespacedToolUse {
                     id: acc.call_id,
@@ -1271,7 +1300,7 @@ impl ResponseAccumulator {
             content_blocks.push(ContentBlock::Text { text: self.text });
         }
 
-        StreamResponse {
+        Ok(StreamResponse {
             message: Message {
                 role: Role::Assistant,
                 content: content_blocks,
@@ -1279,7 +1308,7 @@ impl ResponseAccumulator {
             },
             usage: self.usage,
             stop_reason: self.stop_reason,
-        }
+        })
     }
 }
 
@@ -1289,40 +1318,28 @@ pub(crate) async fn parse_sse(
     stream_timeout: Duration,
     idempotency_key: Option<String>,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
-    let mut lines = reader.lines();
+    let mut stream = SseStream::with_limits(
+        reader,
+        stream_timeout,
+        super::super::OPENAI_RESPONSES_MAX_SSE_FRAME_BYTES,
+        super::super::MAX_SSE_STREAM_BYTES,
+    );
+    stream.set_deadline_cap(Instant::now() + response_in_flight_timeout(stream_timeout));
 
     let mut acc = ResponseAccumulator::new(idempotency_key);
-    let mut deadline = Instant::now() + stream_timeout;
-    let response_deadline = Instant::now() + response_in_flight_timeout(stream_timeout);
-    let mut current_event = String::new();
 
     loop {
-        deadline = deadline.min(response_deadline);
-        let line = match crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout)
-            .await
-        {
-            Ok(Some(line)) => line,
+        let event = match stream.next_event().await {
+            Ok(Some(event)) => event,
             Ok(None) => break,
             Err(error) => {
                 return Err(error.suppress_retry_after_send(Some(acc.delivery_metadata())));
             }
         };
-        if line.is_empty() {
-            current_event.clear();
-            continue;
-        }
+        let data = event.data.trim();
+        let current_event = event.event.as_deref();
 
-        if let Some(event_type) = line.strip_prefix("event:") {
-            current_event = event_type.trim().to_string();
-            continue;
-        }
-
-        let data = match line.strip_prefix("data:") {
-            Some(d) => d.trim(),
-            None => continue,
-        };
-
-        if current_event == "error" {
+        if current_event == Some("error") {
             let error =
                 if let Ok(ev) = serde_json::from_str::<crate::providers::SseErrorPayload>(data) {
                     warn!(error_type = %ev.error.r#type, "SSE error in stream");
@@ -1343,13 +1360,12 @@ pub(crate) async fn parse_sse(
             return Err(error.suppress_retry_after_send(Some(acc.delivery_metadata())));
         }
 
-        let parsed_event = if current_event.is_empty() {
-            serde_json::from_str::<Value>(data)
+        let parsed_event = match current_event {
+            Some(event) => event.to_owned(),
+            None => serde_json::from_str::<Value>(data)
                 .ok()
                 .and_then(|value| value["type"].as_str().map(ToOwned::to_owned))
-                .unwrap_or_else(String::new)
-        } else {
-            current_event.clone()
+                .unwrap_or_else(String::new),
         };
 
         let parsed: Value = match serde_json::from_str(data) {
@@ -1377,7 +1393,11 @@ pub(crate) async fn parse_sse(
     }
 
     let response_id = acc.response_id().map(ToOwned::to_owned);
-    Ok((response_id, acc.into_stream_response()))
+    let delivery_metadata = acc.delivery_metadata();
+    let response = acc
+        .into_stream_response()
+        .map_err(|error| error.suppress_retry_after_send(Some(delivery_metadata)))?;
+    Ok((response_id, response))
 }
 
 #[allow(clippy::manual_unwrap_or)]
@@ -1933,7 +1953,26 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
     }
 
     #[test]
-    fn parse_sse_malformed_tool_json_yields_empty_object() {
+    fn parse_sse_empty_tool_arguments_use_empty_object() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.added\n\
+data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\"}}\n\
+\n\
+event: response.completed\n\
+data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\
+\n";
+
+            let (response, _) = run_sse(sse).await;
+            let (_, response) = response.unwrap();
+            let tools: Vec<_> = response.message.tool_uses().collect();
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].2, &json!({}));
+        });
+    }
+
+    #[test]
+    fn parse_sse_malformed_tool_json_is_rejected() {
         smol::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
@@ -1946,12 +1985,19 @@ event: response.completed\n\
 data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\
 \n";
 
-            let (resp, _) = run_sse(sse).await;
-            let (_, resp) = resp.unwrap();
-            let tools: Vec<_> = resp.message.tool_uses().collect();
-            assert_eq!(tools.len(), 1);
-            assert_eq!(tools[0].1, "bash");
-            assert_eq!(*tools[0].2, Value::Object(Default::default()));
+            let (response, _) = run_sse(sse).await;
+            let error = response.unwrap_err();
+            assert!(!error.is_retryable());
+            assert!(matches!(
+                error,
+                AgentError::RequestSent {
+                    metadata: Some(RequestDeliveryMetadata {
+                        emitted_event: true,
+                        ..
+                    }),
+                    ..
+                }
+            ));
         });
     }
 
@@ -3047,6 +3093,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
         smol::block_on(async {
             let sse = "\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"web_search_call\",\"action\":{\"queries\":[{\"text\":\"rust async\"}],\"results\":[{\"title\":\"Rust async book\",\"url\":\"https://example.com\"}]}}}\n\
+\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
@@ -3062,6 +3109,7 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
         smol::block_on(async {
             let sse = "\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"file_search_call\",\"results\":[{\"filename\":\"doc.txt\",\"file_id\":\"file_123\"}]}}\n\
+\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
@@ -3076,6 +3124,7 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
         smol::block_on(async {
             let sse = "\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"code_interpreter_call\",\"outputs\":[{\"text\":\"Output: 42\"},{\"image\":{\"file_id\":\"img_456\"}}]}}\n\
+\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
@@ -3091,6 +3140,7 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
         smol::block_on(async {
             let sse = "\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"computer_call_output\",\"output\":{\"screenshot\":{\"file_id\":\"screenshot_789\"}}}}\n\
+\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
@@ -3105,7 +3155,9 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
         smol::block_on(async {
             let sse = "\
 event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"program\",\"code\":\"print('hello')\"}}\n\
+\n\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"program\",\"code\":\"print('hello')\"}}\n\
+\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
@@ -3123,7 +3175,9 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
         smol::block_on(async {
             let sse = "\
 event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"program_output\",\"output\":\"hello world\"}}\n\
+\n\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"program_output\",\"output\":\"hello world\"}}\n\
+\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
@@ -3138,8 +3192,11 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
         smol::block_on(async {
             let sse = "\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"tool_search_call\",\"execution\":\"server\",\"arguments\":{\"paths\":[\"knowledge\"]}}}\n\
+\n\
 event: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"tool_search_output\",\"tools\":[{\"name\":\"use_memory\"}]}}\n\
+\n\
 event: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"namespace\":\"n00n_knowledge\",\"name\":\"use_memory\",\"arguments\":\"{\\\"query\\\":\\\"cache\\\"}\"}}\n\
+\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;

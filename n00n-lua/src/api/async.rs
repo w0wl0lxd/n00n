@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_lock::{Semaphore, SemaphoreGuardArc};
 use futures::future::join_all;
@@ -294,9 +295,12 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
             };
 
             let (tx, rx) = flume::bounded(1);
+            let callback_fired = Arc::new(AtomicBool::new(false));
 
             let callback = lua.create_function(move |_lua, values: MultiValue| {
-                tx.send(values).ok();
+                if !callback_fired.swap(true, Ordering::AcqRel) {
+                    let _ = tx.try_send(values);
+                }
                 Ok(())
             })?;
 
@@ -442,6 +446,27 @@ mod tests {
             let result = lua.load(&code).eval_async::<i64>().await.unwrap();
             #[allow(clippy::cast_possible_wrap)]
             assert_eq!(result, expected_pos as i64);
+        });
+    }
+
+    #[test]
+    fn duplicate_synchronous_callback_returns_first_value_without_blocking() {
+        smol::block_on(async {
+            let (lua, _tbl) = setup();
+            let result = lua
+                .load(
+                    r#"
+                    local function producer(cb)
+                        cb("first")
+                        cb("second")
+                    end
+                    return async_tbl.await(1, producer)
+                    "#,
+                )
+                .eval_async::<String>()
+                .await
+                .unwrap();
+            assert_eq!(result, "first");
         });
     }
 
