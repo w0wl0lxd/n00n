@@ -2928,7 +2928,14 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
         SubmitOutcome::Queued
     ));
     app.queue.set_focus();
-    assert!(app.queue.take_focused_for_edit().is_some());
+    let Some((_, edited, _)) = app.queue.take_focused_for_edit() else {
+        panic!("queued prompt must enter edit mode");
+    };
+    app.input_box.set_submission(Submission {
+        text: edited.text,
+        images: edited.images,
+        control: edited.control,
+    });
     assert!(app.queue.text_messages().is_empty());
 
     app.update(agent_msg(AgentEvent::Error {
@@ -2936,6 +2943,7 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
     }));
 
     assert_eq!(app.queue.text_messages(), vec!["queued through turn error"]);
+    assert!(app.input_box.is_empty());
     app.save_session();
     let session_id = app.state.session.id;
     drain_writer(app, writer);
