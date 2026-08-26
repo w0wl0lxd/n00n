@@ -220,10 +220,19 @@ fn stored_credentials(
     })
 }
 
+/// `resolve_base_url` is an unvalidated passthrough; route it through
+/// `resolve_api_server_url` so an invalid `devin.base_url` falls back to
+/// `DEVIN_API_URL` instead of reaching URI construction.
+fn discovered_base_url(config: &ProvidersConfig) -> String {
+    resolve_api_server_url(
+        DEVIN_API_URL.to_string(),
+        resolve_base_url("devin", config.get("devin")).as_deref(),
+    )
+}
+
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
     let config = ProvidersConfig::load()?;
-    let base_url =
-        resolve_base_url("devin", config.get("devin")).unwrap_or_else(|| DEVIN_API_URL.to_string());
+    let base_url = discovered_base_url(&config);
     if let Some(mut credentials) = DevinCredentials::from_env()? {
         credentials.api_server_url = base_url;
         return Ok(Some(credentials));
@@ -900,8 +909,12 @@ pub(crate) fn has_credentials() -> bool {
 
 impl Devin {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
+        let credentials = discover_credentials()?.map(|mut credentials| {
+            credentials.api_server_url = resolve_api_server_url(credentials.api_server_url, None);
+            credentials
+        });
         Ok(Self {
-            credentials: discover_credentials()?,
+            credentials,
             client: super::http_client(timeouts)?,
             client_model_configs: Mutex::new(HashMap::new()),
             timeouts,
@@ -1960,6 +1973,38 @@ mod tests {
             resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url")),
             "https://configured.example"
         );
+    }
+
+    #[test]
+    fn discovered_base_url_rejects_schemeless_config_value() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                base_url: Some("devin".to_string()),
+                ..ProviderDef::default()
+            },
+        );
+        assert_eq!(discovered_base_url(&config), DEVIN_API_URL);
+    }
+
+    #[test]
+    fn discovered_base_url_preserves_valid_https_config_value() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                base_url: Some("https://configured.example".to_string()),
+                ..ProviderDef::default()
+            },
+        );
+        assert_eq!(discovered_base_url(&config), "https://configured.example");
+    }
+
+    #[test]
+    fn discovered_base_url_defaults_when_unconfigured() {
+        let config = ProvidersConfig::default();
+        assert_eq!(discovered_base_url(&config), DEVIN_API_URL);
     }
 
     /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
