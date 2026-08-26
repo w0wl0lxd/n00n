@@ -7,7 +7,17 @@ use prost::Message;
 use std::collections::HashMap;
 
 const CLI_SOURCE: &str = "devin";
-const CLI_VERSION: &str = "3000.3.22";
+const DEFAULT_CLI_VERSION: &str = "3000.6.2";
+
+/// Devin's backend rejects requests reporting a CLI version it considers too
+/// old. `N00N_DEVIN_CLI_VERSION` lets a user bump the reported version ahead
+/// of a release when the backend's minimum moves again.
+fn cli_version() -> String {
+    std::env::var("N00N_DEVIN_CLI_VERSION")
+        .ok()
+        .filter(|version| !version.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_CLI_VERSION.to_string())
+}
 
 pub(crate) const CHAT_MESSAGE_SOURCE_USER: u64 = 1;
 pub(crate) const CHAT_MESSAGE_SOURCE_SYSTEM: u64 = 2;
@@ -285,12 +295,12 @@ pub fn encode_get_user_jwt_request(api_key: &str) -> Vec<u8> {
     GetUserJwtRequest {
         metadata: Some(Metadata {
             ide_name: CLI_SOURCE.to_string(),
-            extension_version: CLI_VERSION.to_string(),
+            extension_version: cli_version(),
             api_key: api_key.to_string(),
             locale: "en".to_string(),
             os: String::new(),
             disable_telemetry: false,
-            ide_version: CLI_VERSION.to_string(),
+            ide_version: cli_version(),
             extension_name: CLI_SOURCE.to_string(),
             user_jwt: String::new(),
         }),
@@ -320,12 +330,12 @@ pub fn encode_get_chat_message_request(
     GetChatMessageRequest {
         metadata: Some(Metadata {
             ide_name: CLI_SOURCE.to_string(),
-            extension_version: CLI_VERSION.to_string(),
+            extension_version: cli_version(),
             api_key: api_key.to_string(),
             locale: "en".to_string(),
             os: String::new(),
             disable_telemetry: false,
-            ide_version: CLI_VERSION.to_string(),
+            ide_version: cli_version(),
             extension_name: CLI_SOURCE.to_string(),
             user_jwt: user_jwt.to_string(),
         }),
@@ -394,12 +404,12 @@ pub fn encode_get_cli_model_configs_request(api_key: &str) -> Vec<u8> {
     GetCliModelConfigsRequest {
         metadata: Some(Metadata {
             ide_name: CLI_SOURCE.to_string(),
-            extension_version: CLI_VERSION.to_string(),
+            extension_version: cli_version(),
             api_key: api_key.to_string(),
             locale: "en".to_string(),
             os: String::new(),
             disable_telemetry: false,
-            ide_version: CLI_VERSION.to_string(),
+            ide_version: cli_version(),
             extension_name: CLI_SOURCE.to_string(),
             user_jwt: String::new(),
         }),
@@ -682,5 +692,39 @@ mod tests {
     fn empty_payload_decodes_to_default() {
         let decoded = GetChatMessageResponse::decode(&[][..]).expect("empty default");
         assert!(decoded.message_id.is_empty());
+    }
+
+    const CLI_VERSION_ENV: &str = "N00N_DEVIN_CLI_VERSION";
+
+    #[allow(unsafe_code)]
+    fn set_env(var: &str, value: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars.
+        unsafe { std::env::set_var(var, value) }
+    }
+
+    #[allow(unsafe_code)]
+    fn remove_env(var: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars.
+        unsafe { std::env::remove_var(var) }
+    }
+
+    #[test]
+    fn cli_version_defaults_when_env_unset() {
+        remove_env(CLI_VERSION_ENV);
+        assert_eq!(cli_version(), DEFAULT_CLI_VERSION);
+    }
+
+    #[test]
+    fn cli_version_uses_override_when_set() {
+        set_env(CLI_VERSION_ENV, "3000.9.9");
+        assert_eq!(cli_version(), "3000.9.9");
+        remove_env(CLI_VERSION_ENV);
+    }
+
+    #[test]
+    fn cli_version_ignores_blank_override() {
+        set_env(CLI_VERSION_ENV, "   ");
+        assert_eq!(cli_version(), DEFAULT_CLI_VERSION);
+        remove_env(CLI_VERSION_ENV);
     }
 }

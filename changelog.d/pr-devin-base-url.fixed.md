@@ -1,1 +1,2 @@
-Fixed Devin requests failing with `invalid format` when the primary account's configured `base_url` was missing a scheme; an invalid value now falls back to the default API URL instead of reaching request construction.
+- Fixed Devin requests failing with `invalid format` when the primary account's configured `base_url` was missing a scheme; an invalid value now falls back to the default API URL instead of reaching request construction.
+- Fixed Devin requests being rejected with "Your Windsurf version is out of date" by bumping the reported CLI version and adding an `N00N_DEVIN_CLI_VERSION` override for future backend bumps.
