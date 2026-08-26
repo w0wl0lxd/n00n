@@ -1148,7 +1148,7 @@ mod tests {
     use std::sync::Arc;
 
     use n00n_config::{Effect, PermissionRule, PermissionsConfig, ToolKey};
-    use n00n_providers::{ContentBlock, Message, StopReason, StreamResponse, TokenUsage};
+    use n00n_providers::{ContentBlock, Message, Role, StopReason, StreamResponse, TokenUsage};
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -2455,8 +2455,6 @@ mod tests {
         error_message: &'static str,
     ) {
         smol::block_on(async {
-            use n00n_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
-
             let (tx, _rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
             let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
