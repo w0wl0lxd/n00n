@@ -3549,7 +3549,22 @@ where
         LogRecord::SubMsg { sub, d } => {
             builder.subagent_messages.entry(sub).or_default().push(d);
         }
-        LogRecord::Transcript { d } => builder.push_transcript_entry(d),
+        LogRecord::Transcript { mut d } => {
+            // A v3 record carries a whole nested tree in one payload, so the
+            // start/end depth cap never sees it. Hold the cap here too, or a
+            // deep legacy log stays deep until a later reload flattens it.
+            if transcript_compaction_depth(std::slice::from_ref(&d))
+                > MAX_TRANSCRIPT_COMPACTION_DEPTH
+            {
+                builder.recovered_structure = true;
+                let mut entries = vec![d];
+                while transcript_compaction_depth(&entries) > MAX_TRANSCRIPT_COMPACTION_DEPTH {
+                    flatten_deepest_compaction(&mut entries);
+                }
+                d = entries.remove(0);
+            }
+            builder.push_transcript_entry(d);
+        }
         LogRecord::TranscriptCompactionStart {
             generated_summary,
             state_revision,
@@ -5101,8 +5116,8 @@ mod tests {
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
         MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
-        TRANSCRIPT_COMPACTION_START_RECORD_TYPE, flatten_deepest_compaction,
-        transcript_compaction_depth,
+        TRANSCRIPT_COMPACTION_START_RECORD_TYPE, TRANSCRIPT_RECORD_TYPE,
+        flatten_deepest_compaction, transcript_compaction_depth,
     };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
@@ -5769,6 +5784,48 @@ mod tests {
     }
 
     #[test]
+    fn legacy_transcript_record_nesting_is_depth_bounded() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message("live")));
+        drop(SessionLog::create(dir, &session).unwrap());
+
+        // A v3 log stores the whole nested tree inside one `transcript` record,
+        // so the start/end cap never sees it.
+        let depth = MAX_TRANSCRIPT_COMPACTION_DEPTH + 8;
+        rewrite_log_lines(dir, session.id, move |lines| {
+            lines
+                .into_iter()
+                .map(|line| {
+                    if line["t"] != TRANSCRIPT_RECORD_TYPE {
+                        return line;
+                    }
+                    let mut nested = line["d"].clone();
+                    for _ in 0..depth {
+                        nested = serde_json::json!({
+                            "compaction": {"entries": [nested]}
+                        });
+                    }
+                    let mut line = line;
+                    line["d"] = nested;
+                    line
+                })
+                .collect()
+        });
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+
+        assert!(
+            transcript_compaction_depth(&loaded.transcript) <= MAX_TRANSCRIPT_COMPACTION_DEPTH,
+            "legacy nesting reached {}",
+            transcript_compaction_depth(&loaded.transcript)
+        );
+    }
+
+    #[test]
     fn transcript_compaction_nesting_is_depth_bounded() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -5783,7 +5840,7 @@ mod tests {
             let mut out = Vec::new();
             let mut tail = Vec::new();
             for line in lines {
-                if line["t"] == "transcript" {
+                if line["t"] == TRANSCRIPT_RECORD_TYPE {
                     for _ in 0..depth {
                         out.push(serde_json::json!({
                             "t": TRANSCRIPT_COMPACTION_START_RECORD_TYPE
