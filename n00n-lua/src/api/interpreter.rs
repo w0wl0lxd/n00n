@@ -360,7 +360,10 @@ async fn interpreter_run(
         let task_handle = lua.app_data_ref::<TaskHandle>();
         task_handle.as_ref().map_or_else(
             || (CancelToken::none(), None),
-            |handle| (lock_cell(handle).cancel.clone(), task_deadline(handle)),
+            |handle| {
+                let cancel = lock_cell(handle).cancel.clone();
+                (cancel, task_deadline(handle))
+            },
         )
     };
     let requested_deadline = Instant::now() + Duration::from_secs(timeout_secs);

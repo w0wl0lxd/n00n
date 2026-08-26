@@ -35,6 +35,16 @@ fn invalid_path() -> Error {
     )
 }
 
+fn confined_open_error(error: rustix::io::Errno) -> Error {
+    match error {
+        rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR => Error::new(
+            ErrorKind::PermissionDenied,
+            "symbolic links are not allowed in confined paths",
+        ),
+        error => Error::from(error),
+    }
+}
+
 fn components(path: &Path) -> std::io::Result<Vec<OsString>> {
     let components: Vec<_> = path
         .components()
@@ -69,7 +79,7 @@ fn open_parent(base: &Path, relative: &Path) -> std::io::Result<(OwnedFd, OsStri
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .map_err(Error::from)?;
+        .map_err(confined_open_error)?;
     }
     Ok((directory, name))
 }
@@ -82,7 +92,7 @@ pub(crate) fn read(base: &Path, relative: &Path) -> std::io::Result<String> {
         OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(Error::from)?;
+    .map_err(confined_open_error)?;
     let mut file = File::from(fd);
     if !file.metadata()?.is_file() {
         return Err(Error::new(
@@ -320,10 +330,8 @@ mod tests {
 
         let error = write(base.path(), Path::new("escape/new.md"), b"escaped").unwrap_err();
 
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::NotADirectory | ErrorKind::Other
-        ));
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("symbolic links are not allowed"));
         assert!(!outside.path().join("new.md").exists());
     }
 }

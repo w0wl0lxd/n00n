@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const MEMORY_SOURCE: &str = include_str!("../../plugins/memory/init.lua");
-const CONFINEMENT_ERROR: &str = "Too many levels of symbolic links";
+const CONFINEMENT_ERROR: &str = "symbolic link";
 const NO_MATCHING_MEMORIES: &str = "No matching memories";
 
 fn fixture_host(state_dir: &Path) -> (Arc<ToolRegistry>, PluginHost) {
