@@ -496,7 +496,10 @@ async fn run_authorized(
             Ok(guard) => guard,
             Err(error) => return tool_done_error(id, Arc::clone(&tool_id), error.to_string()),
         };
-        let result = invocation.execute(ctx).await;
+        let result = match ctx.cancel.race(invocation.execute(ctx)).await {
+            Ok(result) => result,
+            Err(error) => return tool_done_error(id, Arc::clone(&tool_id), error),
+        };
 
         let elapsed = started.elapsed();
         match result.output {
@@ -834,8 +837,8 @@ async fn execute_mcp_tool(
     // A permitted call to a deferred tool counts as loading it, so its full
     // definition joins the next request; a denied call must not load anything.
     mcp.mark_loaded(tool_name);
-    match mcp.call_tool(tool_name, input).await {
-        Ok(text) => tool_done_plain(
+    match ctx.cancel.race(mcp.call_tool(tool_name, input)).await {
+        Ok(Ok(text)) => tool_done_plain(
             id.to_owned(),
             tool_id,
             crate::tools::truncate_output(
@@ -844,15 +847,16 @@ async fn execute_mcp_tool(
                 ctx.config.max_output_bytes,
             ),
         ),
-        Err(e) => tool_done_error(
+        Ok(Err(error)) => tool_done_error(
             id.to_owned(),
             tool_id,
             crate::tools::truncate_output(
-                &e.to_string(),
+                &error.to_string(),
                 ctx.config.max_output_lines,
                 ctx.config.max_output_bytes,
             ),
         ),
+        Err(error) => tool_done_error(id.to_owned(), tool_id, error),
     }
 }
 
@@ -1154,12 +1158,53 @@ mod tests {
     use crate::tools::registry::ToolSource;
     use crate::tools::test_support::{GUARDED_TOOL_NAME, GuardedMock};
 
+    const CANCELLED_STATUS: &str = "cancelled";
+
     fn recent_calls(entries: &[(&str, Value)]) -> RecentCalls {
         let mut rc = RecentCalls::new();
         for (n, v) in entries {
             rc.record(n.to_string(), v);
         }
         rc
+    }
+
+    struct PendingMcpTransport {
+        name: Arc<str>,
+        started: flume::Sender<()>,
+    }
+
+    impl crate::mcp::transport::McpTransport for PendingMcpTransport {
+        fn send_request<'a>(
+            &'a self,
+            _method: &'a str,
+            _params: Option<Value>,
+        ) -> crate::mcp::transport::BoxFuture<'a, Result<Value, crate::mcp::error::McpError>>
+        {
+            Box::pin(async {
+                let _ = self.started.send_async(()).await;
+                std::future::pending().await
+            })
+        }
+
+        fn send_notification<'a>(
+            &'a self,
+            _method: &'a str,
+            _params: Option<Value>,
+        ) -> crate::mcp::transport::BoxFuture<'a, Result<(), crate::mcp::error::McpError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn shutdown(&self) -> crate::mcp::transport::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+
+        fn server_name(&self) -> &Arc<str> {
+            &self.name
+        }
+
+        fn transport_kind(&self) -> &'static str {
+            "pending-test"
+        }
     }
 
     #[test_case("read", &[("read", "/a"), ("read", "/a")], true  ; "triggers_at_threshold")]
@@ -1599,6 +1644,128 @@ mod tests {
             assert_eq!(result.output.as_text(), CODE_EXECUTION_BLOCKED_IN_PLAN);
         });
     }
+    #[test]
+    fn mcp_tool_call_observes_agent_cancellation() {
+        smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(1);
+            let session = crate::mcp::stub_session_with_transport(
+                &[("myserver.mytool", "pending")],
+                false,
+                Arc::new(PendingMcpTransport {
+                    name: Arc::from("pending"),
+                    started: started_tx,
+                }),
+            );
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.mcp = Some(session);
+            let (trigger, cancel) = crate::CancelToken::new();
+            ctx.cancel = cancel;
+            let execution = smol::spawn(async move {
+                dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await
+            });
+            started_rx.recv_async().await.unwrap();
+            trigger.cancel();
+
+            let done = execution.await;
+            assert!(done.is_error);
+            assert_eq!(done.output.as_text(), CANCELLED_STATUS);
+        });
+    }
+
+    #[test]
+    fn native_tool_execution_observes_agent_cancellation() {
+        struct PendingInvocation {
+            started: flume::Sender<()>,
+        }
+
+        impl crate::tools::registry::ToolInvocation for PendingInvocation {
+            fn start_header(&self) -> crate::tools::HeaderFuture {
+                crate::tools::HeaderFuture::Ready(crate::tools::HeaderResult::plain(
+                    "pending".into(),
+                ))
+            }
+
+            fn execute(
+                self: Box<Self>,
+                _ctx: &crate::tools::ToolContext,
+            ) -> crate::tools::ExecFuture<'_> {
+                Box::pin(async move {
+                    let _ = self.started.send_async(()).await;
+                    std::future::pending().await
+                })
+            }
+        }
+
+        struct PendingTool {
+            started: flume::Sender<()>,
+        }
+
+        impl crate::tools::Tool for PendingTool {
+            fn name(&self) -> &'static str {
+                "pending_native"
+            }
+
+            fn description(
+                &self,
+                _ctx: &crate::tools::DescriptionContext,
+            ) -> std::borrow::Cow<'_, str> {
+                "pending native tool".into()
+            }
+
+            fn schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+
+            fn parse(
+                &self,
+                _input: &Value,
+            ) -> Result<Box<dyn crate::tools::registry::ToolInvocation>, crate::tools::ParseError>
+            {
+                Ok(Box::new(PendingInvocation {
+                    started: self.started.clone(),
+                }))
+            }
+        }
+
+        smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(1);
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn crate::tools::Tool> = Arc::new(PendingTool {
+                started: started_tx,
+            });
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "pending".into(),
+                    },
+                )
+                .unwrap();
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.registry = Arc::new(registry);
+            let (trigger, cancel) = crate::CancelToken::new();
+            ctx.cancel = cancel;
+            let execution = smol::spawn(async move {
+                run(
+                    &ctx.registry,
+                    None,
+                    "pending-1".into(),
+                    "pending_native",
+                    &serde_json::json!({}),
+                    &ctx,
+                    Emit::Silent,
+                )
+                .await
+            });
+            started_rx.recv_async().await.unwrap();
+            trigger.cancel();
+
+            let result = execution.await;
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), CANCELLED_STATUS);
+        });
+    }
+
     #[test]
     fn mcp_unannotated_tool_blocked_in_plan_mode() {
         smol::block_on(async {

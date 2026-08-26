@@ -514,7 +514,11 @@ impl ResponsesWebSocket {
         self.available_since = Instant::now();
         self.validated_for_send = false;
         let response_id = acc.response_id().map(ToOwned::to_owned);
-        Ok((response_id, acc.into_stream_response()))
+        let emitted_event = acc.emitted_event();
+        let response = acc
+            .into_stream_response()
+            .map_err(|error| WebSocketAttemptError::response(error, emitted_event, delivery))?;
+        Ok((response_id, response))
     }
 
     #[cfg(test)]

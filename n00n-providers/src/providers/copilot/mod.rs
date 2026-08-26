@@ -9,6 +9,7 @@ use n00n_storage::id::SessionRef;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, warn};
+use url::Url;
 
 use super::anthropic::shared;
 use super::openai::responses;
@@ -159,7 +160,7 @@ impl Copilot {
         let creds = auth::load_token()?;
         let host = creds.host.as_deref().unwrap_or_else(|| "github.com");
         let endpoint =
-            discover_api_endpoint(&self.client, &creds.api_key, &auth::graphql_url(host)).await;
+            discover_api_endpoint(&self.client, &creds.api_key, &auth::graphql_url(host)).await?;
         let auth = CopilotAuth {
             token: creds.api_key,
             endpoint,
@@ -196,10 +197,9 @@ impl Copilot {
 
     async fn fetch_models(&self) -> Result<Vec<CopilotModel>, AgentError> {
         let auth = self.auth().await?;
+        let url = copilot_endpoint_url(&auth.endpoint, MODELS_PATH)?;
         let request = copilot_request(
-            Request::builder()
-                .method("GET")
-                .uri(format!("{}{MODELS_PATH}", auth.endpoint)),
+            Request::builder().method("GET").uri(url.as_str()),
             &auth,
             None,
         )
@@ -317,10 +317,11 @@ impl Copilot {
             apply_responses_reasoning(&mut body, thinking, model, &effort_dialect(&info));
         }
         let resolved = super::ResolvedAuth {
-            base_url: Some(auth.endpoint.clone()),
+            base_url: Some(auth.endpoint.as_str().trim_end_matches('/').to_owned()),
             headers: copilot_headers(&auth, Some("conversation-agent")),
         };
-        responses::do_stream(
+        let request_url = copilot_endpoint_url(&auth.endpoint, RESPONSES_PATH)?;
+        responses::do_stream_at(
             &self.client,
             model,
             &body,
@@ -328,6 +329,7 @@ impl Copilot {
             &resolved,
             self.stream_timeout,
             opts,
+            request_url.as_str(),
         )
         .await
         .map(|(_, response)| response)
@@ -378,10 +380,9 @@ impl Copilot {
             body_bytes = serde_json::to_vec(body)?.len(),
             "sending Copilot API request"
         );
+        let url = copilot_endpoint_url(&auth.endpoint, path)?;
         Ok(copilot_request(
-            Request::builder()
-                .method("POST")
-                .uri(format!("{}{path}", auth.endpoint)),
+            Request::builder().method("POST").uri(url.as_str()),
             auth,
             interaction_type,
         ))
@@ -391,7 +392,7 @@ impl Copilot {
 #[derive(Clone)]
 struct CopilotAuth {
     token: String,
-    endpoint: String,
+    endpoint: Url,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -579,21 +580,11 @@ struct GraphQlCopilotEndpoints {
     api: String,
 }
 
-async fn discover_api_endpoint(client: &HttpClient, token: &str, graphql_url: &str) -> String {
-    match try_discover_api_endpoint(client, token, graphql_url).await {
-        Ok(endpoint) => endpoint,
-        Err(err) => {
-            warn!(error = %err, fallback = DEFAULT_API_ENDPOINT, "Copilot endpoint discovery failed");
-            DEFAULT_API_ENDPOINT.to_owned()
-        }
-    }
-}
-
-async fn try_discover_api_endpoint(
+async fn discover_api_endpoint(
     client: &HttpClient,
     token: &str,
     graphql_url: &str,
-) -> Result<String, AgentError> {
+) -> Result<Url, AgentError> {
     let body = json!({ "query": GRAPHQL_QUERY });
     let request = Request::builder()
         .method("POST")
@@ -608,12 +599,50 @@ async fn try_discover_api_endpoint(
         return Err(AgentError::from_response(response).await);
     }
 
-    let parsed: GraphQlResponse = serde_json::from_str(&response.text().await?)?;
-    parsed
+    parse_copilot_discovery_response(&response.text().await?)
+}
+
+fn parse_copilot_discovery_response(body: &str) -> Result<Url, AgentError> {
+    let parsed: GraphQlResponse = serde_json::from_str(body)?;
+    let endpoint = parsed
         .data
         .map(|data| data.viewer.copilot_endpoints.api)
         .ok_or_else(|| AgentError::Config {
             message: "Copilot endpoint discovery response contained no data".into(),
+        })?;
+    validate_copilot_endpoint(&endpoint)
+}
+
+fn validate_copilot_endpoint(endpoint: &str) -> Result<Url, AgentError> {
+    let mut url = Url::parse(endpoint).map_err(|_| AgentError::Config {
+        message: "Copilot endpoint discovery returned an invalid URL".into(),
+    })?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err(AgentError::Config {
+            message: "Copilot endpoint must be an absolute HTTPS URL".into(),
+        });
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AgentError::Config {
+            message: "Copilot endpoint contains forbidden URL components".into(),
+        });
+    }
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    Ok(url)
+}
+
+fn copilot_endpoint_url(endpoint: &Url, path: &str) -> Result<Url, AgentError> {
+    endpoint
+        .join(path.trim_start_matches('/'))
+        .map_err(|_| AgentError::Config {
+            message: "Copilot request URL could not be constructed".into(),
         })
 }
 
@@ -667,12 +696,12 @@ fn copilot_auth_from_resolved(auth: &super::ResolvedAuth) -> Result<CopilotAuth,
             message: "dynamic Copilot provider missing Bearer authorization header".into(),
         })?;
 
+    let endpoint = auth.base_url.as_deref().ok_or_else(|| AgentError::Config {
+        message: "dynamic Copilot provider is missing its API endpoint".into(),
+    })?;
     Ok(CopilotAuth {
         token,
-        endpoint: auth
-            .base_url
-            .clone()
-            .unwrap_or_else(|| DEFAULT_API_ENDPOINT.into()),
+        endpoint: validate_copilot_endpoint(endpoint)?,
     })
 }
 
@@ -797,7 +826,54 @@ impl Provider for Copilot {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
+
+    #[test_case("https://api.githubcopilot.com" => "https://api.githubcopilot.com/"; "root_endpoint")]
+    #[test_case("https://copilot.example/api" => "https://copilot.example/api/"; "path_endpoint")]
+    fn validates_copilot_endpoint(input: &str) -> String {
+        validate_copilot_endpoint(input).unwrap().to_string()
+    }
+
+    #[test_case("http://api.githubcopilot.com" ; "http")]
+    #[test_case("/relative" ; "relative")]
+    #[test_case("https://user@example.com" ; "userinfo")]
+    #[test_case("https://example.com/api?region=1" ; "query")]
+    #[test_case("https://example.com/api#fragment" ; "fragment")]
+    fn rejects_invalid_copilot_endpoint(input: &str) {
+        assert!(validate_copilot_endpoint(input).is_err());
+    }
+
+    #[test]
+    fn copilot_discovery_without_data_fails() {
+        assert!(parse_copilot_discovery_response(r#"{"data":null}"#).is_err());
+    }
+
+    #[test]
+    fn copilot_discovery_rejects_insecure_endpoint() {
+        let body =
+            r#"{"data":{"viewer":{"copilotEndpoints":{"api":"http://api.githubcopilot.com"}}}}"#;
+        assert!(parse_copilot_discovery_response(body).is_err());
+    }
+
+    #[test]
+    fn joins_copilot_endpoint_paths_without_dropping_base_path() {
+        let endpoint = validate_copilot_endpoint("https://copilot.example/api").unwrap();
+
+        assert_eq!(
+            copilot_endpoint_url(&endpoint, MODELS_PATH)
+                .unwrap()
+                .as_str(),
+            "https://copilot.example/api/models"
+        );
+        assert_eq!(
+            copilot_endpoint_url(&endpoint, RESPONSES_PATH)
+                .unwrap()
+                .as_str(),
+            "https://copilot.example/api/responses"
+        );
+    }
 
     #[test]
     fn endpoint_prefers_messages_then_responses_then_chat() {

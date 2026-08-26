@@ -221,7 +221,7 @@ fn stored_credentials(
 }
 
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
-    let config = ProvidersConfig::load();
+    let config = ProvidersConfig::load()?;
     let base_url =
         resolve_base_url("devin", config.get("devin")).unwrap_or_else(|| DEVIN_API_URL.to_string());
     if let Some(mut credentials) = DevinCredentials::from_env()? {
@@ -295,7 +295,14 @@ fn legacy_account_for_provider_slug_in(config: &ProvidersConfig, slug: &str) -> 
 
 pub(crate) fn legacy_account_for_provider_slug(slug: &str) -> Option<String> {
     legacy_account_name(slug)?;
-    legacy_account_for_provider_slug_in(&ProvidersConfig::load(), slug)
+    let config = match ProvidersConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            warn!(%error, slug, "cannot load provider configuration for Devin account alias");
+            return None;
+        }
+    };
+    legacy_account_for_provider_slug_in(&config, slug)
 }
 
 fn expand_home(path: &Path) -> Result<PathBuf, AgentError> {
@@ -366,7 +373,7 @@ fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials
     if !is_valid_account_name(account) {
         return Ok(None);
     }
-    let config = ProvidersConfig::load();
+    let config = ProvidersConfig::load()?;
     let legacy = legacy_account_definition(&config, account);
     let account_url_override = account_api_server_url_override(&config, legacy);
     let account_base_url =
@@ -883,7 +890,9 @@ pub(crate) fn has_credentials() -> bool {
     if has_primary_credentials() {
         return true;
     }
-    let config = ProvidersConfig::load();
+    let Ok(config) = ProvidersConfig::load() else {
+        return false;
+    };
     configured_account_names(&config)
         .iter()
         .any(|account| account_has_credentials(account))

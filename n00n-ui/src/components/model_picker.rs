@@ -242,7 +242,7 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     } else if let Some(name) = dynamic::display_name(provider_str) {
         name.to_string()
     } else {
-        let config = n00n_config::providers::ProvidersConfig::load();
+        let config = n00n_config::providers::ProvidersConfig::load_or_exit();
         config.get(provider_str)?;
         n00n_config::providers::resolve_display_name(provider_str, config.get(provider_str))
     };

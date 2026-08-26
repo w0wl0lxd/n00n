@@ -66,17 +66,13 @@ impl CallbackServer {
             };
             let request = String::from_utf8_lossy(&buf);
 
-            let path = match request.lines().next() {
-                Some(line) => line.split_whitespace().nth(1).map_or_else(|| "", |v| v),
-                None => continue,
+            let query = match parse_callback_request(&request, self.port) {
+                Ok(query) => query,
+                Err(status) => {
+                    let _ = respond(&mut stream, status, "Invalid callback request").await;
+                    continue;
+                }
             };
-
-            if !path.starts_with(CALLBACK_PATH) {
-                let _ = respond(&mut stream, 404, "Not Found").await;
-                continue;
-            }
-
-            let query = path.split('?').nth(1).map_or_else(|| "", |v| v);
             let params = parse_query(query);
 
             let state = params
@@ -132,6 +128,32 @@ async fn read_headers(stream: &mut smol::net::TcpStream) -> Result<Vec<u8>, Stri
             return Ok(buf);
         }
     }
+}
+
+fn parse_callback_request(request: &str, port: u16) -> Result<&str, u16> {
+    let mut lines = request.lines();
+    let request_line = lines.next().ok_or(400_u16)?;
+    let mut parts = request_line.split_whitespace();
+    if parts.next() != Some("GET") {
+        return Err(400);
+    }
+    let target = parts.next().ok_or(400_u16)?;
+    if parts.next() != Some("HTTP/1.1") || parts.next().is_some() {
+        return Err(400);
+    }
+    let (path, query) = target.split_once('?').ok_or(400_u16)?;
+    if path != CALLBACK_PATH || query.contains('#') {
+        return Err(404);
+    }
+    let expected_host = format!("127.0.0.1:{port}");
+    let host = lines.find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("host").then(|| value.trim())
+    });
+    if host != Some(expected_host.as_str()) {
+        return Err(403);
+    }
+    Ok(query)
 }
 
 pub(crate) fn parse_query(query: &str) -> Vec<(String, String)> {
@@ -221,12 +243,20 @@ mod tests {
                 .await
                 .unwrap();
             let req = format!(
-                "GET {CALLBACK_PATH}?code=auth-code&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                "GET {CALLBACK_PATH}?code=auth-code&state=test-state HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
             );
             stream.write_all(req.as_bytes()).await.unwrap();
 
             let result = handle.await.unwrap();
             assert_eq!(result.code, "auth-code");
         });
+    }
+
+    #[test_case("GET /mcp/oauth/callback?code=x&state=y HTTP/1.1\r\nHost: 127.0.0.1:19876\r\n\r\n", Ok("code=x&state=y") ; "exact_callback")]
+    #[test_case("GET /mcp/oauth/callback.evil?code=x&state=y HTTP/1.1\r\nHost: 127.0.0.1:19876\r\n\r\n", Err(404) ; "path_prefix")]
+    #[test_case("POST /mcp/oauth/callback?code=x&state=y HTTP/1.1\r\nHost: 127.0.0.1:19876\r\n\r\n", Err(400) ; "wrong_method")]
+    #[test_case("GET /mcp/oauth/callback?code=x&state=y HTTP/1.1\r\nHost: localhost:19876\r\n\r\n", Err(403) ; "wrong_host")]
+    fn callback_request_validation(input: &str, expected: Result<&str, u16>) {
+        assert_eq!(parse_callback_request(input, 19876), expected);
     }
 }

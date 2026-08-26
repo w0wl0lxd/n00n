@@ -10,11 +10,12 @@ use n00n_providers::Timeouts;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
 use n00n_providers::provider::{self, Provider};
-use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
-    CompactionStateError, Session, StoredMode, StoredSessionStateSnapshot, TranscriptEntry,
+    CompactionStateError, SESSIONS_DIR, Session, SessionError, StoredMode,
+    StoredSessionStateSnapshot, TranscriptEntry,
 };
+use n00n_storage::{StateDir, StorageError};
 use serde_json::Value;
 use tracing::{error, warn};
 
@@ -223,14 +224,19 @@ impl SessionStore {
         mode: &AgentMode,
         state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     ) -> Result<Self, String> {
-        let mut is_new = false;
-        let session = if let Ok(session) = StoredSession::load(session_id, &dir) {
-            session
-        } else {
-            is_new = true;
-            let mut session = StoredSession::new(model_spec, cwd);
-            session.id = session_id;
-            session
+        let session_path = dir
+            .ensure_subdir(SESSIONS_DIR)
+            .map_err(|error| format!("open sessions directory: {error}"))?
+            .join(format!("{session_id}.jsonl"));
+        let session_existed = session_path.exists();
+        let (session, is_new) = match StoredSession::load(session_id, &dir) {
+            Ok(session) => (session, false),
+            Err(SessionError::Storage(StorageError::NotFound(_))) if !session_existed => {
+                let mut session = StoredSession::new(model_spec, cwd);
+                session.id = session_id;
+                (session, true)
+            }
+            Err(error) => return Err(format!("load session {session_id}: {error}")),
         };
         let identity = session_identity(&session)?;
         let mut store = Self {
@@ -715,6 +721,7 @@ pub struct InteractiveHandle {
     pub input_tx: flume::Sender<AgentInput>,
     pub answer_tx: flume::Sender<String>,
     pub cancel_tx: flume::Sender<()>,
+    pub shutdown_tx: flume::Sender<()>,
     pub model_tx: flume::Sender<Model>,
     pub session_id: SessionRef,
     pub permissions: Arc<PermissionManager>,
@@ -741,6 +748,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     let (input_tx, input_rx) = flume::unbounded::<AgentInput>();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
     let (cancel_tx, cancel_rx) = flume::bounded::<()>(1);
+    let (shutdown_tx, shutdown_rx) = flume::bounded::<()>(1);
     let (model_tx, model_rx) = flume::unbounded::<Model>();
 
     let (session_id, session_ref) = if let Some(w) = params.session_id.clone() {
@@ -806,7 +814,12 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
             let mut run_id: u64 = 0;
             let mut tool_filter = tool_filter.clone();
 
-            while let Ok(input) = input_rx.recv_async().await {
+            loop {
+                let Some((input, cancel, cancel_task)) =
+                    next_interactive_run(&input_rx, &cancel_rx, &shutdown_rx).await
+                else {
+                    break;
+                };
                 let event_tx = EventSender::new(raw_tx.clone(), run_id);
                 let error_tx = event_tx.clone();
                 let turn_mode = input.mode.clone();
@@ -829,6 +842,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     Err(message) => {
                         let _ = error_tx.send(AgentEvent::Error { message });
                         run_id += 1;
+                        cancel_task.cancel().await;
                         continue;
                     }
                 }
@@ -886,20 +900,12 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         .is_err()
                     {
                         error!("event receiver closed while reporting plan prompt error");
+                        cancel_task.cancel().await;
                         break;
                     }
+                    cancel_task.cancel().await;
                     continue;
                 }
-
-                let (trigger, cancel) = CancelToken::new();
-                let cancel_task = smol::spawn({
-                    let cancel_rx = cancel_rx.clone();
-                    async move {
-                        if cancel_rx.recv_async().await.is_ok() {
-                            trigger.cancel();
-                        }
-                    }
-                });
 
                 while answer_rx.lock().await.try_recv().is_ok() {}
 
@@ -995,11 +1001,72 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         input_tx,
         answer_tx,
         cancel_tx,
+        shutdown_tx,
         model_tx,
         session_id: session_ref,
         permissions,
         task,
     }
+}
+
+async fn next_interactive_run<T>(
+    input_rx: &Receiver<T>,
+    cancel_rx: &Receiver<()>,
+    shutdown_rx: &Receiver<()>,
+) -> Option<(T, CancelToken, smol::Task<()>)> {
+    enum RunBoundary<T> {
+        Input(Result<T, flume::RecvError>),
+        Cancel(Result<(), flume::RecvError>),
+        Shutdown,
+    }
+
+    let mut cancel_open = true;
+    loop {
+        while cancel_rx.try_recv().is_ok() {}
+        let boundary = if cancel_open {
+            futures_lite::future::or(
+                async {
+                    let _ = shutdown_rx.recv_async().await;
+                    RunBoundary::Shutdown
+                },
+                futures_lite::future::or(
+                    async { RunBoundary::Cancel(cancel_rx.recv_async().await) },
+                    async { RunBoundary::Input(input_rx.recv_async().await) },
+                ),
+            )
+            .await
+        } else {
+            futures_lite::future::or(
+                async {
+                    let _ = shutdown_rx.recv_async().await;
+                    RunBoundary::Shutdown
+                },
+                async { RunBoundary::Input(input_rx.recv_async().await) },
+            )
+            .await
+        };
+
+        match boundary {
+            RunBoundary::Input(Ok(input)) => {
+                let (cancel, cancel_task) = cancellation_for_run(cancel_rx);
+                return Some((input, cancel, cancel_task));
+            }
+            RunBoundary::Input(Err(_)) | RunBoundary::Shutdown => return None,
+            RunBoundary::Cancel(Ok(())) => {}
+            RunBoundary::Cancel(Err(_)) => cancel_open = false,
+        }
+    }
+}
+
+fn cancellation_for_run(cancel_rx: &Receiver<()>) -> (CancelToken, smol::Task<()>) {
+    let (trigger, cancel) = CancelToken::new();
+    let cancel_rx = cancel_rx.clone();
+    let task = smol::spawn(async move {
+        if cancel_rx.recv_async().await.is_ok() {
+            trigger.cancel();
+        }
+    });
+    (cancel, task)
 }
 
 fn extract_tool_names(tools: &Value) -> Vec<String> {
@@ -1136,6 +1203,79 @@ mod tests {
 
     fn load(tmp: &TempDir) -> StoredSession {
         StoredSession::load(session_id(), &StateDir::from_path(tmp.path().to_path_buf())).unwrap()
+    }
+
+    #[test]
+    fn corrupt_session_load_is_propagated_without_overwriting_history() {
+        let tmp = TempDir::new().unwrap();
+        drop(store_in(&tmp));
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let sessions_dir = dir
+            .ensure_subdir(n00n_storage::sessions::SESSIONS_DIR)
+            .unwrap();
+        let path = sessions_dir.join(format!("{}.jsonl", session_id()));
+        let persisted = std::fs::read(&path).unwrap();
+        let corrupt_history = &persisted[..5];
+        std::fs::write(&path, corrupt_history).unwrap();
+
+        let Err(error) = SessionStore::open_in_with_state(
+            dir,
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            None,
+        ) else {
+            panic!("corrupt session unexpectedly opened");
+        };
+
+        assert!(error.contains("load session"));
+        assert_eq!(std::fs::read(path).unwrap(), corrupt_history);
+    }
+
+    #[test]
+    fn idle_cancellation_does_not_cancel_the_next_run() {
+        smol::block_on(async {
+            let (input_tx, input_rx) = flume::bounded(1);
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
+            let (_shutdown_tx, shutdown_rx) = flume::bounded(1);
+            cancel_tx.send(()).unwrap();
+            input_tx.send(7).unwrap();
+
+            let (input, cancel, cancel_task) =
+                next_interactive_run(&input_rx, &cancel_rx, &shutdown_rx)
+                    .await
+                    .unwrap();
+
+            assert_eq!(input, 7);
+            assert!(!cancel.is_cancelled());
+
+            cancel_tx.send_async(()).await.unwrap();
+            cancel.cancelled().await;
+            assert!(cancel.is_cancelled());
+            cancel_task.await;
+        });
+    }
+
+    #[test]
+    fn cancellation_after_input_dequeue_cancels_run_during_setup() {
+        smol::block_on(async {
+            let (input_tx, input_rx) = flume::bounded(1);
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
+            let (_shutdown_tx, shutdown_rx) = flume::bounded(1);
+            input_tx.send(7).unwrap();
+
+            let (input, cancel, cancel_task) =
+                next_interactive_run(&input_rx, &cancel_rx, &shutdown_rx)
+                    .await
+                    .unwrap();
+            assert_eq!(input, 7);
+
+            cancel_tx.send_async(()).await.unwrap();
+            cancel.cancelled().await;
+            assert!(cancel.is_cancelled());
+            cancel_task.await;
+        });
     }
 
     #[test_case::test_case(())]
