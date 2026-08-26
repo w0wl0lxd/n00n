@@ -1126,6 +1126,7 @@ async fn start_server(
     } else {
         Vec::new()
     };
+    transport.mark_established();
     info!(
         server = config.name,
         tool_count = tool_infos.len(),

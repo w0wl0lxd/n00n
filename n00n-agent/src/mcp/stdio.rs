@@ -213,6 +213,7 @@ pub struct StdioTransport {
     next_id: AtomicU64,
     timeout: Duration,
     alive: Arc<AtomicBool>,
+    established: Arc<AtomicBool>,
     _reader_task: smol::Task<()>,
     _stderr_task: smol::Task<()>,
     child: StdMutex<ChildGuard>,
@@ -268,21 +269,24 @@ impl StdioTransport {
 
         let name: Arc<str> = Arc::from(name);
         let alive = Arc::new(AtomicBool::new(true));
+        let established = Arc::new(AtomicBool::new(false));
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
 
         let reader_task = {
             let name = Arc::clone(&name);
             let alive = Arc::clone(&alive);
+            let established = Arc::clone(&established);
             let pending = Arc::clone(&pending);
             smol::spawn(async move {
                 let result = Self::reader_loop(&name, &mut BufReader::new(stdout), &pending).await;
                 let terminal_err = result.err().unwrap_or_else(|| McpError::ServerDied {
                     server: (*name).into(),
                 });
-                // `alive` is cleared by `begin_shutdown` before the child is signaled, so
-                // an intentional shutdown always clears it before this task observes EOF.
-                // Only an unrequested death (still `true` here) is warning-worthy.
-                if alive.swap(false, Ordering::AcqRel) {
+                if !established.load(Ordering::Acquire) {
+                    // start_server owns this attempt and reports its own failure via
+                    // apply_start_result; an independent warn here would just duplicate it.
+                    debug!(server = &*name, error = %terminal_err, "MCP reader loop ended before handshake completed");
+                } else if alive.swap(false, Ordering::AcqRel) {
                     warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
                     on_death(terminal_err.clone());
                 } else {
@@ -345,6 +349,7 @@ impl StdioTransport {
             next_id: AtomicU64::new(1),
             timeout,
             alive,
+            established,
             _reader_task: reader_task,
             _stderr_task: stderr_task,
             child: StdMutex::new(ChildGuard::new(child)),
@@ -545,6 +550,10 @@ impl McpTransport for StdioTransport {
 
     fn transport_kind(&self) -> &'static str {
         "stdio"
+    }
+
+    fn mark_established(&self) {
+        self.established.store(true, Ordering::Release);
     }
 }
 
@@ -788,6 +797,7 @@ mod tests {
                 }),
             )
             .unwrap();
+            transport.mark_established();
 
             let StdioTransport {
                 _reader_task: reader_task,
@@ -799,6 +809,36 @@ mod tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_some()
             );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn death_before_handshake_established_does_not_invoke_callback() {
+        smol::block_on(async {
+            let died = Arc::new(AtomicBool::new(false));
+            let died_write = Arc::clone(&died);
+            // Never calls `mark_established` — matches a real `start_server` still mid
+            // handshake when the child dies, which apply_start_result reports itself.
+            let transport = StdioTransport::spawn(
+                "test",
+                "sh",
+                &["-c".into(), "exit 0".into()],
+                &HashMap::new(),
+                Duration::from_secs(5),
+                Box::new(move |_| {
+                    died_write.store(true, Ordering::Release);
+                }),
+            )
+            .unwrap();
+
+            let StdioTransport {
+                _reader_task: reader_task,
+                ..
+            } = transport;
+            reader_task.await;
+
+            assert!(!died.load(Ordering::Acquire));
         });
     }
 }

@@ -31,7 +31,7 @@ local function retrieve_lexical(ctx, goal, k)
       break
     end
     local ok, out = pcall(function()
-      return n00n.agent.call_tool(ctx, "grep", { pattern = kw, limit = 3 })
+      return n00n.agent.call_tool(ctx, "search_code", { pattern = kw, limit = 3 })
     end)
     if ok and out and #out > 0 then
       picked[#picked + 1] = "## " .. kw .. "\n" .. out:sub(1, 400)
@@ -92,7 +92,7 @@ local function retrieve_vector(ctx, goal, k)
   local scored = {}
   for _, kw in ipairs(kws) do
     local ok, out = pcall(function()
-      return n00n.agent.call_tool(ctx, "grep", { pattern = kw, limit = 3 })
+      return n00n.agent.call_tool(ctx, "search_code", { pattern = kw, limit = 3 })
     end)
     if ok and out and #out > 0 then
       scored[#scored + 1] = {
