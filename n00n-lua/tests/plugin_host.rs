@@ -33,6 +33,7 @@ use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
+const RTK_ROUTE_TIMEOUT_SECONDS: u8 = 1;
 const RTK_MANAGED_ROUTE_CASES: &[&str] = &[
     "aws --version",
     "cargo --version",
@@ -4978,7 +4979,7 @@ fn bash_handler_routes_every_managed_command_through_rtk() {
     let entry = registry.get("bash").expect("bash registered");
 
     for command in RTK_MANAGED_ROUTE_CASES {
-        let bounded_command = format!("timeout 1 {command}");
+        let bounded_command = format!("timeout {RTK_ROUTE_TIMEOUT_SECONDS} {command}");
         let invocation = entry
             .tool
             .parse(&serde_json::json!({ "command": bounded_command }))
