@@ -1,0 +1,1 @@
+Tool failure logs now include a redacted, size-bounded error summary instead of only a byte count, and a busy OpenAI response-chain session is retried with backoff instead of failing the turn immediately.

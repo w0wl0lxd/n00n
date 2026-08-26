@@ -16,7 +16,7 @@ use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolAdmissionClass, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::{ToolKey, canonical_tool_name};
-use n00n_redact::redact_json_value_for_log;
+use n00n_redact::{redact_json_arg, redact_json_value_for_log};
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
 const CANCELLED_SUBAGENT_OUTPUTS: &[&str] = &[
@@ -563,6 +563,7 @@ async fn run_authorized(
                     source = %entry.source.as_log_field(),
                     elapsed_ms = elapsed_millis(elapsed),
                     error_bytes = message.len(),
+                    error_summary = %redact_json_arg(&message),
                     "tool failed"
                 );
                 ToolDoneEvent {
@@ -708,7 +709,12 @@ fn run_local_tool(
             false,
         ),
         Err(e) => {
-            warn!(tool = %name, error_bytes = e.len(), "local tool failed");
+            warn!(
+                tool = %name,
+                error_bytes = e.len(),
+                error_summary = %redact_json_arg(&e),
+                "local tool failed"
+            );
             (
                 crate::tools::truncate_output(
                     &e,
@@ -1321,6 +1327,109 @@ mod tests {
             assert!(done.is_error);
             assert_eq!(done.output.as_text(), "nope");
         });
+    }
+
+    /// Captures every field of every emitted `tracing` event, keyed by field
+    /// name, so a test can assert on a specific structured field (e.g.
+    /// `error_summary`) without depending on the formatted log line.
+    struct FieldCapture {
+        sender: std::sync::mpsc::Sender<std::collections::HashMap<String, String>>,
+    }
+
+    impl tracing::Subscriber for FieldCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = FieldVisitor::default();
+            event.record(&mut visitor);
+            let _ = self.sender.send(visitor.0);
+        }
+
+        fn enter(&self, _span: &tracing::Id) {}
+
+        fn exit(&self, _span: &tracing::Id) {}
+    }
+
+    #[derive(Default)]
+    struct FieldVisitor(std::collections::HashMap<String, String>);
+
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name().to_owned(), value.to_owned());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        }
+    }
+
+    /// A tool error is undiagnosable if only its byte length is logged. The
+    /// "local tool failed" warning must also carry a redacted, bounded
+    /// summary of the error text so an operator can tell what actually
+    /// failed without the log itself becoming a secret-leak or a flood risk.
+    #[test]
+    fn local_tool_failure_logs_redacted_bounded_error_summary() {
+        let secret = "sk-super-secret-token-0123456789";
+        let huge_error = format!(
+            "boom: password=hunter2 token={secret} {}",
+            "x".repeat(5_000)
+        );
+        let huge_error_len = huge_error.chars().count();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let subscriber = FieldCapture { sender };
+
+        let done = tracing::subscriber::with_default(subscriber, || {
+            smol::block_on(async {
+                let ctx = local_ctx("boom", move |_| Err(huge_error.clone()));
+                run(
+                    ToolRegistry::global(),
+                    None,
+                    "t1".into(),
+                    "boom",
+                    &serde_json::json!({}),
+                    &ctx,
+                    Emit::Silent,
+                )
+                .await
+            })
+        });
+        assert!(done.is_error);
+
+        let fields = receiver
+            .into_iter()
+            .find(|fields| fields.get("message").map(String::as_str) == Some("local tool failed"))
+            .expect("\"local tool failed\" event must be logged");
+
+        assert!(
+            fields.contains_key("error_bytes"),
+            "existing error_bytes field must be preserved"
+        );
+        let summary = fields
+            .get("error_summary")
+            .expect("error_summary field must be present so the failure is diagnosable");
+        assert!(
+            !summary.contains(secret) && !summary.contains("hunter2"),
+            "secrets must not leak into the log: {summary}"
+        );
+        assert!(
+            summary.contains("[redacted]"),
+            "secret-shaped values must be replaced with a redaction marker: {summary}"
+        );
+        assert!(
+            summary.chars().count() < huge_error_len,
+            "summary must be capped, not the full error text"
+        );
     }
 
     #[test]
