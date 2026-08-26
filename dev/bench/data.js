@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787739015038,
+  "lastUpdate": 1787780798000,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -23749,6 +23749,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 186082,
             "range": "± 5728",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56d84707c4b03f978fe616a8cf1ad69ca2235b5a",
+          "message": "fix(storage): bound compacted transcript records (#446)\n\n* fix(storage): bound compacted transcript records\n\n* fix(storage): recover unterminated transcript compactions on load\n\nAn interrupted append can truncate a session log between a compaction's\nstart and end records, and a start record that fails to deserialize is\nskipped by the parse loop. Either left the compaction stack non-empty at\nEOF, which returned MalformedTranscript and made the session permanently\nunopenable and unresumable.\n\nClose the open compactions in place and warn once instead. Every entry\nread so far is intact, and a stray end record with no matching start is\nlossless to drop because its entries are already flat in the transcript.\nThis removes the last two construction sites of MalformedTranscript, so\nthe variant goes with them.\n\nAlso lock the externally-tagged serde shape of TranscriptEntry, which the\nv3 log upgrade path depends on, behind a regression test.\n\n* fix(storage): persist compaction recovery and preserve nested boundaries\n\nThree review findings on the recovery added in a065cff1e.\n\nRecovery was in memory only. Neither `saw_legacy_transcript` nor\n`recovered_tail` was set, so `SessionLog::open` did not rewrite the log and\nthe unbalanced records survived on disk. A later append then landed after\nthe still-open start record and the next load absorbed those live entries\ninto the archived compaction, compounding on every reopen. Recovery now\nsets a flag that forces the rewrite.\n\nAn unreadable *nested* start record was skipped outright, so its matching\nend popped the valid outer compaction and closed it early. The outer\ncompaction's archived entries surfaced at the transcript root, where\n`active_messages_from_transcript` treats them as live and would replay\nthem to the provider. An undecodable start now pushes a placeholder that\nholds its place on the stack; closing it splices its entries into the\nparent instead of wrapping them.\n\nCompaction nesting was unbounded. `TranscriptEntry` is a recursive tree\nwalked by recursive consumers, so an arbitrarily deep chain of start\nrecords within the decode budget could overflow the stack on load,\ntraversal, or drop. Nesting past `MAX_TRANSCRIPT_COMPACTION_DEPTH` is\nflattened through the same placeholder path.\n\nEach of the three has a regression test confirmed to fail with its fix\nreverted. Tests now assert against the shared record-type constants rather\nthan literal tag strings, so renaming a constant cannot silently stop them\nexercising recovery.\n\n* fix(agent): cap transcript compaction nesting when compacting\n\nEach compaction wraps the whole prior transcript, so a session's nesting\ndepth is its compaction count. The loader flattens anything deeper than\n`MAX_TRANSCRIPT_COMPACTION_DEPTH`, which a long-lived session reaches with\nentirely valid data — every reload would then drop the oldest boundary's\nsummary and rewrite the log.\n\n`compact_boundary` now holds the same cap the loader enforces, so the two\nsides agree and reconstruction is lossless for sessions the writer\nproduced. `flatten_deepest_compaction` drops the oldest boundary, whose\nsummary text survives as the `GeneratedMessage` recorded beside it.",
+          "timestamp": "2026-08-26T17:31:58-04:00",
+          "tree_id": "fb425be40b4b20205d9dfa3380174c347b8bb20a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/56d84707c4b03f978fe616a8cf1ad69ca2235b5a"
+        },
+        "date": 1787780797143,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6465796,
+            "range": "± 290374",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2468251,
+            "range": "± 4744",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2470903,
+            "range": "± 40466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7694364,
+            "range": "± 55875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3881034,
+            "range": "± 7690",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3778683,
+            "range": "± 96546",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 555045,
+            "range": "± 1315",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167928,
+            "range": "± 294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167892,
+            "range": "± 192",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1061358,
+            "range": "± 13126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 629619,
+            "range": "± 5824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 628107,
+            "range": "± 7464",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 77843,
+            "range": "± 683",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 108182,
+            "range": "± 5685",
             "unit": "ns/iter"
           }
         ]
