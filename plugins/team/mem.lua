@@ -2,6 +2,53 @@ local helpers = require("memory_helpers")
 
 local M = {}
 
+local run_sequence = 0
+
+function M.new_run_id(goal, timestamp)
+  run_sequence = run_sequence + 1
+  return n00n.workflow.hash(goal .. "\0" .. tostring(timestamp or os.time()) .. "\0" .. tostring(run_sequence))
+end
+
+function M.prepare_resume_state(state)
+  if type(state) ~= "table" or type(state.failed_step) ~= "number" then
+    return state
+  end
+
+  local removed = false
+  local results = state.results
+  if type(results) == "table" and #results > 0 then
+    local prefix = string.format("[%d] %s: ERROR ", state.failed_step, tostring(state.failed_role or ""))
+    for index = #results, 1, -1 do
+      local result = results[index]
+      if type(result) == "string" and result:sub(1, #prefix) == prefix then
+        table.remove(results, index)
+        removed = true
+        break
+      end
+    end
+  end
+  if removed and type(state.failures) == "number" and state.failures > 0 then
+    state.failures = state.failures - 1
+  end
+  state.failed_step = nil
+  state.failed_role = nil
+  return state
+end
+
+function M.prepare_checkpoint_state(state)
+  local checkpoint_state = {}
+  for key, value in pairs(state) do
+    checkpoint_state[key] = value
+  end
+  if type(state.results) == "table" then
+    checkpoint_state.results = {}
+    for index, result in ipairs(state.results) do
+      checkpoint_state.results[index] = result
+    end
+  end
+  return M.prepare_resume_state(checkpoint_state)
+end
+
 local function base_dir()
   local state = n00n.env.state_dir()
   if not state then

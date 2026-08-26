@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, warn};
 
-use crate::AgentError;
+use crate::{AgentError, ChildGuard};
 
 const HOOK_NOT_FOUND_PREFIX: &str = "compaction hook command not found:";
 const HOOK_TIMEOUT_PREFIX: &str = "hook command timed out after";
@@ -297,8 +298,15 @@ async fn run_command_hook(
     let expanded_cmd = expand_path(command);
     let expanded_args: Vec<String> = args.iter().map(|a| expand_path(a)).collect();
 
-    let mut cmd = async_process::Command::new(&expanded_cmd);
-    cmd.args(&expanded_args).current_dir(cwd).kill_on_drop(true);
+    let mut std_cmd = Command::new(&expanded_cmd);
+    std_cmd.args(&expanded_args).current_dir(cwd);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        std_cmd.process_group(0);
+    }
+    let mut cmd: async_process::Command = std_cmd.into();
+    cmd.kill_on_drop(true);
 
     let input_json = serde_json::to_string(input).map_err(|e| AgentError::Config {
         message: format!("failed to serialize hook input: {e}"),
@@ -327,6 +335,7 @@ async fn run_command_hook(
     let stderr = child.stderr.take().ok_or_else(|| AgentError::Config {
         message: "failed to get stderr".to_string(),
     })?;
+    let mut child = ChildGuard::new(child);
 
     let mut stdout_buf = Vec::new();
     let mut stderr_buf = Vec::new();
@@ -365,7 +374,7 @@ async fn run_command_hook(
     .await;
 
     if !completed {
-        let _ = child.kill();
+        child.kill_and_reap().await;
         return Err(AgentError::Config {
             message: format!("{HOOK_TIMEOUT_PREFIX} {timeout_secs}s: {expanded_cmd}"),
         });
@@ -548,6 +557,11 @@ pub async fn run_postcompact_hooks(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    const DESCENDANT_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+    #[cfg(target_os = "linux")]
+    const DESCENDANT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
     #[test]
     fn strip_jsonc_comments_removes_single_line() {
         let input = r#"{"a": 1, // comment
@@ -716,6 +730,56 @@ mod tests {
                 err.to_string().contains(HOOK_NOT_FOUND_PREFIX),
                 "expected {HOOK_NOT_FOUND_PREFIX:?} in: {err}"
             );
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timed_out_hook_terminates_descendant_processes() {
+        smol::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let pid_path = temp.path().join("descendant.pid");
+            let script_path = temp.path().join("hook.sh");
+            std::fs::write(
+                &script_path,
+                "sleep 60 & child=$!; printf '%s' \"$child\" > \"$1\"; wait",
+            )
+            .unwrap();
+            let args = vec![
+                script_path.to_string_lossy().into_owned(),
+                pid_path.to_string_lossy().into_owned(),
+            ];
+            let error = run_command_hook(temp.path(), "sh", &args, 1, &serde_json::json!({}))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(HOOK_TIMEOUT_PREFIX));
+
+            let raw_pid = std::fs::read_to_string(&pid_path)
+                .unwrap()
+                .parse::<i32>()
+                .unwrap();
+            let is_running = || {
+                std::fs::read_to_string(format!("/proc/{raw_pid}/status"))
+                    .ok()
+                    .and_then(|status| {
+                        status
+                            .lines()
+                            .find_map(|line| line.strip_prefix("State:"))
+                            .map(str::to_owned)
+                    })
+                    .is_some_and(|state| !state.trim_start().starts_with('Z'))
+            };
+            let deadline = std::time::Instant::now() + DESCENDANT_EXIT_TIMEOUT;
+            while is_running() && std::time::Instant::now() < deadline {
+                std::thread::sleep(DESCENDANT_POLL_INTERVAL);
+            }
+            let running = is_running();
+            if running {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &raw_pid.to_string()])
+                    .status();
+            }
+            assert!(!running, "timed-out hook left descendant {raw_pid} running");
         });
     }
 

@@ -380,7 +380,8 @@ impl JobWaitState {
         let _ = self.event_tx.send(JobEvent::Exit(code));
     }
 
-    fn cleanup_start_failure(mut self) {
+    fn cleanup_start_failure(mut self, event_rx: flume::Receiver<JobEvent>) {
+        drop(event_rx);
         #[cfg(unix)]
         kill_process_group(self.pid);
         #[cfg(not(unix))]
@@ -611,6 +612,7 @@ impl JobStore {
         let stderr_handle = match spawn_reader!(stderr, "job-stderr", Stderr) {
             Ok(handle) => handle,
             Err(error) => {
+                drop(event_rx);
                 terminate_failed_job_start(&mut child, pid);
                 if let Some(handle) = stdout_handle {
                     let _ = handle.join();
@@ -632,6 +634,7 @@ impl JobStore {
         ) {
             Ok(handle) => handle,
             Err(error) => {
+                drop(event_rx);
                 terminate_failed_job_start(&mut child, pid);
                 if let Some(handle) = stdout_handle {
                     let _ = handle.join();
@@ -674,7 +677,7 @@ impl JobStore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
             {
-                state.cleanup_start_failure();
+                state.cleanup_start_failure(event_rx);
             }
             return Err(error.to_string());
         }
@@ -971,10 +974,16 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
             JobSpec::Shell(cmd)
         }
         Value::Table(t) => {
-            let mut iter = t.sequence_values::<String>();
+            let mut iter = t.sequence_values::<Value>();
             let program = match iter.next() {
-                Some(Ok(p)) => p,
-                Some(Err(e)) => return Err(e),
+                Some(Ok(Value::String(program))) => program.to_str()?.to_owned(),
+                Some(Ok(value)) => {
+                    return Err(mlua::Error::runtime(format!(
+                        "jobstart: program must be a string, got {}",
+                        value.type_name()
+                    )));
+                }
+                Some(Err(error)) => return Err(error),
                 None => {
                     return Err(mlua::Error::runtime(
                         "jobstart: table must have at least a program",
@@ -984,10 +993,18 @@ fn jobstart(lua: &Lua, #[ctx] plugin: Arc<str>, cmd: Value, opts: Option<Table>)
             if program.is_empty() {
                 return Err(mlua::Error::runtime("jobstart: program cannot be empty"));
             }
-            let args: Vec<String> = iter
-                .filter_map(Result::ok)
-                .filter(|s| !s.is_empty())
-                .collect();
+            let mut args = Vec::new();
+            for value in iter {
+                match value? {
+                    Value::String(argument) => args.push(argument.to_str()?.to_owned()),
+                    value => {
+                        return Err(mlua::Error::runtime(format!(
+                            "jobstart: arguments must be strings, got {}",
+                            value.type_name()
+                        )));
+                    }
+                }
+            }
             JobSpec::Program { program, args }
         }
         _ => {
@@ -1408,6 +1425,56 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
             !group_alive(pid)
         })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_start_cleanup_disconnects_full_event_queue_before_joining_readers() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "while :; do printf 'line\\n'; done"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command.process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        let stdout = child.stdout.take().unwrap();
+        let (event_tx, event_rx) = flume::bounded(JOB_EVENT_CAPACITY);
+        let reader_tx = event_tx.clone();
+        let stdout_handle = thread::spawn(move || {
+            pump_job_output(BufReader::new(stdout), &reader_tx, JobEvent::Stdout);
+        });
+
+        let deadline = Instant::now() + EVENT_DEADLINE;
+        while event_rx.len() < JOB_EVENT_CAPACITY && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(event_rx.len(), JOB_EVENT_CAPACITY);
+
+        let state = JobWaitState {
+            child,
+            pid,
+            stdout_handle: Some(stdout_handle),
+            stderr_handle: None,
+            event_tx,
+            #[cfg(target_os = "linux")]
+            resource_done: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "linux")]
+            resource_exceeded: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "linux")]
+            resource_monitor: None,
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            state.cleanup_start_failure(event_rx);
+            done_tx.send(()).unwrap();
+        });
+
+        done_rx
+            .recv_timeout(EVENT_DEADLINE)
+            .expect("failed-start cleanup blocked on a full event queue");
     }
 
     #[test]

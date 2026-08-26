@@ -42,12 +42,21 @@ fn is_legacy_devin_account(slug: &str, def: &ProviderDef) -> bool {
 }
 
 pub fn base_kind(slug: &str) -> Option<ProviderKind> {
-    let config = ProvidersConfig::load();
+    let config = load_optional_config("resolving custom provider protocol")?;
     Some(protocol_kind(config.get(slug)?.protocol?))
 }
 
-fn resolve_custom_auth(slug: &str) -> Result<ResolvedAuth, AgentError> {
-    let config = ProvidersConfig::load();
+fn load_optional_config(operation: &'static str) -> Option<ProvidersConfig> {
+    match ProvidersConfig::load() {
+        Ok(config) => Some(config),
+        Err(error) => {
+            tracing::warn!(%error, operation, "cannot load provider configuration");
+            None
+        }
+    }
+}
+
+fn resolve_custom_auth(slug: &str, config: &ProvidersConfig) -> Result<ResolvedAuth, AgentError> {
     let def = config.get(slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown custom provider '{slug}'"),
     })?;
@@ -96,9 +105,16 @@ fn resolve_custom_auth(slug: &str) -> Result<ResolvedAuth, AgentError> {
 }
 
 pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
-    let kind = base_kind(slug).ok_or_else(|| AgentError::Config {
+    let config = ProvidersConfig::load()?;
+    let def = config.get(slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown custom provider '{slug}'"),
     })?;
+    let kind = def
+        .protocol
+        .map(protocol_kind)
+        .ok_or_else(|| AgentError::Config {
+            message: format!("custom provider '{slug}' has no protocol"),
+        })?;
     if kind == ProviderKind::Devin
         && let Some(account) = super::devin::legacy_account_name(slug)
     {
@@ -108,11 +124,10 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
             ),
         });
     }
-    let resolved = resolve_custom_auth(slug)?;
+    let resolved = resolve_custom_auth(slug, &config)?;
     let auth = Arc::new(Mutex::new(resolved));
 
-    let config = ProvidersConfig::load();
-    let protocol = resolve_protocol(slug, config.get(slug)).unwrap_or_else(|| Protocol::Openai);
+    let protocol = resolve_protocol(slug, Some(def)).unwrap_or_else(|| Protocol::Openai);
 
     match kind {
         ProviderKind::Anthropic => Ok(Box::new(super::anthropic::Anthropic::with_auth(
@@ -138,7 +153,7 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     if is_builtin_slug(slug) {
         return None;
     }
-    let config = ProvidersConfig::load();
+    let config = load_optional_config("looking up custom provider model")?;
     let def = config.get(slug)?;
     if is_legacy_devin_account(slug, def) {
         return None;
@@ -212,7 +227,13 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
 
 /// Specs declared statically in `providers.toml` (no HTTP).
 pub fn declared_model_specs() -> Vec<String> {
-    declared_specs_from(&ProvidersConfig::load())
+    ProvidersConfig::load().map_or_else(
+        |error| {
+            tracing::warn!(%error, "cannot load declared provider models");
+            Vec::new()
+        },
+        |config| declared_specs_from(&config),
+    )
 }
 
 fn declared_specs_from(config: &ProvidersConfig) -> Vec<String> {
@@ -263,7 +284,9 @@ pub fn resolve_tier(slug: &str, tier: ModelTier) -> TierLookup {
     if is_builtin_slug(slug) {
         return TierLookup::Unknown;
     }
-    let config = ProvidersConfig::load();
+    let Some(config) = load_optional_config("resolving custom provider tier") else {
+        return TierLookup::Unknown;
+    };
     let Some(def) = config.get(slug) else {
         return TierLookup::Unknown;
     };
@@ -286,7 +309,9 @@ pub fn resolve_tier(slug: &str, tier: ModelTier) -> TierLookup {
 /// goes through here, so an empty `discover_models = false` provider returns
 /// nothing and never hits the network.
 pub fn discover_models(timeouts: Timeouts) -> Vec<String> {
-    let config = ProvidersConfig::load();
+    let Some(config) = load_optional_config("discovering custom provider models") else {
+        return Vec::new();
+    };
     let mut all_specs = Vec::new();
     for slug in config.providers.keys() {
         if is_builtin_slug(slug) {

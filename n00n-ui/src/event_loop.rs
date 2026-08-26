@@ -107,6 +107,7 @@ pub struct EventLoopParams {
     pub startup_warnings: Vec<String>,
     pub storage: StateDir,
     pub config: AgentConfig,
+    pub project_trusted: bool,
     pub ui_config: UiConfig,
     pub input_history_size: usize,
     pub retention_budget: RetentionBudget,
@@ -1096,6 +1097,7 @@ impl<'t> EventLoop<'t> {
             mut startup_warnings,
             storage,
             config,
+            project_trusted,
             ui_config,
             input_history_size,
             retention_budget,
@@ -1116,8 +1118,11 @@ impl<'t> EventLoop<'t> {
         });
         let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        let (mcp_handle, mcp_config_errors) =
-            smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
+        let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(
+            &cwd,
+            config.mcp_tool_desc_max_chars,
+            project_trusted,
+        ));
 
         let (provider, provider_warning) =
             startup_provider_with(&mut model, needs_login, |model| {

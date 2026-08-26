@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::pin::pin;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -97,6 +98,9 @@ const RTK_MANAGED_ROUTE_CASES: &[&str] = &[
 ];
 
 fn fresh_registry() -> Arc<ToolRegistry> {
+    let _ = n00n_lua::test_support::set_interpreter_worker_executable(std::path::PathBuf::from(
+        env!("CARGO_BIN_EXE_n00n-interpreter-worker"),
+    ));
     Arc::new(ToolRegistry::new())
 }
 
@@ -1201,13 +1205,14 @@ fn agent_api_value_failures_return_err_pairs() {
                 parts[1] = pair_err(n00n.agent.system_prompt(ctx, {{ prompt_id = "nope" }})) and "prompt_err" or "prompt_ok"
                 parts[2] = pair_err(n00n.agent.tools(ctx, {{ audience = "nope" }})) and "tools_err" or "tools_ok"
                 parts[3] = pair_err(n00n.agent.resolve_model(ctx, {{ spec = "not-a-spec" }})) and "model_err" or "model_ok"
+                parts[4] = pair_err(n00n.agent.tools(ctx, {{ audience = "general", spec = "not-a-spec" }})) and "tools_spec_err" or "tools_spec_ok"
                 return table.concat(parts, " ")
             end
         }})"#
     );
     host.load_source("agent_pairs_plugin", &src).unwrap();
     let out = exec_tool(&reg, "agent_pairs_probe", serde_json::json!({})).unwrap();
-    assert_eq!(out, "prompt_err tools_err model_err");
+    assert_eq!(out, "prompt_err tools_err model_err tools_spec_err");
 }
 
 /// Restore used to lose anything drawn via `n00n.async.run`: those tasks
@@ -5532,9 +5537,19 @@ impl Provider for ScriptedSessionProvider {
     }
 }
 
-struct PendingSessionProvider;
+struct PendingThenReadySessionProvider {
+    calls: AtomicUsize,
+}
 
-impl Provider for PendingSessionProvider {
+impl PendingThenReadySessionProvider {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Provider for PendingThenReadySessionProvider {
     fn stream_message<'a>(
         &'a self,
         _: &'a Model,
@@ -5545,7 +5560,19 @@ impl Provider for PendingSessionProvider {
         _: RequestOptions,
         _: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
-        Box::pin(std::future::pending())
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            Box::pin(std::future::pending())
+        } else {
+            Box::pin(async {
+                Ok(session_response(
+                    vec![ContentBlock::Text {
+                        text: "second prompt succeeded".to_owned(),
+                    }],
+                    TokenUsage::default(),
+                    StopReason::EndTurn,
+                ))
+            })
+        }
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
@@ -5707,10 +5734,12 @@ fn session_cancel_interrupts_inflight_prompt_without_waiting_for_session_lock() 
                         return "cancel requested"
                     end,
                 }})
-                sess:close()
                 if not results[1].ok then error(results[1].err, 0) end
                 if not results[2].ok then error(results[2].err, 0) end
-                return results[2].value .. "|" .. results[1].value
+                local second, second_err = sess:prompt("reuse after cancellation")
+                sess:close()
+                if second_err then error(second_err, 0) end
+                return results[2].value .. "|" .. results[1].value .. "|" .. second.text
             end
         }})"#,
     );
@@ -5725,7 +5754,7 @@ fn session_cancel_interrupts_inflight_prompt_without_waiting_for_session_lock() 
         Some(&event_tx),
         None,
     );
-    ctx.provider = Arc::new(PendingSessionProvider);
+    ctx.provider = Arc::new(PendingThenReadySessionProvider::new());
     ctx.registry = Arc::clone(&registry);
     ctx.deadline = Deadline::after(Duration::from_secs(5));
 
@@ -5735,6 +5764,10 @@ fn session_cancel_interrupts_inflight_prompt_without_waiting_for_session_lock() 
         .as_text();
 
     assert!(output.starts_with("cancel requested|"), "got: {output}");
+    assert!(
+        output.ends_with("|second prompt succeeded"),
+        "got: {output}"
+    );
     assert!(
         !output.contains("prompt was not cancelled"),
         "got: {output}"
@@ -6402,11 +6435,19 @@ fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
         "SubagentInfo must carry generated child_id, not the containing task/team/workflow tool-call id"
     );
     assert!(
-        source.contains(".insert(child_id.clone(), child_trigger)")
+        source.contains("parent_cancels.insert(s.child_id.clone(), child_trigger)")
             && source.contains("parent_cancels.remove(&self.child_id)")
             && source.contains("tool_use_id: self.child_id.clone()"),
         "cancellation and SubagentHistory must use the same generated child_id"
     );
+}
+
+#[test]
+fn agent_control_policy_list_uses_loaded_rules() {
+    let source = include_str!("../../plugins/agent_control/init.lua");
+    assert!(source.contains("for _, rule in ipairs(policies.rules) do"));
+    assert!(source.contains("local count = #policies.rules"));
+    assert!(!source.contains("ipairs(rules)"));
 }
 
 #[test]
@@ -8455,6 +8496,28 @@ fn jobstart_list_mode_multiple_args() {
     assert_eq!(out, "a b c");
 }
 
+#[test]
+fn jobstart_list_mode_preserves_empty_args() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "job_empty_arg",
+            description = "preserves empty args in list mode",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                n00n.fn.jobstart({{"printf", "[%s][%s]", "", "tail"}})
+                local res = n00n.fn.jobwait(1)
+                return res.stdout
+            end
+        }})"#
+    );
+    host.load_source("job_empty_arg", &src).unwrap();
+    let out = exec_tool(&reg, "job_empty_arg", serde_json::json!({})).unwrap();
+    assert_eq!(out, "[][tail]");
+}
+
 /// Empty table for list mode errors appropriately.
 #[test]
 fn jobstart_list_mode_empty_table_errors() {
@@ -8489,15 +8552,14 @@ fn jobstart_list_mode_non_string_arg_errors() {
             schema = {MINIMAL_SCHEMA},
             audiences = {{ "main" }},
             handler = function(input, ctx)
-                local _, err = pcall(n00n.fn.jobstart, {{123, "echo"}})
+                local _, err = pcall(n00n.fn.jobstart, {{"echo", 123}})
                 return tostring(err)
             end
         }})"#
     );
     host.load_source("job_nonstr", &src).unwrap();
     let out = exec_tool(&reg, "job_nonstr", serde_json::json!({})).unwrap();
-    // When a non-string is in the array, mlua's get::<String> will error
-    assert!(!out.is_empty(), "got empty error string");
+    assert!(out.contains("string"), "got: {out}");
 }
 
 #[test]
