@@ -1,0 +1,1 @@
+Fixed Devin requests failing with `invalid format` when the primary account's configured `base_url` was missing a scheme; an invalid value now falls back to the default API URL instead of reaching request construction.
