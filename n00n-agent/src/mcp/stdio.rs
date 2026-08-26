@@ -279,9 +279,14 @@ impl StdioTransport {
                 let terminal_err = result.err().unwrap_or_else(|| McpError::ServerDied {
                     server: (*name).into(),
                 });
+                // `alive` is cleared by `begin_shutdown` before the child is signaled, so
+                // an intentional shutdown always clears it before this task observes EOF.
+                // Only an unrequested death (still `true` here) is warning-worthy.
                 if alive.swap(false, Ordering::AcqRel) {
                     warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
                     on_death(terminal_err.clone());
+                } else {
+                    debug!(server = &*name, error = %terminal_err, "MCP reader loop ended after shutdown");
                 }
                 for (_, sender) in pending.lock().await.drain() {
                     let _ = sender.send(Err(terminal_err.clone())).await;

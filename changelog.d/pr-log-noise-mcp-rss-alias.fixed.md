@@ -1,0 +1,1 @@
+Stopped spurious warnings during normal operation: an MCP server shutdown/reconnect no longer logs a false "not running" warning, a job's RSS monitor no longer stops permanently when a child process exits mid-check, `explore_code` no longer dispatches through deprecated tool aliases, and a failed background MCP OAuth attempt now backs off instead of retrying immediately.

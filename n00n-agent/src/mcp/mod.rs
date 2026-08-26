@@ -1093,7 +1093,13 @@ async fn start_server(
             )?)
         }
     };
-    let capabilities = transport::initialize(transport.as_ref()).await?;
+    let capabilities = match transport::initialize(transport.as_ref()).await {
+        Ok(capabilities) => capabilities,
+        Err(e) => {
+            transport.shutdown().await;
+            return Err(e);
+        }
+    };
     // Asymmetric on purpose: sloppy servers omit `capabilities` yet serve
     // tools/list fine, so always ask (fatal only when tools were declared).
     // Prompts only when declared: undeclared endpoints may answer junk,
@@ -1104,10 +1110,19 @@ async fn start_server(
             warn!(server = config.name, error = %e, "tools/list failed; server declared no tools");
             Vec::new()
         }
-        Err(e) => return Err(e),
+        Err(e) => {
+            transport.shutdown().await;
+            return Err(e);
+        }
     };
     let prompt_infos = if capabilities.prompts {
-        transport::list_prompts(transport.as_ref()).await?
+        match transport::list_prompts(transport.as_ref()).await {
+            Ok(prompts) => prompts,
+            Err(e) => {
+                transport.shutdown().await;
+                return Err(e);
+            }
+        }
     } else {
         Vec::new()
     };
@@ -2370,6 +2385,59 @@ mod tests {
             assert!(entry.prompts.is_empty());
             assert!(entry.transport.is_none());
             assert!(matches!(entry.status, McpServerStatus::Failed(_)));
+        });
+    }
+
+    /// A server whose process starts fine but never answers the `initialize` handshake must not
+    /// leak that process: `start_server` has to shut its (just-spawned) transport down itself
+    /// before returning `Err`, rather than leaving cleanup to `Drop`.
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    #[test]
+    fn refresh_server_shuts_down_a_transport_that_never_completes_handshake() {
+        smol::block_on(async {
+            let pid_file = tempfile::NamedTempFile::new().unwrap();
+            let pid_path = pid_file.path().to_path_buf();
+
+            let t = FakeTransport::new();
+            let (mut inner, _) = setup(vec![fake_entry("srv", Arc::clone(&t) as _)]);
+            inner.entries[0].config = Some(ServerConfig {
+                name: "srv".into(),
+                timeout: Duration::from_millis(200),
+                always_load: false,
+                transport: Transport::Stdio {
+                    program: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        format!("echo $$ > {} && exec sleep 30", pid_path.display()),
+                    ],
+                    environment: HashMap::new(),
+                },
+            });
+            let (cmd_tx, _cmd_rx) = flume::unbounded();
+
+            let err = refresh_server(&mut inner, "srv", &cmd_tx)
+                .await
+                .expect_err("a server that never answers initialize must fail the handshake");
+            assert!(matches!(err, McpError::Timeout { .. }));
+
+            let pid: i32 = std::fs::read_to_string(&pid_path)
+                .expect("child must have started and recorded its pid")
+                .trim()
+                .parse()
+                .expect("recorded pid must be numeric");
+
+            // shutdown() reaps before start_server returns, so the process must
+            // already be gone here — no polling, no zombie window.
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "start_server must shut down a transport that failed its handshake"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
         });
     }
 
