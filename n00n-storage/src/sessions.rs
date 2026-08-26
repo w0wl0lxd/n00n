@@ -96,8 +96,6 @@ pub enum SessionError {
     DecodedBudgetExceeded { path: String, limit: usize },
     #[error("session log contains an unknown record type")]
     UnknownRecord,
-    #[error("session log contains malformed transcript structure")]
-    MalformedTranscript,
     #[error("session record exceeds the {maximum}-byte limit")]
     RecordTooLargeWrite { maximum: usize },
 }
@@ -3076,6 +3074,7 @@ struct SessionBuilder<M, U, T> {
     meta: SessionMeta,
     log_appends: u64,
     saw_legacy_transcript: bool,
+    unbalanced_compaction: bool,
 }
 
 impl<M, U, T> SessionBuilder<M, U, T> {
@@ -3087,17 +3086,23 @@ impl<M, U, T> SessionBuilder<M, U, T> {
         }
     }
 
-    fn finish_transcript_compaction(&mut self) -> Result<(), SessionError> {
-        let compaction = self
-            .transcript_compactions
-            .pop()
-            .ok_or(SessionError::MalformedTranscript)?;
+    /// Closes the innermost open compaction.
+    ///
+    /// An end record with no matching start means the start record was lost —
+    /// truncated by an interrupted append, or skipped because it failed to
+    /// deserialize. The entries it would have wrapped are already flat in the
+    /// transcript, so dropping the stray end record is lossless. Record it so
+    /// the loader can warn once, and keep going: a session must stay openable.
+    fn finish_transcript_compaction(&mut self) {
+        let Some(compaction) = self.transcript_compactions.pop() else {
+            self.unbalanced_compaction = true;
+            return;
+        };
         self.push_transcript_entry(TranscriptEntry::Compaction {
             entries: compaction.entries,
             generated_summary: compaction.generated_summary,
             state_revision: compaction.state_revision,
         });
-        Ok(())
     }
 }
 
@@ -3122,6 +3127,7 @@ where
             meta: SessionMeta::default(),
             log_appends: 0,
             saw_legacy_transcript: false,
+            unbalanced_compaction: false,
         }
     }
 }
@@ -3240,8 +3246,29 @@ where
             apply_record(&mut builder, record, &mut got_header)
         })?;
 
+    // An interrupted append can truncate the log between a compaction's start
+    // and end records, and a start record that fails to deserialize is skipped
+    // by the loop above. Either leaves the compaction open at EOF. Close the
+    // open compactions in place rather than refusing to load: every entry read
+    // so far is intact, and failing here would make the session unopenable and
+    // unresumable.
     if !builder.transcript_compactions.is_empty() {
-        return Err(SessionError::MalformedTranscript);
+        let unterminated = builder.transcript_compactions.len();
+        while !builder.transcript_compactions.is_empty() {
+            builder.finish_transcript_compaction();
+        }
+        warn!(
+            path = %path.display(),
+            unterminated,
+            recovered_tail,
+            "closed unterminated transcript compactions while loading session log"
+        );
+    }
+    if builder.unbalanced_compaction {
+        warn!(
+            path = %path.display(),
+            "dropped transcript compaction end records with no matching start"
+        );
     }
     let id = builder
         .id
@@ -3353,7 +3380,7 @@ where
                 generated_summary,
                 state_revision,
             }),
-        LogRecord::TranscriptCompactionEnd => builder.finish_transcript_compaction()?,
+        LogRecord::TranscriptCompactionEnd => builder.finish_transcript_compaction(),
         LogRecord::Meta {
             title: m_title,
             token_usage: m_usage,
@@ -5287,6 +5314,114 @@ mod tests {
             serde_json::to_value(loaded.transcript).unwrap(),
             serde_json::to_value(session.transcript).unwrap()
         );
+    }
+
+    /// The v3 log upgrade path reads an old-style compaction as a single
+    /// `transcript` record whose payload is a whole `TranscriptEntry`. Lock the
+    /// externally-tagged serde shape that path depends on, so changing it fails
+    /// here instead of silently breaking upgrades of existing session logs.
+    #[test]
+    fn compaction_transcript_entry_serde_shape_is_stable() {
+        let entry: TranscriptEntry<Value> = TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Value::from("inner"))],
+            generated_summary: Some(Value::from("summary")),
+            state_revision: Some(3),
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({
+                "Compaction": {
+                    "entries": [{ "Message": "inner" }],
+                    "generated_summary": "summary",
+                    "state_revision": 3,
+                }
+            })
+        );
+    }
+
+    /// Rewrites a session log through `edit`, which receives the decoded JSONL
+    /// lines and returns the lines to persist.
+    fn rewrite_log_lines(dir: &Path, id: n00nId, edit: impl Fn(Vec<Value>) -> Vec<Value>) {
+        let path = jsonl_path(dir, id);
+        let decoded = zstd::stream::decode_all(File::open(&path).unwrap()).unwrap();
+        let lines: Vec<Value> = decoded
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        let mut raw = Vec::new();
+        for line in edit(lines) {
+            raw.extend_from_slice(&serde_json::to_vec(&line).unwrap());
+            raw.push(b'\n');
+        }
+        fs::write(
+            &path,
+            zstd::stream::encode_all(&raw[..], COMPRESS_LEVEL).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn session_with_one_compaction(dir: &Path) -> TestSession {
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(user_message("archived"))],
+            generated_summary: Some(assistant_message("summary")),
+            state_revision: Some(7),
+        }];
+        drop(SessionLog::create(dir, &session).unwrap());
+        session
+    }
+
+    /// A crash between a compaction's start and end records must not make the
+    /// session unopenable: the open compaction is closed in place on load.
+    #[test]
+    fn unterminated_compaction_still_opens_the_session() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_compaction(dir);
+
+        rewrite_log_lines(dir, session.id, |lines| {
+            lines
+                .into_iter()
+                .filter(|line| line["t"] != "transcript_compaction_end")
+                .collect()
+        });
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Compaction { entries, state_revision: Some(7), .. }]
+                if entries.len() == 1
+        ));
+    }
+
+    /// A compaction start record that fails to deserialize is skipped by the
+    /// parse loop, leaving its end record unmatched. The session must still
+    /// load, with the archived entries flattened into the transcript.
+    #[test]
+    fn unmatched_compaction_end_still_opens_the_session() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_compaction(dir);
+
+        rewrite_log_lines(dir, session.id, |lines| {
+            lines
+                .into_iter()
+                .map(|mut line| {
+                    if line["t"] == "transcript_compaction_start" {
+                        line["state_revision"] = Value::from("not-a-number");
+                    }
+                    line
+                })
+                .collect()
+        });
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Message(message)]
+                if message["content"][0]["text"].as_str() == Some("archived")
+        ));
     }
 
     #[test]
