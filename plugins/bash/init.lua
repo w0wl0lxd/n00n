@@ -25,6 +25,7 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
+-- Preserve direct compiler and test-runner hooks used by serialized Cargo builds.
 local RTK_SKIP_TOOLS = {
   nextest = true,
   rustc = true,
