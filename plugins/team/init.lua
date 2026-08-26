@@ -821,7 +821,7 @@ local function run_team(input, ctx)
     forwarded.background = false
     local title = "team: " .. n00n.ui.truncate_text(input.goal or "", 60).head
     local id, err = n00n.session.new({
-      tool = "team",
+      tool = "run_team",
       input = forwarded,
       title = title,
       focus = false,

@@ -593,7 +593,7 @@ impl AgentLoop {
 /// so several concurrent sessions/tabs against the same server otherwise
 /// hammer it within seconds of each other.
 const OAUTH_BACKOFF_BASE: Duration = Duration::from_secs(30);
-const OAUTH_BACKOFF_MAX: Duration = Duration::from_secs(30 * 60);
+const OAUTH_BACKOFF_MAX: Duration = Duration::from_mins(30);
 
 struct OAuthBackoffEntry {
     retry_after: Instant,
