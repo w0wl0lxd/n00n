@@ -350,20 +350,24 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
       end
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
-        local pause_run_id = input.resume or memory.slug(goal)
-        local save_ok, save_err = memory.save_state(ctx, pause_run_id, {
-          goal = goal,
-          steps = steps,
-          results = results,
-          total_cost = total_cost,
-          total_usage = total_usage,
-          mode = input.mode,
-          failed_step = i,
-          failed_role = step.role,
-          start_index = i,
-          wave_index = 0,
-          step_index = i,
-        })
+        local pause_run_id = run_id
+        local save_ok, save_err = memory.save_state(
+          ctx,
+          pause_run_id,
+          memory.prepare_resume_state({
+            goal = goal,
+            steps = steps,
+            results = results,
+            total_cost = total_cost,
+            total_usage = total_usage,
+            mode = input.mode,
+            failed_step = i,
+            failed_role = step.role,
+            start_index = i,
+            wave_index = 0,
+            step_index = i,
+          })
+        )
         if not save_ok then
           error("failed to save pause state: " .. tostring(save_err), 0)
         end
@@ -449,20 +453,24 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
       end
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
-        local pause_run_id = input.resume or memory.slug(goal)
-        local save_ok, save_err = memory.save_state(ctx, pause_run_id, {
-          goal = goal,
-          steps = steps,
-          results = results,
-          total_cost = total_cost,
-          total_usage = total_usage,
-          mode = input.mode,
-          failed_step = i,
-          failed_role = step.role,
-          start_index = i,
-          wave_index = 0,
-          step_index = i,
-        })
+        local pause_run_id = run_id
+        local save_ok, save_err = memory.save_state(
+          ctx,
+          pause_run_id,
+          memory.prepare_resume_state({
+            goal = goal,
+            steps = steps,
+            results = results,
+            total_cost = total_cost,
+            total_usage = total_usage,
+            mode = input.mode,
+            failed_step = i,
+            failed_role = step.role,
+            start_index = i,
+            wave_index = 0,
+            step_index = i,
+          })
+        )
         if not save_ok then
           error("failed to save pause state: " .. tostring(save_err), 0)
         end
@@ -776,6 +784,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           ckpt_state.failed_step = failed_step_index
           ckpt_state.failed_role = failed_role
         end
+        ckpt_state = memory.prepare_checkpoint_state(ckpt_state)
         local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state, wave_idx)
         if not save_ok then
           if logger then
@@ -849,7 +858,8 @@ local function run_team(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local run_id = input.resume or n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
+  local is_resume = type(input.resume) == "string" and #input.resume > 0
+  local run_id = is_resume and input.resume or memory.new_run_id(input.goal)
   local team_dir = memory.base_dir()
   local logger
   if team_dir then
@@ -858,7 +868,7 @@ local function run_team(input, ctx)
 
   local steps, perr, supervisor_cost, supervisor_usage
   local resume_state
-  if input.resume and #input.resume > 0 then
+  if is_resume then
     local latest_id, latest_err = checkpoint.latest(input.resume)
     if latest_err then
       return { llm_output = "failed to load resume " .. input.resume .. ": " .. latest_err, is_error = true }
@@ -899,6 +909,10 @@ local function run_team(input, ctx)
         return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
       end
     end
+  end
+
+  if resume_state then
+    memory.prepare_resume_state(resume_state)
   end
 
   input.mode = input.mode or requested_mode or "supervised"

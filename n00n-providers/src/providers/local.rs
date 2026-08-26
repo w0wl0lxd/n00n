@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::warn;
 
-use n00n_config::providers::Protocol;
+use n00n_config::providers::{Protocol, ProvidersConfig};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
@@ -31,11 +31,8 @@ pub(crate) struct LocalEndpointConfig {
     pub thinking_budget_field: bool,
 }
 
-fn resolve_protocol_for_local(slug: &str) -> Option<Protocol> {
-    n00n_config::providers::resolve_protocol(
-        slug,
-        n00n_config::providers::ProvidersConfig::load().get(slug),
-    )
+fn resolve_protocol_for_local(slug: &str, config: &ProvidersConfig) -> Option<Protocol> {
+    n00n_config::providers::resolve_protocol(slug, config.get(slug))
 }
 
 const THINKING_BUDGET_FIELD: &str = "thinking_budget_tokens";
@@ -77,7 +74,7 @@ impl LocalEndpoint {
         timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
         let key_pool = KeyPool::resolve(cfg.slug, cfg.api_key_env).ok();
-        let provider_config = n00n_config::providers::ProvidersConfig::load();
+        let provider_config = ProvidersConfig::load()?;
         let provider_entry = provider_config.get(cfg.slug);
         let host = provider_entry
             .and_then(|d| d.base_url.clone())
@@ -88,7 +85,7 @@ impl LocalEndpoint {
             key_pool,
             host,
             provider_entry.is_some(),
-            resolve_protocol_for_local(cfg.slug),
+            resolve_protocol_for_local(cfg.slug, &provider_config),
         )
     }
 
@@ -97,6 +94,7 @@ impl LocalEndpoint {
         auth: Arc<Mutex<ResolvedAuth>>,
         timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
+        let provider_config = ProvidersConfig::load()?;
         Ok(Self {
             compat: OpenAiCompatProvider::new(&cfg.compat, timeouts)?,
             auth,
@@ -104,7 +102,7 @@ impl LocalEndpoint {
             system_prefix: None,
             thinking_budget_field: cfg.thinking_budget_field,
             discovery_mode: cfg.discovery_mode,
-            protocol: resolve_protocol_for_local(cfg.slug),
+            protocol: resolve_protocol_for_local(cfg.slug, &provider_config),
             configured: true,
         })
     }

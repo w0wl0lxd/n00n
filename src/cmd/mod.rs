@@ -27,6 +27,27 @@ pub(super) const fn resolve_fusion_opt_in(
 }
 
 pub fn dispatch(cli: Cli) -> Result<()> {
+    let uses_project_config = matches!(
+        &cli.command,
+        None | Some(
+            Command::Acp { .. }
+                | Command::Index { .. }
+                | Command::Prompt { .. }
+                | Command::Mcp {
+                    action: McpAction::Auth { .. },
+                }
+                | Command::Agent {
+                    action: AgentCommand::Run { .. },
+                },
+        )
+    );
+    let project_trusted = if uses_project_config {
+        let cwd = std::env::current_dir().context("resolve working directory")?;
+        crate::project_trust::require(&cwd, cli.trust_project)?
+    } else {
+        false
+    };
+
     match cli.command {
         Some(Command::Auth { action }) => {
             let storage = StateDir::resolve().context("resolve data directory")?;
@@ -39,7 +60,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Some(Command::Index { path }) => {
-            subcmd::index(&path, cli.plugin_flags.no_plugins, cli.plugin_flags.no_jit)?;
+            subcmd::index(
+                &path,
+                cli.plugin_flags.no_plugins,
+                cli.plugin_flags.no_jit,
+                project_trusted,
+            )?;
         }
         Some(Command::Models) => {
             subcmd::models();
@@ -47,7 +73,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Some(Command::Mcp { action }) => {
             let storage = StateDir::resolve().context("resolve data directory")?;
             match action {
-                McpAction::Auth { server } => subcmd::mcp_auth(&server, &storage)?,
+                McpAction::Auth { server } => {
+                    subcmd::mcp_auth(&server, &storage, project_trusted)?;
+                }
                 McpAction::Logout { server } => subcmd::mcp_logout(&server, &storage)?,
             }
         }
@@ -58,7 +86,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             update::rollback().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Acp { model, yolo }) => {
-            acp::run(model.as_deref(), yolo, cli.plugin_flags.no_jit)?;
+            acp::run(
+                model.as_deref(),
+                yolo,
+                cli.plugin_flags.no_jit,
+                project_trusted,
+            )?;
         }
         Some(Command::Git { action }) => native::git_command(action)?,
         Some(Command::Smell { action }) => native::smell_command(action)?,
@@ -75,6 +108,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     tools,
                     names,
                     no_jit: cli.plugin_flags.no_jit,
+                    project_trusted,
                 },
             )?;
         }
@@ -106,6 +140,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     yolo: cli.permission_flags.yolo,
                     no_jit: cli.plugin_flags.no_jit,
                     fusion: cli.fusion,
+                    project_trusted,
                 };
                 if background {
                     agent::server(&run_opts, id)?;

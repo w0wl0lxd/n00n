@@ -1,12 +1,10 @@
-use std::io::Read;
-
 use isahc::HttpClient;
 use isahc::http::Request;
 use serde::Deserialize;
+use url::{Host, Url};
 
 use super::OAuthError;
-
-const MAX_RESPONSE_BODY: usize = 1_048_576;
+use crate::mcp::response::{MAX_RESPONSE_BODY, read_bounded_text};
 
 #[derive(Debug)]
 pub struct WwwAuthenticateInfo {
@@ -95,17 +93,29 @@ pub(super) fn server_origin(server_url: &str) -> String {
     origin(server_url)
 }
 
-fn validate_endpoint_url(url: &str) -> Result<(), OAuthError> {
-    if url.starts_with("https://")
-        || url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-    {
-        Ok(())
-    } else {
-        Err(OAuthError::Other(format!(
-            "endpoint URL must use HTTPS: {url}"
-        )))
+fn validate_endpoint_url(endpoint: &str) -> Result<(), OAuthError> {
+    let url = Url::parse(endpoint)
+        .map_err(|error| OAuthError::Other(format!("invalid endpoint URL {endpoint}: {error}")))?;
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(OAuthError::Other(format!(
+            "endpoint URL must not contain credentials or a fragment: {endpoint}"
+        )));
     }
+    if url.scheme() == "https" && url.host().is_some() {
+        return Ok(());
+    }
+    let loopback = match url.host() {
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if url.scheme() == "http" && loopback {
+        return Ok(());
+    }
+    Err(OAuthError::Other(format!(
+        "endpoint URL must use HTTPS or an exact HTTP loopback host: {endpoint}"
+    )))
 }
 
 /// Validates that all required endpoints in auth server metadata use HTTPS.
@@ -194,32 +204,23 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(
         .body(())
         .map_err(|e| OAuthError::Other(e.to_string()))?;
 
-    let mut response = smol::unblock({
-        let client = client.clone();
-        move || {
-            client
-                .send(req)
-                .map_err(|e| OAuthError::Network(e.to_string()))
-        }
-    })
-    .await?;
+    let mut response = client
+        .send_async(req)
+        .await
+        .map_err(|error| OAuthError::Network(error.to_string()))?;
+    let status = response.status();
+    let body = read_bounded_text(response.body_mut(), MAX_RESPONSE_BODY)
+        .await
+        .map_err(|error| OAuthError::InvalidResponse(error.to_string()))?;
 
-    if !response.status().is_success() {
-        let mut body = String::new();
-        let _ = response.body_mut().read_to_string(&mut body);
+    if !status.is_success() {
         return Err(OAuthError::ServerRejected {
-            status: response.status().as_u16(),
+            status: status.as_u16(),
             body,
         });
     }
 
-    let mut body = String::new();
-    response
-        .body_mut()
-        .take(MAX_RESPONSE_BODY as u64)
-        .read_to_string(&mut body)
-        .map_err(|e| OAuthError::Network(e.to_string()))?;
-    serde_json::from_str(&body).map_err(|e| OAuthError::InvalidResponse(e.to_string()))
+    serde_json::from_str(&body).map_err(|error| OAuthError::InvalidResponse(error.to_string()))
 }
 
 #[cfg(test)]
@@ -278,11 +279,21 @@ mod tests {
         assert_eq!(well_known_url(base, name), expected);
     }
 
-    #[test_case("https://example.com/token",   true  ; "https_valid")]
-    #[test_case("http://127.0.0.1:8080/token", true  ; "localhost_valid")]
-    #[test_case("http://example.com/token",    false ; "http_rejected")]
-    #[test_case("ftp://example.com/token",     false ; "ftp_rejected")]
-    fn endpoint_url_validation(url: &str, should_pass: bool) {
-        assert_eq!(validate_endpoint_url(url).is_ok(), should_pass);
+    #[test_case("https://auth.example.com/token" ; "https")]
+    #[test_case("http://127.0.0.1:8080/token" ; "ipv4_loopback")]
+    #[test_case("http://[::1]:8080/token" ; "ipv6_loopback")]
+    #[test_case("http://localhost:8080/token" ; "localhost")]
+    fn endpoint_validation_accepts_secure_origins(endpoint: &str) {
+        assert!(validate_endpoint_url(endpoint).is_ok());
+    }
+
+    #[test_case("http://localhost.evil.example/token" ; "localhost_prefix")]
+    #[test_case("http://127.0.0.1.evil.example/token" ; "ipv4_prefix")]
+    #[test_case("https://user:pass@auth.example.com/token" ; "credentials")]
+    #[test_case("https://auth.example.com/token#fragment" ; "fragment")]
+    #[test_case("http://192.0.2.1/token" ; "non_loopback_http")]
+    #[test_case("ftp://example.com/token" ; "ftp")]
+    fn endpoint_validation_rejects_ambiguous_or_insecure_origins(endpoint: &str) {
+        assert!(validate_endpoint_url(endpoint).is_err());
     }
 }

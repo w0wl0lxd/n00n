@@ -113,27 +113,35 @@ function M.safe_resolve(memories_dir, relative)
   if relative:match("^%a:") then
     return nil, "path must be relative"
   end
-  local resolved = n00n.fs.normalize(n00n.fs.joinpath(memories_dir, relative))
-  local norm_base = n00n.fs.normalize(memories_dir)
-  local sep = norm_base:find("\\") and "\\" or "/"
-  local prefix = norm_base .. sep
-  if resolved:sub(1, #prefix) ~= prefix then
-    return nil, "path traversal outside memories directory is not allowed"
+  local components = {}
+  for component in relative:gmatch("[^/\\]+") do
+    if component == ".." then
+      return nil, "path traversal outside memories directory is not allowed"
+    end
+    if component ~= "." then
+      table.insert(components, component)
+    end
   end
-  return resolved
+  if #components == 0 then
+    return nil, "path is required"
+  end
+  return table.concat(components, "/")
 end
 
 function M.collect_file_entries(dir)
-  local entries = n00n.fs.dir(dir)
+  local entries = n00n.fs.dir_within(dir)
   if not entries then
     return {}
   end
   local files = {}
   for _, entry in ipairs(entries) do
     if entry[2] == "file" then
-      local meta = n00n.fs.metadata(n00n.fs.joinpath(dir, entry[1]))
-      if meta then
-        files[#files + 1] = { entry[1], meta.size, meta.mtime or 0 }
+      local path = M.safe_resolve(dir, entry[1])
+      if path then
+        local meta = n00n.fs.metadata_within(dir, path)
+        if meta then
+          files[#files + 1] = { entry[1], meta.size, meta.mtime or 0 }
+        end
       end
     end
   end
@@ -490,8 +498,8 @@ function M.load_entries(dir)
   local entries = {}
   for _, f in ipairs(M.collect_file_entries(dir)) do
     local rel = f[1]
-    local file_path = n00n.fs.joinpath(dir, rel)
-    local raw = n00n.fs.read(file_path)
+    local file_path = M.safe_resolve(dir, rel)
+    local raw = file_path and n00n.fs.read_within(dir, file_path)
     if raw then
       local entry = M.parse_memory_file(rel, raw)
       if entry then

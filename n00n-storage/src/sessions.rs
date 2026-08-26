@@ -11,7 +11,9 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::hash::BuildHasher;
 use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Take, Write};
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::UNIX_EPOCH;
@@ -42,6 +44,7 @@ const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
+const CWD_INDEX_LOCK_FILE: &str = "cwd_latest.lock";
 const SCAN_CACHE_FILE: &str = "scan_cache_v3.json";
 const SCAN_CACHE_FILE_V2: &str = "scan_cache_v2.json";
 const DEFAULT_TITLE: &str = "New session";
@@ -63,6 +66,9 @@ const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
 const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
 const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
+const SESSION_LOCK_SUFFIX: &str = "session.lock";
+#[cfg(unix)]
+const SESSION_LOCK_FILE_MODE: u32 = 0o600;
 pub const OPENAI_RESPONSE_CHAIN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// Tool outputs a live session keeps resident before the oldest are evicted.
 pub const DEFAULT_MAX_RETAINED_TOOL_OUTPUTS: usize = 512;
@@ -95,6 +101,8 @@ pub enum SessionError {
     UnknownRecord,
     #[error("session record exceeds the {maximum}-byte limit")]
     RecordTooLargeWrite { maximum: usize },
+    #[error("session log changed concurrently: {path}")]
+    ConcurrentModification { path: String },
 }
 
 /// Per-model token breakdown entry. Mirrors the four usage counters tracked by
@@ -2029,6 +2037,47 @@ enum LogRecord<M, U, T> {
 
 // -- SessionLog: append-only persistence --
 
+struct SessionMutationLock {
+    _file: File,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionFileRevision {
+    len: u64,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    creation_time: u64,
+    #[cfg(windows)]
+    last_write_time: u64,
+}
+
+impl SessionFileRevision {
+    fn from_file(file: &File) -> Result<Self, StorageError> {
+        Ok(Self::from_metadata(&file.metadata()?))
+    }
+
+    fn from_path(path: &Path) -> Result<Self, StorageError> {
+        Ok(Self::from_metadata(&fs::metadata(path)?))
+    }
+
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(windows)]
+            creation_time: metadata.creation_time(),
+            #[cfg(windows)]
+            last_write_time: metadata.last_write_time(),
+        }
+    }
+}
+
 pub struct SessionLog {
     session_id: n00nId,
     dir: PathBuf,
@@ -2044,6 +2093,7 @@ pub struct SessionLog {
     saved_meta: Vec<u8>,
     saved_title: String,
     decoded_bytes: usize,
+    file_revision: SessionFileRevision,
 }
 
 struct MessageCursor {
@@ -2101,6 +2151,7 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
+        let _lock = lock_session_in(dir, session.id)?;
         let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
         Self::cursor_from(dir, session, file, 0, decoded_bytes)
@@ -2132,6 +2183,7 @@ impl SessionLog {
         U: Serialize + DeserializeOwned + Default,
         T: Serialize + DeserializeOwned,
     {
+        let _lock = lock_session_in(dir, session_id)?;
         let path = locate_session_file(dir, session_id)
             .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
         let (session, saw_legacy_transcript, recovered_tail, log_appends, decoded_bytes) =
@@ -2172,6 +2224,7 @@ impl SessionLog {
         U: Serialize + DeserializeOwned + Default,
         T: Serialize + DeserializeOwned,
     {
+        let _lock = lock_session_in(dir, session_id)?;
         let path = locate_session_file(dir, session_id)
             .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
         let mut index = RetainedIndex::default();
@@ -2242,23 +2295,25 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
+        let _lock = lock_session_in(&self.dir, self.session_id)?;
+        self.verify_current_file()?;
         self.require_same_id(session)?;
 
         if session.title != self.saved_title {
             let dir = self.dir.clone();
-            return self.compact_with_limits(&dir, session, limits);
+            return self.compact_with_limits_locked(&dir, session, limits);
         }
 
         let current_messages = MessageCursor::capture(&session.messages)?;
         if !self.saved_messages.is_prefix_of(&current_messages) {
             let dir = self.dir.clone();
-            return self.compact_with_limits(&dir, session, limits);
+            return self.compact_with_limits_locked(&dir, session, limits);
         }
 
         let current_transcript = self.updated_transcript_cursor(session)?;
         if self.transcript_replaced(current_transcript.as_ref()) {
             let dir = self.dir.clone();
-            return self.compact_with_limits(&dir, session, limits);
+            return self.compact_with_limits_locked(&dir, session, limits);
         }
 
         if self.cursor_ahead(session) {
@@ -2270,7 +2325,7 @@ impl SessionLog {
 
         if self.appended_frames >= MAX_INCREMENTAL_FRAMES {
             let dir = self.dir.clone();
-            return self.compact_with_limits(&dir, session, limits);
+            return self.compact_with_limits_locked(&dir, session, limits);
         }
 
         let path = jsonl_path(&self.dir, self.session_id);
@@ -2369,7 +2424,7 @@ impl SessionLog {
         )) = (match prepared {
             Err(SessionError::DecodedBudgetExceeded { .. }) => {
                 let dir = self.dir.clone();
-                return self.compact_with_limits(&dir, session, limits);
+                return self.compact_with_limits_locked(&dir, session, limits);
             }
             result => result?,
         })
@@ -2389,6 +2444,7 @@ impl SessionLog {
             return Err(e.into());
         }
 
+        self.file_revision = SessionFileRevision::from_file(&self.file)?;
         self.saved_messages = current_messages;
         if let Some(current_transcript) = current_transcript {
             self.saved_transcript = current_transcript;
@@ -2475,6 +2531,22 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
+        let _lock = lock_session_in(dir, self.session_id)?;
+        self.verify_current_file()?;
+        self.compact_with_limits_locked(dir, session, limits)
+    }
+
+    fn compact_with_limits_locked<M, U, T>(
+        &mut self,
+        dir: &Path,
+        session: &Session<M, U, T>,
+        limits: DecodeLimits,
+    ) -> Result<(), SessionError>
+    where
+        M: Serialize + Clone,
+        U: Serialize,
+        T: Serialize,
+    {
         self.require_same_id(session)?;
 
         let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
@@ -2517,6 +2589,7 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
+        let file_revision = SessionFileRevision::from_file(&file)?;
         Ok(Self {
             session_id: session.id,
             dir: dir.to_path_buf(),
@@ -2535,7 +2608,23 @@ impl SessionLog {
             saved_meta: meta_record_bytes(session, appended_frames)?,
             saved_title: session.title.clone(),
             decoded_bytes,
+            file_revision,
         })
+    }
+
+    fn verify_current_file(&self) -> Result<(), SessionError> {
+        let path = jsonl_path(&self.dir, self.session_id);
+        let current = SessionFileRevision::from_path(&path).map_err(|_| {
+            SessionError::ConcurrentModification {
+                path: path.display().to_string(),
+            }
+        })?;
+        if current != self.file_revision {
+            return Err(SessionError::ConcurrentModification {
+                path: path.display().to_string(),
+            });
+        }
+        Ok(())
     }
 
     fn require_same_id<M, U, T>(&self, session: &Session<M, U, T>) -> Result<(), SessionError> {
@@ -3483,6 +3572,15 @@ fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
 }
 
 fn update_cwd_index(dir: &Path, cwd: &str, session_id: n00nId) -> Result<(), StorageError> {
+    let _lock = lock_cwd_index(dir)?;
+    update_cwd_index_unlocked(dir, cwd, session_id)
+}
+
+fn update_cwd_index_unlocked(
+    dir: &Path,
+    cwd: &str,
+    session_id: n00nId,
+) -> Result<(), StorageError> {
     let mut index = load_cwd_index(dir);
     let id_str = session_id.to_string();
     if index.get(cwd).is_some_and(|v| *v == id_str) {
@@ -3494,6 +3592,47 @@ fn update_cwd_index(dir: &Path, cwd: &str, session_id: n00nId) -> Result<(), Sto
 
 fn jsonl_path(dir: &Path, id: n00nId) -> PathBuf {
     dir.join(format!("{id}.jsonl"))
+}
+
+fn session_lock_path(dir: &Path, id: n00nId) -> PathBuf {
+    dir.join(format!("{id}.{SESSION_LOCK_SUFFIX}"))
+}
+
+fn lock_session_in(dir: &Path, id: n00nId) -> Result<SessionMutationLock, StorageError> {
+    fs::create_dir_all(dir)?;
+    lock_storage_file(
+        &session_lock_path(dir, id),
+        "session lock is not a regular file",
+    )
+}
+
+fn lock_cwd_index(dir: &Path) -> Result<SessionMutationLock, StorageError> {
+    fs::create_dir_all(dir)?;
+    lock_storage_file(
+        &dir.join(CWD_INDEX_LOCK_FILE),
+        "cwd index lock is not a regular file",
+    )
+}
+
+fn lock_storage_file(
+    path: &Path,
+    invalid_file_message: &'static str,
+) -> Result<SessionMutationLock, StorageError> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    options
+        .mode(SESSION_LOCK_FILE_MODE)
+        .custom_flags(libc::O_NOFOLLOW);
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(ErrorKind::InvalidData, invalid_file_message).into());
+    }
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(SESSION_LOCK_FILE_MODE))?;
+    file.lock()?;
+    Ok(SessionMutationLock { _file: file })
 }
 
 fn openai_response_chain_path(dir: &Path, id: n00nId) -> PathBuf {
@@ -3675,6 +3814,7 @@ fn try_remove(path: &Path) -> Result<bool, StorageError> {
 }
 
 fn remove_from_cwd_index(dir: &Path, session_id: n00nId) -> Result<(), StorageError> {
+    let _lock = lock_cwd_index(dir)?;
     let mut index = load_cwd_index(dir);
     let before = index.len();
     let session_id = session_id.to_string();
@@ -4431,6 +4571,7 @@ where
     /// # Errors
     /// Returns `SessionError` if the session file cannot be written or the index cannot be updated.
     pub fn save_to(&mut self, dir: &Path) -> Result<(), SessionError> {
+        let _lock = lock_session_in(dir, self.id)?;
         self.updated_at = now_epoch();
         let (file, _) = write_session_file_with_limits(dir, self, &DecodeLimits::LOAD)?;
         drop(file);
@@ -4676,7 +4817,8 @@ where
     /// # Errors
     /// Returns `SessionError` if the session file cannot be found or cleanup fails.
     pub fn delete_from(id: n00nId, dir: &Path) -> Result<(), SessionError> {
-        let _lock = lock_openai_response_chain_in(dir, id)?;
+        let _session_lock = lock_session_in(dir, id)?;
+        let _response_chain_lock = lock_openai_response_chain_in(dir, id)?;
         let path = locate_session_file(dir, id);
         if let Some(path) = &path {
             try_remove(path)?;
@@ -4724,7 +4866,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -6612,6 +6754,189 @@ mod tests {
         let cache: Value =
             serde_json::from_slice(&fs::read(dir.join(SCAN_CACHE_FILE)).unwrap()).unwrap();
         assert_eq!(cache.as_object().unwrap().len(), 1, "deleted entry pruned");
+    }
+
+    #[test]
+    fn concurrent_session_handles_reject_lost_update() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let session: TestSession = Session::new("model", "/project");
+        SessionLog::create(dir, &session).unwrap();
+        let (mut first_session, mut first_log) =
+            SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        let (mut second_session, mut second_log) =
+            SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+
+        first_session.messages.push(user_message("first writer"));
+        first_log.append(&first_session).unwrap();
+        second_session.messages.push(user_message("second writer"));
+
+        let error = second_log.append(&second_session).unwrap_err();
+
+        assert!(matches!(error, SessionError::ConcurrentModification { .. }));
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, first_session.messages);
+    }
+
+    #[test]
+    fn stale_session_handle_cannot_append_after_compaction() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let session: TestSession = Session::new("model", "/project");
+        SessionLog::create(dir, &session).unwrap();
+        let (mut compacted_session, mut compacting_log) =
+            SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        let (mut stale_session, mut stale_log) =
+            SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+
+        compacted_session.title = "compacted".into();
+        compacted_session
+            .messages
+            .push(user_message("compacted writer"));
+        compacting_log.compact(dir, &compacted_session).unwrap();
+        stale_session.messages.push(user_message("stale writer"));
+
+        let error = stale_log.append(&stale_session).unwrap_err();
+
+        assert!(matches!(error, SessionError::ConcurrentModification { .. }));
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.title, "compacted");
+        assert_eq!(loaded.messages, compacted_session.messages);
+    }
+
+    #[test]
+    fn delete_waits_for_cross_process_session_writer_lock() {
+        const CHILD_ENV: &str = "N00N_SESSION_LOCK_CHILD";
+        const DIR_ENV: &str = "N00N_SESSION_LOCK_DIR";
+        const ID_ENV: &str = "N00N_SESSION_LOCK_ID";
+        const ADDRESS_ENV: &str = "N00N_SESSION_LOCK_ADDRESS";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let dir = std::env::var_os(DIR_ENV).unwrap();
+            let id = std::env::var(ID_ENV).unwrap().parse::<n00nId>().unwrap();
+            let address = std::env::var(ADDRESS_ENV).unwrap();
+            let _lock = super::lock_session_in(Path::new(&dir), id).unwrap();
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream.write_all(b"ready").unwrap();
+            let mut release = [0_u8; 1];
+            stream.read_exact(&mut release).unwrap();
+            return;
+        }
+
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let session: TestSession = Session::new("model", "/project");
+        SessionLog::create(dir, &session).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(executable)
+            .args([
+                "--exact",
+                "sessions::tests::delete_waits_for_cross_process_session_writer_lock",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env(DIR_ENV, dir)
+            .env(ID_ENV, session.id.to_string())
+            .env(ADDRESS_ENV, address)
+            .spawn()
+            .unwrap();
+        let (mut coordination, _) = listener.accept().unwrap();
+        let mut ready = [0_u8; 5];
+        coordination.read_exact(&mut ready).unwrap();
+        assert_eq!(&ready, b"ready");
+
+        let (deleted_tx, deleted_rx) = std::sync::mpsc::channel();
+        let delete_dir = dir.to_path_buf();
+        let session_id = session.id;
+        let delete_thread = std::thread::spawn(move || {
+            let result = TestSession::delete_from(session_id, &delete_dir);
+            deleted_tx.send(result).unwrap();
+        });
+        assert!(
+            deleted_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
+
+        coordination.write_all(b"r").unwrap();
+        assert!(child.wait().unwrap().success());
+        deleted_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        delete_thread.join().unwrap();
+        assert!(!jsonl_path(dir, session.id).exists());
+    }
+
+    #[test]
+    fn cwd_index_updates_are_serialized_across_session_processes() {
+        const CHILD_ENV: &str = "N00N_CWD_INDEX_LOCK_CHILD";
+        const DIR_ENV: &str = "N00N_CWD_INDEX_LOCK_DIR";
+        const ID_ENV: &str = "N00N_CWD_INDEX_LOCK_ID";
+        const ADDRESS_ENV: &str = "N00N_CWD_INDEX_LOCK_ADDRESS";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let dir = std::env::var_os(DIR_ENV).unwrap();
+            let id = std::env::var(ID_ENV).unwrap().parse::<n00nId>().unwrap();
+            let address = std::env::var(ADDRESS_ENV).unwrap();
+            let _lock = super::lock_cwd_index(Path::new(&dir)).unwrap();
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream.write_all(b"ready").unwrap();
+            let mut release = [0_u8; 1];
+            stream.read_exact(&mut release).unwrap();
+            super::update_cwd_index_unlocked(Path::new(&dir), "/child", id).unwrap();
+            return;
+        }
+
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let child_id: n00nId = "01965087-4c71-7f00-8000-000000000010".parse().unwrap();
+        let parent_id: n00nId = "01965087-4c71-7f00-8000-000000000011".parse().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(executable)
+            .args([
+                "--exact",
+                "sessions::tests::cwd_index_updates_are_serialized_across_session_processes",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env(DIR_ENV, dir)
+            .env(ID_ENV, child_id.to_string())
+            .env(ADDRESS_ENV, address)
+            .spawn()
+            .unwrap();
+        let (mut coordination, _) = listener.accept().unwrap();
+        let mut ready = [0_u8; 5];
+        coordination.read_exact(&mut ready).unwrap();
+        assert_eq!(&ready, b"ready");
+
+        let (updated_tx, updated_rx) = std::sync::mpsc::channel();
+        let update_dir = dir.to_path_buf();
+        let update_thread = std::thread::spawn(move || {
+            let result = update_cwd_index(&update_dir, "/parent", parent_id);
+            updated_tx.send(result).unwrap();
+        });
+        assert!(
+            updated_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
+
+        coordination.write_all(b"r").unwrap();
+        assert!(child.wait().unwrap().success());
+        updated_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        update_thread.join().unwrap();
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/child"), Some(&child_id.to_string()));
+        assert_eq!(index.get("/parent"), Some(&parent_id.to_string()));
     }
 
     #[test]
