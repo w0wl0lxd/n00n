@@ -62,7 +62,9 @@ jobs:
                 --retry-all-errors -sSf https://sh.rustup.rs | \
                 sh -s -- -y --default-toolchain nightly-2026-08-20 --target ${{ matrix.target }}
               source "$HOME/.cargo/env"
-              cargo build --release --package n00n --bin n00n --bin n00n-interpreter-worker --target ${{ matrix.target }}
+              cargo build --release --package n00n \
+                --bin n00n --bin n00n-interpreter-worker \
+                --target ${{ matrix.target }}
             '
           sudo chown -R "$(id -u):$(id -g)" target/
       - name: Package
@@ -98,7 +100,10 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install nightly-2026-08-20 --profile minimal --target ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --package n00n --bin n00n --bin n00n-interpreter-worker --target ${{ matrix.target }}
+        run: >-
+          cargo build --release --package n00n
+          --bin n00n --bin n00n-interpreter-worker
+          --target ${{ matrix.target }}
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
