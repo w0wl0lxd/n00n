@@ -2939,6 +2939,146 @@ mod tests {
         assert!(state.sidekick_cost.abs() < COST_EPSILON);
     }
 
+    #[test_case("task" ; "task")]
+    #[test_case("workflow" ; "workflow")]
+    fn recoverable_subagent_failure_reaches_next_provider_turn(tool_name: &str) {
+        smol::block_on(async {
+            const FAILURE: &str = "sub-agent error: provider unavailable";
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response(tool_name, "subagent-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let call_counter = Arc::clone(&calls);
+            let mut local = std::collections::HashMap::new();
+            local.insert(
+                tool_name.to_owned(),
+                Arc::new(move |_: &Value| {
+                    call_counter.fetch_add(1, Ordering::Relaxed);
+                    Err(FAILURE.to_owned())
+                }) as crate::tools::LocalToolFn,
+            );
+            let mut history = History::new(Vec::new());
+            let (agent, _event_rx) = make_agent(provider, &mut history);
+            let mut agent = agent.with_local_tools(Arc::new(local));
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(
+                requests[1]
+                    .iter()
+                    .any(|message| message.content.iter().any(|block| {
+                        matches!(
+                            block,
+                            ContentBlock::ToolResult {
+                                content,
+                                is_error: true,
+                                ..
+                            } if content == FAILURE
+                        )
+                    }))
+            );
+        });
+    }
+
+    #[test]
+    fn parent_cancellation_after_subagent_start_prevents_next_provider_turn() {
+        struct PendingInvocation {
+            started: flume::Sender<()>,
+        }
+
+        impl crate::tools::registry::ToolInvocation for PendingInvocation {
+            fn start_header(&self) -> crate::tools::HeaderFuture {
+                crate::tools::HeaderFuture::Ready(crate::tools::HeaderResult::plain(
+                    "pending subagent".into(),
+                ))
+            }
+
+            fn execute(
+                self: Box<Self>,
+                _ctx: &crate::tools::ToolContext,
+            ) -> crate::tools::ExecFuture<'_> {
+                Box::pin(async move {
+                    let _ = self.started.send_async(()).await;
+                    std::future::pending().await
+                })
+            }
+        }
+
+        struct PendingTask {
+            started: flume::Sender<()>,
+        }
+
+        impl crate::tools::Tool for PendingTask {
+            fn name(&self) -> &'static str {
+                "task"
+            }
+
+            fn description(
+                &self,
+                _ctx: &crate::tools::DescriptionContext,
+            ) -> std::borrow::Cow<'_, str> {
+                "pending task".into()
+            }
+
+            fn schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+
+            fn parse(
+                &self,
+                _input: &Value,
+            ) -> Result<Box<dyn crate::tools::registry::ToolInvocation>, crate::tools::ParseError>
+            {
+                Ok(Box::new(PendingInvocation {
+                    started: self.started.clone(),
+                }))
+            }
+        }
+
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response("task", "task-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let (started_tx, started_rx) = flume::bounded(1);
+            let registry = crate::tools::ToolRegistry::new();
+            let tool: Arc<dyn crate::tools::Tool> = Arc::new(PendingTask {
+                started: started_tx,
+            });
+            registry
+                .register(
+                    &tool,
+                    &crate::tools::ToolSource::Lua {
+                        plugin: "task".into(),
+                    },
+                )
+                .unwrap();
+            let mut history = History::new(Vec::new());
+            let (agent, _event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(registry),
+            );
+            let (trigger, cancel) = CancelToken::new();
+            let mut agent = agent.with_cancel(cancel);
+            let cancel_after_start = async {
+                started_rx.recv_async().await.unwrap();
+                trigger.cancel();
+            };
+
+            let (result, ()) =
+                futures_lite::future::zip(agent.run(default_input()), cancel_after_start).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            assert_eq!(requests.lock().unwrap().len(), 1);
+        });
+    }
+
     #[test]
     fn successful_delegate_is_followed_by_exactly_one_lead_review_turn() {
         smol::block_on(async {
