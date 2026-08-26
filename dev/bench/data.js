@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787534458607,
+  "lastUpdate": 1787739015038,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -23641,6 +23641,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 116576,
             "range": "± 21157",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "74ddde8dcd3300633d1003b04e0e6223e5a3b899",
+          "message": "fix: resolve 30 high-impact reliability and security bugs (#460)\n\n* fix: harden cancellation and quality edge cases\n\n* fix(ui): preserve queued work across turn errors\n\n* fix(providers): harden streamed response parsing\n\n* fix(providers): harden credential endpoint discovery\n\n* fix(security): harden MCP trust and OAuth boundaries\n\n* fix(acp): bound stdin frame parsing\n\n* fix(runtime): harden headless daemon lifecycle\n\n* fix(runtime): preserve setup cancellation ownership\n\n* fix(storage): protect provider and session integrity\n\n* fix(storage): close integrity review gaps\n\n* fix(lua): harden async and interpreter boundaries\n\n* fix(lua): pin network destinations across redirects\n\n* fix(plugins): serialize claims and confine memory paths\n\n* fix(plugins): anchor memory operations and locks\n\n* fix(ui): reset queue focus after turn errors\n\n* fix(ci): resolve audit validation failures\n\n* fix(plugins): repair policy list rendering\n\n* fix(review): address automated audit findings\n\n* fix(review): address final audit findings\n\n* fix(ci): clear cross-platform audit failures\n\n* fix(ci): restore portable Lua filesystem APIs\n\n* fix(ci): clear portable Lua checks\n\n* fix(ci): clear remaining platform checks\n\n* fix(lua): preserve confined file permissions\n\n* fix(review): address queue and status findings\n\n* fix(lua): clear interpreter and confinement failures\n\n* fix(release): ship interpreter worker\n\n* fix(ci): install yamllint dependency\n\n* fix(release): wrap worker build commands",
+          "timestamp": "2026-08-26T05:54:02-04:00",
+          "tree_id": "85724301fc0a2da171d83c1b7d7fcf85f4a5d740",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/74ddde8dcd3300633d1003b04e0e6223e5a3b899"
+        },
+        "date": 1787739013229,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6409880,
+            "range": "± 49767",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2435733,
+            "range": "± 9500",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2450258,
+            "range": "± 27456",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7729895,
+            "range": "± 137314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3875380,
+            "range": "± 20120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3779638,
+            "range": "± 9229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554937,
+            "range": "± 1341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168114,
+            "range": "± 222",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167932,
+            "range": "± 610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1071889,
+            "range": "± 9770",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 618973,
+            "range": "± 6416",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 617368,
+            "range": "± 6035",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 51146,
+            "range": "± 2730",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 186082,
+            "range": "± 5728",
             "unit": "ns/iter"
           }
         ]
