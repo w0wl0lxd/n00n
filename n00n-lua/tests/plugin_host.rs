@@ -4920,6 +4920,9 @@ fn bash_handler_preserves_bash_env_cargo_wrapper() {
     const CHILD_ENV: &str = "N00N_BASH_ENV_CARGO_WRAPPER_CHILD";
     const WRAPPER_MARKER: &str = "bash-env-cargo-wrapper-invoked";
 
+    if skip_without_rtk("bash_handler_preserves_bash_env_cargo_wrapper") {
+        return;
+    }
     if std::env::var_os(CHILD_ENV).is_some() {
         let (registry, _host) = builtins_host();
         let output = exec_tool(
