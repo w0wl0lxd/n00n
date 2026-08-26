@@ -100,6 +100,46 @@ const MAX_MCP_SCHEMA_DEPTH: usize = 64;
 const MAX_MCP_SCHEMA_NODES: usize = 4096;
 const JSON_SCHEMA_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
+/// The JSON Schema drafts an MCP `inputSchema` may declare, mapped to the draft
+/// its keywords are then interpreted under.
+///
+/// A server that declares a draft gets validated and compiled against that
+/// draft rather than rejected. Draft 7 is what the MCP SDKs emit by default, so
+/// rejecting it drops working tools — and drops them quietly, one warning per
+/// tool at every startup. Servers that declare nothing keep defaulting to
+/// 2020-12, which is what the MCP specification requires.
+///
+/// The trailing `#` is optional in practice: draft 7 publishes its `$id` with
+/// one and servers copy it either way.
+const SUPPORTED_SCHEMA_DRAFTS: &[(&str, Draft)] = &[
+    (JSON_SCHEMA_2020_12, Draft::Draft202012),
+    (
+        "https://json-schema.org/draft/2020-12/schema#",
+        Draft::Draft202012,
+    ),
+    (
+        "https://json-schema.org/draft/2019-09/schema",
+        Draft::Draft201909,
+    ),
+    (
+        "https://json-schema.org/draft/2019-09/schema#",
+        Draft::Draft201909,
+    ),
+    ("http://json-schema.org/draft-07/schema", Draft::Draft7),
+    ("http://json-schema.org/draft-07/schema#", Draft::Draft7),
+    ("https://json-schema.org/draft-07/schema", Draft::Draft7),
+    ("https://json-schema.org/draft-07/schema#", Draft::Draft7),
+];
+
+/// Resolves a declared `$schema` to the draft to interpret it under, or `None`
+/// when the draft is one this build does not handle.
+fn schema_draft_for(declared: &str) -> Option<Draft> {
+    SUPPORTED_SCHEMA_DRAFTS
+        .iter()
+        .find(|(uri, _)| *uri == declared)
+        .map(|(_, draft)| *draft)
+}
+
 struct McpToolDef {
     qualified_name: Arc<str>,
     raw_name: String,
@@ -1465,17 +1505,22 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
         }
     }
 
-    if let Some(declared_draft) = schema.get("$schema").and_then(Value::as_str)
-        && declared_draft != JSON_SCHEMA_2020_12
-    {
-        return Err(format!("unsupported JSON Schema draft: {declared_draft}"));
-    }
-    jsonschema::draft202012::meta::validate(schema)
-        .map_err(|error| format!("invalid JSON Schema 2020-12: {error}"))?;
+    let declared_draft = schema.get("$schema").and_then(Value::as_str);
+    let draft = match declared_draft {
+        None => Draft::Draft202012,
+        Some(declared) => schema_draft_for(declared)
+            .ok_or_else(|| format!("unsupported JSON Schema draft: {declared}"))?,
+    };
+    let meta_validate = match draft {
+        Draft::Draft7 => jsonschema::draft7::meta::validate,
+        Draft::Draft201909 => jsonschema::draft201909::meta::validate,
+        _ => jsonschema::draft202012::meta::validate,
+    };
+    meta_validate(schema).map_err(|error| format!("invalid JSON Schema {draft:?}: {error}"))?;
     jsonschema::options()
-        .with_draft(Draft::Draft202012)
+        .with_draft(draft)
         .build(schema)
-        .map_err(|error| format!("could not compile JSON Schema 2020-12: {error}"))?;
+        .map_err(|error| format!("could not compile JSON Schema {draft:?}: {error}"))?;
     Ok(())
 }
 
@@ -1619,15 +1664,51 @@ mod tests {
     #[test_case(&json!({"type": "object", "$defs": {"item": {"type": "string"}}, "properties": {"value": {"$ref": "#/$defs/item"}}}) ; "local_ref")]
     #[test_case(&json!({"type": "object", "properties": {"$ref": {"type": "string"}}}) ; "property_named_ref")]
     #[test_case(&json!({"$schema": JSON_SCHEMA_2020_12, "type": "object"}) ; "explicit_2020_12")]
-    fn mcp_schema_validation_accepts_draft_2020_12(schema: &Value) {
+    // The drafts MCP servers actually declare. Rejecting these dropped working
+    // tools from every server built on an SDK that still emits draft 7.
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": {"q": {"type": "string"}}}) ; "draft_07_with_fragment")]
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema", "type": "object"}) ; "draft_07_without_fragment")]
+    #[test_case(&json!({"$schema": "https://json-schema.org/draft/2019-09/schema", "type": "object"}) ; "draft_2019_09")]
+    fn mcp_schema_validation_accepts_declared_drafts(schema: &Value) {
         assert!(validate_mcp_input_schema(schema).is_ok());
+    }
+
+    #[test]
+    fn mcp_schema_validation_still_rejects_a_draft_it_cannot_interpret() {
+        let schema =
+            json!({"$schema": "http://json-schema.org/draft-04/schema#", "type": "object"});
+        let error = validate_mcp_input_schema(&schema).expect_err("draft 4 is not supported");
+        assert!(error.contains("unsupported JSON Schema draft"), "{error}");
+    }
+
+    #[test]
+    fn declared_draft_07_is_compiled_under_draft_07() {
+        // Draft 7 spells tuple validation as an array-valued `items`. 2020-12
+        // requires `items` to be a single schema and uses `prefixItems`
+        // instead, so this only validates if the declared draft — not a fixed
+        // one — drives compilation.
+        let tuple = json!({
+            "type": "object",
+            "properties": {"pair": {"type": "array", "items": [{"type": "string"}, {"type": "number"}]}},
+        });
+
+        let mut draft_07 = tuple.clone();
+        draft_07["$schema"] = json!("http://json-schema.org/draft-07/schema#");
+        validate_mcp_input_schema(&draft_07).expect("draft 7 tuple `items` must compile");
+
+        let mut draft_2020_12 = tuple;
+        draft_2020_12["$schema"] = json!(JSON_SCHEMA_2020_12);
+        assert!(
+            validate_mcp_input_schema(&draft_2020_12).is_err(),
+            "2020-12 must still reject an array-valued `items`"
+        );
     }
 
     #[test_case(&json!(null) ; "not_object")]
     #[test_case(&json!({"type": "invalid"}) ; "invalid_type")]
     #[test_case(&json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
     #[test_case(&json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
-    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}) ; "unsupported_draft")]
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-04/schema#", "type": "object"}) ; "unsupported_draft")]
     fn mcp_schema_validation_rejects_invalid_or_remote(schema: &Value) {
         assert!(validate_mcp_input_schema(schema).is_err());
     }
