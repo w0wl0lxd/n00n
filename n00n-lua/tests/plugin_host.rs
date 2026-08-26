@@ -33,6 +33,7 @@ use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
+const WRITE_DIFF_SNAPSHOT_MAX_BYTES: usize = 1024 * 1024;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     let _ = n00n_lua::test_support::set_interpreter_worker_executable(std::path::PathBuf::from(
@@ -460,6 +461,133 @@ fn bundled_write_file_creation_returns_added_diff() {
             ..
         } if before.is_empty() && after == "created\n"
     ));
+}
+
+#[test_case::test_case(vec![0xff, 0xfe, 0xfd] ; "non_utf8")]
+#[test_case::test_case(vec![0, 1, 2, 3] ; "binary")]
+fn bundled_write_file_overwrites_non_text_with_explicit_diff_fallback(before: Vec<u8>) {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("target.bin");
+    std::fs::write(&path, before).unwrap();
+
+    let output = exec_tool_output(
+        &registry,
+        "write_file",
+        serde_json::json!({ "path": path, "content": "replacement\n" }),
+    )
+    .unwrap();
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement\n");
+    assert!(matches!(
+        output,
+        n00n_agent::ToolOutput::Plain(ref text)
+            if text.text.contains("diff unavailable: existing file is not UTF-8")
+    ));
+}
+
+#[test]
+fn bundled_write_file_overwrites_large_file_with_explicit_diff_fallback() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large.txt");
+    std::fs::write(&path, vec![b'x'; WRITE_DIFF_SNAPSHOT_MAX_BYTES + 1]).unwrap();
+
+    let output = exec_tool_output(
+        &registry,
+        "write_file",
+        serde_json::json!({ "path": path, "content": "replacement\n" }),
+    )
+    .unwrap();
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement\n");
+    assert!(matches!(
+        output,
+        n00n_agent::ToolOutput::Plain(ref text)
+            if text.text.contains("diff unavailable: file exceeds maximum size")
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bundled_write_file_overwrites_fifo_without_blocking() {
+    const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
+
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pipe");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &path,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        rustix::fs::makedev(0, 0),
+    )
+    .unwrap();
+    let entry = registry.get("write_file").unwrap();
+    let invocation = entry
+        .tool
+        .parse(&serde_json::json!({ "path": path, "content": "replacement\n" }))
+        .unwrap();
+    let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        sender
+            .send(smol::block_on(invocation.execute(&ctx)).output)
+            .unwrap();
+    });
+
+    let output = receiver
+        .recv_timeout(RESPONSE_TIMEOUT)
+        .expect("write_file blocked while snapshotting a FIFO")
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement\n");
+    assert!(matches!(
+        output,
+        n00n_agent::ToolOutput::Plain(ref text)
+            if text.text.contains("diff unavailable: file is not a regular file")
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn bundled_write_file_reports_metadata_snapshot_error() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("loop");
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+
+    let error = exec_tool_output(
+        &registry,
+        "write_file",
+        serde_json::json!({ "path": path, "content": "replacement\n" }),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("metadata error"), "got: {error}");
+}
+
+#[test]
+fn bundled_write_file_cancellation_preserves_existing_file() {
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("target.txt");
+    std::fs::write(&path, "before\n").unwrap();
+    let invocation = registry
+        .get("write_file")
+        .unwrap()
+        .tool
+        .parse(&serde_json::json!({ "path": path, "content": "after\n" }))
+        .unwrap();
+    let (trigger, cancel) = n00n_agent::CancelToken::new();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    ctx.cancel = cancel;
+    trigger.cancel();
+
+    let error = smol::block_on(invocation.execute(&ctx)).output.unwrap_err();
+
+    assert_eq!(error, "cancelled");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "before\n");
 }
 
 #[test]
