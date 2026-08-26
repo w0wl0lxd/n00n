@@ -3,6 +3,7 @@ local secret_check = require("n00n.secret_check")
 local ToolView = require("n00n.tool_view")
 
 local DESCRIPTION = [[Write content to a file. Prefer edit_file or edit_file_lines for existing files.]]
+local DIFF_SNAPSHOT_MAX_BYTES = 1024 * 1024
 
 local function write_view_opts(ctx)
   local tol = ctx:tool_output_lines()
@@ -18,6 +19,36 @@ local function build_view(content, path, ctx)
     view:toggle()
   end)
   return buf
+end
+
+local function snapshot_before(path)
+  local metadata, metadata_err = n00n.fs.metadata(path)
+  if not metadata then
+    if metadata_err then
+      return nil, "metadata error: " .. tostring(metadata_err)
+    end
+    return ""
+  end
+  if not metadata.is_file then
+    return nil, nil, "file is not a regular file"
+  end
+  if metadata.size > DIFF_SNAPSHOT_MAX_BYTES then
+    return nil, nil, "file exceeds maximum size"
+  end
+
+  local ok, existing = pcall(n00n.fs.read, path)
+  if not ok then
+    local message = tostring(existing)
+    local lower = message:lower()
+    if lower:find("utf-8", 1, true) or lower:find("utf8", 1, true) then
+      return nil, nil, "existing file is not UTF-8"
+    end
+    return nil, "read error: " .. message
+  end
+  if existing:find("[%z\1-\8\11\12\14-\31]") then
+    return nil, nil, "existing file is not UTF-8"
+  end
+  return existing
 end
 
 n00n.api.register_tool({
@@ -85,13 +116,9 @@ n00n.api.register_tool({
       return { llm_output = err, is_error = true }
     end
 
-    local before = ""
-    if n00n.fs.metadata(path) then
-      local existing, read_err = n00n.fs.read(path)
-      if not existing then
-        return { llm_output = "read error: " .. tostring(read_err), is_error = true }
-      end
-      before = existing
+    local before, snapshot_err, diff_fallback = snapshot_before(path)
+    if snapshot_err then
+      return { llm_output = snapshot_err, is_error = true }
     end
 
     local parent = n00n.fs.dirname(path)
@@ -110,6 +137,14 @@ n00n.api.register_tool({
     local rel = shorten_path(path)
     local llm_output = string.format("wrote %d bytes to %s", byte_count, rel)
     local annotation = string.format("%d bytes", byte_count)
+
+    if diff_fallback then
+      return {
+        llm_output = llm_output .. "; diff unavailable: " .. diff_fallback,
+        annotation = annotation,
+        written_path = path,
+      }
+    end
 
     return {
       llm_output = llm_output,
