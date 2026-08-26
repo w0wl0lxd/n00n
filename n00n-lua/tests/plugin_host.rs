@@ -4985,7 +4985,10 @@ fn bash_handler_routes_every_managed_command_through_rtk() {
             .unwrap_or_else(|error| panic!("failed to parse {command}: {error}"));
         let (ctx, event_rx) = warm_ctx("rtk-managed-route");
 
-        let _execution = smol::block_on(invocation.execute(&ctx));
+        let execution = smol::block_on(invocation.execute(&ctx));
+        if let Err(error) = execution.output {
+            panic!("{command} was rejected instead of routed through RTK: {error}");
+        }
 
         let body = recv_live_buf(&event_rx, "rtk-managed-route")
             .unwrap_or_else(|| panic!("missing bash live buffer for {command}"));
