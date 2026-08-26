@@ -15,8 +15,8 @@ use crate::types::{
     ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX, ThinkingFieldConfig,
 };
 use crate::{
-    AgentError, ContentBlock, Message, OpenAiPromptCacheMode, ProviderEvent,
-    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, Role, StopReason,
+    AgentError, CodingPlanAdmissionTransport, ContentBlock, Message, OpenAiPromptCacheMode,
+    ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, Role, StopReason,
     StreamResponse, System, TokenUsage, dialect,
 };
 
@@ -665,7 +665,10 @@ pub(crate) async fn do_stream_at(
         if auth.base_url.as_deref() == Some(super::auth::CODING_PLAN_BASE_URL)
             && matches!(&error, AgentError::Api { status: 403, message } if message.trim().is_empty())
         {
-            Err(AgentError::CodingPlanAdmission { retry_after })
+            Err(AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::Http,
+                retry_after,
+            })
         } else {
             Err(error)
         }
