@@ -463,9 +463,12 @@ fn bundled_write_file_creation_returns_added_diff() {
     ));
 }
 
-#[test_case::test_case(vec![0xff, 0xfe, 0xfd] ; "non_utf8")]
-#[test_case::test_case(vec![0, 1, 2, 3] ; "binary")]
-fn bundled_write_file_overwrites_non_text_with_explicit_diff_fallback(before: Vec<u8>) {
+#[test_case::test_case(vec![0xff, 0xfe, 0xfd], "existing file is not UTF-8" ; "non_utf8")]
+#[test_case::test_case(vec![0, 1, 2, 3], "existing file is binary or non-text" ; "binary")]
+fn bundled_write_file_overwrites_non_text_with_explicit_diff_fallback(
+    before: Vec<u8>,
+    expected_reason: &str,
+) {
     let (registry, _host) = builtins_host();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("target.bin");
@@ -482,7 +485,7 @@ fn bundled_write_file_overwrites_non_text_with_explicit_diff_fallback(before: Ve
     assert!(matches!(
         output,
         n00n_agent::ToolOutput::Plain(ref text)
-            if text.text.contains("diff unavailable: existing file is not UTF-8")
+            if text.text.contains(&format!("diff unavailable: {expected_reason}"))
     ));
 }
 
