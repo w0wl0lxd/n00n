@@ -36,7 +36,7 @@ local function snapshot_before(path)
     return nil, nil, "file exceeds maximum size"
   end
 
-  local ok, existing = pcall(n00n.fs.read, path)
+  local ok, existing, read_err = pcall(n00n.fs.read, path)
   if not ok then
     local message = tostring(existing)
     local lower = message:lower()
@@ -45,8 +45,11 @@ local function snapshot_before(path)
     end
     return nil, "read error: " .. message
   end
+  if read_err then
+    return nil, "read error: " .. tostring(read_err)
+  end
   if existing:find("[%z\1-\8\11\12\14-\31]") then
-    return nil, nil, "existing file is not UTF-8"
+    return nil, nil, "existing file is binary or non-text"
   end
   return existing
 end
@@ -147,6 +150,7 @@ n00n.api.register_tool({
     if diff_fallback then
       return {
         llm_output = llm_output .. "; diff unavailable: " .. diff_fallback,
+        body = build_view(content, path, ctx),
         annotation = annotation,
         written_path = path,
       }
