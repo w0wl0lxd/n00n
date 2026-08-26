@@ -115,10 +115,16 @@ n00n.api.register_tool({
     if not ok then
       return { llm_output = err, is_error = true }
     end
+    if ctx:cancelled() then
+      return { llm_output = "cancelled", is_error = true }
+    end
 
     local before, snapshot_err, diff_fallback = snapshot_before(path)
     if snapshot_err then
       return { llm_output = snapshot_err, is_error = true }
+    end
+    if ctx:cancelled() then
+      return { llm_output = "cancelled", is_error = true }
     end
 
     local parent = n00n.fs.dirname(path)
