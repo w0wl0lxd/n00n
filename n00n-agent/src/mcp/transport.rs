@@ -43,6 +43,7 @@ pub trait McpTransport: Send + Sync {
     /// last handshake request and close stdout before this runs; the caller must
     /// treat `false` as a failed handshake rather than publish a dead transport.
     /// Always true for transports without a background reader task (e.g. HTTP).
+    #[must_use]
     fn mark_established(&self) -> bool {
         true
     }
