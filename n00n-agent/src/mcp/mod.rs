@@ -1547,7 +1547,10 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
             schema["$schema"] = Value::String(canonical.to_owned());
             schema
         });
-    let schema = canonicalized.as_ref().unwrap_or(schema);
+    let schema = match canonicalized {
+        Some(ref canonicalized) => canonicalized,
+        None => schema,
+    };
     let meta_validate = match draft {
         Draft::Draft7 => jsonschema::draft7::meta::validate,
         Draft::Draft201909 => jsonschema::draft201909::meta::validate,
