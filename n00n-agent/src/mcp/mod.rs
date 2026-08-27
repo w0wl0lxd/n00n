@@ -412,6 +412,9 @@ pub struct McpHandle {
     /// Never changes after startup, so it lives here instead of being
     /// copied into every republished `ToolIndex`.
     defer_tools: usize,
+    /// Shared by every agent loop that clones this handle, so one loop's
+    /// failed background OAuth attempt throttles the others.
+    background_auth_backoff: oauth::BackgroundAuthBackoff,
 }
 
 /// One session's view of MCP: the shared handle plus the deferred tools
@@ -699,6 +702,13 @@ impl McpSession {
 }
 
 impl McpHandle {
+    /// The background-OAuth negative cache shared by everyone holding a clone
+    /// of this handle.
+    #[must_use]
+    pub fn background_auth_backoff(&self) -> &oauth::BackgroundAuthBackoff {
+        &self.background_auth_backoff
+    }
+
     pub fn send(&self, cmd: McpCommand) {
         if let Err(e) = self.cmd_tx.try_send(cmd) {
             warn!(error = %e, "MCP command loop is gone");
@@ -820,11 +830,16 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
     let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
     let index: Arc<ArcSwap<ToolIndex>> = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
     publish(&inner, &index, &snapshot, max_desc_chars);
+    // One handle per process, cloned into every agent loop. The backoff below
+    // is shared through those clones, so building a second `McpHandle` here
+    // instead of cloning this one would silently un-share it and let each
+    // loop retry the same failing server.
     let handle = McpHandle {
         cmd_tx: cmd_tx.clone(),
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
     };
     smol::spawn(run(inner, index, snapshot, cmd_tx, cmd_rx)).detach();
     Some(handle)
@@ -1154,7 +1169,13 @@ async fn start_server(
             )?)
         }
     };
-    let capabilities = transport::initialize(transport.as_ref()).await?;
+    let capabilities = match transport::initialize(transport.as_ref()).await {
+        Ok(capabilities) => capabilities,
+        Err(e) => {
+            transport.shutdown().await;
+            return Err(e);
+        }
+    };
     // Asymmetric on purpose: sloppy servers omit `capabilities` yet serve
     // tools/list fine, so always ask (fatal only when tools were declared).
     // Prompts only when declared: undeclared endpoints may answer junk,
@@ -1165,13 +1186,32 @@ async fn start_server(
             warn!(server = config.name, error = %e, "tools/list failed; server declared no tools");
             Vec::new()
         }
-        Err(e) => return Err(e),
+        Err(e) => {
+            transport.shutdown().await;
+            return Err(e);
+        }
     };
     let prompt_infos = if capabilities.prompts {
-        transport::list_prompts(transport.as_ref()).await?
+        match transport::list_prompts(transport.as_ref()).await {
+            Ok(prompts) => prompts,
+            Err(e) => {
+                transport.shutdown().await;
+                return Err(e);
+            }
+        }
     } else {
         Vec::new()
     };
+    if !transport.mark_established() {
+        // The reader loop ended while the handshake was still in flight. It
+        // suppressed its own report because `established` was not yet set, so
+        // failing here is the only thing that keeps a dead server from being
+        // registered as running with its tools advertised.
+        transport.shutdown().await;
+        return Err(McpError::ServerDied {
+            server: config.name.clone(),
+        });
+    }
     info!(
         server = config.name,
         tool_count = tool_infos.len(),
@@ -1431,6 +1471,7 @@ pub(crate) fn stub_session_with_transport(
             index,
             snapshot,
             defer_tools: 0,
+            background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
         },
         &[],
     )
@@ -1683,6 +1724,7 @@ fn prepare_manager(config: McpConfig) -> Option<PreparedManager> {
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
     };
     Some(PreparedManager {
         inner,
@@ -2023,6 +2065,7 @@ mod tests {
             index,
             snapshot,
             defer_tools,
+            background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
         };
         (inner, McpSession::new(handle, &[]))
     }
@@ -2523,6 +2566,62 @@ mod tests {
             assert!(entry.prompts.is_empty());
             assert!(entry.transport.is_none());
             assert!(matches!(entry.status, McpServerStatus::Failed(_)));
+        });
+    }
+
+    /// A server whose process starts fine but never answers the `initialize` handshake must not
+    /// leak that process: `start_server` has to shut its (just-spawned) transport down itself
+    /// before returning `Err`, rather than leaving cleanup to `Drop`.
+    #[cfg(unix)]
+    #[test]
+    fn refresh_server_shuts_down_a_transport_that_never_completes_handshake() {
+        smol::block_on(async {
+            let pid_file = tempfile::NamedTempFile::new().unwrap();
+            let pid_path = pid_file.path().to_path_buf();
+
+            let t = FakeTransport::new();
+            let (mut inner, _) = setup(vec![fake_entry("srv", Arc::clone(&t) as _)]);
+            inner.entries[0].config = Some(ServerConfig {
+                name: "srv".into(),
+                timeout: Duration::from_millis(200),
+                always_load: false,
+                transport: Transport::Stdio {
+                    program: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        format!("echo $$ > {} && exec sleep 30", pid_path.display()),
+                    ],
+                    environment: HashMap::new(),
+                },
+            });
+            let (cmd_tx, _cmd_rx) = flume::unbounded();
+
+            let err = refresh_server(&mut inner, "srv", &cmd_tx)
+                .await
+                .expect_err("a server that never answers initialize must fail the handshake");
+            assert!(matches!(err, McpError::Timeout { .. }));
+
+            let pid: i32 = std::fs::read_to_string(&pid_path)
+                .expect("child must have started and recorded its pid")
+                .trim()
+                .parse()
+                .expect("recorded pid must be numeric");
+
+            // shutdown() reaps before start_server returns, so the process must
+            // already be gone here — no polling, no zombie window. `kill -0`
+            // asks whether the pid exists without signalling it; shelling out
+            // keeps the check in safe Rust, since the workspace denies
+            // `unsafe_code`.
+            let still_running = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("kill -0 {pid} 2>/dev/null"))
+                .status()
+                .expect("kill -0 must run")
+                .success();
+            assert!(
+                !still_running,
+                "start_server must shut down a transport that failed its handshake"
+            );
         });
     }
 

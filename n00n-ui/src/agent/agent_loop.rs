@@ -585,6 +585,11 @@ impl AgentLoop {
     }
 }
 
+/// Backoff floor and ceiling for background OAuth retries. A server that just
+/// failed (e.g. a 403 the user cannot silently resolve) must not be re-hit on
+/// every `spawn_oauth_for_needs_auth` call — which fires once per agent loop,
+/// so several concurrent sessions/tabs against the same server otherwise
+/// hammer it within seconds of each other.
 fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
     let snapshot = handle.reader().load().clone();
     for info in &snapshot.infos {
@@ -594,6 +599,13 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
         let Some(ref server_url) = info.url else {
             continue;
         };
+        // Claiming here, under the shared cache's lock, is what keeps a burst
+        // of agent loops that all see the same `NeedsAuth` server from each
+        // spawning its own attempt.
+        let Some(claim) = handle.background_auth_backoff().try_claim(&info.name) else {
+            tracing::debug!(server = %info.name, "skipping background OAuth retry; already claimed or in backoff");
+            continue;
+        };
         let handle = handle.clone();
         let server_name = info.name.clone();
         let server_url = server_url.clone();
@@ -601,6 +613,9 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
         smol::spawn(async move {
             let storage = match n00n_storage::StateDir::resolve() {
                 Ok(s) => s,
+                // Dropping `claim` here releases it without advancing the
+                // backoff: the failure is process-local and the server never
+                // saw a request.
                 Err(e) => {
                     tracing::warn!(server = %server_name, error = %e, "cannot resolve storage for OAuth");
                     return;
@@ -615,9 +630,11 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
             )
             .await
             {
+                claim.record_failure();
                 tracing::warn!(server = %server_name, error = %e, "background OAuth failed");
                 return;
             }
+            claim.record_success();
             handle.send(McpCommand::Reconnect {
                 server: server_name.clone(),
             });

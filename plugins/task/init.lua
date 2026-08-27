@@ -84,7 +84,7 @@ local function handler(input, ctx)
     forwarded.background = false
     local title = "task: " .. n00n.ui.truncate_text(input.description or input.prompt or "background task", 60).head
     local id, err = n00n.session.new({
-      tool = "task",
+      tool = "run_task",
       input = forwarded,
       title = title,
       focus = false,
