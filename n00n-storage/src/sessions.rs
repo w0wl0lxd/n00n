@@ -3440,6 +3440,16 @@ where
             "closed unterminated transcript compactions while loading session log"
         );
     }
+    // The start/end records hold the cap as they are read, but a legacy record
+    // carries a whole nested tree in one payload — `LogRecord::Transcript` and
+    // `LogRecord::Meta.transcript` both bypass that check. Normalize the
+    // assembled transcript here so every source is capped, whatever its shape.
+    if transcript_compaction_depth(&builder.transcript) > MAX_TRANSCRIPT_COMPACTION_DEPTH {
+        builder.recovered_structure = true;
+        while transcript_compaction_depth(&builder.transcript) > MAX_TRANSCRIPT_COMPACTION_DEPTH {
+            flatten_deepest_compaction(&mut builder.transcript);
+        }
+    }
     let id = builder
         .id
         .ok_or(StorageError::NotFound(path.display().to_string()))?;
@@ -5101,8 +5111,8 @@ mod tests {
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
         MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
-        TRANSCRIPT_COMPACTION_START_RECORD_TYPE, flatten_deepest_compaction,
-        transcript_compaction_depth,
+        TRANSCRIPT_COMPACTION_START_RECORD_TYPE, TRANSCRIPT_RECORD_TYPE,
+        flatten_deepest_compaction, transcript_compaction_depth,
     };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
@@ -5124,6 +5134,12 @@ mod tests {
     use test_case::test_case;
 
     type TestSession = Session<Value, Value, Value>;
+
+    /// Marks the one live entry a depth-cap test must not lose.
+    const LIVE_TEXT: &str = "live";
+
+    /// Kept in step with the `#[serde(rename)]` on [`LogRecord::Meta`].
+    const META_RECORD_TYPE: &str = "meta";
 
     static MESSAGE_SERIALIZATIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -5768,6 +5784,137 @@ mod tests {
         ));
     }
 
+    /// Which legacy record carries the nested tree. Both predate the
+    /// start/end records, so neither is capped as it is read.
+    #[derive(Clone, Copy)]
+    enum LegacyCarrier {
+        /// v3: one `transcript` record per top-level entry.
+        TranscriptRecord,
+        /// v2: the whole transcript inside the `meta` record.
+        MetaRecord,
+    }
+
+    /// A nesting depth every parser handles, used to prove the legacy
+    /// carriers load at all.
+    const SHALLOW_LEGACY_NESTING: usize = 8;
+
+    /// Wraps `entry` in `depth` nested compactions, in the serde shape a
+    /// legacy record used.
+    fn nest_compactions(mut entry: Value, depth: usize) -> Value {
+        for _ in 0..depth {
+            entry = serde_json::json!({"Compaction": {"entries": [entry]}});
+        }
+        entry
+    }
+
+    /// Rewrites the log so `carrier` holds `live` nested `depth` deep.
+    fn plant_legacy_transcript(dir: &Path, id: n00nId, carrier: LegacyCarrier, depth: usize) {
+        rewrite_log_lines(dir, id, move |lines| {
+            let mut lines: Vec<Value> = lines
+                .into_iter()
+                // For the meta variant the transcript record has to go, or
+                // it would supply the entry the meta field is meant to.
+                .filter(|line| match carrier {
+                    LegacyCarrier::MetaRecord => line["t"] != TRANSCRIPT_RECORD_TYPE,
+                    LegacyCarrier::TranscriptRecord => true,
+                })
+                .collect();
+            for line in &mut lines {
+                match carrier {
+                    LegacyCarrier::TranscriptRecord if line["t"] == TRANSCRIPT_RECORD_TYPE => {
+                        line["d"] = nest_compactions(line["d"].clone(), depth);
+                    }
+                    LegacyCarrier::MetaRecord if line["t"] == META_RECORD_TYPE => {
+                        let live =
+                            serde_json::to_value(TranscriptEntry::Message(user_message(LIVE_TEXT)))
+                                .unwrap();
+                        line["transcript"] = serde_json::json!([nest_compactions(live, depth)]);
+                    }
+                    _ => {}
+                }
+            }
+            lines
+        });
+    }
+
+    /// True when `LIVE_TEXT` survives somewhere in the tree. The entry sits
+    /// inside the compactions, so this cannot read the active messages.
+    fn holds_live_text(entries: &[TranscriptEntry<Value>]) -> bool {
+        entries.iter().any(|entry| match entry {
+            TranscriptEntry::Message(message) | TranscriptEntry::GeneratedMessage(message) => {
+                format!("{message:?}").contains(LIVE_TEXT)
+            }
+            TranscriptEntry::Compaction { entries, .. } => holds_live_text(entries),
+        })
+    }
+
+    fn session_with_one_live_entry(dir: &Path) -> TestSession {
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message(LIVE_TEXT)));
+        drop(SessionLog::create(dir, &session).unwrap());
+        session
+    }
+
+    /// Both legacy carriers must reach the loader at all — a nesting bug in
+    /// the fixture would otherwise make the depth test below vacuous.
+    #[test_case(LegacyCarrier::TranscriptRecord ; "v3 transcript record")]
+    #[test_case(LegacyCarrier::MetaRecord ; "v2 meta record")]
+    fn a_nested_legacy_transcript_loads_intact(carrier: LegacyCarrier) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_live_entry(dir);
+        plant_legacy_transcript(dir, session.id, carrier, SHALLOW_LEGACY_NESTING);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+
+        assert!(
+            holds_live_text(&loaded.transcript),
+            "the nested entry must load: {:?}",
+            loaded.transcript
+        );
+        assert_eq!(
+            transcript_compaction_depth(&loaded.transcript),
+            SHALLOW_LEGACY_NESTING,
+            "nothing below the cap may be flattened"
+        );
+    }
+
+    /// A legacy record carries its whole tree in one payload, so the
+    /// start/end depth cap never sees it. It cannot deliver an over-cap
+    /// transcript either: `serde_json`'s recursion limit is spent several
+    /// levels per compaction and runs out well before
+    /// [`MAX_TRANSCRIPT_COMPACTION_DEPTH`], so the record fails to
+    /// deserialize and the loader skips it. What matters is that skipping
+    /// it leaves the session openable rather than permanently broken.
+    #[test_case(LegacyCarrier::TranscriptRecord ; "v3 transcript record")]
+    #[test_case(LegacyCarrier::MetaRecord ; "v2 meta record")]
+    fn an_over_cap_legacy_transcript_never_reaches_the_loader(carrier: LegacyCarrier) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_live_entry(dir);
+        plant_legacy_transcript(
+            dir,
+            session.id,
+            carrier,
+            MAX_TRANSCRIPT_COMPACTION_DEPTH + 2,
+        );
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+
+        assert!(
+            transcript_compaction_depth(&loaded.transcript) <= MAX_TRANSCRIPT_COMPACTION_DEPTH,
+            "an over-cap legacy tree must never survive the load: {}",
+            transcript_compaction_depth(&loaded.transcript)
+        );
+        assert!(
+            !holds_live_text(&loaded.transcript),
+            "the unreadable record cannot have loaded: {:?}",
+            loaded.transcript
+        );
+    }
+
     #[test]
     fn transcript_compaction_nesting_is_depth_bounded() {
         let tmp = TempDir::new().unwrap();
@@ -5783,7 +5930,7 @@ mod tests {
             let mut out = Vec::new();
             let mut tail = Vec::new();
             for line in lines {
-                if line["t"] == "transcript" {
+                if line["t"] == TRANSCRIPT_RECORD_TYPE {
                     for _ in 0..depth {
                         out.push(serde_json::json!({
                             "t": TRANSCRIPT_COMPACTION_START_RECORD_TYPE
