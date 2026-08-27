@@ -63,11 +63,17 @@ pub(crate) enum LineageError {
     },
     #[error("session lineage contains a cycle at {0}")]
     Cycle(n00nId),
-    #[error("session lineage depth limit exceeded: {limit}")]
+    #[error(
+        "session lineage depth limit reached ({limit}); retry without a background session or increase agent.max_depth"
+    )]
     DepthExceeded { limit: usize },
-    #[error("session lineage total descendant limit exceeded: {limit}")]
+    #[error(
+        "session lineage retained descendant limit reached ({limit}); retry without background, reuse or delete a completed descendant in /sessions, or increase agent.max_total_descendants"
+    )]
     TotalDescendantsExceeded { limit: usize },
-    #[error("session lineage active descendant limit exceeded: {limit}")]
+    #[error(
+        "session lineage active descendant limit reached ({limit}); retry without background, wait for or stop an active descendant, or increase agent.max_active_descendants"
+    )]
     ActiveDescendantsExceeded { limit: usize },
     #[error("prompt target is outside the caller lineage")]
     UnauthorizedTarget,
@@ -730,7 +736,19 @@ fn limit_reached(committed: usize, reserved: usize, limit: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashSet;
+
+    use n00n_storage::id::n00nId;
+    use test_case::test_case;
+
+    use super::{
+        DescendantCounts, LineageError, LineageLimits, LiveSession, SessionLineage,
+        SessionLineageGuard,
+    };
+
+    const DEPTH_RECOVERY: &str = "session lineage depth limit reached (4); retry without a background session or increase agent.max_depth";
+    const TOTAL_DESCENDANTS_RECOVERY: &str = "session lineage retained descendant limit reached (16); retry without background, reuse or delete a completed descendant in /sessions, or increase agent.max_total_descendants";
+    const ACTIVE_DESCENDANTS_RECOVERY: &str = "session lineage active descendant limit reached (8); retry without background, wait for or stop an active descendant, or increase agent.max_active_descendants";
 
     fn id(value: u16) -> n00nId {
         format!("00000000-0000-7000-8000-{value:012x}")
@@ -761,6 +779,21 @@ mod tests {
             max_total_descendants,
             max_active_descendants,
         }
+    }
+
+    #[test_case(&LineageError::DepthExceeded { limit: 4 }, DEPTH_RECOVERY ; "depth")]
+    #[test_case(
+        &LineageError::TotalDescendantsExceeded { limit: 16 },
+        TOTAL_DESCENDANTS_RECOVERY;
+        "total descendants"
+    )]
+    #[test_case(
+        &LineageError::ActiveDescendantsExceeded { limit: 8 },
+        ACTIVE_DESCENDANTS_RECOVERY;
+        "active descendants"
+    )]
+    fn lineage_limit_errors_explain_model_recovery(error: &LineageError, expected: &str) {
+        assert_eq!(error.to_string(), expected);
     }
 
     #[test]
