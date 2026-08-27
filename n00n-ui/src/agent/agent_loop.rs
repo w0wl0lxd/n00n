@@ -615,8 +615,10 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
             let storage = match n00n_storage::StateDir::resolve() {
                 Ok(s) => s,
                 Err(e) => {
-                    // Release the claim, or this server never retries.
-                    backoff.record_failure(&server_name);
+                    // Release the claim, or this server never retries. The
+                    // failure is process-local, so it must not advance the
+                    // server's backoff.
+                    backoff.abandon_claim(&server_name);
                     tracing::warn!(server = %server_name, error = %e, "cannot resolve storage for OAuth");
                     return;
                 }
