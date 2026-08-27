@@ -830,6 +830,10 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
     let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
     let index: Arc<ArcSwap<ToolIndex>> = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
     publish(&inner, &index, &snapshot, max_desc_chars);
+    // One handle per process, cloned into every agent loop. The backoff below
+    // is shared through those clones, so building a second `McpHandle` here
+    // instead of cloning this one would silently un-share it and let each
+    // loop retry the same failing server.
     let handle = McpHandle {
         cmd_tx: cmd_tx.clone(),
         index: Arc::clone(&index),
