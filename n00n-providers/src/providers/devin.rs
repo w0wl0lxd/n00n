@@ -481,7 +481,7 @@ fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials
         return Ok(Some(apply_account_url_override(
             credentials,
             account_url_override.as_deref(),
-        )));
+        )?));
     }
     Ok(None)
 }
@@ -949,13 +949,14 @@ pub(crate) fn has_credentials() -> bool {
 
 impl Devin {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
-        let credentials = discover_credentials()?
-            .map(|mut credentials| {
+        let credentials = match discover_credentials()? {
+            Some(mut credentials) => {
                 credentials.api_server_url =
                     resolve_api_server_url(credentials.api_server_url, None)?;
-                Ok(credentials)
-            })
-            .transpose()?;
+                Some(credentials)
+            }
+            None => None,
+        };
         Ok(Self {
             credentials,
             client: super::http_client(timeouts)?,
@@ -991,13 +992,17 @@ impl Devin {
                 api_server_url: DEVIN_API_URL.to_string(),
             }),
             None => discover_credentials()?,
-        }
-        .map(|mut credentials| {
-            credentials.api_server_url =
-                resolve_api_server_url(credentials.api_server_url, resolved_base_url.as_deref())?;
-            Ok(credentials)
-        })
-        .transpose()?;
+        };
+        let credentials = match credentials {
+            Some(mut credentials) => {
+                credentials.api_server_url = resolve_api_server_url(
+                    credentials.api_server_url,
+                    resolved_base_url.as_deref(),
+                )?;
+                Some(credentials)
+            }
+            None => None,
+        };
 
         Ok(Self {
             credentials,
@@ -1982,13 +1987,16 @@ mod tests {
         };
         assert_eq!(
             apply_account_url_override(credentials.clone(), Some("https://account.example/path/"))
+                .unwrap()
                 .api_server_url,
             "https://account.example/path"
         );
-        assert_eq!(
+        // A query would swallow the appended API path, so the override is
+        // unusable — and rerouting to the default would send this account's
+        // token somewhere it was never meant to go.
+        assert!(
             apply_account_url_override(credentials, Some("https://account.example/?ignored=true"))
-                .api_server_url,
-            "https://configured.example"
+                .is_err()
         );
     }
 
@@ -1998,7 +2006,8 @@ mod tests {
             resolve_api_server_url(
                 "https://configured.example".to_string(),
                 Some("https://explicit.example")
-            ),
+            )
+            .unwrap(),
             "https://explicit.example"
         );
     }
@@ -2006,21 +2015,62 @@ mod tests {
     #[test]
     fn configured_api_server_url_is_preserved_without_explicit_url() {
         assert_eq!(
-            resolve_api_server_url("https://configured.example".to_string(), None),
+            resolve_api_server_url("https://configured.example".to_string(), None).unwrap(),
             "https://configured.example"
         );
     }
 
+    /// Replacing an unusable endpoint with the default posts the session
+    /// token to a host the operator never configured. Reject it instead.
     #[test]
-    fn invalid_explicit_url_falls_back_to_configured() {
+    fn an_invalid_explicit_url_is_rejected_not_rerouted() {
+        let rejected =
+            resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url"));
+        assert!(
+            matches!(rejected, Err(AgentError::Config { .. })),
+            "{rejected:?}"
+        );
+    }
+
+    #[test]
+    fn an_invalid_stored_url_is_rejected_too() {
+        assert!(resolve_api_server_url("devin".to_string(), None).is_err());
+    }
+
+    /// Only the absence of any candidate falls back.
+    #[test]
+    fn a_blank_candidate_falls_back_to_the_default() {
         assert_eq!(
-            resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url")),
+            resolve_api_server_url(String::new(), None).unwrap(),
+            DEVIN_API_URL
+        );
+        assert_eq!(
+            resolve_api_server_url(String::new(), Some("   ")).unwrap(),
+            DEVIN_API_URL
+        );
+    }
+
+    /// A host override in Devin's own auth response is provider output, not
+    /// operator configuration: an unusable one is dropped, since the request
+    /// already reached the configured host.
+    #[test]
+    fn a_provider_supplied_override_is_dropped_when_unusable() {
+        assert_eq!(
+            apply_provider_api_server_url("https://configured.example", "not-a-url"),
             "https://configured.example"
+        );
+        assert_eq!(
+            apply_provider_api_server_url("https://configured.example", ""),
+            "https://configured.example"
+        );
+        assert_eq!(
+            apply_provider_api_server_url("https://configured.example", "https://custom.example/"),
+            "https://custom.example"
         );
     }
 
     #[test]
-    fn discovered_base_url_rejects_schemeless_config_value() {
+    fn discovered_base_url_rejects_a_schemeless_config_value() {
         let mut config = ProvidersConfig::default();
         config.upsert(
             "devin".to_string(),
@@ -2029,7 +2079,7 @@ mod tests {
                 ..ProviderDef::default()
             },
         );
-        assert_eq!(discovered_base_url(&config), DEVIN_API_URL);
+        assert!(discovered_base_url(&config).is_err());
     }
 
     #[test]
@@ -2042,13 +2092,16 @@ mod tests {
                 ..ProviderDef::default()
             },
         );
-        assert_eq!(discovered_base_url(&config), "https://configured.example");
+        assert_eq!(
+            discovered_base_url(&config).unwrap(),
+            "https://configured.example"
+        );
     }
 
     #[test]
     fn discovered_base_url_defaults_when_unconfigured() {
         let config = ProvidersConfig::default();
-        assert_eq!(discovered_base_url(&config), DEVIN_API_URL);
+        assert_eq!(discovered_base_url(&config).unwrap(), DEVIN_API_URL);
     }
 
     /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
@@ -2058,7 +2111,8 @@ mod tests {
     fn url_scheme_comparison_is_case_insensitive() {
         for url in ["HTTPS://devin.example", "Http://devin.example"] {
             assert_eq!(
-                resolve_api_server_url("https://configured.example".to_string(), Some(url)),
+                resolve_api_server_url("https://configured.example".to_string(), Some(url))
+                    .unwrap(),
                 url
             );
         }
@@ -2089,17 +2143,14 @@ mod tests {
     #[test]
     fn whitespace_padded_configured_url_is_trimmed_not_discarded() {
         assert_eq!(
-            resolve_api_server_url("  https://configured.example/  ".to_string(), None),
+            resolve_api_server_url("  https://configured.example/  ".to_string(), None).unwrap(),
             "https://configured.example"
         );
     }
 
     #[test]
-    fn invalid_configured_and_explicit_urls_fall_back_to_default() {
-        assert_eq!(
-            resolve_api_server_url("not-a-url".to_string(), Some("also-not-a-url")),
-            DEVIN_API_URL
-        );
+    fn invalid_configured_and_explicit_urls_are_both_rejected() {
+        assert!(resolve_api_server_url("not-a-url".to_string(), Some("also-not-a-url")).is_err());
     }
 
     #[test]
