@@ -795,7 +795,12 @@ mod tests {
             let transport = StdioTransport::spawn(
                 "test",
                 "sh",
-                &["-c".into(), "exit 0".into()],
+                // The child waits for a line rather than exiting at once, so
+                // the handshake window is closed by this test and not by the
+                // scheduler. An `exit 0` child can clear `alive` before
+                // `mark_established` runs and fail the assertion below on a
+                // loaded runner.
+                &["-c".into(), "read -r _ || true".into()],
                 &HashMap::new(),
                 Duration::from_secs(5),
                 Box::new(move |e| {
@@ -809,6 +814,8 @@ mod tests {
                 transport.mark_established(),
                 "the child must still be alive when the handshake completes"
             );
+            // Release the child now that the handshake is on record.
+            transport.write_line(b"\n").await.unwrap();
 
             let StdioTransport {
                 _reader_task: reader_task,
