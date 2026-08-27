@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Write as IoWrite};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -930,9 +931,24 @@ pub struct Devin {
     timeouts: super::Timeouts,
 }
 
+/// Guards the warning below. Provider listing runs often, so an
+/// unconditional warning would repeat on every refresh.
+static REPORTED_UNUSABLE_PRIMARY_CONFIG: AtomicBool = AtomicBool::new(false);
+
 #[must_use]
 pub fn has_primary_credentials() -> bool {
-    discover_credentials().is_ok_and(|credentials| credentials.is_some())
+    match discover_credentials() {
+        Ok(credentials) => credentials.is_some(),
+        // A broken `devin.base_url` must not read as "not configured". The
+        // error still stops the turn when a Devin model is picked, but the
+        // listing is where a user looks first, so say so once here too.
+        Err(error) => {
+            if !REPORTED_UNUSABLE_PRIMARY_CONFIG.swap(true, Ordering::Relaxed) {
+                warn!("Devin is configured but unusable: {error}");
+            }
+            false
+        }
+    }
 }
 
 pub(crate) fn has_credentials() -> bool {
