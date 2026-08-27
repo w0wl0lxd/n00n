@@ -736,9 +736,15 @@ fn limit_reached(committed: usize, reserved: usize, limit: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use n00n_storage::id::n00nId;
     use test_case::test_case;
 
-    use super::*;
+    use super::{
+        DescendantCounts, LineageError, LineageLimits, LiveSession, SessionLineage,
+        SessionLineageGuard,
+    };
 
     const DEPTH_RECOVERY: &str = "session lineage depth limit reached (4); retry without a background session or increase agent.max_depth";
     const TOTAL_DESCENDANTS_RECOVERY: &str = "session lineage retained descendant limit reached (16); retry without background, reuse or delete a completed descendant in /sessions, or increase agent.max_total_descendants";
@@ -775,18 +781,18 @@ mod tests {
         }
     }
 
-    #[test_case(LineageError::DepthExceeded { limit: 4 }, DEPTH_RECOVERY ; "depth")]
+    #[test_case(&LineageError::DepthExceeded { limit: 4 }, DEPTH_RECOVERY ; "depth")]
     #[test_case(
-        LineageError::TotalDescendantsExceeded { limit: 16 },
+        &LineageError::TotalDescendantsExceeded { limit: 16 },
         TOTAL_DESCENDANTS_RECOVERY;
         "total descendants"
     )]
     #[test_case(
-        LineageError::ActiveDescendantsExceeded { limit: 8 },
+        &LineageError::ActiveDescendantsExceeded { limit: 8 },
         ACTIVE_DESCENDANTS_RECOVERY;
         "active descendants"
     )]
-    fn lineage_limit_errors_explain_model_recovery(error: LineageError, expected: &str) {
+    fn lineage_limit_errors_explain_model_recovery(error: &LineageError, expected: &str) {
         assert_eq!(error.to_string(), expected);
     }
 
