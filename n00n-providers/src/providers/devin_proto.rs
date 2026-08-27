@@ -27,7 +27,9 @@ static REPORTED_UNUSABLE_CLI_VERSION: AtomicBool = AtomicBool::new(false);
 /// value had no effect.
 fn cli_version() -> String {
     let rejected = match std::env::var(CLI_VERSION_ENV) {
-        Ok(version) if !version.trim().is_empty() => return version,
+        // Trim: the backend compares the version string exactly, so padding
+        // would read as an unknown build.
+        Ok(version) if !version.trim().is_empty() => return version.trim().to_string(),
         Ok(_) => "the value is blank",
         Err(VarError::NotPresent) => return DEFAULT_CLI_VERSION.to_string(),
         Err(VarError::NotUnicode(_)) => "the value is not valid Unicode",
