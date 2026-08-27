@@ -36,6 +36,9 @@ local function snapshot_before(path)
     return nil, nil, "file exceeds maximum size"
   end
 
+  -- A read failure only costs the diff. The handler wrote without reading the
+  -- target before this tool showed diffs, so a file whose content is
+  -- unreadable must stay overwritable when its directory is writable.
   local ok, existing, read_err = pcall(n00n.fs.read, path)
   if not ok then
     local message = tostring(existing)
@@ -43,10 +46,10 @@ local function snapshot_before(path)
     if lower:find("utf-8", 1, true) or lower:find("utf8", 1, true) then
       return nil, nil, "existing file is not UTF-8"
     end
-    return nil, "read error: " .. message
+    return nil, nil, "cannot read the existing file: " .. message
   end
   if read_err then
-    return nil, "read error: " .. tostring(read_err)
+    return nil, nil, "cannot read the existing file: " .. tostring(read_err)
   end
   if existing:find("[%z\1-\8\11\12\14-\31]") then
     return nil, nil, "existing file is binary or non-text"
