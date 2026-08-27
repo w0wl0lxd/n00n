@@ -14,14 +14,14 @@ n00n.api.register_prompt_hint({
   content = "- Use **explore_code** first; it routes codebase questions efficiently.",
 })
 
-local FALLBACK_BACKEND = "semblem"
+local FALLBACK_BACKEND = "search_text"
 
 local function route_label(backend, intent)
   return string.format("%s via %s", intent, backend)
 end
 
 -- A backend that is missing its index, or whose CLI is absent, must not fail the
--- whole call: semblem needs no prebuilt graph, so it is the degraded route.
+-- whole call: search_text needs no prebuilt graph, so it is the degraded route.
 local function fallback_dispatch(input, ctx, failed_backend)
   if failed_backend == FALLBACK_BACKEND then
     return nil, nil, "no further fallback"

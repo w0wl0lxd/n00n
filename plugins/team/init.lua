@@ -53,7 +53,7 @@ local function post_blackboard_status(ctx, event_type, step, run_id, extra)
   end
 
   pcall(function()
-    call_tool_with_policy(ctx, "blackboard", { action = "write", post = post })
+    call_tool_with_policy(ctx, "use_blackboard", { action = "write", post = post })
   end)
 end
 
@@ -821,7 +821,7 @@ local function run_team(input, ctx)
     forwarded.background = false
     local title = "team: " .. n00n.ui.truncate_text(input.goal or "", 60).head
     local id, err = n00n.session.new({
-      tool = "team",
+      tool = "run_team",
       input = forwarded,
       title = title,
       focus = false,

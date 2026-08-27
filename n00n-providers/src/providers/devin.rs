@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Write as IoWrite};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -156,7 +157,7 @@ impl DevinCredentials {
             api_server_url: resolve_api_server_url(
                 DEVIN_API_URL.to_string(),
                 creds.api_server_url.as_deref(),
-            ),
+            )?,
         }))
     }
 }
@@ -195,16 +196,55 @@ fn is_valid_api_server_url(url: &str) -> bool {
         && parsed.fragment().is_none()
 }
 
-fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
-    let chosen = explicit
-        .filter(|u| is_valid_api_server_url(u))
-        .map_or(configured, |u| u.trim().to_string());
-    let chosen = chosen.trim().trim_end_matches('/').to_string();
-    if is_valid_api_server_url(&chosen) {
-        chosen
-    } else {
-        DEVIN_API_URL.to_string()
+/// Picks the API host, preferring an operator-supplied `explicit` value.
+///
+/// A malformed value is an error, not a fallback. Silently substituting
+/// `DEVIN_API_URL` would post the session token to the public host while the
+/// operator believed it went to their own endpoint.
+///
+/// Only a blank candidate — no override configured, no host stored yet —
+/// falls back to `DEVIN_API_URL`.
+fn resolve_api_server_url(
+    configured: String,
+    explicit: Option<&str>,
+) -> Result<String, AgentError> {
+    let candidate = explicit
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map_or(configured, ToString::to_string);
+    let candidate = candidate.trim().trim_end_matches('/');
+    if candidate.is_empty() {
+        return Ok(DEVIN_API_URL.to_string());
     }
+    if !is_valid_api_server_url(candidate) {
+        return Err(AgentError::Config {
+            message: format!(
+                "Devin base_url must be an http(s) URL with a host and no query or fragment, \
+                 got {candidate:?}"
+            ),
+        });
+    }
+    Ok(candidate.to_string())
+}
+
+/// Applies a host override that Devin's own auth response supplied.
+///
+/// Unlike operator configuration this value is provider output, so a
+/// malformed one is dropped with a warning instead of failing the login: the
+/// request already reached `configured`, and staying there discloses nothing
+/// new.
+fn apply_provider_api_server_url(configured: &str, provider_supplied: &str) -> String {
+    let candidate = provider_supplied.trim().trim_end_matches('/');
+    if candidate.is_empty() {
+        return configured.to_string();
+    }
+    if is_valid_api_server_url(candidate) {
+        return candidate.to_string();
+    }
+    warn!(
+        "Devin auth response supplied an unusable custom_api_server_url; keeping the current host"
+    );
+    configured.to_string()
 }
 
 fn stored_credentials(
@@ -220,10 +260,19 @@ fn stored_credentials(
     })
 }
 
+/// `resolve_base_url` is an unvalidated passthrough; route it through
+/// `resolve_api_server_url` so an invalid `devin.base_url` is rejected instead
+/// of reaching URI construction.
+fn discovered_base_url(config: &ProvidersConfig) -> Result<String, AgentError> {
+    resolve_api_server_url(
+        DEVIN_API_URL.to_string(),
+        resolve_base_url("devin", config.get("devin")).as_deref(),
+    )
+}
+
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
     let config = ProvidersConfig::load()?;
-    let base_url =
-        resolve_base_url("devin", config.get("devin")).unwrap_or_else(|| DEVIN_API_URL.to_string());
+    let base_url = discovered_base_url(&config)?;
     if let Some(mut credentials) = DevinCredentials::from_env()? {
         credentials.api_server_url = base_url;
         return Ok(Some(credentials));
@@ -355,18 +404,19 @@ fn account_api_server_url_override(
 fn apply_account_url_override(
     mut credentials: DevinCredentials,
     account_url_override: Option<&str>,
-) -> DevinCredentials {
+) -> Result<DevinCredentials, AgentError> {
     credentials.api_server_url =
-        resolve_api_server_url(credentials.api_server_url, account_url_override);
-    credentials
+        resolve_api_server_url(credentials.api_server_url, account_url_override)?;
+    Ok(credentials)
 }
 
 fn load_explicit_account_credentials(
     path: &Path,
     account_url_override: Option<&str>,
 ) -> Result<Option<DevinCredentials>, AgentError> {
-    Ok(DevinCredentials::from_path(path)?
-        .map(|credentials| apply_account_url_override(credentials, account_url_override)))
+    DevinCredentials::from_path(path)?
+        .map(|credentials| apply_account_url_override(credentials, account_url_override))
+        .transpose()
 }
 
 fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials>, AgentError> {
@@ -377,7 +427,7 @@ fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials
     let legacy = legacy_account_definition(&config, account);
     let account_url_override = account_api_server_url_override(&config, legacy);
     let account_base_url =
-        resolve_api_server_url(DEVIN_API_URL.to_string(), account_url_override.as_deref());
+        resolve_api_server_url(DEVIN_API_URL.to_string(), account_url_override.as_deref())?;
 
     let explicit_path = config
         .get("devin")
@@ -432,7 +482,7 @@ fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials
         return Ok(Some(apply_account_url_override(
             credentials,
             account_url_override.as_deref(),
-        )));
+        )?));
     }
     Ok(None)
 }
@@ -881,9 +931,24 @@ pub struct Devin {
     timeouts: super::Timeouts,
 }
 
+/// Guards the warning below. Provider listing runs often, so an
+/// unconditional warning would repeat on every refresh.
+static REPORTED_UNUSABLE_PRIMARY_CONFIG: AtomicBool = AtomicBool::new(false);
+
 #[must_use]
 pub fn has_primary_credentials() -> bool {
-    discover_credentials().is_ok_and(|credentials| credentials.is_some())
+    match discover_credentials() {
+        Ok(credentials) => credentials.is_some(),
+        // A broken `devin.base_url` must not read as "not configured". The
+        // error still stops the turn when a Devin model is picked, but the
+        // listing is where a user looks first, so say so once here too.
+        Err(error) => {
+            if !REPORTED_UNUSABLE_PRIMARY_CONFIG.swap(true, Ordering::Relaxed) {
+                warn!("Devin is configured but unusable: {error}");
+            }
+            false
+        }
+    }
 }
 
 pub(crate) fn has_credentials() -> bool {
@@ -900,8 +965,16 @@ pub(crate) fn has_credentials() -> bool {
 
 impl Devin {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
+        let credentials = match discover_credentials()? {
+            Some(mut credentials) => {
+                credentials.api_server_url =
+                    resolve_api_server_url(credentials.api_server_url, None)?;
+                Some(credentials)
+            }
+            None => None,
+        };
         Ok(Self {
-            credentials: discover_credentials()?,
+            credentials,
             client: super::http_client(timeouts)?,
             client_model_configs: Mutex::new(HashMap::new()),
             timeouts,
@@ -935,12 +1008,17 @@ impl Devin {
                 api_server_url: DEVIN_API_URL.to_string(),
             }),
             None => discover_credentials()?,
-        }
-        .map(|mut credentials| {
-            credentials.api_server_url =
-                resolve_api_server_url(credentials.api_server_url, resolved_base_url.as_deref());
-            credentials
-        });
+        };
+        let credentials = match credentials {
+            Some(mut credentials) => {
+                credentials.api_server_url = resolve_api_server_url(
+                    credentials.api_server_url,
+                    resolved_base_url.as_deref(),
+                )?;
+                Some(credentials)
+            }
+            None => None,
+        };
 
         Ok(Self {
             credentials,
@@ -999,9 +1077,9 @@ impl Devin {
             });
         }
 
-        let base_url = resolve_api_server_url(
-            credentials.api_server_url.clone(),
-            Some(&auth_response.custom_api_server_url),
+        let base_url = apply_provider_api_server_url(
+            &credentials.api_server_url,
+            &auth_response.custom_api_server_url,
         );
 
         Ok((auth_response.user_jwt, base_url))
@@ -1925,13 +2003,16 @@ mod tests {
         };
         assert_eq!(
             apply_account_url_override(credentials.clone(), Some("https://account.example/path/"))
+                .unwrap()
                 .api_server_url,
             "https://account.example/path"
         );
-        assert_eq!(
+        // A query would swallow the appended API path, so the override is
+        // unusable — and rerouting to the default would send this account's
+        // token somewhere it was never meant to go.
+        assert!(
             apply_account_url_override(credentials, Some("https://account.example/?ignored=true"))
-                .api_server_url,
-            "https://configured.example"
+                .is_err()
         );
     }
 
@@ -1941,7 +2022,8 @@ mod tests {
             resolve_api_server_url(
                 "https://configured.example".to_string(),
                 Some("https://explicit.example")
-            ),
+            )
+            .unwrap(),
             "https://explicit.example"
         );
     }
@@ -1949,17 +2031,93 @@ mod tests {
     #[test]
     fn configured_api_server_url_is_preserved_without_explicit_url() {
         assert_eq!(
-            resolve_api_server_url("https://configured.example".to_string(), None),
+            resolve_api_server_url("https://configured.example".to_string(), None).unwrap(),
+            "https://configured.example"
+        );
+    }
+
+    /// Replacing an unusable endpoint with the default posts the session
+    /// token to a host the operator never configured. Reject it instead.
+    #[test]
+    fn an_invalid_explicit_url_is_rejected_not_rerouted() {
+        let rejected =
+            resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url"));
+        assert!(
+            matches!(rejected, Err(AgentError::Config { .. })),
+            "{rejected:?}"
+        );
+    }
+
+    #[test]
+    fn an_invalid_stored_url_is_rejected_too() {
+        assert!(resolve_api_server_url("devin".to_string(), None).is_err());
+    }
+
+    /// Only the absence of any candidate falls back.
+    #[test]
+    fn a_blank_candidate_falls_back_to_the_default() {
+        assert_eq!(
+            resolve_api_server_url(String::new(), None).unwrap(),
+            DEVIN_API_URL
+        );
+        assert_eq!(
+            resolve_api_server_url(String::new(), Some("   ")).unwrap(),
+            DEVIN_API_URL
+        );
+    }
+
+    /// A host override in Devin's own auth response is provider output, not
+    /// operator configuration: an unusable one is dropped, since the request
+    /// already reached the configured host.
+    #[test]
+    fn a_provider_supplied_override_is_dropped_when_unusable() {
+        assert_eq!(
+            apply_provider_api_server_url("https://configured.example", "not-a-url"),
+            "https://configured.example"
+        );
+        assert_eq!(
+            apply_provider_api_server_url("https://configured.example", ""),
+            "https://configured.example"
+        );
+        assert_eq!(
+            apply_provider_api_server_url("https://configured.example", "https://custom.example/"),
+            "https://custom.example"
+        );
+    }
+
+    #[test]
+    fn discovered_base_url_rejects_a_schemeless_config_value() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                base_url: Some("devin".to_string()),
+                ..ProviderDef::default()
+            },
+        );
+        assert!(discovered_base_url(&config).is_err());
+    }
+
+    #[test]
+    fn discovered_base_url_preserves_valid_https_config_value() {
+        let mut config = ProvidersConfig::default();
+        config.upsert(
+            "devin".to_string(),
+            ProviderDef {
+                base_url: Some("https://configured.example".to_string()),
+                ..ProviderDef::default()
+            },
+        );
+        assert_eq!(
+            discovered_base_url(&config).unwrap(),
             "https://configured.example"
         );
     }
 
     #[test]
-    fn invalid_explicit_url_falls_back_to_configured() {
-        assert_eq!(
-            resolve_api_server_url("https://configured.example".to_string(), Some("not-a-url")),
-            "https://configured.example"
-        );
+    fn discovered_base_url_defaults_when_unconfigured() {
+        let config = ProvidersConfig::default();
+        assert_eq!(discovered_base_url(&config).unwrap(), DEVIN_API_URL);
     }
 
     /// URI schemes are case-insensitive. Rejecting `HTTPS://` sent the auth
@@ -1969,7 +2127,8 @@ mod tests {
     fn url_scheme_comparison_is_case_insensitive() {
         for url in ["HTTPS://devin.example", "Http://devin.example"] {
             assert_eq!(
-                resolve_api_server_url("https://configured.example".to_string(), Some(url)),
+                resolve_api_server_url("https://configured.example".to_string(), Some(url))
+                    .unwrap(),
                 url
             );
         }
@@ -2000,17 +2159,14 @@ mod tests {
     #[test]
     fn whitespace_padded_configured_url_is_trimmed_not_discarded() {
         assert_eq!(
-            resolve_api_server_url("  https://configured.example/  ".to_string(), None),
+            resolve_api_server_url("  https://configured.example/  ".to_string(), None).unwrap(),
             "https://configured.example"
         );
     }
 
     #[test]
-    fn invalid_configured_and_explicit_urls_fall_back_to_default() {
-        assert_eq!(
-            resolve_api_server_url("not-a-url".to_string(), Some("also-not-a-url")),
-            DEVIN_API_URL
-        );
+    fn invalid_configured_and_explicit_urls_are_both_rejected() {
+        assert!(resolve_api_server_url("not-a-url".to_string(), Some("also-not-a-url")).is_err());
     }
 
     #[test]

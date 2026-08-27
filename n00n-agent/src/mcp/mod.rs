@@ -99,6 +99,67 @@ const MAX_MCP_SCHEMA_BYTES: usize = 256 * 1024;
 const MAX_MCP_SCHEMA_DEPTH: usize = 64;
 const MAX_MCP_SCHEMA_NODES: usize = 4096;
 const JSON_SCHEMA_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
+const JSON_SCHEMA_2019_09: &str = "https://json-schema.org/draft/2019-09/schema";
+const JSON_SCHEMA_DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
+
+/// The JSON Schema drafts an MCP `inputSchema` may declare, mapped to the draft
+/// its keywords are then interpreted under.
+///
+/// A server that declares a draft gets validated and compiled against that
+/// draft rather than rejected. Draft 7 is what the MCP SDKs emit by default, so
+/// rejecting it drops working tools — and drops them quietly, one warning per
+/// tool at every startup. Servers that declare nothing keep defaulting to
+/// 2020-12, which is what the MCP specification requires.
+///
+/// The trailing `#` is optional in practice: draft 7 publishes its `$id` with
+/// one and servers copy it either way. Draft 7 is also widely miswritten as
+/// `https`, though its published `$id` is `http`.
+///
+/// Each entry maps a spelling to its draft and to the canonical `$id` for
+/// that draft. `jsonschema` reads the embedded `$schema` itself when it
+/// compiles, and an id it does not recognise is treated as an external
+/// resource to fetch rather than as a dialect — so a schema is rewritten to
+/// the canonical spelling before compilation, or `with_draft` is overruled
+/// and the build fails on a network resolver it does not have.
+const SUPPORTED_SCHEMA_DRAFTS: &[(&str, Draft, &str)] = &[
+    (JSON_SCHEMA_2020_12, Draft::Draft202012, JSON_SCHEMA_2020_12),
+    (
+        "https://json-schema.org/draft/2020-12/schema#",
+        Draft::Draft202012,
+        JSON_SCHEMA_2020_12,
+    ),
+    (JSON_SCHEMA_2019_09, Draft::Draft201909, JSON_SCHEMA_2019_09),
+    (
+        "https://json-schema.org/draft/2019-09/schema#",
+        Draft::Draft201909,
+        JSON_SCHEMA_2019_09,
+    ),
+    (JSON_SCHEMA_DRAFT_07, Draft::Draft7, JSON_SCHEMA_DRAFT_07),
+    (
+        "http://json-schema.org/draft-07/schema",
+        Draft::Draft7,
+        JSON_SCHEMA_DRAFT_07,
+    ),
+    (
+        "https://json-schema.org/draft-07/schema",
+        Draft::Draft7,
+        JSON_SCHEMA_DRAFT_07,
+    ),
+    (
+        "https://json-schema.org/draft-07/schema#",
+        Draft::Draft7,
+        JSON_SCHEMA_DRAFT_07,
+    ),
+];
+
+/// Resolves a declared `$schema` to the draft to interpret it under, or `None`
+/// when the draft is one this build does not handle.
+fn schema_draft_for(declared: &str) -> Option<(Draft, &'static str)> {
+    SUPPORTED_SCHEMA_DRAFTS
+        .iter()
+        .find(|(uri, _, _)| *uri == declared)
+        .map(|(_, draft, canonical)| (*draft, *canonical))
+}
 
 struct McpToolDef {
     qualified_name: Arc<str>,
@@ -351,6 +412,9 @@ pub struct McpHandle {
     /// Never changes after startup, so it lives here instead of being
     /// copied into every republished `ToolIndex`.
     defer_tools: usize,
+    /// Shared by every agent loop that clones this handle, so one loop's
+    /// failed background OAuth attempt throttles the others.
+    background_auth_backoff: oauth::BackgroundAuthBackoff,
 }
 
 /// One session's view of MCP: the shared handle plus the deferred tools
@@ -638,6 +702,13 @@ impl McpSession {
 }
 
 impl McpHandle {
+    /// The background-OAuth negative cache shared by everyone holding a clone
+    /// of this handle.
+    #[must_use]
+    pub fn background_auth_backoff(&self) -> &oauth::BackgroundAuthBackoff {
+        &self.background_auth_backoff
+    }
+
     pub fn send(&self, cmd: McpCommand) {
         if let Err(e) = self.cmd_tx.try_send(cmd) {
             warn!(error = %e, "MCP command loop is gone");
@@ -759,11 +830,16 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
     let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
     let index: Arc<ArcSwap<ToolIndex>> = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
     publish(&inner, &index, &snapshot, max_desc_chars);
+    // One handle per process, cloned into every agent loop. The backoff below
+    // is shared through those clones, so building a second `McpHandle` here
+    // instead of cloning this one would silently un-share it and let each
+    // loop retry the same failing server.
     let handle = McpHandle {
         cmd_tx: cmd_tx.clone(),
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
     };
     smol::spawn(run(inner, index, snapshot, cmd_tx, cmd_rx)).detach();
     Some(handle)
@@ -1093,7 +1169,13 @@ async fn start_server(
             )?)
         }
     };
-    let capabilities = transport::initialize(transport.as_ref()).await?;
+    let capabilities = match transport::initialize(transport.as_ref()).await {
+        Ok(capabilities) => capabilities,
+        Err(e) => {
+            transport.shutdown().await;
+            return Err(e);
+        }
+    };
     // Asymmetric on purpose: sloppy servers omit `capabilities` yet serve
     // tools/list fine, so always ask (fatal only when tools were declared).
     // Prompts only when declared: undeclared endpoints may answer junk,
@@ -1104,13 +1186,32 @@ async fn start_server(
             warn!(server = config.name, error = %e, "tools/list failed; server declared no tools");
             Vec::new()
         }
-        Err(e) => return Err(e),
+        Err(e) => {
+            transport.shutdown().await;
+            return Err(e);
+        }
     };
     let prompt_infos = if capabilities.prompts {
-        transport::list_prompts(transport.as_ref()).await?
+        match transport::list_prompts(transport.as_ref()).await {
+            Ok(prompts) => prompts,
+            Err(e) => {
+                transport.shutdown().await;
+                return Err(e);
+            }
+        }
     } else {
         Vec::new()
     };
+    if !transport.mark_established() {
+        // The reader loop ended while the handshake was still in flight. It
+        // suppressed its own report because `established` was not yet set, so
+        // failing here is the only thing that keeps a dead server from being
+        // registered as running with its tools advertised.
+        transport.shutdown().await;
+        return Err(McpError::ServerDied {
+            server: config.name.clone(),
+        });
+    }
     info!(
         server = config.name,
         tool_count = tool_infos.len(),
@@ -1370,6 +1471,7 @@ pub(crate) fn stub_session_with_transport(
             index,
             snapshot,
             defer_tools: 0,
+            background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
         },
         &[],
     )
@@ -1447,7 +1549,10 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
         }
         match value {
             Value::Object(map) => {
-                for reference_key in ["$ref", "$dynamicRef"] {
+                // `$recursiveRef` is the 2019-09 spelling; 2020-12 renamed
+                // it to `$dynamicRef`. Both dialects are accepted below, so
+                // both keys must pass the same remote-reference gate.
+                for reference_key in ["$ref", "$dynamicRef", "$recursiveRef"] {
                     if let Some(reference) = map.get(reference_key).and_then(Value::as_str)
                         && !reference.starts_with('#')
                     {
@@ -1465,17 +1570,38 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
         }
     }
 
-    if let Some(declared_draft) = schema.get("$schema").and_then(Value::as_str)
-        && declared_draft != JSON_SCHEMA_2020_12
-    {
-        return Err(format!("unsupported JSON Schema draft: {declared_draft}"));
-    }
-    jsonschema::draft202012::meta::validate(schema)
-        .map_err(|error| format!("invalid JSON Schema 2020-12: {error}"))?;
+    let declared_draft = schema.get("$schema").and_then(Value::as_str);
+    let (draft, canonical) = match declared_draft {
+        None => (Draft::Draft202012, JSON_SCHEMA_2020_12),
+        Some(declared) => schema_draft_for(declared)
+            .ok_or_else(|| format!("unsupported JSON Schema draft: {declared}"))?,
+    };
+    // Compile against the canonical `$id` for the draft. `jsonschema` reads
+    // the embedded `$schema` and treats an id it does not know as an external
+    // resource to fetch, which fails without a network resolver — so a server
+    // that writes `https` for draft 7, or appends a `#`, would have its tools
+    // dropped despite the draft being supported.
+    let canonicalized = declared_draft
+        .is_some_and(|declared| declared != canonical)
+        .then(|| {
+            let mut schema = schema.clone();
+            schema["$schema"] = Value::String(canonical.to_owned());
+            schema
+        });
+    let schema = match canonicalized {
+        Some(ref canonicalized) => canonicalized,
+        None => schema,
+    };
+    let meta_validate = match draft {
+        Draft::Draft7 => jsonschema::draft7::meta::validate,
+        Draft::Draft201909 => jsonschema::draft201909::meta::validate,
+        _ => jsonschema::draft202012::meta::validate,
+    };
+    meta_validate(schema).map_err(|error| format!("invalid JSON Schema {draft:?}: {error}"))?;
     jsonschema::options()
-        .with_draft(Draft::Draft202012)
+        .with_draft(draft)
         .build(schema)
-        .map_err(|error| format!("could not compile JSON Schema 2020-12: {error}"))?;
+        .map_err(|error| format!("could not compile JSON Schema {draft:?}: {error}"))?;
     Ok(())
 }
 
@@ -1598,6 +1724,7 @@ fn prepare_manager(config: McpConfig) -> Option<PreparedManager> {
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
     };
     Some(PreparedManager {
         inner,
@@ -1619,15 +1746,83 @@ mod tests {
     #[test_case(&json!({"type": "object", "$defs": {"item": {"type": "string"}}, "properties": {"value": {"$ref": "#/$defs/item"}}}) ; "local_ref")]
     #[test_case(&json!({"type": "object", "properties": {"$ref": {"type": "string"}}}) ; "property_named_ref")]
     #[test_case(&json!({"$schema": JSON_SCHEMA_2020_12, "type": "object"}) ; "explicit_2020_12")]
-    fn mcp_schema_validation_accepts_draft_2020_12(schema: &Value) {
+    // The drafts MCP servers actually declare. Rejecting these dropped working
+    // tools from every server built on an SDK that still emits draft 7.
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": {"q": {"type": "string"}}}) ; "draft_07_with_fragment")]
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema", "type": "object"}) ; "draft_07_without_fragment")]
+    #[test_case(&json!({"$schema": "https://json-schema.org/draft/2019-09/schema", "type": "object"}) ; "draft_2019_09")]
+    fn mcp_schema_validation_accepts_declared_drafts(schema: &Value) {
         assert!(validate_mcp_input_schema(schema).is_ok());
+    }
+
+    #[test]
+    fn mcp_schema_validation_still_rejects_a_draft_it_cannot_interpret() {
+        let schema =
+            json!({"$schema": "http://json-schema.org/draft-04/schema#", "type": "object"});
+        let error = validate_mcp_input_schema(&schema).expect_err("draft 4 is not supported");
+        assert!(error.contains("unsupported JSON Schema draft"), "{error}");
+    }
+
+    #[test]
+    fn declared_draft_07_is_compiled_under_draft_07() {
+        // Draft 7 spells tuple validation as an array-valued `items`. 2020-12
+        // requires `items` to be a single schema and uses `prefixItems`
+        // instead, so this only validates if the declared draft — not a fixed
+        // one — drives compilation.
+        let tuple = json!({
+            "type": "object",
+            "properties": {"pair": {"type": "array", "items": [{"type": "string"}, {"type": "number"}]}},
+        });
+
+        // Every accepted draft-7 spelling, not just the canonical one. The
+        // compiler reads the embedded `$schema` itself, so an id it does not
+        // recognise can override `with_draft` and reject the schema.
+        for id in [
+            "http://json-schema.org/draft-07/schema#",
+            "http://json-schema.org/draft-07/schema",
+            "https://json-schema.org/draft-07/schema#",
+            "https://json-schema.org/draft-07/schema",
+        ] {
+            let mut draft_07 = tuple.clone();
+            draft_07["$schema"] = json!(id);
+            validate_mcp_input_schema(&draft_07).unwrap_or_else(|error| {
+                panic!("draft 7 tuple `items` must compile for {id}: {error}")
+            });
+        }
+
+        let mut draft_2020_12 = tuple;
+        draft_2020_12["$schema"] = json!(JSON_SCHEMA_2020_12);
+        assert!(
+            validate_mcp_input_schema(&draft_2020_12).is_err(),
+            "2020-12 must still reject an array-valued `items`"
+        );
+    }
+
+    /// Every spelling in `SUPPORTED_SCHEMA_DRAFTS` must survive compilation,
+    /// not just the canonical id. `jsonschema` reads the embedded `$schema`
+    /// itself, so an id it does not recognise is treated as a remote resource
+    /// and the tool is dropped — the failure this table exists to prevent.
+    #[test]
+    fn every_supported_draft_spelling_compiles() {
+        for (id, _, canonical) in SUPPORTED_SCHEMA_DRAFTS {
+            let schema = json!({
+                "$schema": id,
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+            });
+            validate_mcp_input_schema(&schema)
+                .unwrap_or_else(|error| panic!("{id} must compile as {canonical}: {error}"));
+        }
     }
 
     #[test_case(&json!(null) ; "not_object")]
     #[test_case(&json!({"type": "invalid"}) ; "invalid_type")]
     #[test_case(&json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
     #[test_case(&json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
-    #[test_case(&json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}) ; "unsupported_draft")]
+    #[test_case(&json!({"type": "object", "$dynamicRef": "https://example.com/s.json#a"}) ; "remote_dynamic_ref")]
+    #[test_case(&json!({"$schema": "https://json-schema.org/draft/2019-09/schema", "type": "object", "$recursiveRef": "https://example.com/s.json"}) ; "remote_recursive_ref")]
+    #[test_case(&json!({"$schema": "https://json-schema.org/draft/2019-09/schema", "type": "object", "properties": {"child": {"$recursiveRef": "other.json"}}}) ; "nested_relative_recursive_ref")]
+    #[test_case(&json!({"$schema": "http://json-schema.org/draft-04/schema#", "type": "object"}) ; "unsupported_draft")]
     fn mcp_schema_validation_rejects_invalid_or_remote(schema: &Value) {
         assert!(validate_mcp_input_schema(schema).is_err());
     }
@@ -1870,6 +2065,7 @@ mod tests {
             index,
             snapshot,
             defer_tools,
+            background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
         };
         (inner, McpSession::new(handle, &[]))
     }
@@ -2370,6 +2566,62 @@ mod tests {
             assert!(entry.prompts.is_empty());
             assert!(entry.transport.is_none());
             assert!(matches!(entry.status, McpServerStatus::Failed(_)));
+        });
+    }
+
+    /// A server whose process starts fine but never answers the `initialize` handshake must not
+    /// leak that process: `start_server` has to shut its (just-spawned) transport down itself
+    /// before returning `Err`, rather than leaving cleanup to `Drop`.
+    #[cfg(unix)]
+    #[test]
+    fn refresh_server_shuts_down_a_transport_that_never_completes_handshake() {
+        smol::block_on(async {
+            let pid_file = tempfile::NamedTempFile::new().unwrap();
+            let pid_path = pid_file.path().to_path_buf();
+
+            let t = FakeTransport::new();
+            let (mut inner, _) = setup(vec![fake_entry("srv", Arc::clone(&t) as _)]);
+            inner.entries[0].config = Some(ServerConfig {
+                name: "srv".into(),
+                timeout: Duration::from_millis(200),
+                always_load: false,
+                transport: Transport::Stdio {
+                    program: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        format!("echo $$ > {} && exec sleep 30", pid_path.display()),
+                    ],
+                    environment: HashMap::new(),
+                },
+            });
+            let (cmd_tx, _cmd_rx) = flume::unbounded();
+
+            let err = refresh_server(&mut inner, "srv", &cmd_tx)
+                .await
+                .expect_err("a server that never answers initialize must fail the handshake");
+            assert!(matches!(err, McpError::Timeout { .. }));
+
+            let pid: i32 = std::fs::read_to_string(&pid_path)
+                .expect("child must have started and recorded its pid")
+                .trim()
+                .parse()
+                .expect("recorded pid must be numeric");
+
+            // shutdown() reaps before start_server returns, so the process must
+            // already be gone here — no polling, no zombie window. `kill -0`
+            // asks whether the pid exists without signalling it; shelling out
+            // keeps the check in safe Rust, since the workspace denies
+            // `unsafe_code`.
+            let still_running = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("kill -0 {pid} 2>/dev/null"))
+                .status()
+                .expect("kill -0 must run")
+                .success();
+            assert!(
+                !still_running,
+                "start_server must shut down a transport that failed its handshake"
+            );
         });
     }
 
