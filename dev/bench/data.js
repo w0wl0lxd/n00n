@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787780798000,
+  "lastUpdate": 1787810695681,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -23857,6 +23857,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 108182,
             "range": "± 5685",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "df155597ec648e2a56fd0dd67e24c196c21eb151",
+          "message": "Merge pull request #465 from w0wl0lxd/fix/storage-writer-error-classification\n\nfix(ui): stop retrying session writes that can never succeed",
+          "timestamp": "2026-08-27T01:45:59-04:00",
+          "tree_id": "5d3d0baeb61b2e34cadd508031e46a3f82f1d608",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/df155597ec648e2a56fd0dd67e24c196c21eb151"
+        },
+        "date": 1787810693465,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6728496,
+            "range": "± 161471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2225076,
+            "range": "± 13017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2228690,
+            "range": "± 8972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8425085,
+            "range": "± 162023",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4271577,
+            "range": "± 45844",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4261920,
+            "range": "± 11178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584713,
+            "range": "± 1556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191576,
+            "range": "± 426",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192125,
+            "range": "± 278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1050041,
+            "range": "± 5772",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 599809,
+            "range": "± 3354",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 599245,
+            "range": "± 2628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80731,
+            "range": "± 2010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 114611,
+            "range": "± 6544",
             "unit": "ns/iter"
           }
         ]
