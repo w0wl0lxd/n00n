@@ -5,18 +5,42 @@
 
 use prost::Message;
 use std::collections::HashMap;
+use std::env::VarError;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::warn;
 
 const CLI_SOURCE: &str = "devin";
 const DEFAULT_CLI_VERSION: &str = "3000.6.2";
 
+const CLI_VERSION_ENV: &str = "N00N_DEVIN_CLI_VERSION";
+
+/// Guards the rejection warning below. `cli_version` runs on every outbound
+/// message, so an unconditional warning would repeat once per request.
+static REPORTED_UNUSABLE_CLI_VERSION: AtomicBool = AtomicBool::new(false);
+
 /// Devin's backend rejects requests reporting a CLI version it considers too
 /// old. `N00N_DEVIN_CLI_VERSION` lets a user bump the reported version ahead
 /// of a release when the backend's minimum moves again.
+///
+/// An unusable override — blank, or not valid Unicode — is rejected out loud
+/// rather than silently treated as unset, so the operator learns why their
+/// value had no effect.
 fn cli_version() -> String {
-    std::env::var("N00N_DEVIN_CLI_VERSION")
-        .ok()
-        .filter(|version| !version.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_CLI_VERSION.to_string())
+    let rejected = match std::env::var(CLI_VERSION_ENV) {
+        Ok(version) if !version.trim().is_empty() => return version,
+        Ok(_) => "the value is blank",
+        Err(VarError::NotPresent) => return DEFAULT_CLI_VERSION.to_string(),
+        Err(VarError::NotUnicode(_)) => "the value is not valid Unicode",
+    };
+    if !REPORTED_UNUSABLE_CLI_VERSION.swap(true, Ordering::Relaxed) {
+        warn!(
+            env = CLI_VERSION_ENV,
+            reason = rejected,
+            default = DEFAULT_CLI_VERSION,
+            "ignoring the Devin CLI version override"
+        );
+    }
+    DEFAULT_CLI_VERSION.to_string()
 }
 
 pub(crate) const CHAT_MESSAGE_SOURCE_USER: u64 = 1;
@@ -459,6 +483,8 @@ pub fn decode_cli_model_configs(buf: &[u8]) -> Result<HashMap<String, String>, S
 mod tests {
     use super::*;
     use crate::providers::proto_test_util::parse_wire_fields;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::{Mutex, MutexGuard};
 
     #[test]
     fn decode_get_user_jwt_response_roundtrip() {
@@ -694,37 +720,59 @@ mod tests {
         assert!(decoded.message_id.is_empty());
     }
 
-    const CLI_VERSION_ENV: &str = "N00N_DEVIN_CLI_VERSION";
+    /// `N00N_DEVIN_CLI_VERSION` is process-global. nextest gives each test its
+    /// own process, but the documented `cargo test` fallback shares one, so
+    /// these cases must not run at the same time.
+    static CLI_VERSION_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    #[allow(unsafe_code)]
-    fn set_env(var: &str, value: &str) {
-        // SAFETY: Tests run single-threaded; no concurrent access to env vars.
-        unsafe { std::env::set_var(var, value) }
+    /// Sets `N00N_DEVIN_CLI_VERSION` for as long as it is held, then restores
+    /// what was there before. Holds [`CLI_VERSION_ENV_LOCK`] for its lifetime.
+    struct CliVersionEnv(MutexGuard<'static, ()>, Option<OsString>);
+
+    impl CliVersionEnv {
+        fn set(value: Option<&str>) -> Self {
+            let guard = CLI_VERSION_ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let previous = std::env::var_os(CLI_VERSION_ENV);
+            write_env(value);
+            Self(guard, previous)
+        }
+    }
+
+    impl Drop for CliVersionEnv {
+        fn drop(&mut self) {
+            write_env(self.1.as_deref().and_then(OsStr::to_str));
+        }
     }
 
     #[allow(unsafe_code)]
-    fn remove_env(var: &str) {
-        // SAFETY: Tests run single-threaded; no concurrent access to env vars.
-        unsafe { std::env::remove_var(var) }
+    fn write_env(value: Option<&str>) {
+        // SAFETY: `CLI_VERSION_ENV_LOCK` is held for every call, so no other
+        // test in this process reads or writes the variable concurrently.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(CLI_VERSION_ENV, value),
+                None => std::env::remove_var(CLI_VERSION_ENV),
+            }
+        }
     }
 
     #[test]
     fn cli_version_defaults_when_env_unset() {
-        remove_env(CLI_VERSION_ENV);
+        let _env = CliVersionEnv::set(None);
         assert_eq!(cli_version(), DEFAULT_CLI_VERSION);
     }
 
     #[test]
     fn cli_version_uses_override_when_set() {
-        set_env(CLI_VERSION_ENV, "3000.9.9");
+        let _env = CliVersionEnv::set(Some("3000.9.9"));
         assert_eq!(cli_version(), "3000.9.9");
-        remove_env(CLI_VERSION_ENV);
     }
 
     #[test]
     fn cli_version_ignores_blank_override() {
-        set_env(CLI_VERSION_ENV, "   ");
+        let _env = CliVersionEnv::set(Some("   "));
         assert_eq!(cli_version(), DEFAULT_CLI_VERSION);
-        remove_env(CLI_VERSION_ENV);
     }
 }

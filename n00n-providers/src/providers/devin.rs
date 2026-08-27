@@ -156,7 +156,7 @@ impl DevinCredentials {
             api_server_url: resolve_api_server_url(
                 DEVIN_API_URL.to_string(),
                 creds.api_server_url.as_deref(),
-            ),
+            )?,
         }))
     }
 }
@@ -195,16 +195,55 @@ fn is_valid_api_server_url(url: &str) -> bool {
         && parsed.fragment().is_none()
 }
 
-fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
-    let chosen = explicit
-        .filter(|u| is_valid_api_server_url(u))
-        .map_or(configured, |u| u.trim().to_string());
-    let chosen = chosen.trim().trim_end_matches('/').to_string();
-    if is_valid_api_server_url(&chosen) {
-        chosen
-    } else {
-        DEVIN_API_URL.to_string()
+/// Picks the API host, preferring an operator-supplied `explicit` value.
+///
+/// A malformed value is an error, not a fallback. Silently substituting
+/// `DEVIN_API_URL` would post the session token to the public host while the
+/// operator believed it went to their own endpoint.
+///
+/// Only a blank candidate — no override configured, no host stored yet —
+/// falls back to `DEVIN_API_URL`.
+fn resolve_api_server_url(
+    configured: String,
+    explicit: Option<&str>,
+) -> Result<String, AgentError> {
+    let candidate = explicit
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map_or(configured, ToString::to_string);
+    let candidate = candidate.trim().trim_end_matches('/');
+    if candidate.is_empty() {
+        return Ok(DEVIN_API_URL.to_string());
     }
+    if !is_valid_api_server_url(candidate) {
+        return Err(AgentError::Config {
+            message: format!(
+                "Devin base_url must be an http(s) URL with a host and no query or fragment, \
+                 got {candidate:?}"
+            ),
+        });
+    }
+    Ok(candidate.to_string())
+}
+
+/// Applies a host override that Devin's own auth response supplied.
+///
+/// Unlike operator configuration this value is provider output, so a
+/// malformed one is dropped with a warning instead of failing the login: the
+/// request already reached `configured`, and staying there discloses nothing
+/// new.
+fn apply_provider_api_server_url(configured: &str, provider_supplied: &str) -> String {
+    let candidate = provider_supplied.trim().trim_end_matches('/');
+    if candidate.is_empty() {
+        return configured.to_string();
+    }
+    if is_valid_api_server_url(candidate) {
+        return candidate.to_string();
+    }
+    warn!(
+        "Devin auth response supplied an unusable custom_api_server_url; keeping the current host"
+    );
+    configured.to_string()
 }
 
 fn stored_credentials(
@@ -221,9 +260,9 @@ fn stored_credentials(
 }
 
 /// `resolve_base_url` is an unvalidated passthrough; route it through
-/// `resolve_api_server_url` so an invalid `devin.base_url` falls back to
-/// `DEVIN_API_URL` instead of reaching URI construction.
-fn discovered_base_url(config: &ProvidersConfig) -> String {
+/// `resolve_api_server_url` so an invalid `devin.base_url` is rejected instead
+/// of reaching URI construction.
+fn discovered_base_url(config: &ProvidersConfig) -> Result<String, AgentError> {
     resolve_api_server_url(
         DEVIN_API_URL.to_string(),
         resolve_base_url("devin", config.get("devin")).as_deref(),
@@ -232,7 +271,7 @@ fn discovered_base_url(config: &ProvidersConfig) -> String {
 
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
     let config = ProvidersConfig::load()?;
-    let base_url = discovered_base_url(&config);
+    let base_url = discovered_base_url(&config)?;
     if let Some(mut credentials) = DevinCredentials::from_env()? {
         credentials.api_server_url = base_url;
         return Ok(Some(credentials));
@@ -364,18 +403,19 @@ fn account_api_server_url_override(
 fn apply_account_url_override(
     mut credentials: DevinCredentials,
     account_url_override: Option<&str>,
-) -> DevinCredentials {
+) -> Result<DevinCredentials, AgentError> {
     credentials.api_server_url =
-        resolve_api_server_url(credentials.api_server_url, account_url_override);
-    credentials
+        resolve_api_server_url(credentials.api_server_url, account_url_override)?;
+    Ok(credentials)
 }
 
 fn load_explicit_account_credentials(
     path: &Path,
     account_url_override: Option<&str>,
 ) -> Result<Option<DevinCredentials>, AgentError> {
-    Ok(DevinCredentials::from_path(path)?
-        .map(|credentials| apply_account_url_override(credentials, account_url_override)))
+    DevinCredentials::from_path(path)?
+        .map(|credentials| apply_account_url_override(credentials, account_url_override))
+        .transpose()
 }
 
 fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials>, AgentError> {
@@ -386,7 +426,7 @@ fn discover_account_credentials(account: &str) -> Result<Option<DevinCredentials
     let legacy = legacy_account_definition(&config, account);
     let account_url_override = account_api_server_url_override(&config, legacy);
     let account_base_url =
-        resolve_api_server_url(DEVIN_API_URL.to_string(), account_url_override.as_deref());
+        resolve_api_server_url(DEVIN_API_URL.to_string(), account_url_override.as_deref())?;
 
     let explicit_path = config
         .get("devin")
@@ -909,10 +949,13 @@ pub(crate) fn has_credentials() -> bool {
 
 impl Devin {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
-        let credentials = discover_credentials()?.map(|mut credentials| {
-            credentials.api_server_url = resolve_api_server_url(credentials.api_server_url, None);
-            credentials
-        });
+        let credentials = discover_credentials()?
+            .map(|mut credentials| {
+                credentials.api_server_url =
+                    resolve_api_server_url(credentials.api_server_url, None)?;
+                Ok(credentials)
+            })
+            .transpose()?;
         Ok(Self {
             credentials,
             client: super::http_client(timeouts)?,
@@ -951,9 +994,10 @@ impl Devin {
         }
         .map(|mut credentials| {
             credentials.api_server_url =
-                resolve_api_server_url(credentials.api_server_url, resolved_base_url.as_deref());
-            credentials
-        });
+                resolve_api_server_url(credentials.api_server_url, resolved_base_url.as_deref())?;
+            Ok(credentials)
+        })
+        .transpose()?;
 
         Ok(Self {
             credentials,
@@ -1012,9 +1056,9 @@ impl Devin {
             });
         }
 
-        let base_url = resolve_api_server_url(
-            credentials.api_server_url.clone(),
-            Some(&auth_response.custom_api_server_url),
+        let base_url = apply_provider_api_server_url(
+            &credentials.api_server_url,
+            &auth_response.custom_api_server_url,
         );
 
         Ok((auth_response.user_jwt, base_url))
