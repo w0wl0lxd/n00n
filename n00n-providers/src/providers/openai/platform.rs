@@ -537,6 +537,32 @@ fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAtt
     )
 }
 
+/// Builds the attempt record for a failed HTTP fallback.
+///
+/// `do_stream` raises `CodingPlanAdmission` from the response status, before
+/// `parse_sse` runs: nothing was emitted and nothing was accepted. Reporting
+/// that as sent hides it from the admission retry loop, so the turn would
+/// fail on the first 403 with neither `Retry-After` nor backoff applied.
+/// Every other error may have arrived mid-stream, so it stays conservative.
+fn http_fallback_attempt(previous_response_id: Option<String>, error: AgentError) -> CodexAttempt {
+    if matches!(&error, AgentError::CodingPlanAdmission { .. }) {
+        return CodexAttempt {
+            previous_response_id,
+            emitted_event: false,
+            definitive_rejection: true,
+            delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
+            result: Err(error),
+        };
+    }
+    CodexAttempt {
+        previous_response_id,
+        emitted_event: true,
+        definitive_rejection: false,
+        delivery: None,
+        result: Err(suppress_retry_after_send(error)),
+    }
+}
+
 fn suppress_retry_after_send(error: AgentError) -> AgentError {
     error.suppress_retry_after_send(Some(RequestDeliveryMetadata::new(
         RequestDeliveryPhase::SentAwaitingAcceptance,
@@ -1862,13 +1888,7 @@ impl OpenAi {
                         Err(error) => {
                             return self
                                 .finish_codex_attempt(
-                                    CodexAttempt {
-                                        previous_response_id,
-                                        emitted_event: true,
-                                        definitive_rejection: false,
-                                        delivery: None,
-                                        result: Err(suppress_retry_after_send(error)),
-                                    },
+                                    http_fallback_attempt(previous_response_id, error),
                                     session_id,
                                     response_chain_lock.as_ref(),
                                     event_tx,
@@ -5919,5 +5939,37 @@ mod tests {
     #[test_case(Some(120), None)]
     fn rate_limit_window_label_maps(seconds: Option<i64>, expected: Option<&str>) {
         assert_eq!(super::rate_limit_window_label(seconds), expected);
+    }
+
+    /// The HTTP fallback runs only after the WebSocket 403, so an empty 403
+    /// from it too must still reach the admission retry loop. Marking it sent
+    /// would end the turn on the first rejection.
+    #[test]
+    fn an_http_fallback_admission_rejection_stays_retryable() {
+        let retryable = http_fallback_attempt(
+            None,
+            AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::Http,
+                retry_after: Some(Duration::from_secs(7)),
+            },
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(&retryable, 0, 0.0),
+            Some(Duration::from_secs(7)),
+            "the server's Retry-After must survive the fallback"
+        );
+
+        // Any other fallback error may have arrived mid-stream.
+        let mid_stream = http_fallback_attempt(
+            None,
+            AgentError::Api {
+                status: 500,
+                message: "boom".into(),
+            },
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(&mid_stream, 0, 0.0),
+            None
+        );
     }
 }
