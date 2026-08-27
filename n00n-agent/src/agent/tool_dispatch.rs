@@ -49,22 +49,6 @@ const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &[
 ];
 const BASH_BLOCKED_IN_PLAN: &str = "run_shell command is not provably read-only in plan mode";
 
-/// Live Fusion authorization snapshot for one tool-dispatch batch.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FusionDispatchAuth {
-    pub phase: crate::fusion::FusionPhase,
-    pub lane: crate::fusion::FusionLane,
-    pub classification: crate::fusion::DelegationKind,
-}
-
-#[allow(clippy::manual_unwrap_or)]
-fn elapsed_millis(elapsed: Duration) -> u64 {
-    match u64::try_from(elapsed.as_millis()) {
-        Ok(millis) => millis,
-        Err(_) => u64::MAX,
-    }
-}
-
 /// Fixed vocabulary for [`classify_tool_error`], ordered so the most specific
 /// marker wins. Matching is on the lowercased error text.
 const TOOL_ERROR_KINDS: &[(&str, &str)] = &[
@@ -86,6 +70,22 @@ const TOOL_ERROR_KINDS: &[(&str, &str)] = &[
     ("missing", "missing_argument"),
     ("invalid", "invalid_argument"),
 ];
+
+/// Live Fusion authorization snapshot for one tool-dispatch batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FusionDispatchAuth {
+    pub phase: crate::fusion::FusionPhase,
+    pub lane: crate::fusion::FusionLane,
+    pub classification: crate::fusion::DelegationKind,
+}
+
+#[allow(clippy::manual_unwrap_or)]
+fn elapsed_millis(elapsed: Duration) -> u64 {
+    match u64::try_from(elapsed.as_millis()) {
+        Ok(millis) => millis,
+        Err(_) => u64::MAX,
+    }
+}
 
 /// Maps a tool failure to one of a fixed set of labels.
 ///
