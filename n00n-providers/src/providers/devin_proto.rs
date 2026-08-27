@@ -727,7 +727,10 @@ mod tests {
 
     /// Sets `N00N_DEVIN_CLI_VERSION` for as long as it is held, then restores
     /// what was there before. Holds [`CLI_VERSION_ENV_LOCK`] for its lifetime.
-    struct CliVersionEnv(MutexGuard<'static, ()>, Option<OsString>);
+    struct CliVersionEnv {
+        _guard: MutexGuard<'static, ()>,
+        previous: Option<OsString>,
+    }
 
     impl CliVersionEnv {
         fn set(value: Option<&str>) -> Self {
@@ -736,13 +739,16 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let previous = std::env::var_os(CLI_VERSION_ENV);
             write_env(value);
-            Self(guard, previous)
+            Self {
+                _guard: guard,
+                previous,
+            }
         }
     }
 
     impl Drop for CliVersionEnv {
         fn drop(&mut self) {
-            write_env(self.1.as_deref().and_then(OsStr::to_str));
+            write_env(self.previous.as_deref().and_then(OsStr::to_str));
         }
     }
 
