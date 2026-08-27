@@ -32,7 +32,8 @@ use crate::{
 };
 
 const SESSION_VERSION: u32 = 1;
-const LOG_FORMAT_VERSION: u32 = 3;
+const LOG_FORMAT_VERSION: u32 = 4;
+const PREVIOUS_LOG_FORMAT_VERSION: u32 = 3;
 const COMPRESS_LEVEL: i32 = 3;
 const MAX_INCREMENTAL_FRAMES: u64 = 16_384;
 const MAX_SESSION_RECORD_BYTES: usize = 16 * 1024 * 1024;
@@ -42,6 +43,8 @@ const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_LOG: u32 = 27;
 const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
+const TRANSCRIPT_COMPACTION_START_RECORD_TYPE: &str = "transcript_compaction_start";
+const TRANSCRIPT_COMPACTION_END_RECORD_TYPE: &str = "transcript_compaction_end";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const CWD_INDEX_LOCK_FILE: &str = "cwd_latest.lock";
@@ -2019,6 +2022,15 @@ enum LogRecord<M, U, T> {
     SubMsg { sub: String, d: M },
     #[serde(rename = "transcript")]
     Transcript { d: TranscriptEntry<M> },
+    #[serde(rename = "transcript_compaction_start")]
+    TranscriptCompactionStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generated_summary: Option<M>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_revision: Option<u64>,
+    },
+    #[serde(rename = "transcript_compaction_end")]
+    TranscriptCompactionEnd,
     #[serde(rename = "meta")]
     Meta {
         title: String,
@@ -2128,6 +2140,20 @@ struct TranscriptRecord<'a, M> {
     d: &'a TranscriptEntry<M>,
 }
 
+#[derive(Serialize)]
+struct TranscriptCompactionStartRecord<'a, M> {
+    t: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_summary: Option<&'a M>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_revision: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct TranscriptCompactionEndRecord {
+    t: &'static str,
+}
+
 impl SessionLog {
     /// # Errors
     /// Returns `SessionError` if the session file cannot be created or written.
@@ -2186,7 +2212,7 @@ impl SessionLog {
         let _lock = lock_session_in(dir, session_id)?;
         let path = locate_session_file(dir, session_id)
             .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
-        let (session, saw_legacy_transcript, recovered_tail, log_appends, decoded_bytes) =
+        let (session, needs_rewrite, recovered_tail, log_appends, decoded_bytes) =
             parse_records_with_limits::<M, U, T>(&path, limits)?;
 
         if session.id != session_id {
@@ -2196,7 +2222,7 @@ impl SessionLog {
             });
         }
 
-        let rewrite = saw_legacy_transcript || recovered_tail;
+        let rewrite = needs_rewrite || recovered_tail;
         let (file, decoded_bytes) = if rewrite {
             write_session_file_with_limits(dir, &session, &limits)?
         } else {
@@ -2229,7 +2255,7 @@ impl SessionLog {
             .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
         let mut index = RetainedIndex::default();
         let ignore_tool_ids = |_message: &M| Vec::new();
-        let (mut session, saw_legacy_transcript, recovered_tail, log_appends, decoded_bytes) =
+        let (mut session, needs_rewrite, recovered_tail, log_appends, decoded_bytes) =
             parse_records_with_limits_retained::<M, U, T>(
                 &path,
                 DecodeLimits::LOAD,
@@ -2246,7 +2272,7 @@ impl SessionLog {
             .evicted_subagent_messages
             .clone_from(&index.subagent_messages);
         let revision = session.meta.revision;
-        let rewrite = saw_legacy_transcript || recovered_tail;
+        let rewrite = needs_rewrite || recovered_tail;
         let (file, decoded_bytes) = if rewrite {
             write_session_file_with_limits(dir, &session, &DecodeLimits::LOAD)?
         } else {
@@ -2369,12 +2395,9 @@ impl SessionLog {
             )?;
 
             for entry in &session.transcript[self.saved_transcript.len()..] {
-                append_record_with_limits(
+                write_transcript_entry_with_limits(
                     &mut buf,
-                    &TranscriptRecord {
-                        t: TRANSCRIPT_RECORD_TYPE,
-                        d: entry,
-                    },
+                    entry,
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
@@ -2774,16 +2797,7 @@ where
         copy_evicted_records(writer, path, session, limits, &mut decoded_bytes)?;
     }
     for entry in &session.transcript {
-        write_record_with_limits(
-            writer,
-            &TranscriptRecord {
-                t: TRANSCRIPT_RECORD_TYPE,
-                d: entry,
-            },
-            path,
-            limits,
-            &mut decoded_bytes,
-        )?;
+        write_transcript_entry_with_limits(writer, entry, path, limits, &mut decoded_bytes)?;
     }
     write_record_with_limits(
         writer,
@@ -2993,6 +3007,59 @@ fn write_record_with_limits<W: Write, R: Serialize>(
     Ok(())
 }
 
+fn write_transcript_entry_with_limits<W: Write, M: Serialize>(
+    writer: &mut W,
+    entry: &TranscriptEntry<M>,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+) -> Result<(), SessionError> {
+    match entry {
+        TranscriptEntry::Message(_) | TranscriptEntry::GeneratedMessage(_) => {
+            write_record_with_limits(
+                writer,
+                &TranscriptRecord {
+                    t: TRANSCRIPT_RECORD_TYPE,
+                    d: entry,
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )?;
+        }
+        TranscriptEntry::Compaction {
+            entries,
+            generated_summary,
+            state_revision,
+        } => {
+            write_record_with_limits(
+                writer,
+                &TranscriptCompactionStartRecord {
+                    t: TRANSCRIPT_COMPACTION_START_RECORD_TYPE,
+                    generated_summary: generated_summary.as_ref(),
+                    state_revision: *state_revision,
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )?;
+            for child in entries {
+                write_transcript_entry_with_limits(writer, child, path, limits, decoded_bytes)?;
+            }
+            write_record_with_limits(
+                writer,
+                &TranscriptCompactionEndRecord {
+                    t: TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn append_record_with_limits<R: Serialize>(
     writer: &mut Vec<u8>,
     record: &R,
@@ -3074,6 +3141,73 @@ enum RawTag {
 
 type ParsedRecords<M, U, T> = (Session<M, U, T>, bool, bool, u64, usize);
 
+/// Cap on how deeply transcript compactions may nest. `TranscriptEntry` is a
+/// recursive tree and its consumers walk it recursively, so an unbounded chain
+/// of start records in a corrupt or hostile log would overflow the stack on
+/// load, traversal, or drop. Compactions beyond this depth are flattened.
+///
+/// Each compaction wraps the whole prior transcript, so a session's nesting
+/// depth is its compaction count. Writers must hold the same cap — see
+/// [`flatten_deepest_compaction`] — or a long-lived session would cross it
+/// with valid data and be flattened on every reload.
+pub const MAX_TRANSCRIPT_COMPACTION_DEPTH: usize = 64;
+
+/// Depth of the deepest compaction chain in `entries`; 0 when there is none.
+#[must_use]
+pub fn transcript_compaction_depth<M>(entries: &[TranscriptEntry<M>]) -> usize {
+    entries.iter().fold(0, |deepest, entry| match entry {
+        TranscriptEntry::Compaction { entries, .. } => {
+            deepest.max(1 + transcript_compaction_depth(entries))
+        }
+        _ => deepest,
+    })
+}
+
+/// Splices the innermost compaction of the deepest chain into its parent,
+/// reducing nesting depth by one.
+///
+/// The oldest boundary is the one dropped. Its archived entries and its
+/// summary text both survive: a compaction records the summary as a
+/// [`TranscriptEntry::GeneratedMessage`] beside itself, so only the redundant
+/// `generated_summary` and `state_revision` fields are lost. Callers use this
+/// to stay under [`MAX_TRANSCRIPT_COMPACTION_DEPTH`] before writing.
+pub fn flatten_deepest_compaction<M>(entries: &mut Vec<TranscriptEntry<M>>) {
+    let Some(index) = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| matches!(entry, TranscriptEntry::Compaction { .. }))
+        .max_by_key(|(_, entry)| match entry {
+            TranscriptEntry::Compaction { entries, .. } => transcript_compaction_depth(entries),
+            _ => 0,
+        })
+        .map(|(index, _)| index)
+    else {
+        return;
+    };
+    let TranscriptEntry::Compaction { entries: inner, .. } = &mut entries[index] else {
+        return;
+    };
+    if transcript_compaction_depth(inner) > 0 {
+        flatten_deepest_compaction(inner);
+        return;
+    }
+    let TranscriptEntry::Compaction { entries: inner, .. } = entries.remove(index) else {
+        return;
+    };
+    entries.splice(index..index, inner);
+}
+
+struct PendingTranscriptCompaction<M> {
+    entries: Vec<TranscriptEntry<M>>,
+    generated_summary: Option<M>,
+    state_revision: Option<u64>,
+    /// A boundary the loader could not reconstruct: an unreadable start record,
+    /// or one nested past [`MAX_TRANSCRIPT_COMPACTION_DEPTH`]. It occupies the
+    /// stack so its end record pops it rather than a valid ancestor, and closing
+    /// it splices its entries into the parent instead of wrapping them.
+    unreadable: bool,
+}
+
 struct SessionBuilder<M, U, T> {
     id: Option<n00nId>,
     model: String,
@@ -3086,9 +3220,60 @@ struct SessionBuilder<M, U, T> {
     token_usage: U,
     updated_at: u64,
     transcript: Vec<TranscriptEntry<M>>,
+    transcript_compactions: Vec<PendingTranscriptCompaction<M>>,
     meta: SessionMeta,
     log_appends: u64,
     saw_legacy_transcript: bool,
+    recovered_structure: bool,
+}
+
+impl<M, U, T> SessionBuilder<M, U, T> {
+    fn push_transcript_entry(&mut self, entry: TranscriptEntry<M>) {
+        if let Some(compaction) = self.transcript_compactions.last_mut() {
+            compaction.entries.push(entry);
+        } else {
+            self.transcript.push(entry);
+        }
+    }
+
+    /// Opens a compaction the loader cannot describe, keeping the stack
+    /// balanced so the matching end record pops this placeholder instead of a
+    /// valid ancestor. Popping an ancestor would close it early and surface its
+    /// archived entries as live transcript entries.
+    fn begin_unreadable_transcript_compaction(&mut self) {
+        self.recovered_structure = true;
+        self.transcript_compactions
+            .push(PendingTranscriptCompaction {
+                entries: Vec::new(),
+                generated_summary: None,
+                state_revision: None,
+                unreadable: true,
+            });
+    }
+
+    /// Closes the innermost open compaction.
+    ///
+    /// An end record with nothing open means its start record was lost, so the
+    /// entries it would have wrapped are already flat in the transcript and
+    /// dropping the stray end is lossless. Record it so the loader warns once,
+    /// and keep going: a session must stay openable.
+    fn finish_transcript_compaction(&mut self) {
+        let Some(compaction) = self.transcript_compactions.pop() else {
+            self.recovered_structure = true;
+            return;
+        };
+        if compaction.unreadable {
+            for entry in compaction.entries {
+                self.push_transcript_entry(entry);
+            }
+            return;
+        }
+        self.push_transcript_entry(TranscriptEntry::Compaction {
+            entries: compaction.entries,
+            generated_summary: compaction.generated_summary,
+            state_revision: compaction.state_revision,
+        });
+    }
 }
 
 impl<M, U, T> Default for SessionBuilder<M, U, T>
@@ -3108,9 +3293,11 @@ where
             token_usage: U::default(),
             updated_at: 0,
             transcript: Vec::new(),
+            transcript_compactions: Vec::new(),
             meta: SessionMeta::default(),
             log_appends: 0,
             saw_legacy_transcript: false,
+            recovered_structure: false,
         }
     }
 }
@@ -3121,9 +3308,9 @@ where
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
-    let (session, saw_legacy_transcript, recovered_tail, log_appends, _) =
+    let (session, needs_rewrite, recovered_tail, log_appends, _) =
         parse_records_with_limits(path, DecodeLimits::LOAD)?;
-    Ok((session, saw_legacy_transcript, recovered_tail, log_appends))
+    Ok((session, needs_rewrite, recovered_tail, log_appends))
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -3215,6 +3402,12 @@ where
                         }
                     };
                     let record_tag = tag.as_deref().unwrap_or_else(|| "?");
+                    // A start record that cannot be decoded still opened a
+                    // compaction on disk. Hold its place, or the end record
+                    // that follows pops a valid ancestor and closes it early.
+                    if record_tag == TRANSCRIPT_COMPACTION_START_RECORD_TYPE {
+                        builder.begin_unreadable_transcript_compaction();
+                    }
                     warn!(
                         path = %path.display(),
                         error = %error,
@@ -3229,10 +3422,48 @@ where
             apply_record(&mut builder, record, &mut got_header)
         })?;
 
+    // A compaction is still open at EOF when its end record was lost: truncated
+    // by an interrupted append, or unreadable and skipped by the loop above.
+    // Close it in place rather than refusing to load. Every entry read so far
+    // is intact, and failing here would make the session permanently unopenable
+    // and unresumable.
+    if !builder.transcript_compactions.is_empty() {
+        let unterminated = builder.transcript_compactions.len();
+        builder.recovered_structure = true;
+        while !builder.transcript_compactions.is_empty() {
+            builder.finish_transcript_compaction();
+        }
+        warn!(
+            path = %path.display(),
+            unterminated,
+            recovered_tail,
+            "closed unterminated transcript compactions while loading session log"
+        );
+    }
+    // The start/end records hold the cap as they are read, but a legacy record
+    // carries a whole nested tree in one payload — `LogRecord::Transcript` and
+    // `LogRecord::Meta.transcript` both bypass that check. Normalize the
+    // assembled transcript here so every source is capped, whatever its shape.
+    if transcript_compaction_depth(&builder.transcript) > MAX_TRANSCRIPT_COMPACTION_DEPTH {
+        builder.recovered_structure = true;
+        while transcript_compaction_depth(&builder.transcript) > MAX_TRANSCRIPT_COMPACTION_DEPTH {
+            flatten_deepest_compaction(&mut builder.transcript);
+        }
+    }
     let id = builder
         .id
         .ok_or(StorageError::NotFound(path.display().to_string()))?;
-    let saw_legacy_transcript = builder.saw_legacy_transcript;
+    if builder.recovered_structure {
+        warn!(
+            path = %path.display(),
+            "repaired transcript compaction structure while loading session log"
+        );
+    }
+    // Recovery so far is in memory only. Unless the caller rewrites the log the
+    // unbalanced records survive on disk, a later append lands after the still
+    // open start record, and the next load absorbs those live entries into the
+    // archived compaction — the damage compounds on every reopen.
+    let needs_rewrite = builder.saw_legacy_transcript || builder.recovered_structure;
     let log_appends = builder.log_appends;
     let mut session = Session {
         version: SESSION_VERSION,
@@ -3275,7 +3506,7 @@ where
     };
     Ok((
         session,
-        saw_legacy_transcript || hydrated_messages,
+        needs_rewrite || hydrated_messages,
         recovered_tail,
         log_appends,
         decoded_bytes,
@@ -3302,11 +3533,14 @@ where
             created_at: h_created,
             parent_id: h_parent,
         } => {
-            if v != LOG_FORMAT_VERSION {
+            if !is_supported_log_format(v) {
                 return Err(SessionError::VersionMismatch {
                     found: v,
                     expected: LOG_FORMAT_VERSION,
                 });
+            }
+            if v != LOG_FORMAT_VERSION {
+                builder.saw_legacy_transcript = true;
             }
             builder.id = Some(h_id);
             builder.model = h_model;
@@ -3325,7 +3559,25 @@ where
         LogRecord::SubMsg { sub, d } => {
             builder.subagent_messages.entry(sub).or_default().push(d);
         }
-        LogRecord::Transcript { d } => builder.transcript.push(d),
+        LogRecord::Transcript { d } => builder.push_transcript_entry(d),
+        LogRecord::TranscriptCompactionStart {
+            generated_summary,
+            state_revision,
+        } => {
+            if builder.transcript_compactions.len() >= MAX_TRANSCRIPT_COMPACTION_DEPTH {
+                builder.begin_unreadable_transcript_compaction();
+            } else {
+                builder
+                    .transcript_compactions
+                    .push(PendingTranscriptCompaction {
+                        entries: Vec::new(),
+                        generated_summary,
+                        state_revision,
+                        unreadable: false,
+                    });
+            }
+        }
+        LogRecord::TranscriptCompactionEnd => builder.finish_transcript_compaction(),
         LogRecord::Meta {
             title: m_title,
             token_usage: m_usage,
@@ -3347,6 +3599,10 @@ where
         LogRecord::Unknown => return Err(SessionError::UnknownRecord),
     }
     Ok(())
+}
+
+fn is_supported_log_format(version: u32) -> bool {
+    matches!(version, PREVIOUS_LOG_FORMAT_VERSION | LOG_FORMAT_VERSION)
 }
 
 fn encode_frame<W: Write>(file: &mut W, bytes: &[u8]) -> Result<(), SessionError> {
@@ -4264,7 +4520,7 @@ where
     M: TitleSource + DeserializeOwned + Default,
 {
     let header = try_decode_header_at(path, 0)?;
-    if header.v != LOG_FORMAT_VERSION {
+    if !is_supported_log_format(header.v) {
         return None;
     }
     let mut budget = DecodedWorkBudget::new(MAX_SCAN_DECODED_BYTES);
@@ -4843,21 +5099,26 @@ mod tests {
     use super::ThinkingParseError;
     use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
-        CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
-        SESSION_VERSION, StoredDelivery, StoredQueuedMessage, StoredSubagent, append_record,
-        classify_and_display, encode_frame, generate_title, jsonl_path, load_cwd_index, now_epoch,
-        update_cwd_index,
+        COMPRESS_LEVEL, CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord,
+        MAX_TITLE_LEN, PREVIOUS_LOG_FORMAT_VERSION, SESSION_VERSION, StoredDelivery,
+        StoredQueuedMessage, StoredSubagent, append_record, classify_and_display, encode_frame,
+        generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
+    };
+    use super::{
+        DecodeLimits, SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError,
+        StoredFusionUsage, StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
+    use super::{
+        MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
+        TRANSCRIPT_COMPACTION_START_RECORD_TYPE, TRANSCRIPT_RECORD_TYPE,
+        flatten_deepest_compaction, transcript_compaction_depth,
+    };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
         delete_openai_response_chain, load_openai_response_chain, load_openai_response_chain_at,
         lock_openai_response_chain, openai_response_chain_path, save_openai_response_chain,
         try_lock_openai_response_chain,
-    };
-    use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredFusionUsage,
-        StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::n00nId;
@@ -4873,6 +5134,12 @@ mod tests {
     use test_case::test_case;
 
     type TestSession = Session<Value, Value, Value>;
+
+    /// Marks the one live entry a depth-cap test must not lose.
+    const LIVE_TEXT: &str = "live";
+
+    /// Kept in step with the `#[serde(rename)]` on [`LogRecord::Meta`].
+    const META_RECORD_TYPE: &str = "meta";
 
     static MESSAGE_SERIALIZATIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -5273,6 +5540,507 @@ mod tests {
             TranscriptEntry::Message(message)
                 if message["content"][0]["text"].as_str() == Some("second")
         ));
+    }
+
+    #[test]
+    fn nested_compaction_round_trips_below_per_record_limit() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let limits = DecodeLimits::new(2 * 1024, 1024 * 1024, super::MAX_ZSTD_WINDOW_LOG);
+        let archived = (0..64)
+            .map(|index| {
+                TranscriptEntry::Message(user_message(&format!(
+                    "archived message {index}: {}",
+                    "x".repeat(128)
+                )))
+            })
+            .collect();
+        let inner = TranscriptEntry::Compaction {
+            entries: archived,
+            generated_summary: Some(assistant_message("inner summary")),
+            state_revision: Some(1),
+        };
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![inner],
+            generated_summary: Some(assistant_message("outer summary")),
+            state_revision: Some(2),
+        }];
+
+        SessionLog::create_with_limits(dir, &session, limits).unwrap();
+        let (loaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(loaded.transcript).unwrap(),
+            serde_json::to_value(session.transcript).unwrap()
+        );
+    }
+
+    /// The v3 log upgrade path reads an old-style compaction as a single
+    /// `transcript` record whose payload is a whole `TranscriptEntry`. Lock the
+    /// externally-tagged serde shape that path depends on, so changing it fails
+    /// here instead of silently breaking upgrades of existing session logs.
+    #[test]
+    fn compaction_transcript_entry_serde_shape_is_stable() {
+        let entry: TranscriptEntry<Value> = TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Value::from("inner"))],
+            generated_summary: Some(Value::from("summary")),
+            state_revision: Some(3),
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({
+                "Compaction": {
+                    "entries": [{ "Message": "inner" }],
+                    "generated_summary": "summary",
+                    "state_revision": 3,
+                }
+            })
+        );
+    }
+
+    /// Rewrites a session log through `edit`, which receives the decoded JSONL
+    /// lines and returns the lines to persist.
+    fn rewrite_log_lines(dir: &Path, id: n00nId, mut edit: impl FnMut(Vec<Value>) -> Vec<Value>) {
+        let path = jsonl_path(dir, id);
+        let decoded = zstd::stream::decode_all(File::open(&path).unwrap()).unwrap();
+        let lines: Vec<Value> = decoded
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        let mut raw = Vec::new();
+        for line in edit(lines) {
+            raw.extend_from_slice(&serde_json::to_vec(&line).unwrap());
+            raw.push(b'\n');
+        }
+        fs::write(
+            &path,
+            zstd::stream::encode_all(&raw[..], COMPRESS_LEVEL).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn session_with_one_compaction(dir: &Path) -> TestSession {
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(user_message("archived"))],
+            generated_summary: Some(assistant_message("summary")),
+            state_revision: Some(7),
+        }];
+        drop(SessionLog::create(dir, &session).unwrap());
+        session
+    }
+
+    /// Deepest chain of nested compactions in a transcript.
+    /// Counts how many records of `tag` the on-disk log holds.
+    fn count_record_type(dir: &Path, id: n00nId, tag: &str) -> usize {
+        let decoded = zstd::stream::decode_all(File::open(jsonl_path(dir, id)).unwrap()).unwrap();
+        decoded
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+            .filter(|line| line["t"] == tag)
+            .count()
+    }
+
+    /// Recovery that stays in memory is not recovery: the unbalanced records
+    /// survive on disk, a later append lands after the still-open start record,
+    /// and the next load absorbs those live entries into the archived
+    /// compaction. Opening a damaged log must rewrite it as balanced.
+    #[test]
+    fn recovered_compaction_structure_is_rewritten_to_disk() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_compaction(dir);
+
+        rewrite_log_lines(dir, session.id, |lines| {
+            lines
+                .into_iter()
+                .filter(|line| line["t"] != TRANSCRIPT_COMPACTION_END_RECORD_TYPE)
+                .collect()
+        });
+        assert_eq!(
+            count_record_type(dir, session.id, TRANSCRIPT_COMPACTION_END_RECORD_TYPE),
+            0,
+            "precondition: the end record is gone from the log"
+        );
+
+        drop(SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap());
+
+        assert_eq!(
+            count_record_type(dir, session.id, TRANSCRIPT_COMPACTION_START_RECORD_TYPE),
+            count_record_type(dir, session.id, TRANSCRIPT_COMPACTION_END_RECORD_TYPE),
+            "opening a damaged log must rewrite it with balanced compaction records"
+        );
+    }
+
+    /// An unreadable *nested* start record must not let its end record pop the
+    /// valid outer compaction. Closing an ancestor early would surface the
+    /// outer compaction's archived entries as live transcript entries, which
+    /// `active_messages_from_transcript` would then replay to the provider.
+    #[test]
+    fn unreadable_nested_start_preserves_the_outer_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let inner = TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(user_message("inner archived"))],
+            generated_summary: None,
+            state_revision: Some(1),
+        };
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![
+                inner,
+                TranscriptEntry::Message(user_message("outer archived")),
+            ],
+            generated_summary: None,
+            state_revision: Some(2),
+        }];
+        drop(SessionLog::create(dir, &session).unwrap());
+
+        // Corrupt the *second* start record, i.e. the nested one.
+        let mut seen = 0;
+        rewrite_log_lines(dir, session.id, move |lines| {
+            lines
+                .into_iter()
+                .map(|mut line| {
+                    if line["t"] == TRANSCRIPT_COMPACTION_START_RECORD_TYPE {
+                        seen += 1;
+                        if seen == 2 {
+                            line["state_revision"] = Value::from("not-a-number");
+                        }
+                    }
+                    line
+                })
+                .collect()
+        });
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+
+        // The outer compaction must still exist and still archive everything.
+        // Nothing may escape to the transcript root, where it would be treated
+        // as an active message.
+        assert!(
+            matches!(
+                loaded.transcript.as_slice(),
+                [TranscriptEntry::Compaction {
+                    state_revision: Some(2),
+                    ..
+                }]
+            ),
+            "outer compaction was closed early: {:?}",
+            loaded.transcript
+        );
+        assert!(super::active_messages_from_transcript(&loaded.transcript).is_empty());
+    }
+
+    /// `TranscriptEntry` is a recursive tree walked by recursive consumers, so
+    /// an unbounded chain of start records in a corrupt log would overflow the
+    /// stack. Compactions past the depth cap are flattened instead.
+    #[test]
+    fn flatten_deepest_compaction_drops_the_oldest_boundary_only() {
+        let mut entries = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![
+                    TranscriptEntry::Compaction {
+                        entries: vec![TranscriptEntry::Message(Value::from("oldest"))],
+                        generated_summary: Some(Value::from("inner summary")),
+                        state_revision: Some(1),
+                    },
+                    TranscriptEntry::GeneratedMessage(Value::from("inner summary")),
+                ],
+                generated_summary: Some(Value::from("outer summary")),
+                state_revision: Some(2),
+            },
+            TranscriptEntry::Message(Value::from("live")),
+        ];
+
+        flatten_deepest_compaction(&mut entries);
+
+        assert_eq!(transcript_compaction_depth(&entries), 1);
+        let TranscriptEntry::Compaction {
+            entries: outer,
+            generated_summary,
+            state_revision,
+        } = &entries[0]
+        else {
+            panic!("outer compaction was not preserved: {entries:?}");
+        };
+        // The outer boundary keeps its own metadata; the inner one's archived
+        // entries are spliced in ahead of the summary it left beside itself.
+        assert_eq!(
+            generated_summary.as_ref(),
+            Some(&Value::from("outer summary"))
+        );
+        assert_eq!(*state_revision, Some(2));
+        assert!(matches!(
+            outer.as_slice(),
+            [
+                TranscriptEntry::Message(oldest),
+                TranscriptEntry::GeneratedMessage(summary),
+            ] if oldest == &Value::from("oldest") && summary == &Value::from("inner summary")
+        ));
+    }
+
+    /// Which legacy record carries the nested tree. Both predate the
+    /// start/end records, so neither is capped as it is read.
+    #[derive(Clone, Copy)]
+    enum LegacyCarrier {
+        /// v3: one `transcript` record per top-level entry.
+        TranscriptRecord,
+        /// v2: the whole transcript inside the `meta` record.
+        MetaRecord,
+    }
+
+    /// A nesting depth every parser handles, used to prove the legacy
+    /// carriers load at all.
+    const SHALLOW_LEGACY_NESTING: usize = 8;
+
+    /// Wraps `entry` in `depth` nested compactions, in the serde shape a
+    /// legacy record used.
+    fn nest_compactions(mut entry: Value, depth: usize) -> Value {
+        for _ in 0..depth {
+            entry = serde_json::json!({"Compaction": {"entries": [entry]}});
+        }
+        entry
+    }
+
+    /// Rewrites the log so `carrier` holds `live` nested `depth` deep.
+    fn plant_legacy_transcript(dir: &Path, id: n00nId, carrier: LegacyCarrier, depth: usize) {
+        rewrite_log_lines(dir, id, move |lines| {
+            let mut lines: Vec<Value> = lines
+                .into_iter()
+                // For the meta variant the transcript record has to go, or
+                // it would supply the entry the meta field is meant to.
+                .filter(|line| match carrier {
+                    LegacyCarrier::MetaRecord => line["t"] != TRANSCRIPT_RECORD_TYPE,
+                    LegacyCarrier::TranscriptRecord => true,
+                })
+                .collect();
+            for line in &mut lines {
+                match carrier {
+                    LegacyCarrier::TranscriptRecord if line["t"] == TRANSCRIPT_RECORD_TYPE => {
+                        line["d"] = nest_compactions(line["d"].clone(), depth);
+                    }
+                    LegacyCarrier::MetaRecord if line["t"] == META_RECORD_TYPE => {
+                        let live =
+                            serde_json::to_value(TranscriptEntry::Message(user_message(LIVE_TEXT)))
+                                .unwrap();
+                        line["transcript"] = serde_json::json!([nest_compactions(live, depth)]);
+                    }
+                    _ => {}
+                }
+            }
+            lines
+        });
+    }
+
+    /// True when `LIVE_TEXT` survives somewhere in the tree. The entry sits
+    /// inside the compactions, so this cannot read the active messages.
+    fn holds_live_text(entries: &[TranscriptEntry<Value>]) -> bool {
+        entries.iter().any(|entry| match entry {
+            TranscriptEntry::Message(message) | TranscriptEntry::GeneratedMessage(message) => {
+                format!("{message:?}").contains(LIVE_TEXT)
+            }
+            TranscriptEntry::Compaction { entries, .. } => holds_live_text(entries),
+        })
+    }
+
+    fn session_with_one_live_entry(dir: &Path) -> TestSession {
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message(LIVE_TEXT)));
+        drop(SessionLog::create(dir, &session).unwrap());
+        session
+    }
+
+    /// Both legacy carriers must reach the loader at all — a nesting bug in
+    /// the fixture would otherwise make the depth test below vacuous.
+    #[test_case(LegacyCarrier::TranscriptRecord ; "v3 transcript record")]
+    #[test_case(LegacyCarrier::MetaRecord ; "v2 meta record")]
+    fn a_nested_legacy_transcript_loads_intact(carrier: LegacyCarrier) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_live_entry(dir);
+        plant_legacy_transcript(dir, session.id, carrier, SHALLOW_LEGACY_NESTING);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+
+        assert!(
+            holds_live_text(&loaded.transcript),
+            "the nested entry must load: {:?}",
+            loaded.transcript
+        );
+        assert_eq!(
+            transcript_compaction_depth(&loaded.transcript),
+            SHALLOW_LEGACY_NESTING,
+            "nothing below the cap may be flattened"
+        );
+    }
+
+    /// A legacy record carries its whole tree in one payload, so the
+    /// start/end depth cap never sees it. It cannot deliver an over-cap
+    /// transcript either: `serde_json`'s recursion limit is spent several
+    /// levels per compaction and runs out well before
+    /// [`MAX_TRANSCRIPT_COMPACTION_DEPTH`], so the record fails to
+    /// deserialize and the loader skips it. What matters is that skipping
+    /// it leaves the session openable rather than permanently broken.
+    #[test_case(LegacyCarrier::TranscriptRecord ; "v3 transcript record")]
+    #[test_case(LegacyCarrier::MetaRecord ; "v2 meta record")]
+    fn an_over_cap_legacy_transcript_never_reaches_the_loader(carrier: LegacyCarrier) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_live_entry(dir);
+        plant_legacy_transcript(
+            dir,
+            session.id,
+            carrier,
+            MAX_TRANSCRIPT_COMPACTION_DEPTH + 2,
+        );
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+
+        assert!(
+            transcript_compaction_depth(&loaded.transcript) <= MAX_TRANSCRIPT_COMPACTION_DEPTH,
+            "an over-cap legacy tree must never survive the load: {}",
+            transcript_compaction_depth(&loaded.transcript)
+        );
+        assert!(
+            !holds_live_text(&loaded.transcript),
+            "the unreadable record cannot have loaded: {:?}",
+            loaded.transcript
+        );
+    }
+
+    #[test]
+    fn transcript_compaction_nesting_is_depth_bounded() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message("live")));
+        drop(SessionLog::create(dir, &session).unwrap());
+
+        let depth = MAX_TRANSCRIPT_COMPACTION_DEPTH + 8;
+        rewrite_log_lines(dir, session.id, move |lines| {
+            let mut out = Vec::new();
+            let mut tail = Vec::new();
+            for line in lines {
+                if line["t"] == TRANSCRIPT_RECORD_TYPE {
+                    for _ in 0..depth {
+                        out.push(serde_json::json!({
+                            "t": TRANSCRIPT_COMPACTION_START_RECORD_TYPE
+                        }));
+                        tail.push(serde_json::json!({
+                            "t": TRANSCRIPT_COMPACTION_END_RECORD_TYPE
+                        }));
+                    }
+                    out.push(line);
+                    out.append(&mut tail);
+                } else {
+                    out.push(line);
+                }
+            }
+            out
+        });
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+
+        assert!(
+            transcript_compaction_depth(&loaded.transcript) <= MAX_TRANSCRIPT_COMPACTION_DEPTH,
+            "nesting was not bounded: {}",
+            transcript_compaction_depth(&loaded.transcript)
+        );
+    }
+
+    /// A crash between a compaction's start and end records must not make the
+    /// session unopenable: the open compaction is closed in place on load.
+    #[test]
+    fn unterminated_compaction_still_opens_the_session() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_compaction(dir);
+
+        rewrite_log_lines(dir, session.id, |lines| {
+            lines
+                .into_iter()
+                .filter(|line| line["t"] != TRANSCRIPT_COMPACTION_END_RECORD_TYPE)
+                .collect()
+        });
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Compaction { entries, state_revision: Some(7), .. }]
+                if entries.len() == 1
+        ));
+    }
+
+    /// A compaction start record that fails to deserialize is skipped by the
+    /// parse loop, leaving its end record unmatched. The session must still
+    /// load, with the archived entries flattened into the transcript.
+    #[test]
+    fn unmatched_compaction_end_still_opens_the_session() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session = session_with_one_compaction(dir);
+
+        rewrite_log_lines(dir, session.id, |lines| {
+            lines
+                .into_iter()
+                .map(|mut line| {
+                    if line["t"] == TRANSCRIPT_COMPACTION_START_RECORD_TYPE {
+                        line["state_revision"] = Value::from("not-a-number");
+                    }
+                    line
+                })
+                .collect()
+        });
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Message(message)]
+                if message["content"][0]["text"].as_str() == Some("archived")
+        ));
+    }
+
+    #[test]
+    fn previous_log_format_is_rewritten_on_open() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message("persisted")));
+        drop(SessionLog::create(dir, &session).unwrap());
+        let path = jsonl_path(dir, session.id);
+        let decoded = zstd::stream::decode_all(File::open(&path).unwrap()).unwrap();
+        let mut lines = decoded.split(|byte| *byte == b'\n');
+        let mut header: Value = serde_json::from_slice(lines.next().unwrap()).unwrap();
+        header["v"] = PREVIOUS_LOG_FORMAT_VERSION.into();
+        let mut previous = serde_json::to_vec(&header).unwrap();
+        previous.push(b'\n');
+        for line in lines.filter(|line| !line.is_empty()) {
+            previous.extend_from_slice(line);
+            previous.push(b'\n');
+        }
+        fs::write(
+            &path,
+            zstd::stream::encode_all(&previous[..], COMPRESS_LEVEL).unwrap(),
+        )
+        .unwrap();
+
+        drop(SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap());
+
+        let rewritten = zstd::stream::decode_all(File::open(path).unwrap()).unwrap();
+        let header: Value =
+            serde_json::from_slice(rewritten.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
+        assert_eq!(header["v"], LOG_FORMAT_VERSION);
     }
 
     #[test]
