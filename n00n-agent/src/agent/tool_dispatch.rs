@@ -1368,7 +1368,7 @@ mod tests {
 
     /// Captures every field of every emitted `tracing` event, keyed by field
     /// name, so a test can assert on a specific structured field (e.g.
-    /// `error_summary`) without depending on the formatted log line.
+    /// `error_kind`) without depending on the formatted log line.
     struct FieldCapture {
         sender: std::sync::mpsc::Sender<std::collections::HashMap<String, String>>,
     }
