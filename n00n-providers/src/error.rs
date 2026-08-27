@@ -341,8 +341,11 @@ impl AgentError {
                 transport,
                 retry_after,
             } => match retry_after {
+                // States what the server asked for, not what the retry loop
+                // will wait: that value is clamped, so promising it here can
+                // overstate the real delay.
                 Some(delay) => format!(
-                    "OpenAI Coding Plan returned an empty HTTP 403 to the {transport}, retrying after {}s",
+                    "OpenAI Coding Plan returned an empty HTTP 403 to the {transport} and asked to wait {}s before retrying",
                     delay.as_secs()
                 ),
                 None => format!(
