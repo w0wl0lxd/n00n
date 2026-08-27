@@ -1487,7 +1487,10 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
         }
         match value {
             Value::Object(map) => {
-                for reference_key in ["$ref", "$dynamicRef"] {
+                // `$recursiveRef` is the 2019-09 spelling; 2020-12 renamed
+                // it to `$dynamicRef`. Both dialects are accepted below, so
+                // both keys must pass the same remote-reference gate.
+                for reference_key in ["$ref", "$dynamicRef", "$recursiveRef"] {
                     if let Some(reference) = map.get(reference_key).and_then(Value::as_str)
                         && !reference.starts_with('#')
                     {
@@ -1692,9 +1695,21 @@ mod tests {
             "properties": {"pair": {"type": "array", "items": [{"type": "string"}, {"type": "number"}]}},
         });
 
-        let mut draft_07 = tuple.clone();
-        draft_07["$schema"] = json!("http://json-schema.org/draft-07/schema#");
-        validate_mcp_input_schema(&draft_07).expect("draft 7 tuple `items` must compile");
+        // Every accepted draft-7 spelling, not just the canonical one. The
+        // compiler reads the embedded `$schema` itself, so an id it does not
+        // recognise can override `with_draft` and reject the schema.
+        for id in [
+            "http://json-schema.org/draft-07/schema#",
+            "http://json-schema.org/draft-07/schema",
+            "https://json-schema.org/draft-07/schema#",
+            "https://json-schema.org/draft-07/schema",
+        ] {
+            let mut draft_07 = tuple.clone();
+            draft_07["$schema"] = json!(id);
+            validate_mcp_input_schema(&draft_07).unwrap_or_else(|error| {
+                panic!("draft 7 tuple `items` must compile for {id}: {error}")
+            });
+        }
 
         let mut draft_2020_12 = tuple;
         draft_2020_12["$schema"] = json!(JSON_SCHEMA_2020_12);
@@ -1708,6 +1723,9 @@ mod tests {
     #[test_case(&json!({"type": "invalid"}) ; "invalid_type")]
     #[test_case(&json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
     #[test_case(&json!({"type": "object", "$ref": "other.json"}) ; "relative_ref")]
+    #[test_case(&json!({"type": "object", "$dynamicRef": "https://example.com/s.json#a"}) ; "remote_dynamic_ref")]
+    #[test_case(&json!({"$schema": "https://json-schema.org/draft/2019-09/schema", "type": "object", "$recursiveRef": "https://example.com/s.json"}) ; "remote_recursive_ref")]
+    #[test_case(&json!({"$schema": "https://json-schema.org/draft/2019-09/schema", "type": "object", "properties": {"child": {"$recursiveRef": "other.json"}}}) ; "nested_relative_recursive_ref")]
     #[test_case(&json!({"$schema": "http://json-schema.org/draft-04/schema#", "type": "object"}) ; "unsupported_draft")]
     fn mcp_schema_validation_rejects_invalid_or_remote(schema: &Value) {
         assert!(validate_mcp_input_schema(schema).is_err());
