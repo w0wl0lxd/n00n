@@ -99,6 +99,8 @@ const MAX_MCP_SCHEMA_BYTES: usize = 256 * 1024;
 const MAX_MCP_SCHEMA_DEPTH: usize = 64;
 const MAX_MCP_SCHEMA_NODES: usize = 4096;
 const JSON_SCHEMA_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
+const JSON_SCHEMA_2019_09: &str = "https://json-schema.org/draft/2019-09/schema";
+const JSON_SCHEMA_DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
 
 /// The JSON Schema drafts an MCP `inputSchema` may declare, mapped to the draft
 /// its keywords are then interpreted under.
@@ -110,34 +112,53 @@ const JSON_SCHEMA_2020_12: &str = "https://json-schema.org/draft/2020-12/schema"
 /// 2020-12, which is what the MCP specification requires.
 ///
 /// The trailing `#` is optional in practice: draft 7 publishes its `$id` with
-/// one and servers copy it either way.
-const SUPPORTED_SCHEMA_DRAFTS: &[(&str, Draft)] = &[
-    (JSON_SCHEMA_2020_12, Draft::Draft202012),
+/// one and servers copy it either way. Draft 7 is also widely miswritten as
+/// `https`, though its published `$id` is `http`.
+///
+/// Each entry maps a spelling to its draft and to the canonical `$id` for
+/// that draft. `jsonschema` reads the embedded `$schema` itself when it
+/// compiles, and an id it does not recognise is treated as an external
+/// resource to fetch rather than as a dialect — so a schema is rewritten to
+/// the canonical spelling before compilation, or `with_draft` is overruled
+/// and the build fails on a network resolver it does not have.
+const SUPPORTED_SCHEMA_DRAFTS: &[(&str, Draft, &str)] = &[
+    (JSON_SCHEMA_2020_12, Draft::Draft202012, JSON_SCHEMA_2020_12),
     (
         "https://json-schema.org/draft/2020-12/schema#",
         Draft::Draft202012,
+        JSON_SCHEMA_2020_12,
     ),
-    (
-        "https://json-schema.org/draft/2019-09/schema",
-        Draft::Draft201909,
-    ),
+    (JSON_SCHEMA_2019_09, Draft::Draft201909, JSON_SCHEMA_2019_09),
     (
         "https://json-schema.org/draft/2019-09/schema#",
         Draft::Draft201909,
+        JSON_SCHEMA_2019_09,
     ),
-    ("http://json-schema.org/draft-07/schema", Draft::Draft7),
-    ("http://json-schema.org/draft-07/schema#", Draft::Draft7),
-    ("https://json-schema.org/draft-07/schema", Draft::Draft7),
-    ("https://json-schema.org/draft-07/schema#", Draft::Draft7),
+    (JSON_SCHEMA_DRAFT_07, Draft::Draft7, JSON_SCHEMA_DRAFT_07),
+    (
+        "http://json-schema.org/draft-07/schema",
+        Draft::Draft7,
+        JSON_SCHEMA_DRAFT_07,
+    ),
+    (
+        "https://json-schema.org/draft-07/schema",
+        Draft::Draft7,
+        JSON_SCHEMA_DRAFT_07,
+    ),
+    (
+        "https://json-schema.org/draft-07/schema#",
+        Draft::Draft7,
+        JSON_SCHEMA_DRAFT_07,
+    ),
 ];
 
 /// Resolves a declared `$schema` to the draft to interpret it under, or `None`
 /// when the draft is one this build does not handle.
-fn schema_draft_for(declared: &str) -> Option<Draft> {
+fn schema_draft_for(declared: &str) -> Option<(Draft, &'static str)> {
     SUPPORTED_SCHEMA_DRAFTS
         .iter()
-        .find(|(uri, _)| *uri == declared)
-        .map(|(_, draft)| *draft)
+        .find(|(uri, _, _)| *uri == declared)
+        .map(|(_, draft, canonical)| (*draft, *canonical))
 }
 
 struct McpToolDef {
@@ -1509,11 +1530,24 @@ fn validate_mcp_input_schema(schema: &Value) -> Result<(), String> {
     }
 
     let declared_draft = schema.get("$schema").and_then(Value::as_str);
-    let draft = match declared_draft {
-        None => Draft::Draft202012,
+    let (draft, canonical) = match declared_draft {
+        None => (Draft::Draft202012, JSON_SCHEMA_2020_12),
         Some(declared) => schema_draft_for(declared)
             .ok_or_else(|| format!("unsupported JSON Schema draft: {declared}"))?,
     };
+    // Compile against the canonical `$id` for the draft. `jsonschema` reads
+    // the embedded `$schema` and treats an id it does not know as an external
+    // resource to fetch, which fails without a network resolver — so a server
+    // that writes `https` for draft 7, or appends a `#`, would have its tools
+    // dropped despite the draft being supported.
+    let canonicalized = declared_draft
+        .is_some_and(|declared| declared != canonical)
+        .then(|| {
+            let mut schema = schema.clone();
+            schema["$schema"] = Value::String(canonical.to_owned());
+            schema
+        });
+    let schema = canonicalized.as_ref().unwrap_or(schema);
     let meta_validate = match draft {
         Draft::Draft7 => jsonschema::draft7::meta::validate,
         Draft::Draft201909 => jsonschema::draft201909::meta::validate,
