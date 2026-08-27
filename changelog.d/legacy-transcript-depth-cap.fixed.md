@@ -1,1 +1,1 @@
-Bounded transcript compaction nesting when loading a legacy (v3) session log, so a deeply nested legacy transcript is flattened once on read instead of on a later reload.
+Bounded transcript compaction nesting when loading a legacy session log, covering both the v3 `transcript` records and the v2 `meta.transcript` payload, so a deeply nested legacy transcript is flattened once on read instead of on a later reload.
