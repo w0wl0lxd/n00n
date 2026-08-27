@@ -2,10 +2,17 @@
 //! Retryable: 429, 5xx, IO, HTTP transport. Non-retryable: other 4xx, JSON parse, config,
 //! channel closed, user cancel. `user_message()` returns human-readable text for each variant.
 
+use std::fmt;
+
 use isahc::AsyncReadResponseExt;
 use n00n_redact::sanitize_text;
 
 const MAX_PROVIDER_ERROR_CHARS: usize = 1_000;
+
+/// Names for [`CodingPlanAdmissionTransport`], as they read inside a user
+/// message.
+const WEBSOCKET_TRANSPORT_LABEL: &str = "WebSocket handshake";
+const HTTP_TRANSPORT_LABEL: &str = "HTTP request";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryReplayReason {
@@ -13,8 +20,8 @@ pub enum HistoryReplayReason {
     ContinuationNotFound,
 }
 
-impl std::fmt::Display for HistoryReplayReason {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for HistoryReplayReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ContinuationUnavailable => {
                 formatter.write_str("saved continuation is unavailable")
@@ -34,11 +41,11 @@ pub enum CodingPlanAdmissionTransport {
     Http,
 }
 
-impl std::fmt::Display for CodingPlanAdmissionTransport {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for CodingPlanAdmissionTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WebSocket => formatter.write_str("WebSocket handshake"),
-            Self::Http => formatter.write_str("HTTP request"),
+            Self::WebSocket => formatter.write_str(WEBSOCKET_TRANSPORT_LABEL),
+            Self::Http => formatter.write_str(HTTP_TRANSPORT_LABEL),
         }
     }
 }
