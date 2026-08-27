@@ -5,7 +5,10 @@ pub mod pkce;
 pub mod registration;
 pub mod token;
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -442,7 +445,7 @@ const BACKOFF_MAX: Duration = Duration::from_mins(30);
 
 struct BackoffEntry {
     /// `None` while an attempt is in flight.
-    retry_after: Option<std::time::Instant>,
+    retry_after: Option<Instant>,
     attempt: u32,
 }
 
@@ -452,23 +455,17 @@ struct BackoffEntry {
 /// loops share one cache: a `NeedsAuth` server that fails once stops the
 /// other open sessions from each retrying it. Cloning shares the same state.
 #[derive(Clone, Default)]
-pub struct BackgroundAuthBackoff(
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, BackoffEntry>>>,
-);
+pub struct BackgroundAuthBackoff(Arc<Mutex<HashMap<String, BackoffEntry>>>);
 
-impl std::fmt::Debug for BackgroundAuthBackoff {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for BackgroundAuthBackoff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("BackgroundAuthBackoff")
     }
 }
 
 impl BackgroundAuthBackoff {
-    fn entries(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, BackoffEntry>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn entries(&self) -> MutexGuard<'_, HashMap<String, BackoffEntry>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Claims the right to authenticate `server` in the background.
@@ -495,7 +492,7 @@ impl BackgroundAuthBackoff {
         let attempt = match entries.get(server) {
             Some(entry) => match entry.retry_after {
                 None => return false,
-                Some(retry_after) if std::time::Instant::now() < retry_after => return false,
+                Some(retry_after) if Instant::now() < retry_after => return false,
                 Some(_) => entry.attempt,
             },
             None => 0,
@@ -522,7 +519,7 @@ impl BackgroundAuthBackoff {
         entries.insert(
             server.to_owned(),
             BackoffEntry {
-                retry_after: Some(std::time::Instant::now() + delay),
+                retry_after: Some(Instant::now() + delay),
                 attempt: failed + 1,
             },
         );
@@ -546,7 +543,7 @@ impl BackgroundAuthBackoff {
                 entries.insert(
                     server.to_owned(),
                     BackoffEntry {
-                        retry_after: Some(std::time::Instant::now()),
+                        retry_after: Some(Instant::now()),
                         attempt,
                     },
                 );
@@ -596,6 +593,8 @@ impl Drop for AuthClaim {
 
 #[cfg(test)]
 mod backoff_tests {
+    use std::time::Instant;
+
     use super::BackgroundAuthBackoff;
 
     #[test]
@@ -665,7 +664,7 @@ mod backoff_tests {
         let backoff = BackgroundAuthBackoff::default();
         let claim = backoff.try_claim("srv").expect("first claim");
 
-        let before = std::time::Instant::now();
+        let before = Instant::now();
         claim.record_failure();
         let retry_after = backoff.entries().get("srv").unwrap().retry_after.unwrap();
 

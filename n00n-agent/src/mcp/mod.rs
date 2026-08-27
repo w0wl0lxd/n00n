@@ -2569,7 +2569,6 @@ mod tests {
     /// leak that process: `start_server` has to shut its (just-spawned) transport down itself
     /// before returning `Err`, rather than leaving cleanup to `Drop`.
     #[cfg(unix)]
-    #[allow(unsafe_code)]
     #[test]
     fn refresh_server_shuts_down_a_transport_that_never_completes_handshake() {
         smol::block_on(async {
@@ -2605,15 +2604,19 @@ mod tests {
                 .expect("recorded pid must be numeric");
 
             // shutdown() reaps before start_server returns, so the process must
-            // already be gone here — no polling, no zombie window.
-            assert_eq!(
-                unsafe { libc::kill(pid, 0) },
-                -1,
+            // already be gone here — no polling, no zombie window. `kill -0`
+            // asks whether the pid exists without signalling it; shelling out
+            // keeps the check in safe Rust, since the workspace denies
+            // `unsafe_code`.
+            let still_running = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("kill -0 {pid} 2>/dev/null"))
+                .status()
+                .expect("kill -0 must run")
+                .success();
+            assert!(
+                !still_running,
                 "start_server must shut down a transport that failed its handshake"
-            );
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(libc::ESRCH)
             );
         });
     }
