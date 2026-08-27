@@ -43,8 +43,6 @@ const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_LOG: u32 = 27;
 const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
-/// Kept in step with the `#[serde(rename)]` on [`LogRecord::Meta`].
-const META_RECORD_TYPE: &str = "meta";
 const TRANSCRIPT_COMPACTION_START_RECORD_TYPE: &str = "transcript_compaction_start";
 const TRANSCRIPT_COMPACTION_END_RECORD_TYPE: &str = "transcript_compaction_end";
 pub const SESSIONS_DIR: &str = "sessions";
@@ -5112,7 +5110,7 @@ mod tests {
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
-        MAX_TRANSCRIPT_COMPACTION_DEPTH, META_RECORD_TYPE, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
+        MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
         TRANSCRIPT_COMPACTION_START_RECORD_TYPE, TRANSCRIPT_RECORD_TYPE,
         flatten_deepest_compaction, transcript_compaction_depth,
     };
@@ -5139,6 +5137,9 @@ mod tests {
 
     /// Marks the one live entry a depth-cap test must not lose.
     const LIVE_TEXT: &str = "live";
+
+    /// Kept in step with the `#[serde(rename)]` on [`LogRecord::Meta`].
+    const META_RECORD_TYPE: &str = "meta";
 
     static MESSAGE_SERIALIZATIONS: AtomicUsize = AtomicUsize::new(0);
 
