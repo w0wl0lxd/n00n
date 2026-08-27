@@ -1454,8 +1454,9 @@ mod tests {
             Some("nonzero_exit"),
             "the failure must be classified so it stays diagnosable: {fields:?}"
         );
+        // The tool name is logged deliberately; only the error text is not.
         let logged = format!("{fields:?}");
-        for leaked in [secret, private, "hunter2", "boom"] {
+        for leaked in [secret, private, "hunter2"] {
             assert!(
                 !logged.contains(leaked),
                 "no part of the error text may reach the log, found {leaked:?} in {logged}"
