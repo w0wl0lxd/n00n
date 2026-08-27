@@ -2,10 +2,17 @@
 //! Retryable: 429, 5xx, IO, HTTP transport. Non-retryable: other 4xx, JSON parse, config,
 //! channel closed, user cancel. `user_message()` returns human-readable text for each variant.
 
+use std::fmt;
+
 use isahc::AsyncReadResponseExt;
 use n00n_redact::sanitize_text;
 
 const MAX_PROVIDER_ERROR_CHARS: usize = 1_000;
+
+/// Names for [`CodingPlanAdmissionTransport`], as they read inside a user
+/// message.
+const WEBSOCKET_TRANSPORT_LABEL: &str = "WebSocket handshake";
+const HTTP_TRANSPORT_LABEL: &str = "HTTP request";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryReplayReason {
@@ -13,13 +20,32 @@ pub enum HistoryReplayReason {
     ContinuationNotFound,
 }
 
-impl std::fmt::Display for HistoryReplayReason {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for HistoryReplayReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ContinuationUnavailable => {
                 formatter.write_str("saved continuation is unavailable")
             }
             Self::ContinuationNotFound => formatter.write_str("saved continuation was not found"),
+        }
+    }
+}
+
+/// Which transport observed the empty HTTP 403 that the Coding Plan backend
+/// returns when it declines a request. The WebSocket handshake can retry over
+/// plain HTTP; a request that already failed over HTTP has nothing left to fall
+/// back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodingPlanAdmissionTransport {
+    WebSocket,
+    Http,
+}
+
+impl fmt::Display for CodingPlanAdmissionTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WebSocket => formatter.write_str(WEBSOCKET_TRANSPORT_LABEL),
+            Self::Http => formatter.write_str(HTTP_TRANSPORT_LABEL),
         }
     }
 }
@@ -103,9 +129,10 @@ pub enum AgentError {
     #[error("OpenAI Coding Plan account scope changed before request send")]
     CodingPlanAdmissionScopeChanged,
     #[error(
-        "OpenAI Coding Plan rejected the connection before the request was sent; the account may be at its concurrent request limit"
+        "OpenAI Coding Plan returned an empty HTTP 403 to the {transport}; the account may be at a concurrent request limit"
     )]
     CodingPlanAdmission {
+        transport: CodingPlanAdmissionTransport,
         retry_after: Option<std::time::Duration>,
     },
     #[error("full-history replay requires explicit approval because {reason}")]
@@ -319,14 +346,23 @@ impl AgentError {
                 "this session is busy in another n00n process, try again shortly".into()
             }
             Self::CodingPlanAdmissionScopeChanged => {
-                "OpenAI account changed before request send, retrying with the current account".into()
+                "OpenAI account changed before request send, retrying with the current account"
+                    .into()
             }
-            Self::CodingPlanAdmission { retry_after } => match retry_after {
+            Self::CodingPlanAdmission {
+                transport,
+                retry_after,
+            } => match retry_after {
+                // States what the server asked for, not what the retry loop
+                // will wait: that value is clamped, so promising it here can
+                // overstate the real delay.
                 Some(delay) => format!(
-                    "OpenAI Coding Plan is busy for this account, retrying after {}s",
+                    "OpenAI Coding Plan returned an empty HTTP 403 to the {transport} and asked to wait {}s before retrying",
                     delay.as_secs()
                 ),
-                None => "OpenAI Coding Plan rejected the connection before the request was sent; the account may be at its concurrent request limit".into(),
+                None => format!(
+                    "OpenAI Coding Plan returned an empty HTTP 403 to the {transport}; the account may be at a concurrent request limit"
+                ),
             },
             Self::HistoryReplayRequired { reason } => {
                 format!("full-history replay requires explicit approval because {reason}")
@@ -338,7 +374,8 @@ impl AgentError {
             Self::Cancelled => "cancelled".into(),
             Self::RequestSent { metadata, .. } => {
                 if request_sent_is_retryable(metadata.as_ref()) {
-                    "connection failed after the request was sent; retrying with idempotency key".into()
+                    "connection failed after the request was sent; retrying with idempotency key"
+                        .into()
                 } else {
                     "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
                 }
@@ -375,7 +412,7 @@ impl AgentError {
             Self::CodingPlanAdmissionTimeout { .. } => "OpenAI Coding Plan is busy".into(),
             Self::ResponseChainBusy { .. } => "OpenAI session is busy".into(),
             Self::CodingPlanAdmissionScopeChanged => "OpenAI account changed".into(),
-            Self::CodingPlanAdmission { .. } => "OpenAI Coding Plan admission rejected".into(),
+            Self::CodingPlanAdmission { .. } => "OpenAI Coding Plan returned 403".into(),
             _ => self.to_string(),
         }
     }

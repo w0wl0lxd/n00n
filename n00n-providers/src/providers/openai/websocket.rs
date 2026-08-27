@@ -19,8 +19,8 @@ use super::responses::{
 use crate::model::Model;
 use crate::providers::ResolvedAuth;
 use crate::{
-    AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
-    RequestOptions, StreamResponse, System,
+    AgentError, CodingPlanAdmissionTransport, Message, ProviderEvent, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, StreamResponse, System,
 };
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
@@ -540,6 +540,7 @@ fn ws_connect_err(auth: &ResolvedAuth, error: WsError) -> AgentError {
         .is_none_or(|body| body.iter().all(u8::is_ascii_whitespace));
     if is_coding_plan && status == 403 && empty_body {
         return AgentError::CodingPlanAdmission {
+            transport: CodingPlanAdmissionTransport::WebSocket,
             retry_after: retry_after(
                 response
                     .headers()
@@ -1534,7 +1535,11 @@ mod tests {
             .unwrap();
 
         match super::ws_connect_err(&auth, WsError::Http(Box::new(response))) {
-            AgentError::CodingPlanAdmission { retry_after } => {
+            AgentError::CodingPlanAdmission {
+                transport,
+                retry_after,
+            } => {
+                assert_eq!(transport, CodingPlanAdmissionTransport::WebSocket);
                 assert_eq!(retry_after, Some(Duration::from_secs(7)));
             }
             other => panic!("expected CodingPlanAdmission, got {other:?}"),
