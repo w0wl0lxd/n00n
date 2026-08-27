@@ -473,16 +473,23 @@ impl BackgroundAuthBackoff {
 
     /// Claims the right to authenticate `server` in the background.
     ///
-    /// Returns `false` when an attempt is already in flight or the server is
+    /// Returns `None` when an attempt is already in flight or the server is
     /// still inside its backoff window. The check and the claim happen under
     /// one lock, so several agent loops seeing the same `NeedsAuth` server at
     /// once produce a single attempt rather than one each.
     ///
-    /// Every claim must be released by [`Self::record_failure`],
-    /// [`Self::record_success`] or [`Self::abandon_claim`], or the server
-    /// stays blocked for the process lifetime.
-    #[must_use]
-    pub fn try_claim(&self, server: &str) -> bool {
+    /// The returned [`AuthClaim`] releases the claim when it drops, so a task
+    /// that is cancelled or panics cannot block the server for the rest of
+    /// the process.
+    pub fn try_claim(&self, server: &str) -> Option<AuthClaim> {
+        self.claim(server).then(|| AuthClaim {
+            backoff: self.clone(),
+            server: server.to_owned(),
+            settled: false,
+        })
+    }
+
+    fn claim(&self, server: &str) -> bool {
         let mut entries = self.entries();
         let attempt = match entries.get(server) {
             Some(entry) => match entry.retry_after {
@@ -503,7 +510,7 @@ impl BackgroundAuthBackoff {
     }
 
     /// Releases the claim and starts the next backoff window.
-    pub fn record_failure(&self, server: &str) {
+    fn record_failure(&self, server: &str) {
         let mut entries = self.entries();
         // Shift by the count *before* this failure, so the first window is
         // `BACKOFF_BASE` itself rather than twice it.
@@ -525,7 +532,7 @@ impl BackgroundAuthBackoff {
     /// For a failure that is process-local, such as a state directory that
     /// will not resolve. The server never saw a request, so charging it a
     /// window would delay a retry that could still succeed.
-    pub fn abandon_claim(&self, server: &str) {
+    fn abandon_claim(&self, server: &str) {
         let mut entries = self.entries();
         match entries.get(server).map(|entry| entry.attempt) {
             // Nothing to remember: this claim was the first.
@@ -547,8 +554,49 @@ impl BackgroundAuthBackoff {
     }
 
     /// Releases the claim and clears the backoff.
-    pub fn record_success(&self, server: &str) {
+    fn record_success(&self, server: &str) {
         self.entries().remove(server);
+    }
+}
+
+/// The right to run one background OAuth attempt for a server.
+///
+/// Settle it with [`Self::record_failure`] or [`Self::record_success`].
+/// Dropping it unsettled releases the claim without advancing the backoff:
+/// the attempt never reached the server, so it must not be charged a window.
+pub struct AuthClaim {
+    backoff: BackgroundAuthBackoff,
+    server: String,
+    settled: bool,
+}
+
+impl AuthClaim {
+    /// The attempt reached the server and failed. Opens the next window.
+    pub fn record_failure(mut self) {
+        self.settled = true;
+        self.backoff.record_failure(&self.server);
+    }
+
+    /// The attempt succeeded. Clears the backoff entirely.
+    pub fn record_success(mut self) {
+        self.settled = true;
+        self.backoff.record_success(&self.server);
+    }
+}
+
+impl Drop for AuthClaim {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.backoff.abandon_claim(&self.server);
+        }
+    }
+}
+
+impl std::fmt::Debug for AuthClaim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthClaim")
+            .field("server", &self.server)
+            .finish()
     }
 }
 
@@ -560,23 +608,37 @@ mod backoff_tests {
     fn a_claim_excludes_every_other_caller_until_it_is_released() {
         let backoff = BackgroundAuthBackoff::default();
 
-        assert!(backoff.try_claim("srv"), "the first caller must win");
+        let claim = backoff.try_claim("srv").expect("the first caller must win");
         assert!(
-            !backoff.try_claim("srv"),
+            backoff.try_claim("srv").is_none(),
             "a second loop must not launch a concurrent attempt"
         );
 
-        backoff.record_failure("srv");
+        claim.record_failure();
         assert!(
-            !backoff.try_claim("srv"),
+            backoff.try_claim("srv").is_none(),
             "the backoff window must hold after a failure"
         );
 
         backoff.record_success("srv");
-        assert!(
-            backoff.try_claim("srv"),
-            "success must clear the entry so a later NeedsAuth can retry"
-        );
+        let claim = backoff
+            .try_claim("srv")
+            .expect("success must clear the entry so a later NeedsAuth can retry");
+        claim.record_success();
+    }
+
+    /// A background task can be cancelled or panic between the claim and the
+    /// outcome. The guard must release the claim anyway, or that server is
+    /// skipped for the rest of the process.
+    #[test]
+    fn dropping_a_claim_unsettled_releases_it() {
+        let backoff = BackgroundAuthBackoff::default();
+
+        drop(backoff.try_claim("srv").expect("the first caller must win"));
+        let claim = backoff
+            .try_claim("srv")
+            .expect("a dropped claim must not block the next attempt");
+        claim.record_success();
     }
 
     #[test]
@@ -584,8 +646,10 @@ mod backoff_tests {
         let backoff = BackgroundAuthBackoff::default();
         let retry_after = |server: &str| backoff.entries().get(server).unwrap().retry_after;
 
-        assert!(backoff.try_claim("srv"));
-        backoff.record_failure("srv");
+        backoff
+            .try_claim("srv")
+            .expect("first claim")
+            .record_failure();
         let first = retry_after("srv");
 
         // A claim after the window would be denied, so drive the second
@@ -605,10 +669,10 @@ mod backoff_tests {
     #[test]
     fn the_first_failure_waits_the_base_delay() {
         let backoff = BackgroundAuthBackoff::default();
-        assert!(backoff.try_claim("srv"));
+        let claim = backoff.try_claim("srv").expect("first claim");
 
         let before = std::time::Instant::now();
-        backoff.record_failure("srv");
+        claim.record_failure();
         let retry_after = backoff.entries().get("srv").unwrap().retry_after.unwrap();
 
         // `record_failure` reads the clock a few microseconds after `before`,
@@ -627,12 +691,11 @@ mod backoff_tests {
     fn abandoning_a_claim_leaves_the_server_immediately_retryable() {
         let backoff = BackgroundAuthBackoff::default();
 
-        assert!(backoff.try_claim("srv"));
-        backoff.abandon_claim("srv");
-        assert!(
-            backoff.try_claim("srv"),
-            "an abandoned first claim must not delay the next attempt"
-        );
+        drop(backoff.try_claim("srv").expect("first claim"));
+        let claim = backoff
+            .try_claim("srv")
+            .expect("an abandoned first claim must not delay the next attempt");
+        drop(claim);
 
         // Earlier real failures still count: the next one resumes the
         // schedule rather than restarting it.
@@ -640,14 +703,14 @@ mod backoff_tests {
         backoff.record_failure("srv");
         let after_two = backoff.entries().get("srv").unwrap().attempt;
         backoff.abandon_claim("srv");
-        assert!(backoff.try_claim("srv"));
+        assert!(backoff.try_claim("srv").is_some());
         assert_eq!(backoff.entries().get("srv").unwrap().attempt, after_two);
     }
 
     #[test]
     fn each_server_is_claimed_independently() {
         let backoff = BackgroundAuthBackoff::default();
-        assert!(backoff.try_claim("a"));
-        assert!(backoff.try_claim("b"));
+        assert!(backoff.try_claim("a").is_some());
+        assert!(backoff.try_claim("b").is_some());
     }
 }
