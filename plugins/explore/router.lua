@@ -200,11 +200,11 @@ function M.build_backend_input(input, intent)
     if not path then
       return nil, { llm_output = "error: file path required for " .. intent, is_error = true }
     end
-    return "index", { path = path }
+    return "index_file", { path = path }
   end
 
   if intent == "search" then
-    return "semblem", M.search_backend_input(input)
+    return "search_text", M.search_backend_input(input)
   end
 
   if intent == "relations" then
@@ -220,12 +220,12 @@ function M.build_backend_input(input, intent)
       backend_input.symbol = input.symbol or M.extract_symbol(input.query, command)
     end
 
-    return "codegraph", backend_input
+    return "map_codegraph", backend_input
   end
 
   if intent == "symbol" then
     local symbol = input.symbol or M.extract_symbol(input.query, "symbol")
-    return "codegraph", {
+    return "map_codegraph", {
       command = "node",
       name = symbol,
       projectPath = project,
@@ -234,14 +234,14 @@ function M.build_backend_input(input, intent)
 
   if intent == "impact" then
     local symbol = input.symbol or M.extract_symbol(input.query, "impact")
-    return "codegraph", {
+    return "map_codegraph", {
       command = "impact",
       symbol = symbol,
       projectPath = project,
     }
   end
 
-  return "codegraph", {
+  return "map_codegraph", {
     command = "explore",
     query = input.query,
     projectPath = project,

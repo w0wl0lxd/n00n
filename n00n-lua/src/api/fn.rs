@@ -233,11 +233,20 @@ fn status_rss_bytes(status: &str) -> Result<u64, String> {
         .ok_or_else(|| "process RSS overflowed u64".to_string())
 }
 
+/// `ENOENT` (missing `/proc` entry) or `ESRCH` (the kernel re-resolves the
+/// task id when `/proc/<pid>/task/<tid>/children` is read, so a task that
+/// exits between listing and reading surfaces as ESRCH, not ENOENT) both
+/// mean the process is simply gone.
+#[cfg(target_os = "linux")]
+fn process_vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
 #[cfg(target_os = "linux")]
 fn process_rss(pid: u32) -> Result<Option<u64>, String> {
     let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
         Ok(status) => status,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if process_vanished(&error) => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
     status_rss_bytes(&status).map(Some)
@@ -247,7 +256,7 @@ fn process_rss(pid: u32) -> Result<Option<u64>, String> {
 fn process_children(pid: u32) -> Result<Vec<u32>, String> {
     let task_dir = match std::fs::read_dir(format!("/proc/{pid}/task")) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if process_vanished(&error) => return Ok(Vec::new()),
         Err(error) => return Err(error.to_string()),
     };
     let mut children = Vec::new();
@@ -256,7 +265,7 @@ fn process_children(pid: u32) -> Result<Vec<u32>, String> {
         let path = entry.path().join("children");
         let contents = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) if process_vanished(&error) => continue,
             Err(error) => return Err(error.to_string()),
         };
         for child in contents.split_whitespace() {
@@ -2271,5 +2280,28 @@ mod tests {
             buf.is_empty(),
             "drained receiver yields no events via drain_events"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_vanished_treats_esrch_like_enoent() {
+        let enoent = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(process_vanished(&enoent));
+
+        let esrch = std::io::Error::from_raw_os_error(libc::ESRCH);
+        assert!(process_vanished(&esrch));
+
+        let other = std::io::Error::from_raw_os_error(libc::EACCES);
+        assert!(!process_vanished(&other));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_tree_rss_keeps_polling_for_a_vanished_pid() {
+        let vanished_pid = u32::MAX - 1;
+
+        assert_eq!(process_rss(vanished_pid).unwrap(), None);
+        assert_eq!(process_children(vanished_pid).unwrap(), Vec::<u32>::new());
+        assert_eq!(process_tree_rss(vanished_pid).unwrap(), 0);
     }
 }
