@@ -4986,10 +4986,12 @@ fn bash_handler_routes_every_managed_command_through_rtk() {
             .unwrap_or_else(|error| panic!("failed to parse {command}: {error}"));
         let (ctx, event_rx) = warm_ctx("rtk-managed-route");
 
-        let execution = smol::block_on(invocation.execute(&ctx));
-        if let Err(error) = execution.output {
-            panic!("{command} was rejected instead of routed through RTK: {error}");
-        }
+        // The command's own exit status says nothing about routing. The bash
+        // tool reports any non-zero exit as an error, and most of these CLIs
+        // are absent (exit 127) or slower than the timeout (exit 124) on any
+        // given machine. Only the rendered route proves RTK handled it, so
+        // the assertions below read the live buffer and ignore the exit.
+        let _execution = smol::block_on(invocation.execute(&ctx));
 
         let body = recv_live_buf(&event_rx, "rtk-managed-route")
             .unwrap_or_else(|| panic!("missing bash live buffer for {command}"));
