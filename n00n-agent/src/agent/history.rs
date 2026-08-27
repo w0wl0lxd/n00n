@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use n00n_providers::{ContentBlock, Message, Role};
-use n00n_storage::sessions::{TranscriptEntry, active_messages_from_transcript};
+use n00n_storage::sessions::{
+    MAX_TRANSCRIPT_COMPACTION_DEPTH, TranscriptEntry, active_messages_from_transcript,
+    flatten_deepest_compaction, transcript_compaction_depth,
+};
 use tracing::warn;
 
 const CANCEL_MARKER: &str = "[Cancelled by user]";
@@ -120,7 +123,13 @@ impl History {
         summary: Message,
         state_revision: Option<u64>,
     ) {
-        let previous = std::mem::take(&mut self.transcript);
+        let mut previous = std::mem::take(&mut self.transcript);
+        // Wrapping adds a level, so hold the loader's cap here. Without this a
+        // session that compacts more than the cap allows would be flattened on
+        // every reload, and rewritten to disk each time.
+        while transcript_compaction_depth(&previous) >= MAX_TRANSCRIPT_COMPACTION_DEPTH {
+            flatten_deepest_compaction(&mut previous);
+        }
         self.transcript = vec![TranscriptEntry::Compaction {
             entries: previous,
             generated_summary: Some(summary.clone()),
@@ -395,6 +404,28 @@ mod tests {
                 TranscriptEntry::GeneratedMessage(_),
                 TranscriptEntry::GeneratedMessage(_),
             ] if entries.len() == 2
+        ));
+    }
+
+    #[test]
+    fn repeated_compaction_stays_within_the_loader_depth_cap() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        for round in 0..MAX_TRANSCRIPT_COMPACTION_DEPTH + 8 {
+            history.push(Message::synthetic(format!("reply {round}")));
+            compact(&mut history, "summary");
+        }
+
+        let depth = transcript_compaction_depth(history.transcript());
+        assert!(
+            depth <= MAX_TRANSCRIPT_COMPACTION_DEPTH,
+            "compaction nesting reached {depth}"
+        );
+        assert!(matches!(
+            history.transcript().first(),
+            Some(TranscriptEntry::Compaction {
+                generated_summary: Some(_),
+                ..
+            })
         ));
     }
 
