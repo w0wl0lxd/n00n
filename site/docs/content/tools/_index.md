@@ -289,7 +289,7 @@ Shared coordination for multi-agent sessions. Post observations, claim tasks ato
 
 ### `run_team` *(lua plugin)*
 
-Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.
+Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id and retains a child session; if a lineage limit rejects it, retry without background.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -319,7 +319,7 @@ Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentr
 
 ### `run_task` *(lua plugin)*
 
-Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.
+Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id and retains a child session; if a lineage limit rejects it, retry without background.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

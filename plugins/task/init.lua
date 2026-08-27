@@ -22,7 +22,7 @@ local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
 
 local description =
-  [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.]]
+  [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id and retains a child session; if a lineage limit rejects it, retry without background.]]
 
 local schema = {
   type = "object",
