@@ -511,10 +511,50 @@ fn bundled_write_file_overwrites_large_file_with_explicit_diff_fallback() {
     ));
 }
 
+/// A file whose content cannot be read must stay overwritable. The write
+/// renames into the parent directory and never needed the old content, so an
+/// unreadable target costs the diff and nothing else.
+#[cfg(unix)]
+#[test]
+fn bundled_write_file_overwrites_unreadable_file_with_explicit_diff_fallback() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // root ignores the permission bits, so the read would succeed and the
+    // fallback under test would never fire.
+    if rustix::process::getuid().is_root() {
+        eprintln!("skipping: root can read a mode 000 file");
+        return;
+    }
+
+    let (registry, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unreadable.txt");
+    std::fs::write(&path, "before\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let output = exec_tool_output(
+        &registry,
+        "write_file",
+        serde_json::json!({ "path": path, "content": "replacement\n" }),
+    )
+    .unwrap();
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement\n");
+    assert!(matches!(
+        output,
+        n00n_agent::ToolOutput::Plain(ref text)
+            if text.text.contains("diff unavailable: cannot read the existing file")
+    ));
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn bundled_write_file_overwrites_fifo_without_blocking() {
-    const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
+    // Generous on purpose. A regression here is an unbounded block on
+    // opening the FIFO, so any finite budget catches it; a tight one only
+    // buys flakes on a loaded machine.
+    const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
     let (registry, _host) = builtins_host();
     let dir = tempfile::tempdir().unwrap();
