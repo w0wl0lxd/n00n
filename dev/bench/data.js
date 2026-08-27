@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787817925791,
+  "lastUpdate": 1787821619115,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -24181,6 +24181,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 144835,
             "range": "± 2205",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "97731e721ab34bd1d02dd65159d8a9fdd4af6dac",
+          "message": "Merge pull request #464 from w0wl0lxd/fix/log-noise-mcp-rss-alias\n\nfix(logging): silence expected MCP shutdowns, ESRCH races and a deprecated alias",
+          "timestamp": "2026-08-27T04:51:14-04:00",
+          "tree_id": "fc2fd959533447e19aed4fd03c8de185af0fbb6f",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/97731e721ab34bd1d02dd65159d8a9fdd4af6dac"
+        },
+        "date": 1787821616831,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6787203,
+            "range": "± 105156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2255368,
+            "range": "± 10699",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2231239,
+            "range": "± 23300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9085155,
+            "range": "± 30461",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 5174232,
+            "range": "± 51342",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4556190,
+            "range": "± 32782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582838,
+            "range": "± 1938",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192312,
+            "range": "± 3255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192389,
+            "range": "± 1496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1294922,
+            "range": "± 12948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 599470,
+            "range": "± 1743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 599370,
+            "range": "± 3559",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 53282,
+            "range": "± 3008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 197756,
+            "range": "± 1636",
             "unit": "ns/iter"
           }
         ]
