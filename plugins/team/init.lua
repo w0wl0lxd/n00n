@@ -53,7 +53,7 @@ local function post_blackboard_status(ctx, event_type, step, run_id, extra)
   end
 
   pcall(function()
-    call_tool_with_policy(ctx, "blackboard", { action = "write", post = post })
+    call_tool_with_policy(ctx, "use_blackboard", { action = "write", post = post })
   end)
 end
 

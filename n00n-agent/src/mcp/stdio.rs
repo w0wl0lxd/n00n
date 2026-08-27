@@ -282,11 +282,18 @@ impl StdioTransport {
                 let terminal_err = result.err().unwrap_or_else(|| McpError::ServerDied {
                     server: (*name).into(),
                 });
-                if !established.load(Ordering::Acquire) {
+                // Clear liveness first, whatever the reason. `start_server` can
+                // be between the last handshake response and `mark_established`,
+                // and a transport still marked alive there would be published as
+                // initialized with a dead reader behind it. `mark_established`
+                // reads `alive` under the same `SeqCst` order, so one side always
+                // observes the other.
+                let was_alive = alive.swap(false, Ordering::SeqCst);
+                if !established.load(Ordering::SeqCst) {
                     // start_server owns this attempt and reports its own failure via
                     // apply_start_result; an independent warn here would just duplicate it.
                     debug!(server = &*name, error = %terminal_err, "MCP reader loop ended before handshake completed");
-                } else if alive.swap(false, Ordering::AcqRel) {
+                } else if was_alive {
                     warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
                     on_death(terminal_err.clone());
                 } else {
@@ -552,8 +559,9 @@ impl McpTransport for StdioTransport {
         "stdio"
     }
 
-    fn mark_established(&self) {
-        self.established.store(true, Ordering::Release);
+    fn mark_established(&self) -> bool {
+        self.established.store(true, Ordering::SeqCst);
+        self.alive.load(Ordering::SeqCst)
     }
 }
 
@@ -839,6 +847,44 @@ mod tests {
             reader_task.await;
 
             assert!(!died.load(Ordering::Acquire));
+        });
+    }
+
+    /// A child can answer the last handshake request and close stdout before
+    /// `start_server` calls `mark_established`. The reader suppresses its own
+    /// report in that window, so it must at least clear liveness — otherwise
+    /// `mark_established` returns `true` and a dead transport is published as
+    /// initialized, with its tools advertised and no reconnect.
+    #[cfg(unix)]
+    #[test]
+    fn a_death_during_the_handshake_window_clears_liveness() {
+        smol::block_on(async {
+            let transport = StdioTransport::spawn(
+                "test",
+                "sh",
+                &["-c".into(), "exit 0".into()],
+                &HashMap::new(),
+                Duration::from_secs(5),
+                Box::new(|_| {}),
+            )
+            .unwrap();
+
+            let StdioTransport {
+                _reader_task: reader_task,
+                alive,
+                established,
+                ..
+            } = transport;
+            reader_task.await;
+
+            assert!(
+                !established.load(Ordering::SeqCst),
+                "the handshake never completed in this test"
+            );
+            assert!(
+                !alive.load(Ordering::SeqCst),
+                "the reader must clear liveness even before the handshake completes"
+            );
         });
     }
 }
