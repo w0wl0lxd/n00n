@@ -49,6 +49,28 @@ const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &[
 ];
 const BASH_BLOCKED_IN_PLAN: &str = "run_shell command is not provably read-only in plan mode";
 
+/// Fixed vocabulary for [`classify_tool_error`], ordered so the most specific
+/// marker wins. Matching is on the lowercased error text.
+const TOOL_ERROR_KINDS: &[(&str, &str)] = &[
+    ("permission denied", "permission_denied"),
+    ("not permitted", "permission_denied"),
+    ("access denied", "permission_denied"),
+    ("unauthorized", "unauthorized"),
+    ("forbidden", "unauthorized"),
+    ("no such file", "not_found"),
+    ("not found", "not_found"),
+    ("timed out", "timeout"),
+    ("timeout", "timeout"),
+    ("connection refused", "connection_refused"),
+    ("exit status", "nonzero_exit"),
+    ("exit code", "nonzero_exit"),
+    ("cancel", "cancelled"),
+    ("invalid json", "malformed_input"),
+    ("expected value", "malformed_input"),
+    ("missing", "missing_argument"),
+    ("invalid", "invalid_argument"),
+];
+
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FusionDispatchAuth {
@@ -63,6 +85,21 @@ fn elapsed_millis(elapsed: Duration) -> u64 {
         Ok(millis) => millis,
         Err(_) => u64::MAX,
     }
+}
+
+/// Maps a tool failure to one of a fixed set of labels.
+///
+/// The error text itself never reaches the log. A tool error routinely
+/// carries captured command output, file contents, or prompt text, and
+/// `n00n_redact` only masks values that *look* like credentials — ordinary
+/// user data passes straight through. A label from a closed vocabulary keeps
+/// the failure diagnosable without persisting any of that.
+fn classify_tool_error(error: &str) -> &'static str {
+    let lowered = error.to_lowercase();
+    TOOL_ERROR_KINDS
+        .iter()
+        .find(|(marker, _)| lowered.contains(marker))
+        .map_or("other", |(_, kind)| *kind)
 }
 
 /// Returns true when `command` contains shell metacharacters that are outside
@@ -563,6 +600,7 @@ async fn run_authorized(
                     source = %entry.source.as_log_field(),
                     elapsed_ms = elapsed_millis(elapsed),
                     error_bytes = message.len(),
+                    error_kind = classify_tool_error(&message),
                     "tool failed"
                 );
                 ToolDoneEvent {
@@ -708,7 +746,12 @@ fn run_local_tool(
             false,
         ),
         Err(e) => {
-            warn!(tool = %name, error_bytes = e.len(), "local tool failed");
+            warn!(
+                tool = %name,
+                error_bytes = e.len(),
+                error_kind = classify_tool_error(&e),
+                "local tool failed"
+            );
             (
                 crate::tools::truncate_output(
                     &e,
@@ -1321,6 +1364,113 @@ mod tests {
             assert!(done.is_error);
             assert_eq!(done.output.as_text(), "nope");
         });
+    }
+
+    /// Captures every field of every emitted `tracing` event, keyed by field
+    /// name, so a test can assert on a specific structured field (e.g.
+    /// `error_kind`) without depending on the formatted log line.
+    struct FieldCapture {
+        sender: std::sync::mpsc::Sender<std::collections::HashMap<String, String>>,
+    }
+
+    impl tracing::Subscriber for FieldCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = FieldVisitor::default();
+            event.record(&mut visitor);
+            let _ = self.sender.send(visitor.0);
+        }
+
+        fn enter(&self, _span: &tracing::Id) {}
+
+        fn exit(&self, _span: &tracing::Id) {}
+    }
+
+    #[derive(Default)]
+    struct FieldVisitor(std::collections::HashMap<String, String>);
+
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name().to_owned(), value.to_owned());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        }
+    }
+
+    /// A tool error is undiagnosable if only its byte length is logged, but
+    /// the error text itself must never reach the log: it routinely carries
+    /// captured command output, file contents, or prompt text. The warning
+    /// carries a label from a closed vocabulary instead.
+    #[test]
+    fn local_tool_failure_logs_a_classified_error_kind_not_the_error_text() {
+        let secret = "sk-super-secret-token-0123456789";
+        let private = "the-user-private-note";
+        let error = format!("boom: password=hunter2 token={secret} {private} exit status 1");
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let subscriber = FieldCapture { sender };
+
+        let done = tracing::subscriber::with_default(subscriber, || {
+            smol::block_on(async {
+                let ctx = local_ctx("boom", move |_| Err(error.clone()));
+                run(
+                    ToolRegistry::global(),
+                    None,
+                    "t1".into(),
+                    "boom",
+                    &serde_json::json!({}),
+                    &ctx,
+                    Emit::Silent,
+                )
+                .await
+            })
+        });
+        assert!(done.is_error);
+
+        let fields = receiver
+            .into_iter()
+            .find(|fields| fields.get("message").map(String::as_str) == Some("local tool failed"))
+            .expect("\"local tool failed\" event must be logged");
+
+        assert!(
+            fields.contains_key("error_bytes"),
+            "existing error_bytes field must be preserved"
+        );
+        assert_eq!(
+            fields.get("error_kind").map(String::as_str),
+            Some("nonzero_exit"),
+            "the failure must be classified so it stays diagnosable: {fields:?}"
+        );
+        // The tool name is logged deliberately; only the error text is not.
+        let logged = format!("{fields:?}");
+        for leaked in [secret, private, "hunter2"] {
+            assert!(
+                !logged.contains(leaked),
+                "no part of the error text may reach the log, found {leaked:?} in {logged}"
+            );
+        }
+    }
+
+    #[test_case("Permission denied (os error 13)", "permission_denied")]
+    #[test_case("No such file or directory", "not_found")]
+    #[test_case("request timed out after 30s", "timeout")]
+    #[test_case("command exited with exit status 2", "nonzero_exit")]
+    #[test_case("something nobody anticipated", "other")]
+    fn tool_errors_map_to_the_fixed_vocabulary(error: &str, expected: &str) {
+        assert_eq!(classify_tool_error(error), expected);
     }
 
     #[test]

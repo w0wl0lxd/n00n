@@ -174,7 +174,13 @@ impl AgentError {
         }
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
-            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
+            // A 2s response-chain lock wait timing out is transient contention
+            // between n00n processes sharing a session, not a permanent
+            // failure: retry it like any other transport hiccup instead of
+            // failing the turn outright.
+            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } | Self::ResponseChainBusy { .. } => {
+                true
+            }
             Self::Config { .. }
             | Self::ProviderConfig(_)
             | Self::SetupRequired { .. }
@@ -186,7 +192,6 @@ impl AgentError {
             | Self::HttpRequest(_)
             | Self::CredentialLockTimeout { .. }
             | Self::CodingPlanAdmissionTimeout { .. }
-            | Self::ResponseChainBusy { .. }
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
             | Self::HistoryReplayRequired { .. } => false,
@@ -523,6 +528,16 @@ mod tests {
     #[test]
     fn timeout_is_retryable() {
         assert!(AgentError::Timeout { secs: 30 }.is_retryable());
+    }
+
+    #[test]
+    fn response_chain_busy_is_retryable() {
+        assert!(AgentError::ResponseChainBusy { millis: 2_000 }.is_retryable());
+    }
+
+    #[test]
+    fn response_chain_busy_is_not_a_context_overflow() {
+        assert!(!AgentError::ResponseChainBusy { millis: 2_000 }.is_context_overflow());
     }
 
     #[test]

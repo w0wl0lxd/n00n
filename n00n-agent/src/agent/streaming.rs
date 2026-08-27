@@ -203,6 +203,74 @@ mod tests {
         });
     }
 
+    struct FlakyResponseChainProvider {
+        calls: AtomicUsize,
+    }
+
+    impl Provider for FlakyResponseChainProvider {
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a System,
+            _: &'a Value,
+            _: &'a flume::Sender<ProviderEvent>,
+            _: RequestOptions,
+            _: Option<&'a SessionRef>,
+        ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async move {
+                if call == 0 {
+                    Err(AgentError::ResponseChainBusy { millis: 2_000 })
+                } else {
+                    Ok(StreamResponse {
+                        message: Message::assistant("done".into()),
+                        usage: n00n_providers::TokenUsage::default(),
+                        stop_reason: None,
+                    })
+                }
+            })
+        }
+
+        fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    /// A response-chain lock timeout is transient contention, not a permanent
+    /// failure: `stream_with_retry` must retry it (with backoff) instead of
+    /// failing the turn on the first attempt.
+    #[test]
+    fn response_chain_busy_is_retried_until_it_succeeds() {
+        smol::block_on(async {
+            let provider = FlakyResponseChainProvider {
+                calls: AtomicUsize::new(0),
+            };
+            let model = Model::from_spec("openai/gpt-5.6").unwrap();
+            let (agent_tx, agent_rx) = flume::unbounded::<Envelope>();
+            let event_tx = EventSender::new(agent_tx, 1);
+
+            let result = stream_with_retry(StreamContext {
+                provider: &provider,
+                model: &model,
+                messages: &[Message::user("task".into())],
+                system: &System::from("system"),
+                tools: &serde_json::json!([]),
+                event_tx: &event_tx,
+                cancel: &CancelToken::none(),
+                opts: RequestOptions::default(),
+                session_id: None,
+            })
+            .await;
+
+            assert!(result.is_ok());
+            assert_eq!(provider.calls.load(Ordering::Relaxed), 2);
+            let saw_retry_event = std::iter::from_fn(|| agent_rx.try_recv().ok())
+                .any(|envelope| matches!(envelope.event, AgentEvent::Retry { .. }));
+            assert!(saw_retry_event, "expected a Retry event before success");
+        });
+    }
+
     #[test]
     fn forwarded_content_marks_attempt_as_non_retryable() {
         smol::block_on(async {
