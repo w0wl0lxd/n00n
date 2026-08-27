@@ -805,7 +805,10 @@ mod tests {
                 }),
             )
             .unwrap();
-            transport.mark_established();
+            assert!(
+                transport.mark_established(),
+                "the child must still be alive when the handshake completes"
+            );
 
             let StdioTransport {
                 _reader_task: reader_task,
