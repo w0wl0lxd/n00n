@@ -47,6 +47,9 @@ const CODING_PLAN_MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
 /// resolves to a one-minute conservative delay, which would otherwise stall an
 /// interactive turn for the whole minute.
 const CODING_PLAN_MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
+/// A wait at or above this is reported at `warn`, not `debug`: it is long
+/// enough that a user watching the turn needs to know why it stopped.
+const CODING_PLAN_LOUD_RETRY_DELAY: Duration = Duration::from_secs(2);
 const CODING_PLAN_ADMISSION_MAX_RETRIES: u8 = 5;
 const CODING_PLAN_MAX_SLOTS: u8 = 8;
 const RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -2016,6 +2019,18 @@ impl OpenAi {
             }
             if let Some(delay) = coding_plan_admission_retry_delay(&attempt, admission_retries) {
                 admission_retries += 1;
+                // A server-directed `Retry-After` is clamped at 30s and up to
+                // `CODING_PLAN_ADMISSION_MAX_RETRIES` of them can stack, so a
+                // turn can stall for minutes. Say so above `debug`, or the
+                // stall has no visible cause.
+                if delay >= CODING_PLAN_LOUD_RETRY_DELAY {
+                    warn!(
+                        retry_delay_secs = delay.as_secs(),
+                        attempt = admission_retries,
+                        of = CODING_PLAN_ADMISSION_MAX_RETRIES,
+                        "OpenAI Coding Plan asked us to wait before retrying"
+                    );
+                }
                 debug!(
                     process_instance_nonce = process_instance_nonce(),
                     attempt_nonce,
