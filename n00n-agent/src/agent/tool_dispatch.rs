@@ -16,7 +16,7 @@ use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolAdmissionClass, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::{ToolKey, canonical_tool_name};
-use n00n_redact::{redact_json_arg, redact_json_value_for_log};
+use n00n_redact::redact_json_value_for_log;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
 const CANCELLED_SUBAGENT_OUTPUTS: &[&str] = &[
@@ -63,6 +63,43 @@ fn elapsed_millis(elapsed: Duration) -> u64 {
         Ok(millis) => millis,
         Err(_) => u64::MAX,
     }
+}
+
+/// Fixed vocabulary for [`classify_tool_error`], ordered so the most specific
+/// marker wins. Matching is on the lowercased error text.
+const TOOL_ERROR_KINDS: &[(&str, &str)] = &[
+    ("permission denied", "permission_denied"),
+    ("not permitted", "permission_denied"),
+    ("access denied", "permission_denied"),
+    ("unauthorized", "unauthorized"),
+    ("forbidden", "unauthorized"),
+    ("no such file", "not_found"),
+    ("not found", "not_found"),
+    ("timed out", "timeout"),
+    ("timeout", "timeout"),
+    ("connection refused", "connection_refused"),
+    ("exit status", "nonzero_exit"),
+    ("exit code", "nonzero_exit"),
+    ("cancel", "cancelled"),
+    ("invalid json", "malformed_input"),
+    ("expected value", "malformed_input"),
+    ("missing", "missing_argument"),
+    ("invalid", "invalid_argument"),
+];
+
+/// Maps a tool failure to one of a fixed set of labels.
+///
+/// The error text itself never reaches the log. A tool error routinely
+/// carries captured command output, file contents, or prompt text, and
+/// `n00n_redact` only masks values that *look* like credentials — ordinary
+/// user data passes straight through. A label from a closed vocabulary keeps
+/// the failure diagnosable without persisting any of that.
+fn classify_tool_error(error: &str) -> &'static str {
+    let lowered = error.to_lowercase();
+    TOOL_ERROR_KINDS
+        .iter()
+        .find(|(marker, _)| lowered.contains(marker))
+        .map_or("other", |(_, kind)| *kind)
 }
 
 /// Returns true when `command` contains shell metacharacters that are outside
@@ -563,7 +600,7 @@ async fn run_authorized(
                     source = %entry.source.as_log_field(),
                     elapsed_ms = elapsed_millis(elapsed),
                     error_bytes = message.len(),
-                    error_summary = %redact_json_arg(&message),
+                    error_kind = classify_tool_error(&message),
                     "tool failed"
                 );
                 ToolDoneEvent {
@@ -712,7 +749,7 @@ fn run_local_tool(
             warn!(
                 tool = %name,
                 error_bytes = e.len(),
-                error_summary = %redact_json_arg(&e),
+                error_kind = classify_tool_error(&e),
                 "local tool failed"
             );
             (
@@ -1373,25 +1410,22 @@ mod tests {
         }
     }
 
-    /// A tool error is undiagnosable if only its byte length is logged. The
-    /// "local tool failed" warning must also carry a redacted, bounded
-    /// summary of the error text so an operator can tell what actually
-    /// failed without the log itself becoming a secret-leak or a flood risk.
+    /// A tool error is undiagnosable if only its byte length is logged, but
+    /// the error text itself must never reach the log: it routinely carries
+    /// captured command output, file contents, or prompt text. The warning
+    /// carries a label from a closed vocabulary instead.
     #[test]
-    fn local_tool_failure_logs_redacted_bounded_error_summary() {
+    fn local_tool_failure_logs_a_classified_error_kind_not_the_error_text() {
         let secret = "sk-super-secret-token-0123456789";
-        let huge_error = format!(
-            "boom: password=hunter2 token={secret} {}",
-            "x".repeat(5_000)
-        );
-        let huge_error_len = huge_error.chars().count();
+        let private = "the-user-private-note";
+        let error = format!("boom: password=hunter2 token={secret} {private} exit status 1");
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let subscriber = FieldCapture { sender };
 
         let done = tracing::subscriber::with_default(subscriber, || {
             smol::block_on(async {
-                let ctx = local_ctx("boom", move |_| Err(huge_error.clone()));
+                let ctx = local_ctx("boom", move |_| Err(error.clone()));
                 run(
                     ToolRegistry::global(),
                     None,
@@ -1415,21 +1449,27 @@ mod tests {
             fields.contains_key("error_bytes"),
             "existing error_bytes field must be preserved"
         );
-        let summary = fields
-            .get("error_summary")
-            .expect("error_summary field must be present so the failure is diagnosable");
-        assert!(
-            !summary.contains(secret) && !summary.contains("hunter2"),
-            "secrets must not leak into the log: {summary}"
+        assert_eq!(
+            fields.get("error_kind").map(String::as_str),
+            Some("nonzero_exit"),
+            "the failure must be classified so it stays diagnosable: {fields:?}"
         );
-        assert!(
-            summary.contains("[redacted]"),
-            "secret-shaped values must be replaced with a redaction marker: {summary}"
-        );
-        assert!(
-            summary.chars().count() < huge_error_len,
-            "summary must be capped, not the full error text"
-        );
+        let logged = format!("{fields:?}");
+        for leaked in [secret, private, "hunter2", "boom"] {
+            assert!(
+                !logged.contains(leaked),
+                "no part of the error text may reach the log, found {leaked:?} in {logged}"
+            );
+        }
+    }
+
+    #[test_case("Permission denied (os error 13)", "permission_denied")]
+    #[test_case("No such file or directory", "not_found")]
+    #[test_case("request timed out after 30s", "timeout")]
+    #[test_case("command exited with exit status 2", "nonzero_exit")]
+    #[test_case("something nobody anticipated", "other")]
+    fn tool_errors_map_to_the_fixed_vocabulary(error: &str, expected: &str) {
+        assert_eq!(classify_tool_error(error), expected);
     }
 
     #[test]
