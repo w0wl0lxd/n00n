@@ -68,9 +68,21 @@ struct SnapshotVersion {
 struct FailedSnapshot {
     version: SnapshotVersion,
     error: Option<SessionError>,
+    /// Set from the raw write error on every attempt (unlike `error`, which
+    /// is only kept for the flush target), so `RetryState` can fail fast
+    /// on a structurally oversized record instead of burning retries on it.
+    structural_limit: Option<usize>,
 }
 
 type FailedSnapshots = HashMap<n00nId, FailedSnapshot>;
+
+fn structural_failure_limit(error: &SessionError) -> Option<usize> {
+    match error {
+        SessionError::RecordTooLarge { limit, .. } => Some(*limit),
+        SessionError::RecordTooLargeWrite { maximum } => Some(*maximum),
+        _ => None,
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StorageWriterShutdownError {
@@ -86,6 +98,10 @@ pub(crate) enum StorageWriterShutdownError {
 struct RetryState {
     attempts: HashMap<(n00nId, u64), u32>,
     exhausted: HashMap<n00nId, SnapshotVersion>,
+    /// Sessions a structurally-oversized-record warning has already been
+    /// logged for, so it isn't repeated on every later save. Cleared once
+    /// the session persists successfully, so a fresh occurrence logs again.
+    oversized_logged: HashSet<n00nId>,
 }
 
 /// Per-session record ids the writer has actually put on disk. The UI consults
@@ -698,15 +714,29 @@ impl RetryState {
                 .entry((*id, failure.version.generation))
                 .or_default();
             *attempts += 1;
-            if *attempts < MAX_RETRY_ATTEMPTS {
+            let exhausted_now =
+                failure.structural_limit.is_some() || *attempts >= MAX_RETRY_ATTEMPTS;
+            if !exhausted_now {
                 continue;
             }
-            warn!(
-                retry_count = *attempts,
-                %id,
-                revision = failure.version.revision,
-                "storage writer exhausted retry attempts, dropping snapshot"
-            );
+            if let Some(limit) = failure.structural_limit {
+                if self.oversized_logged.insert(*id) {
+                    warn!(
+                        %id,
+                        revision = failure.version.revision,
+                        limit,
+                        "storage writer dropping snapshot: session record exceeds the \
+                         {limit}-byte size limit and cannot be retried"
+                    );
+                }
+            } else {
+                warn!(
+                    retry_count = *attempts,
+                    %id,
+                    revision = failure.version.revision,
+                    "storage writer exhausted retry attempts, dropping snapshot"
+                );
+            }
             if pending
                 .get(id)
                 .is_some_and(|snapshot| snapshot.version == failure.version)
@@ -731,12 +761,14 @@ impl RetryState {
             if supersedes_exhausted {
                 self.exhausted.remove(session_id);
             }
+            self.oversized_logged.remove(session_id);
         }
     }
 
     fn clear(&mut self, id: n00nId) {
         self.attempts.retain(|(session_id, _), _| *session_id != id);
         self.exhausted.remove(&id);
+        self.oversized_logged.remove(&id);
     }
 
     fn unpersisted_count(&self, failed: &FailedSnapshots) -> usize {
@@ -823,6 +855,7 @@ fn flush(
                     FailedSnapshot {
                         version: snapshot.version.clone(),
                         error,
+                        structural_limit: None,
                     },
                 );
                 pending.insert(id, snapshot);
@@ -849,7 +882,10 @@ fn flush(
                 persisted.push((id, snapshot.version));
             }
             Err(error) => {
-                warn!(error = %error, %id, "session write failed");
+                let structural_limit = structural_failure_limit(&error);
+                if structural_limit.is_none() {
+                    warn!(error = %error, %id, "session write failed");
+                }
                 let is_target = target.is_some_and(|(target_id, version)| {
                     target_id == id && *version == snapshot.version
                 });
@@ -858,6 +894,7 @@ fn flush(
                     FailedSnapshot {
                         version: snapshot.version.clone(),
                         error: is_target.then_some(error),
+                        structural_limit,
                     },
                 );
                 pending.insert(id, snapshot);
@@ -953,6 +990,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    use n00n_providers::Message;
     use n00n_storage::sessions::lock_openai_response_chain;
     use tempfile::TempDir;
 
@@ -1368,6 +1406,7 @@ mod tests {
             FailedSnapshot {
                 version: failed_version.clone(),
                 error: None,
+                structural_limit: None,
             },
         )]);
         for _ in 0..MAX_RETRY_ATTEMPTS {
@@ -1465,5 +1504,101 @@ mod tests {
         assert!(persist_and_wait(&writer, session).is_ok());
         assert!(AppSession::load(id, &dir).is_ok());
         writer.shutdown(DRAIN_TIMEOUT).unwrap();
+    }
+
+    #[test]
+    fn structural_failure_limit_covers_both_oversized_variants() {
+        assert_eq!(
+            structural_failure_limit(&SessionError::RecordTooLarge {
+                path: "p".into(),
+                limit: 10,
+            }),
+            Some(10)
+        );
+        assert_eq!(
+            structural_failure_limit(&SessionError::RecordTooLargeWrite { maximum: 20 }),
+            Some(20)
+        );
+        assert_eq!(structural_failure_limit(&SessionError::UnknownRecord), None);
+    }
+
+    fn oversized_session(path: &str) -> Box<AppSession> {
+        let mut session = AppSession::new("test-model", path);
+        session
+            .messages
+            .push(Message::user("x".repeat(17 * 1024 * 1024)));
+        Box::new(session)
+    }
+
+    #[test]
+    fn oversized_record_fails_fast_instead_of_retrying() {
+        let (_tmp, dir) = state_dir();
+        let mut state = WriterState::default();
+        let session = oversized_session("/tmp/oversized");
+        let id = session.id;
+        state.stage_snapshot(PendingSnapshot::new(1, session));
+
+        state.flush(&dir);
+
+        assert!(state.retries.exhausted.contains_key(&id));
+        assert!(!state.pending.contains_key(&id));
+        assert!(state.retries.oversized_logged.contains(&id));
+    }
+
+    #[test]
+    fn oversized_record_does_not_relog_on_next_generation() {
+        let (_tmp, dir) = state_dir();
+        let mut state = WriterState::default();
+        let mut session = oversized_session("/tmp/oversized-repeat");
+        let id = session.id;
+        state.stage_snapshot(PendingSnapshot::new(1, session.clone()));
+        state.flush(&dir);
+        assert!(state.retries.exhausted.contains_key(&id));
+
+        session.meta.revision += 1;
+        state.stage_snapshot(PendingSnapshot::new(2, session));
+        state.flush(&dir);
+
+        assert!(state.retries.exhausted.contains_key(&id));
+        assert!(!state.pending.contains_key(&id));
+        assert_eq!(state.retries.oversized_logged.len(), 1);
+        assert!(state.retries.oversized_logged.contains(&id));
+    }
+
+    #[test]
+    fn oversized_record_log_gate_resets_after_success() {
+        let mut retries = RetryState::default();
+        let id = n00nId::generate();
+        retries.oversized_logged.insert(id);
+
+        retries.record_successes(&[(
+            id,
+            SnapshotVersion {
+                generation: 1,
+                revision: 1,
+            },
+        )]);
+
+        assert!(!retries.oversized_logged.contains(&id));
+    }
+
+    #[test]
+    fn transient_write_error_keeps_full_retry_budget_before_dropping() {
+        let (tmp, dir) = state_dir();
+        let mut state = WriterState::default();
+        let session = AppSession::new("test-model", "/tmp/transient");
+        let id = session.id;
+        fs::create_dir_all(tmp.path().join(SESSIONS_DIR).join(format!("{id}.jsonl"))).unwrap();
+        state.stage_snapshot(PendingSnapshot::new(1, Box::new(session)));
+
+        for attempt in 1..MAX_RETRY_ATTEMPTS {
+            state.flush(&dir);
+            assert!(
+                !state.retries.exhausted.contains_key(&id),
+                "dropped after {attempt} attempt(s), expected the full retry budget"
+            );
+        }
+        state.flush(&dir);
+        assert!(state.retries.exhausted.contains_key(&id));
     }
 }
