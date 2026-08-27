@@ -1756,6 +1756,23 @@ mod tests {
         );
     }
 
+    /// Every spelling in `SUPPORTED_SCHEMA_DRAFTS` must survive compilation,
+    /// not just the canonical id. `jsonschema` reads the embedded `$schema`
+    /// itself, so an id it does not recognise is treated as a remote resource
+    /// and the tool is dropped — the failure this table exists to prevent.
+    #[test]
+    fn every_supported_draft_spelling_compiles() {
+        for (id, _, canonical) in SUPPORTED_SCHEMA_DRAFTS {
+            let schema = json!({
+                "$schema": id,
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+            });
+            validate_mcp_input_schema(&schema)
+                .unwrap_or_else(|error| panic!("{id} must compile as {canonical}: {error}"));
+        }
+    }
+
     #[test_case(&json!(null) ; "not_object")]
     #[test_case(&json!({"type": "invalid"}) ; "invalid_type")]
     #[test_case(&json!({"type": "object", "$ref": "https://example.com/schema.json"}) ; "remote_ref")]
