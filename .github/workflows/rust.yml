@@ -253,7 +253,12 @@ jobs:
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: cargo:cargo-nextest cargo:cargo-llvm-cov
-      - run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --retries 2
+      # `--failure-mode all` so one unreadable profraw does not fail the whole
+      # job. Tests that kill a child process leave a truncated file in the
+      # merge pool, and llvm-profdata's default `any` mode then discards a run
+      # whose tests all passed. `Coverage` gates the required `CI` check, so
+      # that flake blocks every merge.
+      - run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --retries 2 --failure-mode all
       - uses: 'codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac' # v5
         with:
           files: lcov.info
