@@ -159,7 +159,7 @@ case("retrieve_lexical_finds_context", function()
   local old_call = n00n.agent.call_tool
   local grep_pattern = nil
   n00n.agent.call_tool = function(ctx, name, args)
-    if name == "grep" then
+    if name == "search_code" then
       grep_pattern = args.pattern
       return "class RetryHelper {\n  // some implementation\n}"
     end
@@ -184,7 +184,7 @@ case("retrieve_vector_fallback", function()
   local old_call = n00n.agent.call_tool
   local calls = 0
   n00n.agent.call_tool = function(ctx, name, args)
-    if name == "grep" then
+    if name == "search_code" then
       calls = calls + 1
       if calls == 1 then
         return ""

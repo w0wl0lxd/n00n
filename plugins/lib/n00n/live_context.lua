@@ -18,11 +18,11 @@ function M.snapshot(ctx)
 
   local bb_ok, bb_result = pcall(function()
     local posts_result =
-      n00n.agent.call_tool(ctx, "blackboard", { action = "query", query = { type = "status", limit = 50 } })
+      n00n.agent.call_tool(ctx, "use_blackboard", { action = "query", query = { type = "status", limit = 50 } })
     if posts_result and posts_result.results then
       bb_posts = posts_result.results
     end
-    local claims_result = n00n.agent.call_tool(ctx, "blackboard", { action = "list_claims", only_active = true })
+    local claims_result = n00n.agent.call_tool(ctx, "use_blackboard", { action = "list_claims", only_active = true })
     if claims_result and claims_result.claims then
       bb_claims = claims_result.claims
     end

@@ -89,7 +89,7 @@ end
 -- Generate a concise natural-language summary for a single file path.
 -- Uses the index tool when available; otherwise reads a bounded chunk.
 function M.generate(ctx, path)
-  local skeleton, err = n00n.agent.call_tool(ctx, "index", { path = path })
+  local skeleton, err = n00n.agent.call_tool(ctx, "index_file", { path = path })
   if not skeleton or #skeleton == 0 then
     local text
     text, err = n00n.fs.read(path)
