@@ -351,6 +351,9 @@ pub struct McpHandle {
     /// Never changes after startup, so it lives here instead of being
     /// copied into every republished `ToolIndex`.
     defer_tools: usize,
+    /// Shared by every agent loop that clones this handle, so one loop's
+    /// failed background OAuth attempt throttles the others.
+    background_auth_backoff: oauth::BackgroundAuthBackoff,
 }
 
 /// One session's view of MCP: the shared handle plus the deferred tools
@@ -638,6 +641,13 @@ impl McpSession {
 }
 
 impl McpHandle {
+    /// The background-OAuth negative cache shared by everyone holding a clone
+    /// of this handle.
+    #[must_use]
+    pub fn background_auth_backoff(&self) -> &oauth::BackgroundAuthBackoff {
+        &self.background_auth_backoff
+    }
+
     pub fn send(&self, cmd: McpCommand) {
         if let Err(e) = self.cmd_tx.try_send(cmd) {
             warn!(error = %e, "MCP command loop is gone");
@@ -764,6 +774,7 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
     };
     smol::spawn(run(inner, index, snapshot, cmd_tx, cmd_rx)).detach();
     Some(handle)
@@ -1126,7 +1137,16 @@ async fn start_server(
     } else {
         Vec::new()
     };
-    transport.mark_established();
+    if !transport.mark_established() {
+        // The reader loop ended while the handshake was still in flight. It
+        // suppressed its own report because `established` was not yet set, so
+        // failing here is the only thing that keeps a dead server from being
+        // registered as running with its tools advertised.
+        transport.shutdown().await;
+        return Err(McpError::ServerDied {
+            server: config.name.clone(),
+        });
+    }
     info!(
         server = config.name,
         tool_count = tool_infos.len(),
@@ -1386,6 +1406,7 @@ pub(crate) fn stub_session_with_transport(
             index,
             snapshot,
             defer_tools: 0,
+            background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
         },
         &[],
     )
@@ -1614,6 +1635,7 @@ fn prepare_manager(config: McpConfig) -> Option<PreparedManager> {
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
         defer_tools,
+        background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
     };
     Some(PreparedManager {
         inner,
@@ -1886,6 +1908,7 @@ mod tests {
             index,
             snapshot,
             defer_tools,
+            background_auth_backoff: oauth::BackgroundAuthBackoff::default(),
         };
         (inner, McpSession::new(handle, &[]))
     }

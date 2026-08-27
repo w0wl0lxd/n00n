@@ -37,9 +37,15 @@ pub trait McpTransport: Send + Sync {
     /// `start_server` is still establishing the connection and will report a failure
     /// itself, with full context, via `apply_start_result` — so a transport that dies
     /// before this is called logs its own death at `debug`, not `warn`, to avoid a
-    /// noisier, less-informative duplicate. No-op for transports without a background
-    /// reader task (e.g. HTTP).
-    fn mark_established(&self) {}
+    /// noisier, less-informative duplicate.
+    ///
+    /// Returns whether the transport is still alive. A stdio server can answer the
+    /// last handshake request and close stdout before this runs; the caller must
+    /// treat `false` as a failed handshake rather than publish a dead transport.
+    /// Always true for transports without a background reader task (e.g. HTTP).
+    fn mark_established(&self) -> bool {
+        true
+    }
 }
 
 fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {

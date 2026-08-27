@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex as StdMutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use n00n_agent::agent;
@@ -592,54 +591,6 @@ impl AgentLoop {
 /// every `spawn_oauth_for_needs_auth` call — which fires once per agent loop,
 /// so several concurrent sessions/tabs against the same server otherwise
 /// hammer it within seconds of each other.
-const OAUTH_BACKOFF_BASE: Duration = Duration::from_secs(30);
-const OAUTH_BACKOFF_MAX: Duration = Duration::from_mins(30);
-
-struct OAuthBackoffEntry {
-    retry_after: Instant,
-    attempt: u32,
-}
-
-/// Per-server negative cache for background OAuth attempts, process-wide so it
-/// is shared across every agent loop instance (one per open session/tab).
-static OAUTH_BACKOFF: LazyLock<StdMutex<HashMap<String, OAuthBackoffEntry>>> =
-    LazyLock::new(|| StdMutex::new(HashMap::new()));
-
-/// `true` when `server_name` is still within its backoff window from a prior
-/// failed background attempt.
-fn oauth_backoff_active(server_name: &str) -> bool {
-    let backoff = OAUTH_BACKOFF
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    backoff
-        .get(server_name)
-        .is_some_and(|entry| Instant::now() < entry.retry_after)
-}
-
-fn oauth_backoff_record_failure(server_name: &str) {
-    let mut backoff = OAUTH_BACKOFF
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let attempt = backoff.get(server_name).map_or(0, |entry| entry.attempt) + 1;
-    let delay = OAUTH_BACKOFF_BASE
-        .saturating_mul(1_u32 << attempt.min(10))
-        .min(OAUTH_BACKOFF_MAX);
-    backoff.insert(
-        server_name.to_owned(),
-        OAuthBackoffEntry {
-            retry_after: Instant::now() + delay,
-            attempt,
-        },
-    );
-}
-
-fn oauth_backoff_clear(server_name: &str) {
-    OAUTH_BACKOFF
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(server_name);
-}
-
 fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
     let snapshot = handle.reader().load().clone();
     for info in &snapshot.infos {
@@ -649,10 +600,14 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
         let Some(ref server_url) = info.url else {
             continue;
         };
-        if oauth_backoff_active(&info.name) {
-            tracing::debug!(server = %info.name, "skipping background OAuth retry; still in backoff");
+        // Claiming here, under the shared cache's lock, is what keeps a burst
+        // of agent loops that all see the same `NeedsAuth` server from each
+        // spawning its own attempt.
+        if !handle.background_auth_backoff().try_claim(&info.name) {
+            tracing::debug!(server = %info.name, "skipping background OAuth retry; already claimed or in backoff");
             continue;
         }
+        let backoff = handle.background_auth_backoff().clone();
         let handle = handle.clone();
         let server_name = info.name.clone();
         let server_url = server_url.clone();
@@ -661,6 +616,8 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
             let storage = match n00n_storage::StateDir::resolve() {
                 Ok(s) => s,
                 Err(e) => {
+                    // Release the claim, or this server never retries.
+                    backoff.record_failure(&server_name);
                     tracing::warn!(server = %server_name, error = %e, "cannot resolve storage for OAuth");
                     return;
                 }
@@ -674,11 +631,11 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
             )
             .await
             {
-                oauth_backoff_record_failure(&server_name);
+                backoff.record_failure(&server_name);
                 tracing::warn!(server = %server_name, error = %e, "background OAuth failed");
                 return;
             }
-            oauth_backoff_clear(&server_name);
+            backoff.record_success(&server_name);
             handle.send(McpCommand::Reconnect {
                 server: server_name.clone(),
             });
@@ -713,59 +670,5 @@ mod tests {
             build_plan_path(&AgentMode::Build, Some(plan_path)),
             Some(plan_path)
         );
-    }
-
-    // Server names are unique per test (the shared backoff cache is process-wide
-    // and cargo runs unit tests in parallel).
-    #[test]
-    fn oauth_backoff_is_inactive_for_a_server_with_no_recorded_failure() {
-        assert!(!super::oauth_backoff_active("test-server-never-attempted"));
-    }
-
-    #[test]
-    fn oauth_backoff_activates_after_a_failure_and_clears_on_demand() {
-        let server = "test-server-403-loop";
-
-        assert!(!super::oauth_backoff_active(server));
-
-        super::oauth_backoff_record_failure(server);
-        assert!(
-            super::oauth_backoff_active(server),
-            "a background OAuth failure must arm the backoff window"
-        );
-
-        super::oauth_backoff_clear(server);
-        assert!(
-            !super::oauth_backoff_active(server),
-            "a successful attempt must clear the backoff"
-        );
-    }
-
-    #[test]
-    fn oauth_backoff_grows_with_repeated_failures() {
-        let server = "test-server-repeated-403";
-
-        super::oauth_backoff_record_failure(server);
-        let first_retry_after = {
-            let backoff = super::OAUTH_BACKOFF
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            backoff.get(server).unwrap().retry_after
-        };
-
-        super::oauth_backoff_record_failure(server);
-        let second_retry_after = {
-            let backoff = super::OAUTH_BACKOFF
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            backoff.get(server).unwrap().retry_after
-        };
-
-        assert!(
-            second_retry_after > first_retry_after,
-            "a second consecutive failure must extend the backoff further than the first"
-        );
-
-        super::oauth_backoff_clear(server);
     }
 }

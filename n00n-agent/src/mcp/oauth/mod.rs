@@ -434,3 +434,146 @@ fn build_authorization_url(
     }
     url
 }
+
+/// First wait after a failed background OAuth attempt. Doubles per attempt.
+const BACKOFF_BASE: Duration = Duration::from_secs(30);
+/// Ceiling on the doubling above.
+const BACKOFF_MAX: Duration = Duration::from_mins(30);
+
+struct BackoffEntry {
+    /// `None` while an attempt is in flight.
+    retry_after: Option<std::time::Instant>,
+    attempt: u32,
+}
+
+/// Negative cache for background OAuth attempts, one entry per server.
+///
+/// Lives on [`crate::mcp::McpHandle`], which every agent loop clones, so the
+/// loops share one cache: a `NeedsAuth` server that fails once stops the
+/// other open sessions from each retrying it. Cloning shares the same state.
+#[derive(Clone, Default)]
+pub struct BackgroundAuthBackoff(
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, BackoffEntry>>>,
+);
+
+impl std::fmt::Debug for BackgroundAuthBackoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BackgroundAuthBackoff")
+    }
+}
+
+impl BackgroundAuthBackoff {
+    fn entries(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, BackoffEntry>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Claims the right to authenticate `server` in the background.
+    ///
+    /// Returns `false` when an attempt is already in flight or the server is
+    /// still inside its backoff window. The check and the claim happen under
+    /// one lock, so several agent loops seeing the same `NeedsAuth` server at
+    /// once produce a single attempt rather than one each.
+    ///
+    /// Every claim must be released by [`Self::record_failure`] or
+    /// [`Self::record_success`], or the server stays blocked for the process
+    /// lifetime.
+    pub fn try_claim(&self, server: &str) -> bool {
+        let mut entries = self.entries();
+        let attempt = match entries.get(server) {
+            Some(entry) => match entry.retry_after {
+                None => return false,
+                Some(retry_after) if std::time::Instant::now() < retry_after => return false,
+                Some(_) => entry.attempt,
+            },
+            None => 0,
+        };
+        entries.insert(
+            server.to_owned(),
+            BackoffEntry {
+                retry_after: None,
+                attempt,
+            },
+        );
+        true
+    }
+
+    /// Releases the claim and starts the next backoff window.
+    pub fn record_failure(&self, server: &str) {
+        let mut entries = self.entries();
+        let attempt = entries.get(server).map_or(0, |entry| entry.attempt) + 1;
+        let delay = BACKOFF_BASE
+            .saturating_mul(1_u32 << attempt.min(10))
+            .min(BACKOFF_MAX);
+        entries.insert(
+            server.to_owned(),
+            BackoffEntry {
+                retry_after: Some(std::time::Instant::now() + delay),
+                attempt,
+            },
+        );
+    }
+
+    /// Releases the claim and clears the backoff.
+    pub fn record_success(&self, server: &str) {
+        self.entries().remove(server);
+    }
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::BackgroundAuthBackoff;
+
+    #[test]
+    fn a_claim_excludes_every_other_caller_until_it_is_released() {
+        let backoff = BackgroundAuthBackoff::default();
+
+        assert!(backoff.try_claim("srv"), "the first caller must win");
+        assert!(
+            !backoff.try_claim("srv"),
+            "a second loop must not launch a concurrent attempt"
+        );
+
+        backoff.record_failure("srv");
+        assert!(
+            !backoff.try_claim("srv"),
+            "the backoff window must hold after a failure"
+        );
+
+        backoff.record_success("srv");
+        assert!(
+            backoff.try_claim("srv"),
+            "success must clear the entry so a later NeedsAuth can retry"
+        );
+    }
+
+    #[test]
+    fn repeated_failures_extend_the_window() {
+        let backoff = BackgroundAuthBackoff::default();
+        let retry_after = |server: &str| backoff.entries().get(server).unwrap().retry_after;
+
+        assert!(backoff.try_claim("srv"));
+        backoff.record_failure("srv");
+        let first = retry_after("srv");
+
+        // A claim after the window would be denied, so drive the second
+        // failure straight from the recorded state.
+        backoff.record_failure("srv");
+        let second = retry_after("srv");
+
+        assert!(
+            second > first,
+            "a second consecutive failure must extend the backoff further than the first"
+        );
+    }
+
+    #[test]
+    fn each_server_is_claimed_independently() {
+        let backoff = BackgroundAuthBackoff::default();
+        assert!(backoff.try_claim("a"));
+        assert!(backoff.try_claim("b"));
+    }
+}
