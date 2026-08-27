@@ -213,6 +213,7 @@ pub struct StdioTransport {
     next_id: AtomicU64,
     timeout: Duration,
     alive: Arc<AtomicBool>,
+    established: Arc<AtomicBool>,
     _reader_task: smol::Task<()>,
     _stderr_task: smol::Task<()>,
     child: StdMutex<ChildGuard>,
@@ -268,20 +269,35 @@ impl StdioTransport {
 
         let name: Arc<str> = Arc::from(name);
         let alive = Arc::new(AtomicBool::new(true));
+        let established = Arc::new(AtomicBool::new(false));
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
 
         let reader_task = {
             let name = Arc::clone(&name);
             let alive = Arc::clone(&alive);
+            let established = Arc::clone(&established);
             let pending = Arc::clone(&pending);
             smol::spawn(async move {
                 let result = Self::reader_loop(&name, &mut BufReader::new(stdout), &pending).await;
                 let terminal_err = result.err().unwrap_or_else(|| McpError::ServerDied {
                     server: (*name).into(),
                 });
-                if alive.swap(false, Ordering::AcqRel) {
+                // Clear liveness first, whatever the reason. `start_server` can
+                // be between the last handshake response and `mark_established`,
+                // and a transport still marked alive there would be published as
+                // initialized with a dead reader behind it. `mark_established`
+                // reads `alive` under the same `SeqCst` order, so one side always
+                // observes the other.
+                let was_alive = alive.swap(false, Ordering::SeqCst);
+                if !established.load(Ordering::SeqCst) {
+                    // start_server owns this attempt and reports its own failure via
+                    // apply_start_result; an independent warn here would just duplicate it.
+                    debug!(server = &*name, error = %terminal_err, "MCP reader loop ended before handshake completed");
+                } else if was_alive {
                     warn!(server = &*name, error = %terminal_err, "MCP reader loop ended");
                     on_death(terminal_err.clone());
+                } else {
+                    debug!(server = &*name, error = %terminal_err, "MCP reader loop ended after shutdown");
                 }
                 for (_, sender) in pending.lock().await.drain() {
                     let _ = sender.send(Err(terminal_err.clone())).await;
@@ -340,6 +356,7 @@ impl StdioTransport {
             next_id: AtomicU64::new(1),
             timeout,
             alive,
+            established,
             _reader_task: reader_task,
             _stderr_task: stderr_task,
             child: StdMutex::new(ChildGuard::new(child)),
@@ -540,6 +557,11 @@ impl McpTransport for StdioTransport {
 
     fn transport_kind(&self) -> &'static str {
         "stdio"
+    }
+
+    fn mark_established(&self) -> bool {
+        self.established.store(true, Ordering::SeqCst);
+        self.alive.load(Ordering::SeqCst)
     }
 }
 
@@ -773,7 +795,12 @@ mod tests {
             let transport = StdioTransport::spawn(
                 "test",
                 "sh",
-                &["-c".into(), "exit 0".into()],
+                // The child waits for a line rather than exiting at once, so
+                // the handshake window is closed by this test and not by the
+                // scheduler. An `exit 0` child can clear `alive` before
+                // `mark_established` runs and fail the assertion below on a
+                // loaded runner.
+                &["-c".into(), "read -r _ || true".into()],
                 &HashMap::new(),
                 Duration::from_secs(5),
                 Box::new(move |e| {
@@ -783,6 +810,12 @@ mod tests {
                 }),
             )
             .unwrap();
+            assert!(
+                transport.mark_established(),
+                "the child must still be alive when the handshake completes"
+            );
+            // Release the child now that the handshake is on record.
+            transport.write_line(b"\n").await.unwrap();
 
             let StdioTransport {
                 _reader_task: reader_task,
@@ -793,6 +826,74 @@ mod tests {
                 died.lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_some()
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn death_before_handshake_established_does_not_invoke_callback() {
+        smol::block_on(async {
+            let died = Arc::new(AtomicBool::new(false));
+            let died_write = Arc::clone(&died);
+            // Never calls `mark_established` — matches a real `start_server` still mid
+            // handshake when the child dies, which apply_start_result reports itself.
+            let transport = StdioTransport::spawn(
+                "test",
+                "sh",
+                &["-c".into(), "exit 0".into()],
+                &HashMap::new(),
+                Duration::from_secs(5),
+                Box::new(move |_| {
+                    died_write.store(true, Ordering::Release);
+                }),
+            )
+            .unwrap();
+
+            let StdioTransport {
+                _reader_task: reader_task,
+                ..
+            } = transport;
+            reader_task.await;
+
+            assert!(!died.load(Ordering::Acquire));
+        });
+    }
+
+    /// A child can answer the last handshake request and close stdout before
+    /// `start_server` calls `mark_established`. The reader suppresses its own
+    /// report in that window, so it must at least clear liveness — otherwise
+    /// `mark_established` returns `true` and a dead transport is published as
+    /// initialized, with its tools advertised and no reconnect.
+    #[cfg(unix)]
+    #[test]
+    fn a_death_during_the_handshake_window_clears_liveness() {
+        smol::block_on(async {
+            let transport = StdioTransport::spawn(
+                "test",
+                "sh",
+                &["-c".into(), "exit 0".into()],
+                &HashMap::new(),
+                Duration::from_secs(5),
+                Box::new(|_| {}),
+            )
+            .unwrap();
+
+            let StdioTransport {
+                _reader_task: reader_task,
+                alive,
+                established,
+                ..
+            } = transport;
+            reader_task.await;
+
+            assert!(
+                !established.load(Ordering::SeqCst),
+                "the handshake never completed in this test"
+            );
+            assert!(
+                !alive.load(Ordering::SeqCst),
+                "the reader must clear liveness even before the handshake completes"
             );
         });
     }

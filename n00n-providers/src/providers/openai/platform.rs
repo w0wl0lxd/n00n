@@ -23,9 +23,10 @@ use tracing::{debug, info, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, CacheControl, CacheHealth, CacheKind, HistoryReplayReason, Message,
-    OpenAiPromptCacheMode, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, StreamResponse, System, UsageLimit, dialect,
+    AgentError, CacheControl, CacheHealth, CacheKind, CodingPlanAdmissionTransport,
+    HistoryReplayReason, Message, OpenAiPromptCacheMode, ProviderEvent, ProviderUsage,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, StreamResponse, System,
+    UsageLimit, dialect,
 };
 
 use super::auth;
@@ -40,7 +41,22 @@ const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 const FIVE_MINUTES_MILLIS: u64 = 5 * 60 * 1_000;
 const THIRTY_MINUTES_MILLIS: u64 = 30 * 60 * 1_000;
 const CODING_PLAN_DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(250);
-const CODING_PLAN_ADMISSION_MAX_RETRIES: u8 = 3;
+/// Ceiling for the locally computed exponential backoff between admission
+/// retries.
+///
+/// The schedule does not reach it today: `coding_plan_backoff` only ever sees
+/// counts below [`CODING_PLAN_ADMISSION_MAX_RETRIES`], which tops the ceiling
+/// out at 4s. This binds only if that cap is raised, and is what stops the
+/// shift running away when it is.
+const CODING_PLAN_MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
+/// Ceiling for a server-directed `Retry-After`. A malformed header already
+/// resolves to a one-minute conservative delay, which would otherwise stall an
+/// interactive turn for the whole minute.
+const CODING_PLAN_MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
+/// A wait at or above this is reported at `warn`, not `debug`: it is long
+/// enough that a user watching the turn needs to know why it stopped.
+const CODING_PLAN_LOUD_RETRY_DELAY: Duration = Duration::from_secs(2);
+const CODING_PLAN_ADMISSION_MAX_RETRIES: u8 = 5;
 const CODING_PLAN_MAX_SLOTS: u8 = 8;
 const RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -491,11 +507,22 @@ fn response_state_scope_hash(auth: &ResolvedAuth) -> String {
     format!("{:x}", digest.finalize())
 }
 
+/// A WebSocket-origin admission 403 still falls back to HTTP: live probes show
+/// the Coding Plan HTTP endpoint accepting the same credentials and headers that
+/// the WebSocket upgrade rejects, so the turn can still be served. An
+/// HTTP-origin admission 403 is excluded because there is no further transport
+/// to try.
 fn should_fallback_to_http(error: &super::websocket::WebSocketAttemptError) -> bool {
     error.transport_failure
         && !error.delivery.emitted_event
         && !error.error.is_auth_error()
-        && !matches!(error.error.as_ref(), AgentError::CodingPlanAdmission { .. })
+        && !matches!(
+            error.error.as_ref(),
+            AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::Http,
+                ..
+            }
+        )
         && error.delivery.phase == RequestDeliveryPhase::NotSent
 }
 
@@ -517,6 +544,57 @@ fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAtt
         false,
         RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent),
     )
+}
+
+/// Builds the attempt record for a failed HTTP fallback.
+///
+/// `do_stream` raises `CodingPlanAdmission` from the response status, before
+/// `parse_sse` runs: nothing was emitted and nothing was accepted. Reporting
+/// that as sent hides it from the admission retry loop, so the turn would
+/// fail on the first 403 with neither `Retry-After` nor backoff applied.
+/// Every other error may have arrived mid-stream, so it stays conservative.
+///
+/// `inherited_retry_after` is the delay the WebSocket rejection asked for. The
+/// HTTP probe often answers with an empty 403 and no header of its own, and
+/// without this the retry loop would discard the server's delay and restart on
+/// the short local schedule. A `Retry-After` on the HTTP response is more
+/// recent, so it wins.
+fn http_fallback_attempt(
+    previous_response_id: Option<String>,
+    error: AgentError,
+    inherited_retry_after: Option<Duration>,
+) -> CodexAttempt {
+    if let AgentError::CodingPlanAdmission {
+        transport,
+        retry_after,
+    } = error
+    {
+        return CodexAttempt {
+            previous_response_id,
+            emitted_event: false,
+            definitive_rejection: true,
+            delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
+            result: Err(AgentError::CodingPlanAdmission {
+                transport,
+                retry_after: retry_after.or(inherited_retry_after),
+            }),
+        };
+    }
+    CodexAttempt {
+        previous_response_id,
+        emitted_event: true,
+        definitive_rejection: false,
+        delivery: None,
+        result: Err(suppress_retry_after_send(error)),
+    }
+}
+
+/// The delay an admission rejection asked for, if the error is one.
+fn admission_retry_after(error: &AgentError) -> Option<Duration> {
+    match error {
+        AgentError::CodingPlanAdmission { retry_after, .. } => *retry_after,
+        _ => None,
+    }
 }
 
 fn suppress_retry_after_send(error: AgentError) -> AgentError {
@@ -1725,6 +1803,9 @@ impl OpenAi {
                             )
                             .await;
                     }
+                    // Read before the fallback consumes `error`: the HTTP probe
+                    // may reject with an empty 403 that carries no delay.
+                    let ws_retry_after = admission_retry_after(error.error.as_ref());
                     warn!("OpenAI Responses WebSocket unavailable; falling back to HTTP");
                     let fallback_body = if persist_response_chain {
                         &body
@@ -1844,13 +1925,11 @@ impl OpenAi {
                         Err(error) => {
                             return self
                                 .finish_codex_attempt(
-                                    CodexAttempt {
+                                    http_fallback_attempt(
                                         previous_response_id,
-                                        emitted_event: true,
-                                        definitive_rejection: false,
-                                        delivery: None,
-                                        result: Err(suppress_retry_after_send(error)),
-                                    },
+                                        error,
+                                        ws_retry_after,
+                                    ),
                                     session_id,
                                     response_chain_lock.as_ref(),
                                     event_tx,
@@ -1946,6 +2025,18 @@ impl OpenAi {
             }
             if let Some(delay) = coding_plan_admission_retry_delay(&attempt, admission_retries) {
                 admission_retries += 1;
+                // A server-directed `Retry-After` is clamped at 30s and up to
+                // `CODING_PLAN_ADMISSION_MAX_RETRIES` of them can stack, so a
+                // turn can stall for minutes. Say so above `debug`, or the
+                // stall has no visible cause.
+                if delay >= CODING_PLAN_LOUD_RETRY_DELAY {
+                    warn!(
+                        retry_delay_secs = delay.as_secs(),
+                        attempt = admission_retries,
+                        of = CODING_PLAN_ADMISSION_MAX_RETRIES,
+                        "OpenAI Coding Plan asked us to wait before retrying"
+                    );
+                }
                 debug!(
                     process_instance_nonce = process_instance_nonce(),
                     attempt_nonce,
@@ -2521,7 +2612,32 @@ impl Provider for OpenAi {
     }
 }
 
+/// Exponential backoff with full jitter over `[delay / 2, delay]`, never below
+/// [`CODING_PLAN_DEFAULT_RETRY_DELAY`]. Jitter keeps concurrent n00n processes
+/// on the same account from retrying in lockstep and re-colliding on whatever
+/// capacity limit rejected them.
+fn coding_plan_backoff(retry_count: u8, jitter: f64) -> Duration {
+    let exponent = u32::from(retry_count.min(CODING_PLAN_ADMISSION_MAX_RETRIES));
+    let ceiling = CODING_PLAN_DEFAULT_RETRY_DELAY
+        .saturating_mul(1_u32 << exponent)
+        .min(CODING_PLAN_MAX_RETRY_DELAY);
+    // Full jitter halves the ceiling, which would put the first retry at half
+    // of `CODING_PLAN_DEFAULT_RETRY_DELAY`. The clamped `Retry-After` branch
+    // treats that constant as a hard floor, so this branch honours it too.
+    ceiling
+        .mul_f64(0.5 + 0.5 * jitter.clamp(0.0, 1.0))
+        .max(CODING_PLAN_DEFAULT_RETRY_DELAY)
+}
+
 fn coding_plan_admission_retry_delay(attempt: &CodexAttempt, retry_count: u8) -> Option<Duration> {
+    coding_plan_admission_retry_delay_with_jitter(attempt, retry_count, fastrand::f64())
+}
+
+fn coding_plan_admission_retry_delay_with_jitter(
+    attempt: &CodexAttempt,
+    retry_count: u8,
+    jitter: f64,
+) -> Option<Duration> {
     if attempt.emitted_event
         || !matches!(
             &attempt.delivery,
@@ -2538,15 +2654,19 @@ fn coding_plan_admission_retry_delay(attempt: &CodexAttempt, retry_count: u8) ->
         return None;
     }
     match &attempt.result {
-        Err(AgentError::CodingPlanAdmission { retry_after }) if attempt.definitive_rejection => {
-            let delay = match retry_after {
-                Some(delay) => *delay,
-                None => CODING_PLAN_DEFAULT_RETRY_DELAY,
-            };
-            Some(delay.max(CODING_PLAN_DEFAULT_RETRY_DELAY))
+        // A server-directed `Retry-After` overrides the local schedule; jitter is
+        // not added on top of a delay the server chose.
+        Err(AgentError::CodingPlanAdmission {
+            retry_after: Some(delay),
+            ..
+        }) if attempt.definitive_rejection => {
+            Some((*delay).clamp(CODING_PLAN_DEFAULT_RETRY_DELAY, CODING_PLAN_MAX_RETRY_AFTER))
         }
+        Err(AgentError::CodingPlanAdmission {
+            retry_after: None, ..
+        }) if attempt.definitive_rejection => Some(coding_plan_backoff(retry_count, jitter)),
         Err(AgentError::CodingPlanAdmissionTimeout { .. }) => {
-            Some(CODING_PLAN_DEFAULT_RETRY_DELAY * (1_u32 << u32::from(retry_count)))
+            Some(coding_plan_backoff(retry_count, jitter))
         }
         _ => None,
     }
@@ -5512,76 +5632,146 @@ mod tests {
             delivery: Some(RequestDeliveryMetadata::new(phase)),
             result: Err(error),
         };
+        let admission = |retry_after| AgentError::CodingPlanAdmission {
+            transport: CodingPlanAdmissionTransport::WebSocket,
+            retry_after,
+        };
 
+        // `Retry-After: 7` is honoured verbatim, without jitter or backoff growth.
         assert_eq!(
-            coding_plan_admission_retry_delay(
+            coding_plan_admission_retry_delay_with_jitter(
                 &attempt(
                     RequestDeliveryPhase::NotSent,
                     false,
-                    AgentError::CodingPlanAdmission {
-                        retry_after: Some(Duration::from_secs(7)),
-                    },
-                    true,
-                ),
-                0
-            ),
-            Some(Duration::from_secs(7))
-        );
-        assert!(
-            coding_plan_admission_retry_delay(
-                &attempt(
-                    RequestDeliveryPhase::SentAwaitingAcceptance,
-                    false,
-                    AgentError::CodingPlanAdmission {
-                        retry_after: Some(Duration::from_secs(7)),
-                    },
+                    admission(Some(Duration::from_secs(7))),
                     true,
                 ),
                 0,
+                0.0,
+            ),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    admission(Some(Duration::from_secs(7))),
+                    true,
+                ),
+                3,
+                1.0,
+            ),
+            Some(Duration::from_secs(7))
+        );
+        // A `Retry-After` below the floor or above the ceiling is clamped.
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    admission(Some(Duration::from_millis(1))),
+                    true,
+                ),
+                0,
+                1.0,
+            ),
+            Some(CODING_PLAN_DEFAULT_RETRY_DELAY)
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    admission(Some(Duration::from_secs(600))),
+                    true,
+                ),
+                0,
+                1.0,
+            ),
+            Some(CODING_PLAN_MAX_RETRY_AFTER)
+        );
+        assert!(
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(
+                    RequestDeliveryPhase::SentAwaitingAcceptance,
+                    false,
+                    admission(Some(Duration::from_secs(7))),
+                    true,
+                ),
+                0,
+                1.0,
             )
             .is_none()
         );
         assert!(
-            coding_plan_admission_retry_delay(
+            coding_plan_admission_retry_delay_with_jitter(
                 &attempt(
                     RequestDeliveryPhase::NotSent,
                     false,
-                    AgentError::CodingPlanAdmission {
-                        retry_after: Some(Duration::from_secs(7)),
-                    },
+                    admission(Some(Duration::from_secs(7))),
                     true,
                 ),
                 CODING_PLAN_ADMISSION_MAX_RETRIES,
+                1.0,
             )
             .is_none()
         );
 
+        // Without a `Retry-After` the delay grows exponentially and is jittered.
         assert_eq!(
-            coding_plan_admission_retry_delay(
-                &attempt(
-                    RequestDeliveryPhase::NotSent,
-                    false,
-                    AgentError::CodingPlanAdmissionTimeout { millis: 15_000 },
-                    false,
-                ),
-                0
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(RequestDeliveryPhase::NotSent, false, admission(None), true),
+                0,
+                1.0,
             ),
             Some(Duration::from_millis(250))
         );
         assert_eq!(
-            coding_plan_admission_retry_delay(
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(RequestDeliveryPhase::NotSent, false, admission(None), true),
+                2,
+                1.0,
+            ),
+            Some(Duration::from_millis(1_000))
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(RequestDeliveryPhase::NotSent, false, admission(None), true),
+                2,
+                0.0,
+            ),
+            Some(Duration::from_millis(500))
+        );
+
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(
                 &attempt(
                     RequestDeliveryPhase::NotSent,
                     false,
                     AgentError::CodingPlanAdmissionTimeout { millis: 15_000 },
                     false,
                 ),
-                1
+                0,
+                1.0,
+            ),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    AgentError::CodingPlanAdmissionTimeout { millis: 15_000 },
+                    false,
+                ),
+                1,
+                1.0,
             ),
             Some(Duration::from_millis(500))
         );
         assert!(
-            coding_plan_admission_retry_delay(
+            coding_plan_admission_retry_delay_with_jitter(
                 &attempt(
                     RequestDeliveryPhase::NotSent,
                     false,
@@ -5589,11 +5779,12 @@ mod tests {
                     false,
                 ),
                 CODING_PLAN_ADMISSION_MAX_RETRIES,
+                1.0,
             )
             .is_none()
         );
         assert!(
-            coding_plan_admission_retry_delay(
+            coding_plan_admission_retry_delay_with_jitter(
                 &attempt(
                     RequestDeliveryPhase::NotSent,
                     true,
@@ -5601,8 +5792,37 @@ mod tests {
                     false,
                 ),
                 0,
+                1.0,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn coding_plan_backoff_grows_and_saturates_within_the_jitter_window() {
+        for retry_count in 0..=CODING_PLAN_ADMISSION_MAX_RETRIES {
+            let ceiling = coding_plan_backoff(retry_count, 1.0);
+            let floor = coding_plan_backoff(retry_count, 0.0);
+            assert!(floor <= ceiling);
+            assert!(
+                floor >= CODING_PLAN_DEFAULT_RETRY_DELAY,
+                "jitter must not take retry {retry_count} below the floor, got {floor:?}"
+            );
+            assert!(ceiling <= CODING_PLAN_MAX_RETRY_DELAY);
+        }
+        // The floor only binds the first step. Past it the window is the full
+        // `[ceiling / 2, ceiling]`.
+        for retry_count in 1..=CODING_PLAN_ADMISSION_MAX_RETRIES {
+            assert_eq!(
+                coding_plan_backoff(retry_count, 0.0) * 2,
+                coding_plan_backoff(retry_count, 1.0)
+            );
+        }
+        assert!(coding_plan_backoff(1, 1.0) > coding_plan_backoff(0, 1.0));
+        // The ceiling saturates instead of overflowing on a large retry count.
+        assert_eq!(
+            coding_plan_backoff(u8::MAX, 1.0),
+            coding_plan_backoff(CODING_PLAN_ADMISSION_MAX_RETRIES, 1.0)
         );
     }
 
@@ -5663,14 +5883,32 @@ mod tests {
         };
         assert!(!should_fallback_to_http(&auth));
 
-        let admission = super::super::websocket::WebSocketAttemptError {
-            error: Box::new(AgentError::CodingPlanAdmission { retry_after: None }),
+        // A WebSocket-origin admission 403 retries over HTTP, which live probes
+        // show still accepting the same credentials.
+        let ws_admission = super::super::websocket::WebSocketAttemptError {
+            error: Box::new(AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::WebSocket,
+                retry_after: None,
+            }),
             transport_failure: true,
             delivery: Box::new(crate::RequestDeliveryMetadata::new(
                 crate::RequestDeliveryPhase::NotSent,
             )),
         };
-        assert!(!should_fallback_to_http(&admission));
+        assert!(should_fallback_to_http(&ws_admission));
+
+        // An HTTP-origin admission 403 has no remaining transport to fall back to.
+        let http_admission = super::super::websocket::WebSocketAttemptError {
+            error: Box::new(AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::Http,
+                retry_after: Some(Duration::from_secs(3)),
+            }),
+            transport_failure: true,
+            delivery: Box::new(crate::RequestDeliveryMetadata::new(
+                crate::RequestDeliveryPhase::NotSent,
+            )),
+        };
+        assert!(!should_fallback_to_http(&http_admission));
 
         let response_error = super::super::websocket::WebSocketAttemptError {
             error: Box::new(AgentError::Api {
@@ -5771,5 +6009,68 @@ mod tests {
     #[test_case(Some(120), None)]
     fn rate_limit_window_label_maps(seconds: Option<i64>, expected: Option<&str>) {
         assert_eq!(super::rate_limit_window_label(seconds), expected);
+    }
+
+    /// The HTTP fallback runs only after the WebSocket 403, so an empty 403
+    /// from it too must still reach the admission retry loop. Marking it sent
+    /// would end the turn on the first rejection.
+    #[test]
+    fn an_http_fallback_admission_rejection_stays_retryable() {
+        let retryable = http_fallback_attempt(
+            None,
+            AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::Http,
+                retry_after: Some(Duration::from_secs(7)),
+            },
+            Some(Duration::from_secs(2)),
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(&retryable, 0, 0.0),
+            Some(Duration::from_secs(7)),
+            "the HTTP response's own Retry-After wins over the WebSocket's"
+        );
+
+        // An empty HTTP 403 keeps the delay the WebSocket rejection asked for
+        // instead of restarting on the short local schedule.
+        let inherited = http_fallback_attempt(
+            None,
+            AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::Http,
+                retry_after: None,
+            },
+            Some(Duration::from_secs(11)),
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(&inherited, 0, 0.0),
+            Some(Duration::from_secs(11))
+        );
+
+        // With neither transport supplying one, the local schedule applies.
+        let local = http_fallback_attempt(
+            None,
+            AgentError::CodingPlanAdmission {
+                transport: CodingPlanAdmissionTransport::Http,
+                retry_after: None,
+            },
+            None,
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(&local, 0, 0.0),
+            Some(CODING_PLAN_DEFAULT_RETRY_DELAY)
+        );
+
+        // Any other fallback error may have arrived mid-stream.
+        let mid_stream = http_fallback_attempt(
+            None,
+            AgentError::Api {
+                status: 500,
+                message: "boom".into(),
+            },
+            Some(Duration::from_secs(3)),
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay_with_jitter(&mid_stream, 0, 0.0),
+            None
+        );
     }
 }
