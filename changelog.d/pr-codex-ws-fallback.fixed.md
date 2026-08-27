@@ -1,0 +1,1 @@
+Fixed OpenAI Coding Plan (Codex) turns failing instantly when the Responses WebSocket handshake returned an empty HTTP 403; n00n now retries the turn over the HTTP transport and backs off exponentially with jitter, honouring any `Retry-After` the backend sends.

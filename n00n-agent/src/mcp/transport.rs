@@ -33,6 +33,20 @@ pub trait McpTransport: Send + Sync {
     fn shutdown(&self) -> BoxFuture<'_, ()>;
     fn server_name(&self) -> &Arc<str>;
     fn transport_kind(&self) -> &'static str;
+    /// Mark the transport as having completed its handshake. Until this is called,
+    /// `start_server` is still establishing the connection and will report a failure
+    /// itself, with full context, via `apply_start_result` — so a transport that dies
+    /// before this is called logs its own death at `debug`, not `warn`, to avoid a
+    /// noisier, less-informative duplicate.
+    ///
+    /// Returns whether the transport is still alive. A stdio server can answer the
+    /// last handshake request and close stdout before this runs; the caller must
+    /// treat `false` as a failed handshake rather than publish a dead transport.
+    /// Always true for transports without a background reader task (e.g. HTTP).
+    #[must_use]
+    fn mark_established(&self) -> bool {
+        true
+    }
 }
 
 fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {
