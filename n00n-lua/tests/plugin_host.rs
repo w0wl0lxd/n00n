@@ -33,6 +33,70 @@ use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::{StoredSessionStateSnapshot, StoredStateScope};
 
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 50_000;
+const RTK_ROUTE_TIMEOUT_SECONDS: u8 = 1;
+const RTK_MANAGED_ROUTE_CASES: &[&str] = &[
+    "aws --version",
+    "cargo --version",
+    "cat --version",
+    "curl --version",
+    "diff --version",
+    "docker --version",
+    "dotnet --version",
+    "du -d 0 .",
+    "ecs --version",
+    "find --version",
+    "gh --version",
+    "git --version",
+    "glab --version",
+    "go version",
+    "golangci-lint --version",
+    "gradle --version",
+    "gradlew --version",
+    "grep --version",
+    "head --version",
+    "jest --version",
+    "kubectl version --client",
+    "lint --version",
+    "ls --version",
+    "make --version",
+    "mvn --version",
+    "mypy --version",
+    "next --version",
+    "npm --version",
+    "npx --version",
+    "oc version --client",
+    "paratest --version",
+    "pest --version",
+    "php --version",
+    "phpstan --version",
+    "phpunit --version",
+    "pint --version",
+    "pip --version",
+    "pip3 --version",
+    "playwright --version",
+    "pnpm --version",
+    "podman --version",
+    "prettier --version",
+    "prisma --version",
+    "psql --version",
+    "pytest --version",
+    "python --version",
+    "python3 --version",
+    "rake --version",
+    "rg --version",
+    "rspec --version",
+    "rubocop --version",
+    "ruff --version",
+    "sbt --version",
+    "swift --version",
+    "tail --version",
+    "tree --version",
+    "tsc --version",
+    "uv --version",
+    "vitest --version",
+    "wc --version",
+    "wget --version",
+];
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     let _ = n00n_lua::test_support::set_interpreter_worker_executable(std::path::PathBuf::from(
@@ -4853,21 +4917,104 @@ fn bash_handler_preserves_supported_find_fallback() {
 }
 
 #[test]
-fn bash_handler_preserves_cargo_build_wrapper_command() {
-    let (reg, _host) = builtins_host();
+fn bash_handler_preserves_bash_env_cargo_wrapper() {
+    const CHILD_ENV: &str = "N00N_BASH_ENV_CARGO_WRAPPER_CHILD";
+    const WRAPPER_MARKER: &str = "bash-env-cargo-wrapper-invoked";
 
-    let output = match exec_tool(
-        &reg,
-        "bash",
-        serde_json::json!({ "command": "cargo --version" }),
-    ) {
-        Ok(output) | Err(output) => output,
-    };
+    if skip_without_rtk("bash_handler_preserves_bash_env_cargo_wrapper") {
+        return;
+    }
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let (registry, _host) = builtins_host();
+        let output = exec_tool(
+            &registry,
+            "bash",
+            serde_json::json!({ "command": "cargo --version" }),
+        )
+        .expect("Cargo command failed");
+        assert!(
+            output.contains(WRAPPER_MARKER),
+            "BASH_ENV Cargo wrapper was bypassed: {output}"
+        );
+        println!("{WRAPPER_MARKER}");
+        return;
+    }
+
+    let directory = tempfile::tempdir().expect("temporary BASH_ENV directory");
+    let bash_env = directory.path().join("cargo-wrapper.sh");
+    std::fs::write(
+        &bash_env,
+        format!("cargo() {{ printf '{WRAPPER_MARKER}\\n'; }}\n"),
+    )
+    .expect("write BASH_ENV Cargo wrapper");
+    let child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "bash_handler_preserves_bash_env_cargo_wrapper",
+            "--nocapture",
+        ])
+        .env(CHILD_ENV, "1")
+        .env("BASH_ENV", bash_env)
+        .output()
+        .expect("run isolated BASH_ENV probe");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    let stderr = String::from_utf8_lossy(&child.stderr);
 
     assert!(
-        !output.contains("rtk is enabled"),
-        "cargo command was sent through RTK instead of preserving shell wrappers: {output}"
+        child.status.success(),
+        "isolated BASH_ENV probe failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    assert!(
+        stdout.contains(WRAPPER_MARKER),
+        "isolated BASH_ENV probe did not run:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn bash_handler_routes_every_managed_command_through_rtk() {
+    if skip_without_rtk("bash_handler_routes_every_managed_command_through_rtk") {
+        return;
+    }
+    let (registry, _host) = builtins_host();
+    let entry = registry.get("bash").expect("bash registered");
+
+    for command in RTK_MANAGED_ROUTE_CASES {
+        let bounded_command = format!("timeout {RTK_ROUTE_TIMEOUT_SECONDS} {command}");
+        let invocation = entry
+            .tool
+            .parse(&serde_json::json!({ "command": bounded_command }))
+            .unwrap_or_else(|error| panic!("failed to parse {command}: {error}"));
+        let (ctx, event_rx) = warm_ctx("rtk-managed-route");
+
+        // The command's own exit status says nothing about routing. The bash
+        // tool reports any non-zero exit as an error, and most of these CLIs
+        // are absent (exit 127) or slower than the timeout (exit 124) on any
+        // given machine. Only the rendered route proves RTK handled it, so
+        // the assertions below read the live buffer and ignore the exit.
+        let _execution = smol::block_on(invocation.execute(&ctx));
+
+        let body = recv_live_buf(&event_rx, "rtk-managed-route")
+            .unwrap_or_else(|| panic!("missing bash live buffer for {command}"));
+        let rendered = body
+            .read()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !rendered.contains("error: rtk is enabled"),
+            "{command} was rejected instead of routed through RTK: {rendered}"
+        );
+        assert!(
+            rendered.contains("rtk "),
+            "{command} did not take an RTK route: {rendered}"
+        );
+    }
 }
 
 fn exec_tool_with_perms(
