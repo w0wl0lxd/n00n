@@ -41,7 +41,13 @@ const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 const FIVE_MINUTES_MILLIS: u64 = 5 * 60 * 1_000;
 const THIRTY_MINUTES_MILLIS: u64 = 30 * 60 * 1_000;
 const CODING_PLAN_DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(250);
-/// Ceiling for the locally computed exponential backoff between admission retries.
+/// Ceiling for the locally computed exponential backoff between admission
+/// retries.
+///
+/// The schedule does not reach it today: `coding_plan_backoff` only ever sees
+/// counts below [`CODING_PLAN_ADMISSION_MAX_RETRIES`], which tops the ceiling
+/// out at 4s. This binds only if that cap is raised, and is what stops the
+/// shift running away when it is.
 const CODING_PLAN_MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
 /// Ceiling for a server-directed `Retry-After`. A malformed header already
 /// resolves to a one-minute conservative delay, which would otherwise stall an
