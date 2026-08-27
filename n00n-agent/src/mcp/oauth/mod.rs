@@ -481,6 +481,7 @@ impl BackgroundAuthBackoff {
     /// The returned [`AuthClaim`] releases the claim when it drops, so a task
     /// that is cancelled or panics cannot block the server for the rest of
     /// the process.
+    #[must_use]
     pub fn try_claim(&self, server: &str) -> Option<AuthClaim> {
         self.claim(server).then(|| AuthClaim {
             backoff: self.clone(),
@@ -564,6 +565,7 @@ impl BackgroundAuthBackoff {
 /// Settle it with [`Self::record_failure`] or [`Self::record_success`].
 /// Dropping it unsettled releases the claim without advancing the backoff:
 /// the attempt never reached the server, so it must not be charged a window.
+#[derive(Debug)]
 pub struct AuthClaim {
     backoff: BackgroundAuthBackoff,
     server: String,
@@ -589,14 +591,6 @@ impl Drop for AuthClaim {
         if !self.settled {
             self.backoff.abandon_claim(&self.server);
         }
-    }
-}
-
-impl std::fmt::Debug for AuthClaim {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuthClaim")
-            .field("server", &self.server)
-            .finish()
     }
 }
 
