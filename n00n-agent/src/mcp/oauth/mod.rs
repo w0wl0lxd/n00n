@@ -481,6 +481,7 @@ impl BackgroundAuthBackoff {
     /// Every claim must be released by [`Self::record_failure`] or
     /// [`Self::record_success`], or the server stays blocked for the process
     /// lifetime.
+    #[must_use]
     pub fn try_claim(&self, server: &str) -> bool {
         let mut entries = self.entries();
         let attempt = match entries.get(server) {
