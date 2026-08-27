@@ -25,9 +25,8 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fls ",
   " -fprintf ",
 }
--- Preserve Rust build serialization injected through shell BASH_ENV hooks.
+-- Preserve direct compiler and test-runner hooks used by serialized Cargo builds.
 local RTK_SKIP_TOOLS = {
-  cargo = true,
   nextest = true,
   rustc = true,
 }

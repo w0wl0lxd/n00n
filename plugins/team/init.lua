@@ -109,7 +109,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.]]
+  [[Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id and retains a child session; if a lineage limit rejects it, retry without background.]]
 
 local schema = {
   type = "object",
