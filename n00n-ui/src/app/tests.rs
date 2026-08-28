@@ -4319,6 +4319,42 @@ fn plan_toggle_beats_override_when_open_and_after_dismiss() {
 }
 
 #[test]
+fn open_editor_beats_override_after_plan_form_dismiss() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::OPEN_EDITOR.code,
+        modifiers: kb::OPEN_EDITOR.modifiers,
+        desc: "plugin open editor override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 12,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+    assert!(app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "open plan editor must run from the visible plan form"
+    );
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(!app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "open plan editor must beat a plugin override in plan mode"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not be dispatched when open editor wins"
+    );
+}
+
+#[test]
 fn streaming_cancel_wins_over_quit_override() {
     let entry = n00n_lua::KeymapEntry {
         key: kb::QUIT.code,

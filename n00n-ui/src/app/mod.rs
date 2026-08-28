@@ -970,6 +970,13 @@ impl App {
             return Some(vec![]);
         }
 
+        if key::OPEN_EDITOR.matches(key)
+            && self.state.mode == Mode::Plan
+            && let Some(p) = self.state.plan.path()
+        {
+            return Some(vec![Action::OpenEditor(p.to_path_buf())]);
+        }
+
         None
     }
 
