@@ -298,7 +298,7 @@ local control_schema = {
   properties = {
     action = {
       type = "string",
-      enum = { "message", "pause", "resume", "stop", "reap", "policy" },
+      enum = { "message", "pause", "resume", "stop", "reap", "kill", "policy" },
       description = "Mutating control action.",
       required = true,
     },
@@ -426,6 +426,16 @@ local function control_handler(input)
     return { llm_output = "agent_id is required for " .. tostring(input.action), is_error = true }
   end
 
+  if input.action == "kill" then
+    local killed, err = n00n.session.kill(input.agent_id)
+    if not killed then
+      return { llm_output = err, is_error = true }
+    end
+    local plain = string.format("killed · %d · %s", killed, input.agent_id)
+    local body = card(plain, {}, tostring(killed))
+    return { llm_output = plain, body = body, annotation = tostring(killed) }
+  end
+
   if input.action == "message" then
     if not input.message or input.message == "" then
       return { llm_output = "message is required for message", is_error = true }
@@ -507,7 +517,7 @@ end
 n00n.api.register_tool({
   name = "control_agent",
   aliases = { "agent_control" },
-  description = "Mutate background agents: message, stop, resume, reap finished agents, or manage policy. Reap without agent_id removes all finished descendants. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.",
+  description = "Mutate background agents: message, stop, resume, reap idle or stuck agents, fully kill a session, or manage policy. Reap without agent_id removes all idle descendants. Kill permanently removes the target and descendants. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.",
   kind = "execute",
   audiences = { "main" },
   defer_loading = true,

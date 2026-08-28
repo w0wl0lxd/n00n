@@ -629,7 +629,6 @@ impl SessionRuntime {
 
     fn is_reapable(&self) -> bool {
         SessionStatus::of(&self.app) == SessionStatus::Idle
-            && !self.app.state.session.meta.lifecycle.is_active()
             && self.app.queue.is_empty()
             && !has_restorable_work(&self.app.state.session)
             && !self.direct_bootstrap_active
@@ -2091,6 +2090,58 @@ impl<'t> EventLoop<'t> {
                     json!(true),
                 );
             }
+            SessionRequest::Kill { id, caller_id } => {
+                let reply = (|| {
+                    let caller = caller_session_id(caller_id)?;
+                    let target = parse_session_id(&id)?;
+                    if target == caller {
+                        return Err("cannot kill the caller session".to_owned());
+                    }
+                    self.lineage
+                        .authorize_prompt(caller, Some(target))
+                        .map_err(|error| error.to_string())?;
+                    let mut targets = self
+                        .lineage
+                        .descendants_for_delete(target)
+                        .map_err(|error| error.to_string())?;
+                    targets.push(target);
+                    let focused_id = self.sessions[self.focused].id();
+                    if targets.contains(&focused_id) {
+                        return Err("cannot kill the focused session".to_owned());
+                    }
+                    Ok(targets)
+                })();
+                let mut targets = match reply {
+                    Ok(targets) => targets,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let killed = targets
+                    .iter()
+                    .filter(|target| self.position(**target).is_some())
+                    .count();
+                let mut runtime_indices = targets
+                    .iter()
+                    .filter_map(|target| self.position(*target))
+                    .collect::<Vec<_>>();
+                runtime_indices.sort_unstable_by(|left, right| right.cmp(left));
+                for index in runtime_indices {
+                    let rt = self.remove_runtime(index);
+                    let runtime_id = rt.id();
+                    rt.app.drop_plugin_state(runtime_id);
+                    rt.handles.cancel();
+                }
+                self.lineage.remove_sessions(&targets);
+                targets.reverse();
+                delete_sessions_sequentially(
+                    &self.ctx.storage_writer,
+                    targets,
+                    reply_tx,
+                    json!(killed),
+                );
+            }
             SessionRequest::Reap { id, caller_id } => {
                 let reply = (|| {
                     let caller = caller_session_id(caller_id)?;
@@ -2131,7 +2182,7 @@ impl<'t> EventLoop<'t> {
                     if let Some(target) = explicit_target
                         && !selected.contains(&target)
                     {
-                        return Err(format!("session is not finished: {target}"));
+                        return Err(format!("session is not idle: {target}"));
                     }
                     targets.retain(|target| selected.contains(target));
                     Ok(targets)

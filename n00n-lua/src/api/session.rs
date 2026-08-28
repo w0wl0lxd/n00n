@@ -125,10 +125,11 @@ async fn delete(
     .await
 }
 
-/// Deletes completed background sessions in the caller's lineage.
-/// When `id` is nil, all completed descendants are reaped.
+/// Deletes idle background sessions in the caller's lineage, including
+/// sessions with stale active lifecycle state. When `id` is nil, all idle
+/// descendants are reaped.
 ///
-/// @param id string? Completed agent id, or nil for all completed descendants.
+/// @param id string? Idle agent id, or nil for all idle descendants.
 /// @return (integer|nil, string|nil) Number of sessions reaped, or nil and an error.
 #[lua_fn]
 async fn reap(
@@ -138,6 +139,16 @@ async fn reap(
 ) -> LuaResult<Pair> {
     let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
     roundtrip(lua, tx, SessionRequest::Reap { id, caller_id }).await
+}
+
+/// Cancels and permanently deletes an agent session and all descendants.
+///
+/// @param id string Agent id to kill.
+/// @return (integer|nil, string|nil) Number of sessions killed, or nil and an error.
+#[lua_fn]
+async fn kill(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>, id: String) -> LuaResult<Pair> {
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
+    roundtrip(lua, tx, SessionRequest::Kill { id, caller_id }).await
 }
 
 /// Starts a new session in the current project.
@@ -306,7 +317,7 @@ lua_table! {
     /// the pair `(value, err)`. Without an interactive UI attached, every
     /// call returns `nil, "no interactive UI attached"`.
     "n00n.session" => pub(crate) fn create_session_table(tx: Option<flume::Sender<UiAction>>),
-    DOCS [list(tx), live(tx), status(tx), current(tx), focus(tx), delete(tx), reap(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
+    DOCS [list(tx), live(tx), status(tx), current(tx), focus(tx), delete(tx), reap(tx), kill(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
 }
 
 #[cfg(test)]
@@ -398,12 +409,31 @@ mod tests {
             assert_eq!(id.as_deref(), Some("target"));
             assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
             reply_tx.send(Ok(json!(1))).unwrap();
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::Kill {
+                        id,
+                        caller_id: actual_caller_id,
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected kill request");
+            };
+            assert_eq!(id, "target");
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!(1))).unwrap();
         });
 
-        let (child_id, prompt_status, deleted, reaped): (String, String, bool, usize) =
-            smol::block_on(
-                lua.load(
-                    r#"
+        let (child_id, prompt_status, deleted, reaped, killed): (
+            String,
+            String,
+            bool,
+            usize,
+            usize,
+        ) = smol::block_on(
+            lua.load(
+                r#"
                 local child, new_err = session.new({ caller_id = "spoof" })
                 if new_err then error(new_err) end
                 local status, prompt_err = session.prompt("hello", { caller_id = "spoof" })
@@ -412,17 +442,20 @@ mod tests {
                 if delete_err then error(delete_err) end
                 local reaped, reap_err = session.reap("target")
                 if reap_err then error(reap_err) end
-                return child, status, deleted, reaped
+                local killed, kill_err = session.kill("target")
+                if kill_err then error(kill_err) end
+                return child, status, deleted, reaped, killed
                 "#,
-                )
-                .eval_async(),
             )
-            .unwrap();
+            .eval_async(),
+        )
+        .unwrap();
         checker.join().unwrap();
         assert_eq!(child_id, "child");
         assert_eq!(prompt_status, "queued");
         assert!(deleted);
         assert_eq!(reaped, 1);
+        assert_eq!(killed, 1);
     }
 
     #[test]
