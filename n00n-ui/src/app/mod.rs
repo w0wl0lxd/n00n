@@ -759,13 +759,6 @@ impl App {
             self.active_chat().jump_to_bottom();
             return Some(vec![]);
         }
-        if key::PLAN_TOGGLE.matches(key)
-            && self.state.mode == Mode::Plan
-            && self.state.plan.is_ready()
-        {
-            self.plan_form.toggle();
-            return Some(vec![]);
-        }
         None
     }
 
@@ -967,6 +960,14 @@ impl App {
                     vec![Action::ToggleMcp(server_name, enabled)]
                 }
             });
+        }
+
+        if key::PLAN_TOGGLE.matches(key)
+            && self.state.mode == Mode::Plan
+            && self.state.plan.is_ready()
+        {
+            self.plan_form.toggle();
+            return Some(vec![]);
         }
 
         None

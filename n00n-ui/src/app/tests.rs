@@ -4286,7 +4286,7 @@ fn builtin_runs_when_no_override() {
     assert!(app.help_modal.is_open());
 }
 #[test]
-fn overlay_wins_over_override_when_plan_form_open() {
+fn plan_toggle_beats_override_when_open_and_after_dismiss() {
     let entry = n00n_lua::KeymapEntry {
         key: kb::PLAN_TOGGLE.code,
         modifiers: kb::PLAN_TOGGLE.modifiers,
@@ -4296,12 +4296,26 @@ fn overlay_wins_over_override_when_plan_form_open() {
     };
     let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
     app.keymap_reader = reader;
     assert!(app.plan_form.is_visible());
-    assert!(app.lua_event_handle.is_none());
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
-    assert!(!app.plan_form.is_visible());
+    assert!(
+        !app.plan_form.is_visible(),
+        "open plan form must consume Ctrl+T before the override"
+    );
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(
+        app.plan_form.is_visible(),
+        "Ctrl+T must reopen the dismissed plan form despite the override"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not be dispatched when plan toggle wins"
+    );
 }
 
 #[test]
