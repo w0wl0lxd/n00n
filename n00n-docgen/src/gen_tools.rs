@@ -92,7 +92,10 @@ fn extract_default(desc: &str) -> (String, String) {
 }
 
 fn first_paragraph(desc: &str) -> &str {
-    desc.split("\n\n").next().unwrap_or(desc)
+    match desc.split("\n\n").next() {
+        Some(p) => p,
+        None => desc,
+    }
 }
 
 fn format_schema_type(schema: &Value, ty: &str) -> String {
@@ -134,11 +137,11 @@ fn extract_params(schema: &Value) -> Vec<Param> {
         Some(p) => p,
         None => return Vec::new(),
     };
-    let required: Vec<&str> = schema
-        .get("required")
-        .and_then(|r| r.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
+    let required: Vec<&str> = if let Some(arr) = schema.get("required").and_then(|r| r.as_array()) {
+        arr.iter().filter_map(|v| v.as_str()).collect()
+    } else {
+        Vec::new()
+    };
 
     let mut params = Vec::new();
     for (name, prop) in properties {
@@ -146,7 +149,7 @@ fn extract_params(schema: &Value) -> Vec<Param> {
         let raw_desc = prop
             .get("description")
             .and_then(|d| d.as_str())
-            .unwrap_or("");
+            .unwrap_or_else(|| "");
         let is_required = required.contains(&name.as_str());
         let (default, description) = extract_default(raw_desc);
         params.push(Param {
@@ -196,8 +199,12 @@ fn write_tool_entry(out: &mut String, name: &str, info: &ToolInfo, opt_in: &Hash
         .def
         .get("description")
         .and_then(|d| d.as_str())
-        .unwrap_or("");
-    let schema = info.def.get("input_schema").cloned().unwrap_or(Value::Null);
+        .unwrap_or_else(|| "");
+    let schema = info
+        .def
+        .get("input_schema")
+        .cloned()
+        .unwrap_or_else(|| Value::Null);
     let params = extract_params(&schema);
     let summary = first_paragraph(description);
 
@@ -228,10 +235,13 @@ fn redact_path(input: &str, target: &str, placeholder: &str) -> String {
 /// machines and days. CWD is replaced before HOME so a cwd nested under ~
 /// doesn't get partially mangled.
 fn redact_env_and_dates(input: &str) -> String {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|c| c.to_str().map(str::to_owned))
-        .unwrap_or_default();
+    let cwd = match std::env::current_dir() {
+        Ok(c) => match c.to_str() {
+            Some(s) => s.to_owned(),
+            None => String::new(),
+        },
+        Err(_) => String::new(),
+    };
     let mut out = redact_path(input, &cwd, "<cwd>");
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
