@@ -109,6 +109,8 @@ fn needs_sudo(path: &Path) -> bool {
     let Ok(cpath) = CString::new(dir.as_os_str().as_encoded_bytes()) else {
         return false;
     };
+    // SAFETY: cpath owns the null-terminated C string for the directory path.
+    // access() only inspects permissions and does not modify its input.
     unsafe { libc::access(cpath.as_ptr(), libc::W_OK) != 0 }
 }
 

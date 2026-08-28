@@ -12,7 +12,9 @@ use clap::Parser;
 use cli::Cli;
 
 fn main() {
-    color_eyre::install().ok();
+    if let Err(e) = color_eyre::install() {
+        eprintln!("warning: failed to install color-eyre: {e}");
+    }
     n00n_providers::ensure_rustls_crypto_provider();
     if let Err(e) = cmd::dispatch(Cli::parse()) {
         print_error(&e);
