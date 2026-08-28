@@ -78,7 +78,7 @@ const COALESCE_BUDGET: usize = 64;
 const HANDLE_INPUT_BUDGET: usize = 64;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(5);
+const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_COMPACTION_CHECKPOINT_ATTEMPTS: u8 = 3;
 const STORAGE_WRITER_REFS_ERR: &str =
     "storage writer has outstanding references, skipping graceful shutdown";
