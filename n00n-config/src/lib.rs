@@ -2000,11 +2000,22 @@ fn load_env_files_with_global(cwd: &Path, global: Option<&Path>) {
 }
 
 fn collect_env_vars(path: &Path, vars: &mut HashMap<String, String>) {
-    let Ok(iter) = dotenvy::from_path_iter(path) else {
-        return;
-    };
-    for item in iter.flatten() {
-        vars.insert(item.0, item.1);
+    match dotenvy::from_path_iter(path) {
+        Ok(iter) => {
+            for item in iter {
+                match item {
+                    Ok((key, value)) => {
+                        vars.insert(key, value);
+                    }
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "skipping invalid .env line");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "failed to read .env file");
+        }
     }
 }
 
