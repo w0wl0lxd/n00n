@@ -163,11 +163,15 @@ local function build_lines(todo_items, include_activity)
       end
     end
   end
-  for _, item in ipairs(todo_items) do
-    local marker = STATUS_MARKERS[item.status] or STATUS_MARKERS.pending
-    lines[#lines + 1] = {
-      { marker[1] .. " " .. item.content, marker[2] },
-    }
+  for i, item in ipairs(todo_items) do
+    if type(item) == "table" and type(item.content) == "string" and type(item.status) == "string" then
+      local marker = STATUS_MARKERS[item.status] or STATUS_MARKERS.pending
+      lines[#lines + 1] = {
+        { marker[1] .. " " .. item.content, marker[2] },
+      }
+    else
+      n00n.log.warn("todo_write: skipping malformed item " .. tostring(i) .. ": " .. tostring(item))
+    end
   end
   return lines
 end
@@ -255,7 +259,7 @@ n00n.api.register_tool({
   handler = function(input, ctx)
     local owner, owner_err = ctx:state_owner("root")
     if owner_err then
-      error(owner_err)
+      return { llm_output = tostring(owner_err), is_error = true }
     end
     local next_items = input.todos or {}
     local _, state_err
@@ -265,7 +269,7 @@ n00n.api.register_tool({
       _, state_err = ctx:state_replace("root", { todos = next_items })
     end
     if state_err then
-      error(state_err)
+      return { llm_output = tostring(state_err), is_error = true }
     end
     local is_focused = focused_session == nil or owner == focused_session
     if is_focused then
