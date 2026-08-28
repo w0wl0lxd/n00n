@@ -1821,7 +1821,9 @@ impl App {
                 ChatEventResult::AuthRequired
                 | ChatEventResult::SubagentInputRequired
                 | ChatEventResult::PermissionRequest { .. }
-                | ChatEventResult::QueueItemConsumed { .. } => unreachable!(),
+                | ChatEventResult::QueueItemConsumed { .. } => {
+                    tracing::warn!("unexpected ChatEventResult in turn error handler");
+                }
                 ChatEventResult::Continue => {}
             }
         }
