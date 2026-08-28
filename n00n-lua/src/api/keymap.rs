@@ -109,10 +109,15 @@ impl KeymapStore {
         (id, old)
     }
 
-    pub fn del(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Option<RegistryKey> {
+    pub fn del(
+        &mut self,
+        plugin: &str,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<RegistryKey> {
         self.bindings
             .iter()
-            .position(|b| b.key == key && b.modifiers == modifiers)
+            .position(|b| b.key == key && b.modifiers == modifiers && b.plugin.as_ref() == plugin)
             .map(|pos| self.bindings.remove(pos).callback)
     }
 
@@ -313,11 +318,15 @@ fn set(
 /// n00n.keymap.del("n", "<C-t>")
 #[lua_fn]
 fn del(lua: &Lua, #[ctx] plugin: Arc<str>, mode: String, lhs: String) -> LuaResult<()> {
-    let _ = (mode, &plugin);
+    if mode != "n" {
+        return Err(mlua::Error::runtime(format!(
+            "unsupported keymap mode: {mode}"
+        )));
+    }
     let (key, modifiers) = parse_key_notation(&lhs).map_err(mlua::Error::runtime)?;
     let old = lua
         .app_data_mut::<KeymapStore>()
-        .and_then(|mut store| store.del(key, modifiers));
+        .and_then(|mut store| store.del(&plugin, key, modifiers));
     if let Some(old_key) = old {
         let _ = lua.remove_registry_value(old_key);
     }
@@ -439,11 +448,18 @@ mod tests {
         );
         assert_eq!(store.bindings.len(), 1);
 
-        let removed = store.del(KeyCode::Char('x'), KeyModifiers::ALT);
+        let wrong_owner = store.del("other", KeyCode::Char('x'), KeyModifiers::ALT);
+        assert!(
+            wrong_owner.is_none(),
+            "del must not remove a binding owned by another plugin"
+        );
+        assert_eq!(store.bindings.len(), 1);
+
+        let removed = store.del("p", KeyCode::Char('x'), KeyModifiers::ALT);
         assert!(removed.is_some());
         assert!(store.bindings.is_empty());
 
-        let missing = store.del(KeyCode::Char('x'), KeyModifiers::ALT);
+        let missing = store.del("p", KeyCode::Char('x'), KeyModifiers::ALT);
         assert!(missing.is_none());
     }
 
