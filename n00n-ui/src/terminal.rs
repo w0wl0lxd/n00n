@@ -76,6 +76,8 @@ impl Drop for TerminalGuard {
 #[allow(unsafe_code)]
 pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
     teardown();
+    // SAFETY: Sending SIGTSTP to ourselves is the standard way to suspend a Unix
+    // process and return to the shell; teardown has already restored the terminal.
     #[cfg(unix)]
     unsafe {
         libc::raise(libc::SIGTSTP);
@@ -83,27 +85,57 @@ pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
     resume(terminal);
 }
 
+fn log_io<T>(result: std::io::Result<T>, msg: &str) {
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "{msg}");
+    }
+}
+
 fn teardown() {
     pop_terminal_modes();
-    terminal::disable_raw_mode().ok();
-    stdout().execute(LeaveAlternateScreen).ok();
-    stdout().flush().ok();
+    log_io(terminal::disable_raw_mode(), "failed to disable raw mode");
+    log_io(
+        stdout().execute(LeaveAlternateScreen),
+        "failed to leave alternate screen",
+    );
+    log_io(stdout().flush(), "failed to flush stdout");
 }
 
 fn pop_terminal_modes() {
-    stdout().execute(crossterm::cursor::Show).ok();
-    stdout().execute(PopKeyboardEnhancementFlags).ok();
-    stdout().execute(DisableMouseCapture).ok();
-    stdout().execute(DisableBracketedPaste).ok();
+    log_io(
+        stdout().execute(crossterm::cursor::Show),
+        "failed to show cursor",
+    );
+    log_io(
+        stdout().execute(PopKeyboardEnhancementFlags),
+        "failed to pop keyboard enhancements",
+    );
+    log_io(
+        stdout().execute(DisableMouseCapture),
+        "failed to disable mouse capture",
+    );
+    log_io(
+        stdout().execute(DisableBracketedPaste),
+        "failed to disable bracketed paste",
+    );
 }
 
 fn resume(terminal: &mut ratatui::DefaultTerminal) {
-    stdout().execute(EnterAlternateScreen).ok();
-    terminal::enable_raw_mode().ok();
-    stdout().execute(EnableBracketedPaste).ok();
-    stdout().execute(EnableMouseCapture).ok();
+    log_io(
+        stdout().execute(EnterAlternateScreen),
+        "failed to enter alternate screen",
+    );
+    log_io(terminal::enable_raw_mode(), "failed to enable raw mode");
+    log_io(
+        stdout().execute(EnableBracketedPaste),
+        "failed to enable bracketed paste",
+    );
+    log_io(
+        stdout().execute(EnableMouseCapture),
+        "failed to enable mouse capture",
+    );
     push_keyboard_enhancement();
-    let _ = terminal.clear();
+    log_io(terminal.clear(), "failed to clear terminal");
 }
 
 fn push_keyboard_enhancement() {
