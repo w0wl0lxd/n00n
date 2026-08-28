@@ -460,10 +460,10 @@ pub struct Opencode {
     stream_timeout: Duration,
 }
 
-static CATALOG: OnceLock<Mutex<CatalogData>> = OnceLock::new();
+static CATALOG: OnceLock<Arc<CatalogData>> = OnceLock::new();
 
-fn init_catalog_if_needed() -> &'static Mutex<CatalogData> {
-    CATALOG.get_or_init(|| Mutex::new(init_catalog_blocking()))
+fn init_catalog_if_needed() -> &'static Arc<CatalogData> {
+    CATALOG.get_or_init(|| Arc::new(init_catalog_blocking()))
 }
 
 impl Opencode {
@@ -498,13 +498,7 @@ impl Opencode {
 
     async fn do_list_models(&self) -> Result<Vec<ModelInfo>, AgentError> {
         // Delegate to a background thread
-        Ok(smol::unblock(|| {
-            init_catalog_if_needed()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .all_models()
-        })
-        .await)
+        Ok(smol::unblock(|| init_catalog_if_needed().all_models()).await)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -615,7 +609,7 @@ impl Opencode {
         let actual_id = actual_id.to_string();
         let auth_override = self.auth.clone();
         smol::unblock(move || {
-            let guard = init_catalog_if_needed().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = init_catalog_if_needed();
             let (meta, provider_data) = guard.lookup(&sub_provider, &actual_id)?;
             let state_dir = &guard.state_dir;
             // Dynamic provider auth (e.g. from Lua) overrides the opencode route
@@ -693,26 +687,19 @@ fn config_error(message: String) -> AgentError {
 /// Returns the list of all providers in alphabetical order.
 #[must_use]
 pub fn catalog_providers() -> Vec<ProviderData> {
-    let guard = init_catalog_if_needed()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-    guard.all_providers()
+    init_catalog_if_needed().all_providers()
 }
 
 /// Returns the list of catalog providers only if the catalog has already been downloaded.
 /// Does NOT trigger downloading.
 pub fn catalog_providers_if_available() -> Option<Vec<ProviderData>> {
-    let catalog = CATALOG.get()?;
-    let guard = catalog.lock().ok()?;
-    Some(guard.all_providers())
+    CATALOG.get().map(|catalog| catalog.all_providers())
 }
 
 /// Returns the `ProviderData` for a specific catalog provider, if found.
 #[must_use]
 pub fn catalog_provider(provider_id: &str) -> Option<ProviderData> {
-    let guard = init_catalog_if_needed().lock().ok()?;
-    guard.providers.get(provider_id).cloned()
+    init_catalog_if_needed().providers.get(provider_id).cloned()
 }
 
 // --- Catalog helpers ---
