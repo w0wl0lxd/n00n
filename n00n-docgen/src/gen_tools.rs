@@ -163,14 +163,14 @@ fn extract_params(schema: &Value) -> Vec<Param> {
     params
 }
 
-fn write_param_table(out: &mut String, params: &[Param]) {
+fn write_param_table(out: &mut String, params: &[Param]) -> std::fmt::Result {
     let has_defaults = params.iter().any(|p| !p.default.is_empty());
     let header = if has_defaults {
         "| Parameter | Type | Required | Default | Description |\n|-----------|------|----------|---------|-------------|"
     } else {
         "| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|"
     };
-    writeln!(out, "{header}").unwrap();
+    writeln!(out, "{header}")?;
     for p in params {
         let desc = p.description.replace('\n', "<br>");
         let required = if p.required { "yes" } else { "no" };
@@ -179,12 +179,12 @@ fn write_param_table(out: &mut String, params: &[Param]) {
                 out,
                 "| `{}` | {} | {} | {} | {} |",
                 p.name, p.ty, required, p.default, desc
-            )
-            .unwrap();
+            )?;
         } else {
-            writeln!(out, "| `{}` | {} | {} | {} |", p.name, p.ty, required, desc).unwrap();
+            writeln!(out, "| `{}` | {} | {} | {} |", p.name, p.ty, required, desc)?;
         }
     }
+    Ok(())
 }
 
 fn source_label(source: &ToolSource) -> &'static str {
@@ -194,7 +194,12 @@ fn source_label(source: &ToolSource) -> &'static str {
     }
 }
 
-fn write_tool_entry(out: &mut String, name: &str, info: &ToolInfo, opt_in: &HashSet<String>) {
+fn write_tool_entry(
+    out: &mut String,
+    name: &str,
+    info: &ToolInfo,
+    opt_in: &HashSet<String>,
+) -> std::fmt::Result {
     let description = info
         .def
         .get("description")
@@ -208,16 +213,16 @@ fn write_tool_entry(out: &mut String, name: &str, info: &ToolInfo, opt_in: &Hash
     let params = extract_params(&schema);
     let summary = first_paragraph(description);
 
-    writeln!(out).unwrap();
+    writeln!(out)?;
     let mut badge_text = source_label(&info.source).to_string();
     if opt_in.contains(name) {
         badge_text.push_str(", opt-in");
     }
-    writeln!(out, "### `{name}` *({badge_text})*").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "{summary}").unwrap();
-    writeln!(out).unwrap();
-    write_param_table(out, &params);
+    writeln!(out, "### `{name}` *({badge_text})*")?;
+    writeln!(out)?;
+    writeln!(out, "{summary}")?;
+    writeln!(out)?;
+    write_param_table(out, &params)
 }
 
 /// Replace `target` with `placeholder`. Empty `target` is a no-op.
@@ -265,13 +270,14 @@ fn redact_def(def: &Value) -> Value {
     }
 }
 
-fn write_front_matter(out: &mut String) {
-    writeln!(out, "+++").unwrap();
-    writeln!(out, "title = \"Tools\"").unwrap();
-    writeln!(out, "weight = 3").unwrap();
-    writeln!(out, "[extra]").unwrap();
-    writeln!(out, "group = \"Reference\"").unwrap();
-    writeln!(out, "+++").unwrap();
+fn write_front_matter(out: &mut String) -> std::fmt::Result {
+    writeln!(out, "+++")?;
+    writeln!(out, "title = \"Tools\"")?;
+    writeln!(out, "weight = 3")?;
+    writeln!(out, "[extra]")?;
+    writeln!(out, "group = \"Reference\"")?;
+    writeln!(out, "+++")?;
+    Ok(())
 }
 
 fn collect_tool_info(
@@ -313,7 +319,7 @@ fn load_registry_with_builtins() -> (Arc<ToolRegistry>, HashSet<String>) {
     (registry, opt_in)
 }
 
-pub fn generate() -> String {
+pub fn generate() -> Result<String, std::fmt::Error> {
     let vars = Vars::new()
         .set("{cwd}", "<cwd>")
         .set("{platform}", "linux")
@@ -350,15 +356,14 @@ pub fn generate() -> String {
 
     let total = tools.len();
     let mut out = String::new();
-    write_front_matter(&mut out);
-    writeln!(out).unwrap();
-    writeln!(out, "# Tools").unwrap();
-    writeln!(out).unwrap();
+    write_front_matter(&mut out)?;
+    writeln!(out)?;
+    writeln!(out, "# Tools")?;
+    writeln!(out)?;
     writeln!(
         out,
         "n00n ships with {total} built-in tools. This is the full reference."
-    )
-    .unwrap();
+    )?;
 
     let mut rendered: HashSet<&str> = HashSet::new();
 
@@ -371,11 +376,11 @@ pub fn generate() -> String {
         if present.is_empty() {
             continue;
         }
-        writeln!(out).unwrap();
-        writeln!(out, "## {section_name}").unwrap();
+        writeln!(out)?;
+        writeln!(out, "## {section_name}")?;
         for name in present {
             let info = tools.get(name).expect("checked above");
-            write_tool_entry(&mut out, name, info, &opt_in);
+            write_tool_entry(&mut out, name, info, &opt_in)?;
             rendered.insert(name);
         }
     }
@@ -387,18 +392,18 @@ pub fn generate() -> String {
         .collect();
     leftovers.sort_unstable();
     if !leftovers.is_empty() {
-        writeln!(out).unwrap();
-        writeln!(out, "## Additional tools").unwrap();
+        writeln!(out)?;
+        writeln!(out, "## Additional tools")?;
         for name in leftovers {
             let info = tools.get(name).expect("checked above");
-            write_tool_entry(&mut out, name, info, &opt_in);
+            write_tool_entry(&mut out, name, info, &opt_in)?;
         }
     }
 
     if out.ends_with('\n') {
         out.pop();
     }
-    out
+    Ok(out)
 }
 
 static DATE_RE: std::sync::LazyLock<Regex> =

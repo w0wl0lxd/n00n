@@ -201,10 +201,9 @@ fn record_toon_stats(stats: &Mutex<ToonStats>, json_len: usize, toon_len: usize,
         }
         if let Some(path) = toon_stats_path()
             && let Ok(bytes) = serde_json::to_vec(&*stats)
+            && let Err(e) = n00n_storage::atomic_write(&path, &bytes)
         {
-            if let Err(e) = n00n_storage::atomic_write(&path, &bytes) {
-                tracing::warn!(error = %e, "failed to write toon stats");
-            }
+            tracing::warn!(error = %e, "failed to write toon stats");
         }
     }
 }
@@ -236,14 +235,15 @@ fn tooned(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
             .ok()
             .and_then(|decoded| serde_json::to_value(&decoded).ok())
             .is_some_and(|decoded| decoded == serde_val);
-    let toon_stats: Arc<Mutex<ToonStats>> = lua
-        .app_data_ref::<Arc<Mutex<ToonStats>>>()
-        .map(|r| Arc::clone(&*r))
-        .unwrap_or_else(|| {
-            let stats = Arc::new(Mutex::new(load_toon_stats()));
-            lua.set_app_data(Arc::clone(&stats));
-            stats
-        });
+    let toon_stats: Arc<Mutex<ToonStats>> =
+        lua.app_data_ref::<Arc<Mutex<ToonStats>>>().map_or_else(
+            || {
+                let stats = Arc::new(Mutex::new(load_toon_stats()));
+                lua.set_app_data(Arc::clone(&stats));
+                stats
+            },
+            |r| Arc::clone(&*r),
+        );
     record_toon_stats(&toon_stats, json.len(), toon.len(), use_toon);
     if use_toon {
         Ok((
