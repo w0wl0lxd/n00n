@@ -1413,6 +1413,22 @@ impl EventSender {
             .map_err(|_| AgentError::Channel)
     }
 
+    /// Waits for channel capacity and sends an agent event.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError` if the channel is closed.
+    pub async fn send_wait(&self, event: impl Into<AgentEvent>) -> Result<(), AgentError> {
+        self.tx
+            .send_async(Envelope {
+                event: event.into(),
+                subagent: None,
+                run_id: self.run_id,
+            })
+            .await
+            .map_err(|_| AgentError::Channel)
+    }
+
     /// Sends an envelope directly.
     ///
     /// # Errors
@@ -1454,6 +1470,36 @@ pub struct Envelope {
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    #[test]
+    fn send_wait_delivers_lifecycle_event_after_backpressure() {
+        smol::block_on(async {
+            let (tx, rx) = flume::bounded(1);
+            let sender = EventSender::new(tx, 7);
+            sender
+                .send(AgentEvent::TextDelta {
+                    text: "full".into(),
+                })
+                .expect("fill channel");
+
+            let waiting_sender = sender.clone();
+            let pending = smol::spawn(async move {
+                waiting_sender
+                    .send_wait(AgentEvent::QueueDrained { generation: 9 })
+                    .await
+            });
+            let first = rx.recv_async().await.expect("first event");
+            pending.await.expect("reliable send");
+            let second = rx.recv_async().await.expect("lifecycle event");
+
+            assert!(matches!(first.event, AgentEvent::TextDelta { .. }));
+            assert!(matches!(
+                second.event,
+                AgentEvent::QueueDrained { generation: 9 }
+            ));
+            assert_eq!(second.run_id, 7);
+        });
+    }
 
     #[test_case(ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
     #[test_case(ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]

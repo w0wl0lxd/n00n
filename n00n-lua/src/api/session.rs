@@ -125,6 +125,21 @@ async fn delete(
     .await
 }
 
+/// Deletes completed background sessions in the caller's lineage.
+/// When `id` is nil, all completed descendants are reaped.
+///
+/// @param id string? Completed agent id, or nil for all completed descendants.
+/// @return (integer|nil, string|nil) Number of sessions reaped, or nil and an error.
+#[lua_fn]
+async fn reap(
+    lua: Lua,
+    #[ctx] tx: Option<flume::Sender<UiAction>>,
+    id: Option<String>,
+) -> LuaResult<Pair> {
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
+    roundtrip(lua, tx, SessionRequest::Reap { id, caller_id }).await
+}
+
 /// Starts a new session in the current project.
 ///
 /// @param opts table? Optional fields: prompt (string) first user message
@@ -291,7 +306,7 @@ lua_table! {
     /// the pair `(value, err)`. Without an interactive UI attached, every
     /// call returns `nil, "no interactive UI attached"`.
     "n00n.session" => pub(crate) fn create_session_table(tx: Option<flume::Sender<UiAction>>),
-    DOCS [list(tx), live(tx), status(tx), current(tx), focus(tx), delete(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
+    DOCS [list(tx), live(tx), status(tx), current(tx), focus(tx), delete(tx), reap(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
 }
 
 #[cfg(test)]
@@ -369,27 +384,45 @@ mod tests {
             assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
             assert!(!trusted_ui_control);
             reply_tx.send(Ok(json!(true))).unwrap();
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::Reap {
+                        id,
+                        caller_id: actual_caller_id,
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected reap request");
+            };
+            assert_eq!(id.as_deref(), Some("target"));
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!(1))).unwrap();
         });
 
-        let (child_id, prompt_status, deleted): (String, String, bool) = smol::block_on(
-            lua.load(
-                r#"
+        let (child_id, prompt_status, deleted, reaped): (String, String, bool, usize) =
+            smol::block_on(
+                lua.load(
+                    r#"
                 local child, new_err = session.new({ caller_id = "spoof" })
                 if new_err then error(new_err) end
                 local status, prompt_err = session.prompt("hello", { caller_id = "spoof" })
                 if prompt_err then error(prompt_err) end
                 local deleted, delete_err = session.delete("target")
                 if delete_err then error(delete_err) end
-                return child, status, deleted
+                local reaped, reap_err = session.reap("target")
+                if reap_err then error(reap_err) end
+                return child, status, deleted, reaped
                 "#,
+                )
+                .eval_async(),
             )
-            .eval_async(),
-        )
-        .unwrap();
+            .unwrap();
         checker.join().unwrap();
         assert_eq!(child_id, "child");
         assert_eq!(prompt_status, "queued");
         assert!(deleted);
+        assert_eq!(reaped, 1);
     }
 
     #[test]

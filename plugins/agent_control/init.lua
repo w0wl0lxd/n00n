@@ -298,7 +298,7 @@ local control_schema = {
   properties = {
     action = {
       type = "string",
-      enum = { "message", "pause", "resume", "stop", "policy" },
+      enum = { "message", "pause", "resume", "stop", "reap", "policy" },
       description = "Mutating control action.",
       required = true,
     },
@@ -411,6 +411,17 @@ local function control_handler(input)
     return { llm_output = "Error: unknown policy action " .. tostring(paction), is_error = true }
   end
 
+  if input.action == "reap" then
+    local reaped, err = n00n.session.reap(input.agent_id)
+    if not reaped then
+      return { llm_output = err, is_error = true }
+    end
+    local scope = input.agent_id and (" · " .. input.agent_id) or ""
+    local plain = string.format("reaped · %d%s", reaped, scope)
+    local body = card(plain, {}, tostring(reaped))
+    return { llm_output = plain, body = body, annotation = tostring(reaped) }
+  end
+
   if not input.agent_id or input.agent_id == "" then
     return { llm_output = "agent_id is required for " .. tostring(input.action), is_error = true }
   end
@@ -496,7 +507,7 @@ end
 n00n.api.register_tool({
   name = "control_agent",
   aliases = { "agent_control" },
-  description = "Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.",
+  description = "Mutate background agents: message, stop, resume, reap finished agents, or manage policy. Reap without agent_id removes all finished descendants. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.",
   kind = "execute",
   audiences = { "main" },
   defer_loading = true,
