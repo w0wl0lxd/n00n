@@ -63,8 +63,6 @@ const CLIENT_TIMEZONE: &str = "UTC";
 const TOKIO_RUNTIME_BUILD: &str = "cursor run tokio runtime";
 const MIN_READ_BUDGET: Duration = Duration::from_millis(1);
 
-static STALL_DUMP: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
-
 #[derive(Debug, Clone)]
 pub(crate) struct RunResult {
     pub text: String,
@@ -465,9 +463,7 @@ async fn run_text_turn_mode_tokio(
         message,
     })?;
 
-    if let Ok(mut dumps) = STALL_DUMP.lock() {
-        dumps.clear();
-    }
+    let stall_dump: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let (outbound, notify_rx) = new_outbound_queue();
     let checkpoints = shared_store();
     let url = format!("{}{}", agent_base_url.trim_end_matches('/'), AGENT_PATH);
@@ -544,7 +540,7 @@ async fn run_text_turn_mode_tokio(
             started.elapsed()
         };
         if !got_output && pre_output_elapsed > FIRST_BYTE_TIMEOUT {
-            if let Ok(dumps) = STALL_DUMP.lock() {
+            if let Ok(dumps) = stall_dump.lock() {
                 let mut blob = Vec::new();
                 for payload in dumps.iter() {
                     if let Ok(frame) = encode_frame(0, payload) {
@@ -612,7 +608,7 @@ async fn run_text_turn_mode_tokio(
                     // (text/thinking/KV); handle before exiting the read loop.
                     frames_seen = frames_seen.saturating_add(1);
                     if let Ok(payload) = decode_frame_payload(&frame) {
-                        if let Ok(mut dumps) = STALL_DUMP.lock() {
+                        if let Ok(mut dumps) = stall_dump.lock() {
                             dumps.push(payload.clone());
                         }
                         // Use prost to decode for field inspection
