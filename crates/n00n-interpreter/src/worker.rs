@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::error::InterpreterError;
 use crate::runner::{self, AsyncResolver, PendingCall, ToolFn};
 
-const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartRequest {

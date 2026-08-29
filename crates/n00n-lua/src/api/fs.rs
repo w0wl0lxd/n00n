@@ -783,6 +783,29 @@ async fn read_within(lua: Lua, base: String, relative: String) -> LuaResult<(Val
     let base = make_absolute(&base)?;
     let result = smol::unblock(move || {
         let path = portable_path_within(&base, Path::new(&relative))?;
+        let file = std::fs::File::open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "path is not a regular file",
+            ));
+        }
+        let symlink_meta = std::fs::symlink_metadata(&path)?;
+        if symlink_meta.file_type().is_symlink() {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "symbolic links are not allowed in confined paths",
+            ));
+        }
+        let base_canon = std::fs::canonicalize(&base)?;
+        let path_canon = std::fs::canonicalize(&path)?;
+        if !path_canon.starts_with(&base_canon) {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "path traversal outside base directory is not allowed",
+            ));
+        }
         std::fs::read_to_string(path)
     })
     .await;
@@ -890,6 +913,22 @@ async fn write_within(
     let base = make_absolute(&base)?;
     let result = smol::unblock(move || {
         let path = portable_path_within(&base, Path::new(&relative))?;
+        let base_canon = std::fs::canonicalize(&base)?;
+        if let Ok(path_canon) = std::fs::canonicalize(&path) {
+            if !path_canon.starts_with(&base_canon) {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "path traversal outside base directory is not allowed",
+                ));
+            }
+            let symlink_meta = std::fs::symlink_metadata(&path)?;
+            if symlink_meta.file_type().is_symlink() {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "symbolic links are not allowed in confined paths",
+                ));
+            }
+        }
         atomic_write(&path, content.as_bytes())
     })
     .await;

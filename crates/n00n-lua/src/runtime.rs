@@ -1859,21 +1859,8 @@ impl LuaRuntime {
     ) -> Result<Self, PluginError> {
         let lua = Lua::new();
         apply_jit(&lua, jit);
-        lua.set_memory_limit(LUA_MEMORY_LIMIT)
-            .map_err(|e| PluginError::Lua {
-                plugin: "<init>".to_owned(),
-                source: e,
-            })?;
-        let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
-
-        lua.set_app_data(ShutdownFlag {
-            requested: Arc::clone(&shutdown),
-            first_seen: Mutex::new(None),
-        });
-        let armed = Arc::new(AtomicBool::new(false));
-        let watchdog = Watchdog::spawn(Arc::clone(&armed));
-        install_interrupt(&lua, armed);
-
+        // Sandbox before any user code: clear globals and enable sandbox immediately
+        // after VM creation so init.lua cannot observe unrestricted fs.
         let globals = lua.globals();
         for name in &["require", "io", "package"] {
             globals
@@ -1888,6 +1875,20 @@ impl LuaRuntime {
             plugin: "<init>".to_owned(),
             source: e,
         })?;
+        lua.set_memory_limit(LUA_MEMORY_LIMIT)
+            .map_err(|e| PluginError::Lua {
+                plugin: "<init>".to_owned(),
+                source: e,
+            })?;
+        let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
+
+        lua.set_app_data(ShutdownFlag {
+            requested: Arc::clone(&shutdown),
+            first_seen: Mutex::new(None),
+        });
+        let armed = Arc::new(AtomicBool::new(false));
+        let watchdog = Watchdog::spawn(Arc::clone(&armed));
+        install_interrupt(&lua, armed);
 
         lua.set_app_data(CommandHandlerMap::new());
         lua.set_app_data(JobStore::new());
@@ -2942,17 +2943,27 @@ fn spawn_plugin_job_pump(ex: &Rc<smol::LocalExecutor<'_>>, lua: &Lua) {
     .detach();
 }
 
-fn strip_traceback(err: &mlua::Error) -> String {
+fn lua_error_message(err: &mlua::Error) -> String {
     match err {
+        mlua::Error::MemoryError(msg) => format!("memory limit exceeded (512 MiB): {msg}"),
         mlua::Error::CallbackError { cause, .. } => {
             let mut inner = cause;
             while let mlua::Error::CallbackError { cause, .. } = inner.as_ref() {
                 inner = cause;
             }
-            inner.to_string()
+            match inner.as_ref() {
+                mlua::Error::MemoryError(msg) => {
+                    format!("memory limit exceeded (512 MiB): {msg}")
+                }
+                _ => inner.to_string(),
+            }
         }
         other => other.to_string(),
     }
+}
+
+fn strip_traceback(err: &mlua::Error) -> String {
+    lua_error_message(err)
 }
 
 /// The error message format is load-bearing: the bash plugin's `restore`
