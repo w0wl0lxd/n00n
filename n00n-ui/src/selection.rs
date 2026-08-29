@@ -28,6 +28,7 @@
 //! `append_rows` calls `needs_space()` to decide.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 use std::time::Instant;
 
 use ratatui::buffer::Buffer;
@@ -38,7 +39,7 @@ use ratatui::text::Line;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::components::scrollbar::ScrollInfo;
-use crate::theme;
+use crate::theme::{self, ThemeEngine};
 use n00n_markdown::render::{CODE_BAR, CODE_BAR_WRAP};
 
 /// Position in doc space (full logical document, not just visible window).
@@ -493,8 +494,9 @@ pub(crate) fn strip_code_bar_prefix(
     cell: &ratatui::buffer::Cell,
     out: &mut String,
     line_start: usize,
+    theme: &crate::theme::Theme,
 ) -> usize {
-    if cell.style().fg != theme::current().code_gutter.fg || cell.symbol() != "│" {
+    if cell.style().fg != theme.code_gutter.fg || cell.symbol() != "│" {
         return 0;
     }
     let line = &out[line_start..];
@@ -519,6 +521,7 @@ pub(crate) fn append_rows(
     to: u16,
     out: &mut String,
     breaks: &LineBreaks,
+    theme_engine: &Arc<ThemeEngine>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -528,6 +531,7 @@ pub(crate) fn append_rows(
     let row_end = to.min(area.bottom());
     let mut pending_newlines = 0u16;
     let anchor = out.len();
+    let theme = theme_engine.current();
     for row in row_start..row_end {
         let rel_row = row - area.y;
         let is_new_line = breaks.is_line_start(rel_row);
@@ -552,7 +556,7 @@ pub(crate) fn append_rows(
         }
 
         let stripped = if col_start == area.x {
-            strip_code_bar_prefix(&buf[(col_start, row)], out, line_start)
+            strip_code_bar_prefix(&buf[(col_start, row)], out, line_start, &*theme)
         } else {
             0
         };
@@ -583,6 +587,7 @@ pub fn extract_selected_text(
     buf: &Buffer,
     ss: ScreenSelection,
     regions: &[ContentRegion<'_>],
+    theme_engine: &Arc<ThemeEngine>,
 ) -> String {
     let mut out = String::new();
     let mut row = ss.start_row;
@@ -616,6 +621,7 @@ pub fn extract_selected_text(
                 chunk_end,
                 &mut out,
                 &region.line_breaks,
+                theme_engine,
             );
         }
         row = region_end;
@@ -675,7 +681,7 @@ mod tests {
             raw_text: raw,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, sel, &[region]);
+        let text = extract_selected_text(&buf, sel, &[region], &crate::theme::test_engine());
         assert_eq!(text, expected);
     }
 
@@ -706,7 +712,8 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let text = extract_selected_text(&buf, ss(0, 0, 4, 7), &regions);
+        let text =
+            extract_selected_text(&buf, ss(0, 0, 4, 7), &regions, &crate::theme::test_engine());
         assert_eq!(text, "Line 0\nLine 2\nLine 4");
     }
 
@@ -728,7 +735,12 @@ mod tests {
             raw_text: "overlay raw text",
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 2, 9), &[base, overlay]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 2, 9),
+            &[base, overlay],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "overlay raw text");
     }
 
@@ -753,7 +765,12 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let text = extract_selected_text(&buf, ss(1, 0, 2, 18), &regions);
+        let text = extract_selected_text(
+            &buf,
+            ss(1, 0, 2, 18),
+            &regions,
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "msg0 line2\nmsg1 rendered");
     }
 
@@ -779,7 +796,12 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 0, 9), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 0, 9),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "Status");
     }
 
@@ -853,7 +875,7 @@ mod tests {
     fn code_bar_buffer() -> (Buffer, Rect) {
         let area = Rect::new(0, 0, 20, 2);
         let mut buf = Buffer::empty(area);
-        let code_bar_style = theme::current().code_gutter;
+        let code_bar_style = crate::theme::test_engine().current().code_gutter;
         buf.set_string(0, 0, "│", code_bar_style);
         buf.set_string(2, 0, "fn main() {}        ", Style::default());
         buf.set_string(0, 1, "│", code_bar_style);
@@ -868,7 +890,12 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 1, 18), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 1, 18),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "fn main() {}\nlet x = 1;");
     }
 
@@ -876,14 +903,19 @@ mod tests {
     fn does_not_strip_table_border_prefix() {
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
-        let table_style = theme::current().table_border;
+        let table_style = crate::theme::test_engine().current().table_border;
         buf.set_string(0, 0, "│", table_style);
         buf.set_string(2, 0, "cell content        ", Style::default());
         let region = ContentRegion {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 0, 18), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 0, 18),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "│ cell content");
     }
 
@@ -894,7 +926,12 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 5, 0, 13), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 5, 0, 13),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "main() {}");
     }
 
@@ -902,14 +939,19 @@ mod tests {
     fn strips_code_bar_wrap_prefix() {
         let area = Rect::new(0, 0, 12, 1);
         let mut buf = Buffer::empty(area);
-        let code_bar_style = theme::current().code_gutter;
+        let code_bar_style = crate::theme::test_engine().current().code_gutter;
         buf.set_string(0, 0, "│", code_bar_style);
         buf.set_string(1, 0, "continued  ", Style::default());
         let region = ContentRegion {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 0, 10), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 0, 10),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "continued");
     }
 
@@ -1010,7 +1052,12 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 1, 19), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 1, 19),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "helloworld");
     }
 
@@ -1018,7 +1065,7 @@ mod tests {
     fn code_wrap_continuation_no_space() {
         let area = Rect::new(0, 0, 20, 2);
         let mut buf = Buffer::empty(area);
-        let code_style = theme::current().code_gutter;
+        let code_style = crate::theme::test_engine().current().code_gutter;
         buf.set_string(0, 0, "│", code_style);
         buf.set_string(2, 0, "long_variable_na", Style::default());
         buf.set_string(0, 1, "│", code_style);
@@ -1029,7 +1076,12 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 1, 19), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 1, 19),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "long_variable_name_here");
     }
 
@@ -1081,7 +1133,12 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 3, 9), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 3, 9),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(
             text, "Line A\n\n\nLine D",
             "two blank rows produce two pending newlines"
@@ -1095,7 +1152,12 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, 0, 0), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, 0, 0),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "H");
     }
 
@@ -1133,7 +1195,12 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        extract_selected_text(&buf, ss(0, 0, height - 1, width - 1), &[region])
+        extract_selected_text(
+            &buf,
+            ss(0, 0, height - 1, width - 1),
+            &[region],
+            &crate::theme::test_engine(),
+        )
     }
 
     #[test_case("hello world", 5, "hello world" ; "word_wrap_at_exact_boundary")]
@@ -1289,7 +1356,12 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, ss(0, 0, height - 1, 5), &[region]);
+        let text = extract_selected_text(
+            &buf,
+            ss(0, 0, height - 1, 5),
+            &[region],
+            &crate::theme::test_engine(),
+        );
         assert_eq!(text, "hello world\nok");
     }
 

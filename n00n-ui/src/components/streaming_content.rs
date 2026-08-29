@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use crate::animation::Typewriter;
 use crate::components::messages::wrapped_line_count;
 use crate::markdown::{paint_semantic, prefix_line, prefix_span};
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use n00n_markdown::render::Renderer;
 use ratatui::style::Style;
@@ -64,8 +66,9 @@ impl StreamingCache {
         text_style: Style,
         prefix_style: Style,
         width: u16,
+        theme_engine: &Arc<ThemeEngine>,
     ) -> bool {
-        let theme_gen = theme::generation();
+        let theme_gen = theme_engine.generation();
         let key = CacheKey::for_typewriter(tw, width, theme_gen);
         if self.key == Some(key) {
             return false;
@@ -73,7 +76,7 @@ impl StreamingCache {
         let visible = tw.visible();
         let text = n00n_markdown::render::truncate_long_lines_at(visible, STREAMING_MAX_LINE_BYTES);
         let semantic = renderer.render(text.as_ref(), width, theme_gen);
-        self.lines = paint_semantic(semantic, prefix, text_style, prefix_style);
+        self.lines = paint_semantic(semantic, prefix, text_style, prefix_style, theme_engine);
         self.key = Some(key);
         self.rendered_height = None;
         true
@@ -199,6 +202,7 @@ pub(crate) struct StreamingContent {
     text_style: Style,
     prefix_style: Style,
     mode: RenderMode,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl StreamingContent {
@@ -207,6 +211,7 @@ impl StreamingContent {
         text_style: Style,
         prefix_style: Style,
         ms_per_char: u64,
+        theme_engine: Arc<ThemeEngine>,
     ) -> Self {
         Self {
             typewriter: Typewriter::with_speed(ms_per_char),
@@ -217,6 +222,7 @@ impl StreamingContent {
             text_style,
             prefix_style,
             mode: RenderMode::Plain,
+            theme_engine,
         }
     }
 
@@ -285,6 +291,7 @@ impl StreamingContent {
                 self.text_style,
                 self.prefix_style,
                 width,
+                &self.theme_engine,
             );
         }
 
@@ -611,7 +618,7 @@ mod tests {
     fn mutations_invalidate_cache() {
         let style = Style::default();
 
-        let mut sc = StreamingContent::new("", style, style, 4);
+        let mut sc = StreamingContent::new("", style, style, 4, crate::theme::test_engine());
         sc.set_buffer("hello world");
         sc.render_lines(80);
         sc.clear();
@@ -626,7 +633,7 @@ mod tests {
         assert!(sc.is_empty());
         assert!(sc.cache.key.is_none());
 
-        let mut sc = StreamingContent::new("old> ", style, style, 4);
+        let mut sc = StreamingContent::new("old> ", style, style, 4, crate::theme::test_engine());
         sc.set_buffer("text");
         sc.render_lines(80);
         let new_style = Style::default().fg(ratatui::style::Color::Red);
@@ -640,7 +647,15 @@ mod tests {
         let mut cache = StreamingCache::default();
         let mut renderer = fresh_renderer();
         let tw = typewriter_for_text("hello");
-        let repopulated = cache.get_or_update(&mut renderer, &tw, "", style, style, 80);
+        let repopulated = cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            80,
+            &crate::theme::test_engine(),
+        );
         assert!(repopulated, "first call must repopulate (return true)");
     }
 
@@ -650,8 +665,24 @@ mod tests {
         let mut cache = StreamingCache::default();
         let mut renderer = fresh_renderer();
         let tw = typewriter_for_text("hello");
-        cache.get_or_update(&mut renderer, &tw, "", style, style, 80);
-        let hit = cache.get_or_update(&mut renderer, &tw, "", style, style, 80);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            80,
+            &crate::theme::test_engine(),
+        );
+        let hit = cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            80,
+            &crate::theme::test_engine(),
+        );
         assert!(
             !hit,
             "second identical call must be a cache hit (return false)"
@@ -663,7 +694,7 @@ mod tests {
         let style = Style::default();
         let red = Style::default().fg(ratatui::style::Color::Red);
 
-        let mut sc = StreamingContent::new("old> ", style, style, 4);
+        let mut sc = StreamingContent::new("old> ", style, style, 4, crate::theme::test_engine());
         sc.set_buffer("hello");
         let before: Vec<String> = sc
             .render_lines(80)
@@ -688,7 +719,15 @@ mod tests {
         let mut cache = StreamingCache::default();
         let mut renderer = fresh_renderer();
         let tw = typewriter_for_text("");
-        let repopulated = cache.get_or_update(&mut renderer, &tw, "", style, style, 80);
+        let repopulated = cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            80,
+            &crate::theme::test_engine(),
+        );
         assert!(repopulated);
         assert!(
             !cache.lines.is_empty(),

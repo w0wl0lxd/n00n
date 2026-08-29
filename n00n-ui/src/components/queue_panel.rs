@@ -1,7 +1,8 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use crate::components::keybindings::key;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -26,7 +27,13 @@ pub fn height(queue_len: usize) -> u16 {
     }
 }
 
-pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option<usize>) {
+pub fn view(
+    frame: &mut Frame,
+    area: Rect,
+    entries: &[QueueEntry],
+    focus: Option<usize>,
+    theme_engine: &Arc<ThemeEngine>,
+) {
     if entries.is_empty() {
         return;
     }
@@ -37,7 +44,7 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
         .map(|(i, entry)| {
             let flat = entry.text.replace('\n', " ");
             let (style, hint_parts) = if focus == Some(i) {
-                (theme::current().queue_delete, ("", FOCUSED_HINT, ""))
+                (theme_engine.current().queue_delete, ("", FOCUSED_HINT, ""))
             } else if i == 0 {
                 (
                     Style::new().fg(entry.color),
@@ -46,7 +53,7 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
             } else {
                 (Style::new().fg(entry.color), ("", "", ""))
             };
-            truncate_line(&flat, content_width, style, hint_parts)
+            truncate_line(&flat, content_width, style, hint_parts, theme_engine)
         })
         .collect();
 
@@ -54,15 +61,15 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(if focus.is_some() {
-            theme::current().queue_delete
+            theme_engine.current().queue_delete
         } else {
-            theme::current().panel_border
+            theme_engine.current().panel_border
         })
         .title_top(Line::from(QUEUE_LABEL).left_aligned())
-        .title_style(theme::current().panel_title);
+        .title_style(theme_engine.current().panel_title);
 
     let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(theme::current().foreground))
+        .style(Style::new().fg(theme_engine.current().foreground))
         .block(block);
 
     frame.render_widget(paragraph, area);
@@ -73,8 +80,9 @@ fn truncate_line(
     max_width: usize,
     style: Style,
     hint: (&'static str, &'static str, &'static str),
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Line<'static> {
-    let hint_style = theme::current().tool_dim;
+    let hint_style = theme_engine.current().tool_dim;
     let hint_len = hint.0.len() + hint.1.len() + hint.2.len();
     let available = max_width.saturating_sub(hint_len);
 
@@ -114,7 +122,7 @@ mod tests {
     const HINT: (&str, &str, &str) = (" - hint", "", "");
     const NO_HINT: (&str, &str, &str) = ("", "", "");
     fn style() -> Style {
-        Style::new().fg(theme::current().foreground)
+        Style::new().fg(crate::theme::test_engine().current().foreground)
     }
     fn span_texts<'a>(line: &'a Line<'a>) -> Vec<&'a str> {
         line.spans
@@ -141,7 +149,13 @@ mod tests {
         expected: &[&str],
     ) {
         assert_eq!(
-            span_texts(&truncate_line(input, width, style(), hint)),
+            span_texts(&truncate_line(
+                input,
+                width,
+                style(),
+                hint,
+                &crate::theme::test_engine()
+            )),
             expected
         );
     }

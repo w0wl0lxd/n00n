@@ -194,7 +194,13 @@ impl App {
             self.plan_form.view(frame, layout.bottom_area);
         } else if layout.bottom_area.height > 0 {
             let queue_entries = self.queue.panel_entries();
-            queue_panel::view(frame, layout.queue_area, &queue_entries, self.queue.focus());
+            queue_panel::view(
+                frame,
+                layout.queue_area,
+                &queue_entries,
+                self.queue.focus(),
+                &self.theme_engine,
+            );
             for &(idx, rect) in &layout.panel_windows {
                 self.float_mgr.view_panel(frame, idx, rect);
             }

@@ -1,10 +1,12 @@
 //! Renders tool-call argument JSON as styled, truncated display lines so a
 //! tool call never shows the user raw JSON.
 
+use std::sync::Arc;
+
 use ratatui::text::{Line, Span};
 
 use crate::markdown::should_truncate;
-use crate::theme;
+use crate::theme::ThemeEngine;
 use n00n_redact::{REDACTED, escape_value, is_secret_key, looks_like_secret_value};
 
 const COMPACT_BUDGET: usize = 40;
@@ -23,6 +25,7 @@ pub(crate) fn render_args(
     collapsed_limit: usize,
     expanded_limit: usize,
     expanded: bool,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> ArgView {
     let (limit, budget) = if expanded {
         (expanded_limit, EXPANDED_LINE_BUDGET)
@@ -32,6 +35,7 @@ pub(crate) fn render_args(
     let mut builder = ArgsBuilder {
         lines: Vec::new(),
         budget,
+        theme_engine: Arc::clone(theme_engine),
     };
     let redacted = redact_display_value(input);
     if let serde_json::Value::Object(map) = &redacted {
@@ -127,6 +131,7 @@ fn search_value(value: &serde_json::Value) -> String {
 struct ArgsBuilder {
     lines: Vec<Line<'static>>,
     budget: usize,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl ArgsBuilder {
@@ -138,14 +143,17 @@ impl ArgsBuilder {
     }
 
     fn push_entry(&mut self, key: &str, value: &serde_json::Value, depth: usize) {
-        let key_span = Span::styled(format!("{key}:"), theme::current().tool_annotation);
+        let key_span = Span::styled(
+            format!("{key}:"),
+            self.theme_engine.current().tool_annotation,
+        );
         if is_secret_key(key) {
             self.push_line(
                 depth,
                 vec![
                     key_span,
                     Span::raw(" "),
-                    Span::styled(REDACTED, theme::current().tool_dim),
+                    Span::styled(REDACTED, self.theme_engine.current().tool_dim),
                 ],
             );
             return;
@@ -159,7 +167,7 @@ impl ArgsBuilder {
                         vec![
                             key_span,
                             Span::raw(" "),
-                            Span::styled(compact, theme::current().tool),
+                            Span::styled(compact, self.theme_engine.current().tool),
                         ],
                     );
                 } else {
@@ -193,14 +201,17 @@ impl ArgsBuilder {
     }
 
     fn push_item(&mut self, value: &serde_json::Value, depth: usize) {
-        let dash = Span::styled(DASH_PREFIX, theme::current().tool_dim);
+        let dash = Span::styled(DASH_PREFIX, self.theme_engine.current().tool_dim);
         match value {
             serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
                 let compact = self.compact_text(value);
                 if compact.chars().count() <= COMPACT_BUDGET {
                     self.push_line(
                         depth,
-                        vec![dash, Span::styled(compact, theme::current().tool)],
+                        vec![
+                            dash,
+                            Span::styled(compact, self.theme_engine.current().tool),
+                        ],
                     );
                 } else {
                     self.push_line(depth, vec![dash]);
@@ -245,12 +256,18 @@ impl ArgsBuilder {
 
     fn value_span(&self, value: &serde_json::Value) -> Span<'static> {
         match value {
-            serde_json::Value::String(s) => Span::styled(self.escaped(s), theme::current().tool),
-            serde_json::Value::Number(n) => Span::styled(n.to_string(), theme::current().tool),
-            serde_json::Value::Bool(b) => Span::styled(b.to_string(), theme::current().tool),
-            serde_json::Value::Null => Span::styled("null", theme::current().tool_dim),
+            serde_json::Value::String(s) => {
+                Span::styled(self.escaped(s), self.theme_engine.current().tool)
+            }
+            serde_json::Value::Number(n) => {
+                Span::styled(n.to_string(), self.theme_engine.current().tool)
+            }
+            serde_json::Value::Bool(b) => {
+                Span::styled(b.to_string(), self.theme_engine.current().tool)
+            }
+            serde_json::Value::Null => Span::styled("null", self.theme_engine.current().tool_dim),
             serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-                Span::styled(self.compact_text(value), theme::current().tool)
+                Span::styled(self.compact_text(value), self.theme_engine.current().tool)
             }
         }
     }
@@ -286,7 +303,13 @@ mod tests {
     }
 
     fn render(input: &serde_json::Value) -> ArgView {
-        render_args(input, usize::MAX, usize::MAX, false)
+        render_args(
+            input,
+            usize::MAX,
+            usize::MAX,
+            false,
+            &crate::theme::test_engine(),
+        )
     }
 
     #[test]
@@ -356,6 +379,7 @@ mod tests {
             2,
             usize::MAX,
             false,
+            &crate::theme::test_engine(),
         );
         assert_eq!(view.hidden, 3);
         assert_eq!(view.lines.len(), 2);
@@ -363,7 +387,13 @@ mod tests {
 
     #[test]
     fn single_hidden_line_shows_all() {
-        let view = render_args(&json!({ "a": 1, "b": 2, "c": 3 }), 2, usize::MAX, false);
+        let view = render_args(
+            &json!({ "a": 1, "b": 2, "c": 3 }),
+            2,
+            usize::MAX,
+            false,
+            &crate::theme::test_engine(),
+        );
         assert_eq!(view.hidden, 0);
         assert_eq!(view.lines.len(), 3);
     }
@@ -375,6 +405,7 @@ mod tests {
             2,
             4,
             true,
+            &crate::theme::test_engine(),
         );
         assert_eq!(view.hidden, 2);
         assert_eq!(view.lines.len(), 4);
@@ -392,7 +423,13 @@ mod tests {
     #[test]
     fn long_string_full_when_expanded() {
         let long = "x".repeat(400);
-        let view = render_args(&json!({ "content": long }), 1, usize::MAX, true);
+        let view = render_args(
+            &json!({ "content": long }),
+            1,
+            usize::MAX,
+            true,
+            &crate::theme::test_engine(),
+        );
         let text = lines_text(&view);
         assert!(!text.contains('…'));
         assert_eq!(text.chars().count(), "content: ".chars().count() + 400);
@@ -401,7 +438,13 @@ mod tests {
     #[test]
     fn expanded_long_string_uses_existing_line_budget() {
         let long = "x".repeat(EXPANDED_LINE_BUDGET + 100);
-        let view = render_args(&json!({ "content": long }), 1, usize::MAX, true);
+        let view = render_args(
+            &json!({ "content": long }),
+            1,
+            usize::MAX,
+            true,
+            &crate::theme::test_engine(),
+        );
         let text = lines_text(&view);
         assert!(text.contains('…'));
         assert!(text.chars().count() <= EXPANDED_LINE_BUDGET + "content: ".len());
@@ -558,6 +601,9 @@ mod tests {
             .iter()
             .find(|span| span.content == "query:")
             .expect("key span");
-        assert_eq!(span.style, theme::current().tool_annotation);
+        assert_eq!(
+            span.style,
+            crate::theme::test_engine().current().tool_annotation
+        );
     }
 }

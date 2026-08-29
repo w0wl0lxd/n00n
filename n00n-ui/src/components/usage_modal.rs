@@ -22,7 +22,7 @@ use crate::components::keybindings::key;
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::components::status_bar::format_tokens;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 const TITLE: &str = " Token usage ";
 const PREFIX: &str = "  ";
@@ -61,14 +61,16 @@ pub struct UsageModal {
     open: bool,
     scroll: ModalScroll,
     checked_model_specs: HashSet<String>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl UsageModal {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             open: false,
             scroll: ModalScroll::new_top(),
             checked_model_specs: HashSet::new(),
+            theme_engine,
         }
     }
 
@@ -103,14 +105,15 @@ impl UsageModal {
         }
 
         self.warn_unresolved_models(ctx);
-        let theme = theme::current();
-        let lines = build_lines(ctx, &theme);
+        let theme = self.theme_engine.current();
+        let lines = build_lines(ctx, &*theme);
 
         let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
             width_percent: 90,
             max_height_percent: 70,
+            theme_engine: Arc::clone(&self.theme_engine),
         };
         let (popup, inner) = modal.render(frame, area, total);
         let viewport_h = inner.height;
@@ -120,7 +123,14 @@ impl UsageModal {
         frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 
         if total > viewport_h {
-            render_vertical_scrollbar(frame, inner, total, scroll, None);
+            render_vertical_scrollbar(
+                frame,
+                inner,
+                total,
+                scroll,
+                None,
+                self.theme_engine.scrollbar_enabled(),
+            );
         }
 
         let hint = Line::from(vec![
@@ -642,7 +652,7 @@ mod tests {
     }
     #[test]
     fn quota_ready_lines_include_labels_and_percentages() {
-        let theme = crate::theme::current();
+        let theme = crate::theme::test_engine().current();
         let usage = ProviderUsage {
             plan: Some("lite".into()),
             limits: vec![
@@ -693,7 +703,7 @@ mod tests {
 
     #[test]
     fn quota_non_terminal_states_render_single_line() {
-        let theme = crate::theme::current();
+        let theme = crate::theme::test_engine().current();
         assert_eq!(quota_lines(&UsageFetchState::Loading, &theme).len(), 1);
         let unsupported = quota_lines(&UsageFetchState::Unsupported, &theme);
         assert_eq!(unsupported.len(), 1);
@@ -710,7 +720,7 @@ mod tests {
 
     #[test]
     fn usage_columns_keep_fresh_and_cached_tokens_separate() {
-        let theme = crate::theme::current();
+        let theme = crate::theme::test_engine().current();
         let header = header_row(10, &theme)
             .iter()
             .map(|span| span.content.as_ref())
@@ -753,7 +763,7 @@ mod tests {
 
     #[test]
     fn priced_models_show_effective_token_rates() {
-        let theme = crate::theme::current();
+        let theme = crate::theme::test_engine().current();
         let model = Model::from_spec(
             &n00n_providers::model_registry::test_registry(),
             "codex/gpt-5.6-sol",
@@ -801,7 +811,7 @@ mod tests {
 
     #[test]
     fn pricing_includes_current_model_after_switching_models() {
-        let theme = crate::theme::current();
+        let theme = crate::theme::test_engine().current();
         let model = Model::from_spec(
             &n00n_providers::model_registry::test_registry(),
             "codex/gpt-5.6-sol",
@@ -863,7 +873,7 @@ mod tests {
 
     #[test]
     fn zero_priced_models_keep_usage_without_price_metrics() {
-        let theme = crate::theme::current();
+        let theme = crate::theme::test_engine().current();
         let model = Model::from_spec(
             &n00n_providers::model_registry::test_registry(),
             "ollama/test-model",

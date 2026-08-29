@@ -1,10 +1,12 @@
+use std::sync::Arc;
+use std::time::Instant;
+
 use crate::components::keybindings::key;
-use crate::theme::{self, lerp_u8};
+use crate::theme::{Theme, ThemeEngine, lerp_u8};
 use crate::update;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use std::time::Instant;
 
 const LOGO: &str = "n00n";
 const TAGLINE: &str = "the efficient coder";
@@ -130,17 +132,18 @@ pub struct Splash {
     field_offset: f32,
     animate: bool,
     tip_idx: usize,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl Default for Splash {
     fn default() -> Self {
-        Self::new(true)
+        Self::new(true, crate::theme::test_engine())
     }
 }
 
 impl Splash {
     #[must_use]
-    pub fn new(animate: bool) -> Self {
+    pub fn new(animate: bool, theme_engine: Arc<ThemeEngine>) -> Self {
         let mut rng = [0u8; 8];
         let (tip_idx, field_offset) = if getrandom::fill(&mut rng).is_ok() {
             (
@@ -157,6 +160,7 @@ impl Splash {
             field_offset,
             animate,
             tip_idx,
+            theme_engine,
         }
     }
 
@@ -176,7 +180,8 @@ impl Splash {
             ease_out_cubic(t / FADE_DURATION)
         };
         if self.animate {
-            Self::render_field(area, buf, t + self.field_offset, fade, accent);
+            let theme = self.theme_engine.current();
+            Self::render_field(area, buf, t + self.field_offset, fade, accent, &*theme);
         }
     }
 
@@ -200,15 +205,15 @@ impl Splash {
         let tip_offset = top_y + if compact { 3 } else { 5 };
         let version_y = if compact { top_y } else { area.y };
 
-        Self::render_logo(area, buf, t, fade, top_y, accent);
-        render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
-        Self::render_help(area, buf, fade, help_y, accent);
+        let theme = self.theme_engine.current();
+        Self::render_logo(area, buf, t, fade, top_y, accent, &*theme);
+        render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE, &*theme);
+        Self::render_help(area, buf, fade, help_y, accent, &*theme);
         self.render_tip(area, buf, fade, tip_offset, accent);
-        render_version(area, buf, fade, version_y, new_version);
+        render_version(area, buf, fade, version_y, new_version, &*theme);
     }
 
-    fn render_field(area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
-        let theme = theme::current();
+    fn render_field(area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color, theme: &Theme) {
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (15, 15, 25));
 
@@ -365,8 +370,15 @@ impl Splash {
         (vx, col_sin, col_cos)
     }
 
-    fn render_logo(area: Rect, buf: &mut Buffer, t: f32, fade: f32, top_y: u16, accent: Color) {
-        let theme = theme::current();
+    fn render_logo(
+        area: Rect,
+        buf: &mut Buffer,
+        t: f32,
+        fade: f32,
+        top_y: u16,
+        accent: Color,
+        theme: &Theme,
+    ) {
         let bg = theme.background;
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
@@ -397,12 +409,17 @@ impl Splash {
         }
     }
 
-    fn render_help(area: Rect, buf: &mut Buffer, fade: f32, help_y: u16, accent: Color) {
+    fn render_help(
+        area: Rect,
+        buf: &mut Buffer,
+        fade: f32,
+        help_y: u16,
+        accent: Color,
+        theme: &Theme,
+    ) {
         if help_y >= area.y + area.height {
             return;
         }
-
-        let theme = theme::current();
         let bg = theme.background;
         let ac = extract_rgb(accent, (100, 140, 255));
         let fg = extract_rgb(theme.foreground, (200, 200, 200));
@@ -430,7 +447,7 @@ impl Splash {
             return;
         }
 
-        let theme = theme::current();
+        let theme = self.theme_engine.current();
         let bg = theme.background;
         let tip_rgb = extract_rgb(
             theme.todo_in_progress.fg.unwrap_or_else(|| Color::Yellow),
@@ -459,11 +476,17 @@ impl Splash {
     }
 }
 
-fn render_version(area: Rect, buf: &mut Buffer, fade: f32, y: u16, new_version: Option<&str>) {
+fn render_version(
+    area: Rect,
+    buf: &mut Buffer,
+    fade: f32,
+    y: u16,
+    new_version: Option<&str>,
+    theme: &Theme,
+) {
     if y >= area.y + area.height {
         return;
     }
-    let theme = theme::current();
     let bg = theme.background;
     let text = match new_version {
         Some(v) => format!("v{} run n00n update to get v{}", update::CURRENT, v),
@@ -489,11 +512,11 @@ fn render_centered_faded(
     intensity: f32,
     y: u16,
     text: &str,
+    theme: &Theme,
 ) {
     if y >= area.y + area.height {
         return;
     }
-    let theme = theme::current();
     let bg = theme.background;
     let style = faded_style(
         extract_rgb(bg, (15, 15, 25)),

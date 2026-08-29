@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -6,6 +8,7 @@ use n00n_agent::{McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshotRea
 
 use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
+use crate::theme::ThemeEngine;
 
 const TITLE: &str = " MCP Servers ";
 
@@ -76,15 +79,21 @@ pub struct McpPicker {
     snapshot: McpSnapshotReader,
     config_errors: McpConfigErrors,
     last_generation: u64,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl McpPicker {
-    pub fn new(snapshot: McpSnapshotReader, config_errors: McpConfigErrors) -> Self {
+    pub fn new(
+        snapshot: McpSnapshotReader,
+        config_errors: McpConfigErrors,
+        theme_engine: Arc<ThemeEngine>,
+    ) -> Self {
         Self {
-            picker: ListPicker::new(),
+            picker: ListPicker::new(Arc::clone(&theme_engine)),
             snapshot,
             config_errors,
             last_generation: 0,
+            theme_engine,
         }
     }
 

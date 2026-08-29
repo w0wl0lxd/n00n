@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
+use crate::theme::ThemeEngine;
 
 use crossterm::event::KeyEvent;
 use n00n_providers::{Message, Role};
@@ -30,12 +33,14 @@ impl PickerItem for RewindEntry {
 
 pub struct RewindPicker {
     picker: ListPicker<RewindEntry>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl RewindPicker {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
-            picker: ListPicker::new(),
+            picker: ListPicker::new(Arc::clone(&theme_engine)),
+            theme_engine,
         }
     }
 

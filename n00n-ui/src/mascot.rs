@@ -103,7 +103,7 @@ mod tests {
         let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
-        let theme = theme::current();
+        let theme = crate::theme::test_engine().current();
         mascot.render(area, &mut buf, &theme, accent());
     }
 
@@ -112,7 +112,7 @@ mod tests {
         let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 5, 3);
         let mut buf = Buffer::empty(area);
-        let theme = theme::current();
+        let theme = crate::theme::test_engine().current();
         mascot.render(area, &mut buf, &theme, accent());
     }
 
@@ -121,7 +121,7 @@ mod tests {
         let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 80, 45);
         let mut buf = Buffer::empty(area);
-        let theme = theme::current();
+        let theme = crate::theme::test_engine().current();
         mascot.render(area, &mut buf, &theme, accent());
 
         let non_empty = buf.content.iter().filter(|c| c.symbol() != " ").count();
@@ -152,7 +152,7 @@ mod tests {
         let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 80, 45);
         let mut buf = Buffer::empty(area);
-        let theme = theme::current();
+        let theme = crate::theme::test_engine().current();
         mascot.render(area, &mut buf, &theme, accent());
 
         for y in area.y..area.y + area.height {

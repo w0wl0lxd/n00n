@@ -40,7 +40,13 @@ impl BtwModal {
         Self {
             open: false,
             question: String::new(),
-            answer: StreamingContent::new("", theme.assistant, theme.assistant, ms_per_char),
+            answer: StreamingContent::new(
+                "",
+                theme.assistant,
+                theme.assistant,
+                ms_per_char,
+                Arc::clone(&theme_engine),
+            ),
             scroll: ModalScroll::new(),
             rx: None,
             theme_engine,

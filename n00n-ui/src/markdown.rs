@@ -1,7 +1,7 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
-use crate::theme;
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeEngine};
 use n00n_markdown::Emphasis;
 use n00n_markdown::render::{self, Line as RLine, LineKind, Span as RSpan, StyleToken};
 use ratatui::style::{Modifier, Style};
@@ -200,8 +200,9 @@ pub(crate) fn paint_semantic(
     prefix: &'static str,
     text_style: Style,
     prefix_style: Style,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Vec<Line<'static>> {
-    let t = theme::current();
+    let t = theme_engine.current();
     let first_kind = semantic.first().map(|l| l.kind.clone());
     let mut lines: Vec<Line<'static>> = semantic
         .into_iter()
@@ -231,6 +232,7 @@ pub fn text_to_lines(
     prefix_style: Style,
     width: u16,
     max_line_bytes: Option<usize>,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Vec<Line<'static>> {
     let truncated;
     let text = match max_line_bytes {
@@ -241,7 +243,7 @@ pub fn text_to_lines(
         None => text,
     };
     let semantic = render::Renderer::unwrapped().render(text, width, 0);
-    paint_semantic(semantic, prefix, text_style, prefix_style)
+    paint_semantic(semantic, prefix, text_style, prefix_style, theme_engine)
 }
 
 pub struct TruncatedOutput<'a> {
@@ -297,7 +299,15 @@ mod tests {
         prefix_style: Style,
         width: u16,
     ) -> Vec<Line<'static>> {
-        super::text_to_lines(text, prefix, text_style, prefix_style, width, None)
+        super::text_to_lines(
+            text,
+            prefix,
+            text_style,
+            prefix_style,
+            width,
+            None,
+            &crate::theme::test_engine(),
+        )
     }
 
     fn lines_text(lines: &[Line<'_>]) -> Vec<String> {
@@ -325,7 +335,7 @@ mod tests {
         let style = Style::default();
         let lines = text_to_lines("# hello", "", style, style, TEST_WIDTH);
         assert_eq!(lines.len(), 1);
-        let heading_fg = theme::current().heading.fg;
+        let heading_fg = crate::theme::test_engine().current().heading.fg;
         assert_eq!(lines[0].spans[0].style.fg, heading_fg);
     }
 
@@ -338,7 +348,7 @@ mod tests {
             .flat_map(|l| &l.spans)
             .find(|s| s.content.as_ref() == CODE_BAR)
             .expect("code bar span");
-        assert_eq!(bar.style, theme::current().code_gutter);
+        assert_eq!(bar.style, crate::theme::test_engine().current().code_gutter);
     }
 
     #[test]
@@ -346,7 +356,7 @@ mod tests {
         let style = Style::default();
         let lines = text_to_lines("**bold**", "", style, style, TEST_WIDTH);
         let bold = find_span(&lines, "bold");
-        assert_eq!(bold.style.fg, theme::current().bold.fg);
+        assert_eq!(bold.style.fg, crate::theme::test_engine().current().bold.fg);
         assert!(bold.style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -355,7 +365,10 @@ mod tests {
         let style = Style::default();
         let lines = text_to_lines("## ***hi***", "", style, style, TEST_WIDTH);
         let hi = find_span(&lines, "hi");
-        assert_eq!(hi.style.fg, theme::current().heading.fg);
+        assert_eq!(
+            hi.style.fg,
+            crate::theme::test_engine().current().heading.fg
+        );
         assert!(
             hi.style
                 .add_modifier
@@ -368,7 +381,10 @@ mod tests {
         let style = Style::default();
         let lines = text_to_lines("## foo `bar`", "", style, style, TEST_WIDTH);
         let bar = find_span(&lines, "bar");
-        assert_eq!(bar.style.fg, theme::current().inline_code.fg);
+        assert_eq!(
+            bar.style.fg,
+            crate::theme::test_engine().current().inline_code.fg
+        );
     }
 
     #[test]
@@ -378,7 +394,7 @@ mod tests {
         let marker = lines[0]
             .spans
             .iter()
-            .find(|s| s.style == theme::current().list_marker)
+            .find(|s| s.style == crate::theme::test_engine().current().list_marker)
             .expect("list marker span");
         assert_eq!(marker.content, "• ");
     }
@@ -468,7 +484,10 @@ mod tests {
         let lines = text_to_lines("~~struck~~", "", style, style, TEST_WIDTH);
         let struck = find_span(&lines, "struck");
         assert!(struck.style.add_modifier.contains(Modifier::CROSSED_OUT));
-        assert_eq!(struck.style.fg, theme::current().strikethrough.fg);
+        assert_eq!(
+            struck.style.fg,
+            crate::theme::test_engine().current().strikethrough.fg
+        );
     }
 
     #[test]
@@ -492,7 +511,10 @@ mod tests {
                 c.contains('╭') || c.contains('│')
             })
             .expect("box-drawing border span");
-        assert_eq!(border_span.style, theme::current().table_border);
+        assert_eq!(
+            border_span.style,
+            crate::theme::test_engine().current().table_border
+        );
     }
 
     #[test]
@@ -501,7 +523,10 @@ mod tests {
         let lines = text_to_lines("---", "", style, style, TEST_WIDTH);
         assert_eq!(lines.len(), 1);
         let hr = &lines[0].spans[0];
-        assert_eq!(hr.style, theme::current().horizontal_rule);
+        assert_eq!(
+            hr.style,
+            crate::theme::test_engine().current().horizontal_rule
+        );
         assert!(
             hr.content.chars().all(|c| c == '─'),
             "HR should be filled with ─ chars, got {:?}",
@@ -549,7 +574,10 @@ mod tests {
         let style = Style::default();
         let lines = text_to_lines("**a `code` b**", "", style, style, TEST_WIDTH);
         let code = find_span(&lines, "code");
-        assert_eq!(code.style.fg, theme::current().inline_code.fg);
+        assert_eq!(
+            code.style.fg,
+            crate::theme::test_engine().current().inline_code.fg
+        );
         assert!(
             code.style.add_modifier.contains(Modifier::BOLD),
             "inline code inside bold should inherit BOLD modifier"
