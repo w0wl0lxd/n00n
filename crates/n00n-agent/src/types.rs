@@ -1224,24 +1224,18 @@ impl SharedBuf {
     }
 
     pub fn set_click(&self, f: Arc<dyn Any + Send + Sync>) {
-        *self
-            .click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
+        *self.click.lock().unwrap_or_else(|_| std::process::abort()) = Some(f);
     }
 
     pub fn click(&self) -> Option<Arc<dyn Any + Send + Sync>> {
         self.click
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .clone()
     }
 
     pub fn clear_click(&self) {
-        *self
-            .click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.click.lock().unwrap_or_else(|_| std::process::abort()) = None;
     }
 
     /// Fires synchronously after every `append`/`set_lines`, on the
@@ -1252,7 +1246,7 @@ impl SharedBuf {
         *self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
+            .unwrap_or_else(|_| std::process::abort()) = Some(Arc::new(f));
     }
 
     /// A watcher keeps everything it captured alive for as long as it is
@@ -1261,7 +1255,7 @@ impl SharedBuf {
         *self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(|_| std::process::abort()) = None;
     }
 
     fn notify_change(&self) {
@@ -1271,7 +1265,7 @@ impl SharedBuf {
         let cb = self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .clone();
         if let Some(cb) = cb {
             cb();
@@ -1283,7 +1277,7 @@ impl SharedBuf {
         let mut guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Arc::make_mut(&mut guard).push(line);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -1294,7 +1288,7 @@ impl SharedBuf {
         let mut guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         *guard = Arc::new(lines);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -1304,7 +1298,7 @@ impl SharedBuf {
     pub fn len(&self) -> usize {
         self.committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .len()
     }
 
@@ -1316,7 +1310,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Arc::clone(&guard)
     }
 
@@ -1327,7 +1321,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Some(Arc::clone(&guard))
     }
 
@@ -1336,7 +1330,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         BufferSnapshot::from_arc(Arc::clone(&guard))
     }
 }
@@ -1509,11 +1503,13 @@ impl EventSender {
     }
 
     pub fn try_send(&self, event: impl Into<AgentEvent>) {
-        let _ = self.tx.try_send(Envelope {
+        if let Err(error) = self.tx.try_send(Envelope {
             event: event.into(),
             subagent: None,
             run_id: self.run_id,
-        });
+        }) {
+            warn!(%error, run_id = self.run_id, "EventSender try_send failed");
+        }
     }
 
     #[must_use]

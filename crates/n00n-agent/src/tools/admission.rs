@@ -223,7 +223,7 @@ impl ToolAdmission {
                 .state
                 .agents
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(|_| std::process::abort());
             let slot = Arc::clone(agents.entry(scope.clone()).or_insert_with(|| {
                 Arc::new(AgentSlot {
                     semaphore: Arc::new(Semaphore::new(self.agent_limit)),
@@ -263,7 +263,7 @@ impl ToolAdmission {
             .state
             .agents
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         if !agents
             .get(scope)
             .is_some_and(|current| Arc::ptr_eq(current, slot))
@@ -332,7 +332,7 @@ impl Drop for ToolAdmissionGuard<'_> {
         let mut agents = state
             .agents
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         let Some(slot) = agents.get(&scope).cloned() else {
             return;
         };

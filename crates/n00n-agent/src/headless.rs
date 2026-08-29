@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as SyncMutex};
+use std::sync::Arc;
 
 use async_lock::Mutex;
 use flume::Receiver;
@@ -192,14 +192,10 @@ impl SessionStore {
         mode: &AgentMode,
         state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     ) -> Result<Option<Self>, String> {
-        let Some(dir) = StateDir::resolve()
-            .map_err(|error| {
-                warn!(%error, "state dir unavailable; session will not be persisted");
-            })
-            .ok()
-        else {
-            return Ok(None);
-        };
+        let dir = StateDir::resolve().map_err(|error| {
+            warn!(%error, "state dir unavailable; session will not be persisted");
+            format!("state dir unavailable: {error}")
+        })?;
         Self::open_in_with_state(dir, session_id, cwd, model_spec, mode, state_persistence)
             .map(Some)
     }
@@ -593,7 +589,7 @@ pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
             );
             let system =
                 agent::build_system_prompt(&vars, &mode, &instructions.text, &prompt_slots, &model);
-            let session_store = Arc::new(SyncMutex::new(session_store));
+            let session_store = Arc::new(Mutex::new(session_store));
             let checkpoint_store = Arc::clone(&session_store);
             let checkpoint_model_spec = model_spec.clone();
             let mut agent = Agent::new(
@@ -626,9 +622,7 @@ pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
             )
             .with_loaded_instructions(instructions.loaded)
             .with_compaction_checkpoint(move |history, revision| {
-                let mut guard = checkpoint_store
-                    .lock()
-                    .map_err(|error| format!("session persistence lock poisoned: {error}"))?;
+                let mut guard = futures_lite::future::block_on(checkpoint_store.lock());
                 let Some(store) = guard.as_mut() else {
                     return Ok(());
                 };
@@ -657,21 +651,19 @@ pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
                 .await;
             drop(agent);
 
-            match session_store.lock() {
-                Ok(mut guard) => {
-                    if let Some(store) = guard.as_mut()
-                        && let Err(error) = store.record_turn(
-                            history.as_slice(),
-                            history.transcript(),
-                            model_spec,
-                            &mode,
-                            plan_path.as_deref(),
-                        )
-                    {
-                        warn!(error, "session metadata was not persisted");
-                    }
+            {
+                let mut guard = session_store.lock().await;
+                if let Some(store) = guard.as_mut()
+                    && let Err(error) = store.record_turn(
+                        history.as_slice(),
+                        history.transcript(),
+                        model_spec,
+                        &mode,
+                        plan_path.as_deref(),
+                    )
+                {
+                    warn!(error, "session metadata was not persisted");
                 }
-                Err(error) => warn!(%error, "session persistence lock poisoned"),
             }
 
             if let Err(e) = result {
@@ -812,7 +804,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
             let mut state_revision = store
                 .as_ref()
                 .map_or(INITIAL_STATE_REVISION, SessionStore::state_revision);
-            let store = Arc::new(SyncMutex::new(store));
+            let store = Arc::new(Mutex::new(store));
             let mut run_id: u64 = 0;
             let mut tool_filter = tool_filter.clone();
 
@@ -826,18 +818,17 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 let error_tx = event_tx.clone();
                 let turn_mode = input.mode.clone();
                 let turn_plan_path = input.plan_path.clone();
-                let turn_start = store
-                    .lock()
-                    .map_err(|error| format!("session persistence lock poisoned: {error}"))
-                    .and_then(|mut guard| {
-                        let Some(store) = guard.as_mut() else {
-                            return Ok(None);
-                        };
-                        store
+                let turn_start = {
+                    let mut guard = store.lock().await;
+                    if let Some(inner) = guard.as_mut() {
+                        inner
                             .record_turn_started(&turn_mode, turn_plan_path.as_deref())
-                            .map_err(str::to_owned)?;
-                        Ok(Some(store.state_revision()))
-                    });
+                            .map_err(str::to_owned)
+                            .map(|()| Some(inner.state_revision()))
+                    } else {
+                        Ok(None)
+                    }
+                };
                 match turn_start {
                     Ok(Some(revision)) => state_revision = revision,
                     Ok(None) => {}
@@ -940,9 +931,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 )
                 .with_loaded_instructions(instructions.loaded.clone())
                 .with_compaction_checkpoint(move |history, revision| {
-                    let mut guard = checkpoint_store
-                        .lock()
-                        .map_err(|error| format!("session persistence lock poisoned: {error}"))?;
+                    let mut guard = futures_lite::future::block_on(checkpoint_store.lock());
                     let Some(store) = guard.as_mut() else {
                         return Ok(());
                     };
@@ -971,22 +960,20 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     });
                 }
 
-                match store.lock() {
-                    Ok(mut guard) => {
-                        if let Some(store) = guard.as_mut() {
-                            if let Err(error) = store.record_turn(
-                                history.as_slice(),
-                                history.transcript(),
-                                model.spec(),
-                                &turn_mode,
-                                turn_plan_path.as_deref(),
-                            ) {
-                                warn!(error, "session metadata was not persisted");
-                            }
-                            state_revision = store.state_revision();
+                {
+                    let mut guard = store.lock().await;
+                    if let Some(inner) = guard.as_mut() {
+                        if let Err(error) = inner.record_turn(
+                            history.as_slice(),
+                            history.transcript(),
+                            model.spec(),
+                            &turn_mode,
+                            turn_plan_path.as_deref(),
+                        ) {
+                            warn!(error, "session metadata was not persisted");
                         }
+                        state_revision = inner.state_revision();
                     }
-                    Err(error) => warn!(%error, "session persistence lock poisoned"),
                 }
                 run_id += 1;
             }
@@ -1064,9 +1051,8 @@ fn cancellation_for_run(cancel_rx: &Receiver<()>) -> (CancelToken, smol::Task<()
     let (trigger, cancel) = CancelToken::new();
     let cancel_rx = cancel_rx.clone();
     let task = smol::spawn(async move {
-        if cancel_rx.recv_async().await.is_ok() {
-            trigger.cancel();
-        }
+        let _ = cancel_rx.recv_async().await;
+        trigger.cancel();
     });
     (cancel, task)
 }
