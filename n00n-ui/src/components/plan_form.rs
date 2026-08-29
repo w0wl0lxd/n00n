@@ -191,7 +191,7 @@ impl PlanForm {
             lines.push(Line::from(spans));
         }
         lines.push(Line::default());
-        lines.push(hint_line(HINT_PAIRS));
+        lines.push(hint_line(&self.theme_engine, HINT_PAIRS));
 
         render_form(&t, FORM_LABEL, frame, area, lines, (0, 0));
     }

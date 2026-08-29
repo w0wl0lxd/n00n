@@ -327,22 +327,22 @@ impl PermissionPrompt {
         lines.push(Line::raw(""));
         match *state {
             PromptState::ConfirmAllowAlwaysLocal => {
-                lines.push(hint_line(CONFIRM_ALLOW_PROJECT_HINTS));
+                lines.push(hint_line(theme_engine, CONFIRM_ALLOW_PROJECT_HINTS));
             }
             PromptState::ConfirmAllowAlwaysGlobal => {
-                lines.push(hint_line(CONFIRM_ALLOW_ALL_HINTS));
+                lines.push(hint_line(theme_engine, CONFIRM_ALLOW_ALL_HINTS));
             }
             PromptState::ConfirmAllowSession => {
-                lines.push(hint_line(CONFIRM_SESSION_HINTS));
+                lines.push(hint_line(theme_engine, CONFIRM_SESSION_HINTS));
             }
             PromptState::ConfirmDenyAlwaysLocal => {
-                lines.push(hint_line(CONFIRM_DENY_PROJECT_HINTS));
+                lines.push(hint_line(theme_engine, CONFIRM_DENY_PROJECT_HINTS));
             }
             PromptState::ConfirmDenyAlwaysGlobal => {
-                lines.push(hint_line(CONFIRM_DENY_ALL_HINTS));
+                lines.push(hint_line(theme_engine, CONFIRM_DENY_ALL_HINTS));
             }
             PromptState::DenyEditing => {
-                lines.push(hint_line(DENY_GUIDANCE_HINTS));
+                lines.push(hint_line(theme_engine, DENY_GUIDANCE_HINTS));
             }
             PromptState::Normal => {
                 lines.extend(aligned_hint_rows(&[HINT_ALLOW_ROW, HINT_DENY_ROW], &t));

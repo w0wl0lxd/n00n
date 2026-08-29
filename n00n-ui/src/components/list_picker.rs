@@ -686,7 +686,7 @@ fn render_list<T: PickerItem>(
     scroll_offset: usize,
     viewport_height: usize,
     enabled: Option<&[bool]>,
-    theme_engine: &ThemeEngine,
+    theme_engine: &Arc<ThemeEngine>,
 ) {
     if filtered.is_empty() {
         let line = Line::from(Span::styled(
@@ -812,7 +812,12 @@ fn render_list<T: PickerItem>(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer, theme_engine: &ThemeEngine) {
+fn render_search(
+    frame: &mut Frame,
+    area: Rect,
+    search: &TextBuffer,
+    theme_engine: &Arc<ThemeEngine>,
+) {
     let query = search.value();
     let cursor_x = search.x();
     let chars: Vec<char> = query.chars().collect();
@@ -822,7 +827,7 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer, theme_engin
     let after: String = chars[after_start..].iter().collect();
 
     let line = Line::from(vec![
-        super::chevron_span(),
+        super::chevron_span(theme_engine),
         Span::styled(before, Style::default()),
         Span::styled(cursor_char.to_string(), theme_engine.current().cursor),
         Span::styled(after, Style::default()),

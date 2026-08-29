@@ -399,7 +399,7 @@ impl InputBox {
             let placeholder_base = self.theme_engine.current().input_placeholder;
             if streaming {
                 vec![Line::from(vec![
-                    super::chevron_span(),
+                    super::chevron_span(&self.theme_engine),
                     if focused {
                         Span::styled("Q", placeholder_base.reversed())
                     } else {
@@ -409,7 +409,7 @@ impl InputBox {
                 ])]
             } else {
                 vec![Line::from(vec![
-                    super::chevron_span(),
+                    super::chevron_span(&self.theme_engine),
                     if focused {
                         Span::styled("A", placeholder_base.reversed())
                     } else {
@@ -564,7 +564,7 @@ fn wrap_line(
         .enumerate()
         .map(|(row, (start, end))| {
             let prefix_span = if row == 0 && is_first_line {
-                super::chevron_span()
+                super::chevron_span(&self.theme_engine)
             } else if row == 0 {
                 Span::raw(NEWLINE_PAD)
             } else {

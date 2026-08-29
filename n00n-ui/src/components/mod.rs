@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::theme::ThemeEngine;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use n00n_agent::{AgentInput, PreDispatchGate};
 use n00n_agent::{BufferSnapshot, ImageSource, ToolInput, ToolOutput};
@@ -41,8 +42,8 @@ use ratatui::text::{Line, Span};
 
 pub(crate) const CHEVRON: &str = "❯ ";
 
-pub(crate) fn chevron_span() -> ratatui::text::Span<'static> {
-    ratatui::text::Span::styled(CHEVRON, crate::theme::current().tool_dim)
+pub(crate) fn chevron_span(theme_engine: &Arc<ThemeEngine>) -> ratatui::text::Span<'static> {
+    ratatui::text::Span::styled(CHEVRON, theme_engine.current().tool_dim)
 }
 
 pub(crate) trait Overlay {
@@ -54,8 +55,11 @@ pub(crate) trait Overlay {
     }
 }
 
-pub(crate) fn hint_line<K: AsRef<str>, V: AsRef<str>>(pairs: &[(K, V)]) -> Line<'static> {
-    let t = crate::theme::current();
+pub(crate) fn hint_line<K: AsRef<str>, V: AsRef<str>>(
+    theme_engine: &Arc<ThemeEngine>,
+    pairs: &[(K, V)],
+) -> Line<'static> {
+    let t = theme_engine.current();
     let mut spans = Vec::with_capacity(pairs.len() * 3);
     for (key, desc) in pairs {
         spans.push(Span::raw("  "));

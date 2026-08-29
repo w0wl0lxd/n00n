@@ -814,7 +814,7 @@ impl Overlay for LoginPicker {
     }
 }
 
-fn input_line_with_cursor(input: &TextBuffer, theme_engine: &ThemeEngine) -> Line<'static> {
+fn input_line_with_cursor(input: &TextBuffer, theme_engine: &Arc<ThemeEngine>) -> Line<'static> {
     let t = theme_engine.current();
     let value = input.value();
     let cursor_byte = TextBuffer::char_to_byte(&value, input.x());
@@ -823,7 +823,7 @@ fn input_line_with_cursor(input: &TextBuffer, theme_engine: &ThemeEngine) -> Lin
     let cursor_char = chars.next().unwrap_or_else(|| ' ');
     let after = chars.as_str();
     Line::from(vec![
-        super::chevron_span(),
+        super::chevron_span(theme_engine),
         Span::raw(before.to_string()),
         Span::styled(cursor_char.to_string(), t.cursor),
         Span::raw(after.to_string()),

@@ -398,7 +398,7 @@ impl App {
             btw_modal: BtwModal::new(Arc::clone(&theme_engine), ui_config.typewriter_ms_per_char),
             float_mgr: FloatManager::new(),
             search_modal: SearchModal::new(Arc::clone(&theme_engine)),
-            file_picker: FilePickerModal::new(),
+            file_picker: FilePickerModal::new(Arc::clone(&theme_engine)),
             permission_prompt: PermissionPrompt::new(Arc::clone(&theme_engine)),
             plan_form: PlanForm::new(Arc::clone(&theme_engine)),
             status_bar: StatusBar::new(ui_config.flash_duration(), Arc::clone(&theme_engine)),

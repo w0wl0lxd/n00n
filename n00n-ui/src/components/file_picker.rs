@@ -25,7 +25,7 @@ use crate::components::keybindings::key;
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::text_buffer::TextBuffer;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 const TITLE: &str = " Files ";
 const TITLE_WALKING: &str = " Files (scanning…) ";
@@ -80,13 +80,15 @@ impl Drop for Session {
 pub struct FilePickerModal {
     session: Option<Session>,
     opened_via_at: bool,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl FilePickerModal {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             session: None,
             opened_via_at: false,
+            theme_engine,
         }
     }
 
@@ -338,6 +340,7 @@ impl FilePickerModal {
             title,
             width_percent: WIDTH_PERCENT,
             max_height_percent: MAX_HEIGHT_PERCENT,
+            theme_engine: Arc::clone(&self.theme_engine),
         };
         let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW);
         s.inner_area = inner;
@@ -347,8 +350,8 @@ impl FilePickerModal {
         let [list_area, search_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
 
-        render_list(frame, list_area, s);
-        render_search(frame, search_area, s);
+        render_list(frame, list_area, s, &self.theme_engine);
+        render_search(frame, search_area, s, &self.theme_engine);
 
         if match_count > cast::usize_to_u16(s.viewport_height) {
             render_vertical_scrollbar(
@@ -357,6 +360,7 @@ impl FilePickerModal {
                 match_count,
                 cast::usize_to_u16(s.scroll_offset),
                 None,
+                self.theme_engine.scrollbar_enabled(),
             );
         }
 
@@ -448,8 +452,8 @@ fn ensure_visible(s: &mut Session) {
     }
 }
 
-fn render_list(frame: &mut Frame, area: Rect, s: &Session) {
-    let t = theme::current();
+fn render_list(frame: &mut Frame, area: Rect, s: &Session, theme_engine: &Arc<ThemeEngine>) {
+    let t = theme_engine.current();
 
     if s.matches.is_empty() {
         if !s.search.value().is_empty() {
@@ -474,7 +478,7 @@ fn render_list(frame: &mut Frame, area: Rect, s: &Session) {
         .enumerate()
         .map(|(i, m)| {
             let selected = s.scroll_offset + i == s.selected;
-            build_highlighted_line(&m.path, &m.indices, max_label_width, selected, &t)
+            build_highlighted_line(&m.path, &m.indices, max_label_width, selected, theme_engine)
         })
         .collect();
 
@@ -489,8 +493,8 @@ fn render_list(frame: &mut Frame, area: Rect, s: &Session) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_search(frame: &mut Frame, area: Rect, s: &Session) {
-    let t = theme::current();
+fn render_search(frame: &mut Frame, area: Rect, s: &Session, theme_engine: &Arc<ThemeEngine>) {
+    let t = theme_engine.current();
     let query = s.search.value();
     let cursor_byte = TextBuffer::char_to_byte(&query, s.search.x());
     let (before, rest) = query.split_at(cursor_byte);
@@ -498,7 +502,7 @@ fn render_search(frame: &mut Frame, area: Rect, s: &Session) {
     let cursor_char = chars.next().unwrap_or_else(|| ' ');
     let after = chars.as_str();
 
-    let mut spans = vec![super::chevron_span()];
+    let mut spans = vec![super::chevron_span(theme_engine)];
 
     if s.walking {
         let ch = spinner_frame(s.started_at.elapsed().as_millis());
@@ -514,13 +518,14 @@ fn render_search(frame: &mut Frame, area: Rect, s: &Session) {
     frame.render_widget(Paragraph::new(vec![Line::from(spans)]), area);
 }
 
-fn build_highlighted_line<'a>(
+fn build_highlighted_line(
     text: &str,
     indices: &[u32],
     max_width: usize,
     selected: bool,
-    t: &'a theme::Theme,
-) -> Line<'a> {
+    theme_engine: &Arc<ThemeEngine>,
+) -> Line<'static> {
+    let t = theme_engine.current();
     let base = if selected { t.item_selected } else { t.item };
     let highlight = base
         .fg(t.accent.fg.or(base.fg).unwrap_or_else(|| Color::Reset))
@@ -572,7 +577,7 @@ mod tests {
     }
 
     fn pending_picker() -> (FilePickerModal, flume::Sender<()>) {
-        let mut picker = FilePickerModal::new();
+        let mut picker = FilePickerModal::new(crate::theme::test_engine());
         let notify = Arc::new(|| {});
         let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), notify, None, 1);
         let (done_tx, done_rx) = flume::bounded(1);
@@ -718,14 +723,14 @@ mod tests {
     #[test_case(&[], 3 ; "empty_indices")]
     #[test_case(&[0, 2], 5 ; "sparse_match")]
     fn build_highlighted_line_no_panic(indices: &[u32], max_width: usize) {
-        let t = theme::current();
-        let _ = build_highlighted_line("hello", indices, max_width, false, &t);
+        let theme_engine = crate::theme::test_engine();
+        let _ = build_highlighted_line("hello", indices, max_width, false, &theme_engine);
     }
 
     #[test]
     fn build_highlighted_line_truncates_at_max_width() {
-        let t = theme::current();
-        let line = build_highlighted_line("verylongfilename.rs", &[], 5, false, &t);
+        let theme_engine = crate::theme::test_engine();
+        let line = build_highlighted_line("verylongfilename.rs", &[], 5, false, &theme_engine);
         let text: String = line
             .spans
             .iter()
@@ -737,8 +742,8 @@ mod tests {
 
     #[test]
     fn build_highlighted_line_unicode_width() {
-        let t = theme::current();
-        let line = build_highlighted_line("日本語.rs", &[], 6, false, &t);
+        let theme_engine = crate::theme::test_engine();
+        let line = build_highlighted_line("日本語.rs", &[], 6, false, &theme_engine);
         let text: String = line
             .spans
             .iter()
