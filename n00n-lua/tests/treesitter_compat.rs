@@ -518,3 +518,54 @@ assert(err4 ~= nil, "should return error for unknown language")
 "#,
     );
 }
+
+#[test]
+fn query_regex_predicate_caching() {
+    let (_reg, host) = setup();
+    run_lua(
+        &host,
+        "query_regex_predicate_caching",
+        r#"
+local source = [[
+fn foo() {}
+fn bar_test() {}
+fn baz_spec() {}
+]]
+
+local parser = n00n.treesitter.get_parser(source, "rust")
+local root = parser:parse()[1]:root()
+
+-- Query using #match? predicate
+local query = n00n.treesitter.query.parse("rust", [[
+  ((identifier) @fn_name (#match? @fn_name "^(bar_|baz_)"))
+]])
+
+-- Run the same query multiple times to exercise regex caching across calls
+for iteration = 1, 100 do
+    local matched_names = {}
+    for id, node in query:iter_captures(root, source) do
+        local text = n00n.treesitter.get_node_text(node, source)
+        table.insert(matched_names, text)
+    end
+    assert(#matched_names == 2, "expected 2 matches on iteration " .. iteration)
+    assert(matched_names[1] == "bar_test", "expected bar_test")
+    assert(matched_names[2] == "baz_spec", "expected baz_spec")
+end
+
+-- Query using #not-match? predicate
+local not_query = n00n.treesitter.query.parse("rust", [[
+  ((identifier) @fn_name (#not-match? @fn_name "^(bar_|baz_)"))
+]])
+
+for iteration = 1, 100 do
+    local matched_names = {}
+    for id, node in not_query:iter_captures(root, source) do
+        local text = n00n.treesitter.get_node_text(node, source)
+        table.insert(matched_names, text)
+    end
+    assert(#matched_names == 1, "expected 1 match on iteration " .. iteration)
+    assert(matched_names[1] == "foo", "expected foo")
+end
+"#,
+    );
+}
