@@ -93,7 +93,15 @@ const MAX_INFLIGHT_TOOLS: usize = 64;
 const SPAWN_QUEUE_CAPACITY: usize = 256;
 const MAX_RUNTIME_EVENTS_PER_LANE: usize = 64;
 const MAX_CONSECUTIVE_PRIORITY_EVENTS: usize = 64;
-static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+/// Per-`Lua` task id source. Monotonically increasing starting from 1.
+pub(crate) struct TaskIdCounter(Arc<AtomicU64>);
+
+impl TaskIdCounter {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(1)))
+    }
+}
+
 /// Finished tools kept clickable without a restore round-trip. Purely a
 /// cache: a click that misses it falls back to the restore item carried
 /// by the request, so eviction only costs latency, never correctness.
@@ -382,13 +390,23 @@ pub(crate) struct TaskCell {
 
 impl TaskCell {
     pub(crate) fn new(
+        lua: &Lua,
         cancel: CancelToken,
         deadline: Option<Instant>,
         live: Option<LiveCtx>,
         identity: Option<SessionIdentity>,
     ) -> Self {
+        if lua.app_data_ref::<TaskIdCounter>().is_none() {
+            lua.set_app_data(TaskIdCounter::new());
+        }
+        let id = if let Some(counter) = lua.app_data_ref::<TaskIdCounter>() {
+            counter.0.fetch_add(1, Ordering::Relaxed)
+        } else {
+            tracing::warn!("TaskIdCounter not available on Lua; using id 0");
+            0
+        };
         Self {
-            id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
+            id,
             cancel,
             deadline: Cell::new(deadline),
             deadline_secs: Cell::new(None),
@@ -788,7 +806,10 @@ impl TaskScope {
     /// (stale handle looks cancelled). Prefer [`run_detached`] over raw
     /// scopes.
     pub(crate) fn detached(lua: &Lua) -> Self {
-        Self::new(lua, TaskCell::new(CancelToken::none(), None, None, None))
+        Self::new(
+            lua,
+            TaskCell::new(lua, CancelToken::none(), None, None, None),
+        )
     }
 
     pub(crate) fn trusted_ui(lua: &Lua) -> Self {
@@ -838,7 +859,7 @@ async fn run_callback<F: std::future::Future>(
 ) -> F::Output {
     let scope = TaskScope::new(
         lua,
-        TaskCell::new(CancelToken::none(), None, None, identity),
+        TaskCell::new(lua, CancelToken::none(), None, None, identity),
     );
     let handle = Arc::clone(scope.handle());
     lock_cell(&handle).trusted_ui_control = trusted_ui_control;
@@ -1410,6 +1431,7 @@ fn spawn_async_task(
         };
 
         let mut cell = TaskCell::new(
+            &lua,
             task.cancel.clone(),
             task.deadline,
             task.live_ctx.clone(),
@@ -1862,6 +1884,7 @@ impl LuaRuntime {
                 source: e,
             })?;
         let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
+        lua.set_app_data(TaskIdCounter::new());
 
         lua.set_app_data(ShutdownFlag {
             requested: Arc::clone(&shutdown),
@@ -2629,6 +2652,7 @@ async fn restore_item(
 
     let (dummy_tx, _) = flume::unbounded();
     let cell = TaskCell::new(
+        lua,
         CancelToken::none(),
         Some(Instant::now() + RESTORE_ITEM_TIMEOUT),
         Some(LiveCtx {
@@ -3030,7 +3054,7 @@ async fn run_tool_start(
     let identity = ctx.session_identity();
     let scope = TaskScope::new(
         lua,
-        TaskCell::new(ctx.cancel.clone(), None, Some(live), identity),
+        TaskCell::new(lua, ctx.cancel.clone(), None, Some(live), identity),
     );
     let run = async {
         let input_lua = json_to_lua(lua, &input)?;
@@ -3173,7 +3197,7 @@ async fn run_tool_call(
         Err(e) => return ToolCallReply::err(strip_traceback(&e)),
     };
     let live_id = live.as_ref().map(|l| l.tool_use_id.clone());
-    let mut cell = TaskCell::new(cancel, deadline, live, identity.clone());
+    let mut cell = TaskCell::new(&lua, cancel, deadline, live, identity.clone());
     cell.live_sink = live_sink;
     let scope = TaskScope::new(&lua, cell);
     let handle = Arc::clone(scope.handle());
@@ -3273,7 +3297,7 @@ async fn run_tool_call(
             // A fresh cell, because the original's cancel token and
             // deadline are stale: the watchdog interrupt would use them to
             // kill warm clicks.
-            let mut cell = TaskCell::new(CancelToken::none(), None, None, identity);
+            let mut cell = TaskCell::new(&lua, CancelToken::none(), None, None, identity);
             cell.root_buf = Some(root);
             let mut warm = warm_tools.borrow_mut();
             warm.push_back(WarmTool {
@@ -4078,7 +4102,9 @@ mod tests {
     }
 
     fn task_cell(live: Option<LiveCtx>) -> TaskCell {
-        TaskCell::new(CancelToken::none(), None, live, None)
+        let lua = Lua::new();
+        lua.set_app_data(TaskIdCounter::new());
+        TaskCell::new(&lua, CancelToken::none(), None, live, None)
     }
 
     #[test]
@@ -4238,6 +4264,7 @@ mod tests {
         let scope = TaskScope::new(
             &lua,
             TaskCell::new(
+                &lua,
                 CancelToken::none(),
                 Some(Instant::now() + Duration::from_millis(10)),
                 None,
@@ -4259,7 +4286,9 @@ mod tests {
     #[test]
     fn deadline_waiter_rechecks_cleared_deadline_after_waking() {
         smol::block_on(async {
+            let lua = Lua::new();
             let handle = Arc::new(Mutex::new(TaskCell::new(
+                &lua,
                 CancelToken::none(),
                 Some(Instant::now() + DISPATCH_POLL_INTERVAL.saturating_mul(100)),
                 None,
@@ -4304,7 +4333,9 @@ mod tests {
     #[test]
     fn deadline_waiter_observes_shortened_deadline() {
         smol::block_on(async {
+            let lua = Lua::new();
             let handle = Arc::new(Mutex::new(TaskCell::new(
+                &lua,
                 CancelToken::none(),
                 Some(Instant::now() + Duration::from_secs(1)),
                 None,
@@ -4334,7 +4365,7 @@ mod tests {
         let handle = cancelled_handle();
         let scope = TaskScope::new(
             &lua,
-            TaskCell::new(lock_cell(&handle).cancel.clone(), None, None, None),
+            TaskCell::new(&lua, lock_cell(&handle).cancel.clone(), None, None, None),
         );
         assert_eq!(interrupt_reason(&lua), None);
         let cleanup_deadline = lock_cell(scope.handle()).interrupt_after.get().unwrap();
@@ -4353,7 +4384,10 @@ mod tests {
     #[test]
     fn execution_slice_preempts_non_yielding_lua() {
         let lua = Lua::new();
-        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = TaskScope::new(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         lock_cell(scope.handle()).execution_slice_started.set(
             Instant::now()
                 .checked_sub(LUA_EXECUTION_SLICE + WATCHDOG_POLL_INTERVAL)
@@ -4366,7 +4400,10 @@ mod tests {
     #[test]
     fn non_yieldable_callback_continues_instead_of_yielding() {
         let lua = Lua::new();
-        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = TaskScope::new(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
 
         run_non_yieldable(&lua, || {
             lock_cell(scope.handle()).execution_slice_started.set(
@@ -4405,7 +4442,10 @@ mod tests {
     #[test]
     fn enqueue_async_task_routes_to_inline_spawn_when_set() {
         let lua = enqueue_test_lua();
-        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = set_active(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         lock_cell(scope.handle()).inline_spawn = Some(Vec::new());
 
         enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
@@ -4432,7 +4472,10 @@ mod tests {
     #[test]
     fn enqueue_async_task_rejects_excess_fanout() {
         let lua = enqueue_test_lua();
-        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = set_active(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         for _ in 0..SPAWN_QUEUE_CAPACITY {
             enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
         }
@@ -4449,7 +4492,10 @@ mod tests {
     #[test]
     fn draining_spawn_queue_does_not_release_fanout_capacity() {
         let lua = enqueue_test_lua();
-        let _scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let _scope = set_active(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         for _ in 0..SPAWN_QUEUE_CAPACITY {
             enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
         }
@@ -4470,7 +4516,10 @@ mod tests {
     #[test]
     fn inline_async_task_rejects_excess_fanout() {
         let lua = enqueue_test_lua();
-        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = set_active(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         lock_cell(scope.handle()).inline_spawn = Some(Vec::new());
         for _ in 0..SPAWN_QUEUE_CAPACITY {
             enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
@@ -4492,7 +4541,7 @@ mod tests {
     fn enqueue_async_task_inherits_cancel_token() {
         let lua = enqueue_test_lua();
         let (trigger, token) = CancelToken::new();
-        let _h = set_active(&lua, TaskCell::new(token, None, None, None));
+        let _h = set_active(&lua, TaskCell::new(&lua, token, None, None, None));
         enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
 
         let queue = lua.app_data_ref::<SpawnQueue>().unwrap();
@@ -4511,7 +4560,13 @@ mod tests {
         let identity = SessionIdentity::root(n00n_storage::id::SessionRef::generate());
         let _h = set_active(
             &lua,
-            TaskCell::new(CancelToken::none(), None, None, Some(identity.clone())),
+            TaskCell::new(
+                &lua,
+                CancelToken::none(),
+                None,
+                None,
+                Some(identity.clone()),
+            ),
         );
         enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
 
@@ -4526,7 +4581,7 @@ mod tests {
         let parent_deadline = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
         let _h = set_active(
             &lua,
-            TaskCell::new(CancelToken::none(), Some(parent_deadline), None, None),
+            TaskCell::new(&lua, CancelToken::none(), Some(parent_deadline), None, None),
         );
 
         let before = Instant::now();
@@ -4546,7 +4601,7 @@ mod tests {
         let parent_deadline = Instant::now() + Duration::from_mins(10);
         let _h = set_active(
             &lua,
-            TaskCell::new(CancelToken::none(), Some(parent_deadline), None, None),
+            TaskCell::new(&lua, CancelToken::none(), Some(parent_deadline), None, None),
         );
 
         enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
@@ -4558,7 +4613,10 @@ mod tests {
     #[test]
     fn enqueue_async_task_without_parent_deadline_has_no_deadline() {
         let lua = enqueue_test_lua();
-        let _h = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let _h = set_active(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
 
         enqueue_async_task(&lua, enqueue_dummy(&lua), None).unwrap();
 
@@ -4571,7 +4629,10 @@ mod tests {
         use crate::api::ui::buf::HandlerSlot;
 
         let lua = enqueue_test_lua();
-        let scope = set_active(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = set_active(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         let handle = Arc::clone(scope.handle());
 
         let buf = Arc::new(SharedBuf::new());
@@ -4791,7 +4852,9 @@ mod tests {
     fn cancelled_handle() -> TaskHandle {
         let (trigger, token) = CancelToken::new();
         trigger.cancel();
-        Arc::new(Mutex::new(TaskCell::new(token, None, None, None)))
+        let lua = Lua::new();
+        lua.set_app_data(TaskIdCounter::new());
+        Arc::new(Mutex::new(TaskCell::new(&lua, token, None, None, None)))
     }
 
     #[test]
@@ -4894,7 +4957,7 @@ mod tests {
         apply_jit(&lua, true);
 
         let deadline = Instant::now() + Duration::from_millis(20);
-        let cell = TaskCell::new(CancelToken::none(), Some(deadline), None, None);
+        let cell = TaskCell::new(&lua, CancelToken::none(), Some(deadline), None, None);
         lua.set_app_data::<TaskHandle>(Arc::new(Mutex::new(cell)));
 
         let err = hot_loop_expecting_kill(&lua);
@@ -4906,7 +4969,9 @@ mod tests {
         let deadline = Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("one millisecond is representable");
+        let lua = Lua::new();
         let handle = Arc::new(Mutex::new(TaskCell::new(
+            &lua,
             CancelToken::none(),
             Some(deadline),
             None,
@@ -4921,7 +4986,9 @@ mod tests {
 
     #[test]
     fn timeout_reply_omits_unknown_duration() {
+        let lua = Lua::new();
         let handle = Arc::new(Mutex::new(TaskCell::new(
+            &lua,
             CancelToken::none(),
             Some(Instant::now()),
             None,
