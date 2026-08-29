@@ -480,6 +480,7 @@ impl<'h> Agent<'h> {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
 
         info!(

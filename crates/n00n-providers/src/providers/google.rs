@@ -476,7 +476,7 @@ impl Google {
         let status = response.status().as_u16();
 
         if status == 200 {
-            parse_sse(response, event_tx, self.stream_timeout, cancel_flag).await
+            parse_sse_with_cancel(response, event_tx, self.stream_timeout, cancel_flag).await
         } else {
             Err(AgentError::from_response(response).await)
         }
@@ -632,6 +632,7 @@ impl Provider for Google {
                                         tools,
                                         event_tx,
                                         opts.thinking,
+                                        opts.cancel_flag.clone(),
                                     )
                                     .await;
                             }
@@ -717,7 +718,7 @@ impl Provider for Google {
             let status = response.status().as_u16();
 
             if status == 200 {
-                let mut stream_response = parse_sse(
+                let mut stream_response = parse_sse_with_cancel(
                     response,
                     event_tx,
                     self.stream_timeout,
@@ -1038,6 +1039,14 @@ struct ApiModelInfo {
 }
 
 async fn parse_sse(
+    response: isahc::Response<isahc::AsyncBody>,
+    event_tx: &Sender<ProviderEvent>,
+    stream_timeout: Duration,
+) -> Result<StreamResponse, AgentError> {
+    parse_sse_with_cancel(response, event_tx, stream_timeout, None).await
+}
+
+async fn parse_sse_with_cancel(
     response: isahc::Response<isahc::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,

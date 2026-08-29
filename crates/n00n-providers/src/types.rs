@@ -1928,6 +1928,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1947,6 +1948,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -2077,6 +2079,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
         let clamped = opts.clamped(&model);
         assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));
