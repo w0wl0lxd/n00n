@@ -4,13 +4,18 @@ use std::hash::Hasher;
 use std::io::{Error as IoError, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use arc_swap::ArcSwap;
 use n00n_agent::ToolOutput;
 use n00n_agent::permissions::PermissionManager;
 use n00n_config::Effect;
-use n00n_providers::{Message, Model, ModelResolver, ThinkingConfig, TokenUsage};
+use n00n_providers::Message;
+use n00n_providers::Model;
+use n00n_providers::ModelResolver;
+use n00n_providers::ThinkingConfig;
+use n00n_providers::TokenUsage;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_storage::sessions::{StoredEffect, StoredMode, StoredRule};
 use n00n_storage::{StateDir, TranscriptEntry};
 use serde::Serialize;
@@ -90,10 +95,11 @@ impl SessionState {
         mut session: AppSession,
         fallback_model: &Model,
         storage: &StateDir,
+        model_registry: &Arc<RwLock<ModelRegistry>>,
     ) -> Self {
         let model = if let Ok(model) = ModelResolver::current().resolve(&session.model) {
             model
-        } else if let Ok(model) = Model::from_spec(&session.model) {
+        } else if let Ok(model) = Model::from_spec(model_registry, &session.model) {
             // Fall back to the static tables when the provider is currently
             // unconfigured, so the session keeps its model capabilities
             // (thinking, fast, plan mode) instead of collapsing to the default.
@@ -324,7 +330,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session = make_plan_session(Some(StoredMode::Plan), None);
-        let state = SessionState::from_session(session, &test_model(), &storage);
+        let state = SessionState::from_session(
+            session,
+            &test_model(),
+            &storage,
+            &n00n_providers::model_registry::test_registry(),
+        );
         assert_eq!(state.mode, Mode::Plan);
         assert!(state.plan.path().is_some(), "plan path should be allocated");
     }
@@ -335,7 +346,12 @@ mod tests {
         let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session =
             make_plan_session(Some(StoredMode::Plan), Some("/nonexistent/plan.md".into()));
-        let state = SessionState::from_session(session, &test_model(), &storage);
+        let state = SessionState::from_session(
+            session,
+            &test_model(),
+            &storage,
+            &n00n_providers::model_registry::test_registry(),
+        );
         assert_eq!(state.mode, Mode::Plan);
         let path = state.plan.path().expect("plan path should be allocated");
         assert_ne!(path, Path::new("/nonexistent/plan.md"));
@@ -353,7 +369,12 @@ mod tests {
             Some(StoredMode::Plan),
             Some(plan_file.to_string_lossy().into_owned()),
         );
-        let state = SessionState::from_session(session, &test_model(), &storage);
+        let state = SessionState::from_session(
+            session,
+            &test_model(),
+            &storage,
+            &n00n_providers::model_registry::test_registry(),
+        );
         assert_eq!(state.mode, Mode::Plan);
         assert_eq!(state.plan.path(), Some(plan_file.as_path()));
     }
@@ -362,7 +383,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session = make_plan_session(Some(StoredMode::Build), None);
-        let state = SessionState::from_session(session, &test_model(), &storage);
+        let state = SessionState::from_session(
+            session,
+            &test_model(),
+            &storage,
+            &n00n_providers::model_registry::test_registry(),
+        );
         assert_eq!(state.mode, Mode::Build);
         assert!(state.plan.path().is_none());
     }

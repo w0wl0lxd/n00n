@@ -55,7 +55,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("sample cost (1M in / 100k out @ $3/$15): ${cost:.4}");
 
     // (3) Resolved-model cost for a known spec.
-    if let Ok(m) = Model::from_spec("anthropic/claude-3-5-haiku-20241022") {
+    if let Ok(m) = Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        "anthropic/claude-3-5-haiku-20241022",
+    ) {
         let u = TokenUsage {
             input: 10_000,
             output: 2_000,

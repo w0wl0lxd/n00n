@@ -570,7 +570,7 @@ mod tests {
                 .exec_async()
                 .await
                 .unwrap();
-            lua.set_app_data::<TaskHandle>(cancelled_task_handle());
+            lua.set_app_data::<TaskHandle>(cancelled_task_handle(&lua));
             let code = r"
                 local r = async_tbl.gather({ function() return sem:acquire() end })
                 return r[1].ok, tostring(r[1].err)
@@ -593,10 +593,10 @@ mod tests {
         });
     }
 
-    fn cancelled_task_handle() -> TaskHandle {
+    fn cancelled_task_handle(lua: &Lua) -> TaskHandle {
         let (trigger, token) = CancelToken::new();
         trigger.cancel();
-        Arc::new(Mutex::new(TaskCell::new(token, None, None, None)))
+        Arc::new(Mutex::new(TaskCell::new(lua, token, None, None, None)))
     }
 
     #[test_case(0 ; "zero_clamps_to_capacity_one")]
@@ -663,7 +663,7 @@ mod tests {
                 .exec_async()
                 .await
                 .unwrap();
-            lua.set_app_data::<TaskHandle>(cancelled_task_handle());
+            lua.set_app_data::<TaskHandle>(cancelled_task_handle(&lua));
             let msg = lua
                 .load("return sem:acquire()")
                 .eval_async::<Value>()

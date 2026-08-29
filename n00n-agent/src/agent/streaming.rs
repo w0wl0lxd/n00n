@@ -181,7 +181,11 @@ mod tests {
             let provider = RequestSentProvider {
                 calls: AtomicUsize::new(0),
             };
-            let model = Model::from_spec("openai/gpt-5.6").unwrap();
+            let model = Model::from_spec(
+                &n00n_providers::model_registry::test_registry(),
+                "openai/gpt-5.6",
+            )
+            .unwrap();
             let (agent_tx, _agent_rx) = flume::unbounded::<Envelope>();
             let event_tx = EventSender::new(agent_tx, 1);
 

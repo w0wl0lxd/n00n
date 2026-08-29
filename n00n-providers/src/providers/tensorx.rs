@@ -1,10 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use flume::Sender;
 use n00n_storage::id::SessionRef;
 use serde_json::{Value, json};
 
 use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
+use crate::model_registry::ModelRegistry;
 use crate::provider::{BoxFuture, Provider};
 use crate::types::{ThinkingFieldConfig, ToggleEntry};
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System, dialect};
@@ -62,6 +63,7 @@ pub struct TensorX {
     auth: Arc<Mutex<ResolvedAuth>>,
     key_pool: Option<KeyPool>,
     system_prefix: Option<String>,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
 }
 
 impl TensorX {
@@ -72,6 +74,7 @@ impl TensorX {
             auth: Arc::new(Mutex::new(ResolvedAuth::bearer(pool.current()))),
             key_pool: Some(pool),
             system_prefix: None,
+            registry: None,
         })
     }
 
@@ -84,6 +87,7 @@ impl TensorX {
             auth,
             key_pool: None,
             system_prefix: None,
+            registry: None,
         })
     }
 
@@ -94,6 +98,10 @@ impl TensorX {
 }
 
 impl Provider for TensorX {
+    fn set_registry(&mut self, registry: Option<Arc<RwLock<ModelRegistry>>>) {
+        self.registry = registry;
+    }
+
     #[allow(clippy::result_map_or_into_option)]
     fn stream_message<'a>(
         &'a self,
@@ -129,24 +137,25 @@ impl Provider for TensorX {
                 let _ = obj.remove("max_tokens");
             }
 
-            let (has_thinking, has_reasoning_effort) = {
-                // Discovery keys by the builtin slug; a dynamic wrap's model
-                // carries its own slug, so don't key by model.provider.
-                let guard = crate::model_registry::model_registry()
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let info = guard
-                    .discovered("tensorx", &model.id)
-                    .and_then(|d| d.provider_info.clone())
-                    .and_then(|arc| {
-                        Arc::downcast::<TensorXModelInfo>(arc).map_or_else(|_| None, Some)
-                    });
-                if let Some(info) = info {
+            let (has_thinking, has_reasoning_effort) = self
+                .registry
+                .as_ref()
+                .and_then(|registry| {
+                    // Discovery keys by the builtin slug; a dynamic wrap's model
+                    // carries its own slug, so don't key by model.provider.
+                    let guard = registry
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard
+                        .discovered("tensorx", &model.id)
+                        .and_then(|d| d.provider_info.clone())
+                        .and_then(|arc| {
+                            Arc::downcast::<TensorXModelInfo>(arc).map_or_else(|_| None, Some)
+                        })
+                })
+                .map_or((false, false), |info| {
                     (info.has_thinking, info.has_reasoning_effort)
-                } else {
-                    (false, false)
-                }
-            };
+                });
 
             let fields = tensorx_fields(has_thinking, has_reasoning_effort);
             opts.thinking

@@ -4,7 +4,7 @@ use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 use std::{env, thread};
 
@@ -54,9 +54,7 @@ const CODING_PLAN_ADMISSION_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const CODING_PLAN_MAX_SLOTS: u8 = 8;
 
 type LocalCodingPlanSlots = Arc<Mutex<HashSet<u8>>>;
-type LocalCodingPlanSlotRegistry = Mutex<HashMap<PathBuf, Weak<Mutex<HashSet<u8>>>>>;
-
-static LOCAL_CODING_PLAN_SLOTS: OnceLock<LocalCodingPlanSlotRegistry> = OnceLock::new();
+pub(crate) type LocalCodingPlanSlotRegistry = Mutex<HashMap<PathBuf, Weak<Mutex<HashSet<u8>>>>>;
 
 #[derive(Deserialize)]
 struct DeviceCodeResponse {
@@ -382,8 +380,11 @@ fn open_admission_slot(path: &Path) -> Result<File, AgentError> {
     }
 }
 
-fn local_coding_plan_slots(admission_dir: &Path, scope_hash: &str) -> LocalCodingPlanSlots {
-    let registry = LOCAL_CODING_PLAN_SLOTS.get_or_init(|| Mutex::new(HashMap::new()));
+fn local_coding_plan_slots(
+    registry: &LocalCodingPlanSlotRegistry,
+    admission_dir: &Path,
+    scope_hash: &str,
+) -> LocalCodingPlanSlots {
     let key = admission_dir.join(scope_hash);
     let mut registry = registry
         .lock()
@@ -411,6 +412,7 @@ fn reserve_local_coding_plan_slot(
 }
 
 pub(crate) fn acquire_coding_plan_admission(
+    registry: &LocalCodingPlanSlotRegistry,
     dir: &StateDir,
     scope_hash: &str,
     slots: u8,
@@ -422,7 +424,7 @@ pub(crate) fn acquire_coding_plan_admission(
     }
     let scope_hash = admission_scope_hash(scope_hash)?;
     let admission_dir = ensure_coding_plan_admission_dir(dir)?;
-    let local_slots = local_coding_plan_slots(&admission_dir, scope_hash);
+    let local_slots = local_coding_plan_slots(registry, &admission_dir, scope_hash);
     let started = Instant::now();
     let first_slot = fastrand::u8(..slots);
     loop {
@@ -1135,6 +1137,7 @@ mod tests {
     fn coding_plan_admission_bounds_multi_provider_concurrency() {
         let temp = tempfile::tempdir().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
+        let slots = Arc::new(LocalCodingPlanSlotRegistry::new(HashMap::new()));
         let active = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
         let state = Arc::new((
@@ -1145,12 +1148,14 @@ mod tests {
 
         for _ in 0..8 {
             let worker_dir = dir.clone();
+            let worker_slots = Arc::clone(&slots);
             let worker_active = Arc::clone(&active);
             let worker_peak = Arc::clone(&peak);
             let worker_state = Arc::clone(&state);
             workers.push(std::thread::spawn(move || {
                 let (_admission, _) =
-                    acquire_coding_plan_admission(&worker_dir, ADMISSION_SCOPE_A, 4).unwrap();
+                    acquire_coding_plan_admission(&worker_slots, &worker_dir, ADMISSION_SCOPE_A, 4)
+                        .unwrap();
                 let current = worker_active.fetch_add(1, Ordering::SeqCst) + 1;
                 worker_peak.fetch_max(current, Ordering::SeqCst);
                 let (lock, ready) = &*worker_state;
@@ -1211,8 +1216,10 @@ mod tests {
     fn coding_plan_admission_isolated_by_account_scope() {
         let temp = tempfile::tempdir().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        let (first, _) = acquire_coding_plan_admission(&dir, ADMISSION_SCOPE_A, 1).unwrap();
-        let (second, _) = acquire_coding_plan_admission(&dir, ADMISSION_SCOPE_B, 1).unwrap();
+        let slots = LocalCodingPlanSlotRegistry::new(HashMap::new());
+        let (first, _) = acquire_coding_plan_admission(&slots, &dir, ADMISSION_SCOPE_A, 1).unwrap();
+        let (second, _) =
+            acquire_coding_plan_admission(&slots, &dir, ADMISSION_SCOPE_B, 1).unwrap();
 
         assert_eq!(first.slot(), 0);
         assert_eq!(second.slot(), 0);
@@ -1222,15 +1229,18 @@ mod tests {
     fn coding_plan_admission_releases_on_drop_and_error() {
         let temp = tempfile::tempdir().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        let (admission, _) = acquire_coding_plan_admission(&dir, ADMISSION_SCOPE_A, 1).unwrap();
+        let slots = LocalCodingPlanSlotRegistry::new(HashMap::new());
+        let (admission, _) =
+            acquire_coding_plan_admission(&slots, &dir, ADMISSION_SCOPE_A, 1).unwrap();
         drop(admission);
         let result = (|| -> Result<(), AgentError> {
-            let (_admission, _) = acquire_coding_plan_admission(&dir, ADMISSION_SCOPE_A, 1)?;
+            let (_admission, _) =
+                acquire_coding_plan_admission(&slots, &dir, ADMISSION_SCOPE_A, 1)?;
             Err(AgentError::Cancelled)
         })();
 
         assert!(matches!(result, Err(AgentError::Cancelled)));
-        assert!(acquire_coding_plan_admission(&dir, ADMISSION_SCOPE_A, 1).is_ok());
+        assert!(acquire_coding_plan_admission(&slots, &dir, ADMISSION_SCOPE_A, 1).is_ok());
     }
     fn test_tokens(access: &str, refresh: &str, expires: u64) -> OAuthTokens {
         OAuthTokens {

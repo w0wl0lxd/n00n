@@ -21,7 +21,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("{cwd}", "/tmp/n00n-token-profile")
         .set("{platform}", "linux")
         .set("{date}", "2026-07-27");
-    let model = Model::from_spec("anthropic/claude-sonnet-4-6")?;
+    let model = Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        "anthropic/claude-sonnet-4-6",
+    )?;
 
     let filter = ToolFilter::from_config(&AgentConfig::default(), &model, &[]);
     let active = ActiveTools::default();

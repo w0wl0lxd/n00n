@@ -76,14 +76,18 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
     if effective == ctx.model.tier {
         return Ok(Model::clone(&ctx.model));
     }
-    let map = n00n_providers::model_registry::model_registry()
+    let map = ctx
+        .model_registry
         .read()
         .map_err(|e| format!("model registry lock poisoned: {e}"))?;
     map.spec_for_tier(&ctx.model.provider, effective)
         .or_else(|| map.spec_for_tier_any(effective))
-        .and_then(|s| Model::from_spec(&s).ok())
+        .and_then(|s| Model::from_spec(&ctx.model_registry, &s).ok())
         .map_or_else(
-            || Model::from_tier_dynamic(&ctx.model.provider, effective).map_err(|e| e.to_string()),
+            || {
+                Model::from_tier_dynamic(&ctx.model_registry, &ctx.model.provider, effective)
+                    .map_err(|e| e.to_string())
+            },
             Ok,
         )
 }
@@ -289,7 +293,7 @@ fn resolve_model(
         .and_then(|t| t.get::<Option<String>>("spec").ok().flatten());
 
     let model = match spec_str {
-        Some(ref spec) => try_pair!(Model::from_spec(spec)),
+        Some(ref spec) => try_pair!(Model::from_spec(&agent.model_registry, spec)),
         None => try_pair!(resolve_model_from_ctx(agent, tier_str.as_deref())),
     };
     Ok((Some(model_to_lua_table(lua, &model)?), None))
@@ -356,7 +360,10 @@ fn usage_cost(
     output_tokens: u32,
     breakdown: Option<Table>,
 ) -> LuaResult<Pair<f64>> {
-    let model = try_pair!(Model::from_spec(&spec));
+    let model = try_pair!(Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        &spec
+    ));
     let (fresh, cache_read, cache_write, fast) = match breakdown {
         Some(breakdown) => {
             let fresh =
@@ -494,7 +501,7 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
 
     let parsed = spec_str
         .as_deref()
-        .and_then(|spec| Model::from_spec(spec).ok());
+        .and_then(|spec| Model::from_spec(&agent.model_registry, spec).ok());
     let model = if let Some(ref m) = parsed {
         m
     } else {
@@ -702,11 +709,12 @@ async fn session(
 
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
-        let mut m = try_pair!(Model::from_spec(spec));
+        let mut m = try_pair!(Model::from_spec(&agent_ctx.model_registry, spec));
         let p = provider::from_model_fallback_with_openai_options(
             &mut m,
             agent_ctx.timeouts,
             agent_ctx.openai_options.clone(),
+            Some(Arc::clone(&agent_ctx.model_registry)),
         );
         (m, Arc::from(p))
     } else {
@@ -880,6 +888,7 @@ async fn session(
             registry: Arc::clone(&agent_ctx.registry),
             audience,
             state_revision: Some(0),
+            model_registry: Arc::clone(&agent_ctx.model_registry),
         },
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
@@ -2016,7 +2025,11 @@ mod tests {
             .unwrap();
         assert_eq!(err, None);
 
-        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap();
         assert!(model.supports_fast());
         let expected = TokenUsage {
             input: 1_200,
@@ -2049,7 +2062,11 @@ mod tests {
             .unwrap();
         assert_eq!(err, None);
 
-        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap();
         assert!(model.supports_fast());
         let expected = TokenUsage {
             input: 400_000,

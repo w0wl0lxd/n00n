@@ -8,9 +8,9 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 #[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -41,6 +41,7 @@ use n00n_daemon::{AgentRecord, AgentScriptView, is_terminal_worker_status};
 use n00n_lua::PluginHost;
 #[cfg(unix)]
 use n00n_providers::ThinkingConfig;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::{Model, OpenAiOptions, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
@@ -358,6 +359,7 @@ struct PreparedEnv {
     model: Model,
     #[cfg_attr(not(unix), allow(dead_code))]
     model_spec: String,
+    model_registry: Arc<RwLock<ModelRegistry>>,
     agent_config: Arc<AgentConfig>,
     permissions: PermissionsConfig,
     timeouts: Timeouts,
@@ -375,7 +377,11 @@ fn prepare_agent_env(
     fusion: bool,
 ) -> Result<PreparedEnv> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    n00n_providers::model_registry::load_from_storage(&storage);
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
+    model_registry
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
@@ -419,6 +425,7 @@ fn prepare_agent_env(
         &providers_toml,
         &storage,
         Some(&config.agent.fusion),
+        &model_registry,
     )?;
     let model_spec = model.spec();
     setup::install_panic_log_hook();
@@ -439,6 +446,7 @@ fn prepare_agent_env(
         cwd,
         model,
         model_spec,
+        model_registry,
         agent_config: Arc::new(config.agent),
         permissions: config.permissions,
         timeouts,
@@ -499,6 +507,7 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
         fast: false,
         workflow: workflow_from_mode(opts.mode),
         mode,
+        model_registry: env.model_registry,
     };
 
     let handle = headless::spawn(headless_params);
@@ -756,6 +765,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         append_system_prompt: None,
         workflow: workflow_from_mode(opts.mode),
         mode: mode.clone(),
+        model_registry: env.model_registry,
     };
 
     let handle = headless::spawn_interactive(interactive_params);

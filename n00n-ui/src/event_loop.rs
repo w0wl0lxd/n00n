@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -31,6 +31,7 @@ use n00n_lua::{
     EventHandle, HintReader, KeymapReader, LuaCommandReader, SessionReply, SessionRequest, UiAction,
 };
 use n00n_providers::Timeouts;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_with_openai_options, unconfigured_provider,
 };
@@ -621,6 +622,7 @@ struct SpawnCtx {
     picker: Arc<Picker>,
     hydrated_roots: RefCell<HashMap<n00nId, Option<u64>>>,
     revision_allocators: RefCell<HashMap<n00nId, Arc<RevisionAllocator>>>,
+    model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 impl SpawnCtx {
@@ -713,6 +715,7 @@ impl SpawnCtx {
             self.config.clone(),
             self.ui_config.tool_output_lines,
             &permissions,
+            &self.model_registry,
             Some(identity),
             self.timeouts,
             self.openai_options.clone(),
@@ -737,6 +740,7 @@ impl SpawnCtx {
             permissions,
             custom_commands: Arc::clone(&self.custom_commands),
             picker: Arc::clone(&self.picker),
+            model_registry: Arc::clone(&self.model_registry),
         });
         app.lua_event_handle.clone_from(&self.lua_event_handle);
         handles.apply_to_app(&mut app);
@@ -925,6 +929,7 @@ fn complete_model_fetch_with(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     initial_slot: &Arc<ModelSlot>,
     needs_login: bool,
+    registry: &Arc<RwLock<ModelRegistry>>,
     create: impl FnOnce(
         &mut Model,
     ) -> std::result::Result<Box<dyn Provider>, n00n_providers::AgentError>,
@@ -934,7 +939,7 @@ fn complete_model_fetch_with(
     }
 
     let spec = initial_slot.model.spec();
-    let mut resolved = match Model::from_spec(&spec) {
+    let mut resolved = match Model::from_spec(registry, &spec) {
         Ok(model) => model,
         Err(error) => {
             warn!(spec = %spec, %error, "failed to resolve model after discovery");
@@ -962,6 +967,7 @@ fn spawn_model_fetch(
     timeouts: Timeouts,
     openai_options: OpenAiOptions,
     needs_login: bool,
+    model_registry: Arc<RwLock<ModelRegistry>>,
 ) -> BackgroundModels {
     let available: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
     let bg = Arc::clone(&available);
@@ -973,12 +979,25 @@ fn spawn_model_fetch(
     let fetch_generation = Arc::clone(&generation);
     let task = smol::spawn(async move {
         let warn_tx = warn_tx_bg;
+        let registry = Arc::clone(&model_registry);
         let done = Box::new(move || {
-            complete_model_fetch_with(&model_slot, &initial_slot, needs_login, |model| {
-                from_model_with_openai_options(model, timeouts, openai_options)
-            });
+            complete_model_fetch_with(
+                &model_slot,
+                &initial_slot,
+                needs_login,
+                &registry,
+                |model| {
+                    from_model_with_openai_options(
+                        model,
+                        timeouts,
+                        openai_options,
+                        Some(Arc::clone(&registry)),
+                    )
+                },
+            );
         });
         fetch_all_models(
+            Arc::clone(&model_registry),
             |batch| {
                 merge_model_batch(&bg, batch, &warn_tx, 0, &fetch_generation);
             },
@@ -1050,9 +1069,20 @@ impl<'t> EventLoop<'t> {
         let (mcp_handle, mcp_config_errors) =
             smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
 
+        let model_registry = Arc::new(RwLock::new(ModelRegistry::new()));
+        model_registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .load_from_storage(&storage);
+
         let (provider, provider_warning) =
             startup_provider_with(&mut model, needs_login, |model| {
-                from_model_with_openai_options(model, timeouts, openai_options.clone())
+                from_model_with_openai_options(
+                    model,
+                    timeouts,
+                    openai_options.clone(),
+                    Some(Arc::clone(&model_registry)),
+                )
             });
         if let Some(warning) = provider_warning {
             startup_warnings.push(warning);
@@ -1063,7 +1093,13 @@ impl<'t> EventLoop<'t> {
             model: model.clone(),
             provider,
         }));
-        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options.clone(), needs_login);
+        let bg = spawn_model_fetch(
+            &model_slot,
+            timeouts,
+            openai_options.clone(),
+            needs_login,
+            Arc::clone(&model_registry),
+        );
         let startup_login_slot = needs_login.then(|| model_slot.load_full());
 
         let picker = Arc::new(terminal_image::picker());
@@ -1172,6 +1208,7 @@ impl<'t> EventLoop<'t> {
             picker,
             hydrated_roots: RefCell::new(HashMap::new()),
             revision_allocators: RefCell::new(HashMap::new()),
+            model_registry,
         };
 
         let mut runtimes: Vec<SessionRuntime> = sessions
@@ -2638,6 +2675,7 @@ impl<'t> EventLoop<'t> {
             self.ctx.config.clone(),
             self.ctx.ui_config.tool_output_lines,
             &permissions,
+            &self.ctx.model_registry,
             &mut rt.app,
             Some(identity),
             lua_handle,
@@ -2825,6 +2863,7 @@ impl<'t> EventLoop<'t> {
                         &mut new_model,
                         self.ctx.timeouts,
                         self.ctx.openai_options.clone(),
+                        Some(Arc::clone(&self.ctx.model_registry)),
                     )
                 {
                     self.sessions[idx].app.usage_slot.store(None);
@@ -2867,10 +2906,18 @@ impl<'t> EventLoop<'t> {
             Action::ChangeModel(spec) => self.change_model(&spec),
             Action::RefreshProvider { slug } => self.refresh_provider(&slug),
             Action::AssignTier(spec, tier) => {
-                n00n_providers::model_registry::set_and_persist(spec, tier, &self.ctx.storage);
+                self.ctx
+                    .model_registry
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .set_and_persist(spec, tier, &self.ctx.storage);
             }
             Action::UnassignTier(spec, tier) => {
-                n00n_providers::model_registry::unset_and_persist(&spec, tier, &self.ctx.storage);
+                self.ctx
+                    .model_registry
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unset_and_persist(&spec, tier, &self.ctx.storage);
             }
             Action::Compact => {
                 let rt = &mut self.sessions[idx];
@@ -2938,6 +2985,7 @@ impl<'t> EventLoop<'t> {
                 &mut new_model,
                 self.ctx.timeouts,
                 self.ctx.openai_options.clone(),
+                Some(Arc::clone(&self.ctx.model_registry)),
             ) {
                 Ok(new_provider) => {
                     let app = self.focused_app();
@@ -2972,6 +3020,7 @@ impl<'t> EventLoop<'t> {
         let refreshed = Arc::new(ArcSwapOption::empty());
         let warn_tx = self.warn_tx.clone();
         let current_generation = Arc::clone(&self.model_refresh_generation);
+        let model_registry = Arc::clone(&self.ctx.model_registry);
         let generation = {
             let mut current = current_generation
                 .lock()
@@ -2981,6 +3030,7 @@ impl<'t> EventLoop<'t> {
         };
         smol::spawn(async move {
             fetch_all_models(
+                model_registry,
                 |batch| {
                     merge_model_batch(&refreshed, batch, &warn_tx, generation, &current_generation);
                 },
@@ -3015,9 +3065,11 @@ impl<'t> EventLoop<'t> {
     fn refresh_provider(&mut self, slug: &str) {
         let mut model = self.ctx.model_slot.load().model.clone();
         if model.provider.to_string() == slug {
-            if let Ok(provider) =
-                n00n_providers::provider::from_model(&mut model, self.ctx.timeouts)
-            {
+            if let Ok(provider) = n00n_providers::provider::from_model(
+                &mut model,
+                self.ctx.timeouts,
+                Some(Arc::clone(&self.ctx.model_registry)),
+            ) {
                 self.focused_app().usage_slot.store(None);
                 self.ctx.model_slot.store(Arc::new(ModelSlot {
                     model,
@@ -3756,7 +3808,11 @@ mod tests {
 
     #[test]
     fn startup_provider_failure_preserves_model_and_requests_login_once() {
-        let mut model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let mut model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-20250514",
+        )
+        .unwrap();
         let original_spec = model.spec();
         let calls = Counter::new(0);
 
@@ -3776,7 +3832,11 @@ mod tests {
     }
     #[test]
     fn startup_provider_skips_construction_while_login_is_required() {
-        let mut model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let mut model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-20250514",
+        )
+        .unwrap();
         let calls = Counter::new(0);
 
         let (_, warning) = startup_provider_with(&mut model, true, |_| {
@@ -3794,15 +3854,25 @@ mod tests {
     fn model_fetch_completion_preserves_unconfigured_provider(needs_login: bool) {
         let calls = Counter::new(0);
         let initial = Arc::new(ModelSlot {
-            model: Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
+            model: Model::from_spec(
+                &n00n_providers::model_registry::test_registry(),
+                "anthropic/claude-sonnet-4-20250514",
+            )
+            .unwrap(),
             provider: Arc::from(unconfigured_provider()),
         });
         let model_slot = Arc::new(ArcSwap::from(Arc::clone(&initial)));
 
-        complete_model_fetch_with(&model_slot, &initial, needs_login, |_| {
-            calls.set(calls.get() + 1);
-            Ok(unconfigured_provider())
-        });
+        complete_model_fetch_with(
+            &model_slot,
+            &initial,
+            needs_login,
+            &n00n_providers::model_registry::test_registry(),
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(unconfigured_provider())
+            },
+        );
 
         assert_eq!(calls.get(), 0);
         assert!(Arc::ptr_eq(&model_slot.load_full(), &initial));
@@ -3811,7 +3881,11 @@ mod tests {
     #[test]
     fn startup_login_completes_only_after_provider_slot_replacement() {
         let initial = Arc::new(ModelSlot {
-            model: Model::from_spec("codex/gpt-5.6-sol").unwrap(),
+            model: Model::from_spec(
+                &n00n_providers::model_registry::test_registry(),
+                "codex/gpt-5.6-sol",
+            )
+            .unwrap(),
             provider: Arc::from(unconfigured_provider()),
         });
         let replacement = Arc::new(ModelSlot {
@@ -3826,21 +3900,35 @@ mod tests {
     #[test]
     fn model_fetch_completion_does_not_overwrite_concurrent_model_change() {
         let initial = Arc::new(ModelSlot {
-            model: Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
+            model: Model::from_spec(
+                &n00n_providers::model_registry::test_registry(),
+                "anthropic/claude-sonnet-4-20250514",
+            )
+            .unwrap(),
             provider: Arc::from(unconfigured_provider()),
         });
         let replacement = Arc::new(ModelSlot {
-            model: Model::from_spec("openai/gpt-4o").unwrap(),
+            model: Model::from_spec(
+                &n00n_providers::model_registry::test_registry(),
+                "openai/gpt-4o",
+            )
+            .unwrap(),
             provider: Arc::from(unconfigured_provider()),
         });
         let model_slot = Arc::new(ArcSwap::from(Arc::clone(&initial)));
         let slot_during_create = Arc::clone(&model_slot);
         let replacement_during_create = Arc::clone(&replacement);
 
-        complete_model_fetch_with(&model_slot, &initial, false, move |_| {
-            slot_during_create.store(replacement_during_create);
-            Ok(unconfigured_provider())
-        });
+        complete_model_fetch_with(
+            &model_slot,
+            &initial,
+            false,
+            &n00n_providers::model_registry::test_registry(),
+            move |_| {
+                slot_during_create.store(replacement_during_create);
+                Ok(unconfigured_provider())
+            },
+        );
 
         assert!(Arc::ptr_eq(&model_slot.load_full(), &replacement));
     }

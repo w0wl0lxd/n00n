@@ -260,7 +260,11 @@ mod tests {
     fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
         let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
         let slots = crate::prompt::ResolvedSlots::default();
-        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-20250514",
+        )
+        .unwrap();
         let prompt = build_system_prompt(&vars, mode, "", &slots, &model).to_string();
         assert_eq!(prompt.contains("Plan Mode"), expect_plan);
         if expect_plan {
@@ -288,7 +292,11 @@ mod tests {
             &AgentMode::Plan(PathBuf::from("plan.md")),
             &format!("\n{INSTR}"),
             &slots,
-            &Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
+            &Model::from_spec(
+                &n00n_providers::model_registry::test_registry(),
+                "anthropic/claude-sonnet-4-20250514",
+            )
+            .unwrap(),
         )
         .to_string();
         let positions = [INSTR, EXTRA, "Plan Mode"].map(|n| prompt.find(n).unwrap());

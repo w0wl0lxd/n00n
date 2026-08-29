@@ -278,6 +278,7 @@ impl App {
                 model: &self.state.model,
                 fast: self.state.fast,
                 quota: quota.as_deref(),
+                model_registry: &self.model_registry,
             };
             let r = self.usage_modal.view(frame, full, &ctx);
             if r.width > 0 {
@@ -300,6 +301,7 @@ impl App {
                 &self.state.session.meta.usage_by_model,
                 &self.state.model,
                 self.state.fast,
+                &self.model_registry,
             )
         } else {
             None

@@ -26,7 +26,7 @@ use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use humantime::format_duration;
@@ -40,6 +40,7 @@ use crate::permissions::PermissionManager;
 use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
 use n00n_config::{ToolOutputLines, canonical_tool_name};
 use n00n_providers::RequestOptions;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::Provider;
 use n00n_providers::{Model, ModelFamily, ModelPricing, ModelTier, OpenAiOptions};
 use n00n_storage::id::SessionRef;
@@ -420,6 +421,7 @@ pub struct ToolContext {
     /// Immutable session and root identity of the agent executing this tool.
     pub identity: Option<SessionIdentity>,
     pub registry: Arc<ToolRegistry>,
+    pub model_registry: Arc<RwLock<ModelRegistry>>,
     /// Stable identity used by registry-scoped per-agent admission. Child
     /// sessions receive their own scope, while nested calls in one agent share it.
     pub admission_scope: Arc<str>,
@@ -731,12 +733,13 @@ pub fn interpreter_ctx(
     file_tracker: Arc<FileReadTracker>,
     user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     registry: Arc<ToolRegistry>,
+    model_registry: Arc<RwLock<ModelRegistry>>,
 ) -> ToolContext {
     static PROVIDER: LazyLock<Arc<dyn Provider>> = LazyLock::new(|| Arc::new(NullProvider));
     let model = Arc::new(
-        Model::from_spec("anthropic/claude-sonnet-4-20250514")
-            .or_else(|_| Model::from_spec("anthropic/claude-3-5-sonnet-20241022"))
-            .or_else(|_| Model::from_spec("anthropic/claude-3-haiku-20240307"))
+        Model::from_spec(&model_registry, "anthropic/claude-sonnet-4-20250514")
+            .or_else(|_| Model::from_spec(&model_registry, "anthropic/claude-3-5-sonnet-20241022"))
+            .or_else(|_| Model::from_spec(&model_registry, "anthropic/claude-3-haiku-20240307"))
             .unwrap_or_else(|_| fallback_model()),
     );
     let admission_scope = registry.admission().new_scope();
@@ -762,6 +765,7 @@ pub fn interpreter_ctx(
         subagent_cancels: Arc::new(CancelMap::new()),
         identity: None,
         registry,
+        model_registry,
         admission_scope,
         tool_filter: ToolFilter::All,
         workflow: false,
@@ -778,6 +782,7 @@ pub fn interpreter_ctx(
 pub fn cli_tool_ctx() -> ToolContext {
     let (tx, _rx) = flume::unbounded::<crate::Envelope>();
     let event_tx = crate::EventSender::new(tx, 0);
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
     interpreter_ctx(
         &AgentMode::Build,
         &event_tx,
@@ -793,6 +798,7 @@ pub fn cli_tool_ctx() -> ToolContext {
         Arc::new(FileReadTracker::new()),
         None,
         Arc::clone(ToolRegistry::global_arc()),
+        model_registry,
     )
 }
 
@@ -878,6 +884,7 @@ pub mod test_support {
             Arc::new(FileReadTracker::new()),
             None,
             Arc::new(ToolRegistry::new()),
+            n00n_providers::model_registry::test_registry(),
         );
         ctx.tool_use_id = tool_use_id.map(String::from);
         ctx.identity = Some(SessionIdentity::root(
@@ -906,6 +913,7 @@ pub mod test_support {
             Arc::new(FileReadTracker::new()),
             None,
             Arc::new(ToolRegistry::new()),
+            n00n_providers::model_registry::test_registry(),
         );
         ctx.tool_use_id = None;
         ctx
@@ -953,7 +961,11 @@ mod tests {
     #[test_case(true  ; "vision_model_keeps_view_image")]
     #[test_case(false ; "text_only_model_loses_view_image")]
     fn from_config_gates_view_image_on_vision(vision: bool) {
-        let mut model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let mut model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap();
         model.supports_vision_override = Some(vision);
         let filter = ToolFilter::from_config(&AgentConfig::default(), &model, &[]);
         assert_eq!(filter.matches(VIEW_IMAGE_TOOL_NAME), vision);
@@ -965,7 +977,11 @@ mod tests {
 
     #[test]
     fn from_config_hides_fusion_tool_until_enabled() {
-        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap();
         let mut config = AgentConfig::default();
         let disabled = ToolFilter::from_config(&config, &model, &[]);
         assert!(!disabled.matches(FUSION_TOOL_NAME));

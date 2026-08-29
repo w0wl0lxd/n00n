@@ -1,7 +1,7 @@
 use std::env;
 use std::io::{self, IsTerminal, Read};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 
 use color_eyre::Result;
@@ -14,6 +14,7 @@ use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::Message;
 use n00n_providers::model::Model;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::RetentionBudget;
@@ -32,6 +33,7 @@ struct Stack {
     config: Config,
     commands: Vec<CustomCommand>,
     model: Model,
+    model_registry: Arc<RwLock<ModelRegistry>>,
     needs_login: bool,
 }
 
@@ -141,6 +143,7 @@ fn select_startup_model(
     recent_model: Option<Model>,
     detected_model: Option<Model>,
     warnings: &mut Vec<String>,
+    model_registry: &Arc<RwLock<ModelRegistry>>,
 ) -> Result<(Model, bool)> {
     match (resolved, reload_fallback) {
         (Ok(model), _)
@@ -184,7 +187,7 @@ fn select_startup_model(
                 ));
                 Ok((detected, false))
             } else {
-                setup::placeholder_model()
+                setup::placeholder_model(model_registry)
                     .map(|placeholder| (placeholder, true))
                     .map_err(|_| error)
             }
@@ -200,6 +203,7 @@ fn build_stack(
     cli: &Cli,
     cwd: &Path,
     storage: &StateDir,
+    model_registry: &Arc<RwLock<ModelRegistry>>,
     fallback: Option<(Config, Model)>,
 ) -> Result<(Stack, Vec<String>)> {
     let mut warnings = Vec::new();
@@ -242,13 +246,14 @@ fn build_stack(
         &providers_toml,
         storage,
         Some(&config.agent.fusion),
+        model_registry,
     );
     let explicit = cli.model.is_some();
     let interactive_fallback = !cli.run_flags.print && !explicit;
     let (recent_model, detected_model) = if interactive_fallback {
         (
-            setup::fallback_to_recent_model(storage),
-            setup::auto_detect_model(&providers_toml),
+            setup::fallback_to_recent_model(storage, model_registry),
+            setup::auto_detect_model(&providers_toml, model_registry),
         )
     } else {
         (None, None)
@@ -260,6 +265,7 @@ fn build_stack(
         recent_model,
         detected_model,
         &mut warnings,
+        model_registry,
     )?;
 
     Ok((
@@ -268,6 +274,7 @@ fn build_stack(
             config,
             commands,
             model,
+            model_registry: Arc::clone(model_registry),
             needs_login,
         },
         warnings,
@@ -324,14 +331,18 @@ fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
 
 pub fn run(cli: Cli) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    n00n_providers::model_registry::load_from_storage(&storage);
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
+    model_registry
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
 
     load_env_files(&cwd);
     warn_stale_config_toml(&cwd);
 
-    let (stack, startup_warnings) = build_stack(&cli, &cwd, &storage, None)?;
+    let (stack, startup_warnings) = build_stack(&cli, &cwd, &storage, &model_registry, None)?;
     let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
 
     setup::init_logging(&stack.config.storage);
@@ -445,7 +456,7 @@ fn run_ui_loop(
         let model = if focused_tab.messages.is_empty() {
             stack.model.clone()
         } else {
-            setup::available_model_from_spec(&focused_tab.model)
+            setup::available_model_from_spec(&focused_tab.model, &stack.model_registry)
                 .unwrap_or_else(|| stack.model.clone())
         };
 
@@ -465,6 +476,7 @@ fn run_ui_loop(
                 focused,
                 startup_warnings: std::mem::take(&mut warnings),
                 storage: storage.clone(),
+                model_registry: Arc::clone(&stack.model_registry),
                 config: stack.config.agent.clone(),
                 ui_config: stack.config.ui.clone(),
                 input_history_size: stack.config.storage.input_history_size,
@@ -544,8 +556,9 @@ fn handle_reload(
     let plugin_host = std::mem::replace(&mut stack.plugin_host, PluginHost::disabled());
     teardown.defer(move || drop(plugin_host));
 
-    let (new_stack, new_warnings) = build_stack(cli, cwd, storage, Some(last_good))
-        .context("reload with fallback should not fail")?;
+    let (new_stack, new_warnings) =
+        build_stack(cli, cwd, storage, &stack.model_registry, Some(last_good))
+            .context("reload with fallback should not fail")?;
     let tabs = if reloaded.is_empty() {
         vec![AppSession::new(&new_stack.model.spec(), &cwd_str)]
     } else {
@@ -656,7 +669,11 @@ mod tests {
 
     #[test]
     fn resolution_failure_uses_recent_model_and_warns() {
-        let recent = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let recent = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "codex/gpt-5.6-sol",
+        )
+        .unwrap();
         let mut warnings = Vec::new();
 
         let (model, needs_login) = select_startup_model(
@@ -666,6 +683,7 @@ mod tests {
             Some(recent.clone()),
             None,
             &mut warnings,
+            &n00n_providers::model_registry::test_registry(),
         )
         .unwrap();
 
@@ -686,6 +704,7 @@ mod tests {
             None,
             None,
             &mut warnings,
+            &n00n_providers::model_registry::test_registry(),
         )
         .unwrap();
 
@@ -705,6 +724,7 @@ mod tests {
             None,
             None,
             &mut warnings,
+            &n00n_providers::model_registry::test_registry(),
         )
         .unwrap_err();
 

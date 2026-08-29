@@ -5489,7 +5489,13 @@ fn run_session_usage_probe(provider: ScriptedSessionProvider, fast: bool) -> ser
         None,
     );
     ctx.provider = Arc::new(provider);
-    ctx.model = Arc::new(Model::from_spec("anthropic/claude-opus-4-8").unwrap());
+    ctx.model = Arc::new(
+        Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap(),
+    );
     ctx.registry = Arc::clone(&registry);
 
     let output = smol::block_on(invocation.execute(&ctx))
@@ -5526,7 +5532,11 @@ fn session_prompt_returns_current_usage_on_normal_completion() {
     assert_eq!(output["result"]["input_tokens"], usage.total_input());
     assert_eq!(output["result"]["output_tokens"], usage.output);
     assert_eq!(output["result"]["fast"], true);
-    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    let model = Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        "anthropic/claude-opus-4-8",
+    )
+    .unwrap();
     assert_eq!(output["result"]["cost"], usage.cost(&model.pricing, true));
 }
 
@@ -5563,7 +5573,11 @@ fn session_prompt_returns_charged_usage_with_later_error() {
     assert_eq!(output["result"]["input_tokens"], usage.total_input());
     assert_eq!(output["result"]["output_tokens"], usage.output);
     assert_eq!(output["result"]["fast"], false);
-    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    let model = Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        "anthropic/claude-opus-4-8",
+    )
+    .unwrap();
     assert_eq!(output["result"]["cost"], usage.cost(&model.pricing, false));
 }
 
@@ -6023,7 +6037,13 @@ fn plugin_state_capture_services_lua_session_tool_calls() {
     ctx.identity = Some(identity.clone());
     ctx.registry = Arc::clone(&reg);
     ctx.provider = Arc::new(provider);
-    ctx.model = Arc::new(Model::from_spec("anthropic/claude-opus-4-8").unwrap());
+    ctx.model = Arc::new(
+        Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap(),
+    );
     let worker = std::thread::spawn(move || smol::block_on(invocation.execute(&ctx)));
 
     loop {

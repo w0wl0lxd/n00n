@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::mem;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Instant;
 
@@ -26,6 +26,7 @@ use n00n_agent::{
     AgentConfig, AgentEvent, AgentInput, AgentMode, Envelope, PermissionsConfig, ToolOutput,
 };
 use n00n_providers::model::Model;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::{ImageSource, Message, OpenAiOptions, StopReason, Timeouts, TokenUsage};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
@@ -455,6 +456,7 @@ pub struct SdkParams {
 
 struct Shared {
     model: Model,
+    model_registry: Arc<RwLock<ModelRegistry>>,
     permission_mode: PermissionMode,
     turn_start: Instant,
     pending: HashSet<String>,
@@ -485,6 +487,12 @@ pub fn run(params: SdkParams) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let working_dir = cwd.to_string_lossy().into_owned();
     let (session_id, initial_history, initial_transcript) = resolve_session(&cli, &working_dir)?;
+    let storage = StateDir::resolve().context("resolve state dir")?;
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
+    model_registry
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .load_from_storage(&storage);
 
     let (mcp_handle, mcp_config_errors) =
         smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
@@ -512,6 +520,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         append_system_prompt: cli.append_system_prompt.clone().filter(|s| !s.is_empty()),
         workflow,
         mode: AgentMode::Build,
+        model_registry: Arc::clone(&model_registry),
     });
 
     let (writer, writer_thread) = spawn_writer(handle.session_id.clone());
@@ -531,6 +540,7 @@ pub fn run(params: SdkParams) -> Result<()> {
 
     let shared = Arc::new(Mutex::new(Shared {
         model: startup_model.clone(),
+        model_registry,
         permission_mode,
         turn_start: Instant::now(),
         pending: HashSet::new(),
@@ -919,7 +929,14 @@ fn handle_control_request(
             }
         }
         "set_model" => {
-            if let Some(model) = resolve_set_model(cr.request.extra.get("model"), startup_model) {
+            let model = shared.lock().ok().and_then(|guard| {
+                resolve_set_model(
+                    cr.request.extra.get("model"),
+                    startup_model,
+                    &guard.model_registry,
+                )
+            });
+            if let Some(model) = model {
                 let _ = handle.model_tx.send(model.clone());
                 if let Ok(mut shared) = shared.lock() {
                     shared.model = model;
@@ -935,18 +952,24 @@ fn handle_control_request(
     }
 }
 
-fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Option<Model> {
+fn resolve_set_model(
+    model_val: Option<&Value>,
+    startup_model: &Model,
+    registry: &Arc<RwLock<ModelRegistry>>,
+) -> Option<Model> {
     match model_val? {
         Value::Null => Some(startup_model.clone()),
-        Value::String(model_str) => match Model::from_spec(&resolve_model_spec(model_str)) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to resolve model '{model_str}': {e}, keeping current model"
-                );
-                None
+        Value::String(model_str) => {
+            match Model::from_spec(registry, &resolve_model_spec(model_str)) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to resolve model '{model_str}': {e}, keeping current model"
+                    );
+                    None
+                }
             }
-        },
+        }
         _ => None,
     }
 }
@@ -1633,8 +1656,9 @@ mod tests {
 
     #[test]
     fn resolve_set_model_null_returns_startup() {
-        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
-        let result = resolve_set_model(Some(&Value::Null), &startup).unwrap();
+        let registry = n00n_providers::model_registry::test_registry();
+        let startup = Model::from_spec(&registry, "anthropic/claude-sonnet-4-20250514").unwrap();
+        let result = resolve_set_model(Some(&Value::Null), &startup, &registry).unwrap();
         assert_eq!(result.id, startup.id);
     }
 
@@ -1653,7 +1677,8 @@ mod tests {
 
     #[test]
     fn mixed_lane_fusion_cost_uses_per_lane_totals() {
-        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let registry = n00n_providers::model_registry::test_registry();
+        let model = Model::from_spec(&registry, "anthropic/claude-sonnet-4-20250514").unwrap();
         let usage = TokenUsage {
             input: 1_000,
             output: 200,

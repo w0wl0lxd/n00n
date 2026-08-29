@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use flume::Sender;
 use serde_json::Value;
@@ -13,6 +13,7 @@ use n00n_redact::demoted;
 use n00n_storage::id::SessionRef;
 
 use crate::model::{Model, ModelFamily, ModelInfo};
+use crate::model_registry::ModelRegistry;
 use crate::providers::Timeouts;
 use crate::providers::anthropic::Anthropic;
 use crate::providers::anthropic::bedrock;
@@ -315,6 +316,8 @@ pub trait Provider: Send + Sync {
 
     fn adjust_model(&self, _model: &mut Model) {}
 
+    fn set_registry(&mut self, _registry: Option<Arc<RwLock<ModelRegistry>>>) {}
+
     fn supports_hosted_tool_search(&self, _model: &Model) -> bool {
         false
     }
@@ -326,15 +329,20 @@ pub trait Provider: Send + Sync {
 ///
 /// Returns `AgentError` if the slug does not match a builtin, dynamic,
 /// or custom provider, or if provider construction fails.
-pub fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
-    if let Ok(kind) = ProviderKind::from_str(slug) {
-        return kind.create(timeouts);
-    }
-    if dynamic::display_name(slug).is_some() {
-        dynamic::create(slug, timeouts)
+pub fn provider_for_slug(
+    slug: &str,
+    timeouts: Timeouts,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
+) -> Result<Box<dyn Provider>, AgentError> {
+    let mut provider = if let Ok(kind) = ProviderKind::from_str(slug) {
+        kind.create(timeouts)?
+    } else if dynamic::display_name(slug).is_some() {
+        dynamic::create(slug, timeouts)?
     } else {
-        crate::providers::custom::create(slug, timeouts)
-    }
+        crate::providers::custom::create(slug, timeouts)?
+    };
+    provider.set_registry(registry);
+    Ok(provider)
 }
 
 #[must_use]
@@ -371,9 +379,10 @@ fn provider_available_with_config(slug: &str, config: Option<&ProvidersConfig>) 
             .get(slug)
             .and_then(|def| def.enable_free_models)
             .is_some_and(|enabled| enabled);
-        return (has_key || free_enabled) && provider_for_slug(slug, Timeouts::default()).is_ok();
+        return (has_key || free_enabled)
+            && provider_for_slug(slug, Timeouts::default(), None).is_ok();
     }
-    provider_for_slug(slug, Timeouts::default()).is_ok()
+    provider_for_slug(slug, Timeouts::default(), None).is_ok()
 }
 
 fn local_provider_configured(slug: &str, config: &ProvidersConfig) -> bool {
@@ -395,8 +404,12 @@ fn local_provider_configured(slug: &str, config: &ProvidersConfig) -> bool {
 /// # Errors
 ///
 /// Returns `AgentError` if the provider cannot be created.
-pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
-    from_model_with_openai_options(model, timeouts, OpenAiOptions::default())
+pub fn from_model(
+    model: &mut Model,
+    timeouts: Timeouts,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
+) -> Result<Box<dyn Provider>, AgentError> {
+    from_model_with_openai_options(model, timeouts, OpenAiOptions::default(), registry)
 }
 
 /// Create a provider for a resolved model with OpenAI-compatible options.
@@ -408,21 +421,27 @@ pub fn from_model_with_openai_options(
     model: &mut Model,
     timeouts: Timeouts,
     openai_options: OpenAiOptions,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
 ) -> Result<Box<dyn Provider>, AgentError> {
     if let Ok(kind) = ProviderKind::from_str(&model.provider) {
-        let provider = kind.create_with_openai_options(timeouts, openai_options)?;
+        let mut provider = kind.create_with_openai_options(timeouts, openai_options)?;
+        provider.set_registry(registry);
         provider.adjust_model(model);
         debug!(provider = %model.provider, model = %model.id, "provider created");
         return Ok(provider);
     }
-    let provider = provider_for_slug(&model.provider, timeouts)?;
+    let provider = provider_for_slug(&model.provider, timeouts, registry)?;
     provider.adjust_model(model);
     debug!(provider = %model.provider, model = %model.id, "provider created");
     Ok(provider)
 }
 
-pub fn from_model_fallback(model: &mut Model, timeouts: Timeouts) -> Box<dyn Provider> {
-    from_model_fallback_with_openai_options(model, timeouts, OpenAiOptions::default())
+pub fn from_model_fallback(
+    model: &mut Model,
+    timeouts: Timeouts,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
+) -> Box<dyn Provider> {
+    from_model_fallback_with_openai_options(model, timeouts, OpenAiOptions::default(), registry)
 }
 
 #[must_use]
@@ -430,8 +449,9 @@ pub fn from_model_fallback_with_openai_options(
     model: &mut Model,
     timeouts: Timeouts,
     openai_options: OpenAiOptions,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
 ) -> Box<dyn Provider> {
-    match from_model_with_openai_options(model, timeouts, openai_options) {
+    match from_model_with_openai_options(model, timeouts, openai_options, registry) {
         Ok(provider) => provider,
         Err(e) if e.is_setup_required() => {
             info!(error = %e, "provider setup required, using unconfigured provider");
@@ -488,10 +508,11 @@ impl Provider for UnconfiguredProvider {
 pub async fn from_model_async(
     model: &mut Model,
     timeouts: Timeouts,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
 ) -> Result<Box<dyn Provider>, AgentError> {
     let slug = Arc::clone(&model.provider);
     let id = model.id.clone();
-    let provider = smol::unblock(move || provider_for_slug(&slug, timeouts)).await?;
+    let provider = smol::unblock(move || provider_for_slug(&slug, timeouts, registry)).await?;
     provider.adjust_model(model);
     debug!(provider = %model.provider, model = %id, "provider created");
     Ok(provider)
@@ -517,7 +538,7 @@ pub fn available_model_specs() -> Vec<String> {
                 .map(move |p| format!("{}/{}", m.slug, p))
         })
         .collect();
-    for slug in dynamic::discovered_slugs() {
+    for slug in &dynamic::discovered_slugs() {
         if provider_available_with_config(slug, Some(&providers_config)) {
             specs.extend(dynamic::dynamic_model_specs_for(slug));
         }
@@ -550,6 +571,7 @@ fn is_expected_provider_absence(error: &AgentError) -> bool {
 /// Fetches all available models from all providers asynchronously.
 #[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
+    registry: Arc<RwLock<ModelRegistry>>,
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,
 ) {
@@ -558,7 +580,7 @@ pub async fn fetch_all_models(
 
     for manifest in crate::manifest::ManifestRegistry::builtins() {
         let slug = manifest.slug;
-        let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
+        let provider = match smol::unblock(move || provider_for_slug(slug, timeouts, None)).await {
             Ok(provider) => provider,
             Err(error) if is_expected_provider_absence(&error) => {
                 if error.is_setup_required() {
@@ -575,12 +597,13 @@ pub async fn fetch_all_models(
         };
         let display_name = manifest.display_name;
         let tx = tx.clone();
+        let registry = Arc::clone(&registry);
         smol::spawn(async move {
             let batch = match provider.list_models().await {
                 Ok(models) => {
                     if manifest.accepts_arbitrary_models {
                         let slug: Arc<str> = Arc::from(slug);
-                        crate::model_registry::model_registry()
+                        registry
                             .write()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .set_known_models(&slug, models.clone());
@@ -621,9 +644,9 @@ pub async fn fetch_all_models(
         .detach();
     }
 
-    for slug in dynamic::discovered_slugs() {
+    for slug in &dynamic::discovered_slugs() {
         let tx = tx.clone();
-        let slug = slug.to_string();
+        let slug = slug.clone();
         smol::spawn(async move {
             let static_fallback = |reason: String| {
                 warn!(

@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, RwLock,
     atomic::{AtomicI64, Ordering},
 };
 
@@ -25,6 +25,7 @@ use n00n_agent::{
 use n00n_providers::Message;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{Session, TranscriptEntry};
@@ -61,6 +62,7 @@ struct SessionState {
 struct Server {
     out_tx: Sender<Value>,
     model_specs: Vec<String>,
+    model_registry: Arc<RwLock<ModelRegistry>>,
     session: Option<SessionState>,
     next_outgoing_request_id: RequestIdCounter,
 }
@@ -92,6 +94,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let server = Server {
         out_tx,
         model_specs: available_model_specs(),
+        model_registry: Arc::clone(&params.model_registry),
         session: None,
         next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
     };
@@ -310,6 +313,7 @@ fn spawn_session(
         append_system_prompt: None,
         workflow: false,
         mode: AgentMode::Build,
+        model_registry: Arc::clone(&params.model_registry),
     })
 }
 
@@ -433,8 +437,8 @@ fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, Acp
     }
 
     let spec = req.value.0.to_string();
-    let model =
-        Model::from_spec(&spec).map_err(|e| AcpError::invalid_params().data(json_str(&e)))?;
+    let model = Model::from_spec(&srv.model_registry, &spec)
+        .map_err(|e| AcpError::invalid_params().data(json_str(&e)))?;
 
     let session = srv.session.as_mut().ok_or_else(no_session)?;
     session
@@ -775,7 +779,12 @@ mod tests {
 
     fn test_params() -> AcpParams {
         AcpParams {
-            model: Model::from_spec("anthropic/test-model").expect("test model"),
+            model: Model::from_spec(
+                &n00n_providers::model_registry::test_registry(),
+                "anthropic/test-model",
+            )
+            .expect("test model"),
+            model_registry: n00n_providers::model_registry::test_registry(),
             config: Arc::new(n00n_agent::AgentConfig::default()),
             permissions_config: n00n_agent::PermissionsConfig::default(),
             timeouts: n00n_providers::Timeouts::default(),
@@ -794,6 +803,7 @@ mod tests {
         let server = Server {
             out_tx,
             model_specs: Vec::new(),
+            model_registry: n00n_providers::model_registry::test_registry(),
             session: None,
             next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
         };

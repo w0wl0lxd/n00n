@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwapOption;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 
 use n00n_providers::ModelTier;
 use n00n_providers::dynamic;
-use n00n_providers::model_registry;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::ProviderKind;
 
 use crate::components::Overlay;
@@ -110,10 +110,14 @@ pub struct ModelPicker {
     // allocation from being freed and reused at the same address.
     last_specs: Option<Arc<Vec<String>>>,
     dirty: bool,
+    model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 impl ModelPicker {
-    pub fn new(models: Arc<ArcSwapOption<Vec<String>>>) -> Self {
+    pub fn new(
+        models: Arc<ArcSwapOption<Vec<String>>>,
+        model_registry: Arc<RwLock<ModelRegistry>>,
+    ) -> Self {
         Self {
             picker: ListPicker::new().with_footer_builder(footer_line),
             models,
@@ -121,6 +125,7 @@ impl ModelPicker {
             current_spec: String::new(),
             last_specs: None,
             dirty: false,
+            model_registry,
         }
     }
 
@@ -163,14 +168,16 @@ impl ModelPicker {
         let mut entries: Vec<ModelEntry> = Vec::new();
         let recent_specs = self.recents.clone();
         for spec in &recent_specs {
-            if let Some(mut e) = parse_model_entry(spec) {
+            if let Some(mut e) = parse_model_entry(spec, &self.model_registry) {
                 e.suffix = Some(std::mem::take(&mut e.provider_display));
                 e.provider_display = RECENT_SECTION.to_string();
                 entries.push(e);
             }
         }
         let full: Vec<ModelEntry> = specs.map_or_else(Default::default, |s| {
-            s.iter().filter_map(|s| parse_model_entry(s)).collect()
+            s.iter()
+                .filter_map(|s| parse_model_entry(s, &self.model_registry))
+                .collect()
         });
         entries.extend(full);
         let idx = entries
@@ -234,20 +241,23 @@ impl Overlay for ModelPicker {
     }
 }
 
-fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
+fn parse_model_entry(
+    spec: &str,
+    model_registry: &Arc<RwLock<ModelRegistry>>,
+) -> Option<ModelEntry> {
     let (provider_str, model_id) = spec.split_once('/')?;
 
     let provider_display = if let Ok(kind) = provider_str.parse::<ProviderKind>() {
         kind.display_name().to_string()
     } else if let Some(name) = dynamic::display_name(provider_str) {
-        name.to_string()
+        name
     } else {
         let config = n00n_config::providers::ProvidersConfig::load();
         config.get(provider_str)?;
         n00n_config::providers::resolve_display_name(provider_str, config.get(provider_str))
     };
 
-    let map = model_registry::model_registry()
+    let map = model_registry
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let name = map
@@ -264,9 +274,11 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     .collect();
     let override_label = map.override_tier_label(spec);
     drop(map);
-    let tier = override_label.unwrap_or_else(|| match n00n_providers::Model::from_spec(spec) {
-        Ok(m) => m.tier.to_string(),
-        Err(_) => String::new(),
+    let tier = override_label.unwrap_or_else(|| {
+        match n00n_providers::Model::from_spec(model_registry, spec) {
+            Ok(m) => m.tier.to_string(),
+            Err(_) => String::new(),
+        }
     });
     Some(ModelEntry {
         spec: spec.to_string(),
@@ -300,7 +312,10 @@ mod tests {
     #[test_case(key(KeyCode::Esc)          ; "esc_closes")]
     #[test_case(kb::QUIT.to_key_event()    ; "ctrl_c_closes")]
     fn close_keys(cancel_key: KeyEvent) {
-        let mut p = ModelPicker::new(test_models());
+        let mut p = ModelPicker::new(
+            test_models(),
+            n00n_providers::model_registry::test_registry(),
+        );
         p.open("");
         let action = p.handle_key(cancel_key);
         assert!(matches!(action, ModelPickerAction::Close));
@@ -313,7 +328,10 @@ mod tests {
         models.store(Some(Arc::new(vec![
             "anthropic/claude-sonnet-4-20250514".into(),
         ])));
-        let mut p = ModelPicker::new(Arc::clone(&models));
+        let mut p = ModelPicker::new(
+            Arc::clone(&models),
+            n00n_providers::model_registry::test_registry(),
+        );
         p.open("");
 
         p.handle_key(key(KeyCode::Char('o')));
@@ -338,7 +356,10 @@ mod tests {
         models.store(Some(Arc::new(vec![
             "anthropic/claude-sonnet-4-20250514".into(),
         ])));
-        let mut p = ModelPicker::new(Arc::clone(&models));
+        let mut p = ModelPicker::new(
+            Arc::clone(&models),
+            n00n_providers::model_registry::test_registry(),
+        );
         p.open("");
 
         // A refresh that yields the same number of specs but a different model
@@ -359,7 +380,10 @@ mod tests {
 
     #[test]
     fn open_preselects_current_model() {
-        let mut p = ModelPicker::new(test_models());
+        let mut p = ModelPicker::new(
+            test_models(),
+            n00n_providers::model_registry::test_registry(),
+        );
         p.open("anthropic/claude-opus-4-6-20260101");
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(
@@ -369,7 +393,11 @@ mod tests {
 
     #[test]
     fn parse_model_entry_valid() {
-        let entry = parse_model_entry("anthropic/claude-sonnet-4-20250514").unwrap();
+        let entry = parse_model_entry(
+            "anthropic/claude-sonnet-4-20250514",
+            &n00n_providers::model_registry::test_registry(),
+        )
+        .unwrap();
         assert_eq!(entry.id, "claude-sonnet-4-20250514");
         assert_eq!(entry.provider_display, "Anthropic");
         assert!(!entry.tier.is_empty());
@@ -377,7 +405,10 @@ mod tests {
 
     #[test]
     fn parse_model_entry_no_slash() {
-        assert!(parse_model_entry("no-slash").is_none());
+        assert!(
+            parse_model_entry("no-slash", &n00n_providers::model_registry::test_registry())
+                .is_none()
+        );
     }
 
     #[test_case(key(KeyCode::Char('!')),           ModelTier::Strong     ; "legacy_bang_strong")]
@@ -386,7 +417,10 @@ mod tests {
     #[test_case(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::SHIFT), ModelTier::Strong     ; "kitty_shift_1_strong")]
     #[test_case(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::SHIFT), ModelTier::Compaction ; "kitty_shift_4_compaction")]
     fn tier_shortcut_assigns_and_keeps_picker_open(k: KeyEvent, want: ModelTier) {
-        let mut p = ModelPicker::new(test_models());
+        let mut p = ModelPicker::new(
+            test_models(),
+            n00n_providers::model_registry::test_registry(),
+        );
         p.open("");
         let action = p.handle_key(k);
         assert!(
@@ -400,7 +434,10 @@ mod tests {
     #[test]
     fn refresh_preserves_selection_for_current_model() {
         let models = Arc::new(ArcSwapOption::empty());
-        let mut p = ModelPicker::new(Arc::clone(&models));
+        let mut p = ModelPicker::new(
+            Arc::clone(&models),
+            n00n_providers::model_registry::test_registry(),
+        );
         p.open("anthropic/claude-opus-4-6-20260101");
 
         models.store(Some(Arc::new(vec![
@@ -420,7 +457,7 @@ mod tests {
     #[test]
     fn recents_include_current_model_preselected() {
         let models = test_models();
-        let mut p = ModelPicker::new(models);
+        let mut p = ModelPicker::new(models, n00n_providers::model_registry::test_registry());
         p.set_recents(vec![
             "zai/glm-5".into(),
             "anthropic/claude-sonnet-4-20250514".into(),

@@ -7,13 +7,14 @@
 //! Discovered metadata (context windows, pricing) from `/models` endpoints is
 //! stored in `known_models` and consulted by `crate::model::Model::from_base`.
 //!
-//! All reads and writes go through [`model_registry`]. The module owns
-//! persistence: [`load_from_storage`] at startup, [`set_and_persist`] on user
-//! edits. Callers never touch the on-disk format directly.
+//! Callers create an `Arc<RwLock<ModelRegistry>>` at startup, load it from
+//! storage, and pass it through the call stack. The module owns persistence:
+//! [`ModelRegistry::load_from_storage`] at startup,
+//! [`ModelRegistry::set_and_persist`] on user edits.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 use n00n_storage::{StateDir, atomic_write};
 use tracing::warn;
@@ -22,40 +23,10 @@ use crate::model::{ModelInfo, ModelTier};
 
 const TIERS_FILE: &str = "model-tiers";
 
-static REGISTRY: OnceLock<RwLock<ModelRegistry>> = OnceLock::new();
-
-pub fn model_registry() -> &'static RwLock<ModelRegistry> {
-    REGISTRY.get_or_init(|| RwLock::new(ModelRegistry::default()))
-}
-
-pub fn load_from_storage(dir: &StateDir) {
-    let overrides = read_overrides(dir.path().join(TIERS_FILE).as_path());
-    model_registry()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .set_overrides(overrides);
-}
-
-pub fn set_and_persist(spec: String, tier: ModelTier, dir: &StateDir) {
-    let snapshot = {
-        let mut reg = model_registry()
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        reg.set(spec, tier);
-        reg.overrides.clone()
-    };
-    write_overrides(dir.path().join(TIERS_FILE).as_path(), &snapshot);
-}
-
-pub fn unset_and_persist(spec: &str, tier: ModelTier, dir: &StateDir) {
-    let snapshot = {
-        let mut reg = model_registry()
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        reg.unset(spec, tier);
-        reg.overrides.clone()
-    };
-    write_overrides(dir.path().join(TIERS_FILE).as_path(), &snapshot);
+/// Create an empty `Arc<RwLock<ModelRegistry>>` for unit tests.
+#[must_use]
+pub fn test_registry() -> Arc<RwLock<ModelRegistry>> {
+    Arc::new(RwLock::new(ModelRegistry::default()))
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +41,26 @@ pub struct ModelRegistry {
 }
 
 impl ModelRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn load_from_storage(&mut self, dir: &StateDir) {
+        let overrides = read_overrides(dir.path().join(TIERS_FILE).as_path());
+        self.set_overrides(overrides);
+    }
+
+    pub fn set_and_persist(&mut self, spec: String, tier: ModelTier, dir: &StateDir) {
+        self.set(spec, tier);
+        write_overrides(dir.path().join(TIERS_FILE).as_path(), &self.overrides);
+    }
+
+    pub fn unset_and_persist(&mut self, spec: &str, tier: ModelTier, dir: &StateDir) {
+        self.unset(spec, tier);
+        write_overrides(dir.path().join(TIERS_FILE).as_path(), &self.overrides);
+    }
+
     pub fn set_overrides(&mut self, overrides: BTreeMap<ModelTier, String>) {
         self.overrides = overrides;
     }

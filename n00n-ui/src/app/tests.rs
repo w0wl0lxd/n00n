@@ -88,6 +88,7 @@ fn build_app_with_session(
         )),
         custom_commands: Arc::from([]),
         picker: Arc::new(Picker::halfblocks()),
+        model_registry: n00n_providers::model_registry::test_registry(),
     })
 }
 
@@ -4516,12 +4517,21 @@ fn thinking_restored_from_session_meta() {
     let mut session = AppSession::new("test-model", "/tmp/test");
     session.meta.thinking = Some(StoredThinking::Budget { tokens: 4096 });
 
-    let state = SessionState::from_session(session, &test_model(), &storage);
+    let state = SessionState::from_session(
+        session,
+        &test_model(),
+        &storage,
+        &n00n_providers::model_registry::test_registry(),
+    );
     assert_eq!(state.thinking, ThinkingConfig::Budget(4096));
 }
 
 fn set_opus_model(app: &mut App) {
-    app.state.model = n00n_providers::Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    app.state.model = n00n_providers::Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        "anthropic/claude-opus-4-8",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -4588,7 +4598,9 @@ fn subagent_history_finishes_workflow_chat() {
 #[test_case("openai/gpt-5.5" ; "non_anthropic")]
 fn fast_flashes_error_on_ineligible_model(spec: &str) {
     let mut app = test_app();
-    app.state.model = n00n_providers::Model::from_spec(spec).unwrap();
+    app.state.model =
+        n00n_providers::Model::from_spec(&n00n_providers::model_registry::test_registry(), spec)
+            .unwrap();
 
     app.execute_command(cmd("/fast"));
     assert!(!app.state.fast);
@@ -4602,7 +4614,12 @@ fn fast_restored_from_session_meta() {
     let mut session = AppSession::new("anthropic/claude-opus-4-8", "/tmp/test");
     session.meta.fast = true;
 
-    let state = SessionState::from_session(session, &test_model(), &storage);
+    let state = SessionState::from_session(
+        session,
+        &test_model(),
+        &storage,
+        &n00n_providers::model_registry::test_registry(),
+    );
     assert!(state.fast);
 }
 
@@ -4615,7 +4632,12 @@ fn fast_normalized_off_when_restored_onto_ineligible_model() {
     let mut session = AppSession::new("anthropic/claude-sonnet-4-5", "/tmp/test");
     session.meta.fast = true;
 
-    let state = SessionState::from_session(session, &test_model(), &storage);
+    let state = SessionState::from_session(
+        session,
+        &test_model(),
+        &storage,
+        &n00n_providers::model_registry::test_registry(),
+    );
     assert!(!state.fast);
 }
 
@@ -4625,7 +4647,11 @@ fn update_model_to_ineligible_resets_fast() {
     set_opus_model(&mut app);
     app.state.fast = true;
 
-    let sonnet = n00n_providers::Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+    let sonnet = n00n_providers::Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        "anthropic/claude-sonnet-4-5",
+    )
+    .unwrap();
     app.state.update_model(&sonnet);
     assert!(!app.state.fast);
 }

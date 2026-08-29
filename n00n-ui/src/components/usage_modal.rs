@@ -1,10 +1,15 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use n00n_providers::{Model, ModelPricing, ProviderUsage, TokenUsage};
+use n00n_providers::Model;
+use n00n_providers::ModelPricing;
+use n00n_providers::ProviderUsage;
+use n00n_providers::TokenUsage;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_storage::sessions::StoredTokenUsage;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -49,6 +54,7 @@ pub struct UsageModalContext<'a> {
     pub model: &'a Model,
     pub fast: bool,
     pub quota: Option<&'a UsageFetchState>,
+    pub model_registry: &'a Arc<RwLock<ModelRegistry>>,
 }
 
 pub struct UsageModal {
@@ -137,29 +143,39 @@ impl UsageModal {
     fn warn_unresolved_models(&mut self, ctx: &UsageModalContext) {
         for id in ctx.by_model.keys() {
             let key = format!("{}/{id}", ctx.model.provider);
-            if self.checked_model_specs.insert(key) && model_for(id, ctx.model).is_none() {
+            if self.checked_model_specs.insert(key)
+                && model_for(id, ctx.model, ctx.model_registry).is_none()
+            {
                 tracing::warn!(model_id = id, "unable to resolve usage model");
             }
         }
     }
 }
 
-fn model_for(id: &str, current: &Model) -> Option<Model> {
+fn model_for(
+    id: &str,
+    current: &Model,
+    model_registry: &Arc<RwLock<ModelRegistry>>,
+) -> Option<Model> {
     if id == current.id || id == current.spec() {
         return Some(current.clone());
     }
-    if let Ok(model) = Model::from_spec(id) {
+    if let Ok(model) = Model::from_spec(model_registry, id) {
         return Some(model);
     }
     let fallback_spec = format!("{}/{id}", current.provider);
-    let Ok(model) = Model::from_spec(&fallback_spec) else {
+    let Ok(model) = Model::from_spec(model_registry, &fallback_spec) else {
         return None;
     };
     Some(model)
 }
 
-fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
-    model_for(id, current).map(|model| model.pricing)
+fn pricing_for(
+    id: &str,
+    current: &Model,
+    model_registry: &Arc<RwLock<ModelRegistry>>,
+) -> Option<ModelPricing> {
+    model_for(id, current, model_registry).map(|model| model.pricing)
 }
 
 fn display_model_id(id: &str) -> String {
@@ -188,6 +204,7 @@ pub(crate) fn attributed_costs(
     by_model: &HashMap<String, StoredTokenUsage>,
     current: &Model,
     fast: bool,
+    model_registry: &Arc<RwLock<ModelRegistry>>,
 ) -> Option<(f64, f64)> {
     if by_model.is_empty() {
         return None;
@@ -195,7 +212,7 @@ pub(crate) fn attributed_costs(
     let (cost, savings, any_priced) = by_model.iter().fold(
         (0.0, 0.0, false),
         |(cost, savings, any_priced), (id, usage)| {
-            let Some(pricing) = pricing_for(id, current) else {
+            let Some(pricing) = pricing_for(id, current, model_registry) else {
                 return (cost, savings, any_priced);
             };
             if pricing.effective(fast).is_zero() {
@@ -225,7 +242,8 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         (!ctx.model.pricing.effective(ctx.fast).is_zero())
             .then(|| ctx.total.cost(&ctx.model.pricing, ctx.fast))
     } else {
-        attributed_costs(ctx.by_model, ctx.model, ctx.fast).map(|(cost, _)| cost)
+        attributed_costs(ctx.by_model, ctx.model, ctx.fast, ctx.model_registry)
+            .map(|(cost, _)| cost)
     };
     lines.push(Line::from(totals_row(ctx.total, total_cost, theme)));
     lines.push(Line::from(Span::styled(
@@ -268,7 +286,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
     lines.push(Line::from(header_row(model_w, theme)));
 
     for (id, usage) in entries {
-        let pricing = pricing_for(id, ctx.model);
+        let pricing = pricing_for(id, ctx.model, ctx.model_registry);
         let token_usage = TokenUsage::from(*usage);
         let (cost, savings) = pricing.as_ref().map_or((None, None), |p| {
             if p.effective(ctx.fast).is_zero() {
@@ -297,7 +315,7 @@ fn pricing_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Li
     let mut rates = ctx
         .by_model
         .keys()
-        .filter_map(|id| model_for(id, ctx.model))
+        .filter_map(|id| model_for(id, ctx.model, ctx.model_registry))
         .map(|model| (model.spec(), model.pricing))
         .collect::<Vec<_>>();
     rates.push((ctx.model.spec(), ctx.model.pricing));
@@ -600,7 +618,11 @@ mod tests {
 
     #[test]
     fn unresolved_model_is_checked_once_per_provider() {
-        let current_model = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let current_model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-5",
+        )
+        .unwrap();
         let total = TokenUsage::default();
         let by_model = HashMap::from([("unknown-model".into(), StoredTokenUsage::default())]);
         let ctx = UsageModalContext {
@@ -609,6 +631,7 @@ mod tests {
             model: &current_model,
             fast: false,
             quota: None,
+            model_registry: &n00n_providers::model_registry::test_registry(),
         };
         let mut usage_modal = UsageModal::new();
 
@@ -731,7 +754,11 @@ mod tests {
     #[test]
     fn priced_models_show_effective_token_rates() {
         let theme = crate::theme::current();
-        let model = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "codex/gpt-5.6-sol",
+        )
+        .unwrap();
         let total = TokenUsage {
             input: 1_000_000,
             output: 100_000,
@@ -754,6 +781,7 @@ mod tests {
                 model: &model,
                 fast: false,
                 quota: None,
+                model_registry: &n00n_providers::model_registry::test_registry(),
             },
             &theme,
         );
@@ -774,7 +802,11 @@ mod tests {
     #[test]
     fn pricing_includes_current_model_after_switching_models() {
         let theme = crate::theme::current();
-        let model = Model::from_spec("codex/gpt-5.6-sol").unwrap();
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "codex/gpt-5.6-sol",
+        )
+        .unwrap();
         let by_model = HashMap::from([(
             "anthropic/claude-haiku-4-5".into(),
             StoredTokenUsage::default(),
@@ -787,6 +819,7 @@ mod tests {
                 model: &model,
                 fast: false,
                 quota: None,
+                model_registry: &n00n_providers::model_registry::test_registry(),
             },
             &theme,
         )
@@ -831,7 +864,11 @@ mod tests {
     #[test]
     fn zero_priced_models_keep_usage_without_price_metrics() {
         let theme = crate::theme::current();
-        let model = Model::from_spec("ollama/test-model").unwrap();
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "ollama/test-model",
+        )
+        .unwrap();
         let total = TokenUsage {
             input: 100,
             output: 20,
@@ -844,6 +881,7 @@ mod tests {
                 model: &model,
                 fast: false,
                 quota: None,
+                model_registry: &n00n_providers::model_registry::test_registry(),
             },
             &theme,
         );
@@ -859,7 +897,11 @@ mod tests {
 
     #[test]
     fn attributed_costs_price_each_model_separately() {
-        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let current = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-5",
+        )
+        .unwrap();
         let mut by_model = HashMap::new();
         let usage = StoredTokenUsage {
             input: 1_000_000,
@@ -870,9 +912,25 @@ mod tests {
         by_model.insert(current.id.clone(), usage);
         by_model.insert("claude-haiku-4-5".into(), usage);
 
-        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
-        let current_pricing = pricing_for(&current.id, &current).unwrap();
-        let other_pricing = pricing_for("claude-haiku-4-5", &current).unwrap();
+        let (cost, savings) = attributed_costs(
+            &by_model,
+            &current,
+            false,
+            &n00n_providers::model_registry::test_registry(),
+        )
+        .unwrap();
+        let current_pricing = pricing_for(
+            &current.id,
+            &current,
+            &n00n_providers::model_registry::test_registry(),
+        )
+        .unwrap();
+        let other_pricing = pricing_for(
+            "claude-haiku-4-5",
+            &current,
+            &n00n_providers::model_registry::test_registry(),
+        )
+        .unwrap();
         let token_usage = TokenUsage::from(usage);
         let expected_cost =
             token_usage.cost(&current_pricing, false) + token_usage.cost(&other_pricing, false);
@@ -889,32 +947,57 @@ mod tests {
 
     #[test]
     fn attributed_costs_skip_zero_priced_models_without_dropping_the_estimate() {
-        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let current = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-5",
+        )
+        .unwrap();
         let usage = StoredTokenUsage {
             input: 1_000_000,
             output: 1_000_000,
             cache_read: 1_000_000,
             cache_creation: 1_000_000,
         };
-        let free = Model::from_spec("zai/glm-4.7-flash").unwrap();
+        let free = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "zai/glm-4.7-flash",
+        )
+        .unwrap();
         assert!(free.pricing.is_zero(), "test needs a zero-priced model");
 
         let by_model = HashMap::from([(current.id.clone(), usage), (free.id.clone(), usage)]);
 
-        let (cost, savings) = attributed_costs(&by_model, &current, false)
-            .expect("a priced model in the session still yields an estimate");
+        let (cost, savings) = attributed_costs(
+            &by_model,
+            &current,
+            false,
+            &n00n_providers::model_registry::test_registry(),
+        )
+        .expect("a priced model in the session still yields an estimate");
         let token_usage = TokenUsage::from(usage);
 
         assert!((cost - token_usage.cost(&current.pricing, false)).abs() < f64::EPSILON);
         assert!((savings - token_usage.savings_cost(&current.pricing, false)).abs() < f64::EPSILON);
 
         let only_free = HashMap::from([(free.id, usage)]);
-        assert!(attributed_costs(&only_free, &current, false).is_none());
+        assert!(
+            attributed_costs(
+                &only_free,
+                &current,
+                false,
+                &n00n_providers::model_registry::test_registry()
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn attributed_costs_resolve_provider_qualified_models() {
-        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let current = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-5",
+        )
+        .unwrap();
         let usage = StoredTokenUsage {
             input: 1_000_000,
             output: 1_000_000,
@@ -923,8 +1006,19 @@ mod tests {
         };
         let by_model = HashMap::from([("openai/gpt-5.6-sol".into(), usage)]);
 
-        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
-        let pricing = Model::from_spec("openai/gpt-5.6-sol").unwrap().pricing;
+        let (cost, savings) = attributed_costs(
+            &by_model,
+            &current,
+            false,
+            &n00n_providers::model_registry::test_registry(),
+        )
+        .unwrap();
+        let pricing = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "openai/gpt-5.6-sol",
+        )
+        .unwrap()
+        .pricing;
         let token_usage = TokenUsage::from(usage);
 
         assert!((cost - token_usage.cost(&pricing, false)).abs() < f64::EPSILON);
@@ -934,7 +1028,11 @@ mod tests {
 
     #[test]
     fn attributed_costs_skip_unknown_models_without_dropping_known_estimates() {
-        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let current = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-5",
+        )
+        .unwrap();
         let usage = StoredTokenUsage {
             input: 1_000_000,
             output: 1_000_000,
@@ -946,7 +1044,13 @@ mod tests {
             ("unknown-provider/unknown-model".into(), usage),
         ]);
 
-        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
+        let (cost, savings) = attributed_costs(
+            &by_model,
+            &current,
+            false,
+            &n00n_providers::model_registry::test_registry(),
+        )
+        .unwrap();
         let token_usage = TokenUsage::from(usage);
 
         assert!((cost - token_usage.cost(&current.pricing, false)).abs() < f64::EPSILON);

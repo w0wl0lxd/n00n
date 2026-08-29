@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as SyncMutex};
+use std::sync::{Arc, Mutex as SyncMutex, RwLock};
 
 use async_lock::Mutex;
 use flume::Receiver;
@@ -9,6 +9,7 @@ use n00n_providers::System;
 use n00n_providers::Timeouts;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::{self, Provider};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
@@ -416,6 +417,7 @@ pub struct HeadlessParams {
     pub fast: bool,
     pub workflow: bool,
     pub mode: AgentMode,
+    pub model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 pub struct HeadlessHandle {
@@ -514,6 +516,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     &mut model,
                     params.timeouts,
                     params.openai_options.clone(),
+                    Some(Arc::clone(&params.model_registry)),
                 ));
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
@@ -573,6 +576,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     prompt_slots: Arc::new(params.prompt_slots),
                     subagent_cancels: Arc::new(CancelMap::new()),
                     registry: Arc::clone(ToolRegistry::global_arc()),
+                    model_registry: Arc::clone(&params.model_registry),
                     audience: ToolAudience::MAIN,
                     state_revision: Some(state_revision),
                 },
@@ -675,6 +679,7 @@ pub struct InteractiveParams {
     pub append_system_prompt: Option<String>,
     pub workflow: bool,
     pub mode: AgentMode,
+    pub model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 pub struct InteractiveHandle {
@@ -747,6 +752,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     &mut model,
                     params.timeouts,
                     params.openai_options.clone(),
+                    Some(Arc::clone(&params.model_registry)),
                 ));
 
             let store = match store {
@@ -808,6 +814,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         &mut new_model,
                         params.timeouts,
                         params.openai_options.clone(),
+                        Some(Arc::clone(&params.model_registry)),
                     ));
                     let (new_tools, new_filter) = tool_definitions(
                         &vars,
@@ -882,6 +889,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         prompt_slots: Arc::clone(&params.prompt_slots),
                         subagent_cancels: Arc::new(CancelMap::new()),
                         registry: Arc::clone(ToolRegistry::global_arc()),
+                        model_registry: Arc::clone(&params.model_registry),
                         audience: ToolAudience::MAIN,
                         state_revision: Some(state_revision),
                     },

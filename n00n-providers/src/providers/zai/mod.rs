@@ -403,7 +403,7 @@ mod tests {
     #[test_case("zai/glm-5.1", false ; "glm_5_1_no_thinking")]
     #[test_case("zai/glm-4.7", false ; "glm_4_7_no_thinking")]
     fn adjust_model_sets_thinking_support(spec: &str, expected: bool) {
-        let mut model = Model::from_spec(spec).unwrap();
+        let mut model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         adjust_model(&mut model);
         assert_eq!(model.supports_thinking(), expected);
     }

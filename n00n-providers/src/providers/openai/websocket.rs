@@ -898,7 +898,8 @@ mod tests {
 
     #[test]
     fn create_event_uses_responses_reasoning_shape() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             thinking: crate::ThinkingConfig::Effort(crate::Effort::High),
             fast: true,
@@ -935,7 +936,8 @@ mod tests {
 
     #[test]
     fn create_event_includes_image_detail_and_file_input() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions::default();
         let mut message = Message::user_with_images(
             "test".to_string(),
@@ -974,7 +976,8 @@ mod tests {
 
     #[test]
     fn create_event_includes_builtin_tool_config() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions::default();
         let tools = json!([{
             "origin": "openai",
@@ -1644,7 +1647,8 @@ mod tests {
 
     #[test]
     fn build_request_body_with_tools_adds_parallel_tool_calls() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions::default();
         let tools = json!([{
             "name": "bash",
@@ -1670,7 +1674,8 @@ mod tests {
 
     #[test]
     fn build_request_body_with_tools_omits_parallel_tool_calls_when_disabled() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions::default();
         let tools = json!([{
             "name": "bash",

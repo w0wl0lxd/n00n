@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use flume::Sender;
@@ -14,6 +14,7 @@ use super::anthropic::shared;
 use super::openai::responses;
 use super::openai_compat;
 use crate::model::{Model, ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier};
+use crate::model_registry::ModelRegistry;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, Effort, EffortDialect, Message, ProviderEvent, RequestOptions, StreamResponse,
@@ -104,6 +105,7 @@ pub struct Copilot {
     resolved_auth: Option<Arc<Mutex<super::ResolvedAuth>>>,
     system_prefix: Option<String>,
     models: Arc<Mutex<HashMap<String, CopilotModel>>>,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
 }
 
 impl Copilot {
@@ -116,6 +118,7 @@ impl Copilot {
             resolved_auth: None,
             system_prefix: None,
             models: Arc::default(),
+            registry: None,
         })
     }
 
@@ -130,6 +133,7 @@ impl Copilot {
             resolved_auth: Some(auth),
             system_prefix: None,
             models: Arc::default(),
+            registry: None,
         })
     }
 
@@ -282,12 +286,16 @@ impl Copilot {
     }
 
     fn reasoning_info_for(&self, model: &Model) -> Option<Arc<CopilotModelInfo>> {
-        crate::model_registry::model_registry()
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .discovered("copilot", &model.id)
-            .and_then(|info| info.provider_info.clone())
-            .and_then(|info| Arc::downcast::<CopilotModelInfo>(info).ok())
+        self.registry
+            .as_ref()
+            .and_then(|registry| {
+                registry
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .discovered("copilot", &model.id)
+                    .and_then(|info| info.provider_info.clone())
+                    .and_then(|info| Arc::downcast::<CopilotModelInfo>(info).ok())
+            })
             .or_else(|| {
                 self.models
                     .lock()
@@ -726,6 +734,10 @@ fn guess_endpoint(model_id: &str) -> Endpoint {
 }
 
 impl Provider for Copilot {
+    fn set_registry(&mut self, registry: Option<Arc<RwLock<ModelRegistry>>>) {
+        self.registry = registry;
+    }
+
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -867,7 +879,8 @@ mod tests {
 
     #[test]
     fn responses_reasoning_uses_effort_object_and_explicit_none() {
-        let model = Model::from_spec("copilot/gpt-5.4").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "copilot/gpt-5.4").unwrap();
         let info = CopilotModelInfo {
             reasoning_efforts: vec![Effort::Low, Effort::Medium, Effort::High],
             reasoning_off: true,
@@ -892,7 +905,8 @@ mod tests {
 
     #[test]
     fn responses_reasoning_adaptive_with_native_adaptive_clears_stale_effort() {
-        let model = Model::from_spec("copilot/gpt-5.4").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "copilot/gpt-5.4").unwrap();
         let info = CopilotModelInfo {
             reasoning_efforts: vec![Effort::Low, Effort::Medium, Effort::High],
             reasoning_off: true,

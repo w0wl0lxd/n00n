@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::{ArcSwap, Guard};
 use n00n_storage::StateDir;
@@ -249,94 +249,137 @@ pub static BUNDLED_THEMES: &[ThemeEntry] = &[
     },
 ];
 
-static THEME: LazyLock<ArcSwap<Theme>> =
-    LazyLock::new(|| ArcSwap::from_pointee(Theme::load_or_bundled()));
-
-static GENERATION: AtomicU64 = AtomicU64::new(0);
-
-pub fn current() -> Guard<Arc<Theme>> {
-    THEME.load()
-}
-
-pub fn set(theme: Theme) {
-    // Order matters: install colors before bumping the counter, otherwise a
-    // reader could see the new generation but bake with the old palette.
-    THEME.store(Arc::new(theme));
-    crate::highlight::refresh_syntax_theme();
-    GENERATION.fetch_add(1, Ordering::Release);
-}
-
-pub fn generation() -> u64 {
-    GENERATION.load(Ordering::Acquire)
-}
-
-pub fn load_by_name(name: &str) -> Result<Theme, String> {
-    BUNDLED_THEMES.iter().find(|e| e.name == name).map_or_else(
-        || Err(format!("unknown theme: {name}")),
-        |e| Theme::from_toml(e.toml),
-    )
-}
-
-pub fn persist_theme(name: &str) {
-    if let Ok(dir) = StateDir::resolve() {
-        n00n_storage::theme::persist_theme_name(&dir, name);
-    }
-}
-
 fn read_theme_name() -> Option<String> {
     let dir = StateDir::resolve().ok()?;
     n00n_storage::theme::read_theme_name(&dir)
 }
 
-pub fn current_theme_name() -> String {
-    read_theme_name().unwrap_or_else(|| DEFAULT_THEME.to_owned())
+pub struct ThemeEngine {
+    theme: ArcSwap<Theme>,
+    generation: AtomicU64,
+}
+
+impl ThemeEngine {
+    pub fn new(theme: Theme) -> Self {
+        Self {
+            theme: ArcSwap::from_pointee(theme),
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    pub fn current(&self) -> Guard<Arc<Theme>> {
+        self.theme.load()
+    }
+
+    pub fn set(&self, theme: Theme) {
+        // Order matters: install colors before bumping the counter, otherwise a
+        // reader could see the new generation but bake with the old palette.
+        self.theme.store(Arc::new(theme));
+        crate::highlight::refresh_syntax_theme();
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub fn load_by_name(name: &str) -> Result<Theme, String> {
+        BUNDLED_THEMES.iter().find(|e| e.name == name).map_or_else(
+            || Err(format!("unknown theme: {name}")),
+            |e| Theme::from_toml(e.toml),
+        )
+    }
+
+    pub fn persist_theme(name: &str) {
+        if let Ok(dir) = StateDir::resolve() {
+            n00n_storage::theme::persist_theme_name(&dir, name);
+        }
+    }
+
+    pub fn current_theme_name() -> String {
+        read_theme_name().unwrap_or_else(|| DEFAULT_THEME.to_owned())
+    }
+
+    pub fn style_by_name(&self, name: &str) -> Style {
+        let t = self.current();
+        match name {
+            "dim" | "tool_dim" => t.tool_dim,
+            "path" | "tool_path" => t.tool_path,
+            "tool" => t.tool,
+            "tool_prefix" => t.tool_prefix,
+            "tool_success" => t.tool_success,
+            "tool_error" => t.tool_error,
+            "tool_annotation" => t.tool_annotation,
+            "spinner" => t.spinner,
+            "control" => t.control,
+            "error" => t.error,
+            "bold" => t.bold,
+            "italic" => t.italic,
+            "bold_italic" => t.bold_italic,
+            "inline_code" => t.inline_code,
+            "strikethrough" => t.strikethrough,
+            "heading" => t.heading,
+            "list_marker" => t.list_marker,
+            "horizontal_rule" => t.horizontal_rule,
+            "code_gutter" => t.code_gutter,
+            "table_border" => t.table_border,
+            "keyword" | "index_keyword" => t.index_keyword,
+            "section" | "index_section" => t.index_section,
+            "line_nr" | "index_line_nr" => t.index_line_nr,
+            "diff_old" => t.diff_old,
+            "diff_new" => t.diff_new,
+            "item" => t.item,
+            "item_desc" => t.item_desc,
+            "item_selected" | "selected" => t.item_selected,
+            "item_match" | "match" => t.item_match,
+            "item_match_selected" | "match_selected" => t.item_match_selected,
+            "cursor" => t.cursor,
+            "foreground" => Style::new().fg(t.foreground),
+            "accent" => t.accent,
+            "active" => t.active,
+            "keybind_key" => t.keybind_key,
+            "keybind_desc" => t.keybind_desc,
+            "success" | "todo_completed" => t.todo_completed,
+            "warning" | "todo_in_progress" => t.todo_in_progress,
+            "todo_pending" | "pending" => t.todo_pending,
+            "todo_cancelled" | "cancelled" => t.todo_cancelled,
+            _ => Style::default(),
+        }
+    }
+}
+
+static THEME_ENGINE: OnceLock<Arc<ThemeEngine>> = OnceLock::new();
+
+pub fn engine() -> Arc<ThemeEngine> {
+    Arc::clone(THEME_ENGINE.get_or_init(|| Arc::new(ThemeEngine::new(Theme::load_or_bundled()))))
+}
+
+pub fn current() -> Guard<Arc<Theme>> {
+    engine().current()
+}
+
+pub fn set(theme: Theme) {
+    engine().set(theme);
+}
+
+pub fn generation() -> u64 {
+    engine().generation()
 }
 
 pub fn style_by_name(name: &str) -> Style {
-    let t = current();
-    match name {
-        "dim" | "tool_dim" => t.tool_dim,
-        "path" | "tool_path" => t.tool_path,
-        "tool" => t.tool,
-        "tool_prefix" => t.tool_prefix,
-        "tool_success" => t.tool_success,
-        "tool_error" => t.tool_error,
-        "tool_annotation" => t.tool_annotation,
-        "spinner" => t.spinner,
-        "control" => t.control,
-        "error" => t.error,
-        "bold" => t.bold,
-        "italic" => t.italic,
-        "bold_italic" => t.bold_italic,
-        "inline_code" => t.inline_code,
-        "strikethrough" => t.strikethrough,
-        "heading" => t.heading,
-        "list_marker" => t.list_marker,
-        "horizontal_rule" => t.horizontal_rule,
-        "code_gutter" => t.code_gutter,
-        "table_border" => t.table_border,
-        "keyword" | "index_keyword" => t.index_keyword,
-        "section" | "index_section" => t.index_section,
-        "line_nr" | "index_line_nr" => t.index_line_nr,
-        "diff_old" => t.diff_old,
-        "diff_new" => t.diff_new,
-        "item" => t.item,
-        "item_desc" => t.item_desc,
-        "item_selected" | "selected" => t.item_selected,
-        "item_match" | "match" => t.item_match,
-        "item_match_selected" | "match_selected" => t.item_match_selected,
-        "cursor" => t.cursor,
-        "foreground" => Style::new().fg(t.foreground),
-        "accent" => t.accent,
-        "active" => t.active,
-        "keybind_key" => t.keybind_key,
-        "keybind_desc" => t.keybind_desc,
-        "success" | "todo_completed" => t.todo_completed,
-        "warning" | "todo_in_progress" => t.todo_in_progress,
-        "todo_pending" | "pending" => t.todo_pending,
-        "todo_cancelled" | "cancelled" => t.todo_cancelled,
-        _ => Style::default(),
-    }
+    engine().style_by_name(name)
+}
+
+pub fn load_by_name(name: &str) -> Result<Theme, String> {
+    ThemeEngine::load_by_name(name)
+}
+
+pub fn persist_theme(name: &str) {
+    ThemeEngine::persist_theme(name);
+}
+
+pub fn current_theme_name() -> String {
+    ThemeEngine::current_theme_name()
 }
 
 #[derive(Debug)]

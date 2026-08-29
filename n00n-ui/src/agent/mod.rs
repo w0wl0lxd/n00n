@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::mem;
 use std::path::PathBuf;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
@@ -22,6 +22,7 @@ use n00n_lua::EventHandle;
 use n00n_storage::sessions::TranscriptEntry;
 
 use self::cancel_map::new_run_cancel_map;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::Provider;
 use n00n_providers::{Message, Model, OpenAiOptions, System};
 use tracing::{info, warn};
@@ -102,6 +103,7 @@ impl AgentHandles {
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
         permissions: &Arc<PermissionManager>,
+        model_registry: &Arc<RwLock<ModelRegistry>>,
         identity: Option<SessionIdentity>,
         timeouts: n00n_providers::Timeouts,
         openai_options: OpenAiOptions,
@@ -119,6 +121,7 @@ impl AgentHandles {
             config,
             tool_output_lines,
             permissions,
+            model_registry,
             mcp_handle,
             mcp_config_errors,
             identity,
@@ -180,6 +183,7 @@ impl AgentHandles {
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
         permissions: &Arc<PermissionManager>,
+        model_registry: &Arc<RwLock<ModelRegistry>>,
         app: &mut App,
         identity: Option<SessionIdentity>,
         lua_handle: Option<EventHandle>,
@@ -200,6 +204,7 @@ impl AgentHandles {
             config,
             tool_output_lines,
             permissions,
+            model_registry,
             self.mcp_handle.clone(),
             self.mcp_config_errors.clone(),
             self.identity.clone(),
@@ -266,6 +271,7 @@ fn spawn_agent_internal(
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
     permissions: &Arc<PermissionManager>,
+    model_registry: &Arc<RwLock<ModelRegistry>>,
     mcp_handle: Option<McpHandle>,
     mcp_config_errors: McpConfigErrors,
     identity: Option<SessionIdentity>,
@@ -330,6 +336,7 @@ fn spawn_agent_internal(
         openai_options: openai_options.clone(),
         lua_handle,
         subagent_cancels,
+        model_registry: Arc::clone(model_registry),
     });
 
     let task = smol::spawn(agent_loop.run());

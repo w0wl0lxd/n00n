@@ -174,7 +174,11 @@ mod tests {
                 async {
                     run_btw(
                         Arc::new(ImmediateProvider),
-                        Model::from_spec("anthropic/test").unwrap(),
+                        Model::from_spec(
+                            &n00n_providers::model_registry::test_registry(),
+                            "anthropic/test",
+                        )
+                        .unwrap(),
                         System::from("system"),
                         vec![Message::user("question".into())],
                         btw_tx,

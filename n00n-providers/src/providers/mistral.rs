@@ -399,7 +399,11 @@ mod tests {
     fn mistral_request_emits_parallel_tool_calls() {
         let provider =
             OpenAiCompatProvider::new(&CONFIG, super::super::Timeouts::default()).unwrap();
-        let model = Model::from_spec("mistral/mistral-medium-latest").unwrap();
+        let model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "mistral/mistral-medium-latest",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([{
             "name": "bash",
@@ -444,7 +448,7 @@ mod tests {
     #[test_case("mistral/ministral-14b-latest", false ; "ministral_no_thinking")]
     #[test_case("mistral/mistral-medium-latest", true ; "mistral_medium_supports_thinking")]
     fn adjust_model_sets_thinking_support(spec: &str, expected: bool) {
-        let mut model = Model::from_spec(spec).unwrap();
+        let mut model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         adjust_model(&mut model);
         assert_eq!(model.supports_thinking(), expected);
     }

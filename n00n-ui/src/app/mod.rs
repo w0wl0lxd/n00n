@@ -18,7 +18,7 @@ pub(crate) mod view;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
@@ -61,6 +61,7 @@ use n00n_agent::{
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::{Effort, Message, Model, ModelPricing, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
@@ -308,6 +309,7 @@ pub struct App {
     pub(super) restoring: Arc<AtomicBool>,
     subagent_answers: HashMap<String, flume::Sender<String>>,
     subagent_prompts: HashMap<String, flume::Sender<SubagentPrompt>>,
+    pub(crate) model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 pub struct AppInit {
@@ -327,6 +329,7 @@ pub struct AppInit {
     pub permissions: Arc<PermissionManager>,
     pub custom_commands: Arc<[n00n_agent::command::CustomCommand]>,
     pub picker: Arc<Picker>,
+    pub model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 impl App {
@@ -349,10 +352,11 @@ impl App {
             permissions,
             custom_commands,
             picker,
+            model_registry,
         } = init;
         scrollbar::set_enabled(ui_config.scrollbar);
         storage_writer.register_loaded(&session);
-        let state = SessionState::from_session(session, &model, &storage);
+        let state = SessionState::from_session(session, &model, &storage, &model_registry);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
         input_box.set_max_input_lines(ui_config.max_input_lines);
         let mut app = Self {
@@ -373,7 +377,7 @@ impl App {
             task_picker: ListPicker::new(),
             task_picker_original: None,
             theme_picker: ThemePicker::new(),
-            model_picker: ModelPicker::new(available_models),
+            model_picker: ModelPicker::new(available_models, Arc::clone(&model_registry)),
             model_picker_reply: None,
             login_picker: LoginPicker::new(),
             mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors),
@@ -433,6 +437,7 @@ impl App {
             restoring: Arc::new(AtomicBool::new(false)),
             subagent_answers: HashMap::new(),
             subagent_prompts: HashMap::new(),
+            model_registry,
         };
         app.model_picker
             .set_recents(n00n_storage::model::read_recents(&app.storage));
@@ -1672,7 +1677,7 @@ impl App {
             if chat_idx == 0 {
                 self.state.context_size = ctx_size;
             }
-            let pricing = match Model::from_spec(&tc.model) {
+            let pricing = match Model::from_spec(&self.model_registry, &tc.model) {
                 Ok(model) => model.pricing,
                 Err(error) => {
                     tracing::warn!(model = %tc.model, %error, "omitting turn cost for unresolved model");

@@ -2195,7 +2195,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_includes_continuity_and_cache_keys() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions::default();
         let body = build_body(
             &model,
@@ -2221,7 +2222,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         message_cache_breakpoints: usize,
         expected: bool,
     ) {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints,
             ..Default::default()
@@ -2242,7 +2244,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_emits_requested_implicit_prompt_cache_options_without_breakpoint() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 0,
             openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
@@ -2267,7 +2270,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
     #[test]
     fn build_body_omits_requested_explicit_prompt_cache_options_without_breakpoint() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 0,
             openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
@@ -2290,7 +2294,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_explicit_breakpoint_overrides_requested_implicit_prompt_cache_options() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             message_cache_breakpoints: 1,
             openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Implicit),
@@ -2313,7 +2318,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_gates_codex_breakpoints_on_explicit_request_mode() {
-        let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+        let model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "codex/gpt-5.3-codex",
+        )
+        .unwrap();
         let messages = [Message::user("cache me".into())];
         let default_body = build_body(
             &model,
@@ -2354,7 +2363,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     #[test_case(64, true ; "unicode_boundary")]
     #[test_case(65, false ; "unicode_over_limit")]
     fn build_body_safety_identifier_counts_characters(chars: usize, expected: bool) {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             safety_identifier: Some("界".repeat(chars)),
             ..Default::default()
@@ -2376,7 +2386,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     #[test_case(true, Some(MODERATION_MODEL) ; "enabled")]
     #[test_case(false, None ; "disabled")]
     fn build_body_moderation_uses_model_shape(enabled: bool, expected: Option<&str>) {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             moderation: enabled,
             ..Default::default()
@@ -2402,7 +2413,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_off() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             thinking: crate::types::ThinkingConfig::Off,
             ..Default::default()
@@ -2423,7 +2435,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_adaptive() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             thinking: crate::types::ThinkingConfig::Adaptive,
             ..Default::default()
@@ -2445,7 +2458,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_effort_high() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             thinking: crate::types::ThinkingConfig::Effort(crate::Effort::High),
             ..Default::default()
@@ -2467,7 +2481,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_budget() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             thinking: crate::types::ThinkingConfig::Budget(1024),
             ..Default::default()
@@ -2530,7 +2545,10 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             "description": "local tool",
             "input_schema": {"type": "object"}
         }]);
-        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        let converted = convert_tools(
+            &tools,
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap(),
+        );
         assert_eq!(converted[0]["type"], "function");
         assert_eq!(converted[0]["name"], name);
     }
@@ -2550,7 +2568,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             }
         ]);
         let fallback_body = build_body(
-            &Model::from_spec("openai/gpt-5.6").unwrap(),
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap(),
             &[],
             &System::default(),
             &tools,
@@ -2590,7 +2608,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             ..Default::default()
         };
         let body = build_body(
-            &Model::from_spec("openai/gpt-5.6").unwrap(),
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap(),
             &[],
             &System::default(),
             &tools,
@@ -2629,7 +2647,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         };
 
         let body = build_body(
-            &Model::from_spec("openai/gpt-5.6").unwrap(),
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap(),
             &[],
             &System::default(),
             &tools,
@@ -2651,7 +2669,10 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             "description": "custom grammar tool",
             "input_schema": {"type": "object"}
         }]);
-        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        let converted = convert_tools(
+            &tools,
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap(),
+        );
         assert_eq!(converted[0]["type"], "function");
         assert_eq!(converted[0]["name"], "custom");
     }
@@ -2700,7 +2721,10 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             "description": "provider built-in",
             "input_schema": {"type": "object"}
         }]);
-        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        let converted = convert_tools(
+            &tools,
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap(),
+        );
         assert_eq!(converted, json!([{"type": name}]));
     }
 
@@ -2713,7 +2737,10 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             "description": "client-executed provider tool",
             "input_schema": {"type": "object"}
         }]);
-        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        let converted = convert_tools(
+            &tools,
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap(),
+        );
         assert_eq!(converted, json!([]));
     }
 
@@ -2886,7 +2913,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 base_url: Some(format!("http://{address}")),
                 headers: Vec::new(),
             };
-            let model = Model::from_spec("openai/gpt-5.6").unwrap();
+            let model = Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6")
+                .unwrap();
             let (event_tx, _event_rx) = flume::unbounded();
             let error = do_stream(
                 &client,
@@ -2993,7 +3021,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
     #[test]
     fn build_body_with_tools_adds_parallel_tool_calls_when_enabled() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let tools = json!([{
             "name": "bash",
             "description": "run shell commands",
@@ -3016,7 +3045,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
     #[test]
     fn build_body_with_tools_omits_parallel_tool_calls_when_disabled() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let tools = json!([{
             "name": "bash",
             "description": "run shell commands",

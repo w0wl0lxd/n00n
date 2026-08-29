@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use flume::Sender;
 use n00n_storage::id::SessionRef;
@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
+use crate::model_registry::ModelRegistry;
 use crate::provider::{BoxFuture, Provider};
 use crate::types::ThinkingFieldConfig;
 use crate::{
@@ -39,6 +40,7 @@ pub struct OpenRouter {
     auth: Arc<Mutex<ResolvedAuth>>,
     key_pool: Option<KeyPool>,
     system_prefix: Option<String>,
+    registry: Option<Arc<RwLock<ModelRegistry>>>,
 }
 
 impl OpenRouter {
@@ -49,6 +51,7 @@ impl OpenRouter {
             auth: Arc::new(Mutex::new(ResolvedAuth::bearer(pool.current()))),
             key_pool: Some(pool),
             system_prefix: None,
+            registry: None,
         })
     }
 
@@ -61,6 +64,7 @@ impl OpenRouter {
             auth,
             key_pool: None,
             system_prefix: None,
+            registry: None,
         })
     }
 
@@ -176,6 +180,10 @@ fn openrouter_cache_health(usage: &TokenUsage) -> CacheHealth {
 }
 
 impl Provider for OpenRouter {
+    fn set_registry(&mut self, registry: Option<Arc<RwLock<ModelRegistry>>>) {
+        self.registry = registry;
+    }
+
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -205,8 +213,10 @@ impl Provider for OpenRouter {
 
             body["cache_control"] = json!({"type": "ephemeral"});
 
-            let reasoning_info: Option<Arc<OpenRouterModelInfo>> = {
-                let guard = crate::model_registry::model_registry()
+            let reasoning_info: Option<Arc<OpenRouterModelInfo>> = if let Some(registry) =
+                self.registry.as_ref()
+            {
+                let guard = registry
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 // Discovery keys by the builtin slug; a dynamic wrap's model
@@ -220,6 +230,8 @@ impl Provider for OpenRouter {
                         })
                     })
                     .transpose()?
+            } else {
+                None
             };
 
             let effort_dialect = effort_dialect(reasoning_info.as_deref());

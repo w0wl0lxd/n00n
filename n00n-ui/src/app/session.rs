@@ -819,7 +819,12 @@ impl App {
             .load_session_rules(stored_to_rules(&session.meta.session_rules));
         let previous_session_id = self.state.session.id;
         self.storage_writer.register_loaded(&session);
-        self.state = SessionState::from_session(session, fallback_model, &self.storage);
+        self.state = SessionState::from_session(
+            session,
+            fallback_model,
+            &self.storage,
+            &self.model_registry,
+        );
         if previous_session_id != self.state.session.id {
             self.drop_plugin_state(previous_session_id);
         }

@@ -4,12 +4,13 @@ pub mod server;
 pub mod translate;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use n00n_agent::headless::{InteractiveHandle, SessionStatePersistence};
 use n00n_agent::prompt::ResolvedSlots;
 use n00n_agent::{AgentConfig, PermissionsConfig};
 use n00n_providers::model::Model;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::{OpenAiOptions, Timeouts};
 
 /// Keeps an optional in-process daemon registration alive for the ACP session.
@@ -30,6 +31,7 @@ pub struct AcpParams {
     pub state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     pub yolo: bool,
     pub session_daemon_register: Option<SessionDaemonRegister>,
+    pub model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 /// Runs the ACP server with the given parameters.

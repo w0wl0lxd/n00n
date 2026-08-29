@@ -7,7 +7,7 @@ use std::any::Any;
 use std::fmt;
 use std::ops::AddAssign;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use n00n_storage::sessions::{
     BodyOverride, EffortDialectId, MIN_THINKING_BUDGET, StoredTokenUsage, ThinkingFieldConfig,
@@ -15,7 +15,7 @@ use n00n_storage::sessions::{
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{ManifestRegistry, ProviderManifest};
-use crate::model_registry::model_registry;
+use crate::model_registry::ModelRegistry;
 use crate::providers::{anthropic, custom, dynamic};
 use crate::types::{EffortDialect, effort_dialect_for};
 
@@ -268,12 +268,17 @@ pub struct Model {
 impl Model {
     /// When no static entry matches (a freshly released model the table has not
     /// caught up to yet), fall back to the provider defaults so it still resolves.
-    fn from_base(manifest: &ProviderManifest, slug: &str, model_id: &str) -> Self {
+    fn from_base(
+        registry: &Arc<RwLock<ModelRegistry>>,
+        manifest: &ProviderManifest,
+        slug: &str,
+        model_id: &str,
+    ) -> Self {
         let static_entry = lookup_entry(manifest.models, model_id).ok();
         let spec = format!("{slug}/{model_id}");
         // Discovery keys `known_models` by the builtin slug, so a dynamic or
         // custom slug reads positional tiers and metadata through its base.
-        let guard = model_registry()
+        let guard = registry
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let discovered = guard.discovered(manifest.slug, model_id);
@@ -292,6 +297,27 @@ impl Model {
             .or_else(|| anthropic::shared::long_context_window(model_id))
             .or_else(|| static_entry.map(|entry| entry.context_window))
             .unwrap_or_else(|| manifest.fallback_context_window);
+        let supports_thinking = discovered
+            .and_then(|info| info.supports_thinking)
+            .unwrap_or_else(|| manifest.supports_thinking);
+        let supports_vision = discovered
+            .and_then(|info| info.supports_vision)
+            .or_else(|| static_entry.map(|entry| entry.vision))
+            .unwrap_or_else(|| family.supports_vision());
+        let supports_files = discovered
+            .and_then(|info| info.supports_files)
+            .or_else(|| {
+                if slug == "openai" && model_id.contains(GPT_CODEX_MARKER) {
+                    Some(false)
+                } else {
+                    static_entry.map(|entry| entry.files)
+                }
+            })
+            .unwrap_or_else(|| {
+                slug == "openai"
+                    && Self::normalized_openai_model_id_static(model_id)
+                        .is_some_and(|id| id.starts_with("gpt-5.6"))
+            });
         drop(guard);
         Self {
             id: model_id.to_string(),
@@ -299,9 +325,9 @@ impl Model {
             tier,
             family,
             supports_tool_examples_override: None,
-            supports_thinking_override: None,
-            supports_vision_override: None,
-            supports_files_override: None,
+            supports_thinking_override: Some(supports_thinking),
+            supports_vision_override: Some(supports_vision),
+            supports_files_override: Some(supports_files),
             pricing,
             max_output_tokens,
             context_window,
@@ -313,51 +339,25 @@ impl Model {
 
     #[must_use]
     pub fn supports_thinking(&self) -> bool {
-        if let Some(thinking) = self.supports_thinking_override {
-            return thinking;
-        }
-        // Discovery keys `known_models` by the builtin slug; resolve dynamic
-        // and custom slugs through their base manifest before looking up.
-        let Some(manifest) = ManifestRegistry::for_slug(&self.provider) else {
-            return false;
-        };
-        model_registry()
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .discovered(manifest.slug, &self.id)
-            .and_then(|d| d.supports_thinking)
-            .unwrap_or_else(|| manifest.supports_thinking)
+        self.supports_thinking_override.unwrap_or_else(|| {
+            ManifestRegistry::for_slug(&self.provider).map_or(false, |m| m.supports_thinking)
+        })
     }
 
     #[must_use]
     pub fn supports_vision(&self) -> bool {
-        if let Some(vision) = self.supports_vision_override {
-            return vision;
-        }
-        let manifest = ManifestRegistry::for_slug(&self.provider);
-        manifest
-            .and_then(|m| {
-                model_registry()
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .discovered(m.slug, &self.id)
-                    .and_then(|d| d.supports_vision)
-            })
-            .or_else(|| {
-                manifest
-                    .and_then(|m| lookup_entry(m.models, &self.id).ok())
-                    .map(|e| e.vision)
-            })
+        self.supports_vision_override
             .unwrap_or_else(|| self.family.supports_vision())
     }
 
-    fn normalized_openai_model_id(&self) -> Option<&str> {
-        let model_id = self
-            .id
-            .strip_prefix(OPENAI_MODEL_PREFIX)
-            .unwrap_or_else(|| self.id.as_str());
+    fn normalized_openai_model_id_static(id: &str) -> Option<&str> {
+        let model_id = id.strip_prefix(OPENAI_MODEL_PREFIX).unwrap_or_else(|| id);
         (model_id.starts_with(GPT_MODEL_PREFIX) && !model_id.contains(GPT_CODEX_MARKER))
             .then_some(model_id)
+    }
+
+    fn normalized_openai_model_id(&self) -> Option<&str> {
+        Self::normalized_openai_model_id_static(&self.id)
     }
 
     fn openai_model_version(&self) -> Option<(u16, u16)> {
@@ -373,42 +373,7 @@ impl Model {
 
     #[must_use]
     pub fn supports_files(&self) -> bool {
-        if let Some(files) = self.supports_files_override {
-            return files;
-        }
-        let manifest = ManifestRegistry::for_slug(&self.provider);
-        manifest
-            .and_then(|m| {
-                model_registry()
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .discovered(m.slug, &self.id)
-                    .and_then(|d| d.supports_files)
-            })
-            .or_else(|| {
-                // Excludes codex ids from the "gpt-5.6" catch-all prefix on gpt-5.6-sol.
-                if self.provider.as_ref() == "openai" && self.id.contains(GPT_CODEX_MARKER) {
-                    return Some(false);
-                }
-                manifest.and_then(|m| {
-                    let lookup_id = match self.id.strip_prefix(&format!("{}/", self.provider)) {
-                        Some(stripped) => stripped,
-                        None => self.id.as_str(),
-                    };
-                    match lookup_entry(m.models, lookup_id) {
-                        Ok(entry) => Some(entry.files),
-                        Err(_) => None,
-                    }
-                })
-            })
-            .unwrap_or_else(|| {
-                // Fallback for models missing from the static tables: only the
-                // OpenAI Responses API supports file input today.
-                self.provider.as_ref() == "openai"
-                    && self
-                        .normalized_openai_model_id()
-                        .is_some_and(|model_id| model_id.starts_with("gpt-5.6"))
-            })
+        self.supports_files_override.unwrap_or_else(|| false)
     }
 
     #[must_use]
@@ -497,18 +462,22 @@ impl Model {
     /// # Errors
     ///
     /// Returns `ModelError` if no model can be resolved for the tier.
-    pub fn from_tier(slug: &str, tier: ModelTier) -> Result<Self, ModelError> {
-        if let Some(spec) = model_registry()
+    pub fn from_tier(
+        registry: &Arc<RwLock<ModelRegistry>>,
+        slug: &str,
+        tier: ModelTier,
+    ) -> Result<Self, ModelError> {
+        if let Some(spec) = registry
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .spec_for_tier(slug, tier)
         {
-            return Self::from_spec(&spec);
+            return Self::from_spec(registry, &spec);
         }
         let entry = ManifestRegistry::find_default_for_tier(slug, tier)
             .ok_or_else(|| ModelError::NoDefault(slug.to_string(), tier))?;
         let model_id = entry.prefixes[0];
-        Self::from_spec(&format!("{slug}/{model_id}"))
+        Self::from_spec(registry, &format!("{slug}/{model_id}"))
     }
 
     /// Build a model for a provider slug and tier, allowing dynamic and custom providers.
@@ -516,7 +485,11 @@ impl Model {
     /// # Errors
     ///
     /// Returns `ModelError` if the provider or tier cannot be resolved.
-    pub fn from_tier_dynamic(slug: &str, tier: ModelTier) -> Result<Self, ModelError> {
+    pub fn from_tier_dynamic(
+        registry: &Arc<RwLock<ModelRegistry>>,
+        slug: &str,
+        tier: ModelTier,
+    ) -> Result<Self, ModelError> {
         if let Some(model) = dynamic::find_model_for_tier(slug, tier) {
             return Ok(model);
         }
@@ -534,14 +507,14 @@ impl Model {
                     .iter()
                     .find(|e| e.default && e.tier == tier)
                     .ok_or_else(|| ModelError::NoDefault(slug.to_string(), tier))?;
-                return Ok(Self::from_base(manifest, slug, entry.prefixes[0]));
+                return Ok(Self::from_base(registry, manifest, slug, entry.prefixes[0]));
             }
             custom::TierLookup::Unknown => {}
         }
         // Builtin or dynamic slug: resolve the base default under the slug
         // (dynamic slugs route through `base_for_slug`).
         if ManifestRegistry::get(slug).is_some() || dynamic::base_for_slug(slug).is_some() {
-            return Self::from_tier(slug, tier);
+            return Self::from_tier(registry, slug, tier);
         }
         Err(ModelError::UnsupportedProvider(slug.to_string()))
     }
@@ -551,7 +524,10 @@ impl Model {
     /// # Errors
     ///
     /// Returns a `ModelError` if the spec is malformed or the provider is unsupported.
-    pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
+    pub fn from_spec(
+        registry: &Arc<RwLock<ModelRegistry>>,
+        spec: &str,
+    ) -> Result<Self, ModelError> {
         let Some((slug, model_id)) = spec.split_once('/') else {
             // Provider-only spec: resolve the provider's default model.
             if let Some(manifest) = ManifestRegistry::get(spec) {
@@ -560,7 +536,7 @@ impl Model {
                     .iter()
                     .find(|e| e.default)
                     .ok_or(ModelError::NoDefault(spec.to_string(), ModelTier::Weak))?;
-                return Self::from_spec(&format!("{spec}/{}", entry.prefixes[0]));
+                return Self::from_spec(registry, &format!("{spec}/{}", entry.prefixes[0]));
             }
             return Err(ModelError::InvalidFormat);
         };
@@ -569,7 +545,7 @@ impl Model {
         // Discovery drops any script slug a builtin or custom entry already owns,
         // so a script and a custom provider can never share a slug here.
         if let Some(manifest) = ManifestRegistry::get(slug) {
-            return Ok(Self::from_base(manifest, slug, model_id));
+            return Ok(Self::from_base(registry, manifest, slug, model_id));
         }
 
         if let Some(model) = dynamic::lookup_model(slug, model_id) {
@@ -579,7 +555,7 @@ impl Model {
         if let Some(base) = dynamic::base_for_slug(slug)
             && let Some(manifest) = ManifestRegistry::get(&base.to_string())
         {
-            return Ok(Self::from_base(manifest, slug, model_id));
+            return Ok(Self::from_base(registry, manifest, slug, model_id));
         }
 
         if let Some(model) = custom::lookup_model(slug, model_id) {
@@ -685,7 +661,7 @@ mod tests {
     #[test_case("no-slash-here", ModelError::InvalidFormat ; "invalid_format")]
     #[test_case("foobar/gpt-4", ModelError::UnsupportedProvider("foobar".into()) ; "unsupported_provider")]
     fn from_spec_errors(spec: &str, expected: ModelError) {
-        let err = Model::from_spec(spec).unwrap_err();
+        let err = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap_err();
         assert_eq!(
             std::mem::discriminant(&err),
             std::mem::discriminant(&expected)
@@ -697,7 +673,7 @@ mod tests {
     #[test_case("openai/gpt-5.6-sol", true ; "suffixed")]
     #[test_case("anthropic/claude-sonnet-4-6", false ; "non_openai_family")]
     fn tool_search_support_follows_documented_model_floor(spec: &str, expected: bool) {
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.supports_tool_search(), expected);
     }
     #[test]
@@ -1026,8 +1002,14 @@ mod tests {
             if manifest.accepts_arbitrary_models {
                 continue;
             }
-            let model = Model::from_tier(manifest.slug, ModelTier::Medium).unwrap();
-            let round = Model::from_spec(&model.spec()).unwrap();
+            let model = Model::from_tier(
+                &crate::model_registry::test_registry(),
+                manifest.slug,
+                ModelTier::Medium,
+            )
+            .unwrap();
+            let round =
+                Model::from_spec(&crate::model_registry::test_registry(), &model.spec()).unwrap();
             assert_eq!(round.id, model.id);
             assert_eq!(round.provider, model.provider);
         }
@@ -1036,7 +1018,7 @@ mod tests {
     #[test]
     fn opencode_from_spec_parses_four_levels() {
         let spec = "opencode/nvidia/openai/gpt-oss-120b";
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.provider, Arc::<str>::from("opencode"));
         assert_eq!(model.id, "nvidia/openai/gpt-oss-120b");
         assert_eq!(model.spec(), spec);
@@ -1045,7 +1027,7 @@ mod tests {
     #[test]
     fn opencode_from_spec_parses_three_levels() {
         let spec = "opencode/opencode/big-pickle";
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.provider, Arc::<str>::from("opencode"));
         assert_eq!(model.id, "opencode/big-pickle");
         assert_eq!(model.spec(), spec);
@@ -1067,7 +1049,9 @@ mod tests {
                 if tier == ModelTier::Compaction {
                     continue;
                 }
-                let model = Model::from_tier(manifest.slug, tier).unwrap();
+                let model =
+                    Model::from_tier(&crate::model_registry::test_registry(), manifest.slug, tier)
+                        .unwrap();
                 assert_eq!(model.provider, slug);
                 assert_eq!(model.tier, tier);
                 let max_output = model.max_output_tokens.unwrap();
@@ -1124,7 +1108,7 @@ mod tests {
     #[test_case("ollama/my-custom-model", "ollama", "my-custom-model" ; "unknown_ollama_model_accepted")]
     #[test_case("deepseek/my-custom-model", "deepseek", "my-custom-model" ; "unknown_deepseek_model_accepted")]
     fn unknown_model_accepted(spec: &str, expected_slug: &str, expected_id: &str) {
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.provider, Arc::<str>::from(expected_slug));
         assert_eq!(model.id, expected_id);
         let manifest = ManifestRegistry::get(expected_slug).unwrap();
@@ -1135,6 +1119,7 @@ mod tests {
     fn from_base_unknown_model_uses_provider_fallbacks() {
         // Deliberately fake id so this stays valid when the model table changes.
         let model = Model::from_base(
+            &crate::model_registry::test_registry(),
             ManifestRegistry::get("anthropic").unwrap(),
             "anthropic",
             "claude-nonexistent-99",
@@ -1163,7 +1148,12 @@ mod tests {
     #[test_case("anthropic/claude-nonexistent-99",  true  ; "unknown_model_uses_family_fallback")]
     #[test_case("deepseek/my-custom-model",         false ; "unknown_generic_defaults_off")]
     fn vision_resolved_from_entry_or_family(spec: &str, expected: bool) {
-        assert_eq!(Model::from_spec(spec).unwrap().supports_vision(), expected);
+        assert_eq!(
+            Model::from_spec(&crate::model_registry::test_registry(), spec)
+                .unwrap()
+                .supports_vision(),
+            expected
+        );
     }
 
     #[test_case("claude-opus-4-6" ; "opus_4_6")]
@@ -1171,6 +1161,7 @@ mod tests {
     #[test_case("claude-opus-4-8" ; "opus_4_8")]
     fn supports_fast_true_for_anthropic_opus(model_id: &str) {
         let model = Model::from_base(
+            &crate::model_registry::test_registry(),
             ManifestRegistry::get("anthropic").unwrap(),
             "anthropic",
             model_id,
@@ -1183,6 +1174,7 @@ mod tests {
     #[test_case("claude-opus-4-5" ; "opus_4_5")]
     fn supports_fast_false_for_other_anthropic_models(model_id: &str) {
         let model = Model::from_base(
+            &crate::model_registry::test_registry(),
             ManifestRegistry::get("anthropic").unwrap(),
             "anthropic",
             model_id,
@@ -1193,6 +1185,7 @@ mod tests {
     #[test]
     fn supports_fast_false_for_unknown_anthropic_model() {
         let model = Model::from_base(
+            &crate::model_registry::test_registry(),
             ManifestRegistry::get("anthropic").unwrap(),
             "anthropic",
             "claude-opus-99",
@@ -1203,6 +1196,7 @@ mod tests {
     #[test]
     fn supports_fast_false_for_non_anthropic_even_with_fast_pricing() {
         let mut model = Model::from_base(
+            &crate::model_registry::test_registry(),
             ManifestRegistry::get("google").unwrap(),
             "google",
             "gemini-2.5-pro",
@@ -1223,7 +1217,7 @@ mod tests {
     #[test_case("openai/gpt-5.4", true ; "gpt_5_4")]
     #[test_case("openai/gpt-4.1", false ; "gpt_4_1")]
     fn supports_responses_for_gpt_5_4_and_later(spec: &str, expected: bool) {
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.supports_responses(), expected);
     }
 
@@ -1238,7 +1232,7 @@ mod tests {
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
     #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
     fn supports_prompt_cache_breakpoint_by_model_id(spec: &str, expected: bool) {
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.supports_prompt_cache_breakpoint(), expected);
     }
 
@@ -1247,7 +1241,7 @@ mod tests {
     #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
     fn supports_responses_built_in_tools_excludes_codex(spec: &str, expected: bool) {
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.supports_responses_built_in_tools(), expected);
     }
 
@@ -1256,17 +1250,25 @@ mod tests {
     #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
     fn supports_files_for_non_codex_gpt_5_6(spec: &str, expected: bool) {
-        let model = Model::from_spec(spec).unwrap();
+        let model = Model::from_spec(&crate::model_registry::test_registry(), spec).unwrap();
         assert_eq!(model.supports_files(), expected);
     }
 
     #[test]
     fn supports_files_override_takes_precedence() {
-        let mut supported = Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let mut supported = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-luna",
+        )
+        .unwrap();
         supported.supports_files_override = Some(false);
         assert!(!supported.supports_files());
 
-        let mut unsupported = Model::from_spec("openai/gpt-5.6-codex").unwrap();
+        let mut unsupported = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-codex",
+        )
+        .unwrap();
         unsupported.supports_files_override = Some(true);
         assert!(unsupported.supports_files());
     }
@@ -1286,9 +1288,10 @@ mod tests {
         let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-files-model";
+        let reg = crate::model_registry::test_registry();
         {
-            let mut reg = model_registry().write().unwrap();
-            reg.set_known_models(
+            let mut guard = reg.write().unwrap();
+            guard.set_known_models(
                 &slug,
                 vec![ModelInfo {
                     id: model_id.to_string(),
@@ -1306,7 +1309,12 @@ mod tests {
                 }],
             );
         }
-        let model = Model::from_base(ManifestRegistry::get("ollama").unwrap(), "ollama", model_id);
+        let model = Model::from_base(
+            &reg,
+            ManifestRegistry::get("ollama").unwrap(),
+            "ollama",
+            model_id,
+        );
         assert!(model.supports_files());
     }
 
@@ -1318,11 +1326,12 @@ mod tests {
         let slug: Arc<str> = Arc::from("ollama");
         let model_id = "test-discovered-context-window-model";
         let expected_window: u32 = 131_072;
+        let reg = crate::model_registry::test_registry();
 
-        // Seed discovered metadata into the global registry
+        // Seed discovered metadata into the registry
         {
-            let mut reg = model_registry().write().unwrap();
-            reg.set_known_models(
+            let mut guard = reg.write().unwrap();
+            guard.set_known_models(
                 &slug,
                 vec![ModelInfo {
                     id: model_id.to_string(),
@@ -1342,7 +1351,12 @@ mod tests {
         }
 
         // from_base for this unknown model should pick up the discovered context_window
-        let model = Model::from_base(ManifestRegistry::get("ollama").unwrap(), "ollama", model_id);
+        let model = Model::from_base(
+            &reg,
+            ManifestRegistry::get("ollama").unwrap(),
+            "ollama",
+            model_id,
+        );
         assert_eq!(model.id, model_id);
         assert_eq!(model.context_window, expected_window);
         // max_output_tokens falls back to provider default since not discovered
@@ -1350,6 +1364,7 @@ mod tests {
 
         // A dynamic/custom slug shares its base provider's discovery.
         let wrapped = Model::from_base(
+            &reg,
             ManifestRegistry::get("ollama").unwrap(),
             "my-ollama-wrap",
             model_id,

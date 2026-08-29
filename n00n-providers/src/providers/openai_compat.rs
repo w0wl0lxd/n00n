@@ -1818,7 +1818,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-4o",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
 
@@ -1852,7 +1856,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-4o",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
 
@@ -1886,7 +1894,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-luna",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
 
@@ -1917,10 +1929,19 @@ data: [DONE]\n";
 
     #[test]
     fn breakpoint_support_uses_normalized_model_version() {
-        let open_router_model =
-            crate::model::Model::from_spec("openrouter/openai/gpt-5.6-luna").unwrap();
-        let future_model = crate::model::Model::from_spec("openai/gpt-6").unwrap();
-        let codex_model = crate::model::Model::from_spec("openai/gpt-6-codex").unwrap();
+        let open_router_model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openrouter/openai/gpt-5.6-luna",
+        )
+        .unwrap();
+        let future_model =
+            crate::model::Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-6")
+                .unwrap();
+        let codex_model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-6-codex",
+        )
+        .unwrap();
 
         assert!(open_router_model.supports_prompt_cache_breakpoint());
         assert!(future_model.supports_prompt_cache_breakpoint());
@@ -1934,7 +1955,11 @@ data: [DONE]\n";
             crate::providers::Timeouts::default(),
         )
         .unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-luna",
+        )
+        .unwrap();
         let messages = vec![Message {
             role: Role::Assistant,
             content: vec![ContentBlock::Text {
@@ -1973,7 +1998,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-luna",
+        )
+        .unwrap();
         let messages = vec![
             Message::user("first message".to_string()),
             Message::user("second message".to_string()),
@@ -2038,7 +2067,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-luna",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
 
@@ -2072,7 +2105,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-4o",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
 
@@ -2107,7 +2144,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-luna",
+        )
+        .unwrap();
         let messages = vec![
             Message::user("use a tool".to_string()),
             Message {
@@ -2196,7 +2237,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-4o",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([{
             "name": "bash",
@@ -2233,7 +2278,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-4o",
+        )
+        .unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([{
             "name": "bash",
@@ -2271,7 +2320,11 @@ data: [DONE]\n";
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let mut model = crate::model::Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let mut model = crate::model::Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap();
         model.pricing.fast = Some(crate::model::FastPricing {
             input: 10.0,
             output: 60.0,

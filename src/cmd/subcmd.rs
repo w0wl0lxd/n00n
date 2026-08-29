@@ -1,7 +1,7 @@
 use std::env;
 use std::io::{self, Write};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
@@ -15,6 +15,7 @@ use n00n_config::providers::{
 };
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::fetch_all_models;
 use n00n_providers::{ProviderData, catalog_providers};
 use n00n_providers::{copilot_auth, dynamic, openai_auth};
@@ -62,7 +63,11 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
         bail!("unknown provider '{slug}'");
     }
 
-    if builtin.is_none() && dynamic::auth_providers().iter().any(|(s, _)| *s == slug) {
+    if builtin.is_none()
+        && dynamic::auth_providers()
+            .iter()
+            .any(|(s, _)| s.as_str() == slug)
+    {
         dynamic::login(slug)?;
         return Ok(());
     }
@@ -570,7 +575,14 @@ pub fn auth_status(storage: &StateDir) {
 }
 
 pub fn models() {
+    let storage = StateDir::resolve().unwrap_or_else(|_| StateDir::from_path(PathBuf::from(".")));
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
+    model_registry
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .load_from_storage(&storage);
     smol::block_on(fetch_all_models(
+        model_registry,
         |batch| {
             for model in batch.models {
                 println!("{model}");
@@ -725,6 +737,7 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
         .event_handle()
         .map_or_else(Default::default, |h| h.collect_prompt_slots());
 
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
     let output = match variant {
         PromptVariant::System => {
             let mode = if flags.plan {
@@ -737,7 +750,8 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
                 .default_model
                 .as_deref()
                 .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514");
-            let model = Model::from_spec(model_spec).context("invalid default model")?;
+            let model =
+                Model::from_spec(&model_registry, model_spec).context("invalid default model")?;
             build_system_prompt(&vars, &mode, &instructions, &slots, &model)
         }
         PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions).into(),

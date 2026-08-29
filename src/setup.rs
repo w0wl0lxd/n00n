@@ -1,11 +1,12 @@
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
 use n00n_config::providers::ProvidersConfig;
 use n00n_providers::model::{Model, ModelTier};
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider;
 use n00n_storage::StateDir;
 use n00n_storage::log::RotatingFileWriter;
@@ -28,8 +29,16 @@ pub fn resolve_model(
     provider_config: &n00n_config::ProviderConfig,
     providers_toml: &ProvidersConfig,
     storage: &StateDir,
+    registry: &Arc<RwLock<ModelRegistry>>,
 ) -> Result<Model> {
-    resolve_model_with_fusion(explicit, provider_config, providers_toml, storage, None)
+    resolve_model_with_fusion(
+        explicit,
+        provider_config,
+        providers_toml,
+        storage,
+        None,
+        registry,
+    )
 }
 
 pub fn resolve_model_with_fusion(
@@ -38,6 +47,7 @@ pub fn resolve_model_with_fusion(
     providers_toml: &ProvidersConfig,
     storage: &StateDir,
     fusion: Option<&n00n_config::FusionConfig>,
+    registry: &Arc<RwLock<ModelRegistry>>,
 ) -> Result<Model> {
     resolve_model_with_availability(
         explicit,
@@ -46,6 +56,7 @@ pub fn resolve_model_with_fusion(
         storage,
         fusion,
         n00n_providers::provider::provider_available,
+        registry,
     )
 }
 
@@ -56,15 +67,16 @@ fn resolve_model_with_availability(
     storage: &StateDir,
     fusion: Option<&n00n_config::FusionConfig>,
     provider_available: impl Fn(&str) -> bool,
+    registry: &Arc<RwLock<ModelRegistry>>,
 ) -> Result<Model> {
     if let Some(spec) = explicit {
-        return Model::from_spec(spec).context("invalid --model spec");
+        return Model::from_spec(registry, spec).context("invalid --model spec");
     }
     if let Some(fusion) = fusion.filter(|fusion| fusion.enabled) {
-        return Model::from_spec(&fusion.lead_model).context("invalid Fusion lead model");
+        return Model::from_spec(registry, &fusion.lead_model).context("invalid Fusion lead model");
     }
     if let Some(spec) = read_model(storage) {
-        match Model::from_spec(&spec) {
+        match Model::from_spec(registry, &spec) {
             Ok(model) if provider_available(&model.provider) => return Ok(model),
             Ok(model) => tracing::warn!(
                 spec,
@@ -78,63 +90,74 @@ fn resolve_model_with_availability(
         }
     }
     if let Some(spec) = provider_config.default_model.as_deref() {
-        return Model::from_spec(spec).context("invalid default_model in config");
+        return Model::from_spec(registry, spec).context("invalid default_model in config");
     }
-    auto_detect_model_with_availability(providers_toml, provider_available).ok_or_else(|| {
+    auto_detect_model_with_availability(providers_toml, provider_available, registry).ok_or_else(|| {
         color_eyre::eyre::eyre!(
             "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `n00n auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/n00n/docs/providers/ for setup instructions"
         )
     })
 }
 
-pub fn auto_detect_model(providers_toml: &ProvidersConfig) -> Option<Model> {
+pub fn auto_detect_model(
+    providers_toml: &ProvidersConfig,
+    registry: &Arc<RwLock<ModelRegistry>>,
+) -> Option<Model> {
     auto_detect_model_with_availability(
         providers_toml,
         n00n_providers::provider::provider_available,
+        registry,
     )
 }
 
-pub fn placeholder_model() -> Result<Model> {
+pub fn placeholder_model(registry: &Arc<RwLock<ModelRegistry>>) -> Result<Model> {
     PLACEHOLDER_PROVIDER_PRIORITY
         .iter()
-        .find_map(|slug| Model::from_tier(slug, ModelTier::Strong).ok())
+        .find_map(|slug| Model::from_tier(registry, slug, ModelTier::Strong).ok())
         .ok_or_else(|| color_eyre::eyre::eyre!("no built-in placeholder model available"))
 }
 
-pub(crate) fn available_model_from_spec(spec: &str) -> Option<Model> {
-    let model = Model::from_spec(spec).ok()?;
+pub(crate) fn available_model_from_spec(
+    spec: &str,
+    registry: &Arc<RwLock<ModelRegistry>>,
+) -> Option<Model> {
+    let model = Model::from_spec(registry, spec).ok()?;
     n00n_providers::provider::provider_available(&model.provider).then_some(model)
 }
 
-fn provider_candidates<'a>(
-    providers_toml: &'a ProvidersConfig,
-    dynamic_slugs: impl IntoIterator<Item = &'a str>,
-) -> Vec<&'a str> {
+fn provider_candidates(
+    providers_toml: &ProvidersConfig,
+    dynamic_slugs: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Vec<String> {
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
 
     for &slug in PROVIDER_PRIORITY {
-        if seen.insert(slug) {
+        let slug = slug.to_string();
+        if seen.insert(slug.clone()) {
             candidates.push(slug);
         }
     }
 
-    let mut configured: Vec<&str> = providers_toml
+    let mut configured: Vec<String> = providers_toml
         .providers
         .keys()
-        .map(String::as_str)
+        .map(|s| s.as_str().to_string())
         .collect();
     configured.sort_unstable();
     for slug in configured {
-        if seen.insert(slug) {
+        if seen.insert(slug.clone()) {
             candidates.push(slug);
         }
     }
 
-    let mut dynamic: Vec<&str> = dynamic_slugs.into_iter().collect();
+    let mut dynamic: Vec<String> = dynamic_slugs
+        .into_iter()
+        .map(|s| s.as_ref().to_string())
+        .collect();
     dynamic.sort_unstable();
     for slug in dynamic {
-        if seen.insert(slug) {
+        if seen.insert(slug.clone()) {
             candidates.push(slug);
         }
     }
@@ -145,13 +168,14 @@ fn provider_candidates<'a>(
 fn auto_detect_model_with_availability(
     providers_toml: &ProvidersConfig,
     provider_available: impl Fn(&str) -> bool,
+    registry: &Arc<RwLock<ModelRegistry>>,
 ) -> Option<Model> {
     let dynamic_slugs = n00n_providers::dynamic::discovered_slugs();
     let candidates = provider_candidates(providers_toml, dynamic_slugs);
     for tier in [ModelTier::Strong, ModelTier::Medium] {
-        for &slug in &candidates {
-            if provider_available(slug)
-                && let Ok(model) = Model::from_tier_dynamic(slug, tier)
+        for slug in &candidates {
+            if provider_available(slug.as_str())
+                && let Ok(model) = Model::from_tier_dynamic(registry, slug.as_str(), tier)
             {
                 return Some(model);
             }
@@ -160,10 +184,13 @@ fn auto_detect_model_with_availability(
     None
 }
 
-pub fn fallback_to_recent_model(storage: &StateDir) -> Option<Model> {
+pub fn fallback_to_recent_model(
+    storage: &StateDir,
+    registry: &Arc<RwLock<ModelRegistry>>,
+) -> Option<Model> {
     let recents = read_recents(storage);
     for spec in recents {
-        if let Ok(model) = Model::from_spec(&spec)
+        if let Ok(model) = Model::from_spec(registry, &spec)
             && provider::provider_available(&model.provider)
         {
             return Some(model);
@@ -258,6 +285,7 @@ mod tests {
             ..FusionConfig::default()
         };
 
+        let registry = n00n_providers::model_registry::test_registry();
         let model = resolve_model_with_availability(
             Some("codex/gpt-5.6-terra"),
             &ProviderConfig::default(),
@@ -265,6 +293,7 @@ mod tests {
             &storage,
             Some(&fusion),
             |_| false,
+            &registry,
         )
         .unwrap();
 
@@ -284,6 +313,7 @@ mod tests {
             ..FusionConfig::default()
         };
 
+        let registry = n00n_providers::model_registry::test_registry();
         let model = resolve_model_with_availability(
             None,
             &provider,
@@ -291,6 +321,7 @@ mod tests {
             &storage,
             Some(&fusion),
             |_| false,
+            &registry,
         )
         .unwrap();
 
@@ -306,6 +337,7 @@ mod tests {
             ..ProviderConfig::default()
         };
 
+        let registry = n00n_providers::model_registry::test_registry();
         let model = resolve_model_with_availability(
             None,
             &provider,
@@ -313,6 +345,7 @@ mod tests {
             &storage,
             None,
             |slug| slug == "codex",
+            &registry,
         )
         .unwrap();
 
@@ -321,7 +354,7 @@ mod tests {
 
     #[test]
     fn placeholder_model_is_a_builtin_strong_model() {
-        let model = placeholder_model().unwrap();
+        let model = placeholder_model(&n00n_providers::model_registry::test_registry()).unwrap();
 
         assert_eq!(model.tier, ModelTier::Strong);
         assert!(
@@ -342,9 +375,17 @@ mod tests {
             ..ProviderConfig::default()
         };
 
-        let model =
-            resolve_model_with_availability(None, &provider, &providers, &storage, None, |_| false)
-                .unwrap();
+        let registry = n00n_providers::model_registry::test_registry();
+        let model = resolve_model_with_availability(
+            None,
+            &provider,
+            &providers,
+            &storage,
+            None,
+            |_| false,
+            &registry,
+        )
+        .unwrap();
 
         assert_eq!(model.spec(), "anthropic/claude-opus-4-6");
     }
@@ -359,9 +400,17 @@ mod tests {
         let mut providers = ProvidersConfig::default();
         providers.upsert("my-custom".into(), ProviderDef::default());
 
-        let model =
-            resolve_model_with_availability(None, &provider, &providers, &storage, None, |_| false)
-                .unwrap();
+        let registry = n00n_providers::model_registry::test_registry();
+        let model = resolve_model_with_availability(
+            None,
+            &provider,
+            &providers,
+            &storage,
+            None,
+            |_| false,
+            &registry,
+        )
+        .unwrap();
 
         assert_eq!(model.spec(), "openai/gpt-5.6-sol");
     }
@@ -371,6 +420,7 @@ mod tests {
         let (_temp, storage) = temp_state();
         persist_model(&storage, "codex/gpt-5.5");
 
+        let registry = n00n_providers::model_registry::test_registry();
         let model = resolve_model_with_availability(
             None,
             &ProviderConfig::default(),
@@ -378,6 +428,7 @@ mod tests {
             &storage,
             Some(&FusionConfig::default()),
             |slug| slug == "codex",
+            &registry,
         )
         .unwrap();
 
@@ -388,6 +439,7 @@ mod tests {
     fn auto_detection_uses_first_available_provider_by_tier_and_priority() {
         let (_temp, storage) = temp_state();
 
+        let registry = n00n_providers::model_registry::test_registry();
         let model = resolve_model_with_availability(
             None,
             &ProviderConfig::default(),
@@ -395,6 +447,7 @@ mod tests {
             &storage,
             None,
             |slug| slug == "zai",
+            &registry,
         )
         .unwrap();
 

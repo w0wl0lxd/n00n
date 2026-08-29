@@ -9,7 +9,7 @@
 
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use clap::ValueEnum;
@@ -22,6 +22,7 @@ use n00n_agent::{
 };
 use n00n_lua::EventHandle;
 use n00n_providers::model::Model;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::{OpenAiOptions, StopReason, TokenUsage};
 use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
@@ -238,6 +239,8 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
 
     let prompt_slots = lua_handle.map_or_else(Default::default, EventHandle::collect_prompt_slots);
 
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
+
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let (mcp_handle, mcp_config_errors) =
         smol::block_on(n00n_agent::mcp::start(&cwd, config.mcp_tool_desc_max_chars));
@@ -263,6 +266,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
         fast,
         workflow,
         mode: AgentMode::Build,
+        model_registry,
     });
 
     let print_status = Arc::new(Mutex::new("working".to_owned()));

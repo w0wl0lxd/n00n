@@ -408,7 +408,8 @@ mod tests {
     #[test]
     fn custom_openai_protocol_omits_parallel_tool_calls() {
         let provider = OpenAiCompatProvider::new(&CONFIG, Timeouts::default()).unwrap();
-        let model = Model::from_spec("openai/gpt-4o").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-4o").unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = serde_json::json!([{
             "name": "bash",
@@ -432,7 +433,8 @@ mod tests {
 
     #[test]
     fn custom_openai_responses_protocol_omits_parallel_tool_calls() {
-        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let model =
+            Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap();
         let tools = serde_json::json!([{
             "name": "bash",
             "description": "run shell commands",
@@ -469,7 +471,11 @@ mod tests {
         assert!(specs.contains(&"my-custom/real-model".to_string()));
 
         // Resolution owns the builtin slug regardless of the providers.toml entry.
-        let model = Model::from_spec("openrouter/shadow-model").unwrap();
+        let model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openrouter/shadow-model",
+        )
+        .unwrap();
         assert_eq!(model.provider.as_ref(), "openrouter");
     }
 }

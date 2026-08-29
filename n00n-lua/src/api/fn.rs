@@ -1655,7 +1655,10 @@ mod tests {
     #[test]
     fn jobwait_pumps_deferred_callbacks() {
         let lua = Lua::new();
-        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = TaskScope::new(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         let owner = task_owner(lock_cell(scope.handle()).id);
         let callback = lua
             .create_registry_value(
@@ -1719,7 +1722,10 @@ mod tests {
     #[test]
     fn jobwait_pumps_deferred_callbacks_during_continuous_output() {
         let lua = Lua::new();
-        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = TaskScope::new(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         let owner = task_owner(lock_cell(scope.handle()).id);
         lua.globals().set("timer_fired", false).unwrap();
         let timer_callback = lua
@@ -1775,7 +1781,10 @@ mod tests {
     #[test]
     fn jobwait_truncates_retained_output_without_dropping_stream_callbacks() {
         let lua = Lua::new();
-        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = TaskScope::new(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         let owner = task_owner(lock_cell(scope.handle()).id);
         lua.globals().set("streamed_chunks", 0_u32).unwrap();
         let stdout_callback = lua
@@ -1878,7 +1887,10 @@ mod tests {
     #[test]
     fn jobwait_preserves_unwaited_sibling_output() {
         let lua = Lua::new();
-        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = TaskScope::new(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         let owner = task_owner(lock_cell(scope.handle()).id);
         let (first_id, second_id) = with_jobs(&lua, |store| {
             let first_id = start_shell(store, owner.clone(), "printf first");
@@ -1949,7 +1961,10 @@ mod tests {
     #[test_case::test_case(())]
     fn jobwait_pumps_cancelled_sibling_timer(_: ()) {
         let lua = Lua::new();
-        let scope = TaskScope::new(&lua, TaskCell::new(CancelToken::none(), None, None, None));
+        let scope = TaskScope::new(
+            &lua,
+            TaskCell::new(&lua, CancelToken::none(), None, None, None),
+        );
         let owner = task_owner(lock_cell(scope.handle()).id);
         lua.globals().set("timer_cancelled", false).unwrap();
         let callback = lua

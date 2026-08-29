@@ -864,7 +864,11 @@ data: {\"type\":\"message_stop\"}\n";
 
     #[test]
     fn apply_fast_mode_sets_speed_on_capable_model() {
-        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap();
         let mut body = json!({});
         let opts = RequestOptions {
             fast: true,
@@ -878,7 +882,11 @@ data: {\"type\":\"message_stop\"}\n";
     #[test]
     fn apply_fast_mode_ignores_stale_flag_on_ineligible_model() {
         // Sonnet is not fast-capable, so opts.fast=true must still skip `speed`.
-        let model = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-5",
+        )
+        .unwrap();
         let mut body = json!({});
         let opts = RequestOptions {
             fast: true,
@@ -891,7 +899,11 @@ data: {\"type\":\"message_stop\"}\n";
 
     #[test]
     fn apply_fast_mode_off_when_not_requested() {
-        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        let model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8",
+        )
+        .unwrap();
         let mut body = json!({});
         let opts = RequestOptions::default();
         let header = apply_fast_mode(&mut body, &model, &opts);
@@ -901,7 +913,11 @@ data: {\"type\":\"message_stop\"}\n";
 
     #[test]
     fn long_context_spec_resolves_to_1m_window() {
-        let model = Model::from_spec("anthropic/claude-opus-4-8-1m").unwrap();
+        let model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "anthropic/claude-opus-4-8-1m",
+        )
+        .unwrap();
         assert_eq!(model.id, "claude-opus-4-8-1m");
         assert_eq!(model.context_window, shared::LONG_CONTEXT_WINDOW);
         assert!(model.id.ends_with(shared::LONG_CONTEXT_SUFFIX));

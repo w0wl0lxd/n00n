@@ -1,5 +1,5 @@
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use color_eyre::Result;
 use color_eyre::eyre::Context;
@@ -9,13 +9,18 @@ use n00n_agent::tools::ToolRegistry;
 use n00n_config::providers::ProvidersConfig;
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_storage::StateDir;
 
 use crate::setup;
 
 pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    n00n_providers::model_registry::load_from_storage(&storage);
+    let model_registry = Arc::new(RwLock::new(ModelRegistry::default()));
+    model_registry
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
@@ -54,7 +59,13 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
     };
 
     let providers_toml = ProvidersConfig::load();
-    let model = setup::resolve_model(model_arg, &config.provider, &providers_toml, &storage)?;
+    let model = setup::resolve_model(
+        model_arg,
+        &config.provider,
+        &providers_toml,
+        &storage,
+        &model_registry,
+    )?;
     setup::install_panic_log_hook();
 
     let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
@@ -85,5 +96,6 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
             crate::cmd::session_daemon::register_acp_session(state_dir, handle, model)
                 .map(|guard| Box::new(guard) as n00n_acp::SessionDaemonGuard)
         }),
+        model_registry,
     })
 }

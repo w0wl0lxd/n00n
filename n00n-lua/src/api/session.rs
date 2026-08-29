@@ -319,6 +319,7 @@ mod tests {
         let _scope = TaskScope::new(
             &lua,
             TaskCell::new(
+                &lua,
                 CancelToken::none(),
                 None,
                 None,
@@ -400,6 +401,7 @@ mod tests {
         let _scope = TaskScope::new(
             &lua,
             TaskCell::new(
+                &lua,
                 CancelToken::none(),
                 None,
                 None,

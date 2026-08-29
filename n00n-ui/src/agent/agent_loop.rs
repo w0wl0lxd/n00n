@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
 use n00n_agent::agent;
@@ -17,7 +17,13 @@ use n00n_agent::{
     McpHandle, PromptRole, ToolOutputLines,
 };
 use n00n_lua::EventHandle;
-use n00n_providers::{AgentError, Message, Model, OpenAiOptions, System, TokenUsage};
+use n00n_providers::AgentError;
+use n00n_providers::Message;
+use n00n_providers::Model;
+use n00n_providers::OpenAiOptions;
+use n00n_providers::System;
+use n00n_providers::TokenUsage;
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
 use tracing::{error, info, warn};
@@ -63,6 +69,7 @@ pub(super) struct AgentLoop {
     plan_path: Option<PathBuf>,
     state_revision: Option<u64>,
     revision_allocator: Arc<RevisionAllocator>,
+    model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 struct ToolsCache {
@@ -99,6 +106,7 @@ pub(super) struct AgentLoopInit {
     pub(super) openai_options: OpenAiOptions,
     pub(super) lua_handle: Option<EventHandle>,
     pub(super) subagent_cancels: Arc<CancelMap<String>>,
+    pub(super) model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 impl AgentLoop {
@@ -127,6 +135,7 @@ impl AgentLoop {
             openai_options,
             lua_handle,
             subagent_cancels,
+            model_registry,
         } = init;
         let mcp = mcp_handle.map(|handle| McpSession::new(handle, &initial_history));
         let history = History::restored_with_transcript(initial_history, initial_transcript)
@@ -161,6 +170,7 @@ impl AgentLoop {
             plan_path: initial_plan_path,
             state_revision,
             revision_allocator,
+            model_registry,
         }
     }
 
@@ -274,6 +284,7 @@ impl AgentLoop {
                 registry: Arc::clone(ToolRegistry::global_arc()),
                 audience: ToolAudience::MAIN,
                 state_revision: self.state_revision,
+                model_registry: Arc::clone(&self.model_registry),
             },
             AgentRunParams {
                 history: &mut self.history,
@@ -309,6 +320,7 @@ impl AgentLoop {
     async fn do_compact(&mut self, event_tx: &EventSender) -> Result<(), AgentError> {
         let slot = self.model_slot.load();
         let (provider, model) = agent::resolve_compaction_model(
+            &self.model_registry,
             &slot.provider,
             &slot.model,
             self.timeouts,
@@ -444,6 +456,7 @@ impl AgentLoop {
                 audience: ToolAudience::MAIN,
                 openai_options: self.openai_options.clone(),
                 state_revision: self.state_revision,
+                model_registry: Arc::clone(&self.model_registry),
             },
             AgentRunParams {
                 history: &mut self.history,

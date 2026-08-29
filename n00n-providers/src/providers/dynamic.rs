@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flume::Sender;
@@ -41,6 +41,7 @@ const INFO_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROVIDERS_DIR: &str = "providers";
 
+#[derive(Clone)]
 struct DynamicProviderMeta {
     slug: String,
     display_name: String,
@@ -66,7 +67,7 @@ struct ScriptInfo {
     model_filters: Vec<ScriptModelFilter>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct ScriptModelFilter {
     #[serde(rename = "match")]
     match_pattern: String,
@@ -74,7 +75,7 @@ struct ScriptModelFilter {
     body_override: Option<BodyOverride>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct ScriptModel {
     id: String,
     #[serde(default = "default_tier")]
@@ -441,34 +442,30 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
     result
 }
 
-static DISCOVERED: OnceLock<Vec<DynamicProviderMeta>> = OnceLock::new();
-
-fn discover() -> &'static [DynamicProviderMeta] {
-    DISCOVERED.get_or_init(|| {
-        // Load config first: it hard-exits on malformed providers.toml, so fail
-        // before spawning every provider script.
-        let custom = ProvidersConfig::load();
-        let mut metas = providers_dir().map_or_else(Vec::new, |d| discover_in(&d));
-        // A script and a providers.toml entry must not share a slug. The script
-        // loses, the same way it already loses to a builtin, and we say so
-        // instead of silently picking a winner.
-        metas.retain(|m| {
-            if custom.get(&m.slug).is_some() {
-                warn!(
-                    slug = %m.slug,
-                    "provider slug also defined in providers.toml, skipping script"
-                );
-                false
-            } else {
-                true
-            }
-        });
-        metas
-    })
+fn discover() -> Vec<DynamicProviderMeta> {
+    // Load config first: it hard-exits on malformed providers.toml, so fail
+    // before spawning every provider script.
+    let custom = ProvidersConfig::load();
+    let mut metas = providers_dir().map_or_else(Vec::new, |d| discover_in(&d));
+    // A script and a providers.toml entry must not share a slug. The script
+    // loses, the same way it already loses to a builtin, and we say so
+    // instead of silently picking a winner.
+    metas.retain(|m| {
+        if custom.get(&m.slug).is_some() {
+            warn!(
+                slug = %m.slug,
+                "provider slug also defined in providers.toml, skipping script"
+            );
+            false
+        } else {
+            true
+        }
+    });
+    metas
 }
 
-fn find_meta(slug: &str) -> Option<&'static DynamicProviderMeta> {
-    discover().iter().find(|m| m.slug == slug)
+fn find_meta<'a>(metas: &'a [DynamicProviderMeta], slug: &str) -> Option<&'a DynamicProviderMeta> {
+    metas.iter().find(|m| m.slug == slug)
 }
 
 /// Log in to a dynamic script-based provider.
@@ -477,7 +474,8 @@ fn find_meta(slug: &str) -> Option<&'static DynamicProviderMeta> {
 ///
 /// Returns an `AgentError` if the provider is unknown, does not support login, or the script fails.
 pub fn login(slug: &str) -> Result<(), AgentError> {
-    let meta = find_meta(slug).ok_or_else(|| AgentError::Config {
+    let metas = discover();
+    let meta = find_meta(&metas, slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown provider '{slug}'"),
     })?;
     if !meta.has_auth {
@@ -494,7 +492,8 @@ pub fn login(slug: &str) -> Result<(), AgentError> {
 ///
 /// Returns an `AgentError` if the provider is unknown, does not support logout, or the script fails.
 pub fn logout(slug: &str) -> Result<(), AgentError> {
-    let meta = find_meta(slug).ok_or_else(|| AgentError::Config {
+    let metas = discover();
+    let meta = find_meta(&metas, slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown provider '{slug}'"),
     })?;
     if !meta.has_auth {
@@ -506,11 +505,11 @@ pub fn logout(slug: &str) -> Result<(), AgentError> {
 }
 
 #[must_use]
-pub fn auth_providers() -> Vec<(&'static str, &'static str)> {
+pub fn auth_providers() -> Vec<(String, String)> {
     discover()
         .iter()
         .filter(|m| m.has_auth)
-        .map(|m| (m.slug.as_str(), m.display_name.as_str()))
+        .map(|m| (m.slug.clone(), m.display_name.clone()))
         .collect()
 }
 
@@ -520,7 +519,8 @@ pub fn auth_providers() -> Vec<(&'static str, &'static str)> {
 ///
 /// Returns an `AgentError` if the provider is unknown, auth resolution fails, or the base provider cannot be created.
 pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>, AgentError> {
-    let meta = find_meta(slug).ok_or_else(|| AgentError::Config {
+    let metas = discover();
+    let meta = find_meta(&metas, slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown dynamic provider '{slug}'"),
     })?;
     let resolved = resolve_auth(meta)?;
@@ -585,21 +585,23 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
     };
 
     Ok(Box::new(DynamicProvider {
-        script_path: &meta.script_path,
+        script_path: meta.script_path.clone(),
         inner,
         auth,
-        models: &meta.models,
+        models: meta.models.clone(),
     }))
 }
 
 #[must_use]
-pub fn display_name(slug: &str) -> Option<&'static str> {
-    find_meta(slug).map(|m| m.display_name.as_str())
+pub fn display_name(slug: &str) -> Option<String> {
+    let metas = discover();
+    find_meta(&metas, slug).map(|m| m.display_name.clone())
 }
 
 #[must_use]
 pub fn dynamic_model_specs_for(slug: &str) -> Vec<String> {
-    let Some(meta) = find_meta(slug) else {
+    let metas = discover();
+    let Some(meta) = find_meta(&metas, slug) else {
         return Vec::new();
     };
     if meta.models.is_empty() {
@@ -619,18 +621,20 @@ pub fn dynamic_model_specs_for(slug: &str) -> Vec<String> {
 }
 
 #[must_use]
-pub fn discovered_slugs() -> Vec<&'static str> {
-    discover().iter().map(|m| m.slug.as_str()).collect()
+pub fn discovered_slugs() -> Vec<String> {
+    discover().iter().map(|m| m.slug.clone()).collect()
 }
 
 #[must_use]
 pub fn base_for_slug(slug: &str) -> Option<ProviderKind> {
-    find_meta(slug).map(|m| m.base)
+    let metas = discover();
+    find_meta(&metas, slug).map(|m| m.base)
 }
 
 #[must_use]
 pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
-    let meta = find_meta(slug)?;
+    let metas = discover();
+    let meta = find_meta(&metas, slug)?;
     let script_model = meta
         .models
         .iter()
@@ -647,7 +651,8 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
 
 #[must_use]
 pub fn find_model_for_tier(slug: &str, tier: ModelTier) -> Option<Model> {
-    let meta = find_meta(slug)?;
+    let metas = discover();
+    let meta = find_meta(&metas, slug)?;
     let script_model = meta.models.iter().find(|m| m.tier == tier)?;
     Some(script_model.to_model(
         slug,
@@ -659,19 +664,19 @@ pub fn find_model_for_tier(slug: &str, tier: ModelTier) -> Option<Model> {
 }
 
 struct DynamicProvider {
-    script_path: &'static Path,
+    script_path: PathBuf,
     inner: Box<dyn Provider>,
     auth: Arc<Mutex<ResolvedAuth>>,
-    models: &'static [ScriptModel],
+    models: Vec<ScriptModel>,
 }
 
 impl DynamicProvider {
     fn run_auth_script(&self, subcommand: &'static str) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async move {
-            let script_path = self.script_path;
+            let script_path = self.script_path.clone();
             let auth = Arc::clone(&self.auth);
             smol::unblock(move || {
-                let stdout = run_script(script_path, subcommand, SCRIPT_TIMEOUT)?;
+                let stdout = run_script(&script_path, subcommand, SCRIPT_TIMEOUT)?;
                 let parsed: ScriptResolvedAuth =
                     serde_json::from_str(&stdout).map_err(|e| AgentError::Config {
                         message: format!(

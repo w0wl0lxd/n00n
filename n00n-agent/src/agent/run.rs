@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 use tracing::{error, info, warn};
@@ -6,6 +6,7 @@ use tracing::{error, info, warn};
 use n00n_config::canonical_tool_name;
 use n00n_redact::demoted;
 
+use n00n_providers::model_registry::ModelRegistry;
 use n00n_providers::provider::Provider;
 use n00n_providers::{
     ContentBlock, HistoryReplayReason, HostedToolSearch, Message, Model, OpenAiOptions,
@@ -123,18 +124,20 @@ fn adaptive_cache_breakpoints(user_message_count: usize) -> usize {
 /// # Panics
 /// Panics if the model registry lock is poisoned.
 pub fn resolve_compaction_model(
+    registry: &Arc<RwLock<ModelRegistry>>,
     provider: &Arc<dyn Provider>,
     model: &Model,
     timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
 ) -> (Arc<dyn Provider>, Model) {
-    if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
-        && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
-        && let Ok(mut m) = Model::from_spec(&spec)
+    if let Ok(map) = registry.read()
+        && let Some(spec) = map.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
+        && let Ok(mut m) = Model::from_spec(registry, &spec)
         && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
             &mut m,
             timeouts,
             openai_options,
+            Some(Arc::clone(registry)),
         )
     {
         return (Arc::from(p), m);
@@ -163,6 +166,7 @@ pub struct AgentParams {
     pub registry: Arc<crate::tools::ToolRegistry>,
     pub audience: ToolAudience,
     pub state_revision: Option<u64>,
+    pub model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 pub struct AgentRunParams<'h> {
@@ -220,6 +224,7 @@ pub struct Agent<'h> {
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
     registry: Arc<crate::tools::ToolRegistry>,
+    model_registry: Arc<RwLock<ModelRegistry>>,
     admission_scope: Arc<str>,
     audience: ToolAudience,
     workflow: bool,
@@ -291,6 +296,7 @@ impl<'h> Agent<'h> {
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
             registry: params.registry,
+            model_registry: params.model_registry,
             admission_scope,
             audience: params.audience,
             workflow: false,
@@ -1102,6 +1108,7 @@ impl<'h> Agent<'h> {
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             identity: self.identity.clone(),
             registry: Arc::clone(&self.registry),
+            model_registry: Arc::clone(&self.model_registry),
             admission_scope: Arc::clone(&self.admission_scope),
             workflow: self.workflow,
             audience: self.audience,
@@ -1263,6 +1270,7 @@ impl<'h> Agent<'h> {
         }
         self.event_tx.send(AgentEvent::AutoCompacting)?;
         let (compact_provider, compact_model) = resolve_compaction_model(
+            &self.model_registry,
             &self.provider,
             &self.model,
             self.timeouts,
@@ -2236,7 +2244,11 @@ mod tests {
     }
 
     fn default_model() -> Model {
-        Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap()
+        Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-sonnet-4-20250514",
+        )
+        .unwrap()
     }
 
     fn text_response(stop_reason: StopReason) -> StreamResponse {
@@ -2329,6 +2341,7 @@ mod tests {
                 registry,
                 audience: ToolAudience::MAIN,
                 state_revision: Some(0),
+                model_registry: n00n_providers::model_registry::test_registry(),
             },
             AgentRunParams {
                 history,
@@ -3090,7 +3103,11 @@ mod tests {
         let mut history = History::new(Vec::new());
         let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
         let main_model = default_model();
-        let compact_model = Model::from_spec("anthropic/claude-haiku-4-5").unwrap();
+        let compact_model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            "anthropic/claude-haiku-4-5",
+        )
+        .unwrap();
         let main_usage = TokenUsage {
             input: 1_000_000,
             output: 100_000,
@@ -3329,6 +3346,7 @@ mod tests {
                     registry: Arc::new(crate::tools::ToolRegistry::new()),
                     audience: ToolAudience::MAIN,
                     state_revision: Some(0),
+                    model_registry: n00n_providers::model_registry::test_registry(),
                 },
                 AgentRunParams {
                     history: &mut history,

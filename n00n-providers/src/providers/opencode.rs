@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use flume::Sender;
@@ -458,12 +458,7 @@ pub struct Opencode {
     auth: Option<Arc<Mutex<ResolvedAuth>>>,
     system_prefix: Option<String>,
     stream_timeout: Duration,
-}
-
-static CATALOG: OnceLock<Arc<CatalogData>> = OnceLock::new();
-
-fn init_catalog_if_needed() -> &'static Arc<CatalogData> {
-    CATALOG.get_or_init(|| Arc::new(init_catalog_blocking()))
+    catalog: Arc<CatalogData>,
 }
 
 impl Opencode {
@@ -477,6 +472,7 @@ impl Opencode {
             auth,
             system_prefix: None,
             stream_timeout: timeouts.stream,
+            catalog: Arc::new(init_catalog_blocking()),
         })
     }
 
@@ -496,9 +492,8 @@ impl Opencode {
         self
     }
 
-    async fn do_list_models(&self) -> Result<Vec<ModelInfo>, AgentError> {
-        // Delegate to a background thread
-        Ok(smol::unblock(|| init_catalog_if_needed().all_models()).await)
+    fn do_list_models(&self) -> impl Future<Output = Result<Vec<ModelInfo>, AgentError>> + Send {
+        std::future::ready(Ok(self.catalog.all_models()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -607,11 +602,11 @@ impl Opencode {
     ) -> Result<(CatalogMeta, EndpointType, ResolvedAuth), AgentError> {
         let sub_provider = sub_provider.to_string();
         let actual_id = actual_id.to_string();
+        let catalog = Arc::clone(&self.catalog);
         let auth_override = self.auth.clone();
         smol::unblock(move || {
-            let guard = init_catalog_if_needed();
-            let (meta, provider_data) = guard.lookup(&sub_provider, &actual_id)?;
-            let state_dir = &guard.state_dir;
+            let (meta, provider_data) = catalog.lookup(&sub_provider, &actual_id)?;
+            let state_dir = &catalog.state_dir;
             // Dynamic provider auth (e.g. from Lua) overrides the opencode route
             let auth = provider_data
                 .resolve_auth_with_override(auth_override.as_ref(), state_dir)
@@ -687,19 +682,23 @@ fn config_error(message: String) -> AgentError {
 /// Returns the list of all providers in alphabetical order.
 #[must_use]
 pub fn catalog_providers() -> Vec<ProviderData> {
-    init_catalog_if_needed().all_providers()
+    init_catalog_blocking().all_providers()
 }
 
 /// Returns the list of catalog providers only if the catalog has already been downloaded.
 /// Does NOT trigger downloading.
+#[must_use]
 pub fn catalog_providers_if_available() -> Option<Vec<ProviderData>> {
-    CATALOG.get().map(|catalog| catalog.all_providers())
+    let state_dir = StateDir::resolve().ok()?;
+    let index = smol::block_on(load_cached_catalog_async())?;
+    let catalog = CatalogData::from_index(index, enable_free_models_config(), &state_dir);
+    Some(catalog.all_providers())
 }
 
 /// Returns the `ProviderData` for a specific catalog provider, if found.
 #[must_use]
 pub fn catalog_provider(provider_id: &str) -> Option<ProviderData> {
-    init_catalog_if_needed().providers.get(provider_id).cloned()
+    init_catalog_blocking().providers.get(provider_id).cloned()
 }
 
 // --- Catalog helpers ---
@@ -1924,7 +1923,11 @@ mod tests {
                 models.len()
             );
 
-            let model = Model::from_spec("opencode/gpt-5-nano").expect("resolve zen model spec");
+            let model = Model::from_spec(
+                &crate::model_registry::test_registry(),
+                "opencode/gpt-5-nano",
+            )
+            .expect("resolve zen model spec");
             let messages = vec![Message::user(
                 "Reply with exactly the word: pong".to_string(),
             )];
@@ -1977,8 +1980,11 @@ mod tests {
             let provider = Opencode::new(super::super::Timeouts::default())
                 .expect("construct Opencode provider");
 
-            let model = Model::from_spec("opencode/opencode-go/deepseek-v4-flash")
-                .expect("resolve opencode-go model spec");
+            let model = Model::from_spec(
+                &crate::model_registry::test_registry(),
+                "opencode/opencode-go/deepseek-v4-flash",
+            )
+            .expect("resolve opencode-go model spec");
             let messages = vec![Message::user(
                 "Reply with exactly the word: pong".to_string(),
             )];
@@ -2025,7 +2031,11 @@ mod tests {
             let provider = Opencode::new(super::super::Timeouts::default())
                 .expect("construct Opencode provider");
 
-            let model = Model::from_spec("opencode/gpt-5-nano").expect("resolve zen model spec");
+            let model = Model::from_spec(
+                &crate::model_registry::test_registry(),
+                "opencode/gpt-5-nano",
+            )
+            .expect("resolve zen model spec");
             let messages = vec![Message::user(
                 "Call the get_weather tool for Paris. Use the tool, do not answer in text."
                     .to_string(),

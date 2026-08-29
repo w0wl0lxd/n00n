@@ -27,8 +27,11 @@ const FIXTURE_DATE: &str = "2026-07-27";
 /// Returns when the pinned model cannot be resolved, plugins fail to load, or a
 /// surface cannot be serialized for measurement.
 pub fn profile_cold_start() -> Result<ProfileReport, ProfileError> {
-    let model = Model::from_spec(FIXTURE_MODEL_ID)
-        .map_err(|e| ProfileError::Model(format!("{FIXTURE_MODEL_ID}: {e}")))?;
+    let model = Model::from_spec(
+        &n00n_providers::model_registry::test_registry(),
+        FIXTURE_MODEL_ID,
+    )
+    .map_err(|e| ProfileError::Model(format!("{FIXTURE_MODEL_ID}: {e}")))?;
 
     let registry = Arc::new(ToolRegistry::new());
     let host = n00n_lua::PluginHost::with_all_builtins(Arc::clone(&registry))
@@ -344,7 +347,11 @@ mod tests {
     use n00n_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, default_active_tools};
     #[test]
     fn profile_uses_runtime_default_active_tools() {
-        let model = Model::from_spec(FIXTURE_MODEL_ID).expect("fixture model");
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            FIXTURE_MODEL_ID,
+        )
+        .expect("fixture model");
         let registry = Arc::new(ToolRegistry::new());
         let _host = n00n_lua::PluginHost::with_all_builtins(Arc::clone(&registry))
             .expect("built-in plugins");
@@ -370,7 +377,11 @@ mod tests {
 
     #[test]
     fn runtime_descriptions_use_pinned_fixture_variables() {
-        let model = Model::from_spec(FIXTURE_MODEL_ID).expect("fixture model");
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            FIXTURE_MODEL_ID,
+        )
+        .expect("fixture model");
         let registry = Arc::new(ToolRegistry::new());
         let _host = n00n_lua::PluginHost::with_all_builtins(Arc::clone(&registry))
             .expect("built-in plugins");
@@ -395,7 +406,11 @@ mod tests {
 
     #[test]
     fn cache_prefix_includes_complete_tool_definitions() {
-        let model = Model::from_spec(FIXTURE_MODEL_ID).expect("fixture model");
+        let model = Model::from_spec(
+            &n00n_providers::model_registry::test_registry(),
+            FIXTURE_MODEL_ID,
+        )
+        .expect("fixture model");
         let registry = Arc::new(ToolRegistry::new());
         let host = n00n_lua::PluginHost::with_all_builtins(Arc::clone(&registry))
             .expect("built-in plugins");

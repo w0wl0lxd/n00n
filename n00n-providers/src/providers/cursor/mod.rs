@@ -1029,7 +1029,8 @@ mod tests {
     #[test]
     fn tier_defaults_resolve() {
         for tier in [ModelTier::Weak, ModelTier::Medium, ModelTier::Strong] {
-            let model = Model::from_tier("cursor", tier).unwrap();
+            let model =
+                Model::from_tier(&crate::model_registry::test_registry(), "cursor", tier).unwrap();
             assert_eq!(model.tier, tier, "cursor/{tier:?} default should resolve");
         }
     }

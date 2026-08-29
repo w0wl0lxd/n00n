@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::manifest::ManifestRegistry;
 use crate::model::Model;
+use crate::model_registry::ModelRegistry;
 use crate::provider::{available_model_specs, provider_available};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -19,6 +20,7 @@ pub enum ModelCatalogError {
 pub struct ModelCatalog {
     specs: Arc<[String]>,
     aliases: Arc<HashMap<String, String>>,
+    registry: Arc<RwLock<ModelRegistry>>,
 }
 
 impl ModelCatalog {
@@ -40,6 +42,7 @@ impl ModelCatalog {
         Self {
             specs: unique.into(),
             aliases: Arc::new(HashMap::new()),
+            registry: Arc::new(RwLock::new(ModelRegistry::default())),
         }
     }
 
@@ -87,7 +90,7 @@ impl ModelCatalog {
         if !provider_available(provider) {
             return Err(ModelCatalogError::Unavailable(spec));
         }
-        Model::from_spec(&spec).map_err(|error| {
+        Model::from_spec(&self.registry, &spec).map_err(|error| {
             tracing::warn!(error = %error, "configured model metadata failed validation");
             ModelCatalogError::InvalidModel
         })

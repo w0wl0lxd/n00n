@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use async_lock::Mutex as AsyncMutex;
@@ -52,9 +52,6 @@ const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
 const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const PROMPT_CACHE_SHARDS: u8 = 16;
-
-static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
-static RESPONSE_OPERATIONS: OnceLock<ResponseOperationRegistry> = OnceLock::new();
 
 fn coding_plan_slot_count(slots: u64) -> u8 {
     match u8::try_from(slots.clamp(1, u64::from(CODING_PLAN_MAX_SLOTS))) {
@@ -515,10 +512,6 @@ fn log_responses_request(
     }
 }
 
-fn process_instance_nonce() -> u64 {
-    *PROCESS_INSTANCE_NONCE.get_or_init(|| fastrand::u64(..))
-}
-
 fn copy_oauth_tokens(tokens: &n00n_storage::auth::OAuthTokens) -> n00n_storage::auth::OAuthTokens {
     n00n_storage::auth::OAuthTokens {
         access: tokens.access.clone(),
@@ -644,6 +637,9 @@ pub struct OpenAi {
     system_prefix: Option<String>,
     session_state: Arc<Mutex<HashMap<n00nId, OpenAiSessionState>>>,
     response_connections: Arc<Mutex<HashMap<n00nId, ResponseConnectionSlot>>>,
+    response_operations: Arc<ResponseOperationRegistry>,
+    coding_plan_slot_registry: Arc<auth::LocalCodingPlanSlotRegistry>,
+    process_instance_nonce: u64,
 }
 
 impl OpenAi {
@@ -681,6 +677,11 @@ impl OpenAi {
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
+            response_operations: Arc::new(Mutex::new(HashMap::new())),
+            coding_plan_slot_registry: Arc::new(auth::LocalCodingPlanSlotRegistry::new(
+                HashMap::new(),
+            )),
+            process_instance_nonce: fastrand::u64(..),
         })
     }
 
@@ -716,6 +717,11 @@ impl OpenAi {
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
+            response_operations: Arc::new(Mutex::new(HashMap::new())),
+            coding_plan_slot_registry: Arc::new(auth::LocalCodingPlanSlotRegistry::new(
+                HashMap::new(),
+            )),
+            process_instance_nonce: fastrand::u64(..),
         })
     }
 
@@ -809,7 +815,7 @@ impl OpenAi {
         match result {
             Ok(sync) => {
                 debug!(
-                    process_instance_nonce = process_instance_nonce(),
+                    process_instance_nonce = self.process_instance_nonce,
                     attempt_nonce,
                     phase = "auth_refresh",
                     auth_expiry_bucket = expiry_bucket,
@@ -825,7 +831,7 @@ impl OpenAi {
             }
             Err(error) => {
                 warn!(
-                    process_instance_nonce = process_instance_nonce(),
+                    process_instance_nonce = self.process_instance_nonce,
                     attempt_nonce,
                     phase = "auth_refresh",
                     auth_expiry_bucket = expiry_bucket,
@@ -906,7 +912,7 @@ impl OpenAi {
             }
         } else {
             debug!(
-                process_instance_nonce = process_instance_nonce(),
+                process_instance_nonce = self.process_instance_nonce,
                 attempt_nonce,
                 phase = "auth_preflight",
                 auth_expiry_bucket = auth_expiry_bucket(&tokens),
@@ -940,12 +946,13 @@ impl OpenAi {
             smol::unblock(move || auth::coding_plan_admission_scope(&storage, &auth)).await?
         };
         let slots = self.coding_plan_slots;
+        let registry = Arc::clone(&self.coding_plan_slot_registry);
         let (admission, wait) = smol::unblock(move || {
-            auth::acquire_coding_plan_admission(&storage, &scope_hash, slots)
+            auth::acquire_coding_plan_admission(&registry, &storage, &scope_hash, slots)
         })
         .await?;
         debug!(
-            process_instance_nonce = process_instance_nonce(),
+            process_instance_nonce = self.process_instance_nonce,
             attempt_nonce,
             phase = "request_admission",
             slot = admission.slot(),
@@ -1130,7 +1137,7 @@ impl OpenAi {
             if stale || send_auth.generation != self.auth_generation.load(Ordering::Acquire) {
                 if let Some(connection) = scoped.as_ref() {
                     debug!(
-                        process_instance_nonce = process_instance_nonce(),
+                        process_instance_nonce = self.process_instance_nonce,
                         attempt_nonce,
                         phase = "auth_pre_send",
                         socket_age_secs = connection.socket.age().as_secs(),
@@ -1166,7 +1173,7 @@ impl OpenAi {
                 .await;
             match &result {
                 Ok(_) => debug!(
-                    process_instance_nonce = process_instance_nonce(),
+                    process_instance_nonce = self.process_instance_nonce,
                     attempt_nonce,
                     phase = "response_complete",
                     socket_age_secs = connection.socket.age().as_secs(),
@@ -1174,7 +1181,7 @@ impl OpenAi {
                     "OpenAI Responses WebSocket attempt completed"
                 ),
                 Err(error) => debug!(
-                    process_instance_nonce = process_instance_nonce(),
+                    process_instance_nonce = self.process_instance_nonce,
                     attempt_nonce,
                     phase = ?error.delivery.phase,
                     socket_age_secs = connection.socket.age().as_secs(),
@@ -1888,7 +1895,7 @@ impl OpenAi {
             if let Some(delay) = coding_plan_admission_retry_delay(&attempt, admission_retries) {
                 admission_retries += 1;
                 debug!(
-                    process_instance_nonce = process_instance_nonce(),
+                    process_instance_nonce = self.process_instance_nonce,
                     attempt_nonce,
                     phase = "request_admission_retry",
                     retry_delay_ms = delay.as_millis(),
@@ -2016,7 +2023,7 @@ impl OpenAi {
         if !reusable {
             if let Some(scoped) = connection.as_ref() {
                 debug!(
-                    process_instance_nonce = process_instance_nonce(),
+                    process_instance_nonce = self.process_instance_nonce,
                     attempt_nonce,
                     phase = "socket_reuse_check",
                     socket_age_secs = scoped.socket.age().as_secs(),
@@ -2042,8 +2049,8 @@ impl OpenAi {
     ) -> Option<ResponseOperationSlot> {
         let session_id = canonical_session_key(session_id?);
         let storage_path = self.response_state_storage.as_ref()?.path().to_path_buf();
-        let mut operations = RESPONSE_OPERATIONS
-            .get_or_init(|| Mutex::new(HashMap::new()))
+        let mut operations = self
+            .response_operations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = (storage_path, session_id);
@@ -2782,7 +2789,7 @@ mod tests {
     #[test]
     fn api_responses_reject_unsupported_raw_breakpoints() {
         let opts = clamp_responses_cache_breakpoints(
-            &Model::from_spec("openai/gpt-5.5").unwrap(),
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.5").unwrap(),
             RequestOptions {
                 message_cache_breakpoints: 2,
                 openai_prompt_cache_mode: Some(OpenAiPromptCacheMode::Explicit),
@@ -2961,7 +2968,11 @@ mod tests {
             OpenAiOptions::codex(),
         )
         .unwrap();
-        let mut model = Model::from_spec(&format!("openai/{model_id}")).unwrap();
+        let mut model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            &format!("openai/{model_id}"),
+        )
+        .unwrap();
 
         provider.adjust_model(&mut model);
 
@@ -2975,7 +2986,11 @@ mod tests {
             headers: vec![("authorization".into(), "Bearer key".into())],
         }));
         let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
-        let mut model = Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let mut model = Model::from_spec(
+            &crate::model_registry::test_registry(),
+            "openai/gpt-5.6-luna",
+        )
+        .unwrap();
         let expected = model.context_window;
 
         provider.adjust_model(&mut model);
@@ -2990,10 +3005,12 @@ mod tests {
             crate::providers::Timeouts::default(),
         )
         .unwrap();
-        assert!(official.supports_hosted_tool_search(&Model::from_spec("openai/gpt-5.6").unwrap()));
-        assert!(
-            !official.supports_hosted_tool_search(&Model::from_spec("openai/gpt-4.1").unwrap())
-        );
+        assert!(official.supports_hosted_tool_search(
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap()
+        ));
+        assert!(!official.supports_hosted_tool_search(
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-4.1").unwrap()
+        ));
 
         let custom = OpenAi::with_auth(
             Arc::new(Mutex::new(ResolvedAuth {
@@ -3003,7 +3020,9 @@ mod tests {
             crate::providers::Timeouts::default(),
         )
         .unwrap();
-        assert!(!custom.supports_hosted_tool_search(&Model::from_spec("openai/gpt-5.6").unwrap()));
+        assert!(!custom.supports_hosted_tool_search(
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.6").unwrap()
+        ));
     }
 
     #[test]
@@ -3480,7 +3499,11 @@ mod tests {
             );
             session.id = session_id.id();
             session.save(&storage).unwrap();
-            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec(
+                &crate::model_registry::test_registry(),
+                "codex/gpt-5.3-codex",
+            )
+            .unwrap();
             let tools = serde_json::json!([]);
             let (event_tx, _event_rx) = flume::unbounded();
             let first_messages = vec![Message::user("hello".into())];
@@ -3768,7 +3791,7 @@ mod tests {
         );
         let opts = RequestOptions::default();
         let body = super::super::responses::build_body(
-            &Model::from_spec("openai/gpt-4.1").unwrap(),
+            &Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-4.1").unwrap(),
             &[Message::user("private history".into())],
             &System::from(""),
             &serde_json::json!([]),
@@ -3808,7 +3831,8 @@ mod tests {
                 crate::providers::Timeouts::default(),
             )
             .unwrap();
-            let model = Model::from_spec("openai/gpt-5.5").unwrap();
+            let model = Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.5")
+                .unwrap();
             let messages = vec![
                 Message::user("first".into()),
                 assistant("second"),
@@ -3875,7 +3899,8 @@ mod tests {
                 crate::providers::Timeouts::default(),
             )
             .unwrap();
-            let model = Model::from_spec("openai/gpt-5.5").unwrap();
+            let model = Model::from_spec(&crate::model_registry::test_registry(), "openai/gpt-5.5")
+                .unwrap();
             let (event_tx, _event_rx) = flume::unbounded();
 
             let result = provider
@@ -3991,17 +4016,12 @@ mod tests {
     }
 
     #[test]
-    fn response_operation_slot_is_reused_across_provider_instances() {
+    fn response_operation_slot_is_reused_per_provider_instance() {
         let temp_dir = TempDir::new().unwrap();
-        let first_provider = provider_with_response_storage(temp_dir.path());
-        let second_provider = provider_with_response_storage(temp_dir.path());
+        let provider = provider_with_response_storage(temp_dir.path());
         let session_id = SessionRef::generate();
-        let first = first_provider
-            .response_operation_slot(Some(&session_id))
-            .unwrap();
-        let second = second_provider
-            .response_operation_slot(Some(&session_id))
-            .unwrap();
+        let first = provider.response_operation_slot(Some(&session_id)).unwrap();
+        let second = provider.response_operation_slot(Some(&session_id)).unwrap();
 
         assert!(Arc::ptr_eq(&first, &second));
     }
@@ -4327,7 +4347,11 @@ mod tests {
                 },
             )
             .unwrap();
-            let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec(
+                &crate::model_registry::test_registry(),
+                "openai/gpt-5.3-codex",
+            )
+            .unwrap();
             let tools = serde_json::json!([]);
             let (event_tx, _) = flume::unbounded();
 
@@ -4881,7 +4905,11 @@ mod tests {
                 OpenAiOptions::codex(),
             )
             .unwrap();
-            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec(
+                &crate::model_registry::test_registry(),
+                "codex/gpt-5.3-codex",
+            )
+            .unwrap();
             let messages = [Message::user("hello".into())];
             let tools = serde_json::json!([]);
             let (first_tx, _) = flume::unbounded();
@@ -5077,7 +5105,11 @@ mod tests {
                 OpenAiOptions::codex(),
             )
             .unwrap();
-            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec(
+                &crate::model_registry::test_registry(),
+                "codex/gpt-5.3-codex",
+            )
+            .unwrap();
             let tools = serde_json::json!([]);
             let session = SessionRef::generate();
             let (event_tx, _) = flume::unbounded();
