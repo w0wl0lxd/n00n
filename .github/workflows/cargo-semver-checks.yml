@@ -1,13 +1,5 @@
 name: Cargo semver checks
 on:
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/**"
-      - "src/**"
-      - ".github/workflows/cargo-semver-checks.yml"
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,9 +7,10 @@ jobs:
   semver:
     name: Semver checks
     runs-on: ubuntu-latest
-    # cargo-semver-checks currently fails on the gix dependency tree because
-    # gix-protocol 0.64.0 depends on a yanked bisync release. It is kept as a
-    # non-blocking check until that upstream situation is resolved.
+    # cargo-semver-checks is not run on pull requests because the nightly
+    # toolchain (nightly-2026-08-20) emits rustdoc JSON format v61, which is
+    # not supported by current cargo-semver-checks releases. Run it manually
+    # once a compatible release is available.
     continue-on-error: true
     steps:
       - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
@@ -36,7 +29,7 @@ jobs:
           tool: cargo-semver-checks
       - name: Check semver
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_REF: main
         # Excluding crates that transitively depend on gix, to avoid the yanked
         # bisync release used by gix-protocol 0.64.0.
         run: |
