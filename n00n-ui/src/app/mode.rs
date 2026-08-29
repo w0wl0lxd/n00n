@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::agent::QueuedMessage;
 use crate::components::Status;
-use crate::theme;
+use crate::theme::ThemeEngine;
 use n00n_agent::{AgentInput, AgentMode};
 use n00n_storage::StateDir;
 use n00n_storage::plans;
@@ -23,10 +23,10 @@ pub(crate) enum PlanTrigger {
 }
 
 impl Mode {
-    pub(crate) fn color(self) -> Color {
+    pub(crate) fn color(self, theme_engine: &ThemeEngine) -> Color {
         match self {
-            Self::Build => theme::current().mode_build,
-            Self::Plan => theme::current().mode_plan,
+            Self::Build => theme_engine.current().mode_build,
+            Self::Plan => theme_engine.current().mode_plan,
         }
     }
 }
@@ -161,15 +161,15 @@ impl App {
 
     pub(super) fn effective_mode_color(&self) -> Color {
         if self.is_bash_input() {
-            theme::current().mode_bash
+            self.theme_engine.current().mode_bash
         } else {
-            self.state.mode.color()
+            self.state.mode.color(&self.theme_engine)
         }
     }
 
     pub(super) fn separator_style(&self) -> Style {
         if self.status == Status::Streaming {
-            theme::current().input_border
+            self.theme_engine.current().input_border
         } else {
             Style::new().fg(self.effective_mode_color())
         }

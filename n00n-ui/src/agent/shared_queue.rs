@@ -19,7 +19,7 @@ use n00n_agent::{
 
 use crate::components::input::Submission;
 use crate::components::queue_panel::QueueEntry;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 const COMPACT_LABEL: &str = "/compact";
 const STEERING_PREFIX: &str = "↪ ";
@@ -89,7 +89,7 @@ impl QueueItem {
         }
     }
 
-    fn as_queue_entry(&self) -> QueueEntry<'static> {
+    fn as_queue_entry(&self, theme_engine: &ThemeEngine) -> QueueEntry<'static> {
         match self {
             Self::Message { text, delivery, .. } => QueueEntry {
                 text: Cow::Owned(match delivery {
@@ -97,18 +97,19 @@ impl QueueItem {
                     Delivery::Steering => format!("{STEERING_PREFIX}{text}"),
                     Delivery::Immediate => format!("{IMMEDIATE_PREFIX}{text}"),
                 }),
-                color: theme::current().foreground,
+                color: theme_engine.current().foreground,
             },
             Self::Compact { .. } => QueueEntry {
                 text: Cow::Borrowed(COMPACT_LABEL),
-                color: theme::current()
+                color: theme_engine
+                    .current()
                     .queue
                     .fg
-                    .unwrap_or_else(|| theme::current().foreground),
+                    .unwrap_or_else(|| theme_engine.current().foreground),
             },
             Self::DirectTool { tool, .. } => QueueEntry {
                 text: Cow::Owned(tool.clone()),
-                color: theme::current().foreground,
+                color: theme_engine.current().foreground,
             },
         }
     }
@@ -153,6 +154,7 @@ pub(crate) struct QueueSender {
     items: Items,
     generation: Arc<AtomicU64>,
     notify_tx: flume::Sender<()>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 pub(crate) struct QueueReceiver {
@@ -161,7 +163,7 @@ pub(crate) struct QueueReceiver {
     notify_rx: flume::Receiver<()>,
 }
 
-pub(crate) fn queue() -> (QueueSender, QueueReceiver) {
+pub(crate) fn queue(theme_engine: Arc<ThemeEngine>) -> (QueueSender, QueueReceiver) {
     let (notify_tx, notify_rx) = flume::bounded(1);
     let items: Items = Arc::new(Mutex::new(VecDeque::new()));
     let generation = Arc::new(AtomicU64::new(0));
@@ -170,6 +172,7 @@ pub(crate) fn queue() -> (QueueSender, QueueReceiver) {
             items: Arc::clone(&items),
             generation: Arc::clone(&generation),
             notify_tx,
+            theme_engine,
         },
         QueueReceiver {
             items,
@@ -348,7 +351,7 @@ impl QueueSender {
         lock(&self.items)
             .iter()
             .filter(|item| item.visible_in_panel())
-            .map(QueueItem::as_queue_entry)
+            .map(|item| item.as_queue_entry(self.theme_engine.as_ref()))
             .collect()
     }
 }
@@ -420,6 +423,12 @@ mod tests {
     use n00n_agent::{AgentMode, ThinkingConfig};
     use test_case::test_case;
 
+    fn test_engine() -> Arc<ThemeEngine> {
+        Arc::new(ThemeEngine::new(
+            ThemeEngine::load_by_name("dracula").unwrap(),
+        ))
+    }
+
     fn msg(displayed: bool) -> QueueItem {
         QueueItem::Message {
             text: "t".into(),
@@ -449,7 +458,7 @@ mod tests {
     #[test_case(msg(true),                        false ; "displayed_message_hidden")]
     #[test_case(QueueItem::Compact { run_id: 0 }, true  ; "compact_visible")]
     fn panel_visibility(item: QueueItem, visible: bool) {
-        let (tx, _rx) = queue();
+        let (tx, _rx) = queue(test_engine());
         tx.push(item);
         let expected = usize::from(visible);
         assert_eq!(tx.panel_len(), expected);
@@ -457,7 +466,7 @@ mod tests {
     }
     #[test]
     fn poll_respects_delivery_points_and_fifo_within_ready_messages() {
-        let (tx, rx) = queue();
+        let (tx, rx) = queue(test_engine());
         let queued = |text: &str, delivery| QueueItem::Message {
             text: text.into(),
             image_count: 0,
@@ -519,7 +528,7 @@ mod tests {
 
     #[test]
     fn stale_drain_generation_is_rejected_after_new_work() {
-        let (tx, rx) = queue();
+        let (tx, rx) = queue(test_engine());
         tx.push(msg(false));
         assert!(rx.pop().is_some());
         let drained = rx.drain_generation().expect("drained generation");
@@ -534,7 +543,7 @@ mod tests {
 
     #[test]
     fn direct_tools_are_available_for_persistence() {
-        let (tx, _rx) = queue();
+        let (tx, _rx) = queue(test_engine());
         tx.push(QueueItem::DirectTool {
             run_id: 7,
             tool: "task".into(),
@@ -550,7 +559,7 @@ mod tests {
 
     #[test]
     fn promoted_steering_is_available_at_safe_point() {
-        let (tx, rx) = queue();
+        let (tx, rx) = queue(test_engine());
         tx.push(msg(false));
         if let Some(QueueItem::Message { delivery, .. }) = lock(&tx.items).back_mut() {
             *delivery = Delivery::Steering;

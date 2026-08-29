@@ -718,7 +718,7 @@ impl App {
         let (Some(eh), Some(tx)) = (&self.lua_event_handle, &self.restore_event_tx) else {
             return;
         };
-        let theme_gen = crate::theme::generation();
+        let theme_gen = self.theme_engine.generation();
         for mut item in items {
             item.theme_gen = Some(theme_gen);
             eh.request_restore(item, tx.clone());

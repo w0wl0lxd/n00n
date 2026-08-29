@@ -40,7 +40,6 @@ use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::permission_prompt::PermissionPrompt;
 use crate::components::plan_form::{PlanForm, PlanFormAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
-use crate::components::scrollbar;
 use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::status_bar::StatusBar;
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
@@ -69,6 +68,7 @@ use n00n_storage::model::persist_model;
 use n00n_storage::sessions::{RetentionBudget, StoredTokenUsage};
 
 use crate::storage_writer::StorageWriter;
+use crate::theme::ThemeEngine;
 use ratatui::layout::Position;
 use ratatui_image::picker::Picker;
 
@@ -310,6 +310,7 @@ pub struct App {
     subagent_answers: HashMap<String, flume::Sender<String>>,
     subagent_prompts: HashMap<String, flume::Sender<SubagentPrompt>>,
     pub(crate) model_registry: Arc<RwLock<ModelRegistry>>,
+    pub(crate) theme_engine: Arc<ThemeEngine>,
 }
 
 pub struct AppInit {
@@ -330,6 +331,7 @@ pub struct AppInit {
     pub custom_commands: Arc<[n00n_agent::command::CustomCommand]>,
     pub picker: Arc<Picker>,
     pub model_registry: Arc<RwLock<ModelRegistry>>,
+    pub theme_engine: Arc<ThemeEngine>,
 }
 
 impl App {
@@ -353,8 +355,9 @@ impl App {
             custom_commands,
             picker,
             model_registry,
+            theme_engine,
         } = init;
-        scrollbar::set_enabled(ui_config.scrollbar);
+        theme_engine.set_scrollbar_enabled(ui_config.scrollbar);
         storage_writer.register_loaded(&session);
         let state = SessionState::from_session(session, &model, &storage, &model_registry);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
@@ -438,6 +441,7 @@ impl App {
             subagent_answers: HashMap::new(),
             subagent_prompts: HashMap::new(),
             model_registry,
+            theme_engine,
         };
         app.model_picker
             .set_recents(n00n_storage::model::read_recents(&app.storage));

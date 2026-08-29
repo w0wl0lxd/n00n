@@ -8,7 +8,6 @@ use crate::components::split_layout::{MIN_CHAT_ROWS, SplitLayout, carve};
 use crate::components::status_bar::{StatusBarContext, UsageStats};
 use crate::components::usage_modal::{UsageModalContext, attributed_costs};
 use crate::selection::{self, SelectableZone, SelectionZone, ZoneRegistry};
-use crate::theme;
 use n00n_lua::Split;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -36,7 +35,7 @@ impl App {
         let layout = self.compute_layout(frame.area(), form_visible);
         let render_chat = self.resolve_render_chat();
 
-        Self::render_background(frame);
+        self.render_background(frame);
         self.render_messages(frame, &layout, render_chat);
         self.render_bottom_panel(frame, &layout);
         self.render_splits(frame, &layout);
@@ -140,9 +139,9 @@ impl App {
         }
     }
 
-    fn render_background(frame: &mut Frame) {
-        let bg =
-            Block::default().style(ratatui::style::Style::new().bg(theme::current().background));
+    fn render_background(&self, frame: &mut Frame) {
+        let bg = Block::default()
+            .style(ratatui::style::Style::new().bg(self.theme_engine.current().background));
         bg.render(frame.area(), frame.buffer_mut());
     }
 
@@ -443,7 +442,7 @@ impl App {
         let mut spans = Vec::new();
         for (_, pairs) in &snap.entries {
             for (text, style_name) in pairs {
-                let style = theme::style_by_name(style_name);
+                let style = self.theme_engine.style_by_name(style_name);
                 spans.push(Span::styled(text.clone(), style));
             }
         }
