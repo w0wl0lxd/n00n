@@ -255,37 +255,33 @@ fn search_nodes(
     query: &str,
     limit: usize,
 ) -> Result<Vec<GraphNode>, CodegraphError> {
+    let limit_i64 = i64::try_from(limit).map_err(|_| CodegraphError::Cli {
+        message: String::from("result limit out of range"),
+    })?;
+
     let fts_query = fts_query(query);
-    let mut stmt = conn
-        .prepare(
-            "SELECT n.id, n.name, n.qualified_name, n.file_path, n.start_line, n.end_line, \
-             n.signature, n.docstring \
-             FROM nodes_fts fts \
-             JOIN nodes n ON n.id = fts.id \
-             WHERE nodes_fts MATCH ?1 \
-             LIMIT ?2",
-        )
-        .map_err(|source| CodegraphError::Sqlite { source })?;
+    if !fts_query.is_empty() {
+        let fts_res: Result<Vec<GraphNode>, rusqlite::Error> = (|| {
+            let mut stmt = conn.prepare(
+                "SELECT n.id, n.name, n.qualified_name, n.file_path, n.start_line, n.end_line, \
+                 n.signature, n.docstring \
+                 FROM nodes_fts fts \
+                 JOIN nodes n ON n.id = fts.id \
+                 WHERE nodes_fts MATCH ?1 \
+                 LIMIT ?2",
+            )?;
+            let rows = stmt.query_map((fts_query.as_str(), limit_i64), map_graph_node)?;
+            let mut nodes = Vec::new();
+            for row in rows {
+                nodes.push(row?);
+            }
+            Ok(nodes)
+        })();
 
-    let rows = stmt
-        .query_map(
-            (
-                fts_query.as_str(),
-                i64::try_from(limit).map_err(|_| CodegraphError::Cli {
-                    message: String::from("result limit out of range"),
-                })?,
-            ),
-            map_graph_node,
-        )
-        .map_err(|source| CodegraphError::Sqlite { source })?;
-
-    let mut nodes = Vec::new();
-    for row in rows {
-        nodes.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
-    }
-
-    if !nodes.is_empty() {
-        return Ok(nodes);
+        match fts_res {
+            Ok(nodes) if !nodes.is_empty() => return Ok(nodes),
+            _ => {}
+        }
     }
 
     let pattern = like_pattern(query.trim());
@@ -299,17 +295,10 @@ fn search_nodes(
         .map_err(|source| CodegraphError::Sqlite { source })?;
 
     let fallback_rows = fallback
-        .query_map(
-            (
-                pattern.as_str(),
-                i64::try_from(limit).map_err(|_| CodegraphError::Cli {
-                    message: String::from("result limit out of range"),
-                })?,
-            ),
-            map_graph_node,
-        )
+        .query_map((pattern.as_str(), limit_i64), map_graph_node)
         .map_err(|source| CodegraphError::Sqlite { source })?;
 
+    let mut nodes = Vec::new();
     for row in fallback_rows {
         nodes.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
     }
@@ -468,11 +457,9 @@ fn line_u32(value: i64) -> rusqlite::Result<u32> {
 
 fn fts_query(raw: &str) -> String {
     raw.split_whitespace()
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let cleaned = part.replace('"', "");
-            format!("\"{cleaned}\"")
-        })
+        .map(|part| part.replace('"', ""))
+        .filter(|cleaned| !cleaned.is_empty())
+        .map(|cleaned| format!("\"{cleaned}\""))
         .collect::<Vec<_>>()
         .join(" OR ")
 }
@@ -740,6 +727,35 @@ mod tests {
     #[test]
     fn fts_query_quotes_terms() {
         assert_eq!(fts_query("session restore"), "\"session\" OR \"restore\"");
+    }
+
+    #[test]
+    fn fts_query_filters_quotes_and_empty_terms() {
+        assert_eq!(fts_query("\"\""), "");
+        assert_eq!(fts_query("\""), "");
+        assert_eq!(fts_query("foo \"\" bar"), "\"foo\" OR \"bar\"");
+        assert_eq!(fts_query("   "), "");
+    }
+
+    #[test]
+    fn search_nodes_handles_quote_only_query_gracefully() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        write_fixture(&conn);
+
+        let nodes_quote = search_nodes(&conn, "\"", 5).expect("quote search");
+        assert!(nodes_quote.is_empty());
+
+        let nodes_double_quotes = search_nodes(&conn, "\"\"", 5).expect("double quote search");
+        assert!(nodes_double_quotes.is_empty());
+    }
+
+    #[test]
+    fn search_nodes_handles_malformed_fts_queries() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        write_fixture(&conn);
+
+        let result = search_nodes(&conn, "AND OR NOT NEAR", 5);
+        assert!(result.is_ok());
     }
 
     /// The fixture previously declared `edges(source_id, target_id)` while the
