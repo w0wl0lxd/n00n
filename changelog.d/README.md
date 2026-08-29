@@ -31,7 +31,7 @@ Fixed the `/tasks` window losing focus after a subagent finished.
 
 Not every PR needs a fragment. The `changelog.yml` CI check is skipped when the
 PR is labeled `no-changelog`, `dependencies`, or `ci`, or when no source files
-(`src/`, `n00n-*/src/`, `plugins/`) changed.
+(`src/`, `crates/n00n-*/src/`, `plugins/`) changed.
 
 ## Building
 
