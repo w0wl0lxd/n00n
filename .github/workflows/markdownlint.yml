@@ -27,10 +27,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: 'jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea'  # v4.2.1
+      - uses: 'DavidAnson/markdownlint-cli2-action@28a7e8bdb81fd8ad675883de92c758ab78e0ce10'  # v24
         with:
-          install_args: 'npm:markdownlint-cli2'
-
-      - name: Lint Markdown files
-        run: |
-          markdownlint-cli2 "*.md" "site/**/*.md" "crates/**/*.md"
+          globs: |
+            *.md
+            site/**/*.md
+            crates/**/*.md

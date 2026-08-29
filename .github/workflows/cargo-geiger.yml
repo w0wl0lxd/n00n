@@ -31,14 +31,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: 'dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'  # master
+        with:
+          toolchain: nightly-2026-08-20
+
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
         with:
           shared-key: "linux-geiger"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: 'jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea'  # v4.2.1
+      - uses: 'taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80'  # v2.69.4
         with:
-          install_args: 'cargo:cargo-geiger'
+          tool: cargo-geiger
 
       - name: Run cargo geiger
         run: cargo geiger --all --offline

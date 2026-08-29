@@ -20,3 +20,7 @@ jobs:
         with:
           fail-on-severity: high
           comment-summary-in-pr: true
+          # Reusable workflows like slsa-github-generator report Null/unknown
+          # licenses and cannot be meaningfully checked by this action. License
+          # compliance for Rust dependencies is covered by cargo-deny.
+          license-check: false

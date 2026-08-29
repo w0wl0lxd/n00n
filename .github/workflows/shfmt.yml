@@ -39,4 +39,4 @@ jobs:
             -not -path './.tools/*' \
             -not -path './result/*' \
             -print0 |
-            xargs -0 shfmt -d -s -i 2 -ci
+            xargs -0 -r mise x shfmt -- shfmt -d -s -i 2 -ci
