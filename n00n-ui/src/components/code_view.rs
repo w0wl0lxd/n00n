@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::highlight::{fallback_span, highlight_line};
 use crate::markdown::{should_truncate, truncation_notice};
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use n00n_agent::diff::{DiffLine, DiffSpan, compute_hunks};
 use n00n_agent::types::{TodoItem, TodoPriority, TodoStatus};
@@ -52,16 +52,20 @@ pub(crate) fn telemetry_text(telemetry: &ToolTelemetry) -> String {
     out
 }
 
-fn todo_status_style(status: TodoStatus) -> Style {
+fn todo_status_style(status: TodoStatus, theme_engine: &Arc<ThemeEngine>) -> Style {
     match status {
-        TodoStatus::Completed => theme::current().tool_success,
-        TodoStatus::Cancelled => theme::current().tool_error,
-        TodoStatus::InProgress => theme::current().tool_annotation,
-        TodoStatus::Pending => theme::current().tool_dim,
+        TodoStatus::Completed => theme_engine.current().tool_success,
+        TodoStatus::Cancelled => theme_engine.current().tool_error,
+        TodoStatus::InProgress => theme_engine.current().tool_annotation,
+        TodoStatus::Pending => theme_engine.current().tool_dim,
     }
 }
 
-fn render_todo_list(items: &[TodoItem], max_lines: usize) -> (Vec<Line<'static>>, bool) {
+fn render_todo_list(
+    items: &[TodoItem],
+    max_lines: usize,
+    theme_engine: &Arc<ThemeEngine>,
+) -> (Vec<Line<'static>>, bool) {
     if items.is_empty() {
         return (Vec::new(), false);
     }
@@ -79,24 +83,28 @@ fn render_todo_list(items: &[TodoItem], max_lines: usize) -> (Vec<Line<'static>>
         let text = format!("{} {} · {}", item.status.marker(), priority, item.content);
         lines.push(Line::from(Span::styled(
             text,
-            todo_status_style(item.status),
+            todo_status_style(item.status, theme_engine),
         )));
         budget -= 1;
     }
     let hidden = items.len().saturating_sub(lines.len());
     let truncated = should_truncate(hidden);
     if truncated {
-        lines.push(truncation_line(hidden));
+        lines.push(truncation_line(hidden, theme_engine));
     }
     (lines, truncated)
 }
 
-fn render_details(output: Option<&ToolOutput>, limit: usize) -> (Vec<Line<'static>>, bool) {
+fn render_details(
+    output: Option<&ToolOutput>,
+    limit: usize,
+    theme_engine: &Arc<ThemeEngine>,
+) -> (Vec<Line<'static>>, bool) {
     let mut content: Vec<Line<'static>> = Vec::new();
     if let Some(ToolOutput::Image { source, .. }) = output {
         content.push(Line::from(Span::styled(
             "Image source:",
-            theme::current().tool_annotation,
+            theme_engine.current().tool_annotation,
         )));
         content.push(Line::from(Span::styled(
             format!(
@@ -104,7 +112,7 @@ fn render_details(output: Option<&ToolOutput>, limit: usize) -> (Vec<Line<'stati
                 source.media_type.mime(),
                 source.data.len()
             ),
-            theme::current().tool,
+            theme_engine.current().tool,
         )));
     }
     if content.is_empty() {
@@ -118,26 +126,26 @@ fn render_details(output: Option<&ToolOutput>, limit: usize) -> (Vec<Line<'stati
     let display_count = if truncated { capped } else { content.len() };
     let mut lines: Vec<Line<'static>> = content.into_iter().take(display_count).collect();
     if truncated {
-        lines.push(truncation_line(hidden));
+        lines.push(truncation_line(hidden, theme_engine));
     }
     (lines, truncated)
 }
 
-fn gutter(nr_str: &str) -> Span<'static> {
-    Span::styled(format!("{nr_str} "), theme::current().diff_line_nr)
+fn gutter(nr_str: &str, theme_engine: &Arc<ThemeEngine>) -> Span<'static> {
+    Span::styled(format!("{nr_str} "), theme_engine.current().diff_line_nr)
 }
 
-fn gap_ellipsis() -> Line<'static> {
+fn gap_ellipsis(theme_engine: &Arc<ThemeEngine>) -> Line<'static> {
     Line::from(vec![
-        Span::styled("...".to_owned(), theme::current().tool_dim),
+        Span::styled("...".to_owned(), theme_engine.current().tool_dim),
         Span::raw("  ".to_owned()),
     ])
 }
 
-fn truncation_line(truncated: usize) -> Line<'static> {
+fn truncation_line(truncated: usize, theme_engine: &Arc<ThemeEngine>) -> Line<'static> {
     Line::from(Span::styled(
         truncation_notice(truncated),
-        theme::current().tool_dim,
+        theme_engine.current().tool_dim,
     ))
 }
 
@@ -155,6 +163,7 @@ fn render_code(
     code_lines: &[String],
     total_count: usize,
     max_lines: usize,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> (Vec<Line<'static>>, bool) {
     let capped = code_lines.len().min(max_lines);
     let hidden = total_count.saturating_sub(capped);
@@ -173,17 +182,17 @@ fn render_code(
         .enumerate()
         .map(|(i, text)| {
             let nr = start_line + i;
-            let mut spans = vec![gutter(&format!("{nr:>w$}"))];
+            let mut spans = vec![gutter(&format!("{nr:>w$}"), theme_engine)];
             match &mut hl {
                 Some(h) => spans.extend(highlight_spans(h, text)),
-                None => spans.push(fallback_span(text)),
+                None => spans.push(fallback_span(text, theme_engine.current().code_block)),
             }
             Line::from(spans)
         })
         .collect();
 
     if has_truncation {
-        lines.push(truncation_line(hidden));
+        lines.push(truncation_line(hidden, theme_engine));
     }
     (lines, has_truncation)
 }
@@ -254,6 +263,7 @@ fn render_diff(
     before: &str,
     after: &str,
     theme: &Arc<Theme>,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Vec<Line<'static>> {
     let hunks = compute_hunks(before, after);
     let Some(last) = hunks.last() else {
@@ -276,7 +286,7 @@ fn render_diff(
     let mut lines = Vec::new();
     for (i, hunk) in hunks.iter().enumerate() {
         if i > 0 {
-            lines.push(gap_ellipsis());
+            lines.push(gap_ellipsis(theme_engine));
         }
         if let Some((before, after)) = walkers.as_mut() {
             before.skip_to(hunk.before_start);
@@ -285,15 +295,25 @@ fn render_diff(
 
         let mut line_nr = hunk.before_start;
         for dl in &hunk.lines {
-            lines.push(render_hunk_line(dl, walkers.as_mut(), &mut line_nr, w));
+            lines.push(render_hunk_line(
+                dl,
+                walkers.as_mut(),
+                &mut line_nr,
+                w,
+                theme_engine,
+            ));
         }
     }
 
     lines
 }
 
-fn numbered_gutter(line_nr: &mut usize, w: usize) -> Span<'static> {
-    let span = gutter(&format!("{line_nr:>w$}"));
+fn numbered_gutter(
+    line_nr: &mut usize,
+    w: usize,
+    theme_engine: &Arc<ThemeEngine>,
+) -> Span<'static> {
+    let span = gutter(&format!("{line_nr:>w$}"), theme_engine);
     *line_nr += 1;
     span
 }
@@ -305,49 +325,56 @@ fn render_hunk_line(
     walkers: Option<&mut (FileWalker<'_>, FileWalker<'_>)>,
     line_nr: &mut usize,
     w: usize,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Line<'static> {
-    let theme = theme::current();
+    let theme = theme_engine.current();
     match dl {
         DiffLine::Unchanged(t) => {
             let after_spans = walkers.and_then(|(before, after)| {
                 before.skip();
                 after.highlight_next()
             });
-            let mut spans = vec![numbered_gutter(line_nr, w), Span::raw("  ")];
-            spans.extend(syntax_to_spans(after_spans, t));
+            let mut spans = vec![numbered_gutter(line_nr, w, theme_engine), Span::raw("  ")];
+            spans.extend(syntax_to_spans(after_spans, t, theme_engine));
             Line::from(spans)
         }
         DiffLine::Removed(ds) => {
             let before_spans = walkers.and_then(|(before, _)| before.highlight_next());
-            let mut spans = vec![numbered_gutter(line_nr, w)];
+            let mut spans = vec![numbered_gutter(line_nr, w, theme_engine)];
             spans.extend(diff_change_spans(
                 "- ",
                 ds,
                 before_spans,
                 theme.diff_old,
                 theme.diff_old_emphasis,
+                theme_engine,
             ));
             Line::from(spans)
         }
         DiffLine::Added(ds) => {
             let after_spans = walkers.and_then(|(_, after)| after.highlight_next());
-            let mut spans = vec![gutter(&" ".repeat(w))];
+            let mut spans = vec![gutter(&" ".repeat(w), theme_engine)];
             spans.extend(diff_change_spans(
                 "+ ",
                 ds,
                 after_spans,
                 theme.diff_new,
                 theme.diff_new_emphasis,
+                theme_engine,
             ));
             Line::from(spans)
         }
     }
 }
 
-fn syntax_to_spans(syntax: Option<Vec<Span<'static>>>, text: &str) -> Vec<Span<'static>> {
+fn syntax_to_spans(
+    syntax: Option<Vec<Span<'static>>>,
+    text: &str,
+    theme_engine: &Arc<ThemeEngine>,
+) -> Vec<Span<'static>> {
     match syntax {
         Some(s) => s,
-        None => vec![fallback_span(text)],
+        None => vec![fallback_span(text, theme_engine.current().code_block)],
     }
 }
 
@@ -357,10 +384,11 @@ fn diff_change_spans(
     syntax: Option<Vec<Span<'static>>>,
     base: Style,
     emph: Style,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         prefix,
-        base.patch(theme::current().code_block),
+        base.patch(theme_engine.current().code_block),
     )];
     if let Some(syn) = syntax {
         spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
@@ -368,7 +396,7 @@ fn diff_change_spans(
         let full: String = ds.iter().map(|s| s.text.as_str()).collect();
         spans.push(Span::styled(
             n00n_highlight::normalize_text(&full),
-            base.patch(theme::current().code_block),
+            base.patch(theme_engine.current().code_block),
         ));
     }
     spans
@@ -378,6 +406,7 @@ fn render_grep_results(
     entries: &[GrepFileEntry],
     max_lines: usize,
     highlight: bool,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> (Vec<Line<'static>>, bool) {
     let mut out = Vec::new();
     let mut budget = max_lines;
@@ -398,7 +427,7 @@ fn render_grep_results(
         .unwrap_or_else(|| 1);
     let w = nr_width(global_max_nr);
     let multi = entries.len() > 1;
-    let dim = theme::current().tool_dim;
+    let dim = theme_engine.current().tool_dim;
 
     for entry in entries {
         if budget == 0 {
@@ -408,7 +437,7 @@ fn render_grep_results(
         if multi {
             out.push(Line::from(Span::styled(
                 entry.path.clone(),
-                theme::current().tool_path,
+                theme_engine.current().tool_path,
             )));
         }
 
@@ -427,14 +456,14 @@ fn render_grep_results(
                 if budget == 0 {
                     break;
                 }
-                let mut spans = vec![gutter(&format!("{:>w$}", line.line_nr))];
+                let mut spans = vec![gutter(&format!("{:>w$}", line.line_nr), theme_engine)];
                 let text_spans = if let Some(syn) = syntax {
                     highlight_spans(
                         &mut n00n_highlight::Highlighter::for_syntax(syn),
                         &line.text,
                     )
                 } else if line.is_match {
-                    vec![fallback_span(&line.text)]
+                    vec![fallback_span(&line.text, theme_engine.current().code_block)]
                 } else {
                     vec![Span::styled(line.text.clone(), dim)]
                 };
@@ -445,7 +474,7 @@ fn render_grep_results(
                     spans.extend(
                         text_spans
                             .into_iter()
-                            .map(|s| Span::styled(s.content, theme::dim_style(s.style, 0.3))),
+                            .map(|s| Span::styled(s.content, theme_engine.dim_style(s.style, 0.3))),
                     );
                 }
                 out.push(Line::from(spans));
@@ -460,7 +489,7 @@ fn render_grep_results(
     };
     let truncated = should_truncate(hidden);
     if truncated {
-        out.push(truncation_line(hidden));
+        out.push(truncation_line(hidden, theme_engine));
     }
     (out, truncated)
 }
@@ -470,8 +499,9 @@ pub(crate) fn render_instructions(
     lines: &mut Vec<Line<'static>>,
     max_lines: usize,
     highlight: bool,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> bool {
-    let dim = theme::current().tool_dim;
+    let dim = theme_engine.current().tool_dim;
     let multi = blocks.len() > 1;
     let mut rendered = Vec::new();
 
@@ -485,7 +515,14 @@ pub(crate) fn render_instructions(
 
         let code_lines: Vec<String> = block.content.lines().map(String::from).collect();
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_path(&block.path));
-        let (mut block_lines, _) = render_code(hl, 1, &code_lines, code_lines.len(), usize::MAX);
+        let (mut block_lines, _) = render_code(
+            hl,
+            1,
+            &code_lines,
+            code_lines.len(),
+            usize::MAX,
+            theme_engine,
+        );
         rendered.append(&mut block_lines);
     }
 
@@ -493,7 +530,7 @@ pub(crate) fn render_instructions(
     let truncated = should_truncate(hidden);
     if truncated {
         rendered.truncate(max_lines);
-        rendered.push(truncation_line(hidden));
+        rendered.push(truncation_line(hidden, theme_engine));
     }
     lines.extend(rendered);
     truncated
@@ -558,6 +595,7 @@ pub fn render_tool_content(
     output: Option<&ToolOutput>,
     highlight: bool,
     limits: RenderLimits,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> ToolContent {
     let mut lines = Vec::new();
     let mut truncation = SectionFlags::default();
@@ -574,7 +612,8 @@ pub fn render_tool_content(
             .collect();
         let total = code_lines.len();
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_token(language));
-        let (code_result, trunc) = render_code(hl, 1, &code_lines, total, limits.script);
+        let (code_result, trunc) =
+            render_code(hl, 1, &code_lines, total, limits.script, theme_engine);
         truncation.script = trunc;
         if trunc {
             truncation_actions.push(TruncationAction {
@@ -600,6 +639,7 @@ pub fn render_tool_content(
             code_lines,
             code_lines.len(),
             limits.output,
+            theme_engine,
         ),
         Some(ToolOutput::WriteCode {
             path,
@@ -611,6 +651,7 @@ pub fn render_tool_content(
             code_lines,
             code_lines.len(),
             limits.output,
+            theme_engine,
         ),
         Some(ToolOutput::Diff {
             path,
@@ -625,26 +666,32 @@ pub fn render_tool_content(
                 before,
                 after,
                 &theme,
+                theme_engine,
             );
             if let Some(tel) = telemetry {
                 diff_lines.push(Line::default());
                 diff_lines.push(Line::from(Span::styled(
                     telemetry_text(tel),
-                    theme::current().tool_annotation,
+                    theme_engine.current().tool_annotation,
                 )));
             }
             (diff_lines, false)
         }
         Some(ToolOutput::GrepResult { entries }) => {
-            render_grep_results(entries, limits.output, highlight)
+            render_grep_results(entries, limits.output, highlight, theme_engine)
         }
         Some(ToolOutput::Instructions { blocks }) => {
             let mut instruction_lines = Vec::new();
-            let trunc =
-                render_instructions(blocks, &mut instruction_lines, limits.output, highlight);
+            let trunc = render_instructions(
+                blocks,
+                &mut instruction_lines,
+                limits.output,
+                highlight,
+                theme_engine,
+            );
             (instruction_lines, trunc)
         }
-        Some(ToolOutput::TodoList(items)) => render_todo_list(items, limits.output),
+        Some(ToolOutput::TodoList(items)) => render_todo_list(items, limits.output, theme_engine),
         _ => (Vec::new(), false),
     };
     truncation.output = output_trunc;
@@ -662,7 +709,7 @@ pub fn render_tool_content(
         });
     }
     lines.extend(output_lines);
-    let (details_lines, details_trunc) = render_details(output, limits.details);
+    let (details_lines, details_trunc) = render_details(output, limits.details, theme_engine);
     if !lines.is_empty() && !details_lines.is_empty() {
         lines.push(Line::default());
     }
@@ -755,12 +802,14 @@ mod tests {
     #[test_case(6,  6,  6                    ; "one_hidden_shows_all")]
     fn render_code_line_count(input_lines: usize, total: usize, expected: usize) {
         let code_lines: Vec<String> = (0..input_lines).map(|i| format!("line {i}")).collect();
+        let theme_engine = crate::theme::test_engine();
         let (result, _) = render_code(
             Some(n00n_highlight::Highlighter::for_path("test.rs")),
             1,
             &code_lines,
             total,
             READ_MAX_LINES,
+            &theme_engine,
         );
         assert_eq!(result.len(), expected);
     }
@@ -811,12 +860,14 @@ mod tests {
         let before = "/*\nalpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\nOLD\ngolf\n*/\n";
         let after = "/*\nalpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\nNEW\ngolf\n*/\n";
         let theme = n00n_highlight::theme();
+        let theme_engine = crate::theme::test_engine();
 
         let lines = render_diff(
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
             &theme,
+            &theme_engine,
         );
 
         let expected = fg_in_context(
@@ -836,12 +887,14 @@ mod tests {
         let before = "/*\ndoc\n*/\nfn x() {}\n";
         let after = "/*\ndoc\nfn x() {}\n";
         let theme = n00n_highlight::theme();
+        let theme_engine = crate::theme::test_engine();
 
         let lines = render_diff(
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
             &theme,
+            &theme_engine,
         );
 
         let expected = fg_in_context("test.rs", "/*\ndoc\n", "fn x() {}", "fn", theme);
@@ -900,7 +953,13 @@ mod tests {
     #[test_case(&[("a.rs", &[1_usize,2])],                                1, 1  ; "one_hidden_match_no_truncation")]
     fn render_grep_line_count(files: &[(&str, &[usize])], max: usize, expected: usize) {
         let entries = grep_entries(files);
-        assert_eq!(render_grep_results(&entries, max, true).0.len(), expected);
+        let theme_engine = crate::theme::test_engine();
+        assert_eq!(
+            render_grep_results(&entries, max, true, &theme_engine)
+                .0
+                .len(),
+            expected
+        );
     }
 
     fn spans_text(spans: &[Span]) -> String {
@@ -914,7 +973,8 @@ mod tests {
     #[test]
     fn multi_file_grep_headers_and_alignment() {
         let entries = grep_entries(&[("a.rs", &[1]), ("b.rs", &[100])]);
-        let (lines, _) = render_grep_results(&entries, 10, false);
+        let theme_engine = crate::theme::test_engine();
+        let (lines, _) = render_grep_results(&entries, 10, false, &theme_engine);
 
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         assert!(texts.iter().any(|t| t.contains("a.rs")));
@@ -951,7 +1011,8 @@ mod tests {
             content: long_content,
         }];
         let mut lines = Vec::new();
-        let truncated = render_instructions(&blocks, &mut lines, max_lines, false);
+        let theme_engine = crate::theme::test_engine();
+        let truncated = render_instructions(&blocks, &mut lines, max_lines, false, &theme_engine);
         assert_eq!(truncated, expect_truncated);
         let has_notice = lines
             .iter()
@@ -966,7 +1027,14 @@ mod tests {
             content: String::new(),
         }];
         let mut lines = Vec::new();
-        let truncated = render_instructions(&blocks, &mut lines, MAX_INSTRUCTION_LINES, false);
+        let theme_engine = crate::theme::test_engine();
+        let truncated = render_instructions(
+            &blocks,
+            &mut lines,
+            MAX_INSTRUCTION_LINES,
+            false,
+            &theme_engine,
+        );
         assert!(!truncated);
         assert_eq!(lines.len(), 0);
     }
@@ -996,11 +1064,13 @@ mod tests {
 
     #[test]
     fn missing_structured_input_does_not_render_generic_content() {
+        let theme_engine = crate::theme::test_engine();
         let content = render_tool_content(
             None,
             None,
             false,
             RenderLimits::new(SectionFlags::default(), 10),
+            &theme_engine,
         );
 
         assert!(content.lines.is_empty());
@@ -1013,6 +1083,7 @@ mod tests {
             language: "python".into(),
             code: "print('hello')".into(),
         };
+        let theme_engine = crate::theme::test_engine();
         let content = render_tool_content(
             Some(&input),
             None,
@@ -1025,6 +1096,7 @@ mod tests {
                 },
                 10,
             ),
+            &theme_engine,
         );
         let text = content
             .lines
@@ -1045,7 +1117,8 @@ mod tests {
             text: "[image: pic.png 1KB]".into(),
             telemetry: None,
         };
-        let (lines, truncated) = render_details(Some(&output), usize::MAX);
+        let theme_engine = crate::theme::test_engine();
+        let (lines, truncated) = render_details(Some(&output), usize::MAX, &theme_engine);
         assert!(!truncated);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("Image source:"));

@@ -92,7 +92,6 @@ impl Mascot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme;
 
     fn accent() -> Color {
         Color::Rgb(120, 160, 255)

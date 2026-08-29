@@ -791,7 +791,6 @@ pub(crate) struct EventLoop<'t> {
     /// buffer on every idle tick. Resize also sets it.
     dirty: bool,
     truecolor: bool,
-    theme_engine: Arc<ThemeEngine>,
 }
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
@@ -1270,7 +1269,6 @@ impl<'t> EventLoop<'t> {
             _model_fetch_task: bg.task,
             dirty: true,
             truecolor,
-            theme_engine,
         })
     }
 

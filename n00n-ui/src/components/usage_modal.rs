@@ -106,7 +106,7 @@ impl UsageModal {
 
         self.warn_unresolved_models(ctx);
         let theme = self.theme_engine.current();
-        let lines = build_lines(ctx, &*theme);
+        let lines = build_lines(ctx, &theme);
 
         let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
@@ -601,7 +601,7 @@ mod tests {
     #[test_case(key(KeyCode::Esc, KeyModifiers::NONE) ; "esc_closes")]
     #[test_case(key(KeyCode::Char('c'), KeyModifiers::CONTROL) ; "ctrl_c_closes")]
     fn handle_key_closes(k: KeyEvent) {
-        let mut modal = UsageModal::new();
+        let mut modal = UsageModal::new(crate::theme::test_engine());
         modal.toggle();
         assert!(modal.is_open());
         modal.handle_key(k);
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn toggle_open_close() {
-        let mut modal = UsageModal::new();
+        let mut modal = UsageModal::new(crate::theme::test_engine());
         assert!(!modal.is_open());
         modal.toggle();
         assert!(modal.is_open());
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn handle_key_ignores_arbitrary() {
-        let mut modal = UsageModal::new();
+        let mut modal = UsageModal::new(crate::theme::test_engine());
         modal.toggle();
         modal.handle_key(key(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(modal.is_open());
@@ -643,7 +643,7 @@ mod tests {
             quota: None,
             model_registry: &n00n_providers::model_registry::test_registry(),
         };
-        let mut usage_modal = UsageModal::new();
+        let mut usage_modal = UsageModal::new(crate::theme::test_engine());
 
         usage_modal.warn_unresolved_models(&ctx);
         usage_modal.warn_unresolved_models(&ctx);

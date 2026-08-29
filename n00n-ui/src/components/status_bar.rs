@@ -479,7 +479,7 @@ mod tests {
 
         let backend = TestBackend::new(100, 1);
         let mut terminal = Terminal::new(backend).unwrap();
-        let bar = StatusBar::new(Duration::from_secs(1));
+        let bar = StatusBar::new(Duration::from_secs(1), crate::theme::test_engine());
         let usage = TokenUsage::default();
         let pricing = ModelPricing::default();
         terminal
@@ -538,7 +538,7 @@ mod tests {
 
         let backend = TestBackend::new(140, 1);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut bar = StatusBar::new(Duration::from_secs(1));
+        let mut bar = StatusBar::new(Duration::from_secs(1), crate::theme::test_engine());
         bar.set_cwd_branch_for_test("repo");
         let usage = TokenUsage {
             input: 70,
@@ -594,7 +594,7 @@ mod tests {
 
         let backend = TestBackend::new(60, 1);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut bar = StatusBar::new(Duration::from_secs(1));
+        let mut bar = StatusBar::new(Duration::from_secs(1), crate::theme::test_engine());
         bar.flash("Connected".into());
         let usage = TokenUsage {
             input: 999_999,
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn clear_expired_hint_removes_stale_flash() {
-        let mut bar = StatusBar::new(Duration::ZERO);
+        let mut bar = StatusBar::new(Duration::ZERO, crate::theme::test_engine());
         bar.flash("Copied".into());
         bar.clear_expired_hint();
         assert!(bar.flash.is_none());
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn clear_flash_removes_flash() {
-        let mut bar = StatusBar::new(Duration::from_secs(999));
+        let mut bar = StatusBar::new(Duration::from_secs(999), crate::theme::test_engine());
         bar.flash("Copied".into());
         bar.clear_flash();
         assert!(bar.flash.is_none());
@@ -686,7 +686,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         // Pin a short cwd label: ambient / macOS TempDir paths can exceed the
         // 80-col budget and clip the cache badge from the right pane.
-        let mut bar = StatusBar::new(Duration::from_secs(1));
+        let mut bar = StatusBar::new(Duration::from_secs(1), crate::theme::test_engine());
         bar.set_cwd_branch_for_test("cwd");
         let usage = TokenUsage::default();
         let pricing = ModelPricing::default();

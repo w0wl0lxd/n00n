@@ -1,5 +1,8 @@
 use super::segment::SegmentCache;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
+use crate::theme::ThemeEngine;
+
+use std::sync::Arc;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -10,6 +13,7 @@ pub(super) fn extract_selection_text(
     viewport_width: u16,
     sel: &Selection,
     msg_area: Rect,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> String {
     let (doc_start, doc_end) = sel.normalized();
     let width = viewport_width;
@@ -92,6 +96,7 @@ pub(super) fn extract_selection_text(
             u16::try_from(rel_end).unwrap_or_else(|_| u16::MAX),
             &mut out,
             &breaks,
+            theme_engine,
         );
     }
     out

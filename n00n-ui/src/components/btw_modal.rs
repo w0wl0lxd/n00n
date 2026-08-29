@@ -148,7 +148,7 @@ impl BtwModal {
             title: TITLE,
             width_percent: WIDTH_PERCENT,
             max_height_percent: MAX_HEIGHT_PERCENT,
-            theme_engine: self.theme_engine.clone(),
+            theme_engine: Arc::clone(&self.theme_engine),
         };
         let (popup, inner) = modal.render(frame, area, total);
         let padded = Rect {

@@ -3,7 +3,7 @@ use super::status_bar::format_tokens;
 use super::{DisplayMessage, ToolStatus, args_view};
 use crate::animation::{spinner_frame, spinner_str};
 use crate::cast;
-use crate::theme::{ThemeEngine, test_engine};
+use crate::theme::ThemeEngine;
 use code_view::RenderLimits;
 use code_view::{SectionFlags, TruncationAction};
 use n00n_config::ToolOutputLines;
@@ -537,7 +537,8 @@ impl ToolLineBuilder {
     }
 
     fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
-        let content = code_view::render_tool_content(input, output, false, self.limits);
+        let content =
+            code_view::render_tool_content(input, output, false, self.limits, &self.theme_engine);
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
         self.truncation.details |= content.truncation.details;
@@ -914,7 +915,7 @@ pub fn build_instructions_lines(
     blocks: &[InstructionBlock],
     width: u16,
     expanded: bool,
-    theme_engine: Arc<ThemeEngine>,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> ToolLines {
     let header = blocks.first().map_or("", |b| b.path.as_str());
     let annotation = if blocks.len() > 1 {
@@ -932,14 +933,14 @@ pub fn build_instructions_lines(
         width,
         exp,
         code_view::instruction_limit(expanded),
-        Arc::clone(&theme_engine),
+        Arc::clone(theme_engine),
     );
     b.push_header("load", header, annotation.as_deref(), None);
     b.prepend_indicator(&Indicator::Success, Instant::now());
 
     let start = b.lines.len();
     let has_truncation =
-        code_view::render_instructions(blocks, &mut b.lines, b.limits.output, false);
+        code_view::render_instructions(blocks, &mut b.lines, b.limits.output, false, theme_engine);
     b.truncation.output |= has_truncation;
     if has_truncation {
         b.truncation_actions.push(TruncationAction {
@@ -986,7 +987,7 @@ mod tests {
             started_at: Instant::now(),
             width,
             tool_output_lines: &TOL,
-            theme_engine: test_engine(),
+            theme_engine: crate::theme::test_engine(),
         }
     }
 
@@ -1214,6 +1215,7 @@ mod tests {
             started_at: Instant::now(),
             width: 80,
             tool_output_lines: &tol,
+            theme_engine: crate::theme::test_engine(),
         };
         let tl = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
         let text = lines_text(&tl);
@@ -1243,6 +1245,7 @@ mod tests {
             started_at: Instant::now(),
             width: 80,
             tool_output_lines: &tol,
+            theme_engine: crate::theme::test_engine(),
         };
 
         let tl = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
@@ -1271,6 +1274,7 @@ mod tests {
             started_at: Instant::now(),
             width: 80,
             tool_output_lines: &tol,
+            theme_engine: crate::theme::test_engine(),
         };
 
         let collapsed = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
@@ -1342,7 +1346,7 @@ mod tests {
     #[test_case(80, true  ; "shown_when_width_sufficient")]
     #[test_case(10, false ; "hidden_when_too_narrow")]
     fn append_right_info_timestamp_visibility(width: u16, expect_timestamp: bool) {
-        let engine = test_engine();
+        let engine = crate::theme::test_engine();
         let msg = tool_msg();
         let mut tl = build_tool_lines(
             &msg,
@@ -1424,7 +1428,7 @@ mod tests {
     }
 
     fn assert_truncation_styled(tl: &ToolLines) {
-        let engine = test_engine();
+        let engine = crate::theme::test_engine();
         let Some(last) = tl.lines.last() else {
             panic!("expected at least one line");
         };
@@ -1752,7 +1756,7 @@ mod tests {
             &test_rctx(80),
             SectionFlags::default(),
         );
-        let engine = test_engine();
+        let engine = crate::theme::test_engine();
         let t = engine.current();
         assert!(line_has_styled(&tl, "pub", t.index_keyword));
         assert!(line_has_styled(&tl, " fn main()", t.tool));
@@ -1983,7 +1987,7 @@ mod tests {
         let msg = read_msg_with_instructions(3, 30);
         let output = msg.tool_output.as_deref().unwrap();
         let blocks = output.instructions().unwrap();
-        let tl = build_instructions_lines(blocks, 80, expanded, test_engine());
+        let tl = build_instructions_lines(blocks, 80, expanded, &crate::theme::test_engine());
         assert_eq!(tl.truncation.any(), expect_truncation);
         let text = lines_text(&tl);
         assert_eq!(text.contains("inst 29"), expect_all_visible);
@@ -2005,7 +2009,7 @@ mod tests {
             },
         ];
 
-        let tl = build_instructions_lines(&blocks, 80, false, test_engine());
+        let tl = build_instructions_lines(&blocks, 80, false, &crate::theme::test_engine());
 
         assert_eq!(tl.truncation_actions.len(), 1);
         let action_line = tl.truncation_actions[0].line;
@@ -2040,7 +2044,7 @@ mod tests {
             path: "agents.md".into(),
             content: "follow style guide".into(),
         }];
-        let tl = build_instructions_lines(&blocks, 80, false, test_engine());
+        let tl = build_instructions_lines(&blocks, 80, false, &crate::theme::test_engine());
         assert!(tl.highlight.is_some());
         let text = lines_text(&tl);
         assert!(text.contains("follow style guide"));
@@ -2183,7 +2187,7 @@ mod tests {
             strikethrough: true,
             reversed: true,
         });
-        let resolved = resolve_span_style(&style, &test_engine());
+        let resolved = resolve_span_style(&style, &crate::theme::test_engine());
         assert_eq!(resolved.fg, Some(Color::Rgb(10, 20, 30)));
         assert_eq!(resolved.bg, Some(Color::Rgb(40, 50, 60)));
         assert!(resolved.add_modifier.contains(Modifier::BOLD));
@@ -2196,7 +2200,7 @@ mod tests {
 
     #[test]
     fn default_span_resolves_to_theme_tool() {
-        let engine = test_engine();
+        let engine = crate::theme::test_engine();
         assert_eq!(
             resolve_span_style(&SpanStyle::Default, &engine),
             engine.current().tool
@@ -2205,7 +2209,7 @@ mod tests {
 
     #[test]
     fn snapshot_to_lines_range_adds_indent_prefix() {
-        let engine = test_engine();
+        let engine = crate::theme::test_engine();
         let snapshot = make_snapshot(vec![vec![SnapshotSpan {
             text: "content".into(),
             style: SpanStyle::Default,
@@ -2218,7 +2222,7 @@ mod tests {
 
     #[test]
     fn snapshot_multi_span_line_preserves_order() {
-        let engine = test_engine();
+        let engine = crate::theme::test_engine();
         let snapshot = make_snapshot(vec![vec![
             SnapshotSpan {
                 text: "aaa".into(),
@@ -2240,7 +2244,7 @@ mod tests {
 
     #[test]
     fn spinner_spans_bake_to_frame_and_record_positions() {
-        let engine = test_engine();
+        let engine = crate::theme::test_engine();
         let snapshot = make_snapshot(vec![
             vec![SnapshotSpan {
                 text: "plain".into(),

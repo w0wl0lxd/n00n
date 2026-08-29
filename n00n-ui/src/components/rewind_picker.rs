@@ -33,14 +33,12 @@ impl PickerItem for RewindEntry {
 
 pub struct RewindPicker {
     picker: ListPicker<RewindEntry>,
-    theme_engine: Arc<ThemeEngine>,
 }
 
 impl RewindPicker {
-    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
+    pub fn new(theme_engine: &Arc<ThemeEngine>) -> Self {
         Self {
-            picker: ListPicker::new(Arc::clone(&theme_engine)),
-            theme_engine,
+            picker: ListPicker::new(Arc::clone(theme_engine)),
         }
     }
 
@@ -145,13 +143,13 @@ mod tests {
     #[test_case(&[assistant_msg()]                            ; "no_user_turns")]
     #[test_case(&[Message::synthetic("continue".into())]     ; "only_synthetic")]
     fn open_without_user_turns_returns_error(msgs: &[Message]) {
-        let mut picker = RewindPicker::new();
+        let mut picker = RewindPicker::new(&crate::theme::test_engine());
         assert_eq!(picker.open(msgs), Err(NO_TURNS_MSG.into()));
     }
 
     #[test]
     fn entries_are_in_reverse_order() {
-        let mut picker = RewindPicker::new();
+        let mut picker = RewindPicker::new(&crate::theme::test_engine());
         let msgs = vec![
             user_msg("first"),
             assistant_msg(),
@@ -167,7 +165,7 @@ mod tests {
 
     #[test]
     fn long_prompt_is_truncated_in_preview() {
-        let mut picker = RewindPicker::new();
+        let mut picker = RewindPicker::new(&crate::theme::test_engine());
         let long_text = "a".repeat(120);
         picker.open(&[user_msg(&long_text)]).unwrap();
         let item = picker.picker.selected_item().unwrap();
@@ -178,7 +176,7 @@ mod tests {
 
     #[test]
     fn multiline_prompt_uses_first_line_for_preview() {
-        let mut picker = RewindPicker::new();
+        let mut picker = RewindPicker::new(&crate::theme::test_engine());
         picker.open(&[user_msg("first line\nsecond line")]).unwrap();
         let item = picker.picker.selected_item().unwrap();
         assert!(item.label().contains("first line"));
@@ -188,7 +186,7 @@ mod tests {
 
     #[test]
     fn display_text_overrides_content() {
-        let mut picker = RewindPicker::new();
+        let mut picker = RewindPicker::new(&crate::theme::test_engine());
         let msg = Message::user_display("ai sees this".into(), "user typed this".into());
         picker.open(&[msg]).unwrap();
         let item = picker.picker.selected_item().unwrap();
@@ -198,7 +196,7 @@ mod tests {
 
     #[test]
     fn synthetic_messages_are_excluded() {
-        let mut picker = RewindPicker::new();
+        let mut picker = RewindPicker::new(&crate::theme::test_engine());
         let msgs = vec![
             user_msg("real prompt"),
             assistant_msg(),
@@ -212,7 +210,7 @@ mod tests {
 
     #[test]
     fn turn_numbers_skip_synthetic() {
-        let mut picker = RewindPicker::new();
+        let mut picker = RewindPicker::new(&crate::theme::test_engine());
         let msgs = vec![
             user_msg("first"),
             assistant_msg(),

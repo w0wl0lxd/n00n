@@ -209,7 +209,7 @@ impl SearchModal {
             title: MODAL_TITLE,
             width_percent: MODAL_WIDTH_PERCENT,
             max_height_percent: MODAL_MAX_HEIGHT_PERCENT,
-            theme_engine: self.theme_engine.clone(),
+            theme_engine: Arc::clone(&self.theme_engine),
         };
         let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW);
         let viewport_h = inner.height.saturating_sub(SEARCH_ROW) as usize;

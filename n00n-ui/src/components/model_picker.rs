@@ -111,24 +111,22 @@ pub struct ModelPicker {
     last_specs: Option<Arc<Vec<String>>>,
     dirty: bool,
     model_registry: Arc<RwLock<ModelRegistry>>,
-    theme_engine: Arc<ThemeEngine>,
 }
 
 impl ModelPicker {
     pub fn new(
         models: Arc<ArcSwapOption<Vec<String>>>,
         model_registry: Arc<RwLock<ModelRegistry>>,
-        theme_engine: Arc<ThemeEngine>,
+        theme_engine: &Arc<ThemeEngine>,
     ) -> Self {
         Self {
-            picker: ListPicker::new(Arc::clone(&theme_engine)).with_footer_builder(footer_line),
+            picker: ListPicker::new(Arc::clone(theme_engine)).with_footer_builder(footer_line),
             models,
             recents: Vec::new(),
             current_spec: String::new(),
             last_specs: None,
             dirty: false,
             model_registry,
-            theme_engine,
         }
     }
 
@@ -318,6 +316,7 @@ mod tests {
         let mut p = ModelPicker::new(
             test_models(),
             n00n_providers::model_registry::test_registry(),
+            &crate::theme::test_engine(),
         );
         p.open("");
         let action = p.handle_key(cancel_key);
@@ -334,6 +333,7 @@ mod tests {
         let mut p = ModelPicker::new(
             Arc::clone(&models),
             n00n_providers::model_registry::test_registry(),
+            &crate::theme::test_engine(),
         );
         p.open("");
 
@@ -362,6 +362,7 @@ mod tests {
         let mut p = ModelPicker::new(
             Arc::clone(&models),
             n00n_providers::model_registry::test_registry(),
+            &crate::theme::test_engine(),
         );
         p.open("");
 
@@ -386,6 +387,7 @@ mod tests {
         let mut p = ModelPicker::new(
             test_models(),
             n00n_providers::model_registry::test_registry(),
+            &crate::theme::test_engine(),
         );
         p.open("anthropic/claude-opus-4-6-20260101");
         let action = p.handle_key(key(KeyCode::Enter));
@@ -423,6 +425,7 @@ mod tests {
         let mut p = ModelPicker::new(
             test_models(),
             n00n_providers::model_registry::test_registry(),
+            &crate::theme::test_engine(),
         );
         p.open("");
         let action = p.handle_key(k);
@@ -440,6 +443,7 @@ mod tests {
         let mut p = ModelPicker::new(
             Arc::clone(&models),
             n00n_providers::model_registry::test_registry(),
+            &crate::theme::test_engine(),
         );
         p.open("anthropic/claude-opus-4-6-20260101");
 
@@ -460,7 +464,11 @@ mod tests {
     #[test]
     fn recents_include_current_model_preselected() {
         let models = test_models();
-        let mut p = ModelPicker::new(models, n00n_providers::model_registry::test_registry());
+        let mut p = ModelPicker::new(
+            models,
+            n00n_providers::model_registry::test_registry(),
+            &crate::theme::test_engine(),
+        );
         p.set_recents(vec![
             "zai/glm-5".into(),
             "anthropic/claude-sonnet-4-20250514".into(),

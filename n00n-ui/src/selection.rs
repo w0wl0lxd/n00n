@@ -39,7 +39,7 @@ use ratatui::text::Line;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::components::scrollbar::ScrollInfo;
-use crate::theme::{self, ThemeEngine};
+use crate::theme::ThemeEngine;
 use n00n_markdown::render::{CODE_BAR, CODE_BAR_WRAP};
 
 /// Position in doc space (full logical document, not just visible window).
@@ -556,7 +556,7 @@ pub(crate) fn append_rows(
         }
 
         let stripped = if col_start == area.x {
-            strip_code_bar_prefix(&buf[(col_start, row)], out, line_start, &*theme)
+            strip_code_bar_prefix(&buf[(col_start, row)], out, line_start, &theme)
         } else {
             0
         };
@@ -777,14 +777,25 @@ mod tests {
     #[test]
     fn extract_no_matching_region_returns_empty() {
         let (buf, _) = test_buffer();
-        assert_eq!(extract_selected_text(&buf, ss(0, 0, 2, 7), &[]), "");
+        assert_eq!(
+            extract_selected_text(&buf, ss(0, 0, 2, 7), &[], &crate::theme::test_engine()),
+            ""
+        );
 
         let region = ContentRegion {
             area: Rect::new(0, 5, 10, 1),
             raw_text: "far away",
             ..Default::default()
         };
-        assert_eq!(extract_selected_text(&buf, ss(0, 0, 2, 7), &[region]), "");
+        assert_eq!(
+            extract_selected_text(
+                &buf,
+                ss(0, 0, 2, 7),
+                &[region],
+                &crate::theme::test_engine()
+            ),
+            ""
+        );
     }
 
     #[test]
@@ -1302,7 +1313,16 @@ mod tests {
     ) {
         let buf = Buffer::empty(buf_area);
         let mut out = String::new();
-        append_rows(&buf, area, sel, from, to, &mut out, &LineBreaks::EveryRow);
+        append_rows(
+            &buf,
+            area,
+            sel,
+            from,
+            to,
+            &mut out,
+            &LineBreaks::EveryRow,
+            &crate::theme::test_engine(),
+        );
         assert!(out.is_empty());
     }
 
@@ -1384,6 +1404,7 @@ mod tests {
             1,
             &mut out,
             &LineBreaks::EveryRow,
+            &crate::theme::test_engine(),
         );
         assert_eq!(out, "好");
     }

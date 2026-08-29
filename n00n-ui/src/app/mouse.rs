@@ -111,7 +111,7 @@ impl App {
         clippy::cast_sign_loss
     )]
     fn handle_scrollbar_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !scrollbar::is_enabled() {
+        if !self.theme_engine.scrollbar_enabled() {
             return false;
         }
         if self.has_modal_overlay() && !self.task_picker.is_open() {

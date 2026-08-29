@@ -10,6 +10,7 @@ use std::time::Duration;
 use tracing::error;
 
 use crate::components::code_view::{self, RenderLimits};
+use crate::theme::ThemeEngine;
 use n00n_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
 
@@ -58,6 +59,7 @@ struct PoolInner {
     result_tx: flume::Sender<RenderResult>,
     active_threads: AtomicUsize,
     max_threads: usize,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 pub struct RenderWorker {
@@ -68,7 +70,7 @@ pub struct RenderWorker {
 }
 
 impl RenderWorker {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         let (job_tx, job_rx) = flume::bounded(JOB_QUEUE_CAPACITY);
         let (result_tx, result_rx) = flume::bounded(RESULT_QUEUE_CAPACITY);
         let max_threads = thread::available_parallelism()
@@ -82,6 +84,7 @@ impl RenderWorker {
                 result_tx,
                 active_threads: AtomicUsize::new(0),
                 max_threads,
+                theme_engine,
             }),
             result_rx,
             next_job_id: Arc::new(AtomicU64::new(1)),
@@ -180,6 +183,7 @@ impl RenderWorker {
                 result_tx,
                 active_threads: AtomicUsize::new(1),
                 max_threads: 1,
+                theme_engine: crate::theme::test_engine(),
             }),
             result_rx,
             next_job_id: Arc::new(AtomicU64::new(1)),
@@ -236,6 +240,7 @@ fn worker_loop(inner: &PoolInner) {
             job.tool_output.as_deref(),
             true,
             job.limits,
+            &inner.theme_engine,
         );
         if job.identity.is_latest(job.id) {
             publish_result(
@@ -279,6 +284,7 @@ mod tests {
                 result_tx,
                 active_threads: AtomicUsize::new(active),
                 max_threads: max,
+                theme_engine: crate::theme::test_engine(),
             }),
             result_rx,
             next_job_id: Arc::new(AtomicU64::new(1)),

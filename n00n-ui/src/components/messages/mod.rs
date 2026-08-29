@@ -168,7 +168,7 @@ impl MessagesPanel {
             viewport_width: crossterm::terminal::size().map_or(80, |(w, _)| w.saturating_sub(1)),
             cache: SegmentCache::new(),
             last_total_lines: 0,
-            hl_worker: RenderWorker::new(),
+            hl_worker: RenderWorker::new(Arc::clone(&theme_engine)),
             theme_generation: theme_engine.generation(),
             highlight_segment: None,
             idle_splash: Splash::new(ui_config.splash_animation, Arc::clone(&theme_engine)),
@@ -579,7 +579,8 @@ impl MessagesPanel {
             .get(&inst_id)
             .copied()
             .unwrap_or_else(SectionFlags::default);
-        let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
+        let tl =
+            build_instructions_lines(blocks, self.viewport_width, exp.output, &self.theme_engine);
 
         if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
             if let Some(seg) = self.cache.get_mut(seg_idx) {
@@ -1098,7 +1099,7 @@ impl MessagesPanel {
             let t = self.theme_engine.current();
             if self.mascot.enabled() && area.height > 18 {
                 self.mascot.tick(area);
-                self.mascot.render(area, frame.buffer_mut(), &*t, accent);
+                self.mascot.render(area, frame.buffer_mut(), &t, accent);
             } else {
                 self.idle_splash.render(area, frame.buffer_mut(), accent);
             }
@@ -1363,7 +1364,13 @@ impl MessagesPanel {
     }
 
     pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {
-        selection::extract_selection_text(&self.cache, self.viewport_width, sel, msg_area)
+        selection::extract_selection_text(
+            &self.cache,
+            self.viewport_width,
+            sel,
+            msg_area,
+            &self.theme_engine,
+        )
     }
 
     fn tool_in_progress(&self, tool_id: &str) -> bool {
@@ -1565,6 +1572,7 @@ impl MessagesPanel {
                 msg.turn_usage.as_deref(),
                 Some(ts),
                 content_width,
+                &tool_ctx.theme_engine,
             );
         }
         tl
@@ -1777,7 +1785,12 @@ impl MessagesPanel {
                     .get(&inst_id)
                     .copied()
                     .unwrap_or_else(SectionFlags::default);
-                let tl = build_instructions_lines(&blocks, self.viewport_width, exp.output);
+                let tl = build_instructions_lines(
+                    &blocks,
+                    self.viewport_width,
+                    exp.output,
+                    &self.theme_engine,
+                );
                 let mut inst_seg = Segment::with_instructions(id);
                 inst_seg.search_text.clone_from(&tl.search_text);
                 inst_seg.apply_highlight(tl, &self.hl_worker);

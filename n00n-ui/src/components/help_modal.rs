@@ -215,7 +215,7 @@ impl HelpModal {
             title: TITLE,
             width_percent: 50,
             max_height_percent: 80,
-            theme_engine: self.theme_engine.clone(),
+            theme_engine: Arc::clone(&self.theme_engine),
         };
         let (popup, inner) = modal.render(frame, area, total);
         let viewport_h = inner.height;

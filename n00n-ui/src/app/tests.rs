@@ -2978,6 +2978,7 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
         ..Default::default()
     });
     app.command_palette = crate::components::command::CommandPalette::new(
+        Arc::clone(&app.theme_engine),
         Arc::from([]),
         mcp_reader.clone(),
         LuaCommandReader::empty(),
@@ -3744,6 +3745,7 @@ fn mcp_toggle_dispatches_action() {
             generation: 0,
         }),
         McpConfigErrors::new(PathBuf::new()),
+        &app.theme_engine,
     );
     app.execute_command(cmd("/mcp"));
 
@@ -4043,7 +4045,7 @@ fn plan_form_menu_options(
             .any(|a| matches!(a, Action::NewSession { .. })),
         has_new_session
     );
-    let expected_msg = implement_msg(PlanForm::new().parallel());
+    let expected_msg = implement_msg(PlanForm::new(crate::theme::test_engine()).parallel());
     assert_eq!(
         actions
             .iter()
@@ -4076,7 +4078,7 @@ fn clear_and_implement_defers_submission_until_new_session() {
     assert!(pending.plan.is_some());
     assert_eq!(
         pending.message.text,
-        implement_msg(PlanForm::new().parallel())
+        implement_msg(PlanForm::new(crate::theme::test_engine()).parallel())
     );
     assert!(app.queue.is_empty());
     assert_eq!(app.main_chat().message_count(), 0);
@@ -4089,7 +4091,7 @@ fn plan_form_implement_toggled_parallel() {
     app.update(Msg::Key(key(KeyCode::Down)));
     app.update(Msg::Key(key(KeyCode::Down)));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    let expected_msg = implement_msg(!PlanForm::new().parallel());
+    let expected_msg = implement_msg(!PlanForm::new(crate::theme::test_engine()).parallel());
     assert!(
         actions
             .iter()

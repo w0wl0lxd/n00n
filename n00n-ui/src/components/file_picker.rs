@@ -796,7 +796,7 @@ mod tests {
 
     #[test]
     fn handle_paste_returns_false_when_closed() {
-        let mut picker = FilePickerModal::new();
+        let mut picker = FilePickerModal::new(crate::theme::test_engine());
         assert!(!picker.handle_paste("test"));
     }
 

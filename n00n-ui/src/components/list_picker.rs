@@ -11,7 +11,6 @@ use crate::components::keybindings::key;
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::text_buffer::TextBuffer;
-use crate::theme;
 use crate::theme::ThemeEngine;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -882,7 +881,7 @@ mod tests {
 
     #[test]
     fn footer_hints_render_without_panicking() {
-        let mut picker = ListPicker::new(theme::test_engine());
+        let mut picker = ListPicker::new(crate::theme::test_engine());
         picker.set_footer(&[("Enter", "open"), ("Esc", "close")]);
         picker.open(entries(&["Main", "Task"]), " Tasks ");
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
@@ -896,7 +895,7 @@ mod tests {
 
     #[test]
     fn navigation_wraps_around() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(entries(&["A", "B", "C"]), " Test ");
 
         p.handle_key(key(KeyCode::Up));
@@ -909,7 +908,7 @@ mod tests {
     #[test]
     fn page_down_advances_and_clamps() {
         let items: Vec<Entry> = (0..50).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(items, " Test ");
         ready_state_mut(&mut p).viewport_height = 10;
 
@@ -925,7 +924,7 @@ mod tests {
     #[test]
     fn page_up_retreats_and_clamps() {
         let items: Vec<Entry> = (0..50).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(items, " Test ");
         let s = ready_state_mut(&mut p);
         s.viewport_height = 10;
@@ -943,7 +942,7 @@ mod tests {
     #[test]
     fn ctrl_d_and_ctrl_u_page_like_page_keys() {
         let items: Vec<Entry> = (0..50).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(items, " Test ");
         ready_state_mut(&mut p).viewport_height = 10;
 
@@ -956,7 +955,7 @@ mod tests {
 
     #[test]
     fn search_filters_progressively() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(entries(&["Alpha", "Beta"]), " Test ");
         assert_eq!(ready_state(&p).filtered, vec![0, 1]);
 
@@ -969,7 +968,7 @@ mod tests {
 
     #[test]
     fn fuzzy_search_with_nucleo_matcher() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(
             entries(&["claude-sonnet", "claude-opus", "gemini-pro", "gpt-4"]),
             " Test ",
@@ -995,7 +994,7 @@ mod tests {
 
     #[test]
     fn enter_returns_selected_item() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(entries(&["A", "B", "C"]), " Test ");
         p.handle_key(key(KeyCode::Down));
 
@@ -1007,7 +1006,7 @@ mod tests {
     #[test_case(key(KeyCode::Esc) ; "esc_returns_close")]
     #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_returns_close")]
     fn cancel_returns_close(cancel_key: KeyEvent) {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(entries(&["A", "B"]), " Test ");
 
         let action = p.handle_key(cancel_key);
@@ -1017,7 +1016,7 @@ mod tests {
 
     #[test]
     fn enter_on_empty_results_consumed() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(entries(&["Alpha"]), " Test ");
         p.handle_key(key(KeyCode::Char('z')));
 
@@ -1031,7 +1030,7 @@ mod tests {
     #[test_case(0, -100, 20 ; "clamp_at_bottom")]
     fn scroll_bounds(initial: usize, delta: i32, expected: usize) {
         let items: Vec<Entry> = (0..30).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(items, " Test ");
         let s = ready_state_mut(&mut p);
         s.viewport_height = 10;
@@ -1043,7 +1042,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_deletes_word() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(entries(&["A", "B"]), " Test ");
         p.handle_key(key(KeyCode::Char('h')));
         p.handle_key(key(KeyCode::Char('i')));
@@ -1094,7 +1093,7 @@ mod tests {
 
     #[test]
     fn section_navigation_accounts_for_headers() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open(section_entries(), " Test ");
         let s = ready_state_mut(&mut p);
         s.viewport_height = 3;
@@ -1106,7 +1105,7 @@ mod tests {
 
     #[test]
     fn ensure_visible_clamps_scroll_offset_after_filter() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         let items: Vec<Entry> = (0..20).map(|i| Entry::new(&format!("Item {i}"))).collect();
         p.open(items, " Test ");
         let s = ready_state_mut(&mut p);
@@ -1122,7 +1121,7 @@ mod tests {
 
     #[test]
     fn toggle_mode_enter_flips_enabled() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open_toggleable(entries(&["A", "B"]), vec![true, true], " Test ");
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(matches!(action, PickerAction::Toggle(0, false)));
@@ -1131,7 +1130,7 @@ mod tests {
 
     #[test]
     fn toggle_mode_search_targets_correct_item() {
-        let mut p = ListPicker::new(theme::test_engine());
+        let mut p = ListPicker::new(crate::theme::test_engine());
         p.open_toggleable(entries(&["Alpha", "Beta"]), vec![true, true], " Test ");
         p.handle_key(key(KeyCode::Char('b')));
         let action = p.handle_key(key(KeyCode::Enter));

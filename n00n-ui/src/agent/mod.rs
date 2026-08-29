@@ -209,6 +209,7 @@ impl AgentHandles {
             tool_output_lines,
             permissions,
             model_registry,
+            Arc::clone(&app.theme_engine),
             self.mcp_handle.clone(),
             self.mcp_config_errors.clone(),
             self.identity.clone(),

@@ -79,21 +79,19 @@ pub struct McpPicker {
     snapshot: McpSnapshotReader,
     config_errors: McpConfigErrors,
     last_generation: u64,
-    theme_engine: Arc<ThemeEngine>,
 }
 
 impl McpPicker {
     pub fn new(
         snapshot: McpSnapshotReader,
         config_errors: McpConfigErrors,
-        theme_engine: Arc<ThemeEngine>,
+        theme_engine: &Arc<ThemeEngine>,
     ) -> Self {
         Self {
-            picker: ListPicker::new(Arc::clone(&theme_engine)),
+            picker: ListPicker::new(Arc::clone(theme_engine)),
             snapshot,
             config_errors,
             last_generation: 0,
-            theme_engine,
         }
     }
 
@@ -200,7 +198,12 @@ mod tests {
 
     #[test]
     fn toggle_returns_server_name_and_new_state() {
-        let mut p = McpPicker::new(test_snapshot(), McpConfigErrors::new(PathBuf::new()));
+        let theme_engine = crate::theme::test_engine();
+        let mut p = McpPicker::new(
+            test_snapshot(),
+            McpConfigErrors::new(PathBuf::new()),
+            &theme_engine,
+        );
         p.open();
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(matches!(
@@ -212,7 +215,12 @@ mod tests {
     #[test_case(key(KeyCode::Esc)       ; "esc_closes")]
     #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_closes")]
     fn close_keys(cancel_key: KeyEvent) {
-        let mut p = McpPicker::new(test_snapshot(), McpConfigErrors::new(PathBuf::new()));
+        let theme_engine = crate::theme::test_engine();
+        let mut p = McpPicker::new(
+            test_snapshot(),
+            McpConfigErrors::new(PathBuf::new()),
+            &theme_engine,
+        );
         p.open();
         let action = p.handle_key(cancel_key);
         assert!(matches!(action, McpPickerAction::Close));
@@ -221,9 +229,11 @@ mod tests {
 
     #[test]
     fn open_with_empty_infos() {
+        let theme_engine = crate::theme::test_engine();
         let mut p = McpPicker::new(
             McpSnapshotReader::empty(),
             McpConfigErrors::new(PathBuf::new()),
+            &theme_engine,
         );
         p.open();
         assert!(p.is_open());

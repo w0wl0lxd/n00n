@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::render_worker::{RenderIdentity, RenderWorker};
 use crate::terminal_image::TerminalImage;
-use crate::theme::{Theme, ThemeEngine};
+use crate::theme::ThemeEngine;
 
 use super::super::code_view::SectionFlags;
 use super::super::code_view::TruncationAction;

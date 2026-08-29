@@ -175,7 +175,7 @@ impl Splash {
         };
         if self.animate {
             let theme = self.theme_engine.current();
-            Self::render_field(area, buf, t + self.field_offset, fade, accent, &*theme);
+            Self::render_field(area, buf, t + self.field_offset, fade, accent, &theme);
         }
     }
 
@@ -200,11 +200,11 @@ impl Splash {
         let version_y = if compact { top_y } else { area.y };
 
         let theme = self.theme_engine.current();
-        Self::render_logo(area, buf, t, fade, top_y, accent, &*theme);
-        render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE, &*theme);
-        Self::render_help(area, buf, fade, help_y, accent, &*theme);
+        Self::render_logo(area, buf, t, fade, top_y, accent, &theme);
+        render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE, &theme);
+        Self::render_help(area, buf, fade, help_y, accent, &theme);
         self.render_tip(area, buf, fade, tip_offset, accent);
-        render_version(area, buf, fade, version_y, new_version, &*theme);
+        render_version(area, buf, fade, version_y, new_version, &theme);
     }
 
     fn render_field(area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color, theme: &Theme) {

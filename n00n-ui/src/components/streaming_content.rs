@@ -356,7 +356,7 @@ impl std::fmt::Debug for StreamingContent {
             .field("text_style", &self.text_style)
             .field("prefix_style", &self.prefix_style)
             .field("mode", &self.mode)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -377,10 +377,18 @@ mod tests {
 
     fn full_render_lines(text: &str, prefix: &'static str, width: u16) -> Vec<String> {
         let style = Style::default();
-        text_to_lines(text, prefix, style, style, width, None)
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect()
+        text_to_lines(
+            text,
+            prefix,
+            style,
+            style,
+            width,
+            None,
+            &crate::theme::test_engine(),
+        )
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect()
     }
 
     fn typewriter_for_text(text: &str) -> Typewriter {
@@ -437,12 +445,28 @@ mod tests {
                 continue;
             }
             let tw = typewriter_for_text(&full_text[..end]);
-            cache.get_or_update(&mut renderer, &tw, prefix, style, style, width);
+            cache.get_or_update(
+                &mut renderer,
+                &tw,
+                prefix,
+                style,
+                style,
+                width,
+                &crate::theme::test_engine(),
+            );
             end += step;
         }
 
         let tw = typewriter_for_text(full_text);
-        cache.get_or_update(&mut renderer, &tw, prefix, style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            prefix,
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         let incremental = cache_lines_text(&cache);
         let expected = full_render_lines(full_text, prefix, width);
         assert_eq!(
@@ -459,11 +483,27 @@ mod tests {
         let mut renderer = fresh_renderer();
 
         let tw = typewriter_for_text("partial text");
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
 
         let text = "block1\n```py\nx=1\n```\nblock2\n```js\ny=2\n```\ntail";
         let tw = typewriter_for_text(text);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
 
         let expected = full_render_lines(text, "", width);
         assert_eq!(cache_lines_text(&cache), expected);
@@ -477,9 +517,25 @@ mod tests {
         let mut renderer = fresh_renderer();
         let text = "hello\n```rust\nfn x(){}\n```\nafter";
         let tw = typewriter_for_text(text);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         cache.invalidate();
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         assert_eq!(cache_lines_text(&cache), full_render_lines(text, "", width));
     }
 
@@ -495,12 +551,28 @@ mod tests {
         assert_eq!(first.len(), second.len());
 
         let tw1 = typewriter_for_text(first);
-        cache.get_or_update(&mut renderer, &tw1, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw1,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         let first_lines = cache_lines_text(&cache);
         assert_eq!(first_lines, full_render_lines(first, "", width));
 
         let tw2 = typewriter_for_text(second);
-        cache.get_or_update(&mut renderer, &tw2, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw2,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         let second_lines = cache_lines_text(&cache);
         assert_eq!(second_lines, full_render_lines(second, "", width));
         assert_ne!(
@@ -517,9 +589,25 @@ mod tests {
         let text = "```rust\nfn extremely_long_function_name_that_definitely_will_not_fit(arg_one: &str, arg_two: usize) {}\n```";
 
         let tw = typewriter_for_text(text);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, 200);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            200,
+            &crate::theme::test_engine(),
+        );
         let wide = cache.lines.len();
-        cache.get_or_update(&mut renderer, &tw, "", style, style, 30);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            30,
+            &crate::theme::test_engine(),
+        );
         let narrow = cache.lines.len();
         assert!(
             narrow > wide,
@@ -544,7 +632,15 @@ mod tests {
         let mut renderer = fresh_renderer();
 
         let tw = typewriter_for_text(base);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         let mut prev_count = cache.lines.len();
 
         let chars: Vec<char> = suffix.chars().collect();
@@ -552,7 +648,15 @@ mod tests {
             let partial: String = chars[..i].iter().collect();
             let text = format!("{base}{partial}");
             let tw = typewriter_for_text(&text);
-            cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+            cache.get_or_update(
+                &mut renderer,
+                &tw,
+                "",
+                style,
+                style,
+                width,
+                &crate::theme::test_engine(),
+            );
             assert!(
                 cache.lines.len() >= prev_count.saturating_sub(1),
                 "line count dropped from {prev_count} to {} at partial {partial:?}",
@@ -571,12 +675,28 @@ mod tests {
 
         let base = "| A | B |\n| --- | --- |\n| 1 | 2 |";
         let tw = typewriter_for_text(base);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         let base_lines = cache_lines_text(&cache);
 
         let partial = format!("{base}\n| 3 | in pro");
         let tw = typewriter_for_text(&partial);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         let partial_lines = cache_lines_text(&cache);
         assert!(
             partial_lines.len() > base_lines.len(),
@@ -590,7 +710,15 @@ mod tests {
 
         let complete = format!("{base}\n| 3 | in progress |");
         let tw = typewriter_for_text(&complete);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, width);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            width,
+            &crate::theme::test_engine(),
+        );
         let complete_lines = cache_lines_text(&cache);
         let has_complete_content = complete_lines.iter().any(|l| l.contains("in progress"));
         assert!(
@@ -743,12 +871,28 @@ mod tests {
 
         let first_block = "```rust\nfn a() {}\n```";
         let tw = typewriter_for_text(first_block);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, 80);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            80,
+            &crate::theme::test_engine(),
+        );
         let after_first = cache_lines_text(&cache);
 
         let both_blocks = "```rust\nfn a() {}\n```\ntext\n```python\ndef b(): pass\n```";
         let tw = typewriter_for_text(both_blocks);
-        cache.get_or_update(&mut renderer, &tw, "", style, style, 80);
+        cache.get_or_update(
+            &mut renderer,
+            &tw,
+            "",
+            style,
+            style,
+            80,
+            &crate::theme::test_engine(),
+        );
         let after_both = cache_lines_text(&cache);
 
         assert!(

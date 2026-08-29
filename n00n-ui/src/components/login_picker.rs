@@ -18,7 +18,6 @@ use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 use crate::components::modal::Modal;
 use crate::text_buffer::TextBuffer;
-use crate::theme;
 use crate::theme::ThemeEngine;
 
 const TITLE: &str = " Login ";
@@ -846,7 +845,7 @@ mod tests {
     fn codex_item_reflects_coding_plan_tokens_in_supplied_storage() {
         let temp = tempfile::tempdir().unwrap();
         let storage = StateDir::from_path(temp.path().to_path_buf());
-        let mut picker = LoginPicker::new();
+        let mut picker = LoginPicker::new(crate::theme::test_engine());
         save_tokens(
             &storage,
             "openai",

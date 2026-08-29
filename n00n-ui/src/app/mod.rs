@@ -388,12 +388,12 @@ impl App {
             model_picker: ModelPicker::new(
                 available_models,
                 Arc::clone(&model_registry),
-                Arc::clone(&theme_engine),
+                &theme_engine,
             ),
             model_picker_reply: None,
             login_picker: LoginPicker::new(Arc::clone(&theme_engine)),
-            mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors, Arc::clone(&theme_engine)),
-            rewind_picker: RewindPicker::new(Arc::clone(&theme_engine)),
+            mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors, &theme_engine),
+            rewind_picker: RewindPicker::new(&theme_engine),
             help_modal: HelpModal::new(Arc::clone(&theme_engine)),
             usage_modal: UsageModal::new(Arc::clone(&theme_engine)),
             btw_modal: BtwModal::new(Arc::clone(&theme_engine), ui_config.typewriter_ms_per_char),
@@ -1868,6 +1868,7 @@ impl App {
             subagent.name.clone(),
             self.ui_config.clone(),
             Arc::clone(&self.picker),
+            Arc::clone(&self.theme_engine),
         );
         chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
         chat.tool_use_id = Some(id.clone());
