@@ -78,6 +78,13 @@ fn backup_binary(exe_path: &Path, storage: &StateDir) -> Result<PathBuf, UpdateE
 
 fn execute_script(script: &str, install_dir: &Path) -> Result<(), UpdateError> {
     let mut tmp = tempfile::NamedTempFile::new().map_err(UpdateError::WriteScript)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(UpdateError::WriteScript)?;
+    }
     tmp.write_all(script.as_bytes())
         .map_err(UpdateError::WriteScript)?;
     tmp.flush().map_err(UpdateError::WriteScript)?;
@@ -217,4 +224,27 @@ pub fn rollback() -> Result<(), UpdateError> {
     println!("Restored previous version.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_script_success() {
+        let temp_dir = std::env::temp_dir();
+        let result = execute_script("echo hello", &temp_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_execute_script_permissions() {
+        let temp_dir = std::env::temp_dir();
+        let check_script = r#"
+            python3 -c 'import sys, os, stat; mode = stat.S_IMODE(os.stat(sys.argv[1]).st_mode); sys.exit(0 if mode == 0o700 else 1)' "$0"
+        "#;
+        let result = execute_script(check_script, &temp_dir);
+        assert!(result.is_ok());
+    }
 }
