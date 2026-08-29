@@ -135,12 +135,6 @@ pub struct Splash {
     theme_engine: Arc<ThemeEngine>,
 }
 
-impl Default for Splash {
-    fn default() -> Self {
-        Self::new(true, crate::theme::test_engine())
-    }
-}
-
 impl Splash {
     #[must_use]
     pub fn new(animate: bool, theme_engine: Arc<ThemeEngine>) -> Self {

@@ -18,7 +18,7 @@ use crate::components::{
     scrollbar::render_vertical_scrollbar,
     tool_display::{SPINNER_STYLE_NAME, SPINNER_STYLE_PREFIX, resolve_span_style},
 };
-use crate::theme;
+use crate::theme::{ThemeEngine, test_engine};
 
 const MAX_WINDOW_COMMANDS_PER_TICK: usize = 64;
 
@@ -165,6 +165,7 @@ pub(crate) struct FloatManager {
     focused_id: Option<u32>,
     focused_rect: Option<Rect>,
     next_id: u32,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 fn relay_window_commands(
@@ -218,12 +219,13 @@ fn run_window_command_relay(
 }
 
 impl FloatManager {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             windows: Vec::new(),
             focused_id: None,
             focused_rect: None,
             next_id: 0,
+            theme_engine,
         }
     }
 

@@ -3,7 +3,7 @@ use super::status_bar::format_tokens;
 use super::{DisplayMessage, ToolStatus, args_view};
 use crate::animation::{spinner_frame, spinner_str};
 use crate::cast;
-use crate::theme;
+use crate::theme::{ThemeEngine, test_engine};
 use code_view::RenderLimits;
 use code_view::{SectionFlags, TruncationAction};
 use n00n_config::ToolOutputLines;
@@ -34,6 +34,7 @@ pub struct RenderCtx<'a> {
     pub started_at: Instant,
     pub width: u16,
     pub tool_output_lines: &'a ToolOutputLines,
+    pub theme_engine: Arc<ThemeEngine>,
 }
 
 pub const TOOL_INDICATOR: &str = "  ✓ ";
@@ -73,63 +74,67 @@ pub struct RoleStyle {
     pub max_line_bytes: Option<usize>,
 }
 
-pub fn assistant_style() -> RoleStyle {
+pub fn assistant_style(theme_engine: &ThemeEngine) -> RoleStyle {
+    let t = theme_engine.current();
     RoleStyle {
         prefix: "n00n  ",
-        text_style: theme::current().assistant,
-        prefix_style: theme::current().assistant_prefix,
+        text_style: t.assistant,
+        prefix_style: t.assistant_prefix,
         use_markdown: true,
         max_line_bytes: None,
     }
 }
 
-pub fn user_style() -> RoleStyle {
+pub fn user_style(theme_engine: &ThemeEngine) -> RoleStyle {
+    let t = theme_engine.current();
     RoleStyle {
         prefix: "You   ",
-        text_style: theme::current().assistant,
-        prefix_style: theme::current().user,
+        text_style: t.assistant,
+        prefix_style: t.user,
         use_markdown: true,
         max_line_bytes: None,
     }
 }
 
-pub fn control_style() -> RoleStyle {
+pub fn control_style(theme_engine: &ThemeEngine) -> RoleStyle {
+    let t = theme_engine.current();
     RoleStyle {
         prefix: "Ctrl  ",
-        text_style: theme::current().assistant,
-        prefix_style: theme::current().control,
+        text_style: t.assistant,
+        prefix_style: t.control,
         use_markdown: true,
         max_line_bytes: None,
     }
 }
 
-pub fn thinking_style() -> RoleStyle {
+pub fn thinking_style(theme_engine: &ThemeEngine) -> RoleStyle {
+    let t = theme_engine.current();
     RoleStyle {
         prefix: "Think ",
-        text_style: theme::current().thinking,
-        prefix_style: theme::current().thinking,
+        text_style: t.thinking,
+        prefix_style: t.thinking,
         use_markdown: true,
         max_line_bytes: None,
     }
 }
 
-pub fn error_style() -> RoleStyle {
+pub fn error_style(theme_engine: &ThemeEngine) -> RoleStyle {
+    let t = theme_engine.current();
     RoleStyle {
         prefix: "",
-        text_style: theme::current().error,
-        prefix_style: theme::current().tool_error,
+        text_style: t.error,
+        prefix_style: t.tool_error,
         use_markdown: false,
         max_line_bytes: None,
     }
 }
 
-pub fn done_style() -> RoleStyle {
+pub fn done_style(theme_engine: &ThemeEngine) -> RoleStyle {
+    let t = theme_engine.current();
     RoleStyle {
         prefix: "",
-        text_style: theme::current()
-            .tool_success
-            .add_modifier(ratatui::style::Modifier::BOLD),
-        prefix_style: theme::current().tool_success,
+        text_style: t.tool_success.add_modifier(ratatui::style::Modifier::BOLD),
+        prefix_style: t.tool_success,
         use_markdown: false,
         max_line_bytes: None,
     }
@@ -222,6 +227,7 @@ pub fn append_right_info(
     usage: Option<&str>,
     timestamp: Option<&str>,
     width: u16,
+    theme_engine: &ThemeEngine,
 ) {
     if usage.is_none() && timestamp.is_none() {
         return;
@@ -243,17 +249,16 @@ pub fn append_right_info(
         return;
     }
     let pad = w - header_width - suffix_len;
+    let t = theme_engine.current();
     line.spans.push(Span::raw(" ".repeat(pad)));
     if let Some(u) = usage {
-        line.spans
-            .push(Span::styled(u.to_owned(), theme::current().tool_dim));
+        line.spans.push(Span::styled(u.to_owned(), t.tool_dim));
         if timestamp.is_some() {
             line.spans.push(Span::raw("  "));
         }
     }
     if let Some(ts) = timestamp {
-        line.spans
-            .push(Span::styled(ts.to_owned(), theme::current().timestamp));
+        line.spans.push(Span::styled(ts.to_owned(), t.timestamp));
     }
 }
 
@@ -397,10 +402,16 @@ struct ToolLineBuilder {
     truncation_actions: Vec<TruncationAction>,
     limits: RenderLimits,
     markdown: bool,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl ToolLineBuilder {
-    fn new(width: u16, expanded: SectionFlags, max_output_lines: usize) -> Self {
+    fn new(
+        width: u16,
+        expanded: SectionFlags,
+        max_output_lines: usize,
+        theme_engine: Arc<ThemeEngine>,
+    ) -> Self {
         let limits = RenderLimits::new(expanded, max_output_lines);
         Self {
             lines: Vec::new(),
@@ -413,6 +424,7 @@ impl ToolLineBuilder {
             truncation_actions: Vec::new(),
             limits,
             markdown: false,
+            theme_engine,
         }
     }
 
@@ -429,10 +441,11 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         render_header: Option<&BufferSnapshot>,
     ) {
+        let t = self.theme_engine.current();
         let label: String = truncate_label(tool_name);
         let mut spans = vec![
-            Span::styled(label, theme::current().tool_prefix),
-            Span::styled("  ", theme::current().tool_dim),
+            Span::styled(label, t.tool_prefix),
+            Span::styled("  ", t.tool_dim),
         ];
         let mut continuation: Vec<Line<'static>> = Vec::new();
         if let Some(snapshot) = render_header {
@@ -440,27 +453,36 @@ impl ToolLineBuilder {
             for (i, sline) in snapshot.lines.iter().enumerate() {
                 let spinners = &mut self.spinner_lines;
                 if i == 0 {
-                    bake_spans(&sline.spans, &mut spans, spinner_str(0), |span_idx| {
-                        spinners.push((base, span_idx));
-                    });
+                    bake_spans(
+                        &sline.spans,
+                        &mut spans,
+                        spinner_str(0),
+                        |span_idx| {
+                            spinners.push((base, span_idx));
+                        },
+                        &self.theme_engine,
+                    );
                 } else {
                     let mut line_spans = Vec::new();
-                    bake_spans(&sline.spans, &mut line_spans, spinner_str(0), |span_idx| {
-                        spinners.push((base + i, span_idx));
-                    });
+                    bake_spans(
+                        &sline.spans,
+                        &mut line_spans,
+                        spinner_str(0),
+                        |span_idx| {
+                            spinners.push((base + i, span_idx));
+                        },
+                        &self.theme_engine,
+                    );
                     let mut line = Line::from(line_spans);
                     line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
                     continuation.push(line);
                 }
             }
         } else {
-            spans.push(Span::styled(header.to_owned(), theme::current().tool));
+            spans.push(Span::styled(header.to_owned(), t.tool));
         }
         if let Some(ann) = annotation {
-            spans.push(Span::styled(
-                format!(" ({ann})"),
-                theme::current().tool_annotation,
-            ));
+            spans.push(Span::styled(format!(" ({ann})"), t.tool_annotation));
         }
         self.lines.push(Line::from(spans));
         self.lines.extend(continuation);
@@ -494,13 +516,14 @@ impl ToolLineBuilder {
         if self.lines.is_empty() {
             return;
         }
+        let t = self.theme_engine.current();
         let (text, style) = match indicator {
             Indicator::InProgress => {
                 let ch = spinner_frame(started_at.elapsed().as_millis());
-                (format!("{ch} "), theme::current().spinner)
+                (format!("{ch} "), t.spinner)
             }
-            Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
-            Indicator::Error => ("  × ".into(), theme::current().tool_error),
+            Indicator::Success => (TOOL_INDICATOR.into(), t.tool_success),
+            Indicator::Error => ("  × ".into(), t.tool_error),
         };
         for (line, span) in &mut self.spinner_lines {
             if *line == 0 {
@@ -543,17 +566,16 @@ impl ToolLineBuilder {
         }
 
         if self.content_range.1 > self.content_range.0 {
-            self.lines.push(Line::from(Span::styled(
-                CODE_OUTPUT_DIVIDER,
-                theme::current().tool_dim,
-            )));
+            let t = self.theme_engine.current();
+            self.lines
+                .push(Line::from(Span::styled(CODE_OUTPUT_DIVIDER, t.tool_dim)));
         }
 
         if let Some(text) = &resolved.text {
             if self.markdown {
                 self.push_markdown_body(text);
             } else {
-                push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
+                push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT, &self.theme_engine);
             }
             if let Some(full) = &resolved.full_text {
                 self.push_search_text(full);
@@ -565,7 +587,7 @@ impl ToolLineBuilder {
     }
 
     fn push_markdown_body(&mut self, text: &str) {
-        let style = theme::current().assistant;
+        let style = self.theme_engine.current().assistant;
         let indent = cast::usize_to_u16(TOOL_BODY_INDENT.len());
         let md_lines = text_to_lines(
             text,
@@ -574,6 +596,7 @@ impl ToolLineBuilder {
             style,
             self.width.saturating_sub(indent),
             Some(n00n_markdown::render::TOOL_OUTPUT_MAX_LINE_BYTES),
+            &self.theme_engine,
         );
         for mut line in md_lines {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
@@ -593,7 +616,8 @@ impl ToolLineBuilder {
                 },
             });
             let text = truncation_notice(skipped);
-            let mut line = Line::from(Span::styled(text, theme::current().tool_dim));
+            let t = self.theme_engine.current();
+            let mut line = Line::from(Span::styled(text, t.tool_dim));
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
             self.lines.push(line);
         }
@@ -609,8 +633,13 @@ impl ToolLineBuilder {
         self.snapshot_base = Some(base);
         let total = snapshot.lines.len();
         let frame = spinner_str(started_at.elapsed().as_millis());
-        let (lines, spinners) =
-            snapshot_to_lines_range(snapshot, TOOL_BODY_INDENT, 0..total, frame);
+        let (lines, spinners) = snapshot_to_lines_range(
+            snapshot,
+            TOOL_BODY_INDENT,
+            0..total,
+            frame,
+            &self.theme_engine,
+        );
         self.lines.extend(lines);
         self.spinner_lines
             .extend(spinners.into_iter().map(|(line, span)| (base + line, span)));
@@ -640,8 +669,13 @@ impl ToolLineBuilder {
     }
 }
 
-fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &'static str) {
-    let style = theme::current().tool;
+fn push_text_lines(
+    lines: &mut Vec<Line<'static>>,
+    text: &str,
+    indent: &'static str,
+    theme_engine: &ThemeEngine,
+) {
+    let style = theme_engine.current().tool;
     for line in text.lines() {
         lines.push(Line::from(vec![
             Span::styled(indent, style),
@@ -658,15 +692,16 @@ fn bake_spans(
     out: &mut Vec<Span<'static>>,
     spinner_frame: &'static str,
     mut on_spinner: impl FnMut(usize),
+    theme_engine: &ThemeEngine,
 ) {
     for span in src {
         if matches!(&span.style, SpanStyle::Named(n) if n == SPINNER_STYLE_NAME) {
             on_spinner(out.len());
-            out.push(Span::styled(spinner_frame, theme::current().spinner));
+            out.push(Span::styled(spinner_frame, theme_engine.current().spinner));
         } else {
             out.push(Span::styled(
                 span.text.clone(),
-                resolve_span_style(&span.style),
+                resolve_span_style(&span.style, theme_engine),
             ));
         }
     }
@@ -677,6 +712,7 @@ fn snapshot_to_lines_range(
     indent: &str,
     range: std::ops::Range<usize>,
     spinner_frame: &'static str,
+    theme_engine: &ThemeEngine,
 ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     let mut spinners = Vec::new();
     let lines = snapshot.lines[range]
@@ -684,19 +720,26 @@ fn snapshot_to_lines_range(
         .enumerate()
         .map(|(i, sline)| {
             let mut spans = vec![Span::raw(indent.to_string())];
-            bake_spans(&sline.spans, &mut spans, spinner_frame, |span_idx| {
-                spinners.push((i, span_idx));
-            });
+            bake_spans(
+                &sline.spans,
+                &mut spans,
+                spinner_frame,
+                |span_idx| {
+                    spinners.push((i, span_idx));
+                },
+                theme_engine,
+            );
             Line::from(spans)
         })
         .collect();
     (lines, spinners)
 }
 
-pub(crate) fn resolve_span_style(style: &SpanStyle) -> Style {
+pub(crate) fn resolve_span_style(style: &SpanStyle, theme_engine: &ThemeEngine) -> Style {
+    let t = theme_engine.current();
     match style {
-        SpanStyle::Default => theme::current().tool,
-        SpanStyle::Named(name) => theme::style_by_name(name),
+        SpanStyle::Default => t.tool,
+        SpanStyle::Named(name) => theme_engine.style_by_name(name),
         SpanStyle::Inline(inline) => {
             let mut s = Style::default();
             if let Some((r, g, b)) = inline.fg {
@@ -740,7 +783,12 @@ pub fn build_tool_lines(
         None => (msg.text.as_str(), None),
     };
 
-    let mut b = ToolLineBuilder::new(rctx.width, expanded, rctx.tool_output_lines.get(tool_name));
+    let mut b = ToolLineBuilder::new(
+        rctx.width,
+        expanded,
+        rctx.tool_output_lines.get(tool_name),
+        Arc::clone(&rctx.theme_engine),
+    );
     b.apply_output_format(msg.tool_output.as_deref());
     b.push_header(
         tool_name,
@@ -776,7 +824,7 @@ pub fn build_tool_lines(
         if show_args {
             b.lines.push(Line::from(vec![
                 Span::raw(TOOL_BODY_INDENT),
-                Span::styled("Arguments:", theme::current().tool_annotation),
+                Span::styled("Arguments:", b.theme_engine.current().tool_annotation),
             ]));
             for mut line in view.lines {
                 line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
@@ -865,6 +913,7 @@ pub fn build_instructions_lines(
     blocks: &[InstructionBlock],
     width: u16,
     expanded: bool,
+    theme_engine: Arc<ThemeEngine>,
 ) -> ToolLines {
     let header = blocks.first().map_or("", |b| b.path.as_str());
     let annotation = if blocks.len() > 1 {
@@ -878,7 +927,12 @@ pub fn build_instructions_lines(
         output: expanded,
         details: false,
     };
-    let mut b = ToolLineBuilder::new(width, exp, code_view::instruction_limit(expanded));
+    let mut b = ToolLineBuilder::new(
+        width,
+        exp,
+        code_view::instruction_limit(expanded),
+        Arc::clone(&theme_engine),
+    );
     b.push_header("load", header, annotation.as_deref(), None);
     b.prepend_indicator(&Indicator::Success, Instant::now());
 
@@ -931,6 +985,7 @@ mod tests {
             started_at: Instant::now(),
             width,
             tool_output_lines: &TOL,
+            theme_engine: test_engine(),
         }
     }
 
@@ -1286,6 +1341,7 @@ mod tests {
     #[test_case(80, true  ; "shown_when_width_sufficient")]
     #[test_case(10, false ; "hidden_when_too_narrow")]
     fn append_right_info_timestamp_visibility(width: u16, expect_timestamp: bool) {
+        let engine = test_engine();
         let msg = tool_msg();
         let mut tl = build_tool_lines(
             &msg,
@@ -1294,10 +1350,10 @@ mod tests {
             SectionFlags::default(),
         );
         let span_count_before = tl.lines[0].spans.len();
-        append_right_info(&mut tl.lines[0], None, Some("12:34:56"), width);
+        append_right_info(&mut tl.lines[0], None, Some("12:34:56"), width, &engine);
         if expect_timestamp {
             if let Some(last) = tl.lines[0].spans.last() {
-                assert_eq!(last.style, theme::current().timestamp);
+                assert_eq!(last.style, engine.current().timestamp);
                 assert!(tl.lines[0].spans.len() > span_count_before);
             }
         } else {
@@ -1367,6 +1423,7 @@ mod tests {
     }
 
     fn assert_truncation_styled(tl: &ToolLines) {
+        let engine = test_engine();
         let Some(last) = tl.lines.last() else {
             panic!("expected at least one line");
         };
@@ -1377,7 +1434,7 @@ mod tests {
         else {
             panic!("expected truncation prefix");
         };
-        assert_eq!(span.style, theme::current().tool_dim);
+        assert_eq!(span.style, engine.current().tool_dim);
     }
 
     fn task_truncation_tl(output: String) -> ToolLines {
@@ -1694,7 +1751,8 @@ mod tests {
             &test_rctx(80),
             SectionFlags::default(),
         );
-        let t = theme::current();
+        let engine = test_engine();
+        let t = engine.current();
         assert!(line_has_styled(&tl, "pub", t.index_keyword));
         assert!(line_has_styled(&tl, " fn main()", t.tool));
     }
@@ -1924,7 +1982,7 @@ mod tests {
         let msg = read_msg_with_instructions(3, 30);
         let output = msg.tool_output.as_deref().unwrap();
         let blocks = output.instructions().unwrap();
-        let tl = build_instructions_lines(blocks, 80, expanded);
+        let tl = build_instructions_lines(blocks, 80, expanded, test_engine());
         assert_eq!(tl.truncation.any(), expect_truncation);
         let text = lines_text(&tl);
         assert_eq!(text.contains("inst 29"), expect_all_visible);
@@ -1946,7 +2004,7 @@ mod tests {
             },
         ];
 
-        let tl = build_instructions_lines(&blocks, 80, false);
+        let tl = build_instructions_lines(&blocks, 80, false, test_engine());
 
         assert_eq!(tl.truncation_actions.len(), 1);
         let action_line = tl.truncation_actions[0].line;
@@ -1981,7 +2039,7 @@ mod tests {
             path: "agents.md".into(),
             content: "follow style guide".into(),
         }];
-        let tl = build_instructions_lines(&blocks, 80, false);
+        let tl = build_instructions_lines(&blocks, 80, false, test_engine());
         assert!(tl.highlight.is_some());
         let text = lines_text(&tl);
         assert!(text.contains("follow style guide"));
@@ -2124,7 +2182,7 @@ mod tests {
             strikethrough: true,
             reversed: true,
         });
-        let resolved = resolve_span_style(&style);
+        let resolved = resolve_span_style(&style, &test_engine());
         assert_eq!(resolved.fg, Some(Color::Rgb(10, 20, 30)));
         assert_eq!(resolved.bg, Some(Color::Rgb(40, 50, 60)));
         assert!(resolved.add_modifier.contains(Modifier::BOLD));
@@ -2137,23 +2195,21 @@ mod tests {
 
     #[test]
     fn default_span_resolves_to_theme_tool() {
-        let _guard = crate::theme::THEME_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        theme::set(theme::load_by_name("dracula").expect("dracula theme"));
+        let engine = test_engine();
         assert_eq!(
-            resolve_span_style(&SpanStyle::Default),
-            theme::current().tool
+            resolve_span_style(&SpanStyle::Default, &engine),
+            engine.current().tool
         );
     }
 
     #[test]
     fn snapshot_to_lines_range_adds_indent_prefix() {
+        let engine = test_engine();
         let snapshot = make_snapshot(vec![vec![SnapshotSpan {
             text: "content".into(),
             style: SpanStyle::Default,
         }]]);
-        let (lines, _) = snapshot_to_lines_range(&snapshot, ">>", 0..1, "⠋ ");
+        let (lines, _) = snapshot_to_lines_range(&snapshot, ">>", 0..1, "⠋ ", &engine);
         assert_eq!(lines.len(), 1);
         let first_span = &lines[0].spans[0];
         assert_eq!(first_span.content.as_ref(), ">>");
@@ -2161,6 +2217,7 @@ mod tests {
 
     #[test]
     fn snapshot_multi_span_line_preserves_order() {
+        let engine = test_engine();
         let snapshot = make_snapshot(vec![vec![
             SnapshotSpan {
                 text: "aaa".into(),
@@ -2175,13 +2232,14 @@ mod tests {
                 style: SpanStyle::Default,
             },
         ]]);
-        let (lines, _) = snapshot_to_lines_range(&snapshot, "", 0..1, "⠋ ");
+        let (lines, _) = snapshot_to_lines_range(&snapshot, "", 0..1, "⠋ ", &engine);
         let texts: Vec<&str> = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, vec!["", "aaa", "bbb", "ccc"]);
     }
 
     #[test]
     fn spinner_spans_bake_to_frame_and_record_positions() {
+        let engine = test_engine();
         let snapshot = make_snapshot(vec![
             vec![SnapshotSpan {
                 text: "plain".into(),
@@ -2198,7 +2256,7 @@ mod tests {
                 },
             ],
         ]);
-        let (lines, spinners) = snapshot_to_lines_range(&snapshot, "", 0..2, "⠹ ");
+        let (lines, spinners) = snapshot_to_lines_range(&snapshot, "", 0..2, "⠹ ", &engine);
         assert_eq!(spinners, vec![(1, 2)]);
         assert_eq!(lines[1].spans[2].content.as_ref(), "⠹ ");
     }

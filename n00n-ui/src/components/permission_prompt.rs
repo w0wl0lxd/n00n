@@ -157,7 +157,7 @@ impl PermissionPrompt {
     pub fn subagent_id(&self) -> Option<&str> {
         match self {
             Self::Open { subagent_id, .. } => subagent_id.as_deref(),
-            Self::Closed => None,
+            Self::Closed { .. } => None,
         }
     }
 

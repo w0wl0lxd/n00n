@@ -324,7 +324,7 @@ impl App {
                     raw_text: &copy_text,
                     line_breaks,
                 }];
-                selection::extract_selected_text(buf, screen_sel, &regions)
+                selection::extract_selected_text(buf, screen_sel, &regions, &self.theme_engine)
             }
             SelectionZone::Overlay => {
                 let scroll = self.scroll_offset(sel.zone);
@@ -336,7 +336,7 @@ impl App {
                     area: sel.area,
                     ..Default::default()
                 }];
-                selection::extract_selected_text(buf, screen_sel, &regions)
+                selection::extract_selected_text(buf, screen_sel, &regions, &self.theme_engine)
             }
         };
 
