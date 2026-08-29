@@ -728,29 +728,51 @@ pub struct InteractiveHandle {
     pub task: smol::Task<()>,
 }
 
-#[must_use]
-pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
-    let AgentSetup {
-        vars,
-        instructions,
-        mut tools,
-        tool_filter,
-    } = setup(
-        &params.model,
-        &params.config,
-        &params.excluded_tools,
-        params.workflow,
-    );
+struct InteractiveChannels {
+    raw_tx: flume::Sender<Envelope>,
+    event_rx: Receiver<Envelope>,
+    input_tx: flume::Sender<AgentInput>,
+    input_rx: Receiver<AgentInput>,
+    answer_tx: flume::Sender<String>,
+    answer_rx: Receiver<String>,
+    cancel_tx: flume::Sender<()>,
+    cancel_rx: Receiver<()>,
+    shutdown_tx: flume::Sender<()>,
+    shutdown_rx: Receiver<()>,
+    model_tx: flume::Sender<Model>,
+    model_rx: Receiver<Model>,
+}
 
-    let tool_names = extract_tool_names(&tools);
-
+fn create_interactive_channels() -> InteractiveChannels {
     let (raw_tx, event_rx) = flume::unbounded::<Envelope>();
     let (input_tx, input_rx) = flume::unbounded::<AgentInput>();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
     let (cancel_tx, cancel_rx) = flume::bounded::<()>(1);
     let (shutdown_tx, shutdown_rx) = flume::bounded::<()>(1);
     let (model_tx, model_rx) = flume::unbounded::<Model>();
+    InteractiveChannels {
+        raw_tx,
+        event_rx,
+        input_tx,
+        input_rx,
+        answer_tx,
+        answer_rx,
+        cancel_tx,
+        cancel_rx,
+        shutdown_tx,
+        shutdown_rx,
+        model_tx,
+        model_rx,
+    }
+}
 
+fn init_interactive_session_and_permissions(
+    params: &InteractiveParams,
+) -> (
+    SessionRef,
+    Result<Option<SessionStore>, String>,
+    Arc<PermissionManager>,
+) {
     let (session_id, session_ref) = if let Some(w) = params.session_id.clone() {
         (w.id(), w)
     } else {
@@ -773,6 +795,65 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     if params.yolo {
         permissions.set_yolo(true);
     }
+
+    (session_ref, store, permissions)
+}
+
+fn build_interactive_system_prompt(
+    system_prompt_override: Option<&str>,
+    append_system_prompt: Option<&str>,
+    input: &AgentInput,
+    vars: &template::Vars,
+    instructions: &agent::Instructions,
+    prompt_slots: &Arc<ResolvedSlots>,
+    model: &Model,
+) -> System {
+    let mut system = if let Some(override_) = system_prompt_override {
+        System::from(override_)
+    } else {
+        agent::build_system_prompt(vars, &input.mode, &instructions.text, prompt_slots, model)
+    };
+    if let Some(append) = append_system_prompt {
+        system.push_static(format!(
+            "
+{append}"
+        ));
+    }
+    system
+}
+
+#[must_use]
+pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
+    let AgentSetup {
+        vars,
+        instructions,
+        mut tools,
+        tool_filter,
+    } = setup(
+        &params.model,
+        &params.config,
+        &params.excluded_tools,
+        params.workflow,
+    );
+
+    let tool_names = extract_tool_names(&tools);
+
+    let InteractiveChannels {
+        raw_tx,
+        event_rx,
+        input_tx,
+        input_rx,
+        answer_tx,
+        answer_rx,
+        cancel_tx,
+        cancel_rx,
+        shutdown_tx,
+        shutdown_rx,
+        model_tx,
+        model_rx,
+    } = create_interactive_channels();
+
+    let (session_ref, store, permissions) = init_interactive_session_and_permissions(&params);
 
     let answer_rx = Arc::new(Mutex::new(answer_rx));
     let file_tracker = FileReadTracker::fresh();
@@ -873,20 +954,15 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     &identity,
                     Arc::clone(&params.prompt_slots),
                 );
-                let mut system = if let Some(override_) = params.system_prompt_override.as_deref() {
-                    System::from(override_)
-                } else {
-                    agent::build_system_prompt(
-                        &vars,
-                        &input.mode,
-                        &instructions.text,
-                        &prompt_slots,
-                        &model,
-                    )
-                };
-                if let Some(append) = &params.append_system_prompt {
-                    system.push_static(format!("\n{append}"));
-                }
+                let mut system = build_interactive_system_prompt(
+                    params.system_prompt_override.as_deref(),
+                    params.append_system_prompt.as_deref(),
+                    &input,
+                    &vars,
+                    &instructions,
+                    &prompt_slots,
+                    &model,
+                );
                 if matches!(input.mode, AgentMode::Build)
                     && let Some(plan_path) = input.plan_path.as_deref()
                     && let Err(e) = agent::append_build_plan_prompt(&mut system, plan_path)
