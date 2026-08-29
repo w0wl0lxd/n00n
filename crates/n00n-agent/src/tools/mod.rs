@@ -75,11 +75,12 @@ impl ToolFilter {
         match self {
             Self::Only(mut allowed) => {
                 for name in names {
+                    let canonical = canonical_tool_name(&name).to_owned();
                     if !allowed
                         .iter()
-                        .any(|held| canonical_tool_name(held) == canonical_tool_name(&name))
+                        .any(|held| canonical_tool_name(held) == canonical)
                     {
-                        allowed.push(name);
+                        allowed.push(canonical);
                     }
                 }
                 Self::Only(allowed)
@@ -181,7 +182,7 @@ impl ToolFilter {
                     .allowed_tools
                     .iter()
                     .filter(|s| is_builtin_tool(s))
-                    .cloned()
+                    .map(|s| canonical_tool_name(s).to_owned())
                     .collect(),
             )
         };

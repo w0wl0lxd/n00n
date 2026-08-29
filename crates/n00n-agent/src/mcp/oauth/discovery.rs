@@ -1,4 +1,5 @@
 use isahc::HttpClient;
+use isahc::config::{Configurable, RedirectPolicy};
 use isahc::http::Request;
 use serde::Deserialize;
 use url::{Host, Url};
@@ -201,6 +202,7 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(
 ) -> Result<T, OAuthError> {
     let req = Request::get(url)
         .header("Accept", "application/json")
+        .redirect_policy(RedirectPolicy::None)
         .body(())
         .map_err(|e| OAuthError::Other(e.to_string()))?;
 

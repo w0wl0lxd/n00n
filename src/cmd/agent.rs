@@ -861,7 +861,13 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         smol::spawn(async move {
             let _lock = message_lock.lock().await;
             while event_rx.try_recv().is_ok() {}
-            let queued = input_tx.send(input).is_ok();
+            let queued = match input_tx.send(input) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "queued prompt lost: input channel closed");
+                    false
+                }
+            };
             if queued {
                 next_run_id.store(1, Ordering::Release);
             }

@@ -776,7 +776,13 @@ fn handle_user_message(
         prompt: None,
         plan_path: None,
     };
-    handle.input_tx.send(input).is_ok()
+    match handle.input_tx.send(input) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(%error, "sdk queued prompt lost: input channel closed");
+            false
+        }
+    }
 }
 
 fn handle_control_response(

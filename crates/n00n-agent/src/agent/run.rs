@@ -1062,7 +1062,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             definitions.extend(mcp.deferred_definitions());
             definitions.sort_by(|left, right| {
                 left.namespace.cmp(&right.namespace).then_with(|| {
@@ -1156,7 +1158,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             mcp.extend_tools(&mut tools);
         }
         filter_provider_tools(&mut tools, &effective_filter, &self.mode);
