@@ -1,0 +1,37 @@
+name: Nix
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/nix.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/nix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
+
+      - uses: 'DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25'  # v22
+
+      - uses: 'DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d'  # v14
+        with:
+          use-flakehub: false
+
+      - name: Check flake
+        run: nix flake check
