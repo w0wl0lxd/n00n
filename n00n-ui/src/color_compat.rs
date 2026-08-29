@@ -8,8 +8,6 @@
 //! over SSH where the env vars are stripped. `N00N_TRUECOLOR=0/1` overrides
 //! everything.
 
-use std::sync::OnceLock;
-
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 
@@ -37,16 +35,14 @@ const TRUECOLOR_TERMS: [&str; 10] = [
 ];
 const VTE_TRUECOLOR_VERSION: u32 = 3600;
 
-static TRUECOLOR: OnceLock<bool> = OnceLock::new();
-
 /// Must run while the terminal is in raw mode and before the input reader
 /// thread spawns, so the DECRQSS probe can read replies from the tty itself.
-pub(crate) fn init() {
-    TRUECOLOR.get_or_init(detect);
+pub(crate) fn init() -> bool {
+    detect()
 }
 
-pub(crate) fn downgrade_if_needed(buf: &mut Buffer) {
-    if *TRUECOLOR.get_or_init(detect) {
+pub(crate) fn downgrade_if_needed(buf: &mut Buffer, truecolor: bool) {
+    if truecolor {
         return;
     }
     for cell in &mut buf.content {

@@ -786,6 +786,7 @@ pub(crate) struct EventLoop<'t> {
     /// gated on this (or active animation) so we don't re-diff the whole
     /// buffer on every idle tick. Resize also sets it.
     dirty: bool,
+    truecolor: bool,
 }
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
@@ -1034,6 +1035,7 @@ impl<'t> EventLoop<'t> {
     pub(crate) fn new(
         terminal: &'t mut ratatui::DefaultTerminal,
         params: EventLoopParams,
+        truecolor: bool,
     ) -> Result<Self> {
         static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
 
@@ -1256,6 +1258,7 @@ impl<'t> EventLoop<'t> {
             model_refresh_generation: bg.generation,
             _model_fetch_task: bg.task,
             dirty: true,
+            truecolor,
         })
     }
 
@@ -1305,7 +1308,9 @@ impl<'t> EventLoop<'t> {
                 || !self.post_draw_submissions.is_empty();
             let app = &mut self.sessions[self.focused].app;
             if should_draw {
-                if let Err(e) = draw_then_post_terminal(self.terminal, |f| app.view(f), || {}) {
+                if let Err(e) =
+                    draw_then_post_terminal(self.terminal, self.truecolor, |f| app.view(f), || {})
+                {
                     break Err(e.into());
                 }
                 self.dirty = false;
@@ -3170,6 +3175,7 @@ impl<'t> EventLoop<'t> {
 
 fn draw_then_post_terminal<B>(
     terminal: &mut ratatui::Terminal<B>,
+    truecolor: bool,
     draw: impl FnOnce(&mut ratatui::Frame<'_>),
     after_draw: impl FnOnce(),
 ) -> Result<(), B::Error>
@@ -3178,7 +3184,7 @@ where
 {
     terminal.draw(|f| {
         draw(f);
-        color_compat::downgrade_if_needed(f.buffer_mut());
+        color_compat::downgrade_if_needed(f.buffer_mut(), truecolor);
     })?;
     after_draw();
     Ok(())
@@ -4206,6 +4212,7 @@ mod tests {
 
         draw_then_post_terminal(
             &mut terminal,
+            true,
             |frame| {
                 frame.render_widget(Paragraph::new("bubble"), frame.area());
                 painted.set(true);
@@ -4232,6 +4239,7 @@ mod tests {
 
         let result = draw_then_post_terminal(
             &mut terminal,
+            true,
             |frame| frame.render_widget(Paragraph::new("bubble"), frame.area()),
             || post_draw_ran.set(true),
         );
