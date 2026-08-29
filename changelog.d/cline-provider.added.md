@@ -1,0 +1,1 @@
+Added Cline as a builtin provider: usage-billing credits and ClinePass plans over one OpenAI-compatible gateway, browser sign-in via the WorkOS device flow or `CLINE_API_KEY`, live model discovery, and credit balance in the usage panel.

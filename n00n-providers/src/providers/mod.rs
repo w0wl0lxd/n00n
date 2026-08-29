@@ -16,6 +16,7 @@ use crate::types::ThinkingFieldConfig;
 use crate::{AgentError, CacheHealth, CacheKind, TokenUsage};
 
 pub(crate) mod anthropic;
+pub(crate) mod cline;
 pub(crate) mod copilot;
 pub(crate) mod cursor;
 pub mod custom;

@@ -16,6 +16,7 @@ use crate::model::{Model, ModelFamily, ModelInfo};
 use crate::providers::Timeouts;
 use crate::providers::anthropic::Anthropic;
 use crate::providers::anthropic::bedrock;
+use crate::providers::cline::Cline;
 use crate::providers::copilot::Copilot;
 use crate::providers::cursor::Cursor;
 use crate::providers::deepseek::DeepSeek;
@@ -61,6 +62,7 @@ pub enum ProviderKind {
     Devin,
     #[strum(serialize = "cursor")]
     Cursor,
+    Cline,
 }
 
 impl ProviderKind {
@@ -83,6 +85,7 @@ impl ProviderKind {
             Self::Opencode => "Opencode",
             Self::Devin => "Devin",
             Self::Cursor => "Cursor",
+            Self::Cline => "Cline",
         }
     }
 
@@ -105,6 +108,7 @@ impl ProviderKind {
             Self::Opencode => "OPENCODE_API_KEY",
             Self::Devin => "DEVIN_API_KEY",
             Self::Cursor => "CURSOR_API_KEY",
+            Self::Cline => "CLINE_API_KEY",
         }
     }
 
@@ -129,6 +133,7 @@ impl ProviderKind {
             Self::Opencode => "https://opencode.ai/zen/v1",
             Self::Devin => "https://server.codeium.com (native Connect/gRPC-Web)",
             Self::Cursor => "cursor-agent subprocess (Cursor Agent CLI)",
+            Self::Cline => "https://api.cline.bot/api/v1",
         }
     }
 
@@ -164,6 +169,9 @@ impl ProviderKind {
             Self::Cursor => Some(
                 "Cursor Agent CLI subprocess with stream-json parsing, session resume, and tool-call passthrough",
             ),
+            Self::Cline => Some(
+                "Usage-billing credits and ClinePass subscription across 100+ models via an OpenAI-compatible gateway, with OAuth device-flow sign-in",
+            ),
             _ => None,
         }
     }
@@ -183,7 +191,8 @@ impl ProviderKind {
             | Self::TensorX
             | Self::Opencode
             | Self::Devin
-            | Self::Cursor => ModelFamily::Generic,
+            | Self::Cursor
+            | Self::Cline => ModelFamily::Generic,
             Self::Zai => ModelFamily::Glm,
             Self::Synthetic => ModelFamily::Synthetic,
         }
@@ -204,7 +213,8 @@ impl ProviderKind {
             | Self::OpenRouter
             | Self::Opencode
             | Self::Devin
-            | Self::Cursor => Some(128_000),
+            | Self::Cursor
+            | Self::Cline => Some(128_000),
             Self::Ollama => Some(16_384),
             Self::LlamaCpp | Self::TensorX => None,
             Self::Mistral | Self::Synthetic => Some(32_000),
@@ -217,9 +227,12 @@ impl ProviderKind {
     pub const fn fallback_context_window(self) -> u32 {
         match self {
             Self::Codex => crate::providers::openai::CODING_PLAN_CONTEXT_WINDOW,
-            Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
-                200_000
-            }
+            Self::Anthropic
+            | Self::OpenAi
+            | Self::Copilot
+            | Self::OpenRouter
+            | Self::TensorX
+            | Self::Cline => 200_000,
             Self::Devin => 262_144,
             Self::Google | Self::DeepSeek | Self::Cursor => 1_000_000,
             Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
@@ -274,6 +287,7 @@ impl ProviderKind {
             Self::Opencode => Ok(Box::new(Opencode::new(timeouts)?)),
             Self::Devin => Ok(Box::new(Devin::new(timeouts)?)),
             Self::Cursor => Ok(Box::new(Cursor::new(timeouts)?)),
+            Self::Cline => Ok(Box::new(Cline::new(timeouts)?)),
         }
     }
 }

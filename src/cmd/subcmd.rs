@@ -17,7 +17,7 @@ use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::provider::fetch_all_models;
 use n00n_providers::{ProviderData, catalog_providers};
-use n00n_providers::{copilot_auth, dynamic, openai_auth};
+use n00n_providers::{cline_auth, copilot_auth, dynamic, openai_auth};
 use n00n_storage::StateDir;
 use n00n_storage::auth::ProviderCredentials;
 use n00n_storage::auth::{
@@ -37,6 +37,7 @@ pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
     match provider {
         Some("openai" | "codex") => openai_auth::login(storage)?,
         Some("copilot") => copilot_auth::login(storage)?,
+        Some("cline") => cline_login(storage)?,
         Some(slug) => {
             let slug = slugify(slug);
             if builtin_provider(&slug).is_some()
@@ -51,6 +52,37 @@ pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
             }
         }
         None => login_interactive(storage)?,
+    }
+    Ok(())
+}
+
+fn cline_login(storage: &StateDir) -> Result<()> {
+    println!();
+    println!("  Cline authentication:");
+    println!("    1. Sign in with browser (usage-billing / ClinePass account)");
+    println!("    2. Paste an API key (app.cline.bot > Settings > API Keys)");
+    print!("  Select [1-2]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    match input.trim() {
+        "1" | "" => cline_auth::login_device(storage).context("Cline device sign-in")?,
+        "2" => {
+            print!("  API key: ");
+            io::stdout().flush()?;
+            let mut key = String::new();
+            io::stdin().read_line(&mut key)?;
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                bail!("no API key entered");
+            }
+            cline_auth::save_api_key(storage, &key).context("save Cline API key")?;
+            println!("  \x1b[32m✓\x1b[0m Saved Cline credentials");
+        }
+        _ => bail!("invalid selection"),
+    }
+    if let Some(model) = resolve_default_model("cline", None) {
+        persist_model(storage, model);
     }
     Ok(())
 }
@@ -445,6 +477,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
     match provider {
         "openai" | "codex" => openai_auth::logout(storage)?,
         "copilot" => copilot_auth::logout(storage)?,
+        "cline" => cline_auth::logout(storage)?,
         _ => {
             let mut config = ProvidersConfig::load();
             let deleted =
@@ -481,6 +514,11 @@ pub fn auth_status(storage: &StateDir) {
                     b.slug, display, b.slug
                 );
             }
+            continue;
+        }
+
+        if b.slug == "cline" && cline_auth::has_oauth_tokens(storage) {
+            println!("  \x1b[32m✓\x1b[0m {:<14} {} (OAuth)", b.slug, display);
             continue;
         }
 

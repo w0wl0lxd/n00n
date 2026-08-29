@@ -23,6 +23,7 @@ use crate::{
 
 use super::ResolvedAuth;
 use super::anthropic::Anthropic;
+use super::cline::Cline;
 use super::copilot::Copilot;
 use super::cursor::Cursor;
 use super::deepseek::DeepSeek;
@@ -582,6 +583,10 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
         ),
         ProviderKind::Devin => Box::new(Devin::with_auth(&auth, timeouts)?),
         ProviderKind::Cursor => Box::new(Cursor::with_auth(&auth, timeouts)?),
+        ProviderKind::Cline => Box::new(
+            Cline::with_auth(Arc::clone(&auth), timeouts)?
+                .with_system_prefix(meta.system_prefix.clone()),
+        ),
     };
 
     Ok(Box::new(DynamicProvider {

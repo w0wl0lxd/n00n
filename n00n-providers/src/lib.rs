@@ -26,6 +26,7 @@ pub use model::{
 };
 pub use model_catalog::{ModelCatalog, ModelCatalogError, ModelResolver};
 pub use providers::Timeouts;
+pub use providers::cline::auth as cline_auth;
 pub use providers::copilot::auth as copilot_auth;
 pub use providers::dynamic;
 pub use providers::openai::auth as openai_auth;

@@ -1,0 +1,11 @@
+slug = "cline"
+api_key_env = "CLINE_API_KEY"
+base_url = "https://api.cline.bot/api/v1"
+max_tokens_field = "max_tokens"
+include_stream_usage = true
+provider_name = "Cline"
+supports_prompt_cache_key = false
+supports_prompt_cache_breakpoint = false
+emit_reasoning_content = false
+supports_parallel_tool_calls = true
+const_name = "CONFIG"

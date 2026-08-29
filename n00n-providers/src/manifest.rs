@@ -1,7 +1,7 @@
 use crate::model::{ModelEntry, ModelFamily, ModelTier};
 use crate::providers::{
-    anthropic, copilot, cursor, custom, deepseek, devin, dynamic, google, llama_cpp, mistral,
-    ollama, openai, openrouter, synthetic, tensorx, zai,
+    anthropic, cline, copilot, cursor, custom, deepseek, devin, dynamic, google, llama_cpp,
+    mistral, ollama, openai, openrouter, synthetic, tensorx, zai,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -192,9 +192,20 @@ const CURSOR: ProviderManifest = ProviderManifest {
     models: cursor::models(),
 };
 
+const CLINE: ProviderManifest = ProviderManifest {
+    slug: "cline",
+    display_name: "Cline",
+    family: ModelFamily::Generic,
+    supports_thinking: true,
+    accepts_arbitrary_models: true,
+    fallback_max_output: Some(128_000),
+    fallback_context_window: 200_000,
+    models: cline::models(),
+};
+
 const BUILTINS: &[ProviderManifest] = &[
     ANTHROPIC, OPENAI, CODEX, GOOGLE, COPILOT, OLLAMA, LLAMA_CPP, MISTRAL, ZAI, DEEPSEEK,
-    OPENROUTER, SYNTHETIC, TENSORX, OPENCODE, DEVIN, CURSOR,
+    OPENROUTER, SYNTHETIC, TENSORX, OPENCODE, DEVIN, CURSOR, CLINE,
 ];
 
 pub struct ManifestRegistry;
