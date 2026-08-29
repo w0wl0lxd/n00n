@@ -637,6 +637,86 @@ struct SpawnCtx {
 }
 
 impl SpawnCtx {
+    fn resolve_root_session(&self, root_id: n00nId, session_id: n00nId) -> Option<AppSession> {
+        if root_id == session_id {
+            return None;
+        }
+        match self.storage_writer.latest_snapshot(root_id) {
+            Ok(Some(root)) => Some(Arc::unwrap_or_clone(root)),
+            Ok(None) => match AppSession::load_with_retention(
+                root_id,
+                &self.storage,
+                self.retention_budget,
+                message_tool_use_ids,
+            ) {
+                Ok(root) => Some(root),
+                Err(error) => {
+                    warn!(%session_id, %root_id, %error, "root session state unavailable; using child plugin state");
+                    None
+                }
+            },
+            Err(error) => {
+                warn!(%session_id, %root_id, %error, "current root session state unavailable; using child plugin state");
+                None
+            }
+        }
+    }
+
+    fn hydrate_plugin_state_background(
+        &self,
+        handle: &EventHandle,
+        identity: &SessionIdentity,
+        root_id: n00nId,
+        session_id: n00nId,
+        session_snapshot: Option<StoredSessionStateSnapshot>,
+        root_snapshot: Option<StoredSessionStateSnapshot>,
+    ) -> Result<()> {
+        let root_snapshot_revision = root_snapshot
+            .as_ref()
+            .and_then(StoredSessionStateSnapshot::state_revision);
+        let should_hydrate_root = self
+            .hydration_requested_roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&root_id)
+            .is_none_or(|hydrated_revision| root_snapshot_revision > *hydrated_revision);
+        if should_hydrate_root {
+            self.hydration_requested_roots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(root_id, root_snapshot_revision);
+            let hydration_requested_roots = Arc::clone(&self.hydration_requested_roots);
+            let queue_result = handle.hydrate_state_background_with_completion(
+                &SessionIdentity::root(SessionRef::from_id(root_id)),
+                root_snapshot,
+                move |result| {
+                    if let Err(error) = result {
+                        let mut requests = hydration_requested_roots
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if requests.get(&root_id) == Some(&root_snapshot_revision) {
+                            requests.remove(&root_id);
+                        }
+                        warn!(%root_id, %error, "failed to restore root plugin session state");
+                    }
+                },
+            );
+            if let Err(error) = queue_result {
+                self.hydration_requested_roots
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&root_id);
+                return Err(eyre!("failed to hydrate root plugin state: {error}"));
+            }
+        }
+        if root_id != session_id {
+            handle
+                .hydrate_state_background(identity, session_snapshot)
+                .map_err(|error| eyre!("failed to hydrate plugin session state: {error}"))?;
+        }
+        Ok(())
+    }
+
     fn spawn_runtime(&self, mut session: AppSession) -> Result<SessionRuntime> {
         session.meta.direct_paused_team = session
             .meta
@@ -649,29 +729,7 @@ impl SpawnCtx {
             .map_err(|error| eyre!("invalid session identity: {error}"))?;
         let root_id = persisted_root_id(&session);
         let referenced_revision = outer_compaction_boundary_revision(&session.transcript);
-        let root = if root_id == session.id {
-            None
-        } else {
-            match self.storage_writer.latest_snapshot(root_id) {
-                Ok(Some(root)) => Some(Arc::unwrap_or_clone(root)),
-                Ok(None) => match AppSession::load_with_retention(
-                    root_id,
-                    &self.storage,
-                    self.retention_budget,
-                    message_tool_use_ids,
-                ) {
-                    Ok(root) => Some(root),
-                    Err(error) => {
-                        warn!(session_id = %session.id, %root_id, %error, "root session state unavailable; using child plugin state");
-                        None
-                    }
-                },
-                Err(error) => {
-                    warn!(session_id = %session.id, %root_id, %error, "current root session state unavailable; using child plugin state");
-                    None
-                }
-            }
-        };
+        let root = self.resolve_root_session(root_id, session.id);
         let session_snapshot = resume_state_snapshot(&session, referenced_revision)
             .map_err(|error| eyre!("failed to select session plugin state: {error}"))?;
         let root_snapshot = match root.as_ref() {
@@ -689,49 +747,14 @@ impl SpawnCtx {
         revision_allocator.observe(initial_state_revision);
 
         if let Some(handle) = &self.lua_event_handle {
-            let root_snapshot_revision = root_snapshot
-                .as_ref()
-                .and_then(StoredSessionStateSnapshot::state_revision);
-            let should_hydrate_root = self
-                .hydration_requested_roots
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&root_id)
-                .is_none_or(|hydrated_revision| root_snapshot_revision > *hydrated_revision);
-            if should_hydrate_root {
-                self.hydration_requested_roots
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(root_id, root_snapshot_revision);
-                let hydration_requested_roots = Arc::clone(&self.hydration_requested_roots);
-                let queue_result = handle.hydrate_state_background_with_completion(
-                    &SessionIdentity::root(SessionRef::from_id(root_id)),
-                    root_snapshot,
-                    move |result| {
-                        if let Err(error) = result {
-                            let mut requests = hydration_requested_roots
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if requests.get(&root_id) == Some(&root_snapshot_revision) {
-                                requests.remove(&root_id);
-                            }
-                            warn!(%root_id, %error, "failed to restore root plugin session state");
-                        }
-                    },
-                );
-                if let Err(error) = queue_result {
-                    self.hydration_requested_roots
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&root_id);
-                    return Err(eyre!("failed to hydrate root plugin state: {error}"));
-                }
-            }
-            if root_id != session.id {
-                handle
-                    .hydrate_state_background(&identity, session_snapshot)
-                    .map_err(|error| eyre!("failed to hydrate plugin session state: {error}"))?;
-            }
+            self.hydrate_plugin_state_background(
+                handle,
+                &identity,
+                root_id,
+                session.id,
+                session_snapshot,
+                root_snapshot,
+            )?;
         }
         let permissions = Arc::new(self.permissions.fork());
         let initial_plan_path = session.meta.plan_path.as_ref().map(PathBuf::from);
