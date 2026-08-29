@@ -1,13 +1,14 @@
 use std::borrow::Cow;
 use std::env;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{RetryInfo, Status};
 
 use crate::animation::{animation_elapsed_ms, spinner_frame};
 use crate::cast;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use n00n_agent::FusionPhase;
 use n00n_providers::{CacheHealth, ModelPricing, TokenUsage};
@@ -66,15 +67,17 @@ pub struct StatusBar {
     cwd_branch: String,
     pub flash_duration: Duration,
     branch_update_rx: Option<flume::Receiver<()>>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl StatusBar {
-    pub fn new(flash_duration: Duration) -> Self {
+    pub fn new(flash_duration: Duration, theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             flash: None,
             cwd_branch: cwd_branch_label(),
             flash_duration,
             branch_update_rx: spawn_branch_watcher(),
+            theme_engine,
         }
     }
 
@@ -128,7 +131,7 @@ impl StatusBar {
             let ch = spinner_frame(animation_elapsed_ms());
             left_spans.push(Span::styled(
                 format!(" {ch}"),
-                theme::current().status_notice,
+                self.theme_engine.current().status_notice,
             ));
         }
 
@@ -137,21 +140,21 @@ impl StatusBar {
         if let Some(label) = ctx.fusion_phase.and_then(fusion_phase_label) {
             left_spans.push(Span::styled(
                 format!(" · Fusion {label}"),
-                theme::current().status_notice,
+                self.theme_engine.current().status_notice,
             ));
         }
 
         if let Some(name) = ctx.chat_name {
             left_spans.push(Span::styled(
                 format!(" [{name}]"),
-                theme::current().status_dim,
+                self.theme_engine.current().status_dim,
             ));
         }
 
         if !ctx.auto_scroll {
             left_spans.push(Span::styled(
                 " auto-scroll paused",
-                theme::current().status_dim,
+                self.theme_engine.current().status_dim,
             ));
         }
 
@@ -162,11 +165,11 @@ impl StatusBar {
                 .as_secs();
             left_spans.push(Span::styled(
                 format!(" {}", retry.message),
-                theme::current().status_retry_error,
+                self.theme_engine.current().status_retry_error,
             ));
             left_spans.push(Span::styled(
                 format!(" · retrying in {secs}s (#{})", retry.attempt),
-                theme::current().status_retry_info,
+                self.theme_engine.current().status_retry_info,
             ));
         }
 
@@ -174,7 +177,10 @@ impl StatusBar {
         let mut usage_parts = Vec::new();
 
         if let Status::Error { message: e, .. } = ctx.status {
-            left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
+            left_spans.push(Span::styled(
+                format!(" {e}"),
+                self.theme_engine.current().error,
+            ));
         } else {
             let pct = if ctx.stats.context_window > 0 {
                 cast::f64_to_u32(
@@ -186,26 +192,32 @@ impl StatusBar {
 
             right_spans.push(Span::styled(
                 self.cwd_branch.clone(),
-                theme::current().status_dim,
+                self.theme_engine.current().status_dim,
             ));
             right_spans.push(Span::raw("  "));
             right_spans.push(Span::styled(
                 ctx.model_id.to_string(),
-                theme::current().status_dim,
+                self.theme_engine.current().status_dim,
             ));
 
             if let Some(ref label) = ctx.thinking_label {
                 right_spans.push(Span::styled(
                     format!(" [{label}]"),
-                    theme::current().status_dim,
+                    self.theme_engine.current().status_dim,
                 ));
             }
 
             if ctx.fast {
-                right_spans.push(Span::styled(FAST_LABEL, theme::current().status_dim));
+                right_spans.push(Span::styled(
+                    FAST_LABEL,
+                    self.theme_engine.current().status_dim,
+                ));
             }
             if ctx.workflow {
-                right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
+                right_spans.push(Span::styled(
+                    WORKFLOW_LABEL,
+                    self.theme_engine.current().status_dim,
+                ));
             }
 
             if let (Some(health), Some(valid_until)) = (ctx.cache_health, ctx.cache_valid_until) {
@@ -251,7 +263,7 @@ impl StatusBar {
         if let Some((ref msg, _)) = self.flash {
             left_spans.push(Span::styled(
                 format!(" {msg}"),
-                theme::current().status_notice,
+                self.theme_engine.current().status_notice,
             ));
         }
 
@@ -267,7 +279,7 @@ impl StatusBar {
             let separator = if index == 0 { "  " } else { " · " };
             let span = Span::styled(
                 format!("{separator}{part}"),
-                Style::new().fg(theme::current().foreground),
+                Style::new().fg(self.theme_engine.current().foreground),
             );
             let candidate_width = right_width.saturating_add(cast::usize_to_u16(span.width()));
             if candidate_width > max_right_width {

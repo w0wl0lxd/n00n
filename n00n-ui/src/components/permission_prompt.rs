@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,7 +15,7 @@ use crate::components::form::render_form;
 use crate::components::hint_line;
 use crate::components::is_ctrl;
 use crate::text_buffer::TextBuffer;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 const HINT_ALLOW_ROW: &[(&str, &str)] = &[
     ("y", "Allow"),
@@ -48,8 +50,7 @@ const CONFIRM_DENY_ALL_HINTS: &[(&str, &str)] = &[
 
 const DENY_GUIDANCE_HINTS: &[(&str, &str)] = &[("Enter", "Deny"), ("Esc", "Cancel")];
 
-fn aligned_hint_rows(rows: &[&[(&str, &str)]]) -> Vec<Line<'static>> {
-    let t = theme::current();
+fn aligned_hint_rows(rows: &[&[(&str, &str)]], theme: &crate::theme::Theme) -> Vec<Line<'static>> {
     let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or_else(|| 0);
     let mut col_widths = vec![0usize; max_cols];
     for row in rows {
@@ -62,7 +63,7 @@ fn aligned_hint_rows(rows: &[&[(&str, &str)]]) -> Vec<Line<'static>> {
         .map(|row| {
             let mut spans = Vec::with_capacity(row.len() * 2);
             for (i, (key, desc)) in row.iter().enumerate() {
-                spans.push(Span::styled(format!("  {key}"), t.keybind_key));
+                spans.push(Span::styled(format!("  {key}"), theme.keybind_key));
                 let cell_len = key.len() + 1 + desc.len();
                 let pad = if i + 1 < row.len() {
                     col_widths[i].saturating_sub(cell_len)
@@ -71,7 +72,7 @@ fn aligned_hint_rows(rows: &[&[(&str, &str)]]) -> Vec<Line<'static>> {
                 };
                 spans.push(Span::styled(
                     format!(" {desc}{:width$}", "", width = pad),
-                    t.tool_dim,
+                    theme.tool_dim,
                 ));
             }
             Line::from(spans)
@@ -92,7 +93,9 @@ pub(crate) enum PromptState {
 }
 
 pub enum PermissionPrompt {
-    Closed,
+    Closed {
+        theme_engine: Arc<ThemeEngine>,
+    },
     Open {
         tool: ToolKey,
         scopes: Vec<String>,
@@ -100,6 +103,7 @@ pub enum PermissionPrompt {
         allow_scopes: Vec<String>,
         state: PromptState,
         buffer: TextBuffer,
+        theme_engine: Arc<ThemeEngine>,
     },
 }
 
@@ -113,13 +117,18 @@ impl Overlay for PermissionPrompt {
     }
 
     fn close(&mut self) {
-        *self = Self::Closed;
+        let theme_engine = match self {
+            Self::Closed { theme_engine } | Self::Open { theme_engine, .. } => {
+                Arc::clone(theme_engine)
+            }
+        };
+        *self = Self::Closed { theme_engine };
     }
 }
 
 impl PermissionPrompt {
-    pub fn new() -> Self {
-        Self::Closed
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
+        Self::Closed { theme_engine }
     }
 
     pub fn open(&mut self, tool: ToolKey, scopes: Vec<String>, subagent_id: Option<String>) {
@@ -129,6 +138,11 @@ impl PermissionPrompt {
         } else {
             allow_scopes
         };
+        let theme_engine = match self {
+            Self::Closed { theme_engine } | Self::Open { theme_engine, .. } => {
+                Arc::clone(theme_engine)
+            }
+        };
         *self = Self::Open {
             tool,
             scopes,
@@ -136,6 +150,7 @@ impl PermissionPrompt {
             allow_scopes,
             state: PromptState::Normal,
             buffer: TextBuffer::new(""),
+            theme_engine,
         };
     }
 
@@ -246,12 +261,13 @@ impl PermissionPrompt {
             allow_scopes,
             state,
             buffer,
+            theme_engine,
             ..
         } = self
         else {
             return vec![];
         };
-        let t = theme::current();
+        let t = theme_engine.current();
         let label_style = t.tool_dim;
         let value_style = Style::new().fg(t.foreground);
 
@@ -329,7 +345,7 @@ impl PermissionPrompt {
                 lines.push(hint_line(DENY_GUIDANCE_HINTS));
             }
             PromptState::Normal => {
-                lines.extend(aligned_hint_rows(&[HINT_ALLOW_ROW, HINT_DENY_ROW]));
+                lines.extend(aligned_hint_rows(&[HINT_ALLOW_ROW, HINT_DENY_ROW], &t));
             }
         }
         lines.push(Line::raw(""));
@@ -341,7 +357,10 @@ impl PermissionPrompt {
             return;
         }
         let lines = self.build_lines();
-        let t = theme::current();
+        let t = match self {
+            Self::Open { theme_engine, .. } => theme_engine.current(),
+            Self::Closed { .. } => return,
+        };
         render_form(&t, " Permission Required ", frame, area, lines, (0, 0));
     }
 
@@ -360,9 +379,10 @@ mod tests {
     use n00n_config::ToolKey;
 
     use super::{PermissionPrompt, PromptState};
+    use crate::theme::test_engine;
 
     fn open_prompt() -> PermissionPrompt {
-        let mut prompt = PermissionPrompt::new();
+        let mut prompt = PermissionPrompt::new(test_engine());
         prompt.open(ToolKey::native("bash"), vec!["execute".into()], None);
         prompt
     }
@@ -447,7 +467,7 @@ mod tests {
 
     #[test]
     fn wildcard_tool_key_opens() {
-        let mut prompt = PermissionPrompt::new();
+        let mut prompt = PermissionPrompt::new(test_engine());
         prompt.open(ToolKey::Wildcard, vec![], None);
         assert!(matches!(prompt, PermissionPrompt::Open { .. }));
     }

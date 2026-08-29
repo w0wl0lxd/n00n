@@ -13,13 +13,13 @@ use n00n_providers::provider::ProviderKind;
 
 use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 const TITLE: &str = " Models ";
 const RECENT_SECTION: &str = "Recent";
 
-fn footer_line() -> Line<'static> {
-    let t = theme::current();
+fn footer_line(theme_engine: &ThemeEngine) -> Line<'static> {
+    let t = theme_engine.current();
     Line::from(vec![
         Span::styled("  Enter", t.keybind_key),
         Span::styled(" select", t.tool_dim),
@@ -111,21 +111,24 @@ pub struct ModelPicker {
     last_specs: Option<Arc<Vec<String>>>,
     dirty: bool,
     model_registry: Arc<RwLock<ModelRegistry>>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl ModelPicker {
     pub fn new(
         models: Arc<ArcSwapOption<Vec<String>>>,
         model_registry: Arc<RwLock<ModelRegistry>>,
+        theme_engine: Arc<ThemeEngine>,
     ) -> Self {
         Self {
-            picker: ListPicker::new().with_footer_builder(footer_line),
+            picker: ListPicker::new(Arc::clone(&theme_engine)).with_footer_builder(footer_line),
             models,
             recents: Vec::new(),
             current_spec: String::new(),
             last_specs: None,
             dirty: false,
             model_registry,
+            theme_engine,
         }
     }
 

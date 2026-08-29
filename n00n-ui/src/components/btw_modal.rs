@@ -1,10 +1,12 @@
+use std::sync::Arc;
+
 use crate::cast;
 use crate::components::ModalScroll;
 use crate::components::Overlay;
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::components::streaming_content::StreamingContent;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -29,17 +31,19 @@ pub struct BtwModal {
     answer: StreamingContent,
     scroll: ModalScroll,
     rx: Option<flume::Receiver<BtwEvent>>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl BtwModal {
-    pub fn new(ms_per_char: u64) -> Self {
-        let theme = theme::current();
+    pub fn new(theme_engine: Arc<ThemeEngine>, ms_per_char: u64) -> Self {
+        let theme = theme_engine.current();
         Self {
             open: false,
             question: String::new(),
             answer: StreamingContent::new("", theme.assistant, theme.assistant, ms_per_char),
             scroll: ModalScroll::new(),
             rx: None,
+            theme_engine,
         }
     }
 
@@ -112,7 +116,7 @@ impl BtwModal {
             return Rect::default();
         }
 
-        let theme = theme::current();
+        let theme = self.theme_engine.current();
         let border_chrome: u16 = 2;
         let padded_width = cast::u32_to_u16(
             (u32::from(area.width) * u32::from(WIDTH_PERCENT) / 100)
@@ -138,6 +142,7 @@ impl BtwModal {
             title: TITLE,
             width_percent: WIDTH_PERCENT,
             max_height_percent: MAX_HEIGHT_PERCENT,
+            theme_engine: self.theme_engine.clone(),
         };
         let (popup, inner) = modal.render(frame, area, total);
         let padded = Rect {
@@ -155,7 +160,14 @@ impl BtwModal {
         frame.render_widget(paragraph, padded);
 
         if total > viewport_h {
-            render_vertical_scrollbar(frame, inner, total, scroll, None);
+            render_vertical_scrollbar(
+                frame,
+                inner,
+                total,
+                scroll,
+                None,
+                self.theme_engine.scrollbar_enabled(),
+            );
         }
 
         popup
@@ -181,6 +193,7 @@ impl Overlay for BtwModal {
 mod tests {
     use super::*;
     use crate::components::key as key_ev;
+    use crate::theme::test_engine;
     use crossterm::event::KeyCode;
     use test_case::test_case;
 
@@ -192,7 +205,7 @@ mod tests {
 
     #[test]
     fn open_sets_question_and_state() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let _tx = open_modal(&mut m, "why?");
         assert!(m.is_open());
         assert_eq!(m.question, "why?");
@@ -202,7 +215,7 @@ mod tests {
 
     #[test]
     fn close_resets_all_fields() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::TextDelta("some answer".into())).unwrap();
         m.poll();
@@ -218,7 +231,7 @@ mod tests {
 
     #[test]
     fn poll_accumulates_text() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::TextDelta("hello ".into())).unwrap();
         tx.send(BtwEvent::TextDelta("world".into())).unwrap();
@@ -228,7 +241,7 @@ mod tests {
 
     #[test]
     fn poll_done_sets_done_and_drops_rx() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::Done).unwrap();
         m.poll();
@@ -237,7 +250,7 @@ mod tests {
 
     #[test]
     fn poll_error_replaces_answer_and_marks_done() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::TextDelta("partial".into())).unwrap();
         tx.send(BtwEvent::Error("oops".into())).unwrap();
@@ -250,7 +263,7 @@ mod tests {
     #[test_case(KeyCode::Enter ; "enter_closes")]
     #[test_case(KeyCode::Char(' ') ; "space_closes")]
     fn dismiss_keys_close(code: KeyCode) {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let _tx = open_modal(&mut m, "q");
         m.handle_key(key_ev(code));
         assert!(!m.is_open());
@@ -259,7 +272,7 @@ mod tests {
 
     #[test]
     fn other_keys_consumed_but_stay_open() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let _tx = open_modal(&mut m, "q");
         m.handle_key(key_ev(KeyCode::Char('a')));
         assert!(m.is_open());
@@ -267,7 +280,7 @@ mod tests {
 
     #[test]
     fn scroll_up_down() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let _tx = open_modal(&mut m, "q");
         m.scroll.update_dimensions(100, 10);
         m.scroll.scroll(-5);
@@ -282,7 +295,7 @@ mod tests {
 
     #[test]
     fn double_open_resets_first() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let tx1 = open_modal(&mut m, "first");
         tx1.send(BtwEvent::TextDelta("leftover".into())).unwrap();
         m.poll();
@@ -297,7 +310,7 @@ mod tests {
 
     #[test]
     fn close_drops_rx_signaling_sender() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         let tx = open_modal(&mut m, "q");
         m.close();
         assert!(tx.send(BtwEvent::TextDelta("x".into())).is_err());
@@ -305,7 +318,7 @@ mod tests {
 
     #[test]
     fn poll_noop_when_no_rx() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(test_engine(), 0);
         m.poll();
         assert!(!m.is_open());
     }

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher};
@@ -11,6 +12,7 @@ use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::text_buffer::TextBuffer;
 use crate::theme;
+use crate::theme::ThemeEngine;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -62,9 +64,10 @@ pub struct ListPicker<T> {
     state: Option<State<T>>,
     title: String,
     max_visible: Option<u16>,
-    footer: Option<fn() -> Line<'static>>,
+    footer: Option<fn(&ThemeEngine) -> Line<'static>>,
     footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<String>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 struct State<T> {
@@ -226,7 +229,7 @@ impl<T: PickerItem> State<T> {
 }
 
 impl<T: PickerItem> ListPicker<T> {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             state: None,
             title: String::new(),
@@ -234,6 +237,7 @@ impl<T: PickerItem> ListPicker<T> {
             footer: None,
             footer_hints: None,
             error_text: None,
+            theme_engine,
         }
     }
 
@@ -242,7 +246,7 @@ impl<T: PickerItem> ListPicker<T> {
         self
     }
 
-    pub fn with_footer_builder(mut self, builder: fn() -> Line<'static>) -> Self {
+    pub fn with_footer_builder(mut self, builder: fn(&ThemeEngine) -> Line<'static>) -> Self {
         self.footer = Some(builder);
         self
     }
@@ -462,6 +466,7 @@ impl<T: PickerItem> ListPicker<T> {
                 self.footer,
                 self.footer_hints,
                 self.error_text.as_deref(),
+                &self.theme_engine,
             ),
         }
     }
@@ -483,9 +488,10 @@ fn render_ready<T: PickerItem>(
     s: &mut State<T>,
     title: &str,
     max_visible: Option<u16>,
-    footer: Option<fn() -> Line<'static>>,
+    footer: Option<fn(&ThemeEngine) -> Line<'static>>,
     footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<&str>,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Rect {
     let footer_rows = u16::from(footer.is_some() || footer_hints.is_some());
     let content_rows = if s.filtered.is_empty() {
@@ -508,6 +514,7 @@ fn render_ready<T: PickerItem>(
         title,
         width_percent: MIN_WIDTH_PERCENT,
         max_height_percent: MAX_HEIGHT_PERCENT,
+        theme_engine: Arc::clone(theme_engine),
     };
     let (popup, inner) = modal.render(
         frame,
@@ -537,7 +544,7 @@ fn render_ready<T: PickerItem>(
     if let Some(err) = error_text {
         let line = Line::from(Span::styled(
             format!("  Error: {err}"),
-            theme::current().error,
+            theme_engine.current().error,
         ));
         frame.render_widget(Paragraph::new(vec![line]), areas[area_idx]);
         area_idx += 1;
@@ -558,11 +565,12 @@ fn render_ready<T: PickerItem>(
         s.scroll_offset,
         s.viewport_height,
         s.enabled.as_deref(),
+        theme_engine,
     );
-    render_search(frame, search_area, &s.search);
+    render_search(frame, search_area, &s.search, theme_engine);
 
     if let Some(build) = footer {
-        frame.render_widget(Paragraph::new(build()), areas[area_idx]);
+        frame.render_widget(Paragraph::new(build(theme_engine)), areas[area_idx]);
     } else if let Some(hints) = footer_hints {
         let pairs: Vec<Span<'static>> = hints
             .iter()
@@ -587,6 +595,7 @@ fn render_ready<T: PickerItem>(
             u16::try_from(total_visual).unwrap_or_else(|_| u16::MAX),
             u16::try_from(visual_offset).unwrap_or_else(|_| u16::MAX),
             None,
+            theme_engine.scrollbar_enabled(),
         );
     }
 
@@ -677,11 +686,12 @@ fn render_list<T: PickerItem>(
     scroll_offset: usize,
     viewport_height: usize,
     enabled: Option<&[bool]>,
+    theme_engine: &ThemeEngine,
 ) {
     if filtered.is_empty() {
         let line = Line::from(Span::styled(
             format!("  {NO_MATCHES}"),
-            theme::current().item_desc,
+            theme_engine.current().item_desc,
         ));
         frame.render_widget(Paragraph::new(vec![line]), area);
         return;
@@ -709,7 +719,7 @@ fn render_list<T: PickerItem>(
             if lines.len() < viewport_height {
                 lines.push(Line::from(Span::styled(
                     format!("  {sec}"),
-                    theme::current().keybind_section,
+                    theme_engine.current().keybind_section,
                 )));
             }
             last_section = Some(sec);
@@ -720,16 +730,16 @@ fn render_list<T: PickerItem>(
         }
 
         let highlighted = item.is_highlighted();
-        let t = theme::current();
+        let t = theme_engine.current();
         let (style, detail_style) = match (i == selected, highlighted) {
             (true, true) => {
                 let s = t
                     .item_selected
                     .fg(t.accent.fg.unwrap_or_else(Color::default));
-                (s, theme::dim_style(s, 0.4))
+                (s, theme_engine.dim_style(s, 0.4))
             }
             (true, false) => (t.item_selected, t.item_selected),
-            (false, true) => (t.accent, theme::dim_style(t.accent, 0.4)),
+            (false, true) => (t.accent, theme_engine.dim_style(t.accent, 0.4)),
             (false, false) => (t.item, t.item_desc),
         };
         let checkbox = enabled.map(|en| {
@@ -737,9 +747,9 @@ fn render_list<T: PickerItem>(
             let sty = if i == selected {
                 style
             } else if en[item_idx] {
-                theme::current().item
+                theme_engine.current().item
             } else {
-                theme::current().item_desc
+                theme_engine.current().item_desc
             };
             Span::styled(sym, sty)
         });
@@ -771,7 +781,10 @@ fn render_list<T: PickerItem>(
             spans.push(Span::styled(label, style));
             if let Some(s) = suffix {
                 spans.push(Span::styled(" ".repeat(suffix_gap), style));
-                spans.push(Span::styled(s.to_string(), theme::dim_style(style, 0.4)));
+                spans.push(Span::styled(
+                    s.to_string(),
+                    theme_engine.dim_style(style, 0.4),
+                ));
             }
             spans.push(Span::styled(" ".repeat(pad), style));
             spans.push(Span::styled(detail.to_string(), detail_style));
@@ -785,7 +798,10 @@ fn render_list<T: PickerItem>(
             spans.push(Span::styled(label, style));
             if let Some(s) = suffix {
                 spans.push(Span::styled(" ".repeat(suffix_gap), style));
-                spans.push(Span::styled(s.to_string(), theme::dim_style(style, 0.4)));
+                spans.push(Span::styled(
+                    s.to_string(),
+                    theme_engine.dim_style(style, 0.4),
+                ));
             }
             Line::from(spans)
         };
@@ -796,7 +812,7 @@ fn render_list<T: PickerItem>(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
+fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer, theme_engine: &ThemeEngine) {
     let query = search.value();
     let cursor_x = search.x();
     let chars: Vec<char> = query.chars().collect();
@@ -808,7 +824,7 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
     let line = Line::from(vec![
         super::chevron_span(),
         Span::styled(before, Style::default()),
-        Span::styled(cursor_char.to_string(), theme::current().cursor),
+        Span::styled(cursor_char.to_string(), theme_engine.current().cursor),
         Span::styled(after, Style::default()),
     ]);
     frame.render_widget(Paragraph::new(vec![line]), area);
@@ -861,7 +877,7 @@ mod tests {
 
     #[test]
     fn footer_hints_render_without_panicking() {
-        let mut picker = ListPicker::new();
+        let mut picker = ListPicker::new(theme::test_engine());
         picker.set_footer(&[("Enter", "open"), ("Esc", "close")]);
         picker.open(entries(&["Main", "Task"]), " Tasks ");
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
@@ -875,7 +891,7 @@ mod tests {
 
     #[test]
     fn navigation_wraps_around() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(entries(&["A", "B", "C"]), " Test ");
 
         p.handle_key(key(KeyCode::Up));
@@ -888,7 +904,7 @@ mod tests {
     #[test]
     fn page_down_advances_and_clamps() {
         let items: Vec<Entry> = (0..50).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(items, " Test ");
         ready_state_mut(&mut p).viewport_height = 10;
 
@@ -904,7 +920,7 @@ mod tests {
     #[test]
     fn page_up_retreats_and_clamps() {
         let items: Vec<Entry> = (0..50).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(items, " Test ");
         let s = ready_state_mut(&mut p);
         s.viewport_height = 10;
@@ -922,7 +938,7 @@ mod tests {
     #[test]
     fn ctrl_d_and_ctrl_u_page_like_page_keys() {
         let items: Vec<Entry> = (0..50).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(items, " Test ");
         ready_state_mut(&mut p).viewport_height = 10;
 
@@ -935,7 +951,7 @@ mod tests {
 
     #[test]
     fn search_filters_progressively() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(entries(&["Alpha", "Beta"]), " Test ");
         assert_eq!(ready_state(&p).filtered, vec![0, 1]);
 
@@ -948,7 +964,7 @@ mod tests {
 
     #[test]
     fn fuzzy_search_with_nucleo_matcher() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(
             entries(&["claude-sonnet", "claude-opus", "gemini-pro", "gpt-4"]),
             " Test ",
@@ -974,7 +990,7 @@ mod tests {
 
     #[test]
     fn enter_returns_selected_item() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(entries(&["A", "B", "C"]), " Test ");
         p.handle_key(key(KeyCode::Down));
 
@@ -986,7 +1002,7 @@ mod tests {
     #[test_case(key(KeyCode::Esc) ; "esc_returns_close")]
     #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_returns_close")]
     fn cancel_returns_close(cancel_key: KeyEvent) {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(entries(&["A", "B"]), " Test ");
 
         let action = p.handle_key(cancel_key);
@@ -996,7 +1012,7 @@ mod tests {
 
     #[test]
     fn enter_on_empty_results_consumed() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(entries(&["Alpha"]), " Test ");
         p.handle_key(key(KeyCode::Char('z')));
 
@@ -1010,7 +1026,7 @@ mod tests {
     #[test_case(0, -100, 20 ; "clamp_at_bottom")]
     fn scroll_bounds(initial: usize, delta: i32, expected: usize) {
         let items: Vec<Entry> = (0..30).map(|i| Entry::new(&format!("Item {i}"))).collect();
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(items, " Test ");
         let s = ready_state_mut(&mut p);
         s.viewport_height = 10;
@@ -1022,7 +1038,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_deletes_word() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(entries(&["A", "B"]), " Test ");
         p.handle_key(key(KeyCode::Char('h')));
         p.handle_key(key(KeyCode::Char('i')));
@@ -1073,7 +1089,7 @@ mod tests {
 
     #[test]
     fn section_navigation_accounts_for_headers() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open(section_entries(), " Test ");
         let s = ready_state_mut(&mut p);
         s.viewport_height = 3;
@@ -1085,7 +1101,7 @@ mod tests {
 
     #[test]
     fn ensure_visible_clamps_scroll_offset_after_filter() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         let items: Vec<Entry> = (0..20).map(|i| Entry::new(&format!("Item {i}"))).collect();
         p.open(items, " Test ");
         let s = ready_state_mut(&mut p);
@@ -1101,7 +1117,7 @@ mod tests {
 
     #[test]
     fn toggle_mode_enter_flips_enabled() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open_toggleable(entries(&["A", "B"]), vec![true, true], " Test ");
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(matches!(action, PickerAction::Toggle(0, false)));
@@ -1110,7 +1126,7 @@ mod tests {
 
     #[test]
     fn toggle_mode_search_targets_correct_item() {
-        let mut p = ListPicker::new();
+        let mut p = ListPicker::new(theme::test_engine());
         p.open_toggleable(entries(&["Alpha", "Beta"]), vec![true, true], " Test ");
         p.handle_key(key(KeyCode::Char('b')));
         let action = p.handle_key(key(KeyCode::Enter));

@@ -12,12 +12,14 @@ use n00n_storage::auth::{
     ProviderCredentials, load_provider_credentials, save_provider_credentials,
 };
 use n00n_storage::model::persist_model;
+use std::sync::Arc;
 
 use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 use crate::components::modal::Modal;
 use crate::text_buffer::TextBuffer;
 use crate::theme;
+use crate::theme::ThemeEngine;
 
 const TITLE: &str = " Login ";
 const CATALOG_UNAVAILABLE_SLUG: &str = "catalog-unavailable";
@@ -182,14 +184,16 @@ pub struct LoginPicker {
     step: Step,
     provider_items: Vec<ProviderItem>,
     storage: Option<n00n_storage::StateDir>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl LoginPicker {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             step: Step::Closed,
             provider_items: Vec::new(),
             storage: None,
+            theme_engine,
         }
     }
 
@@ -281,7 +285,7 @@ impl LoginPicker {
         });
 
         self.provider_items.clone_from(&items);
-        let mut picker = ListPicker::new();
+        let mut picker = ListPicker::new(Arc::clone(&self.theme_engine));
         picker.open(items, TITLE);
         self.storage = Some(storage);
         self.step = Step::PickProvider(picker);
@@ -628,7 +632,7 @@ impl LoginPicker {
                     })
                     .collect();
                 let display = providers::resolve_display_name(&slug, None);
-                let mut plan_picker = ListPicker::new();
+                let mut plan_picker = ListPicker::new(Arc::clone(&self.theme_engine));
                 plan_picker.open(plan_items, format!(" {display} plan "));
                 self.step = Step::PickPlan {
                     picker: plan_picker,
@@ -648,7 +652,7 @@ impl LoginPicker {
                     .iter()
                     .map(|(name, display)| ProtocolItem(name, display))
                     .collect();
-                let mut picker = ListPicker::new();
+                let mut picker = ListPicker::new(Arc::clone(&self.theme_engine));
                 picker.open(items, " Protocol ");
                 self.step = Step::CustomProtocol { picker, slug };
                 LoginPickerAction::Consumed
@@ -674,7 +678,7 @@ impl LoginPicker {
                 }
             }
             StepAction::Back => {
-                let mut picker = ListPicker::new();
+                let mut picker = ListPicker::new(Arc::clone(&self.theme_engine));
                 picker.open(self.provider_items.clone(), TITLE);
                 self.step = Step::PickProvider(picker);
                 LoginPickerAction::Consumed
@@ -695,11 +699,12 @@ impl LoginPicker {
                     title: " Provider name ",
                     width_percent: 65,
                     max_height_percent: 40,
+                    theme_engine: Arc::clone(&self.theme_engine),
                 };
                 let (popup, inner) = modal.render(frame, area, 2);
-                let t = theme::current();
+                let t = self.theme_engine.current();
                 let hint = Span::styled("Enter provider name, then Enter", t.input_placeholder);
-                let input_line = input_line_with_cursor(input);
+                let input_line = input_line_with_cursor(input, &self.theme_engine);
                 frame.render_widget(
                     ratatui::widgets::Paragraph::new(vec![Line::from(hint), input_line])
                         .style(Style::new().bg(t.background))
@@ -714,11 +719,12 @@ impl LoginPicker {
                     title: " Base URL ",
                     width_percent: 65,
                     max_height_percent: 40,
+                    theme_engine: Arc::clone(&self.theme_engine),
                 };
                 let (popup, inner) = modal.render(frame, area, 2);
-                let t = theme::current();
+                let t = self.theme_engine.current();
                 let hint = Span::styled("Enter base URL, then Enter", t.input_placeholder);
-                let input_line = input_line_with_cursor(input);
+                let input_line = input_line_with_cursor(input, &self.theme_engine);
                 frame.render_widget(
                     ratatui::widgets::Paragraph::new(vec![Line::from(hint), input_line])
                         .style(Style::new().bg(t.background))
@@ -736,11 +742,12 @@ impl LoginPicker {
                     title: &format!(" {display_name} "),
                     width_percent: 65,
                     max_height_percent: 40,
+                    theme_engine: Arc::clone(&self.theme_engine),
                 };
                 let (popup, inner) = modal.render(frame, area, 2);
-                let t = theme::current();
+                let t = self.theme_engine.current();
                 let hint = Span::styled("Edit host URL, or Enter to confirm", t.input_placeholder);
-                let input_line = input_line_with_cursor(input);
+                let input_line = input_line_with_cursor(input, &self.theme_engine);
                 frame.render_widget(
                     ratatui::widgets::Paragraph::new(vec![Line::from(hint), input_line])
                         .style(Style::new().bg(t.background))
@@ -759,16 +766,17 @@ impl LoginPicker {
                     title: &format!(" {display_name} "),
                     width_percent: 65,
                     max_height_percent: 40,
+                    theme_engine: Arc::clone(&self.theme_engine),
                 };
                 let (popup, inner) = modal.render(frame, area, 2);
-                let t = theme::current();
+                let t = self.theme_engine.current();
                 let hint_text = if *api_key_optional {
                     "Paste API key, or Enter to skip"
                 } else {
                     "Paste API key, then Enter"
                 };
                 let hint = Span::styled(hint_text, t.input_placeholder);
-                let input_line = input_line_with_cursor(input);
+                let input_line = input_line_with_cursor(input, &self.theme_engine);
                 frame.render_widget(
                     ratatui::widgets::Paragraph::new(vec![Line::from(hint), input_line])
                         .style(Style::new().bg(t.background))
@@ -782,11 +790,12 @@ impl LoginPicker {
                     title: " Login ",
                     width_percent: 50,
                     max_height_percent: 30,
+                    theme_engine: Arc::clone(&self.theme_engine),
                 };
                 let (popup, inner) = modal.render(frame, area, 1);
                 frame.render_widget(
                     ratatui::widgets::Paragraph::new(Line::from(message.clone()))
-                        .style(Style::new().bg(theme::current().background)),
+                        .style(Style::new().bg(self.theme_engine.current().background)),
                     inner,
                 );
                 popup
@@ -805,8 +814,8 @@ impl Overlay for LoginPicker {
     }
 }
 
-fn input_line_with_cursor(input: &TextBuffer) -> Line<'static> {
-    let t = theme::current();
+fn input_line_with_cursor(input: &TextBuffer, theme_engine: &ThemeEngine) -> Line<'static> {
+    let t = theme_engine.current();
     let value = input.value();
     let cursor_byte = TextBuffer::char_to_byte(&value, input.x());
     let (before, rest) = value.split_at(cursor_byte);

@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use crate::cast;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
@@ -12,6 +14,7 @@ pub struct Modal<'a> {
     pub title: &'a str,
     pub width_percent: u16,
     pub max_height_percent: u16,
+    pub theme_engine: Arc<ThemeEngine>,
 }
 
 impl Modal<'_> {
@@ -31,12 +34,13 @@ impl Modal<'_> {
 
         frame.render_widget(Clear, popup);
 
+        let theme = self.theme_engine.current();
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(theme::current().panel_border)
+            .border_style(theme.panel_border)
             .title(self.title)
-            .title_style(theme::current().panel_title)
-            .style(Style::new().bg(theme::current().background));
+            .title_style(theme.panel_title)
+            .style(Style::new().bg(theme.background));
 
         let inner = block.inner(popup);
         frame.render_widget(block, popup);

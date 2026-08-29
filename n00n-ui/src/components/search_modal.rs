@@ -1,11 +1,12 @@
 use std::cmp::Reverse;
+use std::sync::Arc;
 
 use crate::components::Overlay;
 use crate::components::keybindings::key;
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::text_buffer::TextBuffer;
-use crate::theme;
+use crate::theme::{self, ThemeEngine};
 use crossterm::event::{KeyCode, KeyEvent};
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -46,10 +47,11 @@ pub struct SearchModal {
     open: bool,
     saved_scroll: Option<(u16, bool)>,
     matcher: Matcher,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl SearchModal {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             search: TextBuffer::new(""),
             matches: Vec::new(),
@@ -59,6 +61,7 @@ impl SearchModal {
             open: false,
             saved_scroll: None,
             matcher: Matcher::new(Config::DEFAULT),
+            theme_engine,
         }
     }
 
@@ -206,6 +209,7 @@ impl SearchModal {
             title: MODAL_TITLE,
             width_percent: MODAL_WIDTH_PERCENT,
             max_height_percent: MODAL_MAX_HEIGHT_PERCENT,
+            theme_engine: self.theme_engine.clone(),
         };
         let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW);
         let viewport_h = inner.height.saturating_sub(SEARCH_ROW) as usize;
@@ -225,6 +229,7 @@ impl SearchModal {
                 total,
                 u16::try_from(self.scroll_offset).unwrap_or_else(|_| u16::MAX),
                 None,
+                self.theme_engine.scrollbar_enabled(),
             );
         }
 
@@ -232,7 +237,7 @@ impl SearchModal {
     }
 
     fn render_list(&self, frame: &mut Frame, area: Rect, viewport_height: usize) {
-        let t = theme::current();
+        let t = self.theme_engine.current();
 
         if self.matches.is_empty() {
             if !self.search.value().is_empty() {
@@ -266,7 +271,7 @@ impl SearchModal {
     }
 
     fn render_search(&self, frame: &mut Frame, area: Rect) {
-        let t = theme::current();
+        let t = self.theme_engine.current();
         let query = self.search.value();
         let cursor_byte = TextBuffer::char_to_byte(&query, self.search.x());
         let (before, rest) = query.split_at(cursor_byte);
@@ -360,6 +365,7 @@ fn build_highlighted_line<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::test_engine;
     use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
     use test_case::test_case;
 
@@ -373,7 +379,7 @@ mod tests {
     }
 
     fn modal_with_query(query: &str, texts: &[&str]) -> SearchModal {
-        let mut modal = SearchModal::new();
+        let mut modal = SearchModal::new(test_engine());
         modal.open(0, true);
         modal.search = TextBuffer::new(query);
         modal.update_matches(texts);

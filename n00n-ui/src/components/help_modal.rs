@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::components::ModalScroll;
 use crate::components::Overlay;
 use crate::components::keybindings::{
@@ -5,7 +7,7 @@ use crate::components::keybindings::{
 };
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -27,10 +29,15 @@ const INPUT_PREFIXES: &[(&str, &str)] = &[
 pub struct HelpModal {
     open: bool,
     scroll: ModalScroll,
+    theme_engine: Arc<ThemeEngine>,
 }
 
-fn key_spans(label: ResolvedLabel, pad: usize, prefix: &str) -> Vec<Span<'static>> {
-    let theme = theme::current();
+fn key_spans(
+    label: ResolvedLabel,
+    pad: usize,
+    prefix: &str,
+    theme: &crate::theme::Theme,
+) -> Vec<Span<'static>> {
     match label {
         ResolvedLabel::Single(s) => {
             let w = UnicodeWidthStr::width(s);
@@ -40,8 +47,8 @@ fn key_spans(label: ResolvedLabel, pad: usize, prefix: &str) -> Vec<Span<'static
                 theme.keybind_key,
             )]
         }
-        ResolvedLabel::Alt(a, b) => multi_key_spans(&[a, b], pad, prefix, &theme),
-        ResolvedLabel::Multi(keys) => multi_key_spans(keys, pad, prefix, &theme),
+        ResolvedLabel::Alt(a, b) => multi_key_spans(&[a, b], pad, prefix, theme),
+        ResolvedLabel::Multi(keys) => multi_key_spans(keys, pad, prefix, theme),
     }
 }
 
@@ -78,10 +85,11 @@ fn multi_key_spans(
 }
 
 impl HelpModal {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             open: false,
             scroll: ModalScroll::new_top(),
+            theme_engine,
         }
     }
 
@@ -121,7 +129,7 @@ impl HelpModal {
         }
 
         let mut lines: Vec<Line> = Vec::new();
-        let theme = theme::current();
+        let theme = self.theme_engine.current();
 
         let key_col_width = KEYBINDS
             .iter()
@@ -150,7 +158,7 @@ impl HelpModal {
                 .iter()
                 .filter(|kb| kb.context == ctx && kb.platform.is_visible())
             {
-                let mut spans = key_spans(kb.label.resolve(), key_col_width, PREFIX_TOP);
+                let mut spans = key_spans(kb.label.resolve(), key_col_width, PREFIX_TOP, &theme);
                 spans.push(Span::styled(kb.description, theme.keybind_desc));
                 lines.push(Line::from(spans));
             }
@@ -176,6 +184,7 @@ impl HelpModal {
                         kb.label.resolve(),
                         key_col_width - KEY_COL_GAP,
                         PREFIX_CHILD,
+                        &theme,
                     );
                     spans.push(Span::styled(kb.description, theme.keybind_desc));
                     lines.push(Line::from(spans));
@@ -193,6 +202,7 @@ impl HelpModal {
                         ResolvedLabel::Single(pfx),
                         key_col_width - KEY_COL_GAP,
                         PREFIX_CHILD,
+                        &theme,
                     );
                     spans.push(Span::styled(desc, theme.keybind_desc));
                     lines.push(Line::from(spans));
@@ -205,6 +215,7 @@ impl HelpModal {
             title: TITLE,
             width_percent: 50,
             max_height_percent: 80,
+            theme_engine: self.theme_engine.clone(),
         };
         let (popup, inner) = modal.render(frame, area, total);
         let viewport_h = inner.height;
@@ -215,7 +226,14 @@ impl HelpModal {
         frame.render_widget(paragraph, inner);
 
         if total > viewport_h {
-            render_vertical_scrollbar(frame, inner, total, scroll, None);
+            render_vertical_scrollbar(
+                frame,
+                inner,
+                total,
+                scroll,
+                None,
+                self.theme_engine.scrollbar_enabled(),
+            );
         }
 
         popup
@@ -236,6 +254,7 @@ impl Overlay for HelpModal {
 mod tests {
     use super::*;
     use crate::components::key as key_ev;
+    use crate::theme::test_engine;
     use crossterm::event::KeyCode;
     use test_case::test_case;
 
@@ -243,7 +262,7 @@ mod tests {
     #[test_case(key::QUIT.to_key_event()    ; "ctrl_c_closes")]
     #[test_case(key::HELP.to_key_event()    ; "ctrl_h_closes")]
     fn handle_key_closes(k: KeyEvent) {
-        let mut modal = HelpModal::new();
+        let mut modal = HelpModal::new(test_engine());
         modal.toggle();
         assert!(modal.handle_key(k));
         assert!(!modal.is_open());
@@ -251,7 +270,7 @@ mod tests {
 
     #[test]
     fn handle_key_consumes_all() {
-        let mut modal = HelpModal::new();
+        let mut modal = HelpModal::new(test_engine());
         modal.toggle();
         assert!(modal.handle_key(key_ev(KeyCode::Char('a'))));
         assert!(modal.is_open());

@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use crate::components::form::{render_form, selected_prefix};
 use crate::components::hint_line;
 use crate::components::keybindings::key;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -71,14 +73,16 @@ pub struct PlanForm {
     visibility: Visibility,
     selected: usize,
     parallel: bool,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl PlanForm {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             visibility: Visibility::Hidden,
             selected: 0,
             parallel: false,
+            theme_engine,
         }
     }
 
@@ -125,7 +129,7 @@ impl PlanForm {
         if self.visibility != Visibility::UserDismissed {
             return None;
         }
-        let t = theme::current();
+        let t = self.theme_engine.current();
         Some(Line::from(vec![
             Span::styled(" Plan ", Style::new().fg(t.foreground)),
             Span::styled(key::PLAN_TOGGLE.label, t.keybind_key),
@@ -171,7 +175,7 @@ impl PlanForm {
             return;
         }
 
-        let t = theme::current();
+        let t = self.theme_engine.current();
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(MENU.len() + 1);
 
         for (i, item) in MENU.iter().enumerate() {
@@ -197,13 +201,14 @@ impl PlanForm {
 mod tests {
     use super::*;
     use crate::components::key;
+    use crate::theme::test_engine;
     use test_case::test_case;
 
     const LAST: usize = MENU.len() - 1;
 
     #[test]
     fn on_plan_ready_shows_and_resets_selected() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.selected = 1;
         form.on_plan_ready();
         assert!(form.is_visible());
@@ -212,7 +217,7 @@ mod tests {
 
     #[test]
     fn on_plan_ready_respects_user_dismissed() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         form.hide();
         form.on_plan_ready();
@@ -221,7 +226,7 @@ mod tests {
 
     #[test]
     fn on_plan_drafting_clears_user_dismissed() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         form.hide();
         form.on_plan_drafting();
@@ -234,7 +239,7 @@ mod tests {
 
     #[test]
     fn toggle_cycles_visibility() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         assert!(form.is_visible());
         form.toggle();
@@ -245,7 +250,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         form.selected = 1;
         form.reset();
@@ -255,7 +260,7 @@ mod tests {
 
     #[test]
     fn hint_line_only_when_dismissed() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         assert!(form.hint_line().is_none());
         form.on_plan_ready();
         assert!(form.hint_line().is_none());
@@ -265,7 +270,7 @@ mod tests {
 
     #[test]
     fn height_reflects_visibility() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         assert_eq!(form.height(), 0);
         form.on_plan_ready();
         assert_eq!(form.height(), FORM_HEIGHT);
@@ -278,7 +283,7 @@ mod tests {
     #[test_case(LAST, KeyCode::Down, LAST ; "down_at_max_stays")]
     #[test_case(LAST, KeyCode::Up, LAST - 1 ; "up_from_max")]
     fn navigation(start: usize, code: KeyCode, expected: usize) {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         form.selected = start;
         assert_eq!(form.handle_key(key(code)), PlanFormAction::Consumed);
@@ -289,7 +294,7 @@ mod tests {
     #[test_case(1, PlanFormAction::ClearAndImplement ; "enter_at_1")]
     #[test_case(2, PlanFormAction::Implement          ; "enter_at_2")]
     fn enter_dispatches(selected: usize, expected: PlanFormAction) {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         form.selected = selected;
         assert_eq!(form.handle_key(key(KeyCode::Enter)), expected);
@@ -297,7 +302,7 @@ mod tests {
 
     #[test]
     fn space_toggles_parallel() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         let initial = form.parallel();
         form.on_plan_ready();
         assert_eq!(form.parallel(), initial);
@@ -317,14 +322,14 @@ mod tests {
     #[test_case(key::QUIT.to_key_event()      ; "ctrl_c")]
     #[test_case(key::PLAN_TOGGLE.to_key_event(); "ctrl_t")]
     fn dismiss(k: KeyEvent) {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         assert_eq!(form.handle_key(k), PlanFormAction::Hide);
     }
 
     #[test]
     fn ctrl_o_opens_editor() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         assert_eq!(
             form.handle_key(key::OPEN_EDITOR.to_key_event()),
@@ -334,7 +339,7 @@ mod tests {
 
     #[test]
     fn unknown_key_consumed() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         assert_eq!(
             form.handle_key(key(KeyCode::Char('x'))),
@@ -344,7 +349,7 @@ mod tests {
 
     #[test]
     fn tab_passes_through() {
-        let mut form = PlanForm::new();
+        let mut form = PlanForm::new(test_engine());
         form.on_plan_ready();
         assert_eq!(
             form.handle_key(key(KeyCode::Tab)),

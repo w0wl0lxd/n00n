@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
-use crate::theme;
+use crate::theme::{self, ThemeEngine};
 
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
@@ -27,18 +29,20 @@ impl PickerItem for ThemeEntry {
 pub struct ThemePicker {
     picker: ListPicker<ThemeEntry>,
     original_theme_name: Option<String>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl ThemePicker {
-    pub fn new() -> Self {
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
-            picker: ListPicker::new().with_max_visible(MAX_VISIBLE),
+            picker: ListPicker::new(Arc::clone(&theme_engine)).with_max_visible(MAX_VISIBLE),
             original_theme_name: None,
+            theme_engine,
         }
     }
 
     pub fn open(&mut self) {
-        let current_name = theme::current_theme_name();
+        let current_name = ThemeEngine::current_theme_name();
         let entries: Vec<ThemeEntry> = theme::BUNDLED_THEMES
             .iter()
             .map(|t| ThemeEntry { name: t.name })
@@ -68,7 +72,7 @@ impl ThemePicker {
                 ThemePickerAction::Consumed
             }
             PickerAction::Select(_, entry) => {
-                theme::persist_theme(entry.name);
+                ThemeEngine::persist_theme(entry.name);
                 self.original_theme_name = None;
                 ThemePickerAction::Closed
             }
@@ -95,17 +99,17 @@ impl ThemePicker {
 
     fn apply_preview(&self) {
         if let Some(entry) = self.picker.selected_item()
-            && let Ok(t) = theme::load_by_name(entry.name)
+            && let Ok(t) = ThemeEngine::load_by_name(entry.name)
         {
-            theme::set(t);
+            self.theme_engine.set(t);
         }
     }
 
     fn restore_original(&self) {
         if let Some(ref name) = self.original_theme_name
-            && let Ok(t) = theme::load_by_name(name)
+            && let Ok(t) = ThemeEngine::load_by_name(name)
         {
-            theme::set(t);
+            self.theme_engine.set(t);
         }
     }
 }
@@ -125,12 +129,13 @@ mod tests {
     use super::*;
     use crate::components::key;
     use crate::components::keybindings::key as kb;
+    use crate::theme::test_engine;
     use crossterm::event::KeyCode;
     use test_case::test_case;
 
     #[test]
     fn enter_closes() {
-        let mut p = ThemePicker::new();
+        let mut p = ThemePicker::new(test_engine());
         p.open();
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(matches!(action, ThemePickerAction::Closed));
@@ -140,7 +145,7 @@ mod tests {
     #[test_case(key(KeyCode::Esc) ; "escape_restores_and_closes")]
     #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_restores_and_closes")]
     fn cancel_restores(cancel_key: crossterm::event::KeyEvent) {
-        let mut p = ThemePicker::new();
+        let mut p = ThemePicker::new(test_engine());
         p.open();
         p.handle_key(key(KeyCode::Down));
         let action = p.handle_key(cancel_key);

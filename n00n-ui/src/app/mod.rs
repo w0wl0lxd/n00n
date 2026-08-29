@@ -360,7 +360,10 @@ impl App {
         theme_engine.set_scrollbar_enabled(ui_config.scrollbar);
         storage_writer.register_loaded(&session);
         let state = SessionState::from_session(session, &model, &storage, &model_registry);
-        let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
+        let mut input_box = InputBox::new(
+            InputHistory::load(&storage, input_history_size),
+            Arc::clone(&theme_engine),
+        );
         input_box.set_max_input_lines(ui_config.max_input_lines);
         let mut app = Self {
             chats: vec![Chat::new(
@@ -373,27 +376,32 @@ impl App {
             chat_index: HashMap::new(),
             input_box,
             command_palette: CommandPalette::new(
+                Arc::clone(&theme_engine),
                 custom_commands,
                 mcp_reader.clone(),
                 lua_command_reader,
             ),
-            task_picker: ListPicker::new(),
+            task_picker: ListPicker::new(Arc::clone(&theme_engine)),
             task_picker_original: None,
-            theme_picker: ThemePicker::new(),
-            model_picker: ModelPicker::new(available_models, Arc::clone(&model_registry)),
+            theme_picker: ThemePicker::new(Arc::clone(&theme_engine)),
+            model_picker: ModelPicker::new(
+                available_models,
+                Arc::clone(&model_registry),
+                Arc::clone(&theme_engine),
+            ),
             model_picker_reply: None,
-            login_picker: LoginPicker::new(),
+            login_picker: LoginPicker::new(Arc::clone(&theme_engine)),
             mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors),
             rewind_picker: RewindPicker::new(),
-            help_modal: HelpModal::new(),
+            help_modal: HelpModal::new(Arc::clone(&theme_engine)),
             usage_modal: UsageModal::new(),
-            btw_modal: BtwModal::new(ui_config.typewriter_ms_per_char),
+            btw_modal: BtwModal::new(Arc::clone(&theme_engine), ui_config.typewriter_ms_per_char),
             float_mgr: FloatManager::new(),
-            search_modal: SearchModal::new(),
+            search_modal: SearchModal::new(Arc::clone(&theme_engine)),
             file_picker: FilePickerModal::new(),
-            permission_prompt: PermissionPrompt::new(),
-            plan_form: PlanForm::new(),
-            status_bar: StatusBar::new(ui_config.flash_duration()),
+            permission_prompt: PermissionPrompt::new(Arc::clone(&theme_engine)),
+            plan_form: PlanForm::new(Arc::clone(&theme_engine)),
+            status_bar: StatusBar::new(ui_config.flash_duration(), Arc::clone(&theme_engine)),
             status: Status::Idle,
             fusion_phase: None,
             state,

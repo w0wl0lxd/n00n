@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
 use crate::cast;
-use crate::theme;
+use crate::theme::ThemeEngine;
 
 pub struct BuiltinCommand {
     pub name: &'static str,
@@ -159,10 +159,12 @@ pub struct CommandPalette {
     nucleo: Nucleo<CommandItem>,
     matcher: Matcher,
     current_arg_count: usize,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl CommandPalette {
     pub fn new(
+        theme_engine: Arc<ThemeEngine>,
         custom_commands: Arc<[CustomCommand]>,
         mcp_reader: McpSnapshotReader,
         lua_reader: LuaCommandReader,
@@ -189,6 +191,7 @@ impl CommandPalette {
             nucleo,
             matcher: Matcher::new(Config::DEFAULT),
             current_arg_count: 0,
+            theme_engine,
         }
     }
 
@@ -493,7 +496,7 @@ impl CommandPalette {
             height: popup_height,
         };
 
-        let t = theme::current();
+        let t = self.theme_engine.current();
         let lines: Vec<Line> = filtered
             .iter()
             .enumerate()
@@ -505,7 +508,7 @@ impl CommandPalette {
 
                 if selected {
                     let s = t.item_selected;
-                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, s);
+                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, s);
                     let mut spans = vec![Span::styled(" ".repeat(PAD), s)];
                     spans.extend(highlighted_name);
                     spans.push(Span::styled(" ".repeat(name_pad), s));
@@ -513,7 +516,7 @@ impl CommandPalette {
                     spans.push(Span::styled(" ".repeat(PAD), s));
                     Line::from(spans)
                 } else {
-                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, t.item);
+                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, t.item);
                     let mut spans = vec![Span::raw(" ".repeat(PAD))];
                     spans.extend(highlighted_name);
                     spans.push(Span::raw(" ".repeat(name_pad)));
@@ -533,12 +536,17 @@ impl CommandPalette {
         Some(popup)
     }
 
-    fn build_highlighted_spans(text: &str, indices: &[u32], base: Style) -> Vec<Span<'static>> {
+    fn build_highlighted_spans(
+        &self,
+        text: &str,
+        indices: &[u32],
+        base: Style,
+    ) -> Vec<Span<'static>> {
         if indices.is_empty() {
             return vec![Span::styled(text.to_string(), base)];
         }
 
-        let t = theme::current();
+        let t = self.theme_engine.current();
         let highlight = base
             .fg(t.accent.fg.or(base.fg).unwrap_or_else(|| Color::Reset))
             .add_modifier(Modifier::BOLD);
@@ -571,6 +579,7 @@ impl CommandPalette {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use crate::theme::test_engine;
     use n00n_agent::{McpPromptArg, McpSnapshot};
     use test_case::test_case;
 
@@ -579,13 +588,23 @@ mod tests {
     }
 
     fn synced(input: &str) -> CommandPalette {
-        let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), LuaCommandReader::empty());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            Arc::from([]),
+            empty_snapshot(),
+            LuaCommandReader::empty(),
+        );
         p.sync(input);
         p
     }
 
     fn synced_with_custom(input: &str, custom: Arc<[CustomCommand]>) -> CommandPalette {
-        let mut p = CommandPalette::new(custom, empty_snapshot(), LuaCommandReader::empty());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            custom,
+            empty_snapshot(),
+            LuaCommandReader::empty(),
+        );
         p.sync(input);
         p
     }
@@ -656,7 +675,12 @@ mod tests {
 
     #[test]
     fn confirm_when_inactive_returns_none() {
-        let p = CommandPalette::new(Arc::from([]), empty_snapshot(), LuaCommandReader::empty());
+        let p = CommandPalette::new(
+            test_engine(),
+            Arc::from([]),
+            empty_snapshot(),
+            LuaCommandReader::empty(),
+        );
         assert!(p.confirm("").is_none());
     }
 
@@ -709,7 +733,12 @@ mod tests {
     #[cfg_attr(not(target_os = "windows"), test_case("/pct", "/compact", ""    ; "fuzzy-match-2"))]
     #[test_case("/btw hello world", "/btw", "hello world" ; "btw_multi_word")]
     fn confirm_parses_args(input: &str, expected_name: &str, expected_args: &str) {
-        let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), LuaCommandReader::empty());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            Arc::from([]),
+            empty_snapshot(),
+            LuaCommandReader::empty(),
+        );
         p.sync(input);
         let cmd = p.confirm(input).unwrap();
         assert_eq!(cmd.name, expected_name);
@@ -719,7 +748,12 @@ mod tests {
     #[test]
     fn confirm_custom_command() {
         let custom = sample_custom();
-        let mut p = CommandPalette::new(custom, empty_snapshot(), LuaCommandReader::empty());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            custom,
+            empty_snapshot(),
+            LuaCommandReader::empty(),
+        );
         p.sync("/project:review");
         assert!(p.is_active());
         let cmd = p.confirm("/project:review some-file.rs").unwrap();
@@ -730,7 +764,12 @@ mod tests {
     #[test]
     fn find_custom_command_lookup() {
         let custom = sample_custom();
-        let p = CommandPalette::new(custom, empty_snapshot(), LuaCommandReader::empty());
+        let p = CommandPalette::new(
+            test_engine(),
+            custom,
+            empty_snapshot(),
+            LuaCommandReader::empty(),
+        );
         let found = p.find_custom_command("/project:review");
         assert!(found.is_some());
         assert_eq!(found.unwrap().content, "Review $ARGUMENTS");
@@ -764,7 +803,12 @@ mod tests {
     }
 
     fn synced_with_prompts(input: &str) -> CommandPalette {
-        let mut p = CommandPalette::new(Arc::from([]), sample_prompts(), LuaCommandReader::empty());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            Arc::from([]),
+            sample_prompts(),
+            LuaCommandReader::empty(),
+        );
         p.sync(input);
         p
     }
@@ -822,7 +866,12 @@ mod tests {
     #[test]
     fn mcp_update_clears_old_prompts() {
         let reader = sample_prompts();
-        let mut p = CommandPalette::new(Arc::from([]), reader, LuaCommandReader::empty());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            Arc::from([]),
+            reader,
+            LuaCommandReader::empty(),
+        );
 
         p.sync("/");
         let initial_count = p
@@ -908,7 +957,12 @@ mod tests {
     }
 
     fn synced_with_lua(input: &str) -> CommandPalette {
-        let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), sample_lua_commands());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            Arc::from([]),
+            empty_snapshot(),
+            sample_lua_commands(),
+        );
         p.sync(input);
         p
     }
@@ -946,7 +1000,12 @@ mod tests {
 
     #[test]
     fn confirm_lua_command_parses_args() {
-        let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), sample_lua_commands());
+        let mut p = CommandPalette::new(
+            test_engine(),
+            Arc::from([]),
+            empty_snapshot(),
+            sample_lua_commands(),
+        );
         p.sync("/memory");
         let cmd = p.confirm("/memory some-arg").unwrap();
         assert_eq!(cmd.name, "/memory");
@@ -962,7 +1021,7 @@ mod tests {
             plugin: Arc::from("p"),
             max_args: 0,
         }]);
-        let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), reader);
+        let mut p = CommandPalette::new(test_engine(), Arc::from([]), empty_snapshot(), reader);
         p.sync("/");
         let initial_lua = p
             .filtered
@@ -1005,7 +1064,7 @@ mod tests {
             plugin: Arc::from("p"),
             max_args: 0,
         }]);
-        let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), reader);
+        let mut p = CommandPalette::new(test_engine(), Arc::from([]), empty_snapshot(), reader);
         p.sync("/noargs");
         assert!(p.is_active());
 
@@ -1022,7 +1081,7 @@ mod tests {
             plugin: Arc::from("p"),
             max_args: 1,
         }]);
-        let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), reader);
+        let mut p = CommandPalette::new(test_engine(), Arc::from([]), empty_snapshot(), reader);
         p.sync("/onearg");
         assert!(p.is_active());
 
