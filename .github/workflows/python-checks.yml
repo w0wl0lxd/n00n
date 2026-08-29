@@ -1,0 +1,49 @@
+name: Python checks
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".bandit.yml"
+      - ".vulture.py"
+      - "scripts/**/*.py"
+      - ".github/workflows/python-checks.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".bandit.yml"
+      - ".vulture.py"
+      - "scripts/**/*.py"
+      - ".github/workflows/python-checks.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    name: Python checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
+      - uses: 'astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff'  # v6
+      - name: Cache uv package cache
+        uses: 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'  # v6.1.0
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.local/share/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('mise.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+      - name: Create venv and install tools
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python bandit pip-audit vulture pyyaml yamllint
+      - name: Run bandit
+        run: .venv/bin/bandit -c .bandit.yml -r scripts/
+      - name: Run pip-audit
+        run: |
+          uv pip freeze --python .venv/bin/python > requirements-pip-audit.txt
+          .venv/bin/pip-audit --desc --requirement requirements-pip-audit.txt
+      - name: Run vulture
+        run: .venv/bin/vulture --min-confidence 80 scripts/

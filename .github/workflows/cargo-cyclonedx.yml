@@ -1,5 +1,4 @@
 name: SBOM
-
 on:
   push:
     branches: ["main"]
@@ -11,10 +10,8 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   sbom:
     name: Generate SBOM
@@ -23,18 +20,18 @@ jobs:
       - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
         with:
           persist-credentials: false
-
       - uses: 'dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'  # master
         with:
           toolchain: nightly-2026-08-20
-
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2  # zizmor: ignore[cache-poisoning]
+        with:
+          shared-key: "linux-stable"
+          save-if: false
       - uses: 'taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80'  # v2.69.4
         with:
           tool: cargo-cyclonedx
-
       - name: Generate CycloneDX SBOM
         run: cargo cyclonedx --format json --all-features
-
       - name: Upload SBOM to release
         if: github.event_name == 'release'
         env:
