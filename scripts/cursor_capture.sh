@@ -19,8 +19,8 @@ die() {
   exit 1
 }
 
-[[ -x "$MITM" ]] || die "mitmdump not found — run: mise run mitm-setup"
-[[ -f "$ADDON" ]] || die "missing addon: $ADDON"
+[[ -x $MITM ]] || die "mitmdump not found — run: mise run mitm-setup"
+[[ -f $ADDON ]] || die "missing addon: $ADDON"
 
 if command -v ss >/dev/null 2>&1; then
   if ss -ltn "( sport = :$PORT )" 2>/dev/null | rg -q ":$PORT"; then

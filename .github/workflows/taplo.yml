@@ -1,0 +1,33 @@
+name: Taplo
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**.toml"
+      - ".github/workflows/taplo.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**.toml"
+      - ".github/workflows/taplo.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  taplo:
+    name: TOML format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
+
+      - uses: 'jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea'  # v4.2.1
+        with:
+          install_args: taplo
+
+      - name: Check TOML formatting
+        run: taplo fmt --check

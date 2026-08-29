@@ -62,7 +62,8 @@ jobs:
                 --retry-all-errors -sSf https://sh.rustup.rs | \
                 sh -s -- -y --default-toolchain nightly-2026-08-20 --target ${{ matrix.target }}
               source "$HOME/.cargo/env"
-              cargo build --release --package n00n \
+              cargo install cargo-auditable
+              cargo auditable build --release --package n00n \
                 --bin n00n --bin n00n-interpreter-worker \
                 --target ${{ matrix.target }}
             '
@@ -99,9 +100,11 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install nightly-2026-08-20 --profile minimal --target ${{ matrix.target }}
+      - name: Install cargo-auditable
+        run: cargo install cargo-auditable
       - name: Build
         run: >-
-          cargo build --release --package n00n
+          cargo auditable build --release --package n00n
           --bin n00n --bin n00n-interpreter-worker
           --target ${{ matrix.target }}
       - name: Package (Unix)
@@ -132,6 +135,8 @@ jobs:
     name: Publish Release
     needs: [build-linux, build-other]
     runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
@@ -139,13 +144,32 @@ jobs:
       - name: Download artifacts
         run: .github/scripts/retry.sh gh release download "$GITHUB_REF_NAME" --dir artifacts
       - name: Generate checksums
+        id: hash
         run: |
           cd artifacts
           sha256sum -- * > ../sha256sums.txt
           cat ../sha256sums.txt
+          base64 -w0 ../sha256sums.txt > ../sha256sums.txt.b64
+          echo "hashes=$(cat ../sha256sums.txt.b64)" >> "$GITHUB_OUTPUT"
       - name: Upload checksums
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" sha256sums.txt --clobber
       - name: Mark release as published
         run: .github/scripts/retry.sh gh release edit "$GITHUB_REF_NAME" --draft=false
     permissions:
       contents: write
+
+  provenance:
+    name: SLSA provenance
+    needs: [publish]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: >
+      slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@
+      f7dd8c54c2067bafc12ca7a55595d5ee9b75204a  # v2.1.0
+    with:
+      base64-subjects: ${{ needs.publish.outputs.hashes }}
+      upload-assets: true
+      upload-tag-name: ${{ github.ref_name }}

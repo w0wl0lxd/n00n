@@ -55,8 +55,8 @@ for f in "${FRAGS[@]}"; do
     line="${line%$'\r'}"
     [ -z "$line" ] && continue
     case "$line" in
-    '- '* | '* '* | '-' | '*') printf '%s\n' "$line" >>"$TMP/$type" ;;
-    *) printf '%s\n' "- $line" >>"$TMP/$type" ;;
+      '- '* | '* '* | '-' | '*') printf '%s\n' "$line" >>"$TMP/$type" ;;
+      *) printf '%s\n' "- $line" >>"$TMP/$type" ;;
     esac
   done < <(sed -e '1{/^$/d}' -e '${/^$/d}' "$f")
 done
@@ -69,8 +69,8 @@ for t in "${ORDER[@]}"; do
       line="${line%$'\r'}"
       [ -z "$line" ] && continue
       case "$line" in
-      '- '* | '* '* | '-' | '*') printf '%s\n' "$line" >>"$ENTRY" ;;
-      *) printf '%s\n' "- $line" >>"$ENTRY" ;;
+        '- '* | '* '* | '-' | '*') printf '%s\n' "$line" >>"$ENTRY" ;;
+        *) printf '%s\n' "- $line" >>"$ENTRY" ;;
       esac
     done <"$TMP/$t"
     echo >>"$ENTRY"

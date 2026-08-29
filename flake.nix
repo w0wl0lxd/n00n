@@ -13,7 +13,7 @@
       rust-overlay,
     }:
     let
-      lib = nixpkgs.lib;
+      inherit (nixpkgs) lib;
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       packageName = cargoToml.package.name;
       version = cargoToml.workspace.package.version;

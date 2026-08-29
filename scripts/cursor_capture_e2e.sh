@@ -13,7 +13,7 @@ DUMP_DIR="${ROOT}/spikes/cursor-capture-e2e-$(date +%Y%m%d-%H%M%S)"
 MITM_PID=""
 
 cleanup() {
-  if [[ -n "$MITM_PID" ]] && kill -0 "$MITM_PID" 2>/dev/null; then
+  if [[ -n $MITM_PID ]] && kill -0 "$MITM_PID" 2>/dev/null; then
     kill "$MITM_PID" 2>/dev/null || true
     wait "$MITM_PID" 2>/dev/null || true
   fi

@@ -1,0 +1,45 @@
+name: Vulture
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "scripts/**/*.py"
+      - ".vulture.py"
+      - ".github/workflows/vulture.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "scripts/**/*.py"
+      - ".vulture.py"
+      - ".github/workflows/vulture.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vulture:
+    name: Dead Python code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
+
+      - uses: 'jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea'  # v4.2.1
+        with:
+          install_args: uv
+
+      - name: Cache uv package cache
+        uses: 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'  # v6.1.0
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.local/share/uv
+          key: ${{ runner.os }}-uv-vulture-${{ hashFiles('mise.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
+      - name: Run vulture
+        run: uv tool run vulture --min-confidence 80 scripts/

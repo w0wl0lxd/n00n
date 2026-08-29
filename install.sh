@@ -7,20 +7,20 @@ INSTALL_DIR="${N00N_INSTALL_DIR:-${NOON_INSTALL_DIR:-$HOME/.local/bin}}"
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
-Linux) target_os="unknown-linux-musl" ;;
-Darwin) target_os="apple-darwin" ;;
-*)
-  echo "unsupported OS: $os" >&2
-  exit 1
-  ;;
+  Linux) target_os="unknown-linux-musl" ;;
+  Darwin) target_os="apple-darwin" ;;
+  *)
+    echo "unsupported OS: $os" >&2
+    exit 1
+    ;;
 esac
 case "$arch" in
-x86_64 | amd64) target_arch="x86_64" ;;
-aarch64 | arm64) target_arch="aarch64" ;;
-*)
-  echo "unsupported arch: $arch" >&2
-  exit 1
-  ;;
+  x86_64 | amd64) target_arch="x86_64" ;;
+  aarch64 | arm64) target_arch="aarch64" ;;
+  *)
+    echo "unsupported arch: $arch" >&2
+    exit 1
+    ;;
 esac
 target="${target_arch}-${target_os}"
 

@@ -28,7 +28,7 @@ args=(
   "${EXTRA_ARGS[@]}"
 )
 
-if [[ "${HARBOR_TIMEOUT}" == "0" ]]; then
+if [[ ${HARBOR_TIMEOUT} == "0" ]]; then
   harbor run "${args[@]}"
 else
   timeout "${HARBOR_TIMEOUT}" harbor run "${args[@]}"

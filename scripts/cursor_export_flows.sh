@@ -13,9 +13,9 @@ die() {
   exit 1
 }
 
-[[ -n "$DUMP_DIR" ]] || die "usage: $0 spikes/cursor-capture-<stamp>"
+[[ -n $DUMP_DIR ]] || die "usage: $0 spikes/cursor-capture-<stamp>"
 [[ -f "$DUMP_DIR/flows.mitm" ]] || die "missing $DUMP_DIR/flows.mitm"
-[[ -x "$MITM" ]] || die "mitmdump not found — run: mise run mitm-setup"
+[[ -x $MITM ]] || die "mitmdump not found — run: mise run mitm-setup"
 
 OUT="$DUMP_DIR/export"
 mkdir -p "$OUT"
@@ -87,16 +87,16 @@ run_ok=0
 total=0
 empty=0
 for m in "$OUT"/*.meta.txt; do
-  [[ -f "$m" ]] || continue
+  [[ -f $m ]] || continue
   total=$((total + 1))
   req_len=$(sed -n 's/^req_len=//p' "$m" | head -1)
   resp_len=$(sed -n 's/^resp_len=//p' "$m" | head -1)
   url=$(sed -n 's/^url=//p' "$m" | head -1)
   echo "$(basename "$m"): req=$req_len resp=$resp_len url=$url"
-  if [[ "${req_len:-0}" -eq 0 && "${resp_len:-0}" -eq 0 ]]; then
+  if [[ ${req_len:-0} -eq 0 && ${resp_len:-0} -eq 0 ]]; then
     empty=$((empty + 1))
   fi
-  if [[ "$url" == *"/AgentService/Run"* ]] && { [[ "${req_len:-0}" -gt 0 ]] || [[ "${resp_len:-0}" -gt 0 ]]; }; then
+  if [[ $url == *"/AgentService/Run"* ]] && { [[ ${req_len:-0} -gt 0 ]] || [[ ${resp_len:-0} -gt 0 ]]; }; then
     run_ok=$((run_ok + 1))
   fi
 done
@@ -110,7 +110,7 @@ REPORT="$DUMP_DIR/VALIDATION.txt"
   echo "flows=$total"
   echo "empty_both=$empty"
   echo "run_with_body=$run_ok"
-  if [[ "$run_ok" -ge 1 ]]; then
+  if [[ $run_ok -ge 1 ]]; then
     echo "result=PASS"
   else
     echo "result=FAIL"
@@ -118,7 +118,7 @@ REPORT="$DUMP_DIR/VALIDATION.txt"
   fi
 } | tee "$REPORT"
 
-if [[ "$run_ok" -lt 1 ]]; then
+if [[ $run_ok -lt 1 ]]; then
   echo >&2
   echo "FAIL: need a non-empty AgentService/Run body." >&2
   echo "Re-run: scripts/cursor_capture.sh && scripts/cursor_agent_proxied.sh -p --model auto 'pong'" >&2

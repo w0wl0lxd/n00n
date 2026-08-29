@@ -6,12 +6,14 @@ on:
     paths:
       - "flake.nix"
       - "flake.lock"
+      - "**.nix"
       - ".github/workflows/nix.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "flake.nix"
       - "flake.lock"
+      - "**.nix"
       - ".github/workflows/nix.yml"
   workflow_dispatch:
 
@@ -32,6 +34,20 @@ jobs:
       - uses: 'DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d'  # v14
         with:
           use-flakehub: false
+
+      - uses: 'DeterminateSystems/flake-checker-action@078f5f7f47ee188aa6cb472527ca5984e195222d'  # v9
+
+      - name: Check Nix formatting
+        run: |
+          system=$(nix eval --impure --expr 'builtins.currentSystem' | tr -d '"')
+          find . -type f -name '*.nix' -not -path './.git/*' -print0 |
+            xargs -0 nix run ".#formatter.${system}" -- --check
+
+      - name: Run statix
+        run: nix run nixpkgs#statix -- check .
+
+      - name: Run deadnix
+        run: nix run nixpkgs#deadnix -- .
 
       - name: Check flake
         run: nix flake check
