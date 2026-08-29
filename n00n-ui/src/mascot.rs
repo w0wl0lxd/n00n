@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 use image::DynamicImage;
 use image::imageops::FilterType;
@@ -13,21 +13,21 @@ use ratatui_image::{
 
 use crate::theme::Theme;
 
-static MASCOT_IMAGE: OnceLock<DynamicImage> = OnceLock::new();
+const MASCOT_PNG: &[u8] = include_bytes!("../assets/mascot.png");
 
-fn mascot_image() -> &'static DynamicImage {
-    const MASCOT_PNG: &[u8] = include_bytes!("../assets/mascot.png");
-    MASCOT_IMAGE.get_or_init(|| match image::load_from_memory(MASCOT_PNG) {
-        Ok(img) => img,
+fn load_mascot_image() -> Arc<DynamicImage> {
+    match image::load_from_memory(MASCOT_PNG) {
+        Ok(img) => Arc::new(img),
         Err(error) => {
             tracing::error!(%error, "failed to load mascot.png");
-            DynamicImage::new_rgba8(1, 1)
+            Arc::new(DynamicImage::new_rgba8(1, 1))
         }
-    })
+    }
 }
 
 pub struct Mascot {
     enabled: bool,
+    image: Arc<DynamicImage>,
     mouse_col: Option<u16>,
     mouse_row: Option<u16>,
     last_area: Option<Rect>,
@@ -39,6 +39,7 @@ impl Mascot {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            image: load_mascot_image(),
             mouse_col: None,
             mouse_row: None,
             last_area: None,
@@ -73,7 +74,9 @@ impl Mascot {
         if self.last_area != Some(area) || self.protocol.is_none() {
             let target_w = u32::from(area.width);
             let target_h = u32::from(area.height) * 2;
-            let resized = mascot_image().resize_to_fill(target_w, target_h, FilterType::Triangle);
+            let resized = self
+                .image
+                .resize_to_fill(target_w, target_h, FilterType::Triangle);
             if let Ok(halfblocks) = Halfblocks::new(resized, Size::new(area.width, area.height)) {
                 self.protocol = Some(Protocol::Halfblocks(halfblocks));
             }

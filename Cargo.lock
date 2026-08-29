@@ -4277,6 +4277,7 @@ dependencies = [
 name = "n00n-highlight"
 version = "0.6.3"
 dependencies = [
+ "arc-swap",
  "serde_json",
  "syntect",
  "test-case",

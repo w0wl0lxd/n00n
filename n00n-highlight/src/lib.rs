@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::hash::BuildHasher;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
+use arc_swap::ArcSwap;
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as SynHighlighter, Style as SynStyle,
 };
@@ -17,16 +18,13 @@ pub const TAB_SPACES: &str = "  ";
 type Rgb = (u8, u8, u8);
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
-static THEME: OnceLock<RwLock<Arc<Theme>>> = OnceLock::new();
-static UI_COLORS: OnceLock<RwLock<HashMap<String, Rgb>>> = OnceLock::new();
-
-fn theme_lock() -> &'static RwLock<Arc<Theme>> {
-    THEME.get_or_init(|| RwLock::new(Arc::new(Theme::default())))
-}
+static THEME: LazyLock<ArcSwap<Theme>> = LazyLock::new(|| ArcSwap::from_pointee(Theme::default()));
+static UI_COLORS: LazyLock<ArcSwap<HashMap<String, Rgb>>> =
+    LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
 pub fn warmup() {
     syntax_set();
-    theme_lock();
+    let _ = theme();
     let mut hl = Highlighter::for_token("bash");
     hl.highlight_line("x");
 }
@@ -36,39 +34,26 @@ pub fn is_ready() -> bool {
 }
 
 pub fn set_theme(theme: Theme) {
-    *theme_lock()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(theme);
+    THEME.store(Arc::new(theme));
 }
 
 #[must_use]
 pub fn theme() -> Arc<Theme> {
-    theme_lock()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
-fn ui_colors_lock() -> &'static RwLock<HashMap<String, Rgb>> {
-    UI_COLORS.get_or_init(RwLock::default)
+    THEME.load().clone()
 }
 
 pub fn set_ui_colors<S: BuildHasher>(colors: HashMap<String, Rgb, S>) {
-    *ui_colors_lock()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = colors.into_iter().collect();
+    UI_COLORS.store(Arc::new(colors.into_iter().collect()));
 }
 
 #[must_use]
 pub fn theme_color(name: &str) -> Option<Rgb> {
-    if let Some(&c) = ui_colors_lock()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(name)
-    {
+    let ui_colors = UI_COLORS.load();
+    if let Some(&c) = ui_colors.get(name) {
         return Some(c);
     }
-    let settings = &theme().settings;
+    let theme = THEME.load();
+    let settings = &theme.settings;
     let map = serde_json::to_value(settings).ok()?;
     let obj = map.as_object()?;
     let val = obj.get(name)?;
