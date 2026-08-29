@@ -254,9 +254,91 @@ fn providers_dir() -> Option<PathBuf> {
         .map(|d| d.join(PROVIDERS_DIR))
 }
 
-fn run_script(path: &Path, subcommand: &str, timeout: Duration) -> Result<String, AgentError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptSubcommand {
+    Info,
+    Models,
+    Resolve,
+    Refresh,
+    Reload,
+    Login,
+    Logout,
+}
+
+impl ScriptSubcommand {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Models => "models",
+            Self::Resolve => "resolve",
+            Self::Refresh => "refresh",
+            Self::Reload => "reload",
+            Self::Login => "login",
+            Self::Logout => "logout",
+        }
+    }
+}
+
+impl std::fmt::Display for ScriptSubcommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ScriptSubcommand {
+    type Err = AgentError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "info" => Ok(Self::Info),
+            "models" => Ok(Self::Models),
+            "resolve" => Ok(Self::Resolve),
+            "refresh" => Ok(Self::Refresh),
+            "reload" => Ok(Self::Reload),
+            "login" => Ok(Self::Login),
+            "logout" => Ok(Self::Logout),
+            _ => Err(AgentError::Config {
+                message: format!("invalid script subcommand '{s}'"),
+            }),
+        }
+    }
+}
+
+pub trait IntoScriptSubcommand {
+    /// # Errors
+    ///
+    /// Returns an `AgentError` if the subcommand is invalid.
+    fn into_subcommand(self) -> Result<ScriptSubcommand, AgentError>;
+}
+
+impl IntoScriptSubcommand for ScriptSubcommand {
+    fn into_subcommand(self) -> Result<ScriptSubcommand, AgentError> {
+        Ok(self)
+    }
+}
+
+impl IntoScriptSubcommand for &str {
+    fn into_subcommand(self) -> Result<ScriptSubcommand, AgentError> {
+        self.parse()
+    }
+}
+
+impl IntoScriptSubcommand for String {
+    fn into_subcommand(self) -> Result<ScriptSubcommand, AgentError> {
+        self.parse()
+    }
+}
+
+fn run_script(
+    path: &Path,
+    subcommand: impl IntoScriptSubcommand,
+    timeout: Duration,
+) -> Result<String, AgentError> {
+    let subcommand = subcommand.into_subcommand()?;
+    let subcommand_str = subcommand.as_str();
     let mut child = Command::new(path)
-        .arg(subcommand)
+        .arg(subcommand_str)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -310,9 +392,14 @@ fn run_script(path: &Path, subcommand: &str, timeout: Duration) -> Result<String
     })
 }
 
-fn run_script_interactive(path: &Path, subcommand: &str) -> Result<(), AgentError> {
+fn run_script_interactive(
+    path: &Path,
+    subcommand: impl IntoScriptSubcommand,
+) -> Result<(), AgentError> {
+    let subcommand = subcommand.into_subcommand()?;
+    let subcommand_str = subcommand.as_str();
     let status = Command::new(path)
-        .arg(subcommand)
+        .arg(subcommand_str)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -330,7 +417,7 @@ fn run_script_interactive(path: &Path, subcommand: &str) -> Result<(), AgentErro
 }
 
 fn resolve_auth(meta: &DynamicProviderMeta) -> Result<ResolvedAuth, AgentError> {
-    let stdout = run_script(&meta.script_path, "resolve", SCRIPT_TIMEOUT)?;
+    let stdout = run_script(&meta.script_path, ScriptSubcommand::Resolve, SCRIPT_TIMEOUT)?;
     let parsed: ScriptResolvedAuth =
         serde_json::from_str(&stdout).map_err(|e| AgentError::Config {
             message: format!("{} resolve: invalid JSON: {e}", meta.script_path.display()),
@@ -397,7 +484,7 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
             continue;
         }
 
-        let stdout = match run_script(&path, "info", INFO_TIMEOUT) {
+        let stdout = match run_script(&path, ScriptSubcommand::Info, INFO_TIMEOUT) {
             Ok(s) => s,
             Err(e) => {
                 warn!(slug, error = %e, "failed to get provider info, skipping");
@@ -418,7 +505,7 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
             continue;
         };
 
-        let models = match run_script(&path, "models", INFO_TIMEOUT) {
+        let models = match run_script(&path, ScriptSubcommand::Models, INFO_TIMEOUT) {
             Ok(s) => serde_json::from_str::<Vec<ScriptModel>>(&s).unwrap_or_else(|e| {
                 warn!(slug, error = %e, "invalid models JSON, falling back to base models");
                 Vec::new()
@@ -489,7 +576,7 @@ pub fn login(slug: &str) -> Result<(), AgentError> {
             message: format!("provider '{slug}' does not support login (uses API key)"),
         });
     }
-    run_script_interactive(&meta.script_path, "login")
+    run_script_interactive(&meta.script_path, ScriptSubcommand::Login)
 }
 
 /// Log out of a dynamic script-based provider.
@@ -506,7 +593,7 @@ pub fn logout(slug: &str) -> Result<(), AgentError> {
             message: format!("provider '{slug}' does not support logout (uses API key)"),
         });
     }
-    run_script_interactive(&meta.script_path, "logout")
+    run_script_interactive(&meta.script_path, ScriptSubcommand::Logout)
 }
 
 #[must_use]
@@ -670,7 +757,10 @@ struct DynamicProvider {
 }
 
 impl DynamicProvider {
-    fn run_auth_script(&self, subcommand: &'static str) -> BoxFuture<'_, Result<(), AgentError>> {
+    fn run_auth_script(
+        &self,
+        subcommand: ScriptSubcommand,
+    ) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async move {
             let script_path = self.script_path;
             let auth = Arc::clone(&self.auth);
@@ -735,11 +825,11 @@ impl Provider for DynamicProvider {
     }
 
     fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
-        self.run_auth_script("refresh")
+        self.run_auth_script(ScriptSubcommand::Refresh)
     }
 
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
-        self.run_auth_script("reload")
+        self.run_auth_script(ScriptSubcommand::Reload)
     }
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
@@ -1051,5 +1141,51 @@ esac
         let providers = discover_in(tmp.path());
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].base, expected);
+    }
+
+    #[test]
+    fn script_subcommand_validation() {
+        assert_eq!(
+            "info".parse::<ScriptSubcommand>().unwrap(),
+            ScriptSubcommand::Info
+        );
+        assert_eq!(
+            "models".parse::<ScriptSubcommand>().unwrap(),
+            ScriptSubcommand::Models
+        );
+        assert_eq!(
+            "resolve".parse::<ScriptSubcommand>().unwrap(),
+            ScriptSubcommand::Resolve
+        );
+        assert_eq!(
+            "refresh".parse::<ScriptSubcommand>().unwrap(),
+            ScriptSubcommand::Refresh
+        );
+        assert_eq!(
+            "reload".parse::<ScriptSubcommand>().unwrap(),
+            ScriptSubcommand::Reload
+        );
+        assert_eq!(
+            "login".parse::<ScriptSubcommand>().unwrap(),
+            ScriptSubcommand::Login
+        );
+        assert_eq!(
+            "logout".parse::<ScriptSubcommand>().unwrap(),
+            ScriptSubcommand::Logout
+        );
+
+        for invalid in [
+            "nonexistent",
+            "--flag",
+            "-o",
+            "; rm -rf /",
+            "info && echo hack",
+            "info; ls",
+            "   ",
+            "",
+        ] {
+            let err = invalid.parse::<ScriptSubcommand>().unwrap_err();
+            assert!(matches!(err, AgentError::Config { .. }));
+        }
     }
 }
