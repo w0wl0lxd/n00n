@@ -1057,7 +1057,53 @@ impl StoredCompactionStateCheckpoints {
                     CompactionStateError::TooManyCheckpoints { .. }
                     | CompactionStateError::CheckpointsTooLarge { .. },
                 ) if candidate.checkpoints.len() > 1 => {
+                    // Without transcript context, prune the oldest entry.
+                    // Callers that have a transcript should collect the set of
+                    // `state_revision`s referenced in its
+                    // `transcript_compaction_depth` chain and use
+                    // `insert_pruning_oldest_with_protected` so rewound sessions
+                    // keep their required checkpoints and only unreferenced
+                    // entries are pruned.
                     candidate.checkpoints.remove(0);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.inner = StoredCompactionStateCheckpointsInner::Supported(candidate);
+        Ok(())
+    }
+
+    /// Variant that only prunes checkpoints whose revision is not in `protected`.
+    /// `protected` should be the set of `state_revision`s still referenced by
+    /// the session's `transcript_compaction_depth` chain (i.e. every
+    /// `TranscriptEntry::Compaction { state_revision: Some(..) }` recursively
+    /// reachable). This keeps rewound sessions loadable.
+    pub fn insert_pruning_oldest_with_protected(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+        protected: &std::collections::HashSet<u64>,
+    ) -> Result<(), CompactionStateError> {
+        let Some(mut candidate) = self.candidate_with(snapshot)? else {
+            return Ok(());
+        };
+        loop {
+            match validate_compaction_state_checkpoints(&candidate) {
+                Ok(()) => break,
+                Err(
+                    CompactionStateError::TooManyCheckpoints { .. }
+                    | CompactionStateError::CheckpointsTooLarge { .. },
+                ) if candidate.checkpoints.len() > 1 => {
+                    if let Some(pos) = candidate.checkpoints.iter().position(|s| {
+                        s.state_revision()
+                            .is_none_or(|rev| !protected.contains(&rev))
+                    }) {
+                        candidate.checkpoints.remove(pos);
+                    } else {
+                        // All remaining checkpoints are protected – cannot prune
+                        // without breaking a rewound session. Surface the
+                        // validation error to the caller.
+                        return Err(validate_compaction_state_checkpoints(&candidate).unwrap_err());
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -1355,6 +1401,36 @@ impl SessionMeta {
     ) -> Result<(), CompactionStateError> {
         self.compaction_state_checkpoints
             .insert_pruning_oldest(snapshot)
+    }
+
+    /// Stores a checkpoint while preserving any `state_revision` still referenced
+    /// by `transcript`'s nested `Compaction` entries (i.e. the
+    /// `transcript_compaction_depth` chain). Only unreferenced checkpoints are
+    /// pruned, so a rewound session can still resolve its base state.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot or checkpoint collection is invalid.
+    pub fn checkpoint_compaction_state_with_transcript<M>(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+        transcript: &[TranscriptEntry<M>],
+    ) -> Result<(), CompactionStateError> {
+        let protected = transcript_referenced_revisions(transcript);
+        self.compaction_state_checkpoints
+            .insert_pruning_oldest_with_protected(snapshot, &protected)
+    }
+
+    /// Variant that takes an explicit protected set.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot or checkpoint collection is invalid.
+    pub fn checkpoint_compaction_state_with_protected(
+        &mut self,
+        snapshot: StoredSessionStateSnapshot,
+        protected: &std::collections::HashSet<u64>,
+    ) -> Result<(), CompactionStateError> {
+        self.compaction_state_checkpoints
+            .insert_pruning_oldest_with_protected(snapshot, protected)
     }
 
     /// Retrieves the state snapshot associated with an exact compaction-boundary revision.
@@ -3161,6 +3237,38 @@ pub fn transcript_compaction_depth<M>(entries: &[TranscriptEntry<M>]) -> usize {
         }
         _ => deepest,
     })
+}
+
+/// All `state_revision`s referenced by the nested `Compaction` chain in
+/// `entries` (i.e. every `TranscriptEntry::Compaction { state_revision: Some(..) }`
+/// recursively reachable). Used to protect checkpoints needed for rewound
+/// sessions from pruning.
+#[must_use]
+pub fn transcript_referenced_revisions<M>(
+    entries: &[TranscriptEntry<M>],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    collect_referenced_revisions(entries, &mut out);
+    out
+}
+
+fn collect_referenced_revisions<M>(
+    entries: &[TranscriptEntry<M>],
+    out: &mut std::collections::HashSet<u64>,
+) {
+    for entry in entries {
+        if let TranscriptEntry::Compaction {
+            entries: inner,
+            state_revision: Some(rev),
+            ..
+        } = entry
+        {
+            out.insert(*rev);
+            collect_referenced_revisions(inner, out);
+        } else if let TranscriptEntry::Compaction { entries: inner, .. } = entry {
+            collect_referenced_revisions(inner, out);
+        }
+    }
 }
 
 /// Splices the innermost compaction of the deepest chain into its parent,

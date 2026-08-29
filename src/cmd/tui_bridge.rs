@@ -16,6 +16,17 @@ use n00n_storage::id::SessionRef;
 use serde_json::Value;
 
 const SESSION_ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Reads `session_roundtrip_timeout` from config or `N00N_SESSION_ROUNDTRIP_TIMEOUT_SECS` env var.
+#[must_use]
+pub fn default_session_roundtrip_timeout() -> Duration {
+    match std::env::var("N00N_SESSION_ROUNDTRIP_TIMEOUT_SECS") {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs),
+            Err(_) => SESSION_ROUNDTRIP_TIMEOUT,
+        },
+        Err(_) => SESSION_ROUNDTRIP_TIMEOUT,
+    }
+}
 const LIVE_MISSING_ID: &str = "live session entry missing id";
 const LIVE_MISSING_STATUS: &str = "live session entry missing status";
 const LIVE_NOT_ARRAY: &str = "session.live reply was not an array";
@@ -61,8 +72,19 @@ impl Drop for DaemonHandle {
 /// Returns if the state path is unusable. Bind failures are logged and return `None`
 /// so the TUI still runs without a control plane.
 #[must_use]
+#[allow(dead_code)]
 pub fn try_spawn(state_dir: &Path, ui_tx: flume::Sender<UiAction>) -> Option<DaemonHandle> {
-    match spawn(state_dir, ui_tx) {
+    try_spawn_with_timeout(state_dir, ui_tx, default_session_roundtrip_timeout())
+}
+
+/// Configurable variant of [`try_spawn`] that uses `timeout` for session roundtrips.
+#[must_use]
+pub fn try_spawn_with_timeout(
+    state_dir: &Path,
+    ui_tx: flume::Sender<UiAction>,
+    timeout: Duration,
+) -> Option<DaemonHandle> {
+    match spawn_with_timeout(state_dir, ui_tx, timeout) {
         Ok(h) => Some(h),
         Err(e) => {
             tracing::warn!(error = %e, "failed to start tui daemon listener");
@@ -71,9 +93,18 @@ pub fn try_spawn(state_dir: &Path, ui_tx: flume::Sender<UiAction>) -> Option<Dae
     }
 }
 
+#[allow(dead_code)]
 fn spawn(state_dir: &Path, ui_tx: flume::Sender<UiAction>) -> ControlResult<DaemonHandle> {
+    spawn_with_timeout(state_dir, ui_tx, default_session_roundtrip_timeout())
+}
+
+fn spawn_with_timeout(
+    state_dir: &Path,
+    ui_tx: flume::Sender<UiAction>,
+    timeout: Duration,
+) -> ControlResult<DaemonHandle> {
     let plane = Arc::new(ControlPlane::new(
-        Some(Arc::new(tui_backend(ui_tx))),
+        Some(Arc::new(tui_backend_with_timeout(ui_tx, timeout))),
         Some(Arc::new(WorkerBackend::new(state_dir))),
     ));
     let (cancel, cancel_rx) = flume::bounded(1);
@@ -92,6 +123,7 @@ fn spawn(state_dir: &Path, ui_tx: flume::Sender<UiAction>) -> ControlResult<Daem
     })
 }
 
+#[allow(dead_code)]
 fn tui_backend(ui_tx: flume::Sender<UiAction>) -> TuiCallbackBackend {
     let list_tx = ui_tx.clone();
     let status_tx = ui_tx.clone();
@@ -107,26 +139,73 @@ fn tui_backend(ui_tx: flume::Sender<UiAction>) -> TuiCallbackBackend {
     )
 }
 
+fn tui_backend_with_timeout(
+    ui_tx: flume::Sender<UiAction>,
+    timeout: Duration,
+) -> TuiCallbackBackend {
+    let list_tx = ui_tx.clone();
+    let status_tx = ui_tx.clone();
+    let message_tx = ui_tx.clone();
+    let resume_tx = ui_tx.clone();
+    let stop_tx = ui_tx;
+    TuiCallbackBackend::new(
+        move || list_live_with_timeout(&list_tx, timeout),
+        move |id| status_one_with_timeout(&status_tx, id, timeout),
+        move |id, text, opts| message_one_with_timeout(&message_tx, id, text, opts, timeout),
+        move |id| resume_one_with_timeout(&resume_tx, id, timeout),
+        move |id| stop_one_with_timeout(&stop_tx, id, timeout),
+    )
+}
+
+#[allow(dead_code)]
 fn list_live(tx: &flume::Sender<UiAction>) -> ControlResult<Vec<AgentRecord>> {
-    let value = session_call(tx, SessionRequest::Live)?;
+    list_live_with_timeout(tx, default_session_roundtrip_timeout())
+}
+
+fn list_live_with_timeout(
+    tx: &flume::Sender<UiAction>,
+    timeout: Duration,
+) -> ControlResult<Vec<AgentRecord>> {
+    let value = session_call_with_timeout(tx, SessionRequest::Live, timeout)?;
     live_array_to_records(&value)
 }
 
+#[allow(dead_code)]
 fn status_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<AgentRecord> {
-    let value = session_call(tx, SessionRequest::Status { id: id.to_owned() })
-        .map_err(|e| map_not_found(id, e))?;
+    status_one_with_timeout(tx, id, default_session_roundtrip_timeout())
+}
+
+fn status_one_with_timeout(
+    tx: &flume::Sender<UiAction>,
+    id: &str,
+    timeout: Duration,
+) -> ControlResult<AgentRecord> {
+    let value =
+        session_call_with_timeout(tx, SessionRequest::Status { id: id.to_owned() }, timeout)
+            .map_err(|e| map_not_found(id, e))?;
     status_value_to_record(&value)
 }
 
+#[allow(dead_code)]
 fn message_one(
     tx: &flume::Sender<UiAction>,
     id: &str,
     text: &str,
     opts: &MessageOpts,
 ) -> ControlResult<Value> {
+    message_one_with_timeout(tx, id, text, opts, default_session_roundtrip_timeout())
+}
+
+fn message_one_with_timeout(
+    tx: &flume::Sender<UiAction>,
+    id: &str,
+    text: &str,
+    opts: &MessageOpts,
+    timeout: Duration,
+) -> ControlResult<Value> {
     id.parse::<SessionRef>()
         .map_err(|_| ControlError::InvalidId(id.to_owned()))?;
-    session_call(
+    session_call_with_timeout(
         tx,
         SessionRequest::Prompt {
             id: Some(id.to_owned()),
@@ -136,21 +215,32 @@ fn message_one(
             caller_id: None,
             host_control: true,
         },
+        timeout,
     )
     .map_err(|e| map_not_found(id, e))?;
     Ok(serde_json::json!({"queued": true, "id": id}))
 }
 
+#[allow(dead_code)]
 fn resume_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
+    resume_one_with_timeout(tx, id, default_session_roundtrip_timeout())
+}
+
+fn resume_one_with_timeout(
+    tx: &flume::Sender<UiAction>,
+    id: &str,
+    timeout: Duration,
+) -> ControlResult<()> {
     id.parse::<SessionRef>()
         .map_err(|_| ControlError::InvalidId(id.to_owned()))?;
-    let value = session_call(tx, SessionRequest::Status { id: id.to_owned() })
-        .map_err(|e| map_not_found(id, e))?;
+    let value =
+        session_call_with_timeout(tx, SessionRequest::Status { id: id.to_owned() }, timeout)
+            .map_err(|e| map_not_found(id, e))?;
     let run_info = value.get("paused_team").ok_or_else(|| {
         ControlError::Unavailable(format!("no paused team run found for agent {id}"))
     })?;
     let prompt = build_team_resume_prompt(run_info)?;
-    session_call(
+    session_call_with_timeout(
         tx,
         SessionRequest::Prompt {
             id: Some(id.to_owned()),
@@ -160,6 +250,7 @@ fn resume_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
             caller_id: None,
             host_control: true,
         },
+        timeout,
     )
     .map_err(|e| map_not_found(id, e))?;
     Ok(())
@@ -187,16 +278,26 @@ fn build_team_resume_prompt(run_info: &Value) -> ControlResult<String> {
     ))
 }
 
+#[allow(dead_code)]
 fn stop_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
+    stop_one_with_timeout(tx, id, default_session_roundtrip_timeout())
+}
+
+fn stop_one_with_timeout(
+    tx: &flume::Sender<UiAction>,
+    id: &str,
+    timeout: Duration,
+) -> ControlResult<()> {
     id.parse::<SessionRef>()
         .map_err(|_| ControlError::InvalidId(id.to_owned()))?;
-    session_call(
+    session_call_with_timeout(
         tx,
         SessionRequest::Cancel {
             id: id.to_owned(),
             caller_id: None,
             host_control: true,
         },
+        timeout,
     )
     .map_err(|e| map_not_found(id, e))?;
     Ok(())
@@ -211,15 +312,35 @@ fn map_not_found(id: &str, err: ControlError) -> ControlError {
     }
 }
 
+#[allow(dead_code)]
 fn session_call(tx: &flume::Sender<UiAction>, req: SessionRequest) -> ControlResult<Value> {
+    session_call_with_timeout(tx, req, default_session_roundtrip_timeout())
+}
+
+fn session_call_with_timeout(
+    tx: &flume::Sender<UiAction>,
+    req: SessionRequest,
+    timeout: Duration,
+) -> ControlResult<Value> {
     let (reply_tx, reply_rx) = flume::bounded(1);
     tx.try_send(UiAction::Session { req, reply_tx })
         .map_err(|_| ControlError::Unavailable(UI_CHANNEL_CLOSED.into()))?;
-    match reply_rx.recv_timeout(SESSION_ROUNDTRIP_TIMEOUT) {
+    let timeout_ms = timeout.as_millis() as u64;
+    match reply_rx.recv_timeout(timeout) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(ControlError::Unavailable(e)),
         Err(flume::RecvTimeoutError::Timeout) => {
-            Err(ControlError::Unavailable(UI_REPLY_TIMEOUT.into()))
+            tracing::warn!(timeout_ms, "tui session reply timed out, retrying once");
+            match reply_rx.recv_timeout(timeout) {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(e)) => Err(ControlError::Unavailable(e)),
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    Err(ControlError::Unavailable(UI_REPLY_TIMEOUT.into()))
+                }
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    Err(ControlError::Unavailable(UI_REPLY_DROPPED.into()))
+                }
+            }
         }
         Err(flume::RecvTimeoutError::Disconnected) => {
             Err(ControlError::Unavailable(UI_REPLY_DROPPED.into()))

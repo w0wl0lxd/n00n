@@ -18,7 +18,7 @@ const NAME: &str = "n00n-plugin-dev";
 const DESCRIPTION: &str = "Write or modify n00n plugins or init.lua config in Lua: custom tools, slash commands, keymaps, UI. Authoring guide, real example, indexed n00n Lua API reference. Load before any n00n plugin work.";
 const REFERENCE_PLACEHOLDER: &str = "__N00N_REFERENCE_PATH__";
 
-const EXAMPLE: &str = include_str!("../../plugins/glob/init.lua");
+const EXAMPLE: &str = include_str!("../../../plugins/glob/init.lua");
 
 const GUIDE: &str = r#"# Writing n00n plugins
 

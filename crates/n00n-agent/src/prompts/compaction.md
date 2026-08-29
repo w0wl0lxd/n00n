@@ -1,1 +1,1 @@
-Summarize the conversation for continuation. Cover: goal, progress, affected files, key constraints, technical decisions, and next steps. Output only the summary.
+Summarize the conversation for continuation. Cover: goal, progress, affected files, key constraints, technical decisions, and next steps. Task state (todos, progress) is preserved automatically outside the summary - do not re-list todos. Output only the summary.

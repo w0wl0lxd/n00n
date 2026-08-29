@@ -15,7 +15,7 @@ use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
-pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue with next steps, ask if unsure, restore todos with todo_write, and persist durable notes via memory.";
+pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue with next steps, ask if unsure. Task state (todos, progress) is preserved automatically - do not re-create it; continue from where the summary left off.";
 
 const COMPACTION_INPUT_SAFETY_MARGIN: u32 = 4096;
 const MINIMAL_CONTEXT_RATIO: f64 = 0.2;
@@ -102,14 +102,43 @@ pub(super) async fn compact_history(
     let remaining = context_window.saturating_sub(current_usage);
     let tier = CompactionTier::from_remaining_context(remaining, context_window);
     let budget = tier.token_budget(context_window);
-    let target = context_window
+    let mut target = context_window
         .saturating_sub(budget)
         .saturating_sub(COMPACTION_INPUT_SAFETY_MARGIN);
 
+    // Keep at least 2 rounds (user+assistant pairs) to avoid draining the context
+    // to a single message on tiny windows or mis-estimated budgets. Bound target
+    // to history_len * avg_tokens so the floor scales with actual message size.
+    const MIN_KEEP_ROUNDS: usize = 2;
+    const MIN_KEEP_MESSAGES: usize = MIN_KEEP_ROUNDS * 2;
+    if !compaction_history.is_empty() {
+        let avg_tokens = current_usage
+            .checked_div(u32::try_from(compaction_history.len()).unwrap_or(1))
+            .unwrap_or(0)
+            .max(1);
+        let floor = avg_tokens.saturating_mul(u32::try_from(MIN_KEEP_MESSAGES).unwrap_or(4));
+        // Never target less than the floor, and never more than the current usage
+        // would already satisfy (otherwise we'd skip truncation entirely on large histories).
+        let bounded_floor = floor.min(current_usage);
+        target = target.max(bounded_floor);
+    }
+    let original_len = compaction_history.len();
     let mut current_usage = current_usage;
-    while current_usage > target && compaction_history.len() > 1 {
+    while current_usage > target && compaction_history.len() > MIN_KEEP_MESSAGES {
         truncate_oldest_round(&mut compaction_history);
         current_usage = estimate_message_tokens(&compaction_history, &model.id);
+    }
+    let truncated = original_len.saturating_sub(compaction_history.len());
+    if truncated > 0 {
+        info!(
+            truncated,
+            original_len,
+            remaining_len = compaction_history.len(),
+            target,
+            current_usage,
+            context_window,
+            "pre-truncation dropped oldest rounds to fit context window"
+        );
     }
 
     // Recompute tier/budget/remaining after pre-truncation
@@ -304,11 +333,50 @@ pub(super) fn is_overflow(usage: &TokenUsage, model: &Model, buffer: CompactionB
 
 fn strip_images(messages: &mut [Message]) {
     for msg in messages {
+        // Preserve the ToolResult caption that accompanies an image (e.g. "[image: foo.png 12KB]")
+        // so compaction summaries keep the filename/size context. Falls back to a
+        // source-derived caption like "[image: <mime>]" when no ToolResult caption is present.
+        let image_captions: Vec<String> = msg
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } if content.starts_with("[image:") => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut caption_index = 0usize;
         for block in &mut msg.content {
-            if matches!(block, ContentBlock::Image { .. }) {
-                *block = ContentBlock::Text {
-                    text: IMAGE_PLACEHOLDER.into(),
+            if let ContentBlock::Image { source } = block {
+                let text = if caption_index < image_captions.len() {
+                    let caption = image_captions[caption_index].clone();
+                    caption_index += 1;
+                    caption
+                } else {
+                    caption_index += 1;
+                    // Derive a caption from the image source so we preserve "[image: {text}]"
+                    // shape like ToolOutput::Image annotation does (strip_prefix("[image: ")).
+                    let derived = source
+                        .file_id
+                        .clone()
+                        .or_else(|| source.url.clone())
+                        .unwrap_or_else(|| {
+                            if source.data.is_empty() {
+                                source.media_type.mime().to_string()
+                            } else {
+                                format!("{} {} bytes", source.media_type.mime(), source.data.len())
+                            }
+                        });
+                    if derived.is_empty() {
+                        IMAGE_PLACEHOLDER.into()
+                    } else if derived.starts_with("[image:") {
+                        derived
+                    } else {
+                        format!("[image: {}]", derived)
+                    }
                 };
+                *block = ContentBlock::Text { text };
             }
         }
     }
@@ -758,9 +826,33 @@ mod tests {
         strip_images(&mut messages);
         assert_eq!(messages[0].content.len(), 2);
         assert!(
-            matches!(&messages[0].content[0], ContentBlock::Text { text } if text == IMAGE_PLACEHOLDER)
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text.starts_with("[image:"))
         );
         assert!(matches!(&messages[0].content[1], ContentBlock::Text { text } if text == "hello"));
+    }
+
+    #[test]
+    fn strip_images_preserves_caption_from_tool_result() {
+        use n00n_providers::{ContentBlock, ImageMediaType, ImageSource, Message, Role};
+        use std::sync::Arc;
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc"));
+        let mut messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "[image: foo.png 1KB]".into(),
+                    is_error: false,
+                },
+                ContentBlock::Image { source },
+            ],
+            ..Default::default()
+        }];
+        strip_images(&mut messages);
+        assert_eq!(messages[0].content.len(), 2);
+        assert!(
+            matches!(&messages[0].content[1], ContentBlock::Text { text } if text == "[image: foo.png 1KB]")
+        );
     }
 
     #[test]

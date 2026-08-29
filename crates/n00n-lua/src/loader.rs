@@ -57,100 +57,124 @@ const fn privileged(
 static BUNDLED_PLUGINS: &[BundledPlugin] = &[
     bundled(
         "agent_control",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/agent_control"),
     ),
     bundled(
         "blackboard",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/blackboard"),
     ),
     bundled(
         "sessions",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/sessions"),
     ),
     bundled(
         "semblem",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/semblem"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/semblem"),
     ),
     bundled(
         "smell",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/smell"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/smell"),
     ),
     bundled(
         "index",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/index"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/index"),
     ),
     privileged(
         "webfetch",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/webfetch"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/webfetch"),
         BundledCapability::WebFetch,
     ),
     privileged(
         "websearch",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/websearch"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/websearch"),
         BundledCapability::WebSearch,
     ),
-    bundled("bash", include_dir!("$CARGO_MANIFEST_DIR/../plugins/bash")),
+    bundled(
+        "bash",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/bash"),
+    ),
     bundled(
         "batch",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/batch"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/batch"),
     ),
-    bundled("grep", include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep")),
-    bundled("glob", include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob")),
+    bundled(
+        "grep",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/grep"),
+    ),
+    bundled(
+        "glob",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/glob"),
+    ),
     bundled(
         "skill",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/skill"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/skill"),
     ),
     bundled(
         "memory",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/memory"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/memory"),
     ),
     bundled(
         "question",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/question"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/question"),
     ),
     bundled(
         "todo_write",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/todo_write"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/todo_write"),
     ),
-    bundled("read", include_dir!("$CARGO_MANIFEST_DIR/../plugins/read")),
+    bundled(
+        "read",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/read"),
+    ),
     bundled(
         "write",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/write"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/write"),
     ),
-    bundled("edit", include_dir!("$CARGO_MANIFEST_DIR/../plugins/edit")),
+    bundled(
+        "edit",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/edit"),
+    ),
     bundled(
         "explore",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/explore"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/explore"),
     ),
     bundled(
         "fusion",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/fusion"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/fusion"),
     ),
-    bundled("task", include_dir!("$CARGO_MANIFEST_DIR/../plugins/task")),
+    bundled(
+        "task",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/task"),
+    ),
     bundled(
         "workflow",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/workflow"),
     ),
-    bundled("team", include_dir!("$CARGO_MANIFEST_DIR/../plugins/team")),
-    bundled("tmux", include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux")),
+    bundled(
+        "team",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/team"),
+    ),
+    bundled(
+        "tmux",
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/tmux"),
+    ),
     bundled(
         "code_execution",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/code_execution"),
     ),
     bundled(
         "codegraph",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/codegraph"),
     ),
-    bundled("git", include_dir!("$CARGO_MANIFEST_DIR/../plugins/git")),
+    bundled("git", include_dir!("$CARGO_MANIFEST_DIR/../../plugins/git")),
     bundled(
         "github",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/github"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/github"),
     ),
     bundled(
         "view_image",
-        include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
+        include_dir!("$CARGO_MANIFEST_DIR/../../plugins/view_image"),
     ),
-    bundled("lib", include_dir!("$CARGO_MANIFEST_DIR/../plugins/lib")),
+    bundled("lib", include_dir!("$CARGO_MANIFEST_DIR/../../plugins/lib")),
 ];
 
 pub(crate) fn lib_dir() -> &'static Dir<'static> {

@@ -32,6 +32,7 @@ use std::time::{Duration, Instant, SystemTime};
 use humantime::format_duration;
 use ignore::WalkBuilder;
 use serde_json::Value;
+use tracing::warn;
 
 use crate::agent::LoadedInstructions;
 use crate::cancel::{CancelMap, CancelToken};
@@ -642,6 +643,15 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
             result.truncate(result.floor_char_boundary(content_limit));
             result.push_str(&suffix);
         }
+        warn!(
+            tool = "truncate_output",
+            path = "",
+            original_bytes = text.len(),
+            truncated_bytes = result.len(),
+            max_bytes,
+            max_lines,
+            "truncated tool output"
+        );
     }
     result
 }

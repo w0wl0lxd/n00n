@@ -98,25 +98,52 @@ pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
 
 fn teardown() {
     pop_terminal_modes();
-    terminal::disable_raw_mode().ok();
-    stdout().execute(LeaveAlternateScreen).ok();
-    stdout().flush().ok();
+    if let Err(error) = terminal::disable_raw_mode() {
+        tracing::warn!(error = %error, "failed to disable raw mode");
+    }
+    if let Err(error) = stdout().execute(LeaveAlternateScreen) {
+        tracing::warn!(error = %error, "failed to leave alternate screen");
+    }
+    if let Err(error) = stdout().flush() {
+        tracing::warn!(error = %error, "failed to flush stdout");
+    }
 }
 
 fn pop_terminal_modes() {
-    stdout().execute(crossterm::cursor::Show).ok();
-    stdout().execute(PopKeyboardEnhancementFlags).ok();
-    stdout().execute(DisableMouseCapture).ok();
-    stdout().execute(DisableBracketedPaste).ok();
+    if let Err(error) = stdout().execute(crossterm::cursor::Show) {
+        tracing::warn!(error = %error, "failed to show cursor");
+    }
+    if let Err(error) = stdout().execute(PopKeyboardEnhancementFlags) {
+        tracing::warn!(
+            error = %error,
+            "failed to pop keyboard enhancement flags"
+        );
+    }
+    if let Err(error) = stdout().execute(DisableMouseCapture) {
+        tracing::warn!(error = %error, "failed to disable mouse capture");
+    }
+    if let Err(error) = stdout().execute(DisableBracketedPaste) {
+        tracing::warn!(error = %error, "failed to disable bracketed paste");
+    }
 }
 
 fn resume(terminal: &mut ratatui::DefaultTerminal) {
-    stdout().execute(EnterAlternateScreen).ok();
-    terminal::enable_raw_mode().ok();
-    stdout().execute(EnableBracketedPaste).ok();
-    stdout().execute(EnableMouseCapture).ok();
+    if let Err(error) = stdout().execute(EnterAlternateScreen) {
+        tracing::warn!(error = %error, "failed to enter alternate screen");
+    }
+    if let Err(error) = terminal::enable_raw_mode() {
+        tracing::warn!(error = %error, "failed to enable raw mode");
+    }
+    if let Err(error) = stdout().execute(EnableBracketedPaste) {
+        tracing::warn!(error = %error, "failed to enable bracketed paste");
+    }
+    if let Err(error) = stdout().execute(EnableMouseCapture) {
+        tracing::warn!(error = %error, "failed to enable mouse capture");
+    }
     push_keyboard_enhancement();
-    let _ = terminal.clear();
+    if let Err(error) = terminal.clear() {
+        tracing::warn!(error = %error, "failed to clear terminal");
+    }
 }
 
 fn push_keyboard_enhancement() {

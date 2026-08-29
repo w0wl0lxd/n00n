@@ -112,6 +112,8 @@ pub(crate) enum PluginStateError {
     Serialize(#[from] serde_json::Error),
     #[error(transparent)]
     Snapshot(#[from] SessionStateError),
+    #[error("plugin state lock poisoned")]
+    Poisoned,
 }
 
 #[derive(Default)]
@@ -127,10 +129,11 @@ pub(crate) struct PluginStateStore {
 }
 
 impl PluginStateStore {
-    fn lock(&self) -> MutexGuard<'_, StateInner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> Result<MutexGuard<'_, StateInner>, PluginStateError> {
+        self.inner.lock().map_err(|_| {
+            tracing::warn!("plugin state lock poisoned");
+            PluginStateError::Poisoned
+        })
     }
 
     #[must_use]
@@ -140,7 +143,14 @@ impl PluginStateStore {
         scope: PluginStateScope,
         identity: &PluginStateIdentity,
     ) -> Option<Value> {
-        self.lock()
+        let guard = match self.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to acquire plugin state lock for get");
+                return None;
+            }
+        };
+        guard
             .values
             .get(&StateKey::new(plugin, scope, identity))
             .cloned()
@@ -155,7 +165,7 @@ impl PluginStateStore {
     ) -> Result<Option<Value>, PluginStateError> {
         validate_value_size(&value)?;
         let key = StateKey::new(plugin, scope, identity);
-        let mut inner = self.lock();
+        let mut inner = self.lock()?;
         validate_replacement(&inner, &identity.scope_identity(scope), &key, &value)?;
         inner.managed.insert(key.clone());
         Ok(inner.values.insert(key, value))
@@ -168,7 +178,7 @@ impl PluginStateStore {
         identity: &PluginStateIdentity,
     ) -> Result<Option<Value>, PluginStateError> {
         let key = StateKey::new(plugin, scope, identity);
-        let mut inner = self.lock();
+        let mut inner = self.lock()?;
         validate_removal(&inner, &identity.scope_identity(scope), &key)?;
         inner.managed.insert(key.clone());
         Ok(inner.values.remove(&key))
@@ -196,7 +206,7 @@ impl PluginStateStore {
             }
         }
 
-        let mut inner = self.lock();
+        let mut inner = self.lock()?;
         clear_identity_runtime(&mut inner, &identity, false);
         for (plugin, scope, payload) in entries {
             if !identity.owns_scope(scope) {
@@ -219,7 +229,7 @@ impl PluginStateStore {
         identity: &PluginStateIdentity,
         revision: u64,
     ) -> Result<StoredSessionStateSnapshot, PluginStateError> {
-        let mut inner = self.lock();
+        let mut inner = self.lock()?;
         let mut candidate = candidate_for(&inner, identity, None)?;
         candidate.set_state_revision(revision)?;
         inner.bases.insert(identity.clone(), candidate.clone());
@@ -227,11 +237,18 @@ impl PluginStateStore {
     }
 
     pub(crate) fn reset(&self, identity: &PluginStateIdentity) {
-        clear_identity_runtime(&mut self.lock(), identity, true);
+        let Ok(mut guard) = self.lock() else {
+            tracing::warn!("failed to acquire plugin state lock for reset");
+            return;
+        };
+        clear_identity_runtime(&mut guard, identity, true);
     }
 
     pub(crate) fn drop_owner(&self, owner: n00nId) {
-        let mut inner = self.lock();
+        let Ok(mut inner) = self.lock() else {
+            tracing::warn!("failed to acquire plugin state lock for drop_owner");
+            return;
+        };
         inner.values.retain(|key, _| key.owner != owner);
         inner.managed.retain(|key| key.owner != owner);
         inner.bases.retain(|identity, _| {
@@ -722,13 +739,13 @@ mod tests {
 
         let key = StateKey::new("plugin", PluginStateScope::Session, &identity);
         {
-            let mut inner = store.lock();
+            let mut inner = store.lock().unwrap();
             inner.managed.insert(key.clone());
             inner.values.insert(key, json!("new"));
         }
 
         assert!(store.capture(&identity, 2).is_err());
-        let inner = store.lock();
+        let inner = store.lock().unwrap();
         let base = &inner.bases[&identity];
         assert_eq!(base.state_revision(), Some(1));
         assert_eq!(

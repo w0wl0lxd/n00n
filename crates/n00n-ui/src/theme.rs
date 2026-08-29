@@ -284,7 +284,13 @@ pub fn persist_theme(name: &str) {
 }
 
 fn read_theme_name() -> Option<String> {
-    let dir = StateDir::resolve().ok()?;
+    let dir = match StateDir::resolve() {
+        Ok(dir) => dir,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to resolve state directory for theme");
+            return None;
+        }
+    };
     n00n_storage::theme::read_theme_name(&dir)
 }
 
@@ -437,9 +443,15 @@ fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
     if hex.len() != 6 {
         return None;
     }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    let Ok(r) = u8::from_str_radix(&hex[0..2], 16) else {
+        return None;
+    };
+    let Ok(g) = u8::from_str_radix(&hex[2..4], 16) else {
+        return None;
+    };
+    let Ok(b) = u8::from_str_radix(&hex[4..6], 16) else {
+        return None;
+    };
     Some((r, g, b))
 }
 
@@ -680,7 +692,10 @@ impl Theme {
             .map_or_else(HashMap::default, |t| {
                 t.iter()
                     .filter_map(|(k, v)| {
-                        let def: StyleDef = v.clone().try_into().ok()?;
+                        let Ok(def) = v.clone().try_into() else {
+                            tracing::warn!(key = %k, "failed to parse style definition");
+                            return None;
+                        };
                         Some((k.clone(), def))
                     })
                     .collect()

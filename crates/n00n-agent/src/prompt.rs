@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use n00n_providers::System;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
+use tracing::warn;
 
 pub trait ValidNames: IntoEnumIterator + std::fmt::Display {
     #[must_use]
@@ -33,6 +34,11 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 
 const NATIVE_EFFICIENT_TOOLS: &[&str] = &["explore_code", "index_file", "run_batch", "run_python"];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
+/// Max bytes for dynamic todo injection via `AfterInstructions`.
+/// Todos ride as `System::Dynamic` which is never `cache_read` (see `assemble_system`), so every byte is billed as input.
+/// At `CHARS_PER_TOKEN=4` (scripts/tool_token_analysis.py) this is ~512 tokens. Capped by truncating oldest `pending` first, keeping `in_progress`.
+/// History injection via `compaction_state` would still be dynamic tail and lose visibility after `History` truncation; `System` Dynamic preserves visibility and survives compaction via plugin state.
+const MAX_AFTER_INSTRUCTIONS_BYTES: usize = 2048;
 
 /// Singleton: alphabetically last plugin wins, discarding all prior content
 /// and built-in defaults.  Used for slots with opinionated defaults where
@@ -184,7 +190,12 @@ fn render_slot(slots: &ResolvedSlots, prompt: PromptId, slot: Slot) -> String {
             for entry in entries {
                 parts.push(entry.content.as_str());
             }
-            parts.join("\n")
+            let joined = parts.join("\n");
+            if slot == Slot::AfterInstructions {
+                cap_after_instructions(joined)
+            } else {
+                joined
+            }
         }
     }
 }
@@ -198,6 +209,150 @@ fn render_efficient_tools(slots: &ResolvedSlots, prompt: PromptId) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("Most efficient tools: {names}.")
+}
+
+fn cap_after_instructions(content: String) -> String {
+    if content.len() <= MAX_AFTER_INSTRUCTIONS_BYTES {
+        return content;
+    }
+    if !content.contains("# Current todos") {
+        let truncated =
+            crate::tools::truncate_output(&content, usize::MAX, MAX_AFTER_INSTRUCTIONS_BYTES);
+        warn!(
+            tool = "AfterInstructions",
+            path = "",
+            original_bytes = content.len(),
+            truncated_bytes = truncated.len(),
+            "truncated AfterInstructions to cap"
+        );
+        return truncated;
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let mut header_end = 0;
+    for (idx, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with('{') {
+            break;
+        }
+        header_end = idx + 1;
+    }
+    let header = lines[..header_end].join("\n");
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for line in &lines[header_end..] {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let status = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| {
+                v.get("status")
+                    .and_then(|s| s.as_str())
+                    .map(std::string::ToString::to_string)
+            })
+            .unwrap_or_else(|| "pending".to_string());
+        entries.push(((*line).to_string(), status));
+    }
+    if entries.is_empty() {
+        let truncated =
+            crate::tools::truncate_output(&content, usize::MAX, MAX_AFTER_INSTRUCTIONS_BYTES);
+        warn!(
+            tool = "AfterInstructions",
+            path = "",
+            original_bytes = content.len(),
+            truncated_bytes = truncated.len(),
+            "truncated AfterInstructions to cap"
+        );
+        return truncated;
+    }
+    let mut total: usize = entries.iter().map(|(l, _)| l.len() + 1).sum();
+    if total <= MAX_AFTER_INSTRUCTIONS_BYTES {
+        return content;
+    }
+    let original_bytes = content.len();
+    let mut keep = vec![true; entries.len()];
+    let pending_indices: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, (_, status))| if status == "pending" { Some(idx) } else { None })
+        .collect();
+    let mut pending_pos = 0;
+    while total > MAX_AFTER_INSTRUCTIONS_BYTES && pending_pos < pending_indices.len() {
+        let idx = pending_indices[pending_pos];
+        if keep[idx] {
+            total = total.saturating_sub(entries[idx].0.len() + 1);
+            keep[idx] = false;
+        }
+        pending_pos += 1;
+    }
+    if total > MAX_AFTER_INSTRUCTIONS_BYTES {
+        let fallback: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, (_, status))| {
+                if keep[idx] && status != "in_progress" {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut fallback_pos = 0;
+        while total > MAX_AFTER_INSTRUCTIONS_BYTES && fallback_pos < fallback.len() {
+            let idx = fallback[fallback_pos];
+            total = total.saturating_sub(entries[idx].0.len() + 1);
+            keep[idx] = false;
+            fallback_pos += 1;
+        }
+    }
+    if total > MAX_AFTER_INSTRUCTIONS_BYTES {
+        for (idx, (line, _)) in entries.iter_mut().enumerate() {
+            if keep[idx] {
+                let avail = MAX_AFTER_INSTRUCTIONS_BYTES
+                    .saturating_sub(total.saturating_sub(line.len() + 1));
+                if line.len() > avail {
+                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(obj) = val.as_object_mut() {
+                            if let Some(content_val) = obj.get_mut("content") {
+                                if let Some(content_str) = content_val.as_str() {
+                                    let overhead = line.len().saturating_sub(content_str.len());
+                                    let max_content =
+                                        avail.saturating_sub(overhead).saturating_sub(3);
+                                    let truncated_content = if content_str.len() > max_content {
+                                        let boundary = content_str.floor_char_boundary(max_content);
+                                        format!("{}...", &content_str[..boundary])
+                                    } else {
+                                        content_str.to_string()
+                                    };
+                                    *content_val = serde_json::Value::String(truncated_content);
+                                    if let Ok(new_line) = serde_json::to_string(&val) {
+                                        *line = new_line;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        let boundary = line.floor_char_boundary(avail.saturating_sub(3));
+                        *line = format!("{}...", &line[..boundary]);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    let mut out = header;
+    for (idx, (line, _)) in entries.into_iter().enumerate() {
+        if keep[idx] {
+            out.push('\n');
+            out.push_str(&line);
+        }
+    }
+    warn!(
+        tool = "AfterInstructions",
+        path = "",
+        original_bytes,
+        truncated_bytes = out.len(),
+        "truncated AfterInstructions todo budget"
+    );
+    out
 }
 
 /// Fill each `{{slot}}` marker in the template with its rendered content and
@@ -226,6 +381,10 @@ fn fill_marker(template: &str, marker: &str, content: &str) -> String {
 /// Build a `System` prompt from the template, grouping static content before
 /// dynamic slots (`environment`, `after_instructions`) so providers can cache the
 /// reusable prefix.
+///
+/// `AfterInstructions` is `Dynamic` and never `cache_read` — every byte is billed as input (see `System::cacheable_prefix_blocks`).
+/// We cap it to `MAX_AFTER_INSTRUCTIONS_BYTES` (2048 bytes ≈512 tokens at 4 chars/token) by dropping oldest `pending` todos first, keeping `in_progress`.
+/// Moving todos to history via `compaction_state` would still be a dynamic tail, lose visibility after `History::truncate`, and not improve cache hit rate; plugin state + `System` Dynamic is the correct layer.
 #[must_use]
 pub fn assemble_system(id: PromptId, slots: &ResolvedSlots, instructions: &str) -> System {
     let template = id.template();

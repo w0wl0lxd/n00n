@@ -68,7 +68,17 @@ pub fn load_builtin_plugin_commands() -> Vec<LuaPluginCommand> {
         .filter_map(std::result::Result::ok)
         .filter_map(|e| {
             let path = e.path().join("init.lua");
-            let source = std::fs::read_to_string(&path).ok()?;
+            let source = match std::fs::read_to_string(&path) {
+                Ok(source) => source,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "failed to read plugin init.lua"
+                    );
+                    return None;
+                }
+            };
             Some(parse_lua_commands(&source))
         })
         .flatten()

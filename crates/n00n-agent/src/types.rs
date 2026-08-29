@@ -632,6 +632,26 @@ impl ToolOutput {
 
     #[must_use]
     pub fn bounded(self, max_lines: usize, max_bytes: usize) -> Self {
+        let original_bytes = self.as_text().len();
+        let original_tool: &'static str = match &self {
+            Self::Plain(_) => "Plain",
+            Self::Markdown(_) => "Markdown",
+            Self::ReadDir(_) => "ReadDir",
+            Self::ReadCode { .. } => "ReadCode",
+            Self::Diff { .. } => "Diff",
+            Self::TodoList(_) => "TodoList",
+            Self::WriteCode { .. } => "WriteCode",
+            Self::GrepResult { .. } => "GrepResult",
+            Self::Batch { .. } => "Batch",
+            Self::Instructions { .. } => "Instructions",
+            Self::Image { .. } => "Image",
+        };
+        let original_path = match &self {
+            Self::ReadCode { path, .. }
+            | Self::Diff { path, .. }
+            | Self::WriteCode { path, .. } => path.clone(),
+            _ => String::new(),
+        };
         let bounded = match self {
             Self::Plain(output) => Self::Plain(bounded_text_output(output, max_lines, max_bytes)),
             Self::Markdown(output) => {
@@ -647,7 +667,19 @@ impl ToolOutput {
                 total_lines,
                 instructions,
             } => {
+                let orig_len = lines.len();
                 lines.truncate(max_lines);
+                if lines.len() != orig_len {
+                    warn!(
+                        tool = "ReadCode",
+                        path = %path,
+                        original_bytes = orig_len,
+                        truncated_bytes = lines.len(),
+                        max_bytes,
+                        max_lines,
+                        "truncated tool output lines"
+                    );
+                }
                 let max_line_bytes = max_bytes.clamp(1, 4096);
                 for line in &mut lines {
                     *line = crate::tools::truncate_output(line, 1, max_line_bytes);
@@ -667,14 +699,26 @@ impl ToolOutput {
                 summary,
                 telemetry,
             } => Self::Diff {
-                path,
+                path: path.clone(),
                 before: crate::tools::truncate_output(&before, max_lines, max_bytes / 2),
                 after: crate::tools::truncate_output(&after, max_lines, max_bytes / 2),
                 summary: crate::tools::truncate_output(&summary, max_lines, max_bytes),
                 telemetry,
             },
             Self::TodoList(mut items) => {
+                let orig_len = items.len();
                 items.truncate(max_lines);
+                if items.len() != orig_len {
+                    warn!(
+                        tool = "TodoList",
+                        path = "",
+                        original_bytes = orig_len,
+                        truncated_bytes = items.len(),
+                        max_bytes,
+                        max_lines,
+                        "truncated tool output items"
+                    );
+                }
                 for item in &mut items {
                     item.content = crate::tools::truncate_output(&item.content, 1, max_bytes);
                 }
@@ -685,7 +729,19 @@ impl ToolOutput {
                 byte_count,
                 mut lines,
             } => {
+                let orig_len = lines.len();
                 lines.truncate(max_lines);
+                if lines.len() != orig_len {
+                    warn!(
+                        tool = "WriteCode",
+                        path = %path,
+                        original_bytes = orig_len,
+                        truncated_bytes = lines.len(),
+                        max_bytes,
+                        max_lines,
+                        "truncated tool output lines"
+                    );
+                }
                 for line in &mut lines {
                     *line = crate::tools::truncate_output(line, 1, max_bytes);
                 }
@@ -713,11 +769,32 @@ impl ToolOutput {
                 telemetry,
             },
         };
+        let truncated_bytes = bounded.as_text().len();
+        if truncated_bytes != original_bytes {
+            warn!(
+                tool = original_tool,
+                path = %original_path,
+                original_bytes,
+                truncated_bytes,
+                max_bytes,
+                max_lines,
+                "truncated tool output"
+            );
+        }
         let text = bounded.as_text();
         let limited = crate::tools::truncate_output(&text, max_lines, max_bytes);
         if limited == text {
             bounded
         } else {
+            warn!(
+                tool = original_tool,
+                path = %original_path,
+                original_bytes,
+                truncated_bytes = limited.len(),
+                max_bytes,
+                max_lines,
+                "truncated tool output fallback"
+            );
             Self::Plain(limited.into())
         }
     }

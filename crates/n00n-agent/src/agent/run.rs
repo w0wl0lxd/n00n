@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 use tracing::{error, info, warn};
@@ -227,7 +227,7 @@ pub struct Agent<'h> {
     active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
     tool_filter: ToolFilter,
     allow_dynamic_mcp_tools: bool,
-    active_tools: ActiveTools,
+    active_tools: Arc<RwLock<ActiveTools>>,
     supports_tool_examples: bool,
     fusion_state: Option<FusionState>,
     state_revision: Option<u64>,
@@ -297,7 +297,7 @@ impl<'h> Agent<'h> {
             active_skill_policy: None,
             tool_filter: run.tool_filter,
             allow_dynamic_mcp_tools: false,
-            active_tools: ActiveTools::default(),
+            active_tools: Arc::new(RwLock::new(ActiveTools::default())),
             supports_tool_examples,
             fusion_state,
             state_revision: params.state_revision,
@@ -583,8 +583,14 @@ impl<'h> Agent<'h> {
         .await
     }
 
+    /// History replay resends the full transcript. In YOLO mode this is
+    /// auto-approved because the cost is bounded and the operation is idempotent.
+    /// The flag `allow_history_replay` is set from `is_yolo()` at `run()` start and
+    /// flipped after an explicit approval, so this bypasses the permission prompt
+    /// only when that flag or YOLO is set. Ambiguous replay intentionally does
+    /// NOT auto-approve in YOLO — it may duplicate provider charges/output.
     async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
-        if self.permissions.is_yolo() {
+        if self.opts.allow_history_replay || self.permissions.is_yolo() {
             return Ok(());
         }
         let scope = history_replay_scope(
@@ -625,6 +631,10 @@ impl<'h> Agent<'h> {
         }
     }
 
+    /// Ambiguous replay may duplicate provider output or charges after a
+    /// connection reset. Even in YOLO mode this requires an explicit
+    /// `PermissionRequest`; YOLO only auto-approves history replay (see
+    /// `approve_history_replay` and `yolo_mode_does_not_auto_approve_ambiguous_request_replay`).
     async fn approve_ambiguous_request_replay(
         &self,
         metadata: Option<&RequestDeliveryMetadata>,
@@ -1041,11 +1051,16 @@ impl<'h> Agent<'h> {
             audience: self.audience,
             workflow: self.workflow,
         };
+        let active_snapshot = self
+            .active_tools
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let mut definitions = self.registry.deferred_definitions(
             &vars,
             &ctx,
             self.supports_tool_examples,
-            &self.active_tools,
+            &active_snapshot,
         );
         if let Some(mcp) = &self.mcp {
             definitions.extend(mcp.deferred_definitions());
@@ -1130,11 +1145,16 @@ impl<'h> Agent<'h> {
             audience: self.audience,
             workflow: self.workflow,
         };
+        let active_snapshot = self
+            .active_tools
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let mut tools = self.registry.definitions_active(
             &vars,
             &ctx,
             self.supports_tool_examples,
-            &self.active_tools,
+            &active_snapshot,
         );
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
@@ -1147,6 +1167,10 @@ impl<'h> Agent<'h> {
         let Some(arr) = self.tools.as_array() else {
             return;
         };
+        let mut active = self
+            .active_tools
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for def in arr {
             let Some(name) = def.get("name").and_then(|v| v.as_str()) else {
                 continue;
@@ -1154,13 +1178,17 @@ impl<'h> Agent<'h> {
             if let Some(entry) = self.registry.get(name)
                 && entry.defer_loading
             {
-                self.active_tools.names.insert(name.to_owned());
+                active.names.insert(name.to_owned());
             }
         }
     }
 
     fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
         let mut dirty = false;
+        let mut active = self
+            .active_tools
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for done in results {
             match n00n_config::canonical_tool_name(done.tool.as_ref()) {
                 "search_tools" => {
@@ -1168,7 +1196,7 @@ impl<'h> Agent<'h> {
                     if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) {
                         for item in items {
                             if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                                self.active_tools.names.insert(name.to_owned());
+                                active.names.insert(name.to_owned());
                                 dirty = true;
                             }
                         }
@@ -1179,7 +1207,7 @@ impl<'h> Agent<'h> {
                     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&text)
                         && let Some(ns) = obj.get("namespace").and_then(|v| v.as_str())
                     {
-                        self.active_tools.namespaces.insert(ns.to_owned());
+                        active.namespaces.insert(ns.to_owned());
                         dirty = true;
                     }
                 }
@@ -1261,12 +1289,19 @@ impl<'h> Agent<'h> {
             return Err(AgentError::Cancelled);
         }
         self.event_tx.send(AgentEvent::AutoCompacting)?;
-        let (compact_provider, compact_model) = resolve_compaction_model(
+        let (compact_provider, mut compact_model) = resolve_compaction_model(
             &self.provider,
             &self.model,
             self.timeouts,
             self.openai_options.clone(),
         );
+        // Budgeting (target/budget/remaining) must use the main chat model's
+        // context window, not the compaction model's window which may differ
+        // (e.g. a cheaper compaction tier with a larger window would otherwise
+        // under-truncate, or a smaller window would over-truncate). Only pricing
+        // and streaming should use the compaction model.
+        let main_context_window = self.model.context_window;
+        compact_model.context_window = main_context_window;
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         #[cfg(test)]
         let run_hooks = matches!(self.test_compaction_hooks, TestCompactionHooks::Enabled);
@@ -2573,8 +2608,14 @@ mod tests {
         };
 
         assert!(agent.apply_tool_search_results(&[search_result, namespace_result]));
-        assert!(agent.active_tools.names.contains("fetch_url"));
-        assert!(agent.active_tools.namespaces.contains("knowledge"));
+        {
+            let active = agent
+                .active_tools
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(active.names.contains("fetch_url"));
+            assert!(active.namespaces.contains("knowledge"));
+        }
     }
 
     #[test]
@@ -2591,8 +2632,14 @@ mod tests {
         };
 
         assert!(!agent.apply_tool_search_results(&[malformed]));
-        assert!(agent.active_tools.names.is_empty());
-        assert!(agent.active_tools.namespaces.is_empty());
+        {
+            let active = agent
+                .active_tools
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(active.names.is_empty());
+            assert!(active.namespaces.is_empty());
+        }
     }
     fn default_input() -> AgentInput {
         AgentInput {
