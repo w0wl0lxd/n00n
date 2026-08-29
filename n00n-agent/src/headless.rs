@@ -507,6 +507,79 @@ fn tool_definitions(
     crate::tools::runtime_tool_definitions(registry, vars, config, model, excluded_tools, workflow)
 }
 
+struct PreparedHeadlessSession {
+    model: Model,
+    model_spec: String,
+    provider: Arc<dyn Provider>,
+    session_store: Option<SessionStore>,
+    plan_path: Option<PathBuf>,
+    state_revision: u64,
+    identity: SessionIdentity,
+    prompt_slots: Arc<ResolvedSlots>,
+    system: System,
+}
+
+fn init_headless_session(
+    params: &mut HeadlessParams,
+    session_ref: &SessionRef,
+    session_cwd: &str,
+    startup_prompt_slots: Arc<ResolvedSlots>,
+    vars: &template::Vars,
+    instructions: &agent::Instructions,
+) -> Result<PreparedHeadlessSession, String> {
+    let mut model = params.model.clone();
+    let provider: Arc<dyn Provider> = Arc::from(provider::from_model_fallback_with_openai_options(
+        &mut model,
+        params.timeouts,
+        params.openai_options.clone(),
+    ));
+    let model_spec = model.spec();
+    let mut session_store = SessionStore::open(
+        session_ref.id(),
+        session_cwd,
+        &model_spec,
+        &params.mode,
+        params.state_persistence.clone(),
+    )?;
+    let plan_path = params.mode.plan_path().map(PathBuf::from);
+    if let Some(store) = &mut session_store
+        && let Err(message) = store.record_turn_started(&params.mode, plan_path.as_deref())
+    {
+        return Err(message.into());
+    }
+    let state_revision = session_store
+        .as_ref()
+        .map_or(INITIAL_STATE_REVISION, SessionStore::state_revision);
+    let identity = session_store.as_ref().map_or_else(
+        || SessionIdentity::root(session_ref.clone()),
+        |store| store.identity.clone(),
+    );
+    let prompt_slots = resolved_prompt_slots(
+        params.state_persistence.as_ref(),
+        &identity,
+        startup_prompt_slots,
+    );
+    let system = agent::build_system_prompt(
+        vars,
+        &params.mode,
+        &instructions.text,
+        &prompt_slots,
+        &model,
+    );
+
+    Ok(PreparedHeadlessSession {
+        model,
+        model_spec,
+        provider,
+        session_store,
+        plan_path,
+        state_revision,
+        identity,
+        prompt_slots,
+        system,
+    })
+}
+
 #[must_use]
 pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
     let working_dir = params.initial_wd.to_string_lossy().into_owned();
@@ -539,24 +612,18 @@ pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
         let working_dir_path = params.initial_wd.clone();
         async move {
             let event_tx = EventSender::new(raw_tx, 0);
-            let mut model = params.model;
-            let provider: Arc<dyn Provider> =
-                Arc::from(provider::from_model_fallback_with_openai_options(
-                    &mut model,
-                    params.timeouts,
-                    params.openai_options.clone(),
-                ));
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
-            let model_spec = model.spec();
-            let mut session_store = match SessionStore::open(
-                session_ref_clone.id(),
+
+            let session_init = match init_headless_session(
+                &mut params,
+                &session_ref_clone,
                 &session_cwd,
-                &model_spec,
-                &mode,
-                params.state_persistence.clone(),
+                startup_prompt_slots,
+                &vars,
+                &instructions,
             ) {
-                Ok(store) => store,
+                Ok(session) => session,
                 Err(message) => {
                     let _ = error_tx.send(AgentEvent::Error { message });
                     if let Some(handle) = mcp_shutdown {
@@ -565,32 +632,19 @@ pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
                     return;
                 }
             };
-            let plan_path = mode.plan_path().map(PathBuf::from);
-            if let Some(store) = &mut session_store
-                && let Err(message) = store.record_turn_started(&mode, plan_path.as_deref())
-            {
-                let _ = error_tx.send(AgentEvent::Error {
-                    message: message.into(),
-                });
-                if let Some(handle) = mcp_shutdown {
-                    handle.shutdown().await;
-                }
-                return;
-            }
-            let state_revision = session_store
-                .as_ref()
-                .map_or(INITIAL_STATE_REVISION, SessionStore::state_revision);
-            let identity = session_store.as_ref().map_or_else(
-                || SessionIdentity::root(session_ref_clone.clone()),
-                |store| store.identity.clone(),
-            );
-            let prompt_slots = resolved_prompt_slots(
-                params.state_persistence.as_ref(),
-                &identity,
-                startup_prompt_slots,
-            );
-            let system =
-                agent::build_system_prompt(&vars, &mode, &instructions.text, &prompt_slots, &model);
+
+            let PreparedHeadlessSession {
+                model,
+                model_spec,
+                provider,
+                session_store,
+                plan_path,
+                state_revision,
+                identity,
+                prompt_slots,
+                system,
+            } = session_init;
+
             let session_store = Arc::new(SyncMutex::new(session_store));
             let checkpoint_store = Arc::clone(&session_store);
             let checkpoint_model_spec = model_spec.clone();
