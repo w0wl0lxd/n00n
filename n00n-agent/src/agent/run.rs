@@ -244,9 +244,10 @@ impl<'h> Agent<'h> {
             .identity
             .as_ref()
             .map(SessionIdentity::session_id)
-            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
-                Arc::<str>::from(id.to_string())
-            });
+            .map_or_else(
+                || params.registry.admission().new_scope(),
+                |id| Arc::<str>::from(id.to_string()),
+            );
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
         } else {

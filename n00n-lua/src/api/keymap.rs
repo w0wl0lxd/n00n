@@ -6,8 +6,6 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use mlua::{Lua, RegistryKey, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_fn, lua_table};
 
-static NEXT_KEYMAP_ID: AtomicU64 = AtomicU64::new(1);
-
 #[derive(Clone, Debug)]
 pub struct KeymapEntry {
     pub key: KeyCode,
@@ -75,12 +73,14 @@ pub(crate) struct StoredKeymap {
 
 pub(crate) struct KeymapStore {
     bindings: Vec<StoredKeymap>,
+    next_id: Arc<AtomicU64>,
 }
 
 impl KeymapStore {
     pub fn new() -> Self {
         Self {
             bindings: Vec::new(),
+            next_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -92,7 +92,7 @@ impl KeymapStore {
         plugin: Arc<str>,
         desc: String,
     ) -> (u64, Option<RegistryKey>) {
-        let id = NEXT_KEYMAP_ID.fetch_add(1, Ordering::Relaxed);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let old = self
             .bindings
             .iter()

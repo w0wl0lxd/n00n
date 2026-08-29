@@ -22,7 +22,6 @@ const ORCHESTRATOR_TOOLS: &[&str] = &[
     "run_team",
     "run_workflow",
 ];
-static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 const CHEAP_TOOL_KINDS: &[&str] = &["cheap", "read", "metadata", "search"];
 const ORCHESTRATOR_TOOL_KINDS: &[&str] = &["orchestrator", "fanout"];
 
@@ -104,6 +103,7 @@ pub struct ToolAdmission {
     process_active: AtomicUsize,
     cheap_active: AtomicUsize,
     interactive_active: AtomicUsize,
+    next_scope: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for ToolAdmission {
@@ -141,10 +141,10 @@ impl ToolAdmission {
     }
 
     #[must_use]
-    pub fn new_scope() -> Arc<str> {
+    pub fn new_scope(&self) -> Arc<str> {
         Arc::from(format!(
             "agent-{}",
-            NEXT_SCOPE.fetch_add(1, Ordering::Relaxed)
+            self.next_scope.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
@@ -171,6 +171,7 @@ impl ToolAdmission {
             process_active: AtomicUsize::new(0),
             cheap_active: AtomicUsize::new(0),
             interactive_active: AtomicUsize::new(0),
+            next_scope: Arc::new(AtomicU64::new(1)),
         }
     }
 
