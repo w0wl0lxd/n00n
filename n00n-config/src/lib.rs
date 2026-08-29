@@ -2084,19 +2084,19 @@ pub fn bash_command(cmd: &str) -> Result<Command, String> {
     #[cfg(unix)]
     {
         let mut c = Command::new("bash");
-        c.arg("-c").arg(cmd);
+        c.arg("-c").arg("--").arg(cmd);
         Ok(c)
     }
     #[cfg(windows)]
     {
         if let Some(bash) = find_bash_on_path() {
             let mut c = Command::new(bash);
-            c.arg("-c").arg(cmd);
+            c.arg("-c").arg("--").arg(cmd);
             return Ok(c);
         }
         if let Some(wsl) = find_wsl() {
             let mut c = Command::new(wsl);
-            c.arg("-e").arg("bash").arg("-c").arg(cmd);
+            c.arg("-e").arg("bash").arg("-c").arg("--").arg(cmd);
             return Ok(c);
         }
         Err(BASH_NOT_FOUND_ERROR.to_string())
@@ -3791,5 +3791,21 @@ mod tests {
             perms.rules[0].tool,
             ToolKey::parse("github.delete").unwrap()
         );
+    }
+
+    #[test]
+    fn bash_command_includes_double_dash_separator() {
+        let cmd = bash_command("-s").unwrap();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        #[cfg(unix)]
+        assert_eq!(args, vec!["-c", "--", "-s"]);
+        #[cfg(windows)]
+        {
+            assert!(args.contains(&"--".to_string()));
+            assert_eq!(args.last().unwrap(), "-s");
+        }
     }
 }
