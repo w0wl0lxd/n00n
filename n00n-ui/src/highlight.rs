@@ -1,13 +1,14 @@
-use crate::theme;
+use std::sync::Arc;
 
+use crate::theme::Theme;
 use n00n_highlight::StyledSegment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
 pub use n00n_highlight::TAB_SPACES;
 
-pub(crate) fn warmup() {
-    refresh_syntax_theme();
+pub(crate) fn warmup(theme: &Arc<Theme>) {
+    refresh_syntax_theme(theme);
     n00n_highlight::warmup();
 }
 
@@ -15,8 +16,7 @@ pub(crate) fn is_ready() -> bool {
     n00n_highlight::is_ready()
 }
 
-pub(crate) fn refresh_syntax_theme() {
-    let theme = theme::current();
+pub(crate) fn refresh_syntax_theme(theme: &Theme) {
     n00n_highlight::set_theme(theme.syntax.clone());
     n00n_highlight::set_ui_colors(
         [
@@ -42,16 +42,13 @@ pub fn highlight_line(hl: &mut n00n_highlight::Highlighter, text: &str) -> Vec<S
         .collect()
 }
 
-pub fn fallback_span(text: &str) -> Span<'static> {
-    Span::styled(
-        n00n_highlight::normalize_text(text),
-        theme::current().code_block,
-    )
+pub fn fallback_span(text: &str, style: Style) -> Span<'static> {
+    Span::styled(n00n_highlight::normalize_text(text), style)
 }
 
 #[must_use]
 pub fn highlight_ansi(lang: &str, code: &str) -> String {
-    let theme = theme::current();
+    let theme = Theme::load_or_bundled();
     n00n_highlight::set_theme(theme.syntax.clone());
     let bg = match theme.background {
         Color::Rgb(r, g, b) => (r, g, b),
@@ -107,7 +104,7 @@ mod tests {
 
     #[test]
     fn fallback_span_normalizes() {
-        let span = fallback_span("\thello\n");
+        let span = fallback_span("\thello\n", Style::default());
         let expected = format!("{TAB_SPACES}hello");
         assert_eq!(span.content.as_ref(), expected);
     }

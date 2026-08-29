@@ -1,21 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 pub const SCROLLBAR_THUMB: &str = "\u{2590}";
-
-static ENABLED: AtomicBool = AtomicBool::new(true);
-
-pub fn set_enabled(enabled: bool) {
-    ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-pub fn is_enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ScrollInfo {
@@ -29,8 +17,9 @@ pub fn render_vertical_scrollbar(
     content_len: u16,
     position: u16,
     style: Option<Style>,
+    enabled: bool,
 ) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !enabled {
         return;
     }
     let max_scroll = content_len.saturating_sub(area.height);
@@ -143,22 +132,5 @@ mod tests {
             + u32::from(viewport_height - thumb_len) / 2)
             / u32::from(viewport_height - thumb_len);
         assert_eq!(pos, u16::try_from(expected).unwrap_or_else(|_| u16::MAX));
-    }
-
-    #[test]
-    fn is_enabled_reflects_set() {
-        let before = is_enabled();
-        set_enabled(!before);
-        assert_eq!(is_enabled(), !before);
-        set_enabled(before);
-    }
-
-    #[test]
-    fn render_is_noop_when_disabled() {
-        // Rendering when disabled should not panic and should not access frame.
-        set_enabled(false);
-        // No frame to exercise; the function returns early.
-        assert!(!is_enabled());
-        set_enabled(true);
     }
 }

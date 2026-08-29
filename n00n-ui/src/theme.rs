@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use arc_swap::{ArcSwap, Guard};
 use n00n_storage::StateDir;
@@ -257,6 +257,7 @@ fn read_theme_name() -> Option<String> {
 pub struct ThemeEngine {
     theme: ArcSwap<Theme>,
     generation: AtomicU64,
+    scrollbar_enabled: Arc<AtomicBool>,
 }
 
 impl ThemeEngine {
@@ -264,6 +265,7 @@ impl ThemeEngine {
         Self {
             theme: ArcSwap::from_pointee(theme),
             generation: AtomicU64::new(0),
+            scrollbar_enabled: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -274,9 +276,28 @@ impl ThemeEngine {
     pub fn set(&self, theme: Theme) {
         // Order matters: install colors before bumping the counter, otherwise a
         // reader could see the new generation but bake with the old palette.
+        crate::highlight::refresh_syntax_theme(&theme);
         self.theme.store(Arc::new(theme));
-        crate::highlight::refresh_syntax_theme();
         self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn set_scrollbar_enabled(&self, enabled: bool) {
+        self.scrollbar_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn scrollbar_enabled(&self) -> bool {
+        self.scrollbar_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn dim_style(&self, style: Style, factor: f32) -> Style {
+        match (style.fg, self.current().background) {
+            (Some(Color::Rgb(fr, fg, fb)), Color::Rgb(br, bg, bb)) => style.fg(Color::Rgb(
+                lerp_u8(fr, br, factor),
+                lerp_u8(fg, bg, factor),
+                lerp_u8(fb, bb, factor),
+            )),
+            _ => style,
+        }
     }
 
     pub fn generation(&self) -> u64 {
@@ -346,40 +367,6 @@ impl ThemeEngine {
             _ => Style::default(),
         }
     }
-}
-
-static THEME_ENGINE: OnceLock<Arc<ThemeEngine>> = OnceLock::new();
-
-pub fn engine() -> Arc<ThemeEngine> {
-    Arc::clone(THEME_ENGINE.get_or_init(|| Arc::new(ThemeEngine::new(Theme::load_or_bundled()))))
-}
-
-pub fn current() -> Guard<Arc<Theme>> {
-    engine().current()
-}
-
-pub fn set(theme: Theme) {
-    engine().set(theme);
-}
-
-pub fn generation() -> u64 {
-    engine().generation()
-}
-
-pub fn style_by_name(name: &str) -> Style {
-    engine().style_by_name(name)
-}
-
-pub fn load_by_name(name: &str) -> Result<Theme, String> {
-    ThemeEngine::load_by_name(name)
-}
-
-pub fn persist_theme(name: &str) {
-    ThemeEngine::persist_theme(name);
-}
-
-pub fn current_theme_name() -> String {
-    ThemeEngine::current_theme_name()
 }
 
 #[derive(Debug)]
@@ -730,9 +717,9 @@ impl Theme {
             })
     }
 
-    fn load_or_bundled() -> Self {
+    pub(crate) fn load_or_bundled() -> Self {
         if let Some(name) = read_theme_name()
-            && let Ok(theme) = load_by_name(&name)
+            && let Ok(theme) = ThemeEngine::load_by_name(&name)
         {
             return theme;
         }
@@ -925,17 +912,6 @@ pub(crate) fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     crate::cast::f32_to_u8(f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0))
 }
 
-pub(crate) fn dim_style(style: Style, factor: f32) -> Style {
-    match (style.fg, current().background) {
-        (Some(Color::Rgb(fr, fg, fb)), Color::Rgb(br, bg, bb)) => style.fg(Color::Rgb(
-            lerp_u8(fr, br, factor),
-            lerp_u8(fg, bg, factor),
-            lerp_u8(fb, bb, factor),
-        )),
-        _ => style,
-    }
-}
-
 fn brighten_toward(style: Style, from: Color, to: Color, t: f32) -> Style {
     match (from, to) {
         (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) => style.fg(Color::Rgb(
@@ -1103,7 +1079,7 @@ mod tests {
 
     #[test]
     fn load_by_name_unknown() {
-        assert!(load_by_name("nonexistent").is_err());
+        assert!(ThemeEngine::load_by_name("nonexistent").is_err());
     }
 
     #[test]
@@ -1190,53 +1166,60 @@ mode_build = "#112233"
         let _guard = THEME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        set(dracula());
-        let t = current();
-        assert_eq!(style_by_name("dim"), t.tool_dim);
-        assert_eq!(style_by_name("tool_dim"), t.tool_dim);
-        assert_eq!(style_by_name("path"), t.tool_path);
-        assert_eq!(style_by_name("tool_path"), t.tool_path);
-        assert_eq!(style_by_name("keyword"), t.index_keyword);
-        assert_eq!(style_by_name("index_keyword"), t.index_keyword);
-        assert_eq!(style_by_name("section"), t.index_section);
-        assert_eq!(style_by_name("index_section"), t.index_section);
-        assert_eq!(style_by_name("line_nr"), t.index_line_nr);
-        assert_eq!(style_by_name("index_line_nr"), t.index_line_nr);
-        assert_eq!(style_by_name("tool"), t.tool);
-        assert_eq!(style_by_name("error"), t.error);
-        assert_eq!(style_by_name("bold"), t.bold);
-        assert_eq!(style_by_name("italic"), t.italic);
-        assert_eq!(style_by_name("bold_italic"), t.bold_italic);
-        assert_eq!(style_by_name("diff_old"), t.diff_old);
-        assert_eq!(style_by_name("diff_new"), t.diff_new);
-        assert_eq!(style_by_name("item_selected"), t.item_selected);
-        assert_eq!(style_by_name("item"), t.item);
-        assert_eq!(style_by_name("item_desc"), t.item_desc);
-        assert_eq!(style_by_name("cursor"), t.cursor);
-        assert_eq!(style_by_name("accent"), t.accent);
-        assert_eq!(style_by_name("active"), t.active);
-        assert_eq!(style_by_name("foreground"), Style::new().fg(t.foreground));
-        assert_eq!(style_by_name("keybind_key"), t.keybind_key);
-        assert_eq!(style_by_name("keybind_desc"), t.keybind_desc);
-        assert_eq!(style_by_name("selected"), t.item_selected);
-        assert_eq!(style_by_name("success"), t.todo_completed);
-        assert_eq!(style_by_name("warning"), t.todo_in_progress);
-        assert_eq!(style_by_name("match"), t.item_match);
-        assert_eq!(style_by_name("match_selected"), t.item_match_selected);
+        let engine = ThemeEngine::new(dracula());
+        let t = engine.current();
+        assert_eq!(engine.style_by_name("dim"), t.tool_dim);
+        assert_eq!(engine.style_by_name("tool_dim"), t.tool_dim);
+        assert_eq!(engine.style_by_name("path"), t.tool_path);
+        assert_eq!(engine.style_by_name("tool_path"), t.tool_path);
+        assert_eq!(engine.style_by_name("keyword"), t.index_keyword);
+        assert_eq!(engine.style_by_name("index_keyword"), t.index_keyword);
+        assert_eq!(engine.style_by_name("section"), t.index_section);
+        assert_eq!(engine.style_by_name("index_section"), t.index_section);
+        assert_eq!(engine.style_by_name("line_nr"), t.index_line_nr);
+        assert_eq!(engine.style_by_name("index_line_nr"), t.index_line_nr);
+        assert_eq!(engine.style_by_name("tool"), t.tool);
+        assert_eq!(engine.style_by_name("error"), t.error);
+        assert_eq!(engine.style_by_name("bold"), t.bold);
+        assert_eq!(engine.style_by_name("italic"), t.italic);
+        assert_eq!(engine.style_by_name("bold_italic"), t.bold_italic);
+        assert_eq!(engine.style_by_name("diff_old"), t.diff_old);
+        assert_eq!(engine.style_by_name("diff_new"), t.diff_new);
+        assert_eq!(engine.style_by_name("item_selected"), t.item_selected);
+        assert_eq!(engine.style_by_name("item"), t.item);
+        assert_eq!(engine.style_by_name("item_desc"), t.item_desc);
+        assert_eq!(engine.style_by_name("cursor"), t.cursor);
+        assert_eq!(engine.style_by_name("accent"), t.accent);
+        assert_eq!(engine.style_by_name("active"), t.active);
+        assert_eq!(
+            engine.style_by_name("foreground"),
+            Style::new().fg(t.foreground)
+        );
+        assert_eq!(engine.style_by_name("keybind_key"), t.keybind_key);
+        assert_eq!(engine.style_by_name("keybind_desc"), t.keybind_desc);
+        assert_eq!(engine.style_by_name("selected"), t.item_selected);
+        assert_eq!(engine.style_by_name("success"), t.todo_completed);
+        assert_eq!(engine.style_by_name("warning"), t.todo_in_progress);
+        assert_eq!(engine.style_by_name("match"), t.item_match);
+        assert_eq!(
+            engine.style_by_name("match_selected"),
+            t.item_match_selected
+        );
     }
 
     #[test_case("nonexistent_style")]
     #[test_case("")]
     #[test_case("typo_keyword")]
     fn style_by_name_unknown_returns_default(name: &str) {
-        assert_eq!(style_by_name(name), Style::default());
+        let engine = ThemeEngine::new(dracula());
+        assert_eq!(engine.style_by_name(name), Style::default());
     }
 
     const DRACULA_BG: Color = Color::Rgb(0x28, 0x2a, 0x36);
     const TOKYONIGHT_BG: Color = Color::Rgb(0x1a, 0x1b, 0x26);
 
     fn tokyonight() -> Theme {
-        load_by_name("tokyonight").expect("tokyonight theme must exist")
+        ThemeEngine::load_by_name("tokyonight").expect("tokyonight theme must exist")
     }
 
     #[test]
@@ -1244,9 +1227,10 @@ mode_build = "#112233"
         let _guard = THEME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let before = generation();
-        set(dracula());
-        assert!(generation() > before);
+        let engine = ThemeEngine::new(tokyonight());
+        let before = engine.generation();
+        engine.set(dracula());
+        assert!(engine.generation() > before);
     }
 
     #[test]
@@ -1254,15 +1238,16 @@ mode_build = "#112233"
         let _guard = THEME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let engine = ThemeEngine::new(dracula());
         let theme = tokyonight();
         let expected_syntax_bg = theme.syntax.settings.background;
-        let before = generation();
+        let before = engine.generation();
 
-        set(theme);
+        engine.set(theme);
 
-        let observed = generation();
+        let observed = engine.generation();
         assert!(observed > before);
-        assert_eq!(current().background, TOKYONIGHT_BG);
+        assert_eq!(engine.current().background, TOKYONIGHT_BG);
         assert_eq!(
             n00n_highlight::theme().settings.background,
             expected_syntax_bg,
@@ -1275,16 +1260,17 @@ mode_build = "#112233"
         let _guard = THEME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let g0 = generation();
-        set(dracula());
-        let g1 = generation();
+        let engine = ThemeEngine::new(tokyonight());
+        let g0 = engine.generation();
+        engine.set(dracula());
+        let g1 = engine.generation();
         assert!(g1 > g0);
-        assert_eq!(current().background, DRACULA_BG);
+        assert_eq!(engine.current().background, DRACULA_BG);
 
-        set(tokyonight());
-        let g2 = generation();
+        engine.set(tokyonight());
+        let g2 = engine.generation();
         assert!(g2 > g1);
-        assert_eq!(current().background, TOKYONIGHT_BG);
+        assert_eq!(engine.current().background, TOKYONIGHT_BG);
         assert_eq!(
             n00n_highlight::theme().settings.background,
             tokyonight().syntax.settings.background,
