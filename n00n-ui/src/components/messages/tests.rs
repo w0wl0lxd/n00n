@@ -17,7 +17,11 @@ fn test_panel() -> MessagesPanel {
 }
 
 fn test_panel_with_config(ui_config: UiConfig) -> MessagesPanel {
-    MessagesPanel::new(ui_config, Arc::new(Picker::halfblocks()))
+    MessagesPanel::new(
+        ui_config,
+        Arc::new(Picker::halfblocks()),
+        crate::theme::test_engine(),
+    )
 }
 
 #[test]
@@ -1506,7 +1510,13 @@ fn streaming_content_height_is_cached() {
     use crate::components::streaming_content::StreamingContent;
     use ratatui::style::Style;
 
-    let mut sc = StreamingContent::new("", Style::default(), Style::default(), 0);
+    let mut sc = StreamingContent::new(
+        "",
+        Style::default(),
+        Style::default(),
+        0,
+        crate::theme::test_engine(),
+    );
     sc.set_buffer("this is a very long line that definitely needs to wrap when the width is only forty characters\nshort");
     let first = sc.height(80);
     let second = sc.height(80);

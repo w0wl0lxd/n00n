@@ -7,6 +7,7 @@ use crate::components::scrollbar::ScrollInfo;
 use crate::components::tool_display::append_annotation;
 use crate::components::{CompactionDisplay, DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
+use crate::theme::ThemeEngine;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -68,7 +69,12 @@ pub struct Chat {
 
 impl Chat {
     #[must_use]
-    pub fn new(name: String, ui_config: UiConfig, picker: Arc<Picker>) -> Self {
+    pub fn new(
+        name: String,
+        ui_config: UiConfig,
+        picker: Arc<Picker>,
+        theme_engine: Arc<ThemeEngine>,
+    ) -> Self {
         Self {
             name,
             token_usage: TokenUsage::default(),
@@ -79,7 +85,7 @@ impl Chat {
             cache_health: None,
             cache_valid_until: None,
             pending_turn_usage: None,
-            messages_panel: MessagesPanel::new(ui_config, picker),
+            messages_panel: MessagesPanel::new(ui_config, picker, theme_engine),
             finished: false,
         }
     }
@@ -1031,7 +1037,12 @@ mod tests {
         label: Option<&str>,
         expected: &str,
     ) {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
         chat.handle_event(
             AgentEvent::FusionPhase {
                 phase,
@@ -1044,7 +1055,12 @@ mod tests {
 
     #[test]
     fn fusion_phase_does_not_disturb_streaming_or_compaction_cards() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
         chat.handle_event(AgentEvent::AutoCompacting, None);
         chat.handle_event(
             AgentEvent::TextDelta {
@@ -1068,7 +1084,12 @@ mod tests {
     }
     #[test]
     fn tool_lifecycle() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
         chat.handle_event(tool_start("t1", "bash"), None);
         assert_eq!(chat.in_progress_count(), 1);
 
@@ -1081,7 +1102,12 @@ mod tests {
 
     #[test]
     fn plan_write_renders_file_content() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -1101,7 +1127,12 @@ mod tests {
 
     #[test]
     fn plan_write_ignores_different_path() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
         let plan_path = Path::new("/plans/123.md");
         chat.handle_event(tool_start("w1", "write"), Some(plan_path));
         let (output, wp) = write_output("src/main.rs");
@@ -1114,7 +1145,12 @@ mod tests {
 
     #[test]
     fn plan_edit_shows_path_only() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -1514,6 +1550,7 @@ mod tests {
             "Main".into(),
             UiConfig::default(),
             Arc::new(Picker::halfblocks()),
+            crate::theme::test_engine(),
         );
         chat.load_messages(display);
         let thinking_indices: Vec<_> = chat
@@ -1634,7 +1671,12 @@ mod tests {
 
     #[test]
     fn compaction_done_absorbs_streaming_summary_into_card() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
 
         chat.handle_event(AgentEvent::AutoCompacting, None);
         assert_eq!(chat.message_count(), 1);
@@ -1673,7 +1715,12 @@ mod tests {
 
     #[test]
     fn auto_compact_failed_resolves_pending_compaction_card() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            test_picker(),
+            crate::theme::test_engine(),
+        );
 
         chat.handle_event(AgentEvent::AutoCompacting, None);
         assert!(chat.has_pending_compaction());

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -7,7 +9,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
 use super::COPY_LABEL_WIDTH;
 use super::segment::Surface;
-use crate::theme;
+use crate::theme::{Theme, ThemeEngine};
 
 const COPY_LABEL: &str = "[copy]";
 
@@ -16,15 +18,17 @@ pub(super) struct RenderCursor {
     y: u16,
     bottom: u16,
     viewport: Rect,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl RenderCursor {
-    pub fn new(scroll_top: u16, viewport: Rect) -> Self {
+    pub fn new(scroll_top: u16, viewport: Rect, theme_engine: Arc<ThemeEngine>) -> Self {
         Self {
             skip: scroll_top,
             y: viewport.y,
             bottom: viewport.y + viewport.height,
             viewport,
+            theme_engine,
         }
     }
 
@@ -48,6 +52,7 @@ impl RenderCursor {
         if self.y >= self.bottom {
             return;
         }
+        let t = &*self.theme_engine.current();
         let segment_skip = self.skip;
         let visible_h = h
             .saturating_sub(segment_skip)
@@ -69,24 +74,24 @@ impl RenderCursor {
                 Block::default()
                     .borders(borders)
                     .border_type(BorderType::Rounded)
-                    .border_style(theme::current().user)
-                    .style(theme::current().tool_bg)
+                    .border_style(t.user)
+                    .style(t.tool_bg)
                     .padding(Padding::horizontal(1)),
             ),
             Surface::Control => Some(
                 Block::default()
                     .borders(borders)
                     .border_type(BorderType::Rounded)
-                    .border_style(theme::current().control)
-                    .style(theme::current().tool_bg)
+                    .border_style(t.control)
+                    .style(t.tool_bg)
                     .padding(Padding::horizontal(1)),
             ),
             Surface::Tool => Some(
                 Block::default()
                     .borders(borders)
                     .border_type(BorderType::Rounded)
-                    .border_style(theme::current().tool_dim)
-                    .style(theme::current().tool_bg)
+                    .border_style(t.tool_dim)
+                    .style(t.tool_bg)
                     .padding(Padding::horizontal(1)),
             ),
         };
@@ -116,10 +121,7 @@ impl RenderCursor {
                 copy_width,
                 1,
             );
-            frame.render_widget(
-                Paragraph::new(COPY_LABEL).style(theme::current().tool_dim),
-                copy_area,
-            );
+            frame.render_widget(Paragraph::new(COPY_LABEL).style(t.tool_dim), copy_area);
         }
         self.y += visible_h;
     }
@@ -144,7 +146,8 @@ impl RenderCursor {
             .min(self.bottom.saturating_sub(self.y));
         let seg_area = Rect::new(self.viewport.x, self.y, self.viewport.width, visible_h);
         let content_area = if surface.is_framed() {
-            let block = frame_block(surface);
+            let t = &*self.theme_engine.current();
+            let block = frame_block(surface, t);
             let inner = block.inner(seg_area);
             frame.render_widget(block, seg_area);
             inner
@@ -161,26 +164,26 @@ impl RenderCursor {
     }
 }
 
-fn frame_block(surface: Surface) -> Block<'static> {
+fn frame_block(surface: Surface, t: &Theme) -> Block<'static> {
     let borders = Borders::LEFT | Borders::RIGHT;
     match surface {
         Surface::User => Block::default()
             .borders(borders)
             .border_type(BorderType::Rounded)
-            .border_style(theme::current().user)
-            .style(theme::current().tool_bg)
+            .border_style(t.user)
+            .style(t.tool_bg)
             .padding(Padding::horizontal(1)),
         Surface::Control => Block::default()
             .borders(borders)
             .border_type(BorderType::Rounded)
-            .border_style(theme::current().control)
-            .style(theme::current().tool_bg)
+            .border_style(t.control)
+            .style(t.tool_bg)
             .padding(Padding::horizontal(1)),
         Surface::Tool => Block::default()
             .borders(borders)
             .border_type(BorderType::Rounded)
-            .border_style(theme::current().tool_dim)
-            .style(theme::current().tool_bg)
+            .border_style(t.tool_dim)
+            .style(t.tool_bg)
             .padding(Padding::horizontal(1)),
         _ => Block::default(),
     }

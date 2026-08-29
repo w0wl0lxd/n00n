@@ -819,6 +819,7 @@ pub fn build_tool_lines(
             rctx.tool_output_lines.get(tool_name),
             b.limits.output,
             b.limits.is_output_expanded(),
+            &rctx.theme_engine,
         );
         let show_args = view.lines.len() >= 2 || view.hidden > 0;
         if show_args {

@@ -19,7 +19,7 @@ use tracing::warn;
 use unicode_width::UnicodeWidthChar;
 
 use crate::components::scrollbar::render_vertical_scrollbar;
-use crate::theme;
+use crate::theme::{Theme, ThemeEngine, test_engine};
 
 const MAX_HEIGHT: u16 = 10;
 const NO_MATCHES: &str = "  No matches";
@@ -72,11 +72,15 @@ impl Drop for Session {
 
 pub struct MentionFlyout {
     session: Option<Session>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl MentionFlyout {
-    pub fn new() -> Self {
-        Self { session: None }
+    pub fn new(theme_engine: Arc<ThemeEngine>) -> Self {
+        Self {
+            session: None,
+            theme_engine,
+        }
     }
 
     pub fn open(&mut self, root_cwd: &str, cwd: &str, query: &str) {
@@ -405,9 +409,10 @@ impl MentionFlyout {
             _ => return Rect::default(),
         };
 
+        let t = self.theme_engine.current();
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(theme::current().tool_dim);
+            .border_style(t.tool_dim);
         frame.render_widget(block, area);
 
         let inner = Rect::new(
@@ -418,16 +423,16 @@ impl MentionFlyout {
         );
         s.viewport_height = inner.height as usize;
         Self::ensure_visible_impl(s);
-        Self::render_list_impl(frame, inner, s);
+        Self::render_list_impl(frame, inner, s, &self.theme_engine);
 
         let footer_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-        Self::render_footer_impl(frame, footer_area, s);
+        Self::render_footer_impl(frame, footer_area, s, &self.theme_engine);
 
         area
     }
 
-    fn render_list_impl(frame: &mut Frame, area: Rect, s: &Session) {
-        let t = theme::current();
+    fn render_list_impl(frame: &mut Frame, area: Rect, s: &Session, theme_engine: &ThemeEngine) {
+        let t = &*theme_engine.current();
 
         if s.matches.is_empty() {
             if !s.query.is_empty() {
@@ -452,13 +457,7 @@ impl MentionFlyout {
             .enumerate()
             .map(|(i, m)| {
                 let selected = s.scroll_offset + i == s.selected;
-                Self::build_highlighted_line_impl(
-                    &m.path,
-                    &m.indices,
-                    max_label_width,
-                    selected,
-                    &t,
-                )
+                Self::build_highlighted_line_impl(&m.path, &m.indices, max_label_width, selected, t)
             })
             .collect();
 
@@ -473,12 +472,19 @@ impl MentionFlyout {
         frame.render_widget(Paragraph::new(lines), area);
 
         if s.matches.len() as u16 > s.viewport_height as u16 {
-            render_vertical_scrollbar(frame, area, s.matches.len() as u16, s.scroll_offset as u16);
+            render_vertical_scrollbar(
+                frame,
+                area,
+                s.matches.len() as u16,
+                s.scroll_offset as u16,
+                None,
+                theme_engine.scrollbar_enabled(),
+            );
         }
     }
 
-    fn render_footer_impl(frame: &mut Frame, area: Rect, s: &Session) {
-        let t = theme::current();
+    fn render_footer_impl(frame: &mut Frame, area: Rect, s: &Session, theme_engine: &ThemeEngine) {
+        let t = &*theme_engine.current();
         let match_count = s.total_matches;
         let footer_text = format!("{}   {} matches", FOOTER_HINTS, match_count);
         frame.render_widget(
@@ -492,7 +498,7 @@ impl MentionFlyout {
         indices: &[u32],
         max_width: usize,
         selected: bool,
-        t: &'a theme::Theme,
+        t: &'a Theme,
     ) -> Line<'a> {
         let base = if selected { t.item_selected } else { t.item };
         let highlight = base

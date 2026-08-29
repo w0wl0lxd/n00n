@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use crate::render_worker::{RenderIdentity, RenderWorker};
 use crate::terminal_image::TerminalImage;
-use crate::theme;
+use crate::theme::{Theme, ThemeEngine};
 
 use super::super::code_view::SectionFlags;
 use super::super::code_view::TruncationAction;
@@ -198,7 +200,9 @@ impl Segment {
         width: u16,
         surface: Surface,
         msg_index: Option<usize>,
+        theme_engine: &Arc<ThemeEngine>,
     ) -> Self {
+        let t = &*theme_engine.current();
         let mut seg = match TerminalImage::from_source(source, picker, width) {
             Ok(term_img) => {
                 let search_text = format!(
@@ -217,10 +221,7 @@ impl Segment {
             }
             Err(err) => {
                 let search_text = format!("[image: {err}]");
-                let lines = vec![Line::from(vec![Span::styled(
-                    search_text.clone(),
-                    theme::current().error,
-                )])];
+                let lines = vec![Line::from(vec![Span::styled(search_text.clone(), t.error)])];
                 Self::with_lines(lines, search_text.clone(), Some(search_text), 0, msg_index)
             }
         };

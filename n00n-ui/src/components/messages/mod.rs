@@ -25,7 +25,7 @@ use crate::mascot::Mascot;
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
 use crate::splash::{ColorTransition, Splash};
-use crate::theme;
+use crate::theme::ThemeEngine;
 use n00n_config::{ToolOutputLines, UiConfig};
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -85,6 +85,7 @@ pub struct MessagesPanel {
     accent: ColorTransition,
     expanded_tools: HashMap<String, SectionFlags>,
     expanded_compactions: HashSet<String>,
+    theme_engine: Arc<ThemeEngine>,
     /// Per-tool log of post-completion click rows, replayed on restore.
     lua_clicks: HashMap<String, Vec<usize>>,
     live_bufs: HashMap<String, Arc<SharedBuf>>,
@@ -139,9 +140,10 @@ fn restore_plan(total: usize, batch_size: usize) -> RestorePlan {
 
 impl MessagesPanel {
     #[allow(clippy::needless_pass_by_value)]
-    pub fn new(ui_config: UiConfig, picker: Arc<Picker>) -> Self {
-        let thinking = thinking_style();
-        let assistant = assistant_style();
+    pub fn new(ui_config: UiConfig, picker: Arc<Picker>, theme_engine: Arc<ThemeEngine>) -> Self {
+        let t = theme_engine.current();
+        let thinking = thinking_style(&theme_engine);
+        let assistant = assistant_style(&theme_engine);
         let ms = ui_config.typewriter_ms_per_char;
         Self {
             messages: Vec::new(),
@@ -150,12 +152,14 @@ impl MessagesPanel {
                 thinking.text_style,
                 thinking.prefix_style,
                 ms,
+                Arc::clone(&theme_engine),
             ),
             streaming_text: StreamingContent::new(
                 assistant.prefix,
                 assistant.text_style,
                 assistant.prefix_style,
                 ms,
+                Arc::clone(&theme_engine),
             ),
             started_at: Instant::now(),
             scroll_top: u16::MAX,
@@ -165,13 +169,14 @@ impl MessagesPanel {
             cache: SegmentCache::new(),
             last_total_lines: 0,
             hl_worker: RenderWorker::new(),
-            theme_generation: theme::generation(),
+            theme_generation: theme_engine.generation(),
             highlight_segment: None,
-            idle_splash: Splash::new(ui_config.splash_animation),
+            idle_splash: Splash::new(ui_config.splash_animation, Arc::clone(&theme_engine)),
             mascot: Mascot::new(ui_config.mascot),
-            accent: ColorTransition::new(theme::current().mode_build),
+            accent: ColorTransition::new(t.mode_build),
             expanded_tools: HashMap::new(),
             expanded_compactions: HashSet::new(),
+            theme_engine,
             lua_clicks: HashMap::new(),
             live_bufs: HashMap::new(),
             watched_bufs: VecDeque::new(),
@@ -1077,7 +1082,7 @@ impl MessagesPanel {
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, _is_working: bool) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
-        let theme_gen = theme::generation();
+        let theme_gen = self.theme_engine.generation();
         let theme_changed = self.theme_generation != theme_gen;
         let width_changed = self.viewport_width != width || theme_changed;
         if width_changed {
@@ -1090,10 +1095,10 @@ impl MessagesPanel {
 
         if self.show_idle_splash() {
             let accent = self.accent.resolve();
-            let theme = theme::current();
+            let t = self.theme_engine.current();
             if self.mascot.enabled() && area.height > 18 {
                 self.mascot.tick(area);
-                self.mascot.render(area, frame.buffer_mut(), &theme, accent);
+                self.mascot.render(area, frame.buffer_mut(), &*t, accent);
             } else {
                 self.idle_splash.render(area, frame.buffer_mut(), accent);
             }
@@ -1102,8 +1107,8 @@ impl MessagesPanel {
 
         if width_changed {
             self.cache.invalidate_from_msg_count();
-            let thinking = thinking_style();
-            let assistant = assistant_style();
+            let thinking = thinking_style(&self.theme_engine);
+            let assistant = assistant_style(&self.theme_engine);
             self.streaming_thinking.set_style(
                 thinking.prefix,
                 thinking.text_style,
@@ -1131,7 +1136,7 @@ impl MessagesPanel {
 
         let thinking_collapsed = self.streaming_thinking_collapsed();
         let collapsed_thinking_lines = if thinking_collapsed {
-            Self::build_streaming_collapsed_lines(&self.streaming_thinking)
+            Self::build_streaming_collapsed_lines(&self.streaming_thinking, &self.theme_engine)
         } else {
             Vec::new()
         };
@@ -1178,7 +1183,8 @@ impl MessagesPanel {
         }
 
         let viewport = Rect::new(area.x, area.y, width, area.height);
-        let mut cursor = RenderCursor::new(self.scroll_top, viewport);
+        let mut cursor =
+            RenderCursor::new(self.scroll_top, viewport, Arc::clone(&self.theme_engine));
 
         for (i, seg) in self.cache.segments().iter().enumerate() {
             if cursor.past_bottom() {
@@ -1241,11 +1247,11 @@ impl MessagesPanel {
                 bar_area,
                 &crate::components::progress_bar::ProgressBarConfig {
                     ratio,
-                    style: theme::current().progress_bar,
+                    style: self.theme_engine.current().progress_bar,
                     cache_ratio: f64::from(pp.cache) / f64::from(pp.total),
                     cache_style: Style::new().fg(Color::Green),
                     label: Some(label),
-                    label_style: Some(theme::current().tool_dim),
+                    label_style: Some(self.theme_engine.current().tool_dim),
                     bar_width,
                 },
             );
@@ -1256,8 +1262,15 @@ impl MessagesPanel {
                 || !self.streaming_text.is_empty()
                 || !self.streaming_thinking.is_empty()
                 || !self.live_bufs.is_empty();
-            let style = is_active.then_some(theme::current().spinner);
-            render_vertical_scrollbar(frame, area, total_lines, self.scroll_top, style);
+            let style = is_active.then_some(self.theme_engine.current().spinner);
+            render_vertical_scrollbar(
+                frame,
+                area,
+                total_lines,
+                self.scroll_top,
+                style,
+                self.theme_engine.scrollbar_enabled(),
+            );
         }
 
         self.jump_to_bottom_popup = None;
@@ -1269,8 +1282,9 @@ impl MessagesPanel {
     }
 
     fn render_jump_to_bottom_popup(&mut self, frame: &mut Frame, area: Rect) {
-        let text_style = theme::current().accent;
-        let keybind_style = theme::current().keybind_key;
+        let t = self.theme_engine.current();
+        let text_style = t.accent;
+        let keybind_style = t.keybind_key;
         let line = Line::from(vec![
             Span::styled(JUMP_TO_BOTTOM_TEXT, text_style),
             Span::raw(JUMP_TO_BOTTOM_KEY_GAP),
@@ -1281,9 +1295,9 @@ impl MessagesPanel {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(theme::current().panel_border)
+            .border_style(t.panel_border)
             .padding(Padding::horizontal(1))
-            .style(Style::new().bg(theme::current().background));
+            .style(Style::new().bg(t.background));
         let dummy_area = Rect::new(0, 0, u16::MAX, JUMP_TO_BOTTOM_POPUP_HEIGHT);
         let chrome_width = u16::MAX - block.inner(dummy_area).width;
         let width = text_width.saturating_add(chrome_width);
@@ -1509,6 +1523,7 @@ impl MessagesPanel {
             started_at: self.started_at,
             width: self.viewport_width,
             tool_output_lines: &self.tool_output_lines,
+            theme_engine: Arc::clone(&self.theme_engine),
         }
     }
 
@@ -1539,6 +1554,7 @@ impl MessagesPanel {
             started_at: rctx.started_at,
             width: content_width,
             tool_output_lines: rctx.tool_output_lines,
+            theme_engine: Arc::clone(&rctx.theme_engine),
         };
         let mut tl = build_tool_lines(msg, status, &tool_ctx, exp);
         if let Some(ts) = &msg.timestamp
@@ -1571,12 +1587,17 @@ impl MessagesPanel {
 
     fn build_streaming_collapsed_lines(
         streaming_thinking: &StreamingContent,
+        theme_engine: &Arc<ThemeEngine>,
     ) -> Vec<Line<'static>> {
-        thinking_indicator(streaming_thinking.line_count(), None)
+        thinking_indicator(streaming_thinking.line_count(), None, theme_engine)
     }
 
-    fn build_cached_thinking_indicator(text: &str, duration: Option<&str>) -> Vec<Line<'static>> {
-        thinking_indicator(logical_line_count(text), duration)
+    fn build_cached_thinking_indicator(
+        text: &str,
+        duration: Option<&str>,
+        theme_engine: &Arc<ThemeEngine>,
+    ) -> Vec<Line<'static>> {
+        thinking_indicator(logical_line_count(text), duration, theme_engine)
     }
 
     fn try_toggle_collapsed_thinking(&mut self, doc_row: u32, width: u16) -> bool {
@@ -1586,9 +1607,11 @@ impl MessagesPanel {
         let cached_height = self.cache.total_height(width);
         let spacer = u32::from(self.cache.len() > 0);
         let thinking_start = cached_height + spacer;
-        let height =
-            u32::try_from(Self::build_streaming_collapsed_lines(&self.streaming_thinking).len())
-                .unwrap_or_else(|_| u32::MAX);
+        let height = u32::try_from(
+            Self::build_streaming_collapsed_lines(&self.streaming_thinking, &self.theme_engine)
+                .len(),
+        )
+        .unwrap_or_else(|_| u32::MAX);
         if doc_row >= thinking_start && doc_row < thinking_start + height {
             self.thinking_collapsed = false;
             self.auto_scroll = false;
@@ -1620,9 +1643,9 @@ impl MessagesPanel {
             return;
         };
         let lines = if collapsed {
-            Self::build_cached_thinking_indicator(&text, duration.as_deref())
+            Self::build_cached_thinking_indicator(&text, duration.as_deref(), &self.theme_engine)
         } else {
-            let style = thinking_style();
+            let style = thinking_style(&self.theme_engine);
             text_to_lines(
                 &text,
                 style.prefix,
@@ -1630,6 +1653,7 @@ impl MessagesPanel {
                 style.prefix_style,
                 width,
                 None,
+                &self.theme_engine,
             )
         };
         let search_text = format!("thinking> {text}");
@@ -1648,7 +1672,7 @@ impl MessagesPanel {
     fn update_spinners(&mut self) {
         let spinner_span = Span::styled(
             spinner_str(self.started_at.elapsed().as_millis()),
-            theme::current().spinner,
+            self.theme_engine.current().spinner,
         );
         for seg in self.cache.segments_mut() {
             seg.update_spinners(&spinner_span);
@@ -1724,6 +1748,7 @@ impl MessagesPanel {
                 msg_index,
                 &self.expanded_compactions,
                 &self.tool_output_lines,
+                &self.theme_engine,
             )];
         }
         if let DisplayRole::Tool(t) = &msg.role {
@@ -1763,7 +1788,11 @@ impl MessagesPanel {
         }
         if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
             let text = msg.text.clone();
-            let lines = Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+            let lines = Self::build_cached_thinking_indicator(
+                &text,
+                msg.annotation.as_deref(),
+                &self.theme_engine,
+            );
             let search_text = format!("thinking> {text}");
             return vec![Segment::with_lines(
                 lines,
@@ -1773,13 +1802,14 @@ impl MessagesPanel {
                 Some(msg_index),
             )];
         }
+        let t = &*self.theme_engine.current();
         let style = match &msg.role {
-            DisplayRole::User => user_style(),
-            DisplayRole::Assistant => assistant_style(),
-            DisplayRole::Thinking => thinking_style(),
-            DisplayRole::Control => control_style(),
-            DisplayRole::Error => error_style(),
-            DisplayRole::Done => done_style(),
+            DisplayRole::User => user_style(&self.theme_engine),
+            DisplayRole::Assistant => assistant_style(&self.theme_engine),
+            DisplayRole::Thinking => thinking_style(&self.theme_engine),
+            DisplayRole::Control => control_style(&self.theme_engine),
+            DisplayRole::Error => error_style(&self.theme_engine),
+            DisplayRole::Done => done_style(&self.theme_engine),
             DisplayRole::Tool(_) => unreachable!(),
         };
         let prefix = if msg.plan_path.is_some() {
@@ -1807,6 +1837,7 @@ impl MessagesPanel {
                 style.prefix_style,
                 content_width,
                 style.max_line_bytes,
+                &self.theme_engine,
             )
         } else {
             plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
@@ -1815,23 +1846,20 @@ impl MessagesPanel {
             if msg.text.is_empty() {
                 lines.clear();
             } else {
-                let rule = hr_line(self.viewport_width, theme::current().plan_rule);
+                let rule = hr_line(self.viewport_width, t.plan_rule);
                 lines.insert(0, rule.clone());
                 lines.push(rule);
             }
             if !msg.text.is_empty() {
                 lines.push(Line::from(""));
             }
-            lines.push(Line::from(Span::styled(
-                pp.to_owned(),
-                theme::current().plan_path,
-            )));
+            lines.push(Line::from(Span::styled(pp.to_owned(), t.plan_path)));
             lines.push(Line::from(Span::styled(
                 format!(
                     "{} to open in editor ($VISUAL / $EDITOR)",
                     key::OPEN_EDITOR.label
                 ),
-                theme::current().tool_dim,
+                t.tool_dim,
             )));
         }
         let prefix_width = u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX);
@@ -1858,6 +1886,7 @@ impl MessagesPanel {
                 image_width,
                 surface,
                 Some(msg_index),
+                &self.theme_engine,
             ));
         }
         out
@@ -1878,6 +1907,7 @@ impl MessagesPanel {
                     i,
                     &self.expanded_compactions,
                     &self.tool_output_lines,
+                    &self.theme_engine,
                 ));
             } else if let DisplayRole::Tool(t) = &msg.role {
                 let exp = self
@@ -1907,8 +1937,11 @@ impl MessagesPanel {
             } else {
                 if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
                     let text = msg.text.clone();
-                    let lines =
-                        Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+                    let lines = Self::build_cached_thinking_indicator(
+                        &text,
+                        msg.annotation.as_deref(),
+                        &self.theme_engine,
+                    );
                     let search_text = format!("thinking> {text}");
                     self.cache.push_spacer_if_needed();
                     self.cache.push(Segment::with_lines(
@@ -1920,13 +1953,14 @@ impl MessagesPanel {
                     ));
                     continue;
                 }
+                let t = &*self.theme_engine.current();
                 let style = match &msg.role {
-                    DisplayRole::User => user_style(),
-                    DisplayRole::Assistant => assistant_style(),
-                    DisplayRole::Thinking => thinking_style(),
-                    DisplayRole::Control => control_style(),
-                    DisplayRole::Error => error_style(),
-                    DisplayRole::Done => done_style(),
+                    DisplayRole::User => user_style(&self.theme_engine),
+                    DisplayRole::Assistant => assistant_style(&self.theme_engine),
+                    DisplayRole::Thinking => thinking_style(&self.theme_engine),
+                    DisplayRole::Control => control_style(&self.theme_engine),
+                    DisplayRole::Error => error_style(&self.theme_engine),
+                    DisplayRole::Done => done_style(&self.theme_engine),
                     DisplayRole::Tool(_) => unreachable!(),
                 };
                 let prefix = if msg.plan_path.is_some() {
@@ -1954,6 +1988,7 @@ impl MessagesPanel {
                         style.prefix_style,
                         content_width,
                         style.max_line_bytes,
+                        &self.theme_engine,
                     )
                 } else {
                     plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
@@ -1962,23 +1997,20 @@ impl MessagesPanel {
                     if msg.text.is_empty() {
                         lines.clear();
                     } else {
-                        let rule = hr_line(self.viewport_width, theme::current().plan_rule);
+                        let rule = hr_line(self.viewport_width, t.plan_rule);
                         lines.insert(0, rule.clone());
                         lines.push(rule);
                     }
                     if !msg.text.is_empty() {
                         lines.push(Line::from(""));
                     }
-                    lines.push(Line::from(Span::styled(
-                        pp.to_owned(),
-                        theme::current().plan_path,
-                    )));
+                    lines.push(Line::from(Span::styled(pp.to_owned(), t.plan_path)));
                     lines.push(Line::from(Span::styled(
                         format!(
                             "{} to open in editor ($VISUAL / $EDITOR)",
                             key::OPEN_EDITOR.label
                         ),
-                        theme::current().tool_dim,
+                        t.tool_dim,
                     )));
                 }
 
@@ -2006,6 +2038,7 @@ impl MessagesPanel {
                         image_width,
                         surface,
                         Some(i),
+                        &self.theme_engine,
                     ));
                 }
             }
@@ -2019,6 +2052,7 @@ fn build_compaction_segment(
     msg_index: usize,
     expanded: &HashSet<String>,
     tool_output_lines: &ToolOutputLines,
+    theme_engine: &Arc<ThemeEngine>,
 ) -> Segment {
     let mut lines = Vec::new();
     let mut actions = Vec::new();
@@ -2029,6 +2063,7 @@ fn build_compaction_segment(
         0,
         &mut lines,
         &mut actions,
+        theme_engine,
     );
     let search_text = format!(
         "compaction> depth {} {} messages {}",
@@ -2053,7 +2088,9 @@ fn append_compaction_lines(
     indent: usize,
     lines: &mut Vec<Line<'static>>,
     actions: &mut Vec<(usize, String)>,
+    theme_engine: &Arc<ThemeEngine>,
 ) {
+    let t = &*theme_engine.current();
     let is_expanded = expanded.contains(&compaction.id);
     actions.push((lines.len(), compaction.id.clone()));
     let marker = if is_expanded { '▾' } else { '▸' };
@@ -2069,16 +2106,13 @@ fn append_compaction_lines(
                 "{marker} Compaction · depth {} · {} {count_label}",
                 compaction.depth, compaction.message_count
             ),
-            theme::current().tool_dim,
+            t.tool_dim,
         ),
     ]));
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(indent + 2)),
-        Span::styled("Summary: ", theme::current().assistant_prefix),
-        Span::styled(
-            compaction_summary_text(compaction).to_owned(),
-            theme::current().assistant,
-        ),
+        Span::styled("Summary: ", t.assistant_prefix),
+        Span::styled(compaction_summary_text(compaction).to_owned(), t.assistant),
     ]));
     if !is_expanded {
         return;
@@ -2092,9 +2126,10 @@ fn append_compaction_lines(
                 indent + 2,
                 lines,
                 actions,
+                theme_engine,
             );
         } else {
-            append_compaction_entry(entry, tool_output_lines, indent + 2, lines);
+            append_compaction_entry(entry, tool_output_lines, indent + 2, lines, theme_engine);
         }
     }
 }
@@ -2104,13 +2139,15 @@ fn append_compaction_entry(
     tool_output_lines: &ToolOutputLines,
     indent: usize,
     lines: &mut Vec<Line<'static>>,
+    theme_engine: &Arc<ThemeEngine>,
 ) {
+    let t = &*theme_engine.current();
     let label = role_name(&message.role);
     let mut text_lines = message.text.lines();
     if let Some(first) = text_lines.next() {
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(indent)),
-            Span::styled(format!("{label}> "), theme::current().tool_dim),
+            Span::styled(format!("{label}> "), t.tool_dim),
             Span::raw(first.to_owned()),
         ]));
         for line in text_lines {
@@ -2138,23 +2175,27 @@ fn append_compaction_entry(
             Span::raw(" ".repeat(indent)),
             Span::styled(
                 format!("{label}> [{} image(s)]", message.images.len()),
-                theme::current().tool_dim,
+                t.tool_dim,
             ),
         ]));
     }
 }
 
-fn thinking_indicator(line_count: usize, duration: Option<&str>) -> Vec<Line<'static>> {
-    let theme = theme::current();
+fn thinking_indicator(
+    line_count: usize,
+    duration: Option<&str>,
+    theme_engine: &Arc<ThemeEngine>,
+) -> Vec<Line<'static>> {
+    let t = &*theme_engine.current();
     let label = duration.map_or_else(
         || "Thinking".to_owned(),
         |elapsed| format!("Thought for {elapsed}"),
     );
     vec![Line::from(vec![
-        Span::styled("  › ", theme.thinking),
-        Span::styled(label, theme.thinking),
-        Span::styled(format!(" · {line_count} lines"), theme.tool_dim),
-        Span::styled("  ›", theme.tool_dim),
+        Span::styled("  › ", t.thinking),
+        Span::styled(label, t.thinking),
+        Span::styled(format!(" · {line_count} lines"), t.tool_dim),
+        Span::styled("  ›", t.tool_dim),
     ])]
 }
 

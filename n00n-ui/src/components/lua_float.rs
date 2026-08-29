@@ -473,7 +473,7 @@ impl FloatManager {
         self.render_window(frame, idx, rect);
     }
     fn render_window(&mut self, frame: &mut Frame, idx: usize, popup: Rect) {
-        let t = theme::current();
+        let t = self.theme_engine.current();
         let win = &mut self.windows[idx];
         win.last_rect = popup;
 
@@ -505,7 +505,9 @@ impl FloatManager {
                     .title_style(t.panel_title);
             }
             if !win.config.footer.is_empty() {
-                b = b.title_bottom(hint_footer(&win.config.footer).right_aligned());
+                b = b.title_bottom(
+                    hint_footer(&win.config.footer, &self.theme_engine).right_aligned(),
+                );
             }
             b
         } else {
@@ -567,7 +569,7 @@ impl FloatManager {
             .iter()
             .enumerate()
             .map(|(i, sline)| {
-                let mut line = snapshot_to_line(sline);
+                let mut line = snapshot_to_line(sline, &self.theme_engine);
                 if win.config.cursor_line && top + win.scroll_offset + i == win.cursor {
                     line = line.style(t.item_selected);
                 }
@@ -580,7 +582,7 @@ impl FloatManager {
         if let Some(pa) = pinned_top_area {
             let pinned: Vec<Line<'_>> = win.cached_lines[..top]
                 .iter()
-                .map(snapshot_to_line)
+                .map(|sline| snapshot_to_line(sline, &self.theme_engine))
                 .collect();
             frame.render_widget(Paragraph::new(pinned), pa);
         }
@@ -588,7 +590,7 @@ impl FloatManager {
         if let Some(pa) = pinned_bot_area {
             let pinned: Vec<Line<'_>> = win.cached_lines[top + scrollable..]
                 .iter()
-                .map(snapshot_to_line)
+                .map(|sline| snapshot_to_line(sline, &self.theme_engine))
                 .collect();
             frame.render_widget(Paragraph::new(pinned), pa);
         }
@@ -600,6 +602,7 @@ impl FloatManager {
                 u16::try_from(scrollable).unwrap_or_else(|_| u16::MAX),
                 u16::try_from(win.scroll_offset).unwrap_or_else(|_| u16::MAX),
                 None,
+                self.theme_engine.scrollbar_enabled(),
             );
         }
 
@@ -656,8 +659,11 @@ impl FloatManager {
     }
 }
 
-fn hint_footer<K: AsRef<str>, V: AsRef<str>>(pairs: &[(K, V)]) -> Line<'static> {
-    let t = crate::theme::current();
+fn hint_footer<K: AsRef<str>, V: AsRef<str>>(
+    pairs: &[(K, V)],
+    theme_engine: &ThemeEngine,
+) -> Line<'static> {
+    let t = theme_engine.current();
     let mut spans = Vec::with_capacity(pairs.len() * 3);
     for (key, desc) in pairs {
         spans.push(Span::raw(" "));
@@ -741,7 +747,7 @@ fn adjust_scroll(
 /// animation frame, so plugins animate without redrawing (floats already
 /// repaint every tick while open). `"spinner:<style>"` takes `<style>`, so
 /// rows can keep the glyph on e.g. their selection background.
-fn snapshot_to_line(sline: &SnapshotLine) -> Line<'_> {
+fn snapshot_to_line(sline: &SnapshotLine, theme_engine: &ThemeEngine) -> Line<'_> {
     Line::from(
         sline
             .spans
@@ -752,12 +758,12 @@ fn snapshot_to_line(sline: &SnapshotLine) -> Line<'_> {
                 {
                     Span::styled(
                         spinner_str(animation_elapsed_ms()),
-                        theme::style_by_name(
+                        theme_engine.style_by_name(
                             n.strip_prefix(SPINNER_STYLE_PREFIX).unwrap_or_else(|| n),
                         ),
                     )
                 }
-                style => Span::styled(span.text.clone(), resolve_span_style(style)),
+                style => Span::styled(span.text.clone(), resolve_span_style(style, theme_engine)),
             })
             .collect::<Vec<_>>(),
     )
@@ -845,6 +851,7 @@ mod tests {
     #[test_case("spinner", "spinner" ; "bare_name_takes_spinner_style")]
     #[test_case("spinner:match_selected", "match_selected" ; "prefixed_name_takes_suffix_style")]
     fn spinner_span_bakes_to_live_glyph(span_style: &str, expected_style: &str) {
+        let engine = test_engine();
         let placeholder = "· ";
         let line = SnapshotLine {
             spans: vec![SnapshotSpan {
@@ -852,9 +859,9 @@ mod tests {
                 style: SpanStyle::Named(span_style.into()),
             }],
         };
-        let baked = snapshot_to_line(&line);
+        let baked = snapshot_to_line(&line, &engine);
         assert_ne!(baked.spans[0].content, placeholder);
-        assert_eq!(baked.spans[0].style, theme::style_by_name(expected_style));
+        assert_eq!(baked.spans[0].style, engine.style_by_name(expected_style));
     }
 
     fn open_with_lines(
@@ -1052,7 +1059,7 @@ mod tests {
 
     #[test]
     fn open_close_lifecycle() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         assert!(!mgr.is_open(), "{}", EXPECT_CLOSED);
 
         let (event_rx, _cmd_tx) = open_with_lines(&mut mgr, &["hello"]);
@@ -1068,7 +1075,7 @@ mod tests {
 
     #[test]
     fn multi_window_zindex_ordering() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let mut cfg_low = make_config();
         cfg_low.zindex = 10;
@@ -1087,7 +1094,7 @@ mod tests {
 
     #[test]
     fn focus_transfer() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let cfg1 = make_config();
         let (tx1, rx1, _, _) = make_channels();
@@ -1107,7 +1114,7 @@ mod tests {
 
     #[test]
     fn gc_on_disconnect() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         mgr.open(make_buf(&["a"]), make_config(), true, event_tx, cmd_rx);
         assert!(mgr.is_open(), "{}", EXPECT_OPEN);
@@ -1119,7 +1126,7 @@ mod tests {
 
     #[test]
     fn set_cursor_command() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (_event_rx, cmd_tx) = open_with_lines(&mut mgr, &["a", "b", "c", "d", "e"]);
 
         cmd_tx.send(WinCommand::SetCursor(3)).unwrap();
@@ -1129,7 +1136,7 @@ mod tests {
 
     #[test]
     fn apply_config_patch() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (_event_rx, cmd_tx) = open_with_lines(&mut mgr, &["a"]);
 
         cmd_tx
@@ -1147,7 +1154,7 @@ mod tests {
 
     #[test]
     fn close_command_from_lua() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_rx, cmd_tx) = open_with_lines(&mut mgr, &["a"]);
 
         cmd_tx.send(WinCommand::Close).unwrap();
@@ -1158,7 +1165,7 @@ mod tests {
 
     #[test]
     fn shared_close_flag_bypasses_command_backlog() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, _event_rx) = flume::unbounded();
         let (command_tx, command_rx) = flume::unbounded();
         let close_requested = Arc::new(AtomicBool::new(false));
@@ -1209,7 +1216,7 @@ mod tests {
 
     #[test]
     fn key_forwarded_to_lua() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_rx, _cmd_tx) = open_with_lines(&mut mgr, &["line1"]);
 
         let key_event = KeyEvent::new(
@@ -1225,7 +1232,7 @@ mod tests {
 
     #[test]
     fn handle_key_returns_false_when_empty() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let key_event = KeyEvent::new(
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::NONE,
@@ -1238,7 +1245,7 @@ mod tests {
 
     #[test]
     fn buf_content_update() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
         buf.append(make_line("initial"));
@@ -1252,7 +1259,7 @@ mod tests {
 
     #[test]
     fn cursor_clamps_on_content_shrink() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
         for i in 0..5 {
@@ -1306,7 +1313,7 @@ mod tests {
 
     #[test]
     fn close_focused_falls_back_to_last_by_zindex() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let (tx1, rx1, _, _cmd_tx1) = make_channels();
         let mut cfg1 = make_config();
@@ -1338,7 +1345,7 @@ mod tests {
 
     #[test]
     fn multiple_windows_close_in_same_tick() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let (tx1, rx1, erx1, cmd_tx1) = make_channels();
         mgr.open(make_buf(&["a"]), make_config(), true, tx1, rx1);
@@ -1358,7 +1365,7 @@ mod tests {
 
     #[test]
     fn set_cursor_on_empty_buf() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
         mgr.open(buf, make_config(), true, event_tx, cmd_rx);
@@ -1370,7 +1377,7 @@ mod tests {
 
     #[test]
     fn multiple_commands_in_single_tick() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (_event_rx, cmd_tx) = open_with_lines(&mut mgr, &["a", "b", "c", "d", "e"]);
 
         cmd_tx
@@ -1388,7 +1395,7 @@ mod tests {
 
     #[test]
     fn cursor_does_not_enter_reserved_bottom() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         let buf = make_buf(&["a", "b", "c", "d", "e"]);
         let mut cfg = make_config();
@@ -1405,7 +1412,7 @@ mod tests {
 
     #[test]
     fn reserved_bottom_clamp_on_shrink() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
         for i in 0..5 {
@@ -1426,7 +1433,7 @@ mod tests {
 
     #[test]
     fn key_only_goes_to_focused_window() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let (tx1, rx1, erx1, _) = make_channels();
         mgr.open(make_buf(&["a"]), make_config(), true, tx1, rx1);
@@ -1456,7 +1463,7 @@ mod tests {
 
     #[test]
     fn zindex_insertion_order_preserved_for_equal_zindex() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let (tx1, rx1, _, _) = make_channels();
         let mut cfg1 = make_config();
@@ -1474,7 +1481,7 @@ mod tests {
 
     #[test]
     fn tick_reads_dirty_buf_before_processing_set_cursor() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
         mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
@@ -1496,7 +1503,7 @@ mod tests {
 
     #[test]
     fn handle_paste_forwards_event_to_focused_window() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_rx, _cmd_tx) = open_with_lines(&mut mgr, &["a"]);
 
         assert!(mgr.handle_paste(PASTE_TEXT), "{EXPECT_PASTE_TRUE}");
@@ -1508,13 +1515,13 @@ mod tests {
 
     #[test]
     fn handle_paste_returns_false_when_empty() {
-        let mgr = FloatManager::new();
+        let mgr = FloatManager::new(test_engine());
         assert!(!mgr.handle_paste("x"), "{EXPECT_PASTE_FALSE}");
     }
 
     #[test]
     fn paste_only_goes_to_focused_window() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let (tx1, rx1, erx1, _) = make_channels();
         mgr.open(make_buf(&["a"]), make_config(), true, tx1, rx1);
@@ -1539,7 +1546,7 @@ mod tests {
 
     #[test]
     fn reserved_top_clamps_cursor_down() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         let buf = make_buf(&["a", "b", "c", "d", "e"]);
         let mut cfg = make_config();
@@ -1556,7 +1563,7 @@ mod tests {
 
     #[test]
     fn reserved_top_and_bottom_leave_single_scrollable_row() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         let buf = make_buf(&["a", "b", "c", "d", "e"]);
         let mut cfg = make_config();
@@ -1574,7 +1581,7 @@ mod tests {
 
     #[test]
     fn reserved_top_yields_when_bottom_exceeds_content() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = make_buf(&["a", "b", "c", "d", "e"]);
         let mut cfg = make_config();
@@ -1593,7 +1600,7 @@ mod tests {
 
     #[test]
     fn scroll_clamps_at_max_offset_with_reserved_bottom() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let lines: Vec<String> = (0..10).map(|i| format!("line{i}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
@@ -1615,7 +1622,7 @@ mod tests {
 
     #[test]
     fn tick_consumes_all_appends_accumulated_between_ticks() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = make_buf(&["initial"]);
         mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
@@ -1634,7 +1641,7 @@ mod tests {
 
     #[test]
     fn close_before_set_cursor_in_same_tick_is_safe() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (_event_rx, cmd_tx) = open_with_lines(&mut mgr, &["a", "b", "c"]);
 
         cmd_tx.send(WinCommand::Close).unwrap();
@@ -1646,7 +1653,7 @@ mod tests {
 
     #[test]
     fn close_all_is_idempotent() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (_event_rx, _cmd_tx) = open_with_lines(&mut mgr, &["a"]);
 
         mgr.close_all();
@@ -1657,7 +1664,7 @@ mod tests {
 
     #[test]
     fn handle_key_after_focused_window_closed_returns_false() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (_event_rx, cmd_tx) = open_with_lines(&mut mgr, &["a"]);
 
         cmd_tx.send(WinCommand::Close).unwrap();
@@ -1678,7 +1685,7 @@ mod tests {
         let (tx1, rx1, erx1, _cmd_tx1) = make_channels();
         let (tx2, rx2, erx2, _cmd_tx2) = make_channels();
         {
-            let mut mgr = FloatManager::new();
+            let mut mgr = FloatManager::new(test_engine());
             mgr.open(make_buf(&["a"]), make_config(), true, tx1, rx1);
             mgr.open(make_buf(&["b"]), make_config(), true, tx2, rx2);
         }
@@ -1922,7 +1929,7 @@ mod tests {
 
     #[test]
     fn split_reqs_empty_without_split_window() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         open_with_lines(&mut mgr, &["a"]);
         let area = Rect::new(0, 0, 80, 40);
         assert!(mgr.split_reqs(area).is_empty(), "{EXPECT_NO_REQS}");
@@ -1931,7 +1938,7 @@ mod tests {
     #[test_case(Split::Below, 10 ; "vertical_uses_height")]
     #[test_case(Split::Left, 30 ; "horizontal_uses_width")]
     fn split_reqs_resolves_extent_per_axis(dir: Split, extent: u16) {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let _ = open_split(&mut mgr, dir, extent, true);
         let area = Rect::new(0, 0, 80, 40);
         let reqs = mgr.split_reqs(area);
@@ -1940,7 +1947,7 @@ mod tests {
 
     #[test]
     fn view_skips_split_window() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_rx, _ctx) = open_split(&mut mgr, Split::Below, 10, true);
         let area = Rect::new(0, 0, 80, 40);
         render_into(&mut mgr, area, |m, f| {
@@ -1957,7 +1964,7 @@ mod tests {
 
     #[test]
     fn view_split_draws_into_given_rect() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let dir = Split::Below;
         let rect = Rect::new(0, 30, 80, 10);
         let (event_rx, _ctx) = open_split(&mut mgr, dir, 10, true);
@@ -1980,7 +1987,7 @@ mod tests {
 
     #[test]
     fn second_split_of_same_direction_replaces_first() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let dir = Split::Below;
         let (erx1, _ctx1) = open_split(&mut mgr, dir, 5, true);
         let _ = open_split(&mut mgr, dir, 5, true);
@@ -1995,7 +2002,7 @@ mod tests {
 
     #[test]
     fn splits_of_different_directions_coexist() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (erx_left, _) = open_split(&mut mgr, Split::Left, 20, true);
         let (erx_below, _) = open_split(&mut mgr, Split::Below, 10, true);
 
@@ -2018,7 +2025,7 @@ mod tests {
 
     #[test]
     fn unfocused_split_does_not_claim_focused_rect() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let _ = open_split(&mut mgr, Split::Below, 10, false);
         let area = Rect::new(0, 0, 80, 40);
         let rect = Rect::new(0, 30, 80, 10);
@@ -2031,7 +2038,7 @@ mod tests {
 
     #[test]
     fn removing_focused_window_recovers_focus_to_survivor() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (tx1, rx1, _erx1, _ctx1) = make_channels();
         mgr.open(make_buf(&["a"]), FloatConfig::default(), false, tx1, rx1);
         let survivor = mgr.windows[0].id;
@@ -2049,7 +2056,7 @@ mod tests {
     #[test_case(Rect::new(0, 30, 80, 0) ; "zero_height")]
     #[test_case(Rect::new(0, 30, 0, 10) ; "zero_width")]
     fn view_split_zero_size_rect_is_noop(rect: Rect) {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_rx, _ctx) = open_split(&mut mgr, Split::Below, 10, true);
         let area = Rect::new(0, 0, 80, 40);
         render_into(&mut mgr, area, |m, f| m.view_split(f, Split::Below, rect));
@@ -2068,7 +2075,7 @@ mod tests {
 
     #[test]
     fn view_overlays_float_and_skips_coexisting_split() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (ftx, frx, ferx, _fctx) = make_channels();
         mgr.open(
             make_buf(&["float"]),
@@ -2109,7 +2116,7 @@ mod tests {
 
     #[test]
     fn close_all_notifies_split_window() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (event_rx, _ctx) = open_split(&mut mgr, Split::Below, 10, true);
 
         mgr.close_all();
@@ -2122,7 +2129,7 @@ mod tests {
 
     #[test]
     fn panel_reqs_returns_visible_panels_sorted_by_order() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (tx1, rx1, _, _) = make_channels();
         let (tx2, rx2, _, _) = make_channels();
 
@@ -2150,7 +2157,7 @@ mod tests {
 
     #[test]
     fn panel_window_not_evicted_on_second_open() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (tx1, rx1, _, _) = make_channels();
         let (tx2, rx2, _, _) = make_channels();
 
@@ -2168,7 +2175,7 @@ mod tests {
 
     #[test]
     fn hidden_panel_excluded_from_reqs() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
         let (tx, _rx, _, _) = make_channels();
         let (cmd_tx, cmd_rx) = flume::bounded::<WinCommand>(8);
 
@@ -2192,7 +2199,7 @@ mod tests {
 
     #[test]
     fn focus_fallback_skips_panel_windows() {
-        let mut mgr = FloatManager::new();
+        let mut mgr = FloatManager::new(test_engine());
 
         let (tx_panel, rx_panel, _, _cmd_tx_panel) = make_channels();
         let panel_cfg = FloatConfig {
