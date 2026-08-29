@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787994688169,
+  "lastUpdate": 1788004790538,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -24611,6 +24611,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 126840,
             "range": "± 9133",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d5dea03665c018a03621907094321d2585a6b9b",
+          "message": "Merge pull request #477 from w0wl0lxd/w0wl0lxd-patch-1\n\nDelete spikes/phase0.1-arbor-json/src directory",
+          "timestamp": "2026-08-29T07:47:16-04:00",
+          "tree_id": "ebd3e5d9b3e11fea667f95bb9aa72dcbf5b699db",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5d5dea03665c018a03621907094321d2585a6b9b"
+        },
+        "date": 1788004788253,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5021737,
+            "range": "± 55357",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1895914,
+            "range": "± 4865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1904848,
+            "range": "± 6538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5964083,
+            "range": "± 12625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3029096,
+            "range": "± 8080",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3025077,
+            "range": "± 7638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 431532,
+            "range": "± 846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130173,
+            "range": "± 141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130195,
+            "range": "± 189",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 836981,
+            "range": "± 2134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 479246,
+            "range": "± 5163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 500269,
+            "range": "± 4368",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 45966,
+            "range": "± 4054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 133573,
+            "range": "± 8703",
             "unit": "ns/iter"
           }
         ]
