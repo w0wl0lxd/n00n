@@ -189,7 +189,7 @@ fn is_array_table(lua: &Lua, table: &Table) -> Result<bool, StateConvertError> {
         return Ok(false);
     }
     let mut entries = 0;
-    for pair in table.clone().pairs::<Value, Value>() {
+    for pair in table.pairs::<Value, Value>() {
         let (key, _) = pair?;
         let Value::Integer(key) = key else {
             return Ok(false);
