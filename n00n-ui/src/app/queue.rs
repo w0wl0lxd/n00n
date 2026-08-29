@@ -507,7 +507,7 @@ mod tests {
     }
 
     fn queue_with_interspersed_hidden_items() -> MessageQueue {
-        let (shared, _receiver) = shared_queue::queue();
+        let (shared, _receiver) = shared_queue::queue(crate::theme::test_engine());
         shared.push(displayed_message("hidden-first"));
         shared.push(QueueItem::Compact { run_id: 0 });
         shared.push(displayed_message("hidden-middle"));
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn take_focused_for_edit_preserves_control_flag() {
-        let (shared, _receiver) = shared_queue::queue();
+        let (shared, _receiver) = shared_queue::queue(crate::theme::test_engine());
         let mut message = displayed_message("control nudge");
         if let QueueItem::Message {
             input,

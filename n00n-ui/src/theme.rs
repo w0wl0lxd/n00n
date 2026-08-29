@@ -369,6 +369,13 @@ impl ThemeEngine {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_engine() -> Arc<ThemeEngine> {
+    Arc::new(ThemeEngine::new(
+        ThemeEngine::load_by_name("dracula").unwrap_or_else(|_| Theme::load_or_bundled()),
+    ))
+}
+
 #[derive(Debug)]
 pub struct Theme {
     pub background: Color,

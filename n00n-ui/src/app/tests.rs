@@ -89,6 +89,7 @@ fn build_app_with_session(
         custom_commands: Arc::from([]),
         picker: Arc::new(Picker::halfblocks()),
         model_registry: n00n_providers::model_registry::test_registry(),
+        theme_engine: crate::theme::test_engine(),
     })
 }
 
@@ -106,7 +107,7 @@ fn isolated_app() -> App {
 
 fn test_app() -> App {
     let mut app = isolated_app();
-    let (shared_queue, _rx) = shared_queue::queue();
+    let (shared_queue, _rx) = shared_queue::queue(crate::theme::test_engine());
     app.queue.set_shared(shared_queue);
     app
 }
@@ -272,7 +273,7 @@ fn install_manual_submission_clock(app: &mut App) -> ManualSubmissionClock {
 #[test]
 fn rapid_submissions_keep_fifo_while_first_waits_for_persistence() {
     let mut app = test_app();
-    let (shared, receiver) = shared_queue::queue();
+    let (shared, receiver) = shared_queue::queue(crate::theme::test_engine());
     app.queue.set_shared(shared);
 
     let first = type_and_submit(&mut app, "first");
@@ -332,7 +333,7 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
 #[test]
 fn session_api_control_prompt_steers_with_control_tag() {
     let mut app = test_app();
-    let (sender, receiver) = shared_queue::queue();
+    let (sender, receiver) = shared_queue::queue(crate::theme::test_engine());
     app.queue.set_shared(sender);
     app.status = Status::Streaming;
 
@@ -2868,7 +2869,7 @@ fn loaded_metadata_consumption_survives_crash_restore() {
     let id = seed.id;
     seed.save(&dir).unwrap();
 
-    let (shared, _receiver) = shared_queue::queue();
+    let (shared, _receiver) = shared_queue::queue(crate::theme::test_engine());
     app.queue.set_shared(shared);
     let previous_revision = seed.meta.revision;
     app.apply_loaded_session(seed, &test_model());
@@ -2886,7 +2887,7 @@ fn loaded_metadata_consumption_survives_crash_restore() {
 #[test]
 fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restart() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
-    let (shared, receiver) = shared_queue::queue();
+    let (shared, receiver) = shared_queue::queue(crate::theme::test_engine());
     app.queue.set_shared(shared);
 
     app.input_box.set_input("first with image");
@@ -2920,7 +2921,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
-    let (shared, receiver) = shared_queue::queue();
+    let (shared, receiver) = shared_queue::queue(crate::theme::test_engine());
     restarted.queue.set_shared(shared);
     restarted.apply_loaded_session(
         AppSession::load(session_id, &dir).expect("saved session loads"),
@@ -2981,7 +2982,7 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
         mcp_reader.clone(),
         LuaCommandReader::empty(),
     );
-    let (shared, _receiver) = shared_queue::queue();
+    let (shared, _receiver) = shared_queue::queue(crate::theme::test_engine());
     app.queue.set_shared(shared);
     app.state.thinking = n00n_providers::ThinkingConfig::Effort(Effort::High);
     app.state.fast = true;
@@ -3023,7 +3024,7 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
 
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
-    let (shared, receiver) = shared_queue::queue();
+    let (shared, receiver) = shared_queue::queue(crate::theme::test_engine());
     restarted.queue.set_shared(shared);
     restarted.apply_loaded_session(
         AppSession::load(session_id, &dir).expect("saved session loads"),

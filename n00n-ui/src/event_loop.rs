@@ -66,6 +66,7 @@ use crate::color_compat;
 use crate::storage_writer::StorageWriter;
 use crate::terminal;
 use crate::terminal_image;
+use crate::theme::{Theme, ThemeEngine};
 use ratatui_image::picker::Picker;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
@@ -623,6 +624,7 @@ struct SpawnCtx {
     hydrated_roots: RefCell<HashMap<n00nId, Option<u64>>>,
     revision_allocators: RefCell<HashMap<n00nId, Arc<RevisionAllocator>>>,
     model_registry: Arc<RwLock<ModelRegistry>>,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 impl SpawnCtx {
@@ -716,6 +718,7 @@ impl SpawnCtx {
             self.ui_config.tool_output_lines,
             &permissions,
             &self.model_registry,
+            &self.theme_engine,
             Some(identity),
             self.timeouts,
             self.openai_options.clone(),
@@ -741,6 +744,7 @@ impl SpawnCtx {
             custom_commands: Arc::clone(&self.custom_commands),
             picker: Arc::clone(&self.picker),
             model_registry: Arc::clone(&self.model_registry),
+            theme_engine: Arc::clone(&self.theme_engine),
         });
         app.lua_event_handle.clone_from(&self.lua_event_handle);
         handles.apply_to_app(&mut app);
@@ -787,6 +791,7 @@ pub(crate) struct EventLoop<'t> {
     /// buffer on every idle tick. Resize also sets it.
     dirty: bool,
     truecolor: bool,
+    theme_engine: Arc<ThemeEngine>,
 }
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
@@ -1062,9 +1067,14 @@ impl<'t> EventLoop<'t> {
             lua_event_handle,
         } = params;
 
-        PROCESS_WARMUP.call_once(|| {
-            std::thread::spawn(crate::highlight::warmup);
-            crate::update::spawn_check();
+        let theme_engine = Arc::new(ThemeEngine::new(Theme::load_or_bundled()));
+
+        PROCESS_WARMUP.call_once({
+            let theme = Arc::clone(&*theme_engine.current());
+            move || {
+                std::thread::spawn(move || crate::highlight::warmup(&theme));
+                crate::update::spawn_check();
+            }
         });
         let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -1211,6 +1221,7 @@ impl<'t> EventLoop<'t> {
             hydrated_roots: RefCell::new(HashMap::new()),
             revision_allocators: RefCell::new(HashMap::new()),
             model_registry,
+            theme_engine: Arc::clone(&theme_engine),
         };
 
         let mut runtimes: Vec<SessionRuntime> = sessions
@@ -1259,6 +1270,7 @@ impl<'t> EventLoop<'t> {
             _model_fetch_task: bg.task,
             dirty: true,
             truecolor,
+            theme_engine,
         })
     }
 

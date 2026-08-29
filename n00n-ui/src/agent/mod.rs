@@ -27,6 +27,8 @@ use n00n_providers::provider::Provider;
 use n00n_providers::{Message, Model, OpenAiOptions, System};
 use tracing::{info, warn};
 
+use crate::theme::ThemeEngine;
+
 use crate::app::App;
 
 use self::agent_loop::{AgentLoop, AgentLoopInit};
@@ -104,6 +106,7 @@ impl AgentHandles {
         tool_output_lines: ToolOutputLines,
         permissions: &Arc<PermissionManager>,
         model_registry: &Arc<RwLock<ModelRegistry>>,
+        theme_engine: &Arc<ThemeEngine>,
         identity: Option<SessionIdentity>,
         timeouts: n00n_providers::Timeouts,
         openai_options: OpenAiOptions,
@@ -122,6 +125,7 @@ impl AgentHandles {
             tool_output_lines,
             permissions,
             model_registry,
+            Arc::clone(theme_engine),
             mcp_handle,
             mcp_config_errors,
             identity,
@@ -272,6 +276,7 @@ fn spawn_agent_internal(
     tool_output_lines: ToolOutputLines,
     permissions: &Arc<PermissionManager>,
     model_registry: &Arc<RwLock<ModelRegistry>>,
+    theme_engine: Arc<ThemeEngine>,
     mcp_handle: Option<McpHandle>,
     mcp_config_errors: McpConfigErrors,
     identity: Option<SessionIdentity>,
@@ -283,7 +288,7 @@ fn spawn_agent_internal(
     let agent_tx_clone = agent_tx.clone();
     let (cmd_tx, cmd_rx) = flume::unbounded::<AgentCommand>();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
-    let (queue_tx, queue_rx) = shared_queue::queue();
+    let (queue_tx, queue_rx) = shared_queue::queue(theme_engine);
     let queue_rx = Arc::new(queue_rx);
     let shared_history: Arc<ArcSwap<Vec<Message>>> =
         Arc::new(ArcSwap::from_pointee(initial_history.clone()));
