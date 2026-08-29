@@ -1239,11 +1239,8 @@ impl<'h> Agent<'h> {
             if matches!(error, AgentError::Cancelled) {
                 return Err(error);
             }
-            warn!(
-                error = %error,
-                "auto-compaction failed; continuing without compacting"
-            );
-            return Ok(false);
+            warn!(error = %error, "auto-compaction failed");
+            return Err(error);
         }
         Ok(true)
     }

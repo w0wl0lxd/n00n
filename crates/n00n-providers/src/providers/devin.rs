@@ -1149,8 +1149,7 @@ impl Devin {
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
-        // Devin cannot express thinking, fast-mode, or cache/history replay options.
-        let _ = opts;
+        let cancel_flag = opts.cancel_flag.clone();
         let (account, model_router_uid) = if model.provider.as_ref() == "devin" {
             account_and_model(&model.id)
         } else {
@@ -1246,11 +1245,32 @@ impl Devin {
             .map_err(|e| AgentError::Config {
                 message: format!("failed to build chat request: {e}"),
             })?;
-        let mut response = self
-            .http_client()
-            .send_async(request)
-            .await
-            .map_err(map_chat_send_error)?;
+        if let Some(flag) = &cancel_flag
+            && flag.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(AgentError::Cancelled);
+        }
+        let mut response = futures_lite::future::or(
+            async { Ok(self.http_client().send_async(request).await) },
+            async {
+                if let Some(flag) = cancel_flag.clone() {
+                    loop {
+                        if flag.load(std::sync::atomic::Ordering::Acquire) {
+                            return Err(AgentError::Cancelled);
+                        }
+                        smol::Timer::after(std::time::Duration::from_millis(20)).await;
+                    }
+                } else {
+                    std::future::pending::<
+                        Result<Result<isahc::Response<isahc::AsyncBody>, isahc::Error>, AgentError>,
+                    >()
+                    .await
+                }
+            },
+        )
+        .await
+        .map_err(|e: AgentError| e)?
+        .map_err(map_chat_send_error)?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -1277,12 +1297,33 @@ impl Devin {
         let mut buffer = vec![0u8; 8192];
 
         'stream: loop {
-            let n = futures_lite::future::or(read_stream_chunk(&mut reader, &mut buffer), async {
-                smol::Timer::after(stream_deadline.saturating_duration_since(Instant::now())).await;
-                Err(AgentError::Timeout {
-                    secs: self.timeouts.stream.as_secs(),
-                })
-            })
+            if let Some(flag) = &cancel_flag
+                && flag.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(AgentError::Cancelled);
+            }
+            let cancel_for_read = cancel_flag.clone();
+            let n = futures_lite::future::or(
+                futures_lite::future::or(read_stream_chunk(&mut reader, &mut buffer), async {
+                    smol::Timer::after(stream_deadline.saturating_duration_since(Instant::now()))
+                        .await;
+                    Err(AgentError::Timeout {
+                        secs: self.timeouts.stream.as_secs(),
+                    })
+                }),
+                async {
+                    if let Some(flag) = cancel_for_read {
+                        loop {
+                            if flag.load(std::sync::atomic::Ordering::Acquire) {
+                                return Err(AgentError::Cancelled);
+                            }
+                            smol::Timer::after(std::time::Duration::from_millis(20)).await;
+                        }
+                    } else {
+                        std::future::pending::<Result<usize, AgentError>>().await
+                    }
+                },
+            )
             .await
             .map_err(|error| accepted_stream_error(&error, emitted_event))?;
 

@@ -59,11 +59,22 @@ async fn forward_provider_events(
 pub(crate) async fn stream_with_retry(
     ctx: StreamContext<'_>,
 ) -> Result<StreamResponse, AgentError> {
-    let opts = ctx.opts.clamped(ctx.model).with_idempotency_key();
+    let mut opts = ctx.opts.clamped(ctx.model).with_idempotency_key();
     let messages = n00n_providers::adapt_images_for_model(ctx.model, ctx.messages);
     let messages = n00n_providers::adapt_files_for_model(ctx.model, &messages);
     let messages = &*messages;
     let mut retry = RetryState::new();
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let flag = cancel_flag.clone();
+        let cancel = ctx.cancel.clone();
+        smol::spawn(async move {
+            cancel.cancelled().await;
+            flag.store(true, std::sync::atomic::Ordering::Release);
+        })
+        .detach();
+    }
+    opts.cancel_flag = Some(cancel_flag.clone());
     loop {
         let (ptx, prx) = flume::bounded(PROVIDER_EVENT_QUEUE_CAPACITY);
         let forwarder = smol::spawn({
@@ -121,14 +132,7 @@ pub(crate) async fn stream_with_retry(
                     message: e.retry_message(),
                     delay_ms,
                 })?;
-                futures_lite::future::race(
-                    async {
-                        smol::Timer::after(delay).await;
-                    },
-                    ctx.cancel.cancelled(),
-                )
-                .await;
-                if ctx.cancel.is_cancelled() {
+                if ctx.cancel.race(smol::Timer::after(delay)).await.is_err() {
                     return Err(AgentError::Cancelled);
                 }
             }

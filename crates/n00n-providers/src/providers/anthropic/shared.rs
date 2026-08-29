@@ -419,6 +419,15 @@ impl EventParser {
                             }
                         }
                         Delta::InputJson { partial_json } => {
+                            if self.current_tool_block_idx != Some(ev.index) {
+                                return Err(AgentError::Api {
+                                    status: 400,
+                                    message: format!(
+                                        "mismatched tool delta index {} vs active {:?}",
+                                        ev.index, self.current_tool_block_idx
+                                    ),
+                                });
+                            }
                             self.current_tool_json.push_str(&partial_json);
                         }
                     }

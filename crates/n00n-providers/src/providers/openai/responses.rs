@@ -645,13 +645,14 @@ pub(crate) async fn do_stream_at(
     let status = response.status().as_u16();
 
     if status == 200 {
-        parse_sse(
+        parse_sse_with_cancel(
             BufReader::new(response.into_body()),
             event_tx,
             stream_timeout,
             opts.idempotency_supported
                 .then(|| opts.idempotency_key.clone())
                 .flatten(),
+            opts.cancel_flag.clone(),
         )
         .await
     } else {
@@ -1321,6 +1322,16 @@ pub(crate) async fn parse_sse(
     stream_timeout: Duration,
     idempotency_key: Option<String>,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
+    parse_sse_with_cancel(reader, event_tx, stream_timeout, idempotency_key, None).await
+}
+
+pub(crate) async fn parse_sse_with_cancel(
+    reader: impl AsyncBufRead + Unpin,
+    event_tx: &Sender<ProviderEvent>,
+    stream_timeout: Duration,
+    idempotency_key: Option<String>,
+    cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<(Option<String>, StreamResponse), AgentError> {
     let mut stream = SseStream::with_limits(
         reader,
         stream_timeout,
@@ -1328,6 +1339,9 @@ pub(crate) async fn parse_sse(
         super::super::MAX_SSE_STREAM_BYTES,
     );
     stream.set_deadline_cap(Instant::now() + response_in_flight_timeout(stream_timeout));
+    if let Some(flag) = cancel_flag {
+        stream.set_cancel_flag(flag);
+    }
 
     let mut acc = ResponseAccumulator::new(idempotency_key);
 
