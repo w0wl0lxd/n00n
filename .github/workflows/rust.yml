@@ -80,7 +80,7 @@ jobs:
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
         with:
           shared-key: 'linux-stable'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - uses: 'taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80'  # v2.69.4
         with:
           tool: just
@@ -171,7 +171,7 @@ jobs:
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
         with:
           shared-key: 'windows-stable'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - uses: 'taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80'  # v2.69.4
         with:
           tool: just
@@ -206,7 +206,7 @@ jobs:
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
         with:
           shared-key: 'macos-stable'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - uses: 'taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80'  # v2.69.4
         with:
           tool: just
@@ -287,7 +287,7 @@ jobs:
       - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
         with:
           shared-key: 'linux-coverage'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - uses: 'taiki-e/install-action@a7e592b24782184db1613493a5e65d2e12199f80'  # v2.69.4
         with:
           tool: nextest
