@@ -66,6 +66,7 @@ All fields are optional. Typos in field names cause an error right away.
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `splash_animation` | bool | `true` | - | Show splash animation on startup |
+| `reduced_motion` | bool | `false` | - | Replace animated spinners and the typewriter reveal with their finished state. Set N00N_REDUCED_MOTION to override the file value; N00N_REDUCED_MOTION=0 forces motion back on |
 | `mascot` | bool | `true` | - | Show the n00n mascot on the idle splash screen |
 | `scrollbar` | bool | `true` | - | Show vertical scrollbar in scrollable areas |
 | `flash_duration_ms` | u64 | `1500` | - | Duration of flash messages (ms) |
