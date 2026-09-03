@@ -1191,7 +1191,7 @@ impl ToolOutputLines {
             "run_task" => "task",
             "run_workflow" => "workflow",
             "index_file" => "index",
-            "search_code" | "search_files" => "grep",
+            "search_code" | "search_files" | "search_text" => "grep",
             "map_codegraph" | "explore_code" => "explore",
             "read_file" => "read",
             "use_memory" => "memory",
@@ -2876,6 +2876,16 @@ mod tests {
             config.ui.tool_output_lines.index,
             ToolOutputLines::DEFAULT.index
         );
+    }
+
+    #[test]
+    fn tool_output_lines_get_routes_semblem_search_text_to_grep_bucket() {
+        let mut tol = ToolOutputLines::DEFAULT;
+        tol.grep = 99;
+        tol.other = 1;
+
+        assert_eq!(tol.get("semblem"), 99);
+        assert_eq!(tol.get("search_text"), 99);
     }
 
     #[test_case("provider", "connect_timeout_secs", 0 ; "provider_zero_connect_timeout")]

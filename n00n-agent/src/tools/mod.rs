@@ -913,6 +913,7 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs::{self, File};
 
     use tempfile::TempDir;
@@ -1518,5 +1519,57 @@ mod tests {
         ] {
             assert!(active.names.contains(name), "missing default tool: {name}");
         }
+    }
+
+    fn parse_lua_tool_aliases(lua_src: &str) -> BTreeMap<String, String> {
+        let table_start = lua_src
+            .find("local TOOL_ALIASES = {")
+            .expect("policy.lua must define local TOOL_ALIASES = { ... }");
+        let brace_start = table_start
+            + lua_src[table_start..]
+                .find('{')
+                .expect("missing opening brace for TOOL_ALIASES table");
+        let body_start = brace_start + 1;
+        let body_end = body_start
+            + lua_src[body_start..]
+                .find('}')
+                .expect("missing closing brace for TOOL_ALIASES table");
+        let body = &lua_src[body_start..body_end];
+
+        let mut aliases = BTreeMap::new();
+        for raw_line in body.lines() {
+            let line = raw_line.trim().trim_end_matches(',');
+            if line.is_empty() {
+                continue;
+            }
+            let (key, value) = line.split_once('=').unwrap_or_else(|| {
+                panic!("unparseable TOOL_ALIASES line in policy.lua: {raw_line:?}")
+            });
+            let value = value
+                .trim()
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or_else(|| {
+                    panic!("unparseable TOOL_ALIASES value in policy.lua: {raw_line:?}")
+                });
+            aliases.insert(key.trim().to_string(), value.to_string());
+        }
+        aliases
+    }
+
+    #[test]
+    fn lua_policy_aliases_exactly_match_rust_aliases() {
+        let lua_src = include_str!("../../../plugins/lib/n00n/policy.lua");
+        let lua_aliases = parse_lua_tool_aliases(lua_src);
+
+        let rust_aliases: BTreeMap<String, String> = TOOL_ALIASES
+            .iter()
+            .map(|(alias, canonical)| (alias.to_string(), canonical.to_string()))
+            .collect();
+
+        assert_eq!(
+            lua_aliases, rust_aliases,
+            "plugins/lib/n00n/policy.lua TOOL_ALIASES has drifted from n00n_config::TOOL_ALIASES"
+        );
     }
 }
