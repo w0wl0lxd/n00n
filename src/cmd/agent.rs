@@ -50,6 +50,7 @@ use serde_json::json;
 use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
+use crate::cli::SafetyFlags;
 use crate::setup;
 
 fn try_daemon(
@@ -1291,7 +1292,18 @@ pub fn message_client(
     }
 }
 
-pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+pub fn stop_client(
+    id: &str,
+    state_dir_override: Option<PathBuf>,
+    safety: SafetyFlags,
+) -> Result<()> {
+    if !crate::safety::allow(
+        safety,
+        &format!("stop agent '{id}' and discard its session"),
+    ) {
+        return Ok(());
+    }
+
     let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
         &state_dir,

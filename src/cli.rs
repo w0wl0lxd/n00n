@@ -86,6 +86,18 @@ pub struct PluginFlags {
     pub no_jit: bool,
 }
 
+/// Confirmation and dry-run controls for the destructive subcommands.
+#[derive(Args, Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct SafetyFlags {
+    /// Show what would be destroyed and exit without changing anything
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip the confirmation prompt
+    #[arg(long)]
+    pub no_confirm: bool,
+}
+
 #[derive(Args)]
 pub struct PermissionFlags {
     /// Skip all permission prompts (allow everything)
@@ -270,7 +282,10 @@ pub enum Command {
         no_color: bool,
     },
     /// Rollback to the previous version
-    Rollback,
+    Rollback {
+        #[command(flatten)]
+        safety: SafetyFlags,
+    },
     /// Run as an ACP (Agent Client Protocol) server over stdio
     Acp {
         /// Model spec (provider/model-id)
@@ -474,6 +489,8 @@ pub enum AgentCommand {
         id: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
+        #[command(flatten)]
+        safety: SafetyFlags,
     },
     /// Start a foreground control-plane listener (worker backend only)
     Daemon {
@@ -494,6 +511,8 @@ pub enum McpAction {
     Logout {
         /// Server name from config
         server: String,
+        #[command(flatten)]
+        safety: SafetyFlags,
     },
 }
 
@@ -508,6 +527,8 @@ pub enum AuthAction {
     Logout {
         /// Provider slug (e.g. openai)
         provider: String,
+        #[command(flatten)]
+        safety: SafetyFlags,
     },
     /// Show authentication status for all providers
     Status,
@@ -767,8 +788,121 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Agent {
-                action: AgentCommand::Stop { id, state_dir: None }
+                action: AgentCommand::Stop {
+                    id,
+                    state_dir: None,
+                    safety: SafetyFlags {
+                        dry_run: false,
+                        no_confirm: false,
+                    },
+                }
             }) if id == "agent-id"
+        ));
+    }
+
+    #[test]
+    fn destructive_commands_default_to_asking() {
+        let cli = Cli::parse_from(["n00n", "rollback"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Rollback {
+                safety: SafetyFlags {
+                    dry_run: false,
+                    no_confirm: false,
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn rollback_accepts_dry_run() {
+        let cli = Cli::parse_from(["n00n", "rollback", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Rollback {
+                safety: SafetyFlags {
+                    dry_run: true,
+                    no_confirm: false,
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn rollback_accepts_no_confirm() {
+        let cli = Cli::parse_from(["n00n", "rollback", "--no-confirm"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Rollback {
+                safety: SafetyFlags {
+                    dry_run: false,
+                    no_confirm: true,
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn auth_logout_accepts_safety_flags() {
+        let cli = Cli::parse_from(["n00n", "auth", "logout", "openai", "--no-confirm"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Auth {
+                action: AuthAction::Logout {
+                    provider,
+                    safety: SafetyFlags {
+                        dry_run: false,
+                        no_confirm: true,
+                    },
+                }
+            }) if provider == "openai"
+        ));
+    }
+
+    #[test]
+    fn mcp_logout_accepts_dry_run() {
+        let cli = Cli::parse_from(["n00n", "mcp", "logout", "srv", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Mcp {
+                action: McpAction::Logout {
+                    server,
+                    safety: SafetyFlags {
+                        dry_run: true,
+                        no_confirm: false,
+                    },
+                }
+            }) if server == "srv"
+        ));
+    }
+
+    #[test]
+    fn agent_stop_accepts_safety_flags() {
+        let cli = Cli::parse_from(["n00n", "agent", "stop", "agent-id", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Stop {
+                    id,
+                    state_dir: None,
+                    safety: SafetyFlags {
+                        dry_run: true,
+                        no_confirm: false,
+                    },
+                }
+            }) if id == "agent-id"
+        ));
+    }
+
+    #[test]
+    fn update_keeps_its_own_yes_flag() {
+        let cli = Cli::parse_from(["n00n", "update", "-y"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Update {
+                yes: true,
+                no_color: false,
+            })
         ));
     }
 

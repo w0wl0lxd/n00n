@@ -55,7 +55,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 AuthAction::Login { provider } => {
                     subcmd::auth_login(provider.as_deref(), &storage)?;
                 }
-                AuthAction::Logout { provider } => subcmd::auth_logout(&provider, &storage)?,
+                AuthAction::Logout { provider, safety } => {
+                    subcmd::auth_logout(&provider, &storage, safety)?;
+                }
                 AuthAction::Status => subcmd::auth_status(&storage),
             }
         }
@@ -76,14 +78,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 McpAction::Auth { server } => {
                     subcmd::mcp_auth(&server, &storage, project_trusted)?;
                 }
-                McpAction::Logout { server } => subcmd::mcp_logout(&server, &storage)?,
+                McpAction::Logout { server, safety } => {
+                    subcmd::mcp_logout(&server, &storage, safety)?;
+                }
             }
         }
         Some(Command::Update { yes, no_color }) => {
             update::update(yes, no_color).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
-        Some(Command::Rollback) => {
-            update::rollback().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+        Some(Command::Rollback { safety }) => {
+            update::rollback(safety).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Acp { model, yolo }) => {
             acp::run(
@@ -181,8 +185,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             AgentCommand::Resume { id, state_dir } => {
                 agent::resume_client(&id, state_dir)?;
             }
-            AgentCommand::Stop { id, state_dir } => {
-                agent::stop_client(&id, state_dir)?;
+            AgentCommand::Stop {
+                id,
+                state_dir,
+                safety,
+            } => {
+                agent::stop_client(&id, state_dir, safety)?;
             }
             AgentCommand::Daemon { state_dir } => {
                 agent::daemon_serve(state_dir)?;

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use n00n_storage::version::{self, VersionError};
 use n00n_storage::{StateDir, StorageError};
 
+use crate::cli::SafetyFlags;
+
 const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/n00n/main/install.sh";
 const BACKUP_FILENAME: &str = "n00n_backup";
 const INSTALL_DIR_ENV: &str = "N00N_INSTALL_DIR";
@@ -144,13 +146,10 @@ fn restore_backup(backup_path: &Path, exe_path: &Path) -> Result<(), UpdateError
 }
 
 fn prompt_yes(install_dir: &Path) -> bool {
-    eprint!(
-        "Install to {} and run this script? [y/N] ",
+    crate::safety::confirm(&format!(
+        "Install to {} and run this script?",
         install_dir.display()
-    );
-    let _ = std::io::stderr().flush();
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
+    ))
 }
 
 pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
@@ -203,13 +202,24 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
     Ok(())
 }
 
-pub fn rollback() -> Result<(), UpdateError> {
+pub fn rollback(safety: SafetyFlags) -> Result<(), UpdateError> {
     let exe_path = current_exe_resolved()?;
     let storage = StateDir::resolve()?;
     let backup_path = storage.path().join(BACKUP_FILENAME);
 
     if !backup_path.exists() {
         return Err(UpdateError::NoBackup(backup_path));
+    }
+
+    if !crate::safety::allow(
+        safety,
+        &format!(
+            "overwrite {} with the backup at {}",
+            exe_path.display(),
+            backup_path.display()
+        ),
+    ) {
+        return Ok(());
     }
 
     restore_backup(&backup_path, &exe_path)?;
