@@ -8,11 +8,24 @@ pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 
 use std::cmp::Reverse;
 
-use crate::model::{ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry};
+use crate::model::{
+    FastPricing, ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry,
+};
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
+const GPT_6_ASTRA_MODEL_ID: &str = "gpt-6-astra";
 const GPT_6_ASTRA_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_6_ASTRA_CONTEXT_WINDOW: u32 = 1_050_000;
+const GPT_6_ASTRA_PRICING: ModelPricing = ModelPricing {
+    input: 10.00,
+    output: 50.00,
+    cache_write: 12.50,
+    cache_read: 1.00,
+    fast: Some(FastPricing {
+        input: 20.00,
+        output: 100.00,
+    }),
+};
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
 
@@ -123,22 +136,13 @@ const fn with_coding_plan(
 }
 
 const OPENAI_GPT_6_ASTRA: ModelEntry = with_files(model_entry(
-    &["gpt-6-astra"],
+    &[GPT_6_ASTRA_MODEL_ID],
     ModelTier::Strong,
     true,
     false,
     GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
     GPT_6_ASTRA_CONTEXT_WINDOW,
-    ModelPricing {
-        input: 10.00,
-        output: 50.00,
-        cache_write: 12.50,
-        cache_read: 1.00,
-        fast: Some(crate::model::FastPricing {
-            input: 20.00,
-            output: 100.00,
-        }),
-    },
+    GPT_6_ASTRA_PRICING,
 ));
 
 const OPENAI_GPT_5_6_LUNA: ModelEntry = with_files(model_entry(
@@ -377,7 +381,7 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
     const CODEX_MODELS: &[ModelEntry] = &[
         with_coding_plan(
             OPENAI_GPT_6_ASTRA,
-            &["gpt-6-astra"],
+            &[GPT_6_ASTRA_MODEL_ID],
             GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
             CODING_PLAN_CONTEXT_WINDOW,
             true,
@@ -664,7 +668,7 @@ mod tests {
     fn gpt_6_astra_is_registered_for_openai_and_codex() {
         let openai_model = models()
             .iter()
-            .find(|model| model.prefixes.contains(&"gpt-6-astra"))
+            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
             .expect("GPT-6 Astra should be registered in the OpenAI catalog");
         assert_eq!(openai_model.tier, ModelTier::Strong);
         assert_eq!(openai_model.context_window, 1_050_000);
@@ -687,7 +691,7 @@ mod tests {
 
         let codex_model = codex_models()
             .iter()
-            .find(|model| model.prefixes.contains(&"gpt-6-astra"))
+            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
             .expect("GPT-6 Astra should be registered in the Codex catalog");
         assert_eq!(codex_model.tier, ModelTier::Strong);
         assert_eq!(codex_model.context_window, CODING_PLAN_CONTEXT_WINDOW);
@@ -787,7 +791,7 @@ mod tests {
             ModelInfo::id_only("gpt-5.4".into()),
             ModelInfo::id_only("gpt-5.6-luna".into()),
             ModelInfo::id_only("gpt-5.6-sol".into()),
-            ModelInfo::id_only("gpt-6-astra".into()),
+            ModelInfo::id_only(GPT_6_ASTRA_MODEL_ID.into()),
         ];
 
         sort_models(&mut listed, models());
@@ -797,7 +801,12 @@ mod tests {
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+            [
+                GPT_6_ASTRA_MODEL_ID,
+                "gpt-5.6-sol",
+                "gpt-5.6-luna",
+                "gpt-5.4"
+            ]
         );
     }
 
