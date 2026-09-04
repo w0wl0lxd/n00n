@@ -1048,10 +1048,16 @@ impl MessagesPanel {
     }
 
     pub fn is_animating(&self) -> bool {
+        let idle_animation = self.show_idle_splash()
+            && if self.mascot.enabled() && self.viewport_height > 18 {
+                self.mascot.is_animating()
+            } else {
+                true
+            };
         self.in_progress_count() > 0
             || self.streaming_thinking.is_animating()
             || self.streaming_text.is_animating()
-            || self.show_idle_splash()
+            || idle_animation
             || self.accent.is_animating()
             || !self.live_bufs.is_empty()
             || self.streaming_thinking_collapsed()
