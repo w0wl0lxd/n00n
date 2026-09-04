@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788523186782,
+  "lastUpdate": 1788544405096,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -24827,6 +24827,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 176356,
             "range": "± 16200",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7a3b54420cbcf19d56553185e9cc04f1a5757cb9",
+          "message": "feat(providers): add Daybreak Blue to Codex (#497)\n\n* feat(providers): add Daybreak Blue to Codex\n\n* docs(changelog): record Daybreak Blue support\n\n* fix(providers): route Daybreak Blue through Responses\n\n* fix(providers): scope Daybreak capabilities to Codex\n\n* fix(providers): preserve Daybreak capabilities in wrappers\n\n* refactor(providers): name Daybreak capability metadata",
+          "timestamp": "2026-09-04T17:38:13Z",
+          "tree_id": "b70dc61c52f6d6cc7144291073587c28a838f473",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/7a3b54420cbcf19d56553185e9cc04f1a5757cb9"
+        },
+        "date": 1788544402974,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6489520,
+            "range": "± 23767",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2452243,
+            "range": "± 6669",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2652400,
+            "range": "± 12582",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7754131,
+            "range": "± 157349",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3874395,
+            "range": "± 18996",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3780618,
+            "range": "± 12129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554934,
+            "range": "± 3281",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168112,
+            "range": "± 616",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167998,
+            "range": "± 302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1079252,
+            "range": "± 5479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 611667,
+            "range": "± 2854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 615210,
+            "range": "± 8586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 77265,
+            "range": "± 1194",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 126696,
+            "range": "± 11963",
             "unit": "ns/iter"
           }
         ]
