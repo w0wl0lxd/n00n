@@ -80,6 +80,7 @@ members = [
   "crates/n00n-markdown",
   "crates/n00n-providers",
   "crates/n00n-redact",
+  "crates/n00n-runs",
   "crates/n00n-search",
   "crates/n00n-semble",
   "crates/n00n-smell",
@@ -105,6 +106,7 @@ n00n-config = { path = "crates/n00n-config" }
 n00n-interpreter = { path = "crates/n00n-interpreter" }
 n00n-providers = { path = "crates/n00n-providers" }
 n00n-redact = { path = "crates/n00n-redact" }
+n00n-runs = { path = "crates/n00n-runs" }
 n00n-search = { path = "crates/n00n-search" }
 n00n-storage = { path = "crates/n00n-storage" }
 n00n-ui = { path = "crates/n00n-ui" }

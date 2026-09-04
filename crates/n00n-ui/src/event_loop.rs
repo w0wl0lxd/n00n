@@ -4362,6 +4362,7 @@ mod tests {
             control: false,
             delivery: StoredDelivery::TurnEnd,
             prompt: None,
+            run_delivery: None,
         }];
         session.meta.queued_direct_tools = vec![StoredDirectTool {
             tool: "task".into(),

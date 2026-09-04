@@ -4469,6 +4469,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "n00n-runs"
+version = "0.7.0"
+dependencies = [
+ "n00n-storage",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "smol",
+ "tempfile",
+ "test-case",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "n00n-search"
 version = "0.7.0"
 dependencies = [

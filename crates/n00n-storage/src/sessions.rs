@@ -77,6 +77,7 @@ pub const OPENAI_RESPONSE_CHAIN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 pub const DEFAULT_MAX_RETAINED_TOOL_OUTPUTS: usize = 512;
 /// Subagent histories a live session keeps resident before the oldest are evicted.
 pub const DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES: usize = 32;
+pub const MAX_CONTROL_DELIVERY_RECORDS: usize = 1_024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -102,6 +103,8 @@ pub enum SessionError {
     DecodedBudgetExceeded { path: String, limit: usize },
     #[error("session log contains an unknown record type")]
     UnknownRecord,
+    #[error("session control-delivery ledger reached its bounded capacity")]
+    ControlDeliveryCapacity,
     #[error("session record exceeds the {maximum}-byte limit")]
     RecordTooLargeWrite { maximum: usize },
     #[error("session log changed concurrently: {path}")]
@@ -202,6 +205,13 @@ impl StoredSessionLifecycle {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredControlDelivery {
+    pub delivery_id: String,
+    pub child_run_id: String,
+    pub source_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredQueuedMessage {
     pub text: String,
     pub images: Vec<StoredImageSource>,
@@ -222,6 +232,8 @@ pub struct StoredQueuedMessage {
     pub delivery: StoredDelivery,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<StoredMcpPrompt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_delivery: Option<StoredControlDelivery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1350,6 +1362,8 @@ pub struct SessionMeta {
     pub queued_submissions: Vec<StoredQueuedMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_direct_tools: Vec<StoredDirectTool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumed_run_deliveries: Vec<StoredControlDelivery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_output: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1391,6 +1405,37 @@ pub struct SessionMeta {
 }
 
 impl SessionMeta {
+    #[must_use]
+    pub fn contains_run_delivery(&self, delivery_id: &str) -> bool {
+        self.queued_submissions.iter().any(|submission| {
+            submission
+                .run_delivery
+                .as_ref()
+                .is_some_and(|delivery| delivery.delivery_id == delivery_id)
+        }) || self
+            .consumed_run_deliveries
+            .iter()
+            .any(|delivery| delivery.delivery_id == delivery_id)
+    }
+
+    /// Records a consumed control delivery for crash-safe idempotency.
+    ///
+    /// # Errors
+    /// Returns an error when the bounded ledger is full.
+    pub fn record_consumed_run_delivery(
+        &mut self,
+        delivery: StoredControlDelivery,
+    ) -> Result<(), SessionError> {
+        if self.contains_run_delivery(&delivery.delivery_id) {
+            return Ok(());
+        }
+        if self.consumed_run_deliveries.len() >= MAX_CONTROL_DELIVERY_RECORDS {
+            return Err(SessionError::ControlDeliveryCapacity);
+        }
+        self.consumed_run_deliveries.push(delivery);
+        Ok(())
+    }
+
     /// Stores a compaction checkpoint and prunes the oldest checkpoints to remain within bounds.
     ///
     /// # Errors
@@ -1639,6 +1684,52 @@ pub struct SessionSummary {
     pub cwd: String,
     #[serde(default)]
     pub model: String,
+}
+
+/// Minimal persisted metadata used to import legacy background child sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacySessionMetadata {
+    pub session_id: n00nId,
+    pub cwd: String,
+    pub title: String,
+    pub parent_id: n00nId,
+    pub root_session_id: Option<n00nId>,
+    pub lifecycle: StoredSessionLifecycle,
+    pub workflow: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "t")]
+enum LegacyMetadataRecord {
+    #[serde(rename = "header")]
+    Header {
+        v: u32,
+        id: n00nId,
+        cwd: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        created_at: u64,
+        #[serde(default)]
+        parent_id: Option<n00nId>,
+    },
+    #[serde(rename = "meta")]
+    Meta {
+        title: String,
+        updated_at: u64,
+        #[serde(default)]
+        parent_id: Option<n00nId>,
+        #[serde(default)]
+        root_session_id: Option<n00nId>,
+        #[serde(default)]
+        lifecycle: StoredSessionLifecycle,
+        #[serde(default)]
+        workflow: bool,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4656,6 +4747,123 @@ where
         parent_id: header.parent_id,
     })
 }
+/// Scans child-session metadata belonging to one trusted project cwd.
+///
+/// This intentionally returns only bounded session metadata. It does not expose prompts,
+/// transcript content, provider payloads, or tool output to the run migration.
+///
+/// # Errors
+/// Returns a typed storage/session error if a candidate session cannot be read safely.
+pub fn scan_legacy_child_sessions(
+    project_cwd: &str,
+    state_dir: &StateDir,
+) -> Result<Vec<LegacySessionMetadata>, SessionError> {
+    scan_legacy_child_sessions_in(project_cwd, &state_dir.path().join(SESSIONS_DIR))
+}
+
+/// Variant of [`scan_legacy_child_sessions`] for an explicit sessions directory.
+///
+/// # Errors
+/// Returns a typed storage/session error if a candidate session cannot be read safely.
+pub fn scan_legacy_child_sessions_in(
+    project_cwd: &str,
+    sessions_dir: &Path,
+) -> Result<Vec<LegacySessionMetadata>, SessionError> {
+    let entries = match session_entries(sessions_dir) {
+        Ok(entries) => entries,
+        Err(StorageError::Io(error)) if error.kind() == ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut sessions = Vec::new();
+    for path in entries {
+        if let Some(session) = scan_legacy_metadata_at(&path, project_cwd)? {
+            sessions.push(session);
+        }
+    }
+    sessions.sort_unstable_by_key(|session| (session.created_at, *session.session_id.as_bytes()));
+    Ok(sessions)
+}
+
+fn scan_legacy_metadata_at(
+    path: &Path,
+    project_cwd: &str,
+) -> Result<Option<LegacySessionMetadata>, SessionError> {
+    let mut reader = BoundedZstdLines::open(path, 0, DecodeLimits::SCAN)?;
+    let mut metadata: Option<LegacySessionMetadata> = None;
+    loop {
+        let line = match reader.next(true) {
+            Ok(DecodedLine::Eof) => break,
+            Ok(DecodedLine::Oversized) => continue,
+            Ok(DecodedLine::Line(line)) => line,
+            Err(LineReadError::Io(_)) if metadata.is_some() => break,
+            Err(error) => return Err(reader.limit_error(error)),
+        };
+        if line.is_empty() {
+            continue;
+        }
+        let record =
+            serde_json::from_str::<LegacyMetadataRecord>(&line).map_err(StorageError::from)?;
+        match record {
+            LegacyMetadataRecord::Header {
+                v,
+                id,
+                cwd,
+                title,
+                created_at,
+                parent_id,
+            } => {
+                if !is_supported_log_format(v) {
+                    return Err(SessionError::VersionMismatch {
+                        found: v,
+                        expected: LOG_FORMAT_VERSION,
+                    });
+                }
+                if cwd != project_cwd {
+                    return Ok(None);
+                }
+                let Some(parent_id) = parent_id else {
+                    return Ok(None);
+                };
+                metadata = Some(LegacySessionMetadata {
+                    session_id: id,
+                    cwd,
+                    title: match title {
+                        Some(title) => title,
+                        None => DEFAULT_TITLE.to_owned(),
+                    },
+                    parent_id,
+                    root_session_id: None,
+                    lifecycle: StoredSessionLifecycle::Idle,
+                    workflow: false,
+                    created_at,
+                    updated_at: created_at,
+                });
+            }
+            LegacyMetadataRecord::Meta {
+                title,
+                updated_at,
+                parent_id,
+                root_session_id,
+                lifecycle,
+                workflow,
+            } => {
+                let current = metadata.as_mut().ok_or(SessionError::UnknownRecord)?;
+                if let Some(parent_id) = parent_id {
+                    current.parent_id = parent_id;
+                }
+                current.title = title;
+                current.root_session_id = root_session_id;
+                current.lifecycle = lifecycle;
+                current.workflow = workflow;
+                current.updated_at = updated_at;
+            }
+            LegacyMetadataRecord::Other => {}
+        }
+    }
+    metadata.ok_or(SessionError::UnknownRecord).map(Some)
+}
 
 fn session_entries(dir: &Path) -> Result<Vec<PathBuf>, StorageError> {
     Ok(fs::read_dir(dir)?
@@ -5208,9 +5416,10 @@ mod tests {
     use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
         COMPRESS_LEVEL, CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord,
-        MAX_TITLE_LEN, PREVIOUS_LOG_FORMAT_VERSION, SESSION_VERSION, StoredDelivery,
-        StoredQueuedMessage, StoredSubagent, append_record, classify_and_display, encode_frame,
-        generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
+        MAX_CONTROL_DELIVERY_RECORDS, MAX_TITLE_LEN, PREVIOUS_LOG_FORMAT_VERSION, SESSION_VERSION,
+        SessionMeta, StoredControlDelivery, StoredDelivery, StoredQueuedMessage, StoredSubagent,
+        append_record, classify_and_display, encode_frame, generate_title, jsonl_path,
+        load_cwd_index, now_epoch, update_cwd_index,
     };
     use super::{
         DecodeLimits, SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError,
@@ -9544,5 +9753,36 @@ mod tests {
             [&survivor]
         );
         assert!(loaded.tool_outputs.is_empty());
+    }
+
+    #[test]
+    fn run_delivery_ledger_is_idempotent_and_bounded() {
+        let delivery = StoredControlDelivery {
+            delivery_id: "delivery-1".to_owned(),
+            child_run_id: "run-1".to_owned(),
+            source_revision: 2,
+        };
+        let mut meta = SessionMeta::default();
+        meta.record_consumed_run_delivery(delivery.clone()).unwrap();
+        meta.record_consumed_run_delivery(delivery).unwrap();
+        assert_eq!(meta.consumed_run_deliveries.len(), 1);
+        assert!(meta.contains_run_delivery("delivery-1"));
+
+        for index in 2..=MAX_CONTROL_DELIVERY_RECORDS {
+            meta.record_consumed_run_delivery(StoredControlDelivery {
+                delivery_id: format!("delivery-{index}"),
+                child_run_id: "run-1".to_owned(),
+                source_revision: 2,
+            })
+            .unwrap();
+        }
+        assert!(matches!(
+            meta.record_consumed_run_delivery(StoredControlDelivery {
+                delivery_id: "overflow".to_owned(),
+                child_run_id: "run-1".to_owned(),
+                source_revision: 2,
+            }),
+            Err(SessionError::ControlDeliveryCapacity)
+        ));
     }
 }

@@ -193,6 +193,7 @@ fn stored_message(input: AgentInput, delivery: Delivery) -> StoredQueuedMessage 
             qualified_name: prompt.qualified_name,
             arguments: prompt.arguments,
         }),
+        run_delivery: None,
     }
 }
 
