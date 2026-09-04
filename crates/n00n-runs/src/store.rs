@@ -980,6 +980,46 @@ impl RunStore {
         rows.into_iter().map(decode_outbox).collect()
     }
 
+    pub(crate) fn dispatchable_outbox(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ParentOutboxRecord>, RunStoreError> {
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(RunStoreError::InvalidLimit {
+                requested: limit,
+                maximum: MAX_PAGE_SIZE,
+            });
+        }
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT o.delivery_id, o.source_event_id, o.child_run_id, o.parent_session_id, o.payload_json, o.state, o.attempt_count, o.next_attempt_at, o.created_at, o.delivered_at, o.acknowledged_at, o.dead_letter_reason FROM parent_outbox o JOIN runs r ON r.run_id = o.child_run_id JOIN run_chains c ON c.chain_id = r.chain_id WHERE c.project_key = ?1 AND o.state IN ('pending', 'delivered') AND (o.state = 'delivered' OR o.next_attempt_at IS NULL OR o.next_attempt_at <= ?2) ORDER BY CASE o.state WHEN 'pending' THEN 0 ELSE 1 END, o.created_at LIMIT ?3")
+            .map_err(RunStoreError::database)?;
+        let rows = statement
+            .query_map(
+                params![self.inner.project_key.as_str(), now, usize_to_i64(limit)?],
+                |row| {
+                    Ok(RawOutbox {
+                        delivery_id: row.get(0)?,
+                        source_event_id: row.get(1)?,
+                        child_run_id: row.get(2)?,
+                        parent_session_id: row.get(3)?,
+                        payload: row.get(4)?,
+                        state: row.get(5)?,
+                        attempt_count: row.get(6)?,
+                        next_attempt_at: row.get(7)?,
+                        created_at: row.get(8)?,
+                        delivered_at: row.get(9)?,
+                        acknowledged_at: row.get(10)?,
+                        dead_letter_reason: row.get(11)?,
+                    })
+                },
+            )
+            .map_err(RunStoreError::database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(RunStoreError::database)?;
+        rows.into_iter().map(decode_outbox).collect()
+    }
     /// Marks an idempotently inserted parent delivery as delivered.
     ///
     /// # Errors

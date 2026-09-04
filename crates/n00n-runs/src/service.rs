@@ -108,7 +108,7 @@ impl RunService {
         limit: usize,
     ) -> Result<ParentDispatchReport, RunStoreError> {
         let store = self.store.clone();
-        let deliveries = smol::unblock(move || store.pending_outbox(now, limit)).await?;
+        let deliveries = smol::unblock(move || store.dispatchable_outbox(now, limit)).await?;
         let mut report = ParentDispatchReport::default();
         for delivery in deliveries {
             match inbox.insert(&delivery).await {
@@ -116,6 +116,12 @@ impl RunService {
                     let store = self.store.clone();
                     let delivery_id = delivery.delivery_id;
                     smol::unblock(move || store.mark_outbox_delivered(delivery_id, now)).await?;
+                    report.delivered += 1;
+                }
+                Ok(ParentInsertResult::AlreadyConsumed) => {
+                    let store = self.store.clone();
+                    let delivery_id = delivery.delivery_id;
+                    smol::unblock(move || store.acknowledge_outbox(delivery_id, now)).await?;
                     report.delivered += 1;
                 }
                 Ok(ParentInsertResult::PermanentUnavailable { reason }) => {
@@ -138,6 +144,19 @@ impl RunService {
             }
         }
         Ok(report)
+    }
+
+    /// Acknowledges durable consumption of a parent delivery.
+    ///
+    /// # Errors
+    /// Returns a typed scope or database error.
+    pub async fn acknowledge_parent_delivery(
+        &self,
+        delivery_id: crate::DeliveryId,
+        acknowledged_at: i64,
+    ) -> Result<(), RunStoreError> {
+        let store = self.store.clone();
+        smol::unblock(move || store.acknowledge_outbox(delivery_id, acknowledged_at)).await
     }
 
     /// Routes text to a capability-compatible adapter.
@@ -417,6 +436,7 @@ mod tests {
         logical_insertions: Mutex<HashSet<String>>,
         fail_after_insert: AtomicBool,
         unavailable: AtomicBool,
+        consumed: AtomicBool,
     }
 
     impl ParentInboxAdapter for FakeInbox {
@@ -424,7 +444,9 @@ mod tests {
             &'a self,
             delivery: &'a crate::ParentOutboxRecord,
         ) -> AdapterFuture<'a, ParentInsertResult> {
-            let result = if self.unavailable.load(Ordering::SeqCst) {
+            let result = if self.consumed.load(Ordering::SeqCst) {
+                Ok(ParentInsertResult::AlreadyConsumed)
+            } else if self.unavailable.load(Ordering::SeqCst) {
                 Ok(ParentInsertResult::PermanentUnavailable {
                     reason: "parent_deleted".to_owned(),
                 })
@@ -650,6 +672,17 @@ mod tests {
             service
                 .store()
                 .pending_outbox(i64::MAX, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        inbox.consumed.store(true, Ordering::SeqCst);
+        let third = smol::block_on(service.dispatch_parent_outbox(&inbox, 16, 5, 10)).unwrap();
+        assert_eq!(third.delivered, 1);
+        assert!(
+            service
+                .store()
+                .dispatchable_outbox(i64::MAX, 10)
                 .unwrap()
                 .is_empty()
         );

@@ -29,6 +29,7 @@ pub struct RunAdapterError {
 pub enum ParentInsertResult {
     Inserted,
     AlreadyPresent,
+    AlreadyConsumed,
     PermanentUnavailable { reason: String },
 }
 

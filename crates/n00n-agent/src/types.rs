@@ -1085,6 +1085,13 @@ pub fn tool_results(results: Vec<ToolDoneEvent>) -> Message {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ControlDeliveryMetadata {
+    pub delivery_id: String,
+    pub child_run_id: String,
+    pub source_revision: u64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -1115,6 +1122,8 @@ pub enum AgentEvent {
         image_count: usize,
         images: Vec<ImageSource>,
         control: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_delivery: Option<ControlDeliveryMetadata>,
     },
     QueueDrained {
         generation: u64,

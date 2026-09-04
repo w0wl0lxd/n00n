@@ -36,6 +36,7 @@ n00n-agent = { workspace = true }
 n00n-acp = { workspace = true }
 n00n-config = { workspace = true }
 n00n-providers = { workspace = true }
+n00n-runs = { workspace = true }
 n00n-storage = { workspace = true }
 n00n-lua = { workspace = true }
 n00n-interpreter = { workspace = true }

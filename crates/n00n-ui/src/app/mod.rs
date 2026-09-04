@@ -2032,6 +2032,7 @@ impl App {
             text: display_text.clone(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         });
         input.prompt = Some(Box::new(prompt_ref));
 
@@ -2045,6 +2046,7 @@ impl App {
                     text: display_text,
                     images: Vec::new(),
                     control: false,
+                    run_delivery: None,
                 },
                 input,
                 true,
@@ -2085,6 +2087,7 @@ impl App {
             text: cmd.render(args),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         })
     }
 
@@ -2292,6 +2295,7 @@ impl App {
             text,
             images: vec![],
             control: false,
+            run_delivery: None,
         };
 
         if clear_context {

@@ -24,6 +24,7 @@ pub(crate) mod keymap;
 pub(crate) mod log;
 pub(crate) mod net;
 pub(crate) mod options;
+pub(crate) mod run;
 pub(crate) mod search;
 pub(crate) mod semblem;
 pub(crate) mod session;
@@ -88,6 +89,7 @@ pub(crate) fn create_n00n_global(
         search::create_search_table(lua, permissions, search_config)?,
     )?;
     n00n.set("text", text::create_text_table(lua)?)?;
+    n00n.set("run", run::create_run_table(lua, ui_action_tx.clone())?)?;
     n00n.set(
         "session",
         session::create_session_table(lua, ui_action_tx.clone())?,

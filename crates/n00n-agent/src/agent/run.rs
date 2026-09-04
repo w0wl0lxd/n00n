@@ -1412,6 +1412,7 @@ impl<'h> Agent<'h> {
                         image_count: input.images.len(),
                         images: input.images.clone(),
                         control: input.control,
+                        run_delivery: None,
                     })?;
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);

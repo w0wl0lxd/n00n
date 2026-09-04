@@ -1412,8 +1412,12 @@ impl SessionMeta {
                 .run_delivery
                 .as_ref()
                 .is_some_and(|delivery| delivery.delivery_id == delivery_id)
-        }) || self
-            .consumed_run_deliveries
+        }) || self.has_consumed_run_delivery(delivery_id)
+    }
+
+    #[must_use]
+    pub fn has_consumed_run_delivery(&self, delivery_id: &str) -> bool {
+        self.consumed_run_deliveries
             .iter()
             .any(|delivery| delivery.delivery_id == delivery_id)
     }

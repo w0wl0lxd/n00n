@@ -317,6 +317,7 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
         text: "background prompt".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     });
     let SubmitOutcome::Started(actions) = outcome else {
         panic!("expected background prompt to start");
@@ -341,6 +342,7 @@ fn session_api_control_prompt_steers_with_control_tag() {
             text: "resume".into(),
             images: Vec::new(),
             control: true,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -354,12 +356,47 @@ fn session_api_control_prompt_steers_with_control_tag() {
 }
 
 #[test]
+fn parent_run_delivery_metadata_is_persisted_with_control_queue_item() {
+    let mut app = test_app();
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-1".to_owned(),
+        child_run_id: "run-1".to_owned(),
+        source_revision: 3,
+    };
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "child completed".to_owned(),
+            images: Vec::new(),
+            control: true,
+            run_delivery: Some(delivery),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    let snapshot = app.session_snapshot();
+    assert!(snapshot.meta.contains_run_delivery("delivery-1"));
+    let stored = snapshot
+        .meta
+        .queued_submissions
+        .first()
+        .and_then(|message| message.run_delivery.as_ref())
+        .expect("stored run delivery");
+    assert_eq!(stored.child_run_id, "run-1");
+    assert_eq!(stored.source_revision, 3);
+}
+#[test]
 fn background_persistence_failure_is_terminal_without_composer_restore() {
     let mut app = test_app();
     let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {
         text: "background prompt".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     }) else {
         panic!("expected background prompt to start");
     };
@@ -373,6 +410,7 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
             text: "queued after failure".into(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -757,6 +795,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
             image_count: 0,
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         },
         app.run_id,
     ));
@@ -821,6 +860,7 @@ fn queued_msg(text: &str) -> QueuedMessage {
         text: text.into(),
         images: vec![],
         control: false,
+        run_delivery: None,
     }
 }
 
@@ -2223,6 +2263,7 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
         text: "original".into(),
         images: vec![image],
         control: true,
+        run_delivery: None,
     }));
     app.queue_and_notify(queued_msg("after"));
     app.queue.set_focus_at(1);
@@ -2235,9 +2276,10 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
     assert!(app.queue.editing().is_none());
     assert!(app.input_box.is_empty());
     let queued = app.queue.queued_inputs();
-    let (input, delivery) = &queued[1];
+    let (input, delivery, run_delivery) = &queued[1];
     assert_eq!(input.message, "original");
     assert_eq!(*delivery, Delivery::Steering);
+    assert!(run_delivery.is_none());
     assert!(input.control);
     assert_eq!(input.images.len(), 1);
     assert_eq!(input.images[0].media_type, ImageMediaType::Png);
@@ -2924,6 +2966,7 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
             text: "queued through turn error".into(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -2990,6 +3033,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
             text: "second control in fifo".into(),
             images: Vec::new(),
             control: true,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -4581,6 +4625,7 @@ fn workflow_toggle_flows_into_agent_input() {
         text: "hi".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     };
     assert!(!app.build_agent_input(&msg).workflow);
 
