@@ -1,34 +1,56 @@
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use image::imageops::FilterType;
+use image::{DynamicImage, RgbaImage};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-use crate::cast::{f32_to_u8, usize_to_f32, usize_to_u16, usize_to_u32};
+use crate::cast::usize_to_u16;
 use crate::theme::Theme;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(100);
-const LOGO_HALF_HEIGHT: f32 = 0.31;
-const LOGO_HALF_WIDTH: f32 = 0.13;
-const LOGO_CENTERS: [f32; 4] = [-0.52, -0.175, 0.175, 0.52];
-const LOGO_STROKE: f32 = 0.025;
-const LOGO_GLOW: f32 = 0.11;
-const SIGNAL_PERIOD: u16 = 48;
-const STAR_THRESHOLD: u32 = 248;
+const MASCOT_SCALE_PERCENT: u32 = 100;
+const MASCOT_MARGIN_CELLS: u16 = 4;
+const BLINK_CYCLE_FRAMES: u16 = 53;
+const LEFT_EYE: (i32, i32) = (246, 201);
+const RIGHT_EYE: (i32, i32) = (316, 181);
+const EYE_RADIUS: (i32, i32) = (22, 21);
+const FUR: [u8; 4] = [154, 147, 169, 255];
+const OUTLINE: [u8; 4] = [52, 32, 82, 255];
 
-#[derive(Clone, Copy)]
-struct ScenePixel {
-    base: [u8; 3],
-    glow: u8,
-    signal_phase: u8,
-    star_phase: u8,
+static MASCOT_IMAGE: OnceLock<DynamicImage> = OnceLock::new();
+
+fn mascot_image() -> &'static DynamicImage {
+    const MASCOT_PNG: &[u8] = include_bytes!("../../../site/android-chrome-512x512.png");
+    MASCOT_IMAGE.get_or_init(|| match image::load_from_memory(MASCOT_PNG) {
+        Ok(image) => image,
+        Err(error) => {
+            tracing::error!(%error, "failed to load branded mascot");
+            DynamicImage::new_rgba8(1, 1)
+        }
+    })
 }
 
-struct SceneCache {
+#[derive(Clone, Copy)]
+enum Blink {
+    Open,
+    Half,
+    Closed,
+}
+
+struct SpriteFrame {
+    pixels: Vec<[u8; 4]>,
+}
+
+struct SpriteCache {
     area: Rect,
     background: (u8, u8, u8),
-    accent: (u8, u8, u8),
-    pixels: Vec<ScenePixel>,
+    side: usize,
+    left: i32,
+    top: i32,
+    frames: [SpriteFrame; 3],
 }
 
 pub struct Mascot {
@@ -37,7 +59,7 @@ pub struct Mascot {
     mouse_row: Option<u16>,
     frame: u16,
     last_frame: Instant,
-    cache: Option<SceneCache>,
+    cache: Option<SpriteCache>,
 }
 
 impl Mascot {
@@ -77,57 +99,36 @@ impl Mascot {
         self.enabled && self.last_frame.elapsed() >= FRAME_INTERVAL
     }
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme, accent: Color) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme, _accent: Color) {
         if !self.enabled || area.width < 24 || area.height < 12 {
             return;
         }
 
         let background = extract_rgb(theme.background, (12, 14, 20));
-        let accent = extract_rgb(accent, (100, 150, 255));
-        let needs_rebuild = self.cache.as_ref().is_none_or(|cache| {
-            cache.area != area || cache.background != background || cache.accent != accent
-        });
+        let needs_rebuild = self
+            .cache
+            .as_ref()
+            .is_none_or(|cache| cache.area != area || cache.background != background);
         if needs_rebuild {
-            self.cache = Some(build_scene(area, background, accent));
+            self.cache = build_cache(area, background);
         }
 
         let Some(cache) = self.cache.as_ref() else {
             return;
         };
-        let width = usize::from(area.width);
-        let virtual_height = usize::from(area.height) * 2;
-        let mouse = mouse_position(area, self.mouse_col, self.mouse_row);
-        let scan_row = usize::from(self.frame) % virtual_height;
-        let pulse = triangle_wave(self.frame, 30);
+        let frame = &cache.frames[blink_index(blink_for_frame(self.frame))];
+        let (shift_x, shift_y) = sprite_shift(area, self.mouse_col, self.mouse_row, self.frame);
         let buf_width = usize::from(buf.area().width);
 
         for row in 0..usize::from(area.height) {
-            let top_idx = row * 2 * width;
-            let bottom_idx = top_idx + width;
             let y = area.y + usize_to_u16(row);
             let row_offset = usize::from(y) * buf_width + usize::from(area.x);
-
-            for col in 0..width {
-                let top = animated_color(
-                    cache.pixels[top_idx + col],
-                    accent,
-                    self.frame,
-                    pulse,
-                    top_idx / width,
-                    scan_row,
-                    mouse,
-                    col,
-                );
-                let bottom = animated_color(
-                    cache.pixels[bottom_idx + col],
-                    accent,
-                    self.frame,
-                    pulse,
-                    bottom_idx / width,
-                    scan_row,
-                    mouse,
-                    col,
-                );
+            let virtual_top = i32::from(usize_to_u16(row)) * 2;
+            let virtual_bottom = virtual_top.saturating_add(1);
+            for col in 0..usize::from(area.width) {
+                let virtual_x = i32::from(usize_to_u16(col));
+                let top = sample(cache, frame, virtual_x - shift_x, virtual_top - shift_y);
+                let bottom = sample(cache, frame, virtual_x - shift_x, virtual_bottom - shift_y);
                 if let Some(cell) = buf.content.get_mut(row_offset + col) {
                     cell.set_symbol("▀")
                         .set_fg(Color::Rgb(top[0], top[1], top[2]))
@@ -138,200 +139,180 @@ impl Mascot {
     }
 }
 
-fn build_scene(area: Rect, background: (u8, u8, u8), accent: (u8, u8, u8)) -> SceneCache {
-    let width = usize::from(area.width);
-    let height = usize::from(area.height) * 2;
-    let inv_width = 1.0 / usize_to_f32(width);
-    let inv_height = 1.0 / usize_to_f32(height);
-    let aspect = usize_to_f32(width) / usize_to_f32(height).max(1.0);
-    let mut pixels = Vec::with_capacity(width * height);
+fn build_cache(area: Rect, background: (u8, u8, u8)) -> Option<SpriteCache> {
+    let available_width = area.width.saturating_sub(MASCOT_MARGIN_CELLS);
+    let available_height = area.height.saturating_sub(2) * 2;
+    let side = u32::from(available_width)
+        .min(u32::from(available_height))
+        .saturating_mul(MASCOT_SCALE_PERCENT)
+        / 100;
+    if side == 0 {
+        return None;
+    }
 
-    for row in 0..height {
-        let y = (usize_to_f32(row) + 0.5) * inv_height * 2.0 - 1.0;
-        for col in 0..width {
-            let x = ((usize_to_f32(col) + 0.5) * inv_width * 2.0 - 1.0) * aspect;
-            let radius_squared = x * x + y * y;
-            let vignette = (1.0 - radius_squared * 0.38).clamp(0.22, 1.0);
-            let grid = grid_intensity(x, y, width, height);
-            let logo_distance = logo_distance(x, y);
-            let glow = ((LOGO_GLOW - logo_distance) / LOGO_GLOW).clamp(0.0, 1.0);
-            let core = ((LOGO_STROKE - logo_distance) / LOGO_STROKE).clamp(0.0, 1.0);
-            let star_hash = hash_2d(col, row);
-            let hash_bytes = star_hash.to_le_bytes();
-            let star = u32::from(hash_bytes[0]) > STAR_THRESHOLD;
-            let background_lift = 0.72 + vignette * 0.28 + grid * 0.08;
-            let accent_lift = grid * 0.035 + glow * 0.16 + core * 0.2;
-            let base = mix_color(background, accent, background_lift, accent_lift);
+    let Ok(side_usize) = usize::try_from(side) else {
+        return None;
+    };
+    let Ok(sprite_side) = i32::try_from(side) else {
+        return None;
+    };
+    let left = (i32::from(area.width) - sprite_side) / 2;
+    let top = (i32::from(area.height) * 2 - sprite_side) / 2;
+    let frames = [
+        build_frame(side, Blink::Open),
+        build_frame(side, Blink::Half),
+        build_frame(side, Blink::Closed),
+    ];
 
-            pixels.push(ScenePixel {
-                base,
-                glow: f32_to_u8((glow * 0.48 + core * 0.52) * 255.0),
-                signal_phase: hash_bytes[1],
-                star_phase: if star { hash_bytes[2] } else { 0 },
-            });
+    Some(SpriteCache {
+        area,
+        background,
+        side: side_usize,
+        left,
+        top,
+        frames,
+    })
+}
+
+fn build_frame(side: u32, blink: Blink) -> SpriteFrame {
+    let source = blink_source(blink);
+    let resized = DynamicImage::ImageRgba8(source)
+        .resize_exact(side, side, FilterType::Lanczos3)
+        .to_rgba8();
+    SpriteFrame {
+        pixels: resized.pixels().map(|pixel| pixel.0).collect(),
+    }
+}
+
+fn blink_source(blink: Blink) -> RgbaImage {
+    let mut image = mascot_image().to_rgba8();
+    match blink {
+        Blink::Open => {}
+        Blink::Half => {
+            paint_lid(&mut image, LEFT_EYE, false);
+            paint_lid(&mut image, RIGHT_EYE, false);
+        }
+        Blink::Closed => {
+            paint_lid(&mut image, LEFT_EYE, true);
+            paint_lid(&mut image, RIGHT_EYE, true);
+        }
+    }
+    image
+}
+
+fn paint_lid(image: &mut RgbaImage, center: (i32, i32), closed: bool) {
+    let (radius_x, radius_y) = EYE_RADIUS;
+    for offset_y in -radius_y..=radius_y {
+        for offset_x in -radius_x..=radius_x {
+            let ellipse = offset_x * offset_x * radius_y * radius_y
+                + offset_y * offset_y * radius_x * radius_x;
+            let boundary = radius_x * radius_x * radius_y * radius_y;
+            if ellipse <= boundary && (closed || offset_y <= 4) {
+                put_pixel(image, center.0 + offset_x, center.1 + offset_y, FUR);
+            }
         }
     }
 
-    SceneCache {
-        area,
-        background,
-        accent,
-        pixels,
+    let line_y = if closed { 2 } else { 5 };
+    for offset_x in -(radius_x - 3)..=(radius_x - 3) {
+        let curve = offset_x * offset_x / 90;
+        for thickness in 0..=2 {
+            put_pixel(
+                image,
+                center.0 + offset_x,
+                center.1 + line_y + curve + thickness,
+                OUTLINE,
+            );
+        }
     }
 }
 
-fn animated_color(
-    pixel: ScenePixel,
-    accent: (u8, u8, u8),
+fn put_pixel(image: &mut RgbaImage, x: i32, y: i32, color: [u8; 4]) {
+    let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+        return;
+    };
+    if x < image.width() && y < image.height() {
+        image.put_pixel(x, y, image::Rgba(color));
+    }
+}
+
+fn sample(cache: &SpriteCache, frame: &SpriteFrame, x: i32, y: i32) -> [u8; 3] {
+    let sprite_x = x - cache.left;
+    let sprite_y = y - cache.top;
+    let (Ok(sprite_x), Ok(sprite_y)) = (usize::try_from(sprite_x), usize::try_from(sprite_y))
+    else {
+        return background_color(cache.background);
+    };
+    if sprite_x >= cache.side || sprite_y >= cache.side {
+        return background_color(cache.background);
+    }
+
+    blend(
+        cache.background,
+        frame.pixels[sprite_y * cache.side + sprite_x],
+    )
+}
+
+fn blend(background: (u8, u8, u8), foreground: [u8; 4]) -> [u8; 3] {
+    let alpha = u16::from(foreground[3]);
+    let inverse = 255_u16 - alpha;
+    [
+        blend_channel(background.0, foreground[0], alpha, inverse),
+        blend_channel(background.1, foreground[1], alpha, inverse),
+        blend_channel(background.2, foreground[2], alpha, inverse),
+    ]
+}
+
+fn blend_channel(background: u8, foreground: u8, alpha: u16, inverse: u16) -> u8 {
+    let value = u16::from(foreground) * alpha + u16::from(background) * inverse;
+    ((value + 127) / 255).to_le_bytes()[0]
+}
+
+fn background_color(background: (u8, u8, u8)) -> [u8; 3] {
+    [background.0, background.1, background.2]
+}
+
+fn blink_for_frame(frame: u16) -> Blink {
+    match frame % BLINK_CYCLE_FRAMES {
+        48 | 51 => Blink::Half,
+        49 | 50 => Blink::Closed,
+        _ => Blink::Open,
+    }
+}
+
+const fn blink_index(blink: Blink) -> usize {
+    match blink {
+        Blink::Open => 0,
+        Blink::Half => 1,
+        Blink::Closed => 2,
+    }
+}
+
+fn sprite_shift(
+    area: Rect,
+    mouse_col: Option<u16>,
+    mouse_row: Option<u16>,
     frame: u16,
-    pulse: f32,
-    row: usize,
-    scan_row: usize,
-    mouse: Option<(f32, f32)>,
-    col: usize,
-) -> [u8; 3] {
-    let glow = f32::from(pixel.glow) / 255.0;
-    let signal = signal_intensity(frame, pixel.signal_phase);
-    let scan = row.abs_diff(scan_row) <= 1;
-    let star = star_intensity(frame, pixel.star_phase);
-    let mouse_glow = mouse.map_or(0.0, |(mx, my)| {
-        let dx = usize_to_f32(col) - mx;
-        let dy = usize_to_f32(row) - my;
-        (1.0 - (dx * dx + dy * dy) / 160.0).clamp(0.0, 1.0) * 0.08
-    });
-    let lift = glow * (0.2 + pulse * 0.12 + signal * 0.34)
-        + if scan { glow * 0.13 } else { 0.0 }
-        + star
-        + mouse_glow;
-
-    [
-        channel_lift(pixel.base[0], accent.0, lift),
-        channel_lift(pixel.base[1], accent.1, lift),
-        channel_lift(pixel.base[2], accent.2, lift),
-    ]
+) -> (i32, i32) {
+    const BOB: [i32; 20] = [
+        0, 0, 0, -1, -1, -1, -2, -2, -2, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let bob = BOB[usize::from(frame) % BOB.len()];
+    let horizontal = axis_shift(mouse_col, area.x, area.width);
+    let vertical = axis_shift(mouse_row, area.y, area.height);
+    (horizontal, bob + vertical)
 }
 
-fn logo_distance(x: f32, y: f32) -> f32 {
-    let mut distance = f32::MAX;
-    for (index, center) in LOGO_CENTERS.into_iter().enumerate() {
-        let local_x = x - center;
-        let glyph_distance = if index == 1 || index == 2 {
-            zero_distance(local_x, y)
+fn axis_shift(position: Option<u16>, start: u16, length: u16) -> i32 {
+    position.map_or(0, |position| {
+        let center = start.saturating_add(length / 2);
+        let margin = length / 5;
+        if position < center.saturating_sub(margin) {
+            -1
         } else {
-            n_distance(local_x, y)
-        };
-        distance = distance.min(glyph_distance);
-    }
-    distance
-}
-
-fn n_distance(x: f32, y: f32) -> f32 {
-    let left = segment_distance(
-        x,
-        y,
-        -LOGO_HALF_WIDTH,
-        -LOGO_HALF_HEIGHT,
-        -LOGO_HALF_WIDTH,
-        LOGO_HALF_HEIGHT,
-    );
-    let right = segment_distance(
-        x,
-        y,
-        LOGO_HALF_WIDTH,
-        -LOGO_HALF_HEIGHT,
-        LOGO_HALF_WIDTH,
-        LOGO_HALF_HEIGHT,
-    );
-    let diagonal = segment_distance(
-        x,
-        y,
-        -LOGO_HALF_WIDTH,
-        LOGO_HALF_HEIGHT,
-        LOGO_HALF_WIDTH,
-        -LOGO_HALF_HEIGHT,
-    );
-    left.min(right).min(diagonal)
-}
-
-fn zero_distance(x: f32, y: f32) -> f32 {
-    let normalized_x = x / LOGO_HALF_WIDTH;
-    let normalized_y = y / LOGO_HALF_HEIGHT;
-    ((normalized_x * normalized_x + normalized_y * normalized_y).sqrt() - 1.0).abs()
-        * LOGO_HALF_WIDTH
-}
-
-fn segment_distance(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
-    let segment_x = bx - ax;
-    let segment_y = by - ay;
-    let point_x = px - ax;
-    let point_y = py - ay;
-    let denominator = segment_x * segment_x + segment_y * segment_y;
-    let t = ((point_x * segment_x + point_y * segment_y) / denominator).clamp(0.0, 1.0);
-    let dx = point_x - segment_x * t;
-    let dy = point_y - segment_y * t;
-    (dx * dx + dy * dy).sqrt()
-}
-
-fn grid_intensity(x: f32, y: f32, width: usize, height: usize) -> f32 {
-    let column = ((x + 2.0) * usize_to_f32(width) * 0.11).fract();
-    let row = ((y + 1.0) * usize_to_f32(height) * 0.055).fract();
-    let line = column.min(1.0 - column).min(row.min(1.0 - row));
-    ((0.035 - line) / 0.035).clamp(0.0, 1.0)
-}
-
-fn mix_color(
-    background: (u8, u8, u8),
-    accent: (u8, u8, u8),
-    background_lift: f32,
-    accent_lift: f32,
-) -> [u8; 3] {
-    [
-        f32_to_u8(f32::from(background.0) * background_lift + f32::from(accent.0) * accent_lift),
-        f32_to_u8(f32::from(background.1) * background_lift + f32::from(accent.1) * accent_lift),
-        f32_to_u8(f32::from(background.2) * background_lift + f32::from(accent.2) * accent_lift),
-    ]
-}
-
-fn channel_lift(base: u8, accent: u8, amount: f32) -> u8 {
-    f32_to_u8(f32::from(base) + (f32::from(accent) - f32::from(base)) * amount.clamp(0.0, 1.0))
-}
-
-fn signal_intensity(frame: u16, phase: u8) -> f32 {
-    let position = (frame.wrapping_mul(5) + u16::from(phase)) % SIGNAL_PERIOD;
-    let distance = position.min(SIGNAL_PERIOD - position);
-    (1.0 - f32::from(distance) / 5.0).clamp(0.0, 1.0)
-}
-
-fn star_intensity(frame: u16, phase: u8) -> f32 {
-    if phase == 0 {
-        return 0.0;
-    }
-    let wave = triangle_wave(frame.wrapping_add(u16::from(phase)), 36);
-    wave * wave * 0.35
-}
-
-fn triangle_wave(frame: u16, period: u16) -> f32 {
-    let position = frame % period;
-    let half = period / 2;
-    let distance = position.abs_diff(half);
-    1.0 - f32::from(distance) / f32::from(half)
-}
-
-fn mouse_position(area: Rect, col: Option<u16>, row: Option<u16>) -> Option<(f32, f32)> {
-    let col = col?.checked_sub(area.x)?;
-    let row = row?.checked_sub(area.y)?;
-    if col >= area.width || row >= area.height {
-        return None;
-    }
-    Some((f32::from(col), f32::from(row) * 2.0))
-}
-
-fn hash_2d(x: usize, y: usize) -> u32 {
-    let mut value =
-        usize_to_u32(x).wrapping_mul(0x9e37_79b1) ^ usize_to_u32(y).wrapping_mul(0x85eb_ca77);
-    value ^= value >> 16;
-    value = value.wrapping_mul(0x7feb_352d);
-    value ^ (value >> 15)
+            i32::from(position > center.saturating_add(margin))
+        }
+    })
 }
 
 fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
@@ -427,9 +408,18 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
         mascot.render(area, &mut buf, &theme, accent());
-        let first = mascot.cache.as_ref().map(|cache| cache.pixels.as_ptr());
+        let first = mascot.cache.as_ref().map(std::ptr::from_ref);
         mascot.render(area, &mut buf, &theme, accent());
-        let second = mascot.cache.as_ref().map(|cache| cache.pixels.as_ptr());
+        let second = mascot.cache.as_ref().map(std::ptr::from_ref);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn blink_sequence_has_brief_closed_frames() {
+        assert!(matches!(blink_for_frame(47), Blink::Open));
+        assert!(matches!(blink_for_frame(48), Blink::Half));
+        assert!(matches!(blink_for_frame(49), Blink::Closed));
+        assert!(matches!(blink_for_frame(51), Blink::Half));
+        assert!(matches!(blink_for_frame(52), Blink::Open));
     }
 }
