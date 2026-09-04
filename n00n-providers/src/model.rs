@@ -376,7 +376,7 @@ impl Model {
 
     fn openai_model_version(&self) -> Option<(u16, u16)> {
         let model_id = self.normalized_openai_model_id()?;
-        if model_id == DAYBREAK_BLUE_MODEL_ID {
+        if self.provider.as_ref() == "codex" && model_id == DAYBREAK_BLUE_MODEL_ID {
             return Some((5, 6));
         }
         let version_and_suffix = model_id.strip_prefix(GPT_MODEL_PREFIX)?;
@@ -709,11 +709,25 @@ mod tests {
     #[test_case("openai/gpt-5.3", false ; "before_minimum")]
     #[test_case("openai/gpt-5.4", true ; "minimum")]
     #[test_case("openai/gpt-5.6-sol", true ; "suffixed")]
-    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("anthropic/claude-sonnet-4-6", false ; "non_openai_family")]
     fn tool_search_support_follows_documented_model_floor(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.supports_tool_search(), expected);
+    }
+
+    #[test]
+    fn daybreak_blue_capabilities_are_codex_only() {
+        let codex = Model::from_spec("codex/gpt-daybreak-blue-latest").unwrap();
+        assert!(codex.supports_responses());
+        assert!(codex.supports_prompt_cache_breakpoint());
+        assert!(codex.supports_tool_search());
+        assert!(codex.supports_responses_built_in_tools());
+
+        let openai = Model::from_spec("openai/gpt-daybreak-blue-latest").unwrap();
+        assert!(!openai.supports_responses());
+        assert!(!openai.supports_prompt_cache_breakpoint());
+        assert!(!openai.supports_tool_search());
+        assert!(!openai.supports_responses_built_in_tools());
     }
     #[test]
     fn total_input_includes_cached_tokens() {

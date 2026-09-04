@@ -4093,9 +4093,8 @@ mod tests {
         assert!(body.get("previous_response_id").is_none());
     }
 
-    #[test_case("openai/gpt-5.5" ; "gpt_5_5")]
-    #[test_case("codex/gpt-daybreak-blue-latest" ; "daybreak_blue")]
-    fn supported_model_dispatches_to_responses_with_private_full_history(model_spec: &str) {
+    #[test]
+    fn supported_model_dispatches_to_responses_with_private_full_history() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -4120,7 +4119,7 @@ mod tests {
                 crate::providers::Timeouts::default(),
             )
             .unwrap();
-            let model = Model::from_spec(model_spec).unwrap();
+            let model = Model::from_spec("openai/gpt-5.5").unwrap();
             let messages = vec![
                 Message::user("first".into()),
                 assistant("second"),
