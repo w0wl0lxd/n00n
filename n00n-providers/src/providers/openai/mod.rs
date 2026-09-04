@@ -11,6 +11,8 @@ use std::cmp::Reverse;
 use crate::model::{ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry};
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
+const GPT_6_ASTRA_MAX_OUTPUT_TOKENS: u32 = 128_000;
+const GPT_6_ASTRA_CONTEXT_WINDOW: u32 = 1_050_000;
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
 
@@ -119,6 +121,25 @@ const fn with_coding_plan(
         ..entry
     }
 }
+
+const OPENAI_GPT_6_ASTRA: ModelEntry = with_files(model_entry(
+    &["gpt-6-astra"],
+    ModelTier::Strong,
+    true,
+    false,
+    GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
+    GPT_6_ASTRA_CONTEXT_WINDOW,
+    ModelPricing {
+        input: 10.00,
+        output: 50.00,
+        cache_write: 12.50,
+        cache_read: 1.00,
+        fast: Some(crate::model::FastPricing {
+            input: 20.00,
+            output: 100.00,
+        }),
+    },
+));
 
 const OPENAI_GPT_5_6_LUNA: ModelEntry = with_files(model_entry(
     &["gpt-5.6-luna"],
@@ -334,6 +355,7 @@ const OPENAI_O3: ModelEntry = model_entry(
 #[allow(clippy::too_many_lines)]
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
+        OPENAI_GPT_6_ASTRA,
         OPENAI_GPT_5_6_LUNA,
         OPENAI_GPT_5_6_TERRA,
         OPENAI_GPT_5_6_SOL,
@@ -353,6 +375,14 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
 #[allow(clippy::too_many_lines)]
 pub(crate) const fn codex_models() -> &'static [ModelEntry] {
     const CODEX_MODELS: &[ModelEntry] = &[
+        with_coding_plan(
+            OPENAI_GPT_6_ASTRA,
+            &["gpt-6-astra"],
+            GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
         with_coding_plan(
             OPENAI_GPT_5_6_LUNA,
             &["gpt-5.6-luna"],
@@ -631,6 +661,40 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)]
+    fn gpt_6_astra_is_registered_for_openai_and_codex() {
+        let openai_model = models()
+            .iter()
+            .find(|model| model.prefixes.contains(&"gpt-6-astra"))
+            .expect("GPT-6 Astra should be registered in the OpenAI catalog");
+        assert_eq!(openai_model.tier, ModelTier::Strong);
+        assert_eq!(openai_model.context_window, 1_050_000);
+        assert_eq!(openai_model.max_output_tokens, 128_000);
+        assert_eq!(openai_model.pricing.input, 10.0);
+        assert_eq!(openai_model.pricing.cache_read, 1.0);
+        assert_eq!(openai_model.pricing.cache_write, 12.5);
+        assert_eq!(openai_model.pricing.output, 50.0);
+        let fast = openai_model
+            .pricing
+            .fast
+            .expect("GPT-6 Astra should have fast pricing");
+        assert_eq!(fast.input, 20.0);
+        assert_eq!(fast.output, 100.0);
+        assert!(openai_model.vision);
+        assert!(openai_model.files);
+
+        let codex_model = codex_models()
+            .iter()
+            .find(|model| model.prefixes.contains(&"gpt-6-astra"))
+            .expect("GPT-6 Astra should be registered in the Codex catalog");
+        assert_eq!(codex_model.tier, ModelTier::Strong);
+        assert_eq!(codex_model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+        assert_eq!(codex_model.max_output_tokens, 128_000);
+        assert!(codex_model.vision);
+        assert!(!codex_model.files);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
     fn gpt_5_6_sol_has_fast_pricing() {
         let model = models()
             .iter()
@@ -720,6 +784,7 @@ mod tests {
             ModelInfo::id_only("gpt-5.4".into()),
             ModelInfo::id_only("gpt-5.6-luna".into()),
             ModelInfo::id_only("gpt-5.6-sol".into()),
+            ModelInfo::id_only("gpt-6-astra".into()),
         ];
 
         sort_models(&mut listed, models());
@@ -729,7 +794,7 @@ mod tests {
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+            ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
         );
     }
 
