@@ -376,7 +376,10 @@ impl Model {
 
     fn openai_model_version(&self) -> Option<(u16, u16)> {
         let model_id = self.normalized_openai_model_id()?;
-        if self.provider.as_ref() == "codex" && model_id == DAYBREAK_BLUE_MODEL_ID {
+        if ManifestRegistry::for_slug(&self.provider)
+            .is_some_and(|manifest| manifest.slug == "codex")
+            && model_id == DAYBREAK_BLUE_MODEL_ID
+        {
             return Some((5, 6));
         }
         let version_and_suffix = model_id.strip_prefix(GPT_MODEL_PREFIX)?;
