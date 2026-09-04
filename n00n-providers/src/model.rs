@@ -22,6 +22,7 @@ use crate::types::{EffortDialect, effort_dialect_for};
 const PER_MILLION: f64 = 1_000_000.0;
 const GPT_MODEL_PREFIX: &str = "gpt-";
 const OPENAI_MODEL_PREFIX: &str = "openai/";
+pub(crate) const DAYBREAK_BLUE_MODEL_ID: &str = "gpt-daybreak-blue-latest";
 const GPT_CODEX_MARKER: &str = "-codex";
 const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
 const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
@@ -374,9 +375,11 @@ impl Model {
     }
 
     fn openai_model_version(&self) -> Option<(u16, u16)> {
-        let version_and_suffix = self
-            .normalized_openai_model_id()?
-            .strip_prefix(GPT_MODEL_PREFIX)?;
+        let model_id = self.normalized_openai_model_id()?;
+        if model_id == DAYBREAK_BLUE_MODEL_ID {
+            return Some((5, 6));
+        }
+        let version_and_suffix = model_id.strip_prefix(GPT_MODEL_PREFIX)?;
         let version = version_and_suffix
             .split_once('-')
             .map_or(version_and_suffix, |(version, _)| version);
@@ -706,6 +709,7 @@ mod tests {
     #[test_case("openai/gpt-5.3", false ; "before_minimum")]
     #[test_case("openai/gpt-5.4", true ; "minimum")]
     #[test_case("openai/gpt-5.6-sol", true ; "suffixed")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("anthropic/claude-sonnet-4-6", false ; "non_openai_family")]
     fn tool_search_support_follows_documented_model_floor(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
@@ -1247,6 +1251,7 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
     #[test_case("openai/gpt-5.5", true ; "gpt_5_5")]
@@ -1260,6 +1265,7 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-codex", false ; "openai_gpt_5_6_codex")]
     #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
@@ -1273,10 +1279,11 @@ mod tests {
     }
 
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
-    fn supports_responses_built_in_tools_excludes_codex(spec: &str, expected: bool) {
+    fn supports_responses_built_in_tools_by_model_id(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.supports_responses_built_in_tools(), expected);
     }

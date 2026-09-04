@@ -9,12 +9,12 @@ pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 use std::cmp::Reverse;
 
 use crate::model::{
-    FastPricing, ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry,
+    DAYBREAK_BLUE_MODEL_ID, FastPricing, ModelEntry, ModelFamily, ModelInfo, ModelPricing,
+    ModelTier, lookup_entry,
 };
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
 const GPT_6_ASTRA_MODEL_ID: &str = "gpt-6-astra";
-const DAYBREAK_BLUE_MODEL_ID: &str = "gpt-daybreak-blue-latest";
 const GPT_6_ASTRA_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_6_ASTRA_CONTEXT_WINDOW: u32 = 1_050_000;
 const GPT_6_ASTRA_PRICING: ModelPricing = ModelPricing {
