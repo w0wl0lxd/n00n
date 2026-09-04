@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788004790538,
+  "lastUpdate": 1788523186782,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -24719,6 +24719,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 133573,
             "range": "± 8703",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "708d7e3461cef7de51b8e03bc53b210717b02092",
+          "message": "feat(providers): add GPT-6 Astra (#496)\n\n* feat(providers): add GPT-6 Astra\n\n* test(providers): cover Astra fast cache pricing\n\n* fix(providers): align Astra catalog metadata",
+          "timestamp": "2026-09-04T11:44:43Z",
+          "tree_id": "fd4dfa9d3a057a16ca4c260163db697b593bdbe2",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/708d7e3461cef7de51b8e03bc53b210717b02092"
+        },
+        "date": 1788523185444,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6741031,
+            "range": "± 97924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2237801,
+            "range": "± 8563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2224725,
+            "range": "± 17200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8082102,
+            "range": "± 126810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4337221,
+            "range": "± 21072",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4325289,
+            "range": "± 24769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582225,
+            "range": "± 3670",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191920,
+            "range": "± 8781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191909,
+            "range": "± 356",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1053123,
+            "range": "± 9579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 597731,
+            "range": "± 1341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 598038,
+            "range": "± 2513",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 55940,
+            "range": "± 5055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 176356,
+            "range": "± 16200",
             "unit": "ns/iter"
           }
         ]
