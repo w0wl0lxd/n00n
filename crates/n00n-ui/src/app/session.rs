@@ -169,7 +169,11 @@ fn restored_delivery(delivery: StoredDelivery) -> Delivery {
     }
 }
 
-fn stored_message(input: AgentInput, delivery: Delivery) -> StoredQueuedMessage {
+fn stored_message(
+    input: AgentInput,
+    delivery: Delivery,
+    run_delivery: Option<n00n_agent::ControlDeliveryMetadata>,
+) -> StoredQueuedMessage {
     // Preamble contains live shell results and may include transient secrets.
     let (mode, plan_path) = match input.mode {
         AgentMode::Build => (Some(StoredMode::Build), None),
@@ -193,7 +197,11 @@ fn stored_message(input: AgentInput, delivery: Delivery) -> StoredQueuedMessage 
             qualified_name: prompt.qualified_name,
             arguments: prompt.arguments,
         }),
-        run_delivery: None,
+        run_delivery: run_delivery.map(|delivery| n00n_storage::sessions::StoredControlDelivery {
+            delivery_id: delivery.delivery_id,
+            child_run_id: delivery.child_run_id,
+            source_revision: delivery.source_revision,
+        }),
     }
 }
 
@@ -206,6 +214,13 @@ fn restored_submission(
         text: message.text,
         images: message.images.into_iter().map(restored_image).collect(),
         control: message.control,
+        run_delivery: message
+            .run_delivery
+            .map(|delivery| n00n_agent::ControlDeliveryMetadata {
+                delivery_id: delivery.delivery_id,
+                child_run_id: delivery.child_run_id,
+                source_revision: delivery.source_revision,
+            }),
     };
     let mut input = app.build_agent_input(&queued);
     if let Some(mode) = message.mode {
@@ -471,7 +486,7 @@ impl App {
         self.state.session.meta.queued_messages = self.queue.text_messages();
         self.state.session.meta.queued_submissions = queued
             .into_iter()
-            .map(|(input, delivery)| stored_message(input, delivery))
+            .map(|(input, delivery, run_delivery)| stored_message(input, delivery, run_delivery))
             .collect();
         let queued_direct_tools: Vec<_> = self
             .queue
@@ -578,6 +593,7 @@ impl App {
                             text,
                             images: Vec::new(),
                             control: false,
+                            run_delivery: None,
                         };
                         let input = self.build_agent_input(&msg);
                         (msg, input, Delivery::TurnEnd)

@@ -189,6 +189,8 @@ async fn new(
         SessionRequest::New {
             prompt,
             focus,
+            requested_id: None,
+            managed_run_id: None,
             parent_id,
             caller_id,
             bootstrap,
@@ -413,6 +415,8 @@ mod tests {
                     SessionRequest::New {
                         prompt,
                         focus,
+                        requested_id,
+                        managed_run_id,
                         parent_id,
                         caller_id,
                         bootstrap: Some(bootstrap),
@@ -424,6 +428,8 @@ mod tests {
             };
             assert_eq!(prompt, None);
             assert!(!focus);
+            assert_eq!(requested_id, None);
+            assert_eq!(managed_run_id, None);
             assert_eq!(parent_id, None);
             assert_eq!(caller_id.as_ref(), Some(&expected_caller_id));
             assert_eq!(bootstrap.tool, "task");

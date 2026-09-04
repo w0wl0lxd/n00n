@@ -23,6 +23,7 @@ use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyl
 use serde_json::Value;
 
 use n00n_config::{RawConfig, SearchConfig, canonical_tool_name};
+use n00n_runs::RunService;
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
@@ -1854,6 +1855,7 @@ impl LuaRuntime {
         keymap_writer: KeymapWriter,
         hint_writer: HintWriter,
         jit: bool,
+        run_service: Option<Arc<RunService>>,
     ) -> Result<Self, PluginError> {
         let lua = Lua::new();
         apply_jit(&lua, jit);
@@ -1901,6 +1903,9 @@ impl LuaRuntime {
         lua.set_app_data(hint_writer);
         lua.set_app_data(Arc::clone(&registry));
         lua.set_app_data(Arc::clone(&search_config));
+        if let Some(run_service) = run_service {
+            lua.set_app_data(run_service);
+        }
 
         register_builtin_tools(&registry)?;
 
@@ -3341,6 +3346,7 @@ pub fn spawn(
     search_config: Arc<SearchConfig>,
     bundled_dirs: &'static [&'static Dir<'static>],
     jit: bool,
+    run_service: Option<Arc<RunService>>,
 ) -> Result<LuaThread, PluginError> {
     let (tx, rx) = flume::unbounded::<Request>();
     let (prio_tx, prio_rx) = flume::unbounded::<Request>();
@@ -3368,6 +3374,7 @@ pub fn spawn(
                 keymap_writer,
                 hint_writer,
                 jit,
+                run_service,
             ) {
                 Ok(r) => {
                     let _ = init_tx.send(Ok(()));

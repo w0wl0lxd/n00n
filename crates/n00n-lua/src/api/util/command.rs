@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use arc_swap::ArcSwap;
 use mlua::RegistryKey;
 use n00n_agent::SharedBuf;
+use n00n_runs::{ParentInsertResult, ParentOutboxRecord, RunAdapterError, RunId};
 use n00n_storage::id::SessionRef;
 
 #[derive(Clone)]
@@ -422,6 +423,8 @@ pub enum SessionRequest {
     New {
         prompt: Option<String>,
         focus: bool,
+        requested_id: Option<SessionRef>,
+        managed_run_id: Option<RunId>,
         parent_id: Option<String>,
         caller_id: Option<SessionRef>,
         bootstrap: Option<SessionBootstrap>,
@@ -454,6 +457,7 @@ pub enum SessionRequest {
 }
 
 pub type SessionReply = Result<serde_json::Value, String>;
+pub type ParentInboxReply = Result<ParentInsertResult, RunAdapterError>;
 
 pub enum UiAction {
     OpenWin {
@@ -476,6 +480,10 @@ pub enum UiAction {
     Session {
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,
+    },
+    ParentRunDelivery {
+        delivery: ParentOutboxRecord,
+        reply_tx: flume::Sender<ParentInboxReply>,
     },
 }
 

@@ -14,6 +14,7 @@ use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::Message;
 use n00n_providers::model::Model;
+use n00n_runs::{ProjectKey, RunService, RunStore};
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::RetentionBudget;
@@ -29,6 +30,7 @@ const MODEL_FALLBACK_WARNING: &str = "model resolution failed, keeping previous 
 /// Dropping it joins the Lua thread via `PluginHost::drop`.
 struct Stack {
     plugin_host: PluginHost,
+    run_service: Arc<RunService>,
     config: Config,
     commands: Vec<CustomCommand>,
     model: Model,
@@ -202,6 +204,7 @@ fn build_stack(
     cli: &Cli,
     cwd: &Path,
     storage: &StateDir,
+    run_service: Arc<RunService>,
     fallback: Option<(Config, Model)>,
 ) -> Result<(Stack, Vec<String>)> {
     let mut warnings = Vec::new();
@@ -209,9 +212,10 @@ fn build_stack(
     let mut plugin_host = if cli.plugin_flags.no_plugins {
         PluginHost::disabled()
     } else {
-        PluginHost::with_jit(
+        PluginHost::with_jit_and_run_service(
             Arc::clone(ToolRegistry::global_arc()),
             !cli.plugin_flags.no_jit,
+            Arc::clone(&run_service),
         )
         .context("initialize lua plugin host")?
     };
@@ -267,6 +271,7 @@ fn build_stack(
     Ok((
         Stack {
             plugin_host,
+            run_service,
             config,
             commands,
             model,
@@ -333,7 +338,11 @@ pub fn run(cli: Cli) -> Result<()> {
     load_env_files(&cwd);
     warn_stale_config_toml(&cwd);
 
-    let (stack, startup_warnings) = build_stack(&cli, &cwd, &storage, None)?;
+    let project_key = ProjectKey::from_path(&cwd).context("derive project identity")?;
+    let run_service = Arc::new(RunService::new(
+        RunStore::open(&storage, project_key).context("open background run store")?,
+    ));
+    let (stack, startup_warnings) = build_stack(&cli, &cwd, &storage, run_service, None)?;
     let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
 
     setup::init_logging(&stack.config.storage);
@@ -459,7 +468,7 @@ fn run_ui_loop(
             crate::cmd::tui_bridge::try_spawn_with_timeout(
                 storage.path(),
                 tx,
-                stack.config.agent.session_roundtrip_timeout(),
+                crate::cmd::tui_bridge::default_session_roundtrip_timeout(),
             )
         });
 
@@ -472,12 +481,12 @@ fn run_ui_loop(
                 focused,
                 startup_warnings: std::mem::take(&mut warnings),
                 storage: storage.clone(),
+                run_service: Arc::clone(&stack.run_service),
                 config: stack.config.agent.clone(),
                 project_trusted: stack.config.project_trusted,
                 ui_config: stack.config.ui.clone(),
                 input_history_size: stack.config.storage.input_history_size,
                 retention_budget: stack.config.storage.retention_budget(),
-                snapshot_timeout: stack.config.storage.snapshot_timeout,
                 permissions: Arc::new(n00n_agent::permissions::PermissionManager::new(
                     stack.config.permissions.clone(),
                     cwd.to_path_buf(),
@@ -489,6 +498,7 @@ fn run_ui_loop(
                 keymap_reader: stack.plugin_host.keymap_reader(),
                 hint_reader: stack.plugin_host.hint_reader(),
                 ui_action_rx: stack.plugin_host.ui_action_rx(),
+                ui_action_tx: stack.plugin_host.ui_action_tx(),
                 lua_event_handle: stack.plugin_host.event_handle(),
             },
             initial_prompt.take(),
@@ -553,7 +563,8 @@ fn handle_reload(
     let plugin_host = std::mem::replace(&mut stack.plugin_host, PluginHost::disabled());
     teardown.defer(move || drop(plugin_host));
 
-    let (new_stack, new_warnings) = build_stack(cli, cwd, storage, Some(last_good))
+    let run_service = Arc::clone(&stack.run_service);
+    let (new_stack, new_warnings) = build_stack(cli, cwd, storage, run_service, Some(last_good))
         .context("reload with fallback should not fail")?;
     let tabs = if reloaded.is_empty() {
         vec![AppSession::new(&new_stack.model.spec(), &cwd_str)]

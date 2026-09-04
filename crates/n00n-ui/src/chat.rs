@@ -202,6 +202,7 @@ impl Chat {
                 image_count,
                 images,
                 control,
+                ..
             } => {
                 return ChatEventResult::QueueItemConsumed {
                     text,

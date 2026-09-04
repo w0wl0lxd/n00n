@@ -9,6 +9,7 @@ use include_dir::{Dir, include_dir};
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_config::{PluginsConfig, RawConfig, SearchConfig};
+use n00n_runs::RunService;
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredSessionStateSnapshot;
 
@@ -235,7 +236,24 @@ impl PluginHost {
     /// # Errors
     /// Returns an error if the Lua runtime cannot be spawned.
     pub fn with_jit(registry: Arc<ToolRegistry>, jit: bool) -> Result<Self, PluginError> {
-        Self::with_jit_and_search_config(registry, jit, Arc::new(SearchConfig::default()))
+        Self::with_jit_and_services(registry, jit, Arc::new(SearchConfig::default()), None)
+    }
+
+    /// Creates a plugin host with the project-scoped background run service.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua runtime cannot be spawned.
+    pub fn with_jit_and_run_service(
+        registry: Arc<ToolRegistry>,
+        jit: bool,
+        run_service: Arc<RunService>,
+    ) -> Result<Self, PluginError> {
+        Self::with_jit_and_services(
+            registry,
+            jit,
+            Arc::new(SearchConfig::default()),
+            Some(run_service),
+        )
     }
 
     /// Creates a plugin host with immutable search configuration available to native APIs.
@@ -247,7 +265,20 @@ impl PluginHost {
         jit: bool,
         search_config: Arc<SearchConfig>,
     ) -> Result<Self, PluginError> {
-        let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit)?;
+        let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit, None)?;
+        Ok(Self {
+            inner: Some(lua),
+            state_leases: Arc::new(StateLeases::default()),
+        })
+    }
+
+    fn with_jit_and_services(
+        registry: Arc<ToolRegistry>,
+        jit: bool,
+        search_config: Arc<SearchConfig>,
+        run_service: Option<Arc<RunService>>,
+    ) -> Result<Self, PluginError> {
+        let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit, run_service)?;
         Ok(Self {
             inner: Some(lua),
             state_leases: Arc::new(StateLeases::default()),
