@@ -679,6 +679,9 @@ mod tests {
             .expect("GPT-6 Astra should have fast pricing");
         assert_eq!(fast.input, 20.0);
         assert_eq!(fast.output, 100.0);
+        let effective_fast = openai_model.pricing.effective(true);
+        assert_eq!(effective_fast.cache_read, 2.0);
+        assert_eq!(effective_fast.cache_write, 25.0);
         assert!(openai_model.vision);
         assert!(openai_model.files);
 
