@@ -471,6 +471,7 @@ mod tests {
         assert!(
             generated.contains("| Strong | gpt-6-astra | $5.00 / $30.00 | 272K ctx / 128K out |")
         );
+        assert!(generated.contains("**gpt-5.6-sol** (default), gpt-daybreak-blue-latest"));
         assert!(
             generated.contains(
                 "Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6 (strong)"

@@ -22,6 +22,9 @@ use crate::types::{EffortDialect, effort_dialect_for};
 const PER_MILLION: f64 = 1_000_000.0;
 const GPT_MODEL_PREFIX: &str = "gpt-";
 const OPENAI_MODEL_PREFIX: &str = "openai/";
+const CODEX_PROVIDER_SLUG: &str = "codex";
+pub(crate) const DAYBREAK_BLUE_MODEL_ID: &str = "gpt-daybreak-blue-latest";
+const DAYBREAK_BLUE_MODEL_VERSION: (u16, u16) = (5, 6);
 const GPT_CODEX_MARKER: &str = "-codex";
 const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
 const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
@@ -374,9 +377,14 @@ impl Model {
     }
 
     fn openai_model_version(&self) -> Option<(u16, u16)> {
-        let version_and_suffix = self
-            .normalized_openai_model_id()?
-            .strip_prefix(GPT_MODEL_PREFIX)?;
+        let model_id = self.normalized_openai_model_id()?;
+        if ManifestRegistry::for_slug(&self.provider)
+            .is_some_and(|manifest| manifest.slug == CODEX_PROVIDER_SLUG)
+            && model_id == DAYBREAK_BLUE_MODEL_ID
+        {
+            return Some(DAYBREAK_BLUE_MODEL_VERSION);
+        }
+        let version_and_suffix = model_id.strip_prefix(GPT_MODEL_PREFIX)?;
         let version = version_and_suffix
             .split_once('-')
             .map_or(version_and_suffix, |(version, _)| version);
@@ -710,6 +718,21 @@ mod tests {
     fn tool_search_support_follows_documented_model_floor(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.supports_tool_search(), expected);
+    }
+
+    #[test]
+    fn daybreak_blue_capabilities_are_codex_only() {
+        let codex = Model::from_spec("codex/gpt-daybreak-blue-latest").unwrap();
+        assert!(codex.supports_responses());
+        assert!(codex.supports_prompt_cache_breakpoint());
+        assert!(codex.supports_tool_search());
+        assert!(codex.supports_responses_built_in_tools());
+
+        let openai = Model::from_spec("openai/gpt-daybreak-blue-latest").unwrap();
+        assert!(!openai.supports_responses());
+        assert!(!openai.supports_prompt_cache_breakpoint());
+        assert!(!openai.supports_tool_search());
+        assert!(!openai.supports_responses_built_in_tools());
     }
     #[test]
     fn total_input_includes_cached_tokens() {
@@ -1247,6 +1270,7 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
     #[test_case("openai/gpt-5.5", true ; "gpt_5_5")]
@@ -1260,6 +1284,7 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-codex", false ; "openai_gpt_5_6_codex")]
     #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
@@ -1273,10 +1298,11 @@ mod tests {
     }
 
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue_alias")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
-    fn supports_responses_built_in_tools_excludes_codex(spec: &str, expected: bool) {
+    fn supports_responses_built_in_tools_by_model_id(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.supports_responses_built_in_tools(), expected);
     }

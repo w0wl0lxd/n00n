@@ -9,7 +9,8 @@ pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 use std::cmp::Reverse;
 
 use crate::model::{
-    FastPricing, ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry,
+    DAYBREAK_BLUE_MODEL_ID, FastPricing, ModelEntry, ModelFamily, ModelInfo, ModelPricing,
+    ModelTier, lookup_entry,
 };
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
@@ -468,6 +469,14 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
             true,
         ),
         with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[DAYBREAK_BLUE_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
             OPENAI_GPT_5_5,
             &["gpt-5.5"],
             128_000,
@@ -698,6 +707,31 @@ mod tests {
         assert_eq!(codex_model.max_output_tokens, 128_000);
         assert!(codex_model.vision);
         assert!(!codex_model.files);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn daybreak_blue_is_registered_only_for_codex() {
+        assert!(
+            models()
+                .iter()
+                .all(|model| !model.prefixes.contains(&DAYBREAK_BLUE_MODEL_ID))
+        );
+
+        let model = codex_models()
+            .iter()
+            .find(|model| model.prefixes.contains(&DAYBREAK_BLUE_MODEL_ID))
+            .expect("Daybreak Blue should be registered in the Codex catalog");
+        assert_eq!(model.tier, ModelTier::Strong);
+        assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+        assert_eq!(model.max_output_tokens, GPT_5_6_MAX_OUTPUT_TOKENS);
+        assert_eq!(model.pricing.input, STRONG_PLAN_PRICING.input);
+        assert_eq!(model.pricing.output, STRONG_PLAN_PRICING.output);
+        assert_eq!(model.pricing.cache_write, STRONG_PLAN_PRICING.cache_write);
+        assert_eq!(model.pricing.cache_read, STRONG_PLAN_PRICING.cache_read);
+        assert!(model.vision);
+        assert!(!model.files);
+        assert!(!model.default);
     }
 
     #[test]
