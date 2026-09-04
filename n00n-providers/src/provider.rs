@@ -138,7 +138,9 @@ impl ProviderKind {
             Self::Anthropic => {
                 Some("Prompt caching, thinking mode (adaptive/budgeted), advanced tool use")
             }
-            Self::Codex => Some("ChatGPT/Codex plan via OAuth device flow"),
+            Self::Codex => Some(
+                "ChatGPT/Codex plan via OAuth device flow; Daybreak Blue requires approved access",
+            ),
             Self::Google => Some("Native Gemini API with thinking support"),
             Self::Copilot => Some("Native Copilot Chat HTTP API with model endpoint discovery"),
             Self::Ollama => {
