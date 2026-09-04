@@ -35,6 +35,29 @@ fn reduced_motion_config_disables_streaming_reveal() {
         "a response long enough to animate with the default typewriter speed"
     );
 }
+
+#[test]
+fn idle_mascot_waits_for_its_low_rate_frame_deadline() {
+    let config = UiConfig {
+        mascot: true,
+        ..UiConfig::default()
+    };
+    let mut panel = test_panel_with_config(config);
+    panel.viewport_height = 30;
+    assert!(!panel.is_animating());
+}
+
+#[test]
+fn idle_text_splash_keeps_continuous_animation() {
+    let config = UiConfig {
+        mascot: false,
+        ..UiConfig::default()
+    };
+    let mut panel = test_panel_with_config(config);
+    panel.viewport_height = 30;
+    assert!(panel.is_animating());
+}
+
 #[test]
 fn highlight_result_drain_is_limited_per_frame() {
     let mut panel = test_panel();
