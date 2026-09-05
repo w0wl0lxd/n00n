@@ -33,10 +33,13 @@ const MIN_TOOL_SEARCH_MODEL_MAJOR: u16 = 5;
 const MIN_TOOL_SEARCH_MODEL_MINOR: u16 = 4;
 
 pub(crate) fn codex_frontier_model_version(model_id: &str) -> Option<(u16, u16)> {
-    matches!(
-        model_id,
-        DAYBREAK_BLUE_MODEL_ID | DAYBREAK_RED_MODEL_ID | GPT_5_6_CYBER_MODEL_ID
-    )
+    [
+        DAYBREAK_BLUE_MODEL_ID,
+        DAYBREAK_RED_MODEL_ID,
+        GPT_5_6_CYBER_MODEL_ID,
+    ]
+    .iter()
+    .any(|prefix| model_id.starts_with(prefix))
     .then_some((5, 6))
 }
 
@@ -406,7 +409,9 @@ impl Model {
             return files;
         }
         if self.provider.as_ref() != CODEX_PROVIDER_SLUG
-            && codex_frontier_model_version(self.metadata_model_id()).is_some()
+            && self
+                .normalized_openai_model_id()
+                .is_some_and(|model_id| codex_frontier_model_version(model_id).is_some())
         {
             return false;
         }
@@ -735,7 +740,9 @@ mod tests {
 
     #[test_case(DAYBREAK_BLUE_MODEL_ID; "daybreak_blue")]
     #[test_case(DAYBREAK_RED_MODEL_ID; "daybreak_red")]
+    #[test_case("gpt-daybreak-red-latest-2026-09-05"; "daybreak_red_snapshot")]
     #[test_case(GPT_5_6_CYBER_MODEL_ID; "gpt_5_6_cyber")]
+    #[test_case("gpt-5.6-cyber-2026-09-05"; "gpt_5_6_cyber_snapshot")]
     fn codex_frontier_capabilities_are_provider_scoped(model_id: &str) {
         let codex = Model::from_spec(&format!("codex/{model_id}")).unwrap();
         assert!(codex.supports_responses());
@@ -751,6 +758,10 @@ mod tests {
         assert!(!openai.supports_tool_search());
         assert!(!openai.supports_responses_built_in_tools());
         assert!(!openai.supports_files());
+
+        let nested_openai = Model::from_spec(&format!("openai/openai/{model_id}")).unwrap();
+        assert!(!nested_openai.supports_responses());
+        assert!(!nested_openai.supports_files());
     }
     #[test]
     fn total_input_includes_cached_tokens() {
