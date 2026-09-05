@@ -8,9 +8,16 @@ pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 
 use std::cmp::Reverse;
 
-use crate::model::{ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry};
+use crate::model::{
+    DAYBREAK_BACKING_VERSION, DAYBREAK_BLUE_MODEL_ID, DAYBREAK_RED_MODEL_ID, ModelEntry,
+    ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry,
+};
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
+const GPT_6_ASTRA_MODEL_ID: &str = "gpt-6-astra";
+const GPT_6_ASTRA_MAX_OUTPUT_TOKENS: u32 = 128_000;
+const GPT_6_ASTRA_CONTEXT_WINDOW: u32 = 1_050_000;
+const GPT_5_6_CYBER_MODEL_ID: &str = "gpt-5.6-cyber";
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
 
@@ -119,6 +126,25 @@ const fn with_coding_plan(
         ..entry
     }
 }
+
+const OPENAI_GPT_6_ASTRA: ModelEntry = with_files(model_entry(
+    &[GPT_6_ASTRA_MODEL_ID],
+    ModelTier::Strong,
+    true,
+    false,
+    GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
+    GPT_6_ASTRA_CONTEXT_WINDOW,
+    ModelPricing {
+        input: 10.00,
+        output: 50.00,
+        cache_write: 12.50,
+        cache_read: 1.00,
+        fast: Some(crate::model::FastPricing {
+            input: 20.00,
+            output: 100.00,
+        }),
+    },
+));
 
 const OPENAI_GPT_5_6_LUNA: ModelEntry = with_files(model_entry(
     &["gpt-5.6-luna"],
@@ -334,6 +360,7 @@ const OPENAI_O3: ModelEntry = model_entry(
 #[allow(clippy::too_many_lines)]
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
+        OPENAI_GPT_6_ASTRA,
         OPENAI_GPT_5_6_LUNA,
         OPENAI_GPT_5_6_TERRA,
         OPENAI_GPT_5_6_SOL,
@@ -353,6 +380,38 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
 #[allow(clippy::too_many_lines)]
 pub(crate) const fn codex_models() -> &'static [ModelEntry] {
     const CODEX_MODELS: &[ModelEntry] = &[
+        with_coding_plan(
+            OPENAI_GPT_6_ASTRA,
+            &[GPT_6_ASTRA_MODEL_ID],
+            GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[DAYBREAK_BLUE_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[DAYBREAK_RED_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[GPT_5_6_CYBER_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
         with_coding_plan(
             OPENAI_GPT_5_6_LUNA,
             &["gpt-5.6-luna"],
@@ -531,6 +590,13 @@ fn tier_strength(tier: Option<ModelTier>) -> u8 {
 }
 
 fn parse_model_version(id: &str) -> (u32, u32) {
+    if matches!(id, DAYBREAK_BLUE_MODEL_ID | DAYBREAK_RED_MODEL_ID) {
+        return (
+            u32::from(DAYBREAK_BACKING_VERSION.0),
+            u32::from(DAYBREAK_BACKING_VERSION.1),
+        );
+    }
+
     fn take_digits(s: &str) -> Option<(u32, &str)> {
         let end = s
             .find(|c: char| !c.is_ascii_digit())
@@ -627,6 +693,36 @@ mod tests {
         assert_eq!(model.pricing.cache_read, cache_read);
         assert_eq!(model.pricing.cache_write, cache_write);
         assert_eq!(model.pricing.output, output);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn new_frontier_models_are_registered() {
+        let openai_astra = models()
+            .iter()
+            .find(|model| model.prefixes.contains(&"gpt-6-astra"))
+            .expect("GPT-6 Astra should be registered in the OpenAI catalog");
+        assert_eq!(openai_astra.context_window, 1_050_000);
+        assert_eq!(openai_astra.max_output_tokens, 128_000);
+        assert_eq!(openai_astra.pricing.input, 10.0);
+        assert_eq!(openai_astra.pricing.output, 50.0);
+        assert!(openai_astra.vision);
+        assert!(openai_astra.files);
+
+        for model_id in [
+            "gpt-6-astra",
+            "gpt-daybreak-blue-latest",
+            "gpt-daybreak-red-latest",
+            "gpt-5.6-cyber",
+        ] {
+            let model = codex_models()
+                .iter()
+                .find(|model| model.prefixes.contains(&model_id))
+                .unwrap_or_else(|| panic!("{model_id} should be registered in the Codex catalog"));
+            assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+            assert!(model.vision);
+            assert!(!model.files);
+        }
     }
 
     #[test]
@@ -730,6 +826,25 @@ mod tests {
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
             ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+        );
+    }
+
+    #[test]
+    fn daybreak_aliases_sort_with_their_backing_generation() {
+        let mut listed = vec![
+            ModelInfo::id_only("gpt-5.4".into()),
+            ModelInfo::id_only(DAYBREAK_BLUE_MODEL_ID.into()),
+            ModelInfo::id_only(DAYBREAK_RED_MODEL_ID.into()),
+        ];
+
+        sort_models(&mut listed, codex_models());
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            [DAYBREAK_BLUE_MODEL_ID, DAYBREAK_RED_MODEL_ID, "gpt-5.4"]
         );
     }
 

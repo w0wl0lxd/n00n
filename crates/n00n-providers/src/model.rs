@@ -22,6 +22,10 @@ use crate::types::{EffortDialect, effort_dialect_for};
 const PER_MILLION: f64 = 1_000_000.0;
 const GPT_MODEL_PREFIX: &str = "gpt-";
 const OPENAI_MODEL_PREFIX: &str = "openai/";
+const CODEX_PROVIDER_SLUG: &str = "codex";
+pub(crate) const DAYBREAK_BLUE_MODEL_ID: &str = "gpt-daybreak-blue-latest";
+pub(crate) const DAYBREAK_RED_MODEL_ID: &str = "gpt-daybreak-red-latest";
+pub(crate) const DAYBREAK_BACKING_VERSION: (u16, u16) = (5, 6);
 const GPT_CODEX_MARKER: &str = "-codex";
 const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
 const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
@@ -374,6 +378,14 @@ impl Model {
     }
 
     fn openai_model_version(&self) -> Option<(u16, u16)> {
+        if self.provider.as_ref() == CODEX_PROVIDER_SLUG
+            && matches!(
+                self.id.as_str(),
+                DAYBREAK_BLUE_MODEL_ID | DAYBREAK_RED_MODEL_ID
+            )
+        {
+            return Some(DAYBREAK_BACKING_VERSION);
+        }
         let version_and_suffix = self
             .normalized_openai_model_id()?
             .strip_prefix(GPT_MODEL_PREFIX)?;
@@ -1247,6 +1259,9 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("codex/gpt-6-astra", true ; "gpt_6_astra")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue")]
+    #[test_case("codex/gpt-daybreak-red-latest", true ; "daybreak_red")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
     #[test_case("openai/gpt-5.5", true ; "gpt_5_5")]
@@ -1260,6 +1275,9 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("codex/gpt-6-astra", true ; "gpt_6_astra")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue")]
+    #[test_case("codex/gpt-daybreak-red-latest", true ; "daybreak_red")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-codex", false ; "openai_gpt_5_6_codex")]
     #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
@@ -1273,6 +1291,9 @@ mod tests {
     }
 
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("codex/gpt-6-astra", true ; "gpt_6_astra")]
+    #[test_case("codex/gpt-daybreak-blue-latest", true ; "daybreak_blue")]
+    #[test_case("codex/gpt-daybreak-red-latest", true ; "daybreak_red")]
     #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
     #[test_case("codex/gpt-5.3-codex", false ; "gpt_5_3_codex")]
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
