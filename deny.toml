@@ -28,11 +28,11 @@ allow = [
   "BSL-1.0",
   "OpenSSL",
   "Artistic-2.0",
-  "AGPL-3.0-only",
-  "GPL-2.0-only",
-  "GPL-3.0-only",
-  "LGPL-2.1-only",
-  "LGPL-3.0-only",
+  "AGPL-3.0",
+  "GPL-2.0",
+  "GPL-3.0",
+  "LGPL-2.1",
+  "LGPL-3.0",
 ]
 confidence-threshold = 0.9
 
