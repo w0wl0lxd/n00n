@@ -1,0 +1,1 @@
+Added `--dry-run` and `--no-confirm` to the destructive commands `rollback`, `auth logout`, `mcp logout` and `agent stop`. Each one now asks before it destroys anything, `--dry-run` reports the target and changes nothing, and `--no-confirm` skips the prompt for scripts. A non-interactive stdin declines by default, so automation must opt in.

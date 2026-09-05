@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use n00n_storage::version::{self, VersionError};
 use n00n_storage::{StateDir, StorageError};
 
+use crate::cli::SafetyFlags;
+use crate::safety::{Decision, SafetyError};
+
 const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/n00n/main/install.sh";
 const BACKUP_FILENAME: &str = "n00n_backup";
 const INSTALL_DIR_ENV: &str = "N00N_INSTALL_DIR";
@@ -50,6 +53,9 @@ pub enum UpdateError {
 
     #[error("cannot access data directory: {0}")]
     Storage(#[from] StorageError),
+
+    #[error("destructive confirmation failed: {0}")]
+    Safety(#[from] SafetyError),
 
     #[error("failed to check latest version: {0}")]
     VersionCheck(#[from] VersionError),
@@ -143,14 +149,11 @@ fn restore_backup(backup_path: &Path, exe_path: &Path) -> Result<(), UpdateError
     Ok(())
 }
 
-fn prompt_yes(install_dir: &Path) -> bool {
-    eprint!(
-        "Install to {} and run this script? [y/N] ",
-        install_dir.display()
-    );
-    let _ = std::io::stderr().flush();
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
+fn prompt_yes(install_dir: &Path) -> Result<bool, SafetyError> {
+    crate::safety::confirm(
+        &format!("Install to {} and run this script?", install_dir.display()),
+        "--yes",
+    )
 }
 
 pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
@@ -186,7 +189,7 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
         println!("{}", n00n_ui::highlight_ansi("bash", &script));
     }
 
-    if !skip_confirm && !prompt_yes(&install_dir) {
+    if !skip_confirm && !prompt_yes(&install_dir)? {
         println!("Aborted.");
         return Ok(());
     }
@@ -203,13 +206,29 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
     Ok(())
 }
 
-pub fn rollback() -> Result<(), UpdateError> {
+pub fn rollback(safety: &SafetyFlags) -> Result<(), UpdateError> {
+    if matches!(crate::safety::decide(safety), Decision::DryRun) {
+        crate::safety::report_dry_run("overwrite the running binary with its stored backup");
+        return Ok(());
+    }
+
     let exe_path = current_exe_resolved()?;
     let storage = StateDir::resolve()?;
     let backup_path = storage.path().join(BACKUP_FILENAME);
 
     if !backup_path.exists() {
         return Err(UpdateError::NoBackup(backup_path));
+    }
+
+    if !crate::safety::allow(
+        safety,
+        &format!(
+            "overwrite {} with the backup at {}",
+            exe_path.display(),
+            backup_path.display()
+        ),
+    )? {
+        return Ok(());
     }
 
     restore_backup(&backup_path, &exe_path)?;

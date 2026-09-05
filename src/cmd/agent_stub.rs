@@ -6,6 +6,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 
 use crate::cli::AgentMode as CliAgentMode;
+use crate::cli::SafetyFlags;
 
 #[allow(dead_code)]
 pub struct AgentRunOptions<'a> {
@@ -68,7 +69,11 @@ pub fn resume_client(_id: &str, _state_dir_override: Option<PathBuf>) -> Result<
     unsupported()
 }
 
-pub fn stop_client(_id: &str, _state_dir_override: Option<PathBuf>) -> Result<()> {
+pub fn stop_client(
+    _id: &str,
+    _state_dir_override: Option<PathBuf>,
+    _safety: &SafetyFlags,
+) -> Result<()> {
     unsupported()
 }
 
