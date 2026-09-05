@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788544405096,
+  "lastUpdate": 1788586333361,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -24935,6 +24935,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 126696,
             "range": "± 11963",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2962a62e221657cc31b877f8b9e656f5d6b76b45",
+          "message": "perf(treesitter): cache compiled query regexes (#490)\n\n* perf(treesitter): cache compiled regexes on LuaQuery\n\nStore a `Mutex<HashMap<String, Option<Regex>>>` regex cache on `LuaQuery`\nto reuse compiled regular expressions across query evaluations instead of\nre-instantiating the cache locally on every `collect_captures` or `collect_matches` call.\n\n* perf(treesitter): cache compiled regexes on LuaQuery\n\nStore a `Mutex<HashMap<String, Option<Regex>>>` regex cache on `LuaQuery`\nto reuse compiled regular expressions across query evaluations instead of\nre-instantiating the cache locally on every `collect_captures` or `collect_matches` call.\n\n* perf(treesitter): cache compiled regexes on LuaQuery\n\nStore a `Mutex<HashMap<String, Option<Regex>>>` regex cache on `LuaQuery`\nto reuse compiled regular expressions across query evaluations instead of\nre-instantiating the cache locally on every `collect_captures` or `collect_matches` call.\n\n* perf(treesitter): cache compiled regexes on LuaQuery\n\nStore a `Mutex<HashMap<String, Option<Regex>>>` regex cache on `LuaQuery`\nto reuse compiled regular expressions across query evaluations instead of\nre-instantiating the cache locally on every `collect_captures` or `collect_matches` call.\n\n* perf(treesitter): cache compiled regexes on LuaQuery\n\nStore a `Mutex<HashMap<String, Option<Regex>>>` regex cache on `LuaQuery`\nto reuse compiled regular expressions across query evaluations instead of\nre-instantiating the cache locally on every `collect_captures` or `collect_matches` call.\n\n* perf(treesitter): cache compiled regexes on LuaQuery\n\nStore a `Mutex<HashMap<String, Option<Regex>>>` regex cache on `LuaQuery`\nto reuse compiled regular expressions across query evaluations instead of\nre-instantiating the cache locally on every `collect_captures` or `collect_matches` call.",
+          "timestamp": "2026-09-05T05:14:03Z",
+          "tree_id": "ef4e3220e37993d67bb351253fb8f8ca84aad1ca",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/2962a62e221657cc31b877f8b9e656f5d6b76b45"
+        },
+        "date": 1788586331223,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6722101,
+            "range": "± 76448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2251421,
+            "range": "± 4382",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2251026,
+            "range": "± 17191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8227681,
+            "range": "± 103723",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4376319,
+            "range": "± 18938",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4314483,
+            "range": "± 13458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 588611,
+            "range": "± 17061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192519,
+            "range": "± 1671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192381,
+            "range": "± 335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1057261,
+            "range": "± 6259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 601923,
+            "range": "± 3636",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 599902,
+            "range": "± 3865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81637,
+            "range": "± 949",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 114346,
+            "range": "± 4927",
             "unit": "ns/iter"
           }
         ]
