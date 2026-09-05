@@ -39,6 +39,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f  # v2.0.12
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          command-arguments: licenses bans sources
+          install_args: cargo:cargo-deny
+      - run: cargo deny --workspace check
