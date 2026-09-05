@@ -1025,65 +1025,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn emphasis_is_empty_returns_true_only_when_no_flags_set() {
-        assert!(Emphasis::default().is_empty());
-        assert!(
-            Emphasis {
-                bold: false,
-                italic: false,
-                strike: false,
-                underline: false,
-            }
-            .is_empty()
-        );
-
-        assert!(
-            !Emphasis {
-                bold: true,
-                italic: false,
-                strike: false,
-                underline: false,
-            }
-            .is_empty()
-        );
-        assert!(
-            !Emphasis {
-                bold: false,
-                italic: true,
-                strike: false,
-                underline: false,
-            }
-            .is_empty()
-        );
-        assert!(
-            !Emphasis {
-                bold: false,
-                italic: false,
-                strike: true,
-                underline: false,
-            }
-            .is_empty()
-        );
-        assert!(
-            !Emphasis {
-                bold: false,
-                italic: false,
-                strike: false,
-                underline: true,
-            }
-            .is_empty()
-        );
-
-        assert!(
-            !Emphasis {
-                bold: true,
-                italic: true,
-                strike: true,
-                underline: true,
-            }
-            .is_empty()
-        );
+    #[test_case(Emphasis::default(), true; "default")]
+    #[test_case(Emphasis { bold: false, italic: false, strike: false, underline: false }, true; "all_flags_unset")]
+    #[test_case(Emphasis::BOLD, false; "bold")]
+    #[test_case(Emphasis::ITALIC, false; "italic")]
+    #[test_case(Emphasis::STRIKE, false; "strike")]
+    #[test_case(Emphasis::UNDERLINE, false; "underline")]
+    #[test_case(Emphasis { bold: true, italic: true, strike: true, underline: true }, false; "all_flags_set")]
+    fn emphasis_is_empty_returns_true_only_when_no_flags_set(emphasis: Emphasis, expected: bool) {
+        assert_eq!(emphasis.is_empty(), expected);
     }
 
     #[test]
