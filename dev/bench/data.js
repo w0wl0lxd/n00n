@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788586333361,
+  "lastUpdate": 1788587282365,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -25043,6 +25043,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 114346,
             "range": "± 4927",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c5907fc5aaaadc5dba21c4cad655e4446e44fb92",
+          "message": "refactor(openai): split local response chain cleanup (#486)\n\n* refactor(openai): split local response chain cleanup\n\nRefactor `clear_local_response_chain` in `OpenAi` platform provider by\nextracting modular state cleanup helper methods `remove_local_session_state`\nand `remove_local_response_connection`. Added unit test covering local\nresponse chain cleanup.\n\n* refactor(openai): split local response chain cleanup\n\nRefactor `clear_local_response_chain` in `OpenAi` platform provider by\nextracting modular state cleanup helper methods `remove_local_session_state`\nand `remove_local_response_connection`. Added unit test covering local\nresponse chain cleanup.\n\n* test(openai): preserve response cleanup semantics\n\n* ci: refresh labeled pull request checks\n\n* refactor(openai): split local response chain cleanup\n\nRefactor `clear_local_response_chain` in `OpenAi` platform provider by\nextracting modular state cleanup helper methods `remove_local_session_state`\nand `remove_local_response_connection`. Added unit test covering local\nresponse chain cleanup and included required changelog fragment.",
+          "timestamp": "2026-09-05T05:32:54Z",
+          "tree_id": "b39077a473333984fa243f1d4e7f08356169ecdd",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/c5907fc5aaaadc5dba21c4cad655e4446e44fb92"
+        },
+        "date": 1788587281019,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6769812,
+            "range": "± 116926",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2263969,
+            "range": "± 7167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2267190,
+            "range": "± 34663",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8011487,
+            "range": "± 124867",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4350633,
+            "range": "± 59319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4288952,
+            "range": "± 8428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 579982,
+            "range": "± 2321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191156,
+            "range": "± 298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191280,
+            "range": "± 379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1050153,
+            "range": "± 66521",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 598072,
+            "range": "± 2378",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 598183,
+            "range": "± 26514",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 71248,
+            "range": "± 7457",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 161322,
+            "range": "± 14690",
             "unit": "ns/iter"
           }
         ]
