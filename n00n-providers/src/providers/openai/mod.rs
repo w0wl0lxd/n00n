@@ -9,15 +9,14 @@ pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 use std::cmp::Reverse;
 
 use crate::model::{
-    DAYBREAK_BLUE_MODEL_ID, DAYBREAK_MODEL_VERSION, DAYBREAK_RED_MODEL_ID, FastPricing, ModelEntry,
-    ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry,
+    DAYBREAK_BLUE_MODEL_ID, DAYBREAK_RED_MODEL_ID, FastPricing, GPT_5_6_CYBER_MODEL_ID, ModelEntry,
+    ModelFamily, ModelInfo, ModelPricing, ModelTier, codex_frontier_model_version, lookup_entry,
 };
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
 const GPT_6_ASTRA_MODEL_ID: &str = "gpt-6-astra";
 const GPT_6_ASTRA_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_6_ASTRA_CONTEXT_WINDOW: u32 = 1_050_000;
-const GPT_5_6_CYBER_MODEL_ID: &str = "gpt-5.6-cyber";
 const GPT_6_ASTRA_PRICING: ModelPricing = ModelPricing {
     input: 10.00,
     output: 50.00,
@@ -602,11 +601,8 @@ fn parse_model_version(id: &str) -> (u32, u32) {
         Some((n, &s[end..]))
     }
 
-    if matches!(id, DAYBREAK_BLUE_MODEL_ID | DAYBREAK_RED_MODEL_ID) {
-        return (
-            u32::from(DAYBREAK_MODEL_VERSION.0),
-            u32::from(DAYBREAK_MODEL_VERSION.1),
-        );
+    if let Some((major, minor)) = codex_frontier_model_version(id) {
+        return (u32::from(major), u32::from(minor));
     }
 
     let start = id
