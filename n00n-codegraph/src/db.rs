@@ -470,8 +470,8 @@ fn fts_query(raw: &str) -> String {
     raw.split_whitespace()
         .filter(|part| !part.is_empty())
         .map(|part| {
-            let cleaned = part.replace('"', "");
-            format!("\"{cleaned}\"")
+            let escaped = part.replace('"', "\"\"");
+            format!("\"{escaped}\"")
         })
         .collect::<Vec<_>>()
         .join(" OR ")
@@ -740,6 +740,55 @@ mod tests {
     #[test]
     fn fts_query_quotes_terms() {
         assert_eq!(fts_query("session restore"), "\"session\" OR \"restore\"");
+    }
+
+    #[test]
+    fn fts_query_escapes_internal_double_quotes() {
+        assert_eq!(fts_query("foo\"bar"), "\"foo\"\"bar\"");
+        assert_eq!(fts_query("\"quoted\""), "\"\"\"quoted\"\"\"");
+        assert_eq!(fts_query("   "), "");
+    }
+
+    #[test]
+    fn fts_query_escapes_fts_operators_and_syntax() {
+        assert_eq!(
+            fts_query("AND OR NOT NEAR"),
+            "\"AND\" OR \"OR\" OR \"NOT\" OR \"NEAR\""
+        );
+        assert_eq!(
+            fts_query("foo* bar:baz (test)"),
+            "\"foo*\" OR \"bar:baz\" OR \"(test)\""
+        );
+    }
+
+    #[test]
+    fn search_nodes_handles_malicious_fts_inputs() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        write_fixture(&conn);
+
+        // Inputs that would cause FTS5 syntax errors or query injection if unescaped
+        let malicious_inputs = [
+            "\"",
+            "\" OR \"1\"=\"1",
+            "foo\" OR \"1\"=\"1",
+            "AND",
+            "OR",
+            "NOT",
+            "*",
+            "(",
+            ")",
+            "column:value",
+            "NEAR(a b)",
+            "\"*\" AND \"*\"",
+        ];
+
+        for input in malicious_inputs {
+            let result = search_nodes(&conn, input, 5);
+            assert!(
+                result.is_ok(),
+                "search_nodes failed with FTS syntax error on input '{input}': {result:?}"
+            );
+        }
     }
 
     /// The fixture previously declared `edges(source_id, target_id)` while the
