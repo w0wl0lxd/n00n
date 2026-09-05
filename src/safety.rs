@@ -38,9 +38,9 @@ pub fn decide(flags: SafetyFlags) -> Decision {
 #[derive(Debug, thiserror::Error)]
 pub enum SafetyError {
     #[error(
-        "destructive confirmation requires interactive stdin; rerun with --no-confirm to proceed"
+        "destructive confirmation requires interactive stdin; rerun with {bypass_flag} to proceed"
     )]
-    NonInteractive,
+    NonInteractive { bypass_flag: &'static str },
 
     #[error("failed to write destructive confirmation prompt to stderr: {0}")]
     WritePrompt(#[source] io::Error),
@@ -57,9 +57,10 @@ fn confirm_with_io(
     input: &mut impl BufRead,
     prompt: &mut impl Write,
     stdin_is_interactive: bool,
+    bypass_flag: &'static str,
 ) -> Result<bool, SafetyError> {
     if !stdin_is_interactive {
-        return Err(SafetyError::NonInteractive);
+        return Err(SafetyError::NonInteractive { bypass_flag });
     }
 
     write!(prompt, "{question} [y/N] ").map_err(SafetyError::WritePrompt)?;
@@ -73,13 +74,19 @@ fn confirm_with_io(
 }
 
 /// Ask a yes/no question on stderr. Only a literal `y` approves.
-pub fn confirm(question: &str) -> Result<bool, SafetyError> {
+pub fn confirm(question: &str, bypass_flag: &'static str) -> Result<bool, SafetyError> {
     let stdin = io::stdin();
     let stdin_is_interactive = stdin.is_terminal();
     let mut input = stdin.lock();
     let stderr = io::stderr();
     let mut prompt = stderr.lock();
-    confirm_with_io(question, &mut input, &mut prompt, stdin_is_interactive)
+    confirm_with_io(
+        question,
+        &mut input,
+        &mut prompt,
+        stdin_is_interactive,
+        bypass_flag,
+    )
 }
 
 /// Gate a destructive command.
@@ -96,7 +103,7 @@ pub fn allow(flags: SafetyFlags, action: &str) -> Result<bool, SafetyError> {
         }
         Decision::Proceed => Ok(true),
         Decision::Ask => {
-            if confirm(&format!("Really {action}?"))? {
+            if confirm(&format!("Really {action}?"), "--no-confirm")? {
                 Ok(true)
             } else {
                 println!("Aborted.");
@@ -161,10 +168,10 @@ mod tests {
         let mut input = std::io::Cursor::new(b"y\n");
         let mut prompt = Vec::new();
 
-        let error = confirm_with_io("Delete it?", &mut input, &mut prompt, false)
+        let error = confirm_with_io("Delete it?", &mut input, &mut prompt, false, "--no-confirm")
             .expect_err("non-interactive input must be rejected");
 
-        assert!(matches!(error, SafetyError::NonInteractive));
+        assert!(matches!(error, SafetyError::NonInteractive { .. }));
         assert_eq!(
             error.to_string(),
             "destructive confirmation requires interactive stdin; rerun with --no-confirm to proceed"
@@ -174,12 +181,27 @@ mod tests {
     }
 
     #[test]
+    fn non_interactive_error_names_the_callers_bypass_flag() {
+        let mut input = std::io::Cursor::new(b"y\n");
+        let mut prompt = Vec::new();
+
+        let error = confirm_with_io("Update?", &mut input, &mut prompt, false, "--yes")
+            .expect_err("non-interactive input must be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "destructive confirmation requires interactive stdin; rerun with --yes to proceed"
+        );
+    }
+
+    #[test]
     fn interactive_literal_y_confirms() {
         let mut input = std::io::Cursor::new(b"y\n");
         let mut prompt = Vec::new();
 
-        let confirmed = confirm_with_io("Delete it?", &mut input, &mut prompt, true)
-            .expect("interactive confirmation should succeed");
+        let confirmed =
+            confirm_with_io("Delete it?", &mut input, &mut prompt, true, "--no-confirm")
+                .expect("interactive confirmation should succeed");
 
         assert!(confirmed);
         assert_eq!(prompt, b"Delete it? [y/N] ");
@@ -202,7 +224,7 @@ mod tests {
         let mut input = std::io::Cursor::new(b"y\n");
         let mut prompt = FlushFailingWriter;
 
-        let error = confirm_with_io("Delete it?", &mut input, &mut prompt, true)
+        let error = confirm_with_io("Delete it?", &mut input, &mut prompt, true, "--no-confirm")
             .expect_err("flush failure must be reported");
 
         assert!(matches!(error, SafetyError::FlushPrompt(_)));

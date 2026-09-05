@@ -150,10 +150,10 @@ fn restore_backup(backup_path: &Path, exe_path: &Path) -> Result<(), UpdateError
 }
 
 fn prompt_yes(install_dir: &Path) -> Result<bool, SafetyError> {
-    crate::safety::confirm(&format!(
-        "Install to {} and run this script?",
-        install_dir.display()
-    ))
+    crate::safety::confirm(
+        &format!("Install to {} and run this script?", install_dir.display()),
+        "--yes",
+    )
 }
 
 pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
