@@ -2723,58 +2723,6 @@ fn is_definitive_responses_rejection(error: &AgentError) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn clear_local_response_chain_removes_session_state_and_connections() {
-        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
-        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
-        let session_id = n00nId::generate();
-
-        // Populate state and connection slots
-        provider
-            .session_state
-            .lock()
-            .unwrap()
-            .insert(session_id, OpenAiSessionState::default());
-        provider
-            .response_connections
-            .lock()
-            .unwrap()
-            .insert(session_id, ResponseConnectionSlot::default());
-
-        assert!(
-            provider
-                .session_state
-                .lock()
-                .unwrap()
-                .contains_key(&session_id)
-        );
-        assert!(
-            provider
-                .response_connections
-                .lock()
-                .unwrap()
-                .contains_key(&session_id)
-        );
-
-        // Clear local response chain
-        provider.clear_local_response_chain(session_id);
-
-        assert!(
-            !provider
-                .session_state
-                .lock()
-                .unwrap()
-                .contains_key(&session_id)
-        );
-        assert!(
-            !provider
-                .response_connections
-                .lock()
-                .unwrap()
-                .contains_key(&session_id)
-        );
-    }
-
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2849,6 +2797,47 @@ mod tests {
         );
         stream.write_all(response.as_bytes()).await.unwrap();
         stream.flush().await.unwrap();
+    }
+
+    #[test_case(false; "clear")]
+    #[test_case(true; "reset")]
+    fn local_response_chain_cleanup_preserves_expected_entries(preserve_connection: bool) {
+        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
+        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+        let session_id = n00nId::generate();
+
+        provider
+            .session_state
+            .lock()
+            .unwrap()
+            .insert(session_id, OpenAiSessionState::default());
+        provider
+            .response_connections
+            .lock()
+            .unwrap()
+            .insert(session_id, ResponseConnectionSlot::default());
+
+        if preserve_connection {
+            provider.reset_connection_local_chain(Some(session_id));
+        } else {
+            provider.clear_local_response_chain(session_id);
+        }
+
+        assert!(
+            !provider
+                .session_state
+                .lock()
+                .unwrap()
+                .contains_key(&session_id)
+        );
+        assert_eq!(
+            provider
+                .response_connections
+                .lock()
+                .unwrap()
+                .contains_key(&session_id),
+            preserve_connection
+        );
     }
 
     #[test_case(1)]
