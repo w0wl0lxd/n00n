@@ -1026,6 +1026,67 @@ mod tests {
     }
 
     #[test]
+    fn emphasis_is_empty_returns_true_only_when_no_flags_set() {
+        assert!(Emphasis::default().is_empty());
+        assert!(
+            Emphasis {
+                bold: false,
+                italic: false,
+                strike: false,
+                underline: false,
+            }
+            .is_empty()
+        );
+
+        assert!(
+            !Emphasis {
+                bold: true,
+                italic: false,
+                strike: false,
+                underline: false,
+            }
+            .is_empty()
+        );
+        assert!(
+            !Emphasis {
+                bold: false,
+                italic: true,
+                strike: false,
+                underline: false,
+            }
+            .is_empty()
+        );
+        assert!(
+            !Emphasis {
+                bold: false,
+                italic: false,
+                strike: true,
+                underline: false,
+            }
+            .is_empty()
+        );
+        assert!(
+            !Emphasis {
+                bold: false,
+                italic: false,
+                strike: false,
+                underline: true,
+            }
+            .is_empty()
+        );
+
+        assert!(
+            !Emphasis {
+                bold: true,
+                italic: true,
+                strike: true,
+                underline: true,
+            }
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn emphasis_merge_ors_fields_and_default_is_identity() {
         assert_eq!(
             Emphasis::BOLD.merge(Emphasis::ITALIC),
