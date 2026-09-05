@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788587282365,
+  "lastUpdate": 1788588435631,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -25151,6 +25151,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 161322,
             "range": "± 14690",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3370a52106a6a4710947f9da1f14c7e3e0e592cf",
+          "message": "test(markdown): add unit tests for Emphasis::is_empty (#485)\n\n* test(markdown): add unit tests for Emphasis::is_empty\n\nAdded unit tests for Emphasis::is_empty in n00n-markdown/src/lib.rs\ncovering default state, single-flag cases, and multi-flag cases.\n\n* test(markdown): add unit tests for Emphasis::is_empty\n\nAdded unit tests for Emphasis::is_empty in n00n-markdown/src/lib.rs\ncovering default state, single-flag cases, and multi-flag cases.\n\n* test(markdown): parameterize emphasis empty cases\n\n* chore: refresh pull request checks\n\n* test(markdown): add unit tests for Emphasis::is_empty\n\nAdded unit tests for Emphasis::is_empty in n00n-markdown/src/lib.rs\ncovering default state, single-flag cases, and multi-flag cases.\n\n* test(markdown): add unit tests for Emphasis::is_empty\n\nAdded unit tests for Emphasis::is_empty in n00n-markdown/src/lib.rs\ncovering default state, single-flag cases, and multi-flag cases.",
+          "timestamp": "2026-09-05T05:55:06Z",
+          "tree_id": "96e5eb336456264a84eb65842a5461166a617134",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/3370a52106a6a4710947f9da1f14c7e3e0e592cf"
+        },
+        "date": 1788588433491,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5223088,
+            "range": "± 93003",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1277556,
+            "range": "± 32586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1234960,
+            "range": "± 35784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 6245153,
+            "range": "± 30159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2165268,
+            "range": "± 142959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2176069,
+            "range": "± 18086",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 533347,
+            "range": "± 18285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 103742,
+            "range": "± 5561",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 104110,
+            "range": "± 484",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 812982,
+            "range": "± 11043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 353737,
+            "range": "± 3351",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 353360,
+            "range": "± 3928",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 32720,
+            "range": "± 6356",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 114073,
+            "range": "± 1032",
             "unit": "ns/iter"
           }
         ]
