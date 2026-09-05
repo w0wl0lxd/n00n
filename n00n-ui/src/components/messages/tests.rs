@@ -21,6 +21,21 @@ fn test_panel_with_config(ui_config: UiConfig) -> MessagesPanel {
 }
 
 #[test]
+fn reduced_motion_config_disables_streaming_reveal() {
+    let mut panel = test_panel_with_config(UiConfig {
+        reduced_motion: true,
+        ..UiConfig::default()
+    });
+
+    panel.text_delta("a response long enough to animate with the default typewriter speed");
+
+    assert!(!panel.is_working());
+    assert_eq!(
+        panel.streaming_text,
+        "a response long enough to animate with the default typewriter speed"
+    );
+}
+#[test]
 fn highlight_result_drain_is_limited_per_frame() {
     let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::User, "ready".into()));

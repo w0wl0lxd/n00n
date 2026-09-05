@@ -1061,8 +1061,20 @@ pub const REDUCED_MOTION_ENV: &str = "N00N_REDUCED_MOTION";
 ///
 /// Any value other than `0` turns reduced motion on, matching how
 /// `N00N_TRUECOLOR` is read in `n00n-ui`.
-fn reduced_motion_from_env(get: impl Fn(&str) -> Option<String>) -> Option<bool> {
-    get(REDUCED_MOTION_ENV).map(|v| v != "0")
+fn reduced_motion_from_env(
+    get: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> Option<bool> {
+    match get(REDUCED_MOTION_ENV) {
+        Ok(value) => Some(value != "0"),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            warn!(
+                variable = REDUCED_MOTION_ENV,
+                "ignoring environment override that is not valid UTF-8"
+            );
+            None
+        }
+    }
 }
 
 impl UiConfig {
@@ -1072,10 +1084,13 @@ impl UiConfig {
     }
 
     fn from_file(f: UiFileConfig) -> Self {
-        Self::from_file_with_env(f, |var| std::env::var(var).ok())
+        Self::from_file_with_env(f, |var| std::env::var(var))
     }
 
-    fn from_file_with_env(f: UiFileConfig, get_env: impl Fn(&str) -> Option<String>) -> Self {
+    fn from_file_with_env(
+        f: UiFileConfig,
+        get_env: impl Fn(&str) -> Result<String, std::env::VarError>,
+    ) -> Self {
         Self {
             splash_animation: f.splash_animation.is_none_or(|v| v),
             reduced_motion: reduced_motion_from_env(get_env)
@@ -2594,10 +2609,12 @@ mod tests {
 
     /// A fake environment holding exactly one variable, so these tests never
     /// depend on the ambient environment of whoever runs them.
-    fn env_with(value: Option<&str>) -> impl Fn(&str) -> Option<String> + '_ {
+    fn env_with(value: Option<&str>) -> impl Fn(&str) -> Result<String, std::env::VarError> + '_ {
         move |var| {
             assert_eq!(var, REDUCED_MOTION_ENV, "only this variable is read");
-            value.map(ToOwned::to_owned)
+            value
+                .map(ToOwned::to_owned)
+                .ok_or(std::env::VarError::NotPresent)
         }
     }
 
