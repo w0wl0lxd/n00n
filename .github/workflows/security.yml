@@ -41,5 +41,5 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          install_args: cargo:cargo-deny
+          install_args: cargo-binstall cargo:cargo-deny
       - run: cargo deny --workspace check
