@@ -548,7 +548,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir, safety: SafetyFlags) -> R
     if !crate::safety::allow(
         safety,
         &format!("remove stored credentials for '{provider}'"),
-    ) {
+    )? {
         return Ok(());
     }
 
@@ -827,7 +827,7 @@ pub fn mcp_logout(server: &str, storage: &StateDir, safety: SafetyFlags) -> Resu
     if !crate::safety::allow(
         safety,
         &format!("remove stored OAuth credentials for MCP server '{server}'"),
-    ) {
+    )? {
         return Ok(());
     }
 

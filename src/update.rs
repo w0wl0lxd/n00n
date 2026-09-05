@@ -7,6 +7,7 @@ use n00n_storage::version::{self, VersionError};
 use n00n_storage::{StateDir, StorageError};
 
 use crate::cli::SafetyFlags;
+use crate::safety::SafetyError;
 
 const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/n00n/main/install.sh";
 const BACKUP_FILENAME: &str = "n00n_backup";
@@ -52,6 +53,9 @@ pub enum UpdateError {
 
     #[error("cannot access data directory: {0}")]
     Storage(#[from] StorageError),
+
+    #[error("destructive confirmation failed: {0}")]
+    Safety(#[from] SafetyError),
 
     #[error("failed to check latest version: {0}")]
     VersionCheck(#[from] VersionError),
@@ -145,7 +149,7 @@ fn restore_backup(backup_path: &Path, exe_path: &Path) -> Result<(), UpdateError
     Ok(())
 }
 
-fn prompt_yes(install_dir: &Path) -> bool {
+fn prompt_yes(install_dir: &Path) -> Result<bool, SafetyError> {
     crate::safety::confirm(&format!(
         "Install to {} and run this script?",
         install_dir.display()
@@ -185,7 +189,7 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
         println!("{}", n00n_ui::highlight_ansi("bash", &script));
     }
 
-    if !skip_confirm && !prompt_yes(&install_dir) {
+    if !skip_confirm && !prompt_yes(&install_dir)? {
         println!("Aborted.");
         return Ok(());
     }
@@ -218,7 +222,7 @@ pub fn rollback(safety: SafetyFlags) -> Result<(), UpdateError> {
             exe_path.display(),
             backup_path.display()
         ),
-    ) {
+    )? {
         return Ok(());
     }
 

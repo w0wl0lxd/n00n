@@ -1300,7 +1300,7 @@ pub fn stop_client(
     if !crate::safety::allow(
         safety,
         &format!("stop agent '{id}' and discard its session"),
-    ) {
+    )? {
         return Ok(());
     }
 

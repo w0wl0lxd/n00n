@@ -5,11 +5,10 @@
 //! through [`allow`] before it touches anything.
 //!
 //! The prompt keeps the semantics the updater already had: only a literal `y`
-//! approves. A closed or piped stdin reads as end-of-file, which leaves the
-//! answer empty and declines. Non-interactive callers therefore abort by
-//! default and must pass `--no-confirm` to proceed.
+//! approves. Confirmation requires an interactive stdin, so automation must
+//! pass `--no-confirm` explicitly.
 
-use std::io::Write;
+use std::io::{self, BufRead, IsTerminal, Write};
 
 use crate::cli::SafetyFlags;
 
@@ -36,12 +35,51 @@ pub fn decide(flags: SafetyFlags) -> Decision {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SafetyError {
+    #[error(
+        "destructive confirmation requires interactive stdin; rerun with --no-confirm to proceed"
+    )]
+    NonInteractive,
+
+    #[error("failed to write destructive confirmation prompt to stderr: {0}")]
+    WritePrompt(#[source] io::Error),
+
+    #[error("failed to flush destructive confirmation prompt to stderr: {0}")]
+    FlushPrompt(#[source] io::Error),
+
+    #[error("failed to read destructive confirmation response from stdin: {0}")]
+    ReadResponse(#[source] io::Error),
+}
+
+fn confirm_with_io(
+    question: &str,
+    input: &mut impl BufRead,
+    prompt: &mut impl Write,
+    stdin_is_interactive: bool,
+) -> Result<bool, SafetyError> {
+    if !stdin_is_interactive {
+        return Err(SafetyError::NonInteractive);
+    }
+
+    write!(prompt, "{question} [y/N] ").map_err(SafetyError::WritePrompt)?;
+    prompt.flush().map_err(SafetyError::FlushPrompt)?;
+
+    let mut response = String::new();
+    input
+        .read_line(&mut response)
+        .map_err(SafetyError::ReadResponse)?;
+    Ok(response.trim().eq_ignore_ascii_case("y"))
+}
+
 /// Ask a yes/no question on stderr. Only a literal `y` approves.
-pub fn confirm(question: &str) -> bool {
-    eprint!("{question} [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
+pub fn confirm(question: &str) -> Result<bool, SafetyError> {
+    let stdin = io::stdin();
+    let stdin_is_interactive = stdin.is_terminal();
+    let mut input = stdin.lock();
+    let stderr = io::stderr();
+    let mut prompt = stderr.lock();
+    confirm_with_io(question, &mut input, &mut prompt, stdin_is_interactive)
 }
 
 /// Gate a destructive command.
@@ -49,20 +87,20 @@ pub fn confirm(question: &str) -> bool {
 /// `action` is a lowercase verb phrase naming what the command destroys, for
 /// example `remove stored credentials for 'openai'`. Returns `true` only when
 /// the caller should go ahead.
-pub fn allow(flags: SafetyFlags, action: &str) -> bool {
+pub fn allow(flags: SafetyFlags, action: &str) -> Result<bool, SafetyError> {
     match decide(flags) {
         Decision::DryRun => {
             println!("Dry run: would {action}.");
             println!("Nothing was changed.");
-            false
+            Ok(false)
         }
-        Decision::Proceed => true,
+        Decision::Proceed => Ok(true),
         Decision::Ask => {
-            if confirm(&format!("Really {action}?")) {
-                true
+            if confirm(&format!("Really {action}?"))? {
+                Ok(true)
             } else {
                 println!("Aborted.");
-                false
+                Ok(false)
             }
         }
     }
@@ -101,13 +139,13 @@ mod tests {
 
     #[test]
     fn allow_is_false_for_dry_run() {
-        assert!(!allow(flags(true, false), "delete everything"));
-        assert!(!allow(flags(true, true), "delete everything"));
+        assert!(!allow(flags(true, false), "delete everything").expect("dry-run should succeed"));
+        assert!(!allow(flags(true, true), "delete everything").expect("dry-run should win"));
     }
 
     #[test]
     fn allow_is_true_for_no_confirm() {
-        assert!(allow(flags(false, true), "delete everything"));
+        assert!(allow(flags(false, true), "delete everything").expect("bypass should succeed"));
     }
 
     #[test]
@@ -116,5 +154,61 @@ mod tests {
         assert!(!default.dry_run);
         assert!(!default.no_confirm);
         assert_eq!(decide(default), Decision::Ask);
+    }
+
+    #[test]
+    fn piped_yes_is_rejected_without_reading_input() {
+        let mut input = std::io::Cursor::new(b"y\n");
+        let mut prompt = Vec::new();
+
+        let error = confirm_with_io("Delete it?", &mut input, &mut prompt, false)
+            .expect_err("non-interactive input must be rejected");
+
+        assert!(matches!(error, SafetyError::NonInteractive));
+        assert_eq!(
+            error.to_string(),
+            "destructive confirmation requires interactive stdin; rerun with --no-confirm to proceed"
+        );
+        assert_eq!(input.position(), 0);
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn interactive_literal_y_confirms() {
+        let mut input = std::io::Cursor::new(b"y\n");
+        let mut prompt = Vec::new();
+
+        let confirmed = confirm_with_io("Delete it?", &mut input, &mut prompt, true)
+            .expect("interactive confirmation should succeed");
+
+        assert!(confirmed);
+        assert_eq!(prompt, b"Delete it? [y/N] ");
+    }
+
+    struct FlushFailingWriter;
+
+    impl std::io::Write for FlushFailingWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("broken stderr"))
+        }
+    }
+
+    #[test]
+    fn stderr_flush_failure_is_a_typed_helpful_error() {
+        let mut input = std::io::Cursor::new(b"y\n");
+        let mut prompt = FlushFailingWriter;
+
+        let error = confirm_with_io("Delete it?", &mut input, &mut prompt, true)
+            .expect_err("flush failure must be reported");
+
+        assert!(matches!(error, SafetyError::FlushPrompt(_)));
+        assert_eq!(
+            error.to_string(),
+            "failed to flush destructive confirmation prompt to stderr: broken stderr"
+        );
     }
 }
