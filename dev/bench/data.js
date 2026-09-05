@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788590641604,
+  "lastUpdate": 1788592164540,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -25367,6 +25367,112 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 96485,
             "range": "± 12236",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c6a2ef2b9613ae986fbfc574467b663c7060f5b2",
+          "message": "feat(ui): add reduced-motion accessibility control (#493)\n\n* feat(ui): add reduced-motion accessibility control\n\nThe frozen naming RFC states the accessibility contract: \"reduced motion\nuses no animated spinner\". Nothing implemented it.\n\nAdd `ui.reduced_motion` (default false) to UiConfig, mirroring how\n`splash_animation` is declared, merged and defaulted. `N00N_REDUCED_MOTION`\noverrides the file value for one run, using the same \"anything but 0 is on\"\nrule that `N00N_TRUECOLOR` already uses in n00n-ui. The environment read is\ninjected into `UiConfig::from_file_with_env`, so the tests never touch the\nambient environment.\n\nIn n00n-ui/src/animation.rs, `set_reduced_motion` and `reduced_motion` hold\nthe process-wide setting. `spinner_frame` and `spinner_str` pin to the first\nframe, so the spinner renders but does not move. `Typewriter` captures the\nsetting when it is built and exposes a per-instance override; `push` reveals\nthe whole buffer at once and `tick` jumps to the target, reusing the path the\n`ms_per_char == 0` case already took.\n\nThe call site that sets the flag is left for a follow-up: it belongs in\nn00n-ui/src/app/mod.rs, which PR #484 rewrites.\n\n* fix(ui): initialize reduced motion from config",
+          "timestamp": "2026-09-05T06:31:09Z",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/c6a2ef2b9613ae986fbfc574467b663c7060f5b2"
+        },
+        "date": 1788592163116,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6720751,
+            "range": "± 108489",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2215498,
+            "range": "± 3706",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2257961,
+            "range": "± 8551",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8298196,
+            "range": "± 14745",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4322662,
+            "range": "± 23921",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4303895,
+            "range": "± 39175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 586511,
+            "range": "± 3382",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192311,
+            "range": "± 352",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192241,
+            "range": "± 535",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1056256,
+            "range": "± 10318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 599659,
+            "range": "± 2070",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 599216,
+            "range": "± 4383",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 49009,
+            "range": "± 2882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 153010,
+            "range": "± 14377",
             "unit": "ns/iter"
           }
         ]
