@@ -8,9 +8,25 @@ pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 
 use std::cmp::Reverse;
 
-use crate::model::{ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry};
+use crate::model::{
+    DAYBREAK_BLUE_MODEL_ID, FastPricing, ModelEntry, ModelFamily, ModelInfo, ModelPricing,
+    ModelTier, lookup_entry,
+};
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
+const GPT_6_ASTRA_MODEL_ID: &str = "gpt-6-astra";
+const GPT_6_ASTRA_MAX_OUTPUT_TOKENS: u32 = 128_000;
+const GPT_6_ASTRA_CONTEXT_WINDOW: u32 = 1_050_000;
+const GPT_6_ASTRA_PRICING: ModelPricing = ModelPricing {
+    input: 10.00,
+    output: 50.00,
+    cache_write: 12.50,
+    cache_read: 1.00,
+    fast: Some(FastPricing {
+        input: 20.00,
+        output: 100.00,
+    }),
+};
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
 
@@ -119,6 +135,16 @@ const fn with_coding_plan(
         ..entry
     }
 }
+
+const OPENAI_GPT_6_ASTRA: ModelEntry = with_files(model_entry(
+    &[GPT_6_ASTRA_MODEL_ID],
+    ModelTier::Strong,
+    true,
+    false,
+    GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
+    GPT_6_ASTRA_CONTEXT_WINDOW,
+    GPT_6_ASTRA_PRICING,
+));
 
 const OPENAI_GPT_5_6_LUNA: ModelEntry = with_files(model_entry(
     &["gpt-5.6-luna"],
@@ -334,6 +360,7 @@ const OPENAI_O3: ModelEntry = model_entry(
 #[allow(clippy::too_many_lines)]
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
+        OPENAI_GPT_6_ASTRA,
         OPENAI_GPT_5_6_LUNA,
         OPENAI_GPT_5_6_TERRA,
         OPENAI_GPT_5_6_SOL,
@@ -353,6 +380,14 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
 #[allow(clippy::too_many_lines)]
 pub(crate) const fn codex_models() -> &'static [ModelEntry] {
     const CODEX_MODELS: &[ModelEntry] = &[
+        with_coding_plan(
+            OPENAI_GPT_6_ASTRA,
+            &[GPT_6_ASTRA_MODEL_ID],
+            GPT_6_ASTRA_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
         with_coding_plan(
             OPENAI_GPT_5_6_LUNA,
             &["gpt-5.6-luna"],
@@ -432,6 +467,14 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
             CODING_PLAN_CONTEXT_WINDOW,
             true,
             true,
+        ),
+        with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[DAYBREAK_BLUE_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
         ),
         with_coding_plan(
             OPENAI_GPT_5_5,
@@ -631,6 +674,68 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)]
+    fn gpt_6_astra_is_registered_for_openai_and_codex() {
+        let openai_model = models()
+            .iter()
+            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
+            .expect("GPT-6 Astra should be registered in the OpenAI catalog");
+        assert_eq!(openai_model.tier, ModelTier::Strong);
+        assert_eq!(openai_model.context_window, 1_050_000);
+        assert_eq!(openai_model.max_output_tokens, 128_000);
+        assert_eq!(openai_model.pricing.input, 10.0);
+        assert_eq!(openai_model.pricing.cache_read, 1.0);
+        assert_eq!(openai_model.pricing.cache_write, 12.5);
+        assert_eq!(openai_model.pricing.output, 50.0);
+        let fast = openai_model
+            .pricing
+            .fast
+            .expect("GPT-6 Astra should have fast pricing");
+        assert_eq!(fast.input, 20.0);
+        assert_eq!(fast.output, 100.0);
+        let effective_fast = openai_model.pricing.effective(true);
+        assert_eq!(effective_fast.cache_read, 2.0);
+        assert_eq!(effective_fast.cache_write, 25.0);
+        assert!(openai_model.vision);
+        assert!(openai_model.files);
+
+        let codex_model = codex_models()
+            .iter()
+            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
+            .expect("GPT-6 Astra should be registered in the Codex catalog");
+        assert_eq!(codex_model.tier, ModelTier::Strong);
+        assert_eq!(codex_model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+        assert_eq!(codex_model.max_output_tokens, 128_000);
+        assert!(codex_model.vision);
+        assert!(!codex_model.files);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn daybreak_blue_is_registered_only_for_codex() {
+        assert!(
+            models()
+                .iter()
+                .all(|model| !model.prefixes.contains(&DAYBREAK_BLUE_MODEL_ID))
+        );
+
+        let model = codex_models()
+            .iter()
+            .find(|model| model.prefixes.contains(&DAYBREAK_BLUE_MODEL_ID))
+            .expect("Daybreak Blue should be registered in the Codex catalog");
+        assert_eq!(model.tier, ModelTier::Strong);
+        assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+        assert_eq!(model.max_output_tokens, GPT_5_6_MAX_OUTPUT_TOKENS);
+        assert_eq!(model.pricing.input, STRONG_PLAN_PRICING.input);
+        assert_eq!(model.pricing.output, STRONG_PLAN_PRICING.output);
+        assert_eq!(model.pricing.cache_write, STRONG_PLAN_PRICING.cache_write);
+        assert_eq!(model.pricing.cache_read, STRONG_PLAN_PRICING.cache_read);
+        assert!(model.vision);
+        assert!(!model.files);
+        assert!(!model.default);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
     fn gpt_5_6_sol_has_fast_pricing() {
         let model = models()
             .iter()
@@ -720,6 +825,7 @@ mod tests {
             ModelInfo::id_only("gpt-5.4".into()),
             ModelInfo::id_only("gpt-5.6-luna".into()),
             ModelInfo::id_only("gpt-5.6-sol".into()),
+            ModelInfo::id_only(GPT_6_ASTRA_MODEL_ID.into()),
         ];
 
         sort_models(&mut listed, models());
@@ -729,7 +835,12 @@ mod tests {
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+            [
+                GPT_6_ASTRA_MODEL_ID,
+                "gpt-5.6-sol",
+                "gpt-5.6-luna",
+                "gpt-5.4"
+            ]
         );
     }
 

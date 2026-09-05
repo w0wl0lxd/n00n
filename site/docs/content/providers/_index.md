@@ -69,7 +69,9 @@ You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROP
 |------|--------|-------------------------------|---------|
 | Weak | **gpt-5.6-luna** (default), gpt-5.4-nano, gpt-5.4-mini, gpt-4.1-nano | $1.00 / $6.00 | 372K ctx / 128K out |
 | Medium | **gpt-5.6-terra** (default), gpt-4.1-mini, gpt-4.1, o4-mini | $2.50 / $15.00 | 372K ctx / 128K out |
-| Strong | gpt-5.6-sol, **gpt-5.6** (default), gpt-5.5, gpt-5.4, o3 | $5.00 / $30.00 | 372K ctx / 128K out |
+| Strong | gpt-5.6-sol, **gpt-5.6** (default), gpt-5.4, o3 | $5.00 / $30.00 | 372K ctx / 128K out |
+| Strong | gpt-6-astra | $10.00 / $50.00 | 1050K ctx / 128K out |
+| Strong | gpt-5.5 | $5.00 / $30.00 | 1050K ctx / 128K out |
 | Strong | gpt-5.5-pro | $7.50 / $45.00 | 1050K ctx / 128K out |
 
 Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6 (strong)
@@ -78,13 +80,15 @@ Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6 (strong)
 
 - **Env var**: ``
 - **API**: `https://chatgpt.com/backend-api/codex`
-- **Features**: ChatGPT/Codex plan via OAuth device flow
+- **Features**: ChatGPT/Codex plan via OAuth device flow; Daybreak Blue requires approved access
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|
 | Weak | **gpt-5.6-luna** (default), gpt-5.4-nano, gpt-5.4-mini, gpt-4.1-nano, gpt-5.2 | $1.00 / $6.00 | 272K ctx / 128K out |
 | Medium | **gpt-5.6-terra** (default), gpt-4.1-mini, gpt-4.1, o4-mini, gpt-5.1-codex-mini | $2.50 / $15.00 | 272K ctx / 128K out |
-| Strong | **gpt-5.6-sol** (default), gpt-5.5, gpt-5.4, o3, gpt-5.3-codex-spark, gpt-5.3-codex, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex | $5.00 / $30.00 | 272K ctx / 128K out |
+| Strong | **gpt-5.6-sol** (default), gpt-daybreak-blue-latest, gpt-5.4, o3, gpt-5.3-codex-spark, gpt-5.3-codex, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex | $5.00 / $30.00 | 272K ctx / 128K out |
+| Strong | gpt-6-astra | $5.00 / $30.00 | 272K ctx / 128K out |
+| Strong | gpt-5.5 | $5.00 / $30.00 | 272K ctx / 128K out |
 | Strong | gpt-5.5-pro | $7.50 / $45.00 | 272K ctx / 128K out |
 
 Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6-sol (strong)
