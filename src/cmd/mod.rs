@@ -66,14 +66,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 subcmd::auth_login(provider.as_deref(), &storage)?;
             }
             AuthAction::Logout { provider, safety } => {
-                run_if_allowed(
-                    &safety,
-                    &format!("remove stored credentials for '{provider}'"),
-                    || {
-                        let storage = StateDir::resolve().context("resolve data directory")?;
-                        subcmd::auth_logout(&provider, &storage)
-                    },
-                )?;
+                run_if_allowed(&safety, &subcmd::auth_logout_action(&provider), || {
+                    let storage = StateDir::resolve().context("resolve data directory")?;
+                    subcmd::auth_logout(&provider, &storage)
+                })?;
             }
             AuthAction::Status => {
                 let storage = StateDir::resolve().context("resolve data directory")?;
