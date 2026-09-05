@@ -143,7 +143,8 @@ impl MessagesPanel {
         let thinking = thinking_style();
         let assistant = assistant_style();
         let ms = ui_config.typewriter_ms_per_char;
-        Self {
+        let reduced_motion = ui_config.reduced_motion;
+        let mut panel = Self {
             messages: Vec::new(),
             streaming_thinking: StreamingContent::new(
                 thinking.prefix,
@@ -187,7 +188,10 @@ impl MessagesPanel {
             restore_backlog: Vec::new(),
             restore_batches: VecDeque::new(),
             picker,
-        }
+        };
+        panel.streaming_thinking.set_reduced_motion(reduced_motion);
+        panel.streaming_text.set_reduced_motion(reduced_motion);
+        panel
     }
 
     pub fn set_restore_channel(

@@ -1,5 +1,6 @@
 use std::mem;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use quanta::Instant;
@@ -8,14 +9,40 @@ const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '�
 const SPINNER_STRS: [&str; 10] = ["⠋ ", "⠙ ", "⠹ ", "⠸ ", "⠼ ", "⠴ ", "⠦ ", "⠧ ", "⠇ ", "⠏ "];
 const SPINNER_FRAME_MS: u128 = 80;
 
+static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
+
+/// Turn reduced motion on or off for the whole process.
+///
+/// Drive this from `ui.reduced_motion` once the config is resolved. With it on,
+/// every animated surface in this module reports its finished, static state, so
+/// nothing in the TUI moves on its own.
+pub fn set_reduced_motion(on: bool) {
+    REDUCED_MOTION.store(on, Ordering::Relaxed);
+}
+
+/// Whether reduced motion is currently on.
+#[must_use]
+pub fn reduced_motion() -> bool {
+    REDUCED_MOTION.load(Ordering::Relaxed)
+}
+
+/// Index of the frame to draw. Reduced motion pins it to the first frame, so
+/// the spinner still reads as a spinner but never moves.
+fn spinner_index(reduced: bool, elapsed_ms: u128, len: usize) -> usize {
+    if reduced {
+        return 0;
+    }
+    (elapsed_ms / SPINNER_FRAME_MS) as usize % len
+}
+
 #[must_use]
 pub fn spinner_frame(elapsed_ms: u128) -> char {
-    SPINNER_FRAMES[(elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len()]
+    SPINNER_FRAMES[spinner_index(reduced_motion(), elapsed_ms, SPINNER_FRAMES.len())]
 }
 
 #[must_use]
 pub fn spinner_str(elapsed_ms: u128) -> &'static str {
-    SPINNER_STRS[(elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_STRS.len()]
+    SPINNER_STRS[spinner_index(reduced_motion(), elapsed_ms, SPINNER_STRS.len())]
 }
 
 /// Spinners need a consistent time reference. Using a static epoch avoids
@@ -41,6 +68,7 @@ pub struct Typewriter {
     char_count: usize,
     newline_count: usize,
     generation: u64,
+    reduced_motion: bool,
 }
 
 impl Default for Typewriter {
@@ -69,6 +97,18 @@ impl Typewriter {
             char_count: 0,
             newline_count: 0,
             generation: 1,
+            reduced_motion: reduced_motion(),
+        }
+    }
+
+    /// Override this typewriter's motion setting.
+    ///
+    /// A typewriter picks the process-wide setting up when it is built; call
+    /// this to change one after the fact, such as after a config reload.
+    pub fn set_reduced_motion(&mut self, on: bool) {
+        self.reduced_motion = on;
+        if on {
+            self.tick();
         }
     }
 
@@ -83,7 +123,7 @@ impl Typewriter {
         self.tick();
         self.anim_start_visible = self.visible_len;
         self.anim_target = self.char_count;
-        if self.ms_per_char == 0 {
+        if self.ms_per_char == 0 || self.reduced_motion {
             self.advance_visible(self.anim_target);
             return;
         }
@@ -95,6 +135,10 @@ impl Typewriter {
 
     pub fn tick(&mut self) {
         if self.visible_len >= self.anim_target {
+            return;
+        }
+        if self.reduced_motion {
+            self.advance_visible(self.anim_target);
             return;
         }
         let elapsed = self.anim_start_at.elapsed();
@@ -219,6 +263,7 @@ impl std::fmt::Debug for Typewriter {
             .field("char_count", &self.char_count)
             .field("newline_count", &self.newline_count)
             .field("generation", &self.generation)
+            .field("reduced_motion", &self.reduced_motion)
             .finish()
     }
 }
@@ -226,6 +271,91 @@ impl std::fmt::Debug for Typewriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The process-wide flag is never flipped by these tests: every guarded
+    /// path is reachable through `spinner_index` or the per-typewriter
+    /// override, so the tests stay independent of the runner's isolation.
+    #[test]
+    fn reduced_motion_is_off_by_default() {
+        assert!(!reduced_motion());
+    }
+
+    #[test]
+    fn reduced_motion_pins_the_spinner_to_one_frame() {
+        let full: Vec<usize> = (0..12)
+            .map(|i| spinner_index(false, i * SPINNER_FRAME_MS, SPINNER_FRAMES.len()))
+            .collect();
+        assert!(full.iter().any(|&i| i != full[0]), "motion still advances");
+
+        for i in 0..12 {
+            assert_eq!(
+                spinner_index(true, i * SPINNER_FRAME_MS, SPINNER_FRAMES.len()),
+                0,
+                "frame {i} must not move"
+            );
+        }
+    }
+
+    #[test]
+    fn reduced_motion_spinner_stays_a_valid_frame() {
+        assert_eq!(
+            SPINNER_FRAMES[spinner_index(true, 0, SPINNER_FRAMES.len())],
+            '⠋'
+        );
+        assert_eq!(
+            SPINNER_STRS[spinner_index(true, 9_999, SPINNER_STRS.len())],
+            "⠋ "
+        );
+    }
+
+    #[test]
+    fn reduced_motion_push_reveals_everything_at_once() {
+        let mut tw = Typewriter::new();
+        tw.set_reduced_motion(true);
+        tw.push("hello world, this is a longer string");
+        assert_eq!(tw.visible(), "hello world, this is a longer string");
+        assert!(!tw.is_animating(), "nothing left to animate");
+    }
+
+    #[test]
+    fn reduced_motion_tick_finishes_an_in_flight_reveal() {
+        let mut tw = Typewriter::new();
+        tw.push("hello world, this is a longer string");
+        assert!(tw.is_animating(), "starts mid-reveal at full motion");
+        assert_eq!(tw.visible(), "");
+
+        tw.set_reduced_motion(true);
+        assert_eq!(tw.visible(), "hello world, this is a longer string");
+        assert!(!tw.is_animating());
+
+        tw.tick();
+        assert_eq!(tw.visible(), "hello world, this is a longer string");
+    }
+
+    #[test]
+    fn reduced_motion_handles_multibyte_and_repeated_pushes() {
+        let mut tw = Typewriter::new();
+        tw.set_reduced_motion(true);
+        tw.push("héllo ");
+        tw.push("🌍中");
+        assert_eq!(tw.visible(), "héllo 🌍中");
+        assert_eq!(tw.visible_byte_offset(), tw.visible().len());
+        assert!(!tw.is_animating());
+
+        tw.clear();
+        tw.push("again 🦀");
+        assert_eq!(tw.visible(), "again 🦀");
+    }
+
+    #[test]
+    fn turning_reduced_motion_off_restores_animation() {
+        let mut tw = Typewriter::new();
+        tw.set_reduced_motion(true);
+        tw.set_reduced_motion(false);
+        tw.push("hello world, this is a longer string");
+        assert_eq!(tw.visible(), "");
+        assert!(tw.is_animating());
+    }
 
     #[test]
     fn spinner_wraps_around() {

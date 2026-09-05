@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use crate::AppSession;
 use crate::agent::RevisionAllocator;
+use crate::animation;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
@@ -350,6 +351,7 @@ impl App {
             custom_commands,
             picker,
         } = init;
+        animation::set_reduced_motion(ui_config.reduced_motion);
         scrollbar::set_enabled(ui_config.scrollbar);
         storage_writer.register_loaded(&session);
         let state = SessionState::from_session(session, &model, &storage);
@@ -380,7 +382,7 @@ impl App {
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
             usage_modal: UsageModal::new(),
-            btw_modal: BtwModal::new(ui_config.typewriter_ms_per_char),
+            btw_modal: BtwModal::new(ui_config.typewriter_ms_per_char, ui_config.reduced_motion),
             float_mgr: FloatManager::new(),
             search_modal: SearchModal::new(),
             file_picker: FilePickerModal::new(),
