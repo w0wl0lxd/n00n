@@ -7,7 +7,7 @@ use n00n_storage::version::{self, VersionError};
 use n00n_storage::{StateDir, StorageError};
 
 use crate::cli::SafetyFlags;
-use crate::safety::SafetyError;
+use crate::safety::{Decision, SafetyError};
 
 const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/n00n/main/install.sh";
 const BACKUP_FILENAME: &str = "n00n_backup";
@@ -206,7 +206,12 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
     Ok(())
 }
 
-pub fn rollback(safety: SafetyFlags) -> Result<(), UpdateError> {
+pub fn rollback(safety: &SafetyFlags) -> Result<(), UpdateError> {
+    if matches!(crate::safety::decide(safety), Decision::DryRun) {
+        crate::safety::report_dry_run("overwrite the running binary with its stored backup");
+        return Ok(());
+    }
+
     let exe_path = current_exe_resolved()?;
     let storage = StateDir::resolve()?;
     let backup_path = storage.path().join(BACKUP_FILENAME);

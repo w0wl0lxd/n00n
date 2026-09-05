@@ -25,8 +25,6 @@ use n00n_storage::auth::{
 };
 use n00n_storage::model::persist_model;
 
-use crate::cli::SafetyFlags;
-
 fn env_key_populated(var: &str) -> bool {
     env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
 }
@@ -544,14 +542,7 @@ fn prompt_api_key(url: Option<&str>, display_name: &str, optional: bool) -> Resu
     Ok(api_key)
 }
 
-pub fn auth_logout(provider: &str, storage: &StateDir, safety: SafetyFlags) -> Result<()> {
-    if !crate::safety::allow(
-        safety,
-        &format!("remove stored credentials for '{provider}'"),
-    )? {
-        return Ok(());
-    }
-
+pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
     if let Some((provider, account)) = provider.split_once('@') {
         let provider = slugify(provider);
         let account = validated_provider_account(account)?;
@@ -823,14 +814,7 @@ pub fn mcp_auth(server: &str, storage: &StateDir, project_trusted: bool) -> Resu
     })
 }
 
-pub fn mcp_logout(server: &str, storage: &StateDir, safety: SafetyFlags) -> Result<()> {
-    if !crate::safety::allow(
-        safety,
-        &format!("remove stored OAuth credentials for MCP server '{server}'"),
-    )? {
-        return Ok(());
-    }
-
+pub fn mcp_logout(server: &str, storage: &StateDir) -> Result<()> {
     let deleted = n00n_storage::auth::delete_mcp_auth(storage, server)?;
     if deleted {
         eprintln!("Removed OAuth credentials for MCP server '{server}'");

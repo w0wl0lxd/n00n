@@ -15,7 +15,7 @@ use color_eyre::eyre::Context;
 
 use n00n_storage::StateDir;
 
-use crate::cli::{AgentCommand, AuthAction, Cli, Command, McpAction};
+use crate::cli::{AgentCommand, AuthAction, Cli, Command, McpAction, SafetyFlags};
 use crate::update;
 
 pub(super) const fn resolve_fusion_opt_in(
@@ -24,6 +24,17 @@ pub(super) const fn resolve_fusion_opt_in(
     agent_enabled: bool,
 ) -> bool {
     cli_flag || always_fusion || agent_enabled
+}
+
+fn run_if_allowed(
+    safety: &SafetyFlags,
+    action: &str,
+    operation: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if crate::safety::allow(safety, action)? {
+        operation()?;
+    }
+    Ok(())
 }
 
 pub fn dispatch(cli: Cli) -> Result<()> {
@@ -49,18 +60,26 @@ pub fn dispatch(cli: Cli) -> Result<()> {
     };
 
     match cli.command {
-        Some(Command::Auth { action }) => {
-            let storage = StateDir::resolve().context("resolve data directory")?;
-            match action {
-                AuthAction::Login { provider } => {
-                    subcmd::auth_login(provider.as_deref(), &storage)?;
-                }
-                AuthAction::Logout { provider, safety } => {
-                    subcmd::auth_logout(&provider, &storage, safety)?;
-                }
-                AuthAction::Status => subcmd::auth_status(&storage),
+        Some(Command::Auth { action }) => match action {
+            AuthAction::Login { provider } => {
+                let storage = StateDir::resolve().context("resolve data directory")?;
+                subcmd::auth_login(provider.as_deref(), &storage)?;
             }
-        }
+            AuthAction::Logout { provider, safety } => {
+                run_if_allowed(
+                    &safety,
+                    &format!("remove stored credentials for '{provider}'"),
+                    || {
+                        let storage = StateDir::resolve().context("resolve data directory")?;
+                        subcmd::auth_logout(&provider, &storage)
+                    },
+                )?;
+            }
+            AuthAction::Status => {
+                let storage = StateDir::resolve().context("resolve data directory")?;
+                subcmd::auth_status(&storage);
+            }
+        },
         Some(Command::Index { path }) => {
             subcmd::index(
                 &path,
@@ -72,22 +91,27 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Some(Command::Models) => {
             subcmd::models();
         }
-        Some(Command::Mcp { action }) => {
-            let storage = StateDir::resolve().context("resolve data directory")?;
-            match action {
-                McpAction::Auth { server } => {
-                    subcmd::mcp_auth(&server, &storage, project_trusted)?;
-                }
-                McpAction::Logout { server, safety } => {
-                    subcmd::mcp_logout(&server, &storage, safety)?;
-                }
+        Some(Command::Mcp { action }) => match action {
+            McpAction::Auth { server } => {
+                let storage = StateDir::resolve().context("resolve data directory")?;
+                subcmd::mcp_auth(&server, &storage, project_trusted)?;
             }
-        }
+            McpAction::Logout { server, safety } => {
+                run_if_allowed(
+                    &safety,
+                    &format!("remove stored OAuth credentials for MCP server '{server}'"),
+                    || {
+                        let storage = StateDir::resolve().context("resolve data directory")?;
+                        subcmd::mcp_logout(&server, &storage)
+                    },
+                )?;
+            }
+        },
         Some(Command::Update { yes, no_color }) => {
             update::update(yes, no_color).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Rollback { safety }) => {
-            update::rollback(safety).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            update::rollback(&safety).map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Acp { model, yolo }) => {
             acp::run(
@@ -190,7 +214,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 state_dir,
                 safety,
             } => {
-                agent::stop_client(&id, state_dir, safety)?;
+                agent::stop_client(&id, state_dir, &safety)?;
             }
             AgentCommand::Daemon { state_dir } => {
                 agent::daemon_serve(state_dir)?;
@@ -205,8 +229,46 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_fusion_opt_in;
+    use std::cell::Cell;
+
     use test_case::test_case;
+
+    use super::{resolve_fusion_opt_in, run_if_allowed};
+    use crate::cli::SafetyFlags;
+
+    #[test]
+    fn dry_run_skips_late_destructive_operation() {
+        let called = Cell::new(false);
+        let safety = SafetyFlags {
+            dry_run: true,
+            no_confirm: false,
+        };
+
+        run_if_allowed(&safety, "delete test state", || {
+            called.set(true);
+            Ok(())
+        })
+        .expect("dry-run should succeed");
+
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn no_confirm_runs_late_destructive_operation() {
+        let called = Cell::new(false);
+        let safety = SafetyFlags {
+            dry_run: false,
+            no_confirm: true,
+        };
+
+        run_if_allowed(&safety, "delete test state", || {
+            called.set(true);
+            Ok(())
+        })
+        .expect("explicit bypass should succeed");
+
+        assert!(called.get());
+    }
 
     #[test_case(false, false, false, false ; "default off")]
     #[test_case(true,  false, false, true  ; "cli flag")]

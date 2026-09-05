@@ -72,7 +72,7 @@ pub fn resume_client(_id: &str, _state_dir_override: Option<PathBuf>) -> Result<
 pub fn stop_client(
     _id: &str,
     _state_dir_override: Option<PathBuf>,
-    _safety: SafetyFlags,
+    _safety: &SafetyFlags,
 ) -> Result<()> {
     unsupported()
 }

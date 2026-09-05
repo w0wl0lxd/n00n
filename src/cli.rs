@@ -87,7 +87,7 @@ pub struct PluginFlags {
 }
 
 /// Confirmation and dry-run controls for the destructive subcommands.
-#[derive(Args, Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[derive(Args, Clone, Default, Debug, PartialEq, Eq)]
 pub struct SafetyFlags {
     /// Show what would be destroyed and exit without changing anything
     #[arg(long)]

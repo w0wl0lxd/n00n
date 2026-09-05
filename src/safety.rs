@@ -25,7 +25,7 @@ pub enum Decision {
 
 /// Map the flags to a decision. `--dry-run` wins over `--no-confirm`, so a
 /// caller that passes both still changes nothing.
-pub fn decide(flags: SafetyFlags) -> Decision {
+pub fn decide(flags: &SafetyFlags) -> Decision {
     if flags.dry_run {
         Decision::DryRun
     } else if flags.no_confirm {
@@ -89,16 +89,20 @@ pub fn confirm(question: &str, bypass_flag: &'static str) -> Result<bool, Safety
     )
 }
 
+pub fn report_dry_run(action: &str) {
+    println!("Dry run: would {action}.");
+    println!("Nothing was changed.");
+}
+
 /// Gate a destructive command.
 ///
 /// `action` is a lowercase verb phrase naming what the command destroys, for
 /// example `remove stored credentials for 'openai'`. Returns `true` only when
 /// the caller should go ahead.
-pub fn allow(flags: SafetyFlags, action: &str) -> Result<bool, SafetyError> {
+pub fn allow(flags: &SafetyFlags, action: &str) -> Result<bool, SafetyError> {
     match decide(flags) {
         Decision::DryRun => {
-            println!("Dry run: would {action}.");
-            println!("Nothing was changed.");
+            report_dry_run(action);
             Ok(false)
         }
         Decision::Proceed => Ok(true),
@@ -126,33 +130,33 @@ mod tests {
 
     #[test]
     fn bare_flags_ask_the_operator() {
-        assert_eq!(decide(flags(false, false)), Decision::Ask);
+        assert_eq!(decide(&flags(false, false)), Decision::Ask);
     }
 
     #[test]
     fn no_confirm_proceeds_without_asking() {
-        assert_eq!(decide(flags(false, true)), Decision::Proceed);
+        assert_eq!(decide(&flags(false, true)), Decision::Proceed);
     }
 
     #[test]
     fn dry_run_reports_without_changing() {
-        assert_eq!(decide(flags(true, false)), Decision::DryRun);
+        assert_eq!(decide(&flags(true, false)), Decision::DryRun);
     }
 
     #[test]
     fn dry_run_wins_over_no_confirm() {
-        assert_eq!(decide(flags(true, true)), Decision::DryRun);
+        assert_eq!(decide(&flags(true, true)), Decision::DryRun);
     }
 
     #[test]
     fn allow_is_false_for_dry_run() {
-        assert!(!allow(flags(true, false), "delete everything").expect("dry-run should succeed"));
-        assert!(!allow(flags(true, true), "delete everything").expect("dry-run should win"));
+        assert!(!allow(&flags(true, false), "delete everything").expect("dry-run should succeed"));
+        assert!(!allow(&flags(true, true), "delete everything").expect("dry-run should win"));
     }
 
     #[test]
     fn allow_is_true_for_no_confirm() {
-        assert!(allow(flags(false, true), "delete everything").expect("bypass should succeed"));
+        assert!(allow(&flags(false, true), "delete everything").expect("bypass should succeed"));
     }
 
     #[test]
@@ -160,7 +164,7 @@ mod tests {
         let default = SafetyFlags::default();
         assert!(!default.dry_run);
         assert!(!default.no_confirm);
-        assert_eq!(decide(default), Decision::Ask);
+        assert_eq!(decide(&default), Decision::Ask);
     }
 
     #[test]

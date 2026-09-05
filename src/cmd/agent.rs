@@ -1295,7 +1295,7 @@ pub fn message_client(
 pub fn stop_client(
     id: &str,
     state_dir_override: Option<PathBuf>,
-    safety: SafetyFlags,
+    safety: &SafetyFlags,
 ) -> Result<()> {
     if !crate::safety::allow(
         safety,
