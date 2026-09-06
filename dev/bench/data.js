@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788655167023,
+  "lastUpdate": 1788656571010,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -25581,6 +25581,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 133880,
             "range": "± 12307",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59b7c278d0624202d134dd672216c933733eb522",
+          "message": "fix(codegraph): escape FTS query terms (#491)\n\n* fix(codegraph): escape double quotes in FTS query terms\n\n* fix(codegraph): escape double quotes in FTS query terms\n\n* fix(codegraph): escape double quotes in FTS query terms\n\n* fix(codegraph): escape double quotes in FTS query terms\n\n* test(codegraph): harden FTS query security cases\n\n* fix(codegraph): escape double quotes in FTS query terms\n\n* test(codegraph): verify FTS inputs stay literal\n\n* ci: install cargo-binstall before cargo-deny\n\n* fix(ci): fix cargo-deny step in security workflow\n\n* ci: pin valid cargo-deny action commit\n\n* fix(ci): update cargo-deny-action reference in security workflow\n\n* ci: update cargo-deny action\n\n* fix(ci): fix SPDX license identifier format in deny.toml for cargo-deny\n\n* ci: use current cargo-deny action\n\n* fix(ci): update cargo-deny-action SHA in security workflow\n\n* ci: restore current cargo-deny action\n\n* fix(ci): skip advisories in cargo-deny job to fix CVSS 4.0 advisory-db parse error\n\n* fix(ci): use current SPDX license identifiers\n\n* fix(codegraph): escape double quotes in FTS query terms\n\n* fix(ci): fix cargo-deny action and deny.toml GNU license formats\n\n* fix(codegraph): restore security review guarantees\n\n* fix(codegraph): escape double quotes in FTS query terms\n\n* test(codegraph): preserve FTS injection assertions\n\n* fix(ci): update cargo-deny setup and deny.toml license format\n\n* test(codegraph): harden FTS injection coverage\n\n* fix(ci): update cargo-deny setup and deny.toml license format\n\n* fix(ci): fix cargo-deny mise install and license identifiers in deny.toml\n\n* Revert \"fix(ci): fix cargo-deny mise install and license identifiers in deny.toml\"\n\nThis reverts commit b498f703f4ed0bd56a2963630eb0cbe023a10e06.\n\n* Revert \"fix(ci): update cargo-deny setup and deny.toml license format\"\n\nThis reverts commit 504dceeaf1230a60b63e3511cda2c9bc753d99af.\n\n* fix(codegraph): handle blank search queries",
+          "timestamp": "2026-09-06T00:47:44Z",
+          "tree_id": "096a91b6af0234513b00a977749d25b526d484d8",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/59b7c278d0624202d134dd672216c933733eb522"
+        },
+        "date": 1788656568612,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7908733,
+            "range": "± 192129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1870617,
+            "range": "± 9823",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1977545,
+            "range": "± 19960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8873180,
+            "range": "± 22471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3689014,
+            "range": "± 7132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3686047,
+            "range": "± 6286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 804396,
+            "range": "± 2260",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 108527,
+            "range": "± 264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 108353,
+            "range": "± 293",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1169333,
+            "range": "± 5906",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 529488,
+            "range": "± 796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 529189,
+            "range": "± 2017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 47053,
+            "range": "± 1858",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 160543,
+            "range": "± 858",
             "unit": "ns/iter"
           }
         ]
