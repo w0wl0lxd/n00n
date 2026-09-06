@@ -256,6 +256,10 @@ fn search_nodes(
     limit: usize,
 ) -> Result<Vec<GraphNode>, CodegraphError> {
     let fts_query = fts_query(query);
+    if fts_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut stmt = conn
         .prepare(
             "SELECT n.id, n.name, n.qualified_name, n.file_path, n.start_line, n.end_line, \
@@ -763,6 +767,16 @@ mod tests {
             fts_query("foo* bar:baz (test)"),
             "\"foo*\" OR \"bar:baz\" OR \"(test)\""
         );
+    }
+
+    #[test]
+    fn blank_search_returns_no_nodes() {
+        let conn = Connection::open_in_memory().expect(MEMORY_DB_ERROR);
+        write_fixture(&conn);
+
+        let nodes = search_nodes(&conn, "   ", 5).expect(CRAFTED_INPUT_ERROR);
+
+        assert!(nodes.is_empty(), "{UNEXPECTED_NODES_ERROR}: {nodes:?}");
     }
 
     #[test_case("\""; "bare_quote")]
