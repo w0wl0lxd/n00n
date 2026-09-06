@@ -4196,6 +4196,7 @@ dependencies = [
  "rusqlite",
  "rustix 1.1.4",
  "tempfile",
+ "test-case",
  "thiserror 2.0.20",
  "tracing",
  "wait-timeout",
