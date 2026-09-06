@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788592164540,
+  "lastUpdate": 1788655167023,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -25473,6 +25473,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 153010,
             "range": "± 14377",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1fd74ce672d0b8a0c035f24e6f2904fa1ffaf031",
+          "message": "fix(providers): complete Codex frontier model catalog (#500)\n\n* fix(providers): complete Codex frontier model catalog\n\n* fix(providers): scope frontier Codex capabilities\n\n* fix(providers): normalize frontier model aliases",
+          "timestamp": "2026-09-05T20:24:31-04:00",
+          "tree_id": "ae3aa6fdd045bb28f4121b808026c0362d350f21",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/1fd74ce672d0b8a0c035f24e6f2904fa1ffaf031"
+        },
+        "date": 1788655164595,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7956258,
+            "range": "± 108627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1858549,
+            "range": "± 21534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1879853,
+            "range": "± 23621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8875300,
+            "range": "± 29621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3736801,
+            "range": "± 11752",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3733689,
+            "range": "± 13255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 803609,
+            "range": "± 1310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 108348,
+            "range": "± 1250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 108334,
+            "range": "± 202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1300360,
+            "range": "± 12513",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 528932,
+            "range": "± 992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 528741,
+            "range": "± 800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 65267,
+            "range": "± 1122",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 133880,
+            "range": "± 12307",
             "unit": "ns/iter"
           }
         ]
