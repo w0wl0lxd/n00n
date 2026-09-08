@@ -453,8 +453,10 @@ impl App {
     }
 
     pub(crate) fn update_model(&mut self, model: &Model) {
+        let spec_changed = self.state.session.model != model.spec();
         self.state.update_model(model);
-        if model.supports_thinking()
+        if spec_changed
+            && model.supports_thinking()
             && let Some(remembered) = model_registry()
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

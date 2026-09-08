@@ -4597,17 +4597,37 @@ fn thinking_change_persists_model_memory() {
 #[test]
 fn update_model_applies_remembered_thinking() {
     let mut app = test_app();
-    let spec = app.state.model.spec();
+    let mut model = test_model();
+    model.id = "remembered-model".into();
+    model.supports_thinking_override = Some(true);
     n00n_providers::model_registry::set_thinking_and_persist(
-        spec,
+        model.spec(),
         n00n_storage::sessions::StoredThinking::Effort {
             level: n00n_storage::sessions::Effort::XHigh,
         },
         &app.storage,
     );
 
-    app.update_model(&test_model());
+    app.update_model(&model);
     assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::XHigh));
+}
+
+#[test]
+fn same_spec_update_keeps_session_thinking() {
+    let mut app = test_app();
+    n00n_providers::model_registry::set_thinking_and_persist(
+        app.state.model.spec(),
+        n00n_storage::sessions::StoredThinking::Effort {
+            level: n00n_storage::sessions::Effort::Max,
+        },
+        &app.storage,
+    );
+    app.state.thinking = ThinkingConfig::Effort(Effort::Low);
+
+    let mut same_spec = test_model();
+    same_spec.context_window = 999_999;
+    app.update_model(&same_spec);
+    assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::Low));
 }
 
 #[test]

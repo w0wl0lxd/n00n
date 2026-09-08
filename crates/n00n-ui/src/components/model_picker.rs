@@ -278,6 +278,7 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
         Err(_) => String::new(),
     });
     let detail = match remembered {
+        Some(stored) if tier.is_empty() => ThinkingConfig::from(stored).to_string(),
         Some(stored) => format!("{tier} · {}", ThinkingConfig::from(stored)),
         None => tier,
     };
