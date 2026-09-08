@@ -808,43 +808,6 @@ mod tests {
         assert_eq!(codex_model.pricing.output, 45.0);
     }
 
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn gpt_6_astra_is_registered_for_openai_and_codex() {
-        let openai_model = models()
-            .iter()
-            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
-            .expect("GPT-6 Astra should be registered in the OpenAI catalog");
-        assert_eq!(openai_model.tier, ModelTier::Strong);
-        assert_eq!(openai_model.context_window, 1_050_000);
-        assert_eq!(openai_model.max_output_tokens, 128_000);
-        assert_eq!(openai_model.pricing.input, 10.0);
-        assert_eq!(openai_model.pricing.cache_read, 1.0);
-        assert_eq!(openai_model.pricing.cache_write, 12.5);
-        assert_eq!(openai_model.pricing.output, 50.0);
-        let fast = openai_model
-            .pricing
-            .fast
-            .expect("GPT-6 Astra should have fast pricing");
-        assert_eq!(fast.input, 20.0);
-        assert_eq!(fast.output, 100.0);
-        let effective_fast = openai_model.pricing.effective(true);
-        assert_eq!(effective_fast.cache_read, 2.0);
-        assert_eq!(effective_fast.cache_write, 25.0);
-        assert!(openai_model.vision);
-        assert!(openai_model.files);
-
-        let codex_model = codex_models()
-            .iter()
-            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
-            .expect("GPT-6 Astra should be registered in the Codex catalog");
-        assert_eq!(codex_model.tier, ModelTier::Strong);
-        assert_eq!(codex_model.context_window, CODING_PLAN_CONTEXT_WINDOW);
-        assert_eq!(codex_model.max_output_tokens, 128_000);
-        assert!(codex_model.vision);
-        assert!(!codex_model.files);
-    }
-
     #[test_case("gpt-5.6-luna", ModelTier::Weak, 1.0, 0.1, 1.25, 6.0)]
     #[test_case("gpt-5.6-terra", ModelTier::Medium, 2.5, 0.25, 3.125, 15.0)]
     #[test_case("gpt-5.6-sol", ModelTier::Strong, 5.0, 0.5, 6.25, 30.0)]

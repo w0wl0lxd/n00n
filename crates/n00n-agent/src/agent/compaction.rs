@@ -110,7 +110,7 @@ pub(super) async fn compact_history(
         .saturating_sub(COMPACTION_INPUT_SAFETY_MARGIN);
 
     // Keep at least 2 rounds (user+assistant pairs) to avoid draining the context
-    // to a single message on tiny windows or mis-estimated budgets. Bound target
+    // to a single message on tiny windows or miscalculated budgets. Bound target
     // to history_len * avg_tokens so the floor scales with actual message size.
     if !compaction_history.is_empty() {
         let len = u32::try_from(compaction_history.len()).unwrap_or_else(|_| u32::MAX);

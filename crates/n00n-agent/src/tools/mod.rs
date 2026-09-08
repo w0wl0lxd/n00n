@@ -1569,7 +1569,7 @@ mod tests {
 
     #[test]
     fn lua_policy_aliases_exactly_match_rust_aliases() {
-        let lua_src = include_str!("../../../plugins/lib/n00n/policy.lua");
+        let lua_src = include_str!("../../../../plugins/lib/n00n/policy.lua");
         let lua_aliases = parse_lua_tool_aliases(lua_src);
 
         let rust_aliases: BTreeMap<String, String> = TOOL_ALIASES
