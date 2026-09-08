@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use include_dir::{Dir, include_dir};
 use mlua::{Lua, MultiValue, Value as LuaValue};
@@ -79,6 +79,7 @@ const iter_matches__doc: FnDoc = FnDoc {
 
 pub(crate) struct LuaQuery {
     pub(crate) inner: Arc<Query>,
+    pub(crate) regex_cache: Mutex<HashMap<String, Option<Regex>>>,
 }
 
 fn query_fields<F: mlua::UserDataFields<LuaQuery>>(fields: &mut F) {
@@ -96,13 +97,13 @@ fn query_fields<F: mlua::UserDataFields<LuaQuery>>(fields: &mut F) {
 fn query_methods<M: mlua::UserDataMethods<LuaQuery>>(methods: &mut M) {
     methods.add_method("iter_captures", |lua, this, args: MultiValue| {
         let parsed = IterArgs::parse(args, "iter_captures")?;
-        let results = collect_captures(&this.inner, &parsed)?;
+        let results = collect_captures(&this.inner, &parsed, &this.regex_cache)?;
         stateful_iter(lua, results)
     });
 
     methods.add_method("iter_matches", |lua, this, args: MultiValue| {
         let parsed = IterArgs::parse(args, "iter_matches")?;
-        let results = collect_matches(&this.inner, &parsed)?;
+        let results = collect_matches(&this.inner, &parsed, &this.regex_cache)?;
         stateful_iter(lua, results)
     });
 }
@@ -137,7 +138,10 @@ fn parse(_lua: &Lua, lang: String, query: String) -> mlua::Result<LuaQuery> {
         .ts_language();
     let q = Query::new(&ts_lang, &query)
         .map_err(|e| mlua::Error::runtime(format!("query parse error: {e}")))?;
-    Ok(LuaQuery { inner: Arc::new(q) })
+    Ok(LuaQuery {
+        inner: Arc::new(q),
+        regex_cache: Mutex::new(HashMap::new()),
+    })
 }
 
 /// Looks up a named built-in query for {lang}.
@@ -170,7 +174,13 @@ fn get(_lua: &Lua, lang: String, name: String) -> mlua::Result<(Option<LuaQuery>
         Err(e) => return Ok((None, Some(format!("query parse error: {e}")))),
     };
 
-    Ok((Some(LuaQuery { inner: Arc::new(q) }), None))
+    Ok((
+        Some(LuaQuery {
+            inner: Arc::new(q),
+            regex_cache: Mutex::new(HashMap::new()),
+        }),
+        None,
+    ))
 }
 
 lua_table! {
@@ -304,10 +314,13 @@ fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> QueryCursor 
     cursor
 }
 
-fn collect_captures(query: &Query, args: &IterArgs) -> mlua::Result<Vec<CaptureEntry>> {
+fn collect_captures(
+    query: &Query,
+    args: &IterArgs,
+    regex_cache: &Mutex<HashMap<String, Option<Regex>>>,
+) -> mlua::Result<Vec<CaptureEntry>> {
     let source_bytes = args.source.as_bytes();
     let mut cursor = new_cursor(args.start_row, args.stop_row);
-    let mut regex_cache = HashMap::new();
     let mut results = Vec::new();
 
     let node = args.lua_node.ts_node()?;
@@ -320,7 +333,7 @@ fn collect_captures(query: &Query, args: &IterArgs) -> mlua::Result<Vec<CaptureE
             m.captures,
             source_bytes,
             &mut metadata,
-            &mut regex_cache,
+            regex_cache,
         ) {
             continue;
         }
@@ -334,10 +347,13 @@ fn collect_captures(query: &Query, args: &IterArgs) -> mlua::Result<Vec<CaptureE
     Ok(results)
 }
 
-fn collect_matches(query: &Query, args: &IterArgs) -> mlua::Result<Vec<MatchEntry>> {
+fn collect_matches(
+    query: &Query,
+    args: &IterArgs,
+    regex_cache: &Mutex<HashMap<String, Option<Regex>>>,
+) -> mlua::Result<Vec<MatchEntry>> {
     let source_bytes = args.source.as_bytes();
     let mut cursor = new_cursor(args.start_row, args.stop_row);
-    let mut regex_cache = HashMap::new();
     let mut results = Vec::new();
 
     let node = args.lua_node.ts_node()?;
@@ -350,7 +366,7 @@ fn collect_matches(query: &Query, args: &IterArgs) -> mlua::Result<Vec<MatchEntr
             m.captures,
             source_bytes,
             &mut metadata,
-            &mut regex_cache,
+            regex_cache,
         ) {
             continue;
         }
@@ -390,7 +406,7 @@ fn evaluate_predicates(
     captures: &[tree_sitter::QueryCapture<'_>],
     source: &[u8],
     metadata: &mut HashMap<String, String>,
-    regex_cache: &mut HashMap<String, Option<Regex>>,
+    regex_cache: &Mutex<HashMap<String, Option<Regex>>>,
 ) -> bool {
     for prop in query.property_settings(pattern_index) {
         if let Some(val) = &prop.value {
@@ -478,7 +494,7 @@ fn eval_match(
     source: &[u8],
     args: &[QueryPredicateArg],
     any: bool,
-    regex_cache: &mut HashMap<String, Option<Regex>>,
+    regex_cache: &Mutex<HashMap<String, Option<Regex>>>,
 ) -> bool {
     let Some(text) = args.first().and_then(|a| resolve_arg(captures, source, a)) else {
         return false;
@@ -486,7 +502,10 @@ fn eval_match(
     let Some(QueryPredicateArg::String(pattern)) = args.get(1) else {
         return false;
     };
-    let re = regex_cache.entry(pattern.to_string()).or_insert_with(|| {
+    let mut cache = regex_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let re = cache.entry(pattern.to_string()).or_insert_with(|| {
         Regex::new(pattern.as_ref())
             .inspect_err(|_| tracing::debug!(pattern = pattern.as_ref(), "invalid regex predicate"))
             .ok()

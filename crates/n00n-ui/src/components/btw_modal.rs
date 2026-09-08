@@ -32,12 +32,14 @@ pub struct BtwModal {
 }
 
 impl BtwModal {
-    pub fn new(ms_per_char: u64) -> Self {
+    pub fn new(ms_per_char: u64, reduced_motion: bool) -> Self {
         let theme = theme::current();
+        let mut answer = StreamingContent::new("", theme.assistant, theme.assistant, ms_per_char);
+        answer.set_reduced_motion(reduced_motion);
         Self {
             open: false,
             question: String::new(),
-            answer: StreamingContent::new("", theme.assistant, theme.assistant, ms_per_char),
+            answer,
             scroll: ModalScroll::new(),
             rx: None,
         }
@@ -192,7 +194,7 @@ mod tests {
 
     #[test]
     fn open_sets_question_and_state() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let _tx = open_modal(&mut m, "why?");
         assert!(m.is_open());
         assert_eq!(m.question, "why?");
@@ -202,7 +204,7 @@ mod tests {
 
     #[test]
     fn close_resets_all_fields() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::TextDelta("some answer".into())).unwrap();
         m.poll();
@@ -218,7 +220,7 @@ mod tests {
 
     #[test]
     fn poll_accumulates_text() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::TextDelta("hello ".into())).unwrap();
         tx.send(BtwEvent::TextDelta("world".into())).unwrap();
@@ -227,8 +229,22 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_reveals_streamed_answer_immediately() {
+        let mut modal = BtwModal::new(4, true);
+        let sender = open_modal(&mut modal, "q");
+        sender
+            .send(BtwEvent::TextDelta(
+                "a response long enough to animate at the configured speed".into(),
+            ))
+            .unwrap();
+        modal.poll();
+
+        assert!(!modal.answer.is_animating());
+        assert!(modal.answer_eq("a response long enough to animate at the configured speed"));
+    }
+    #[test]
     fn poll_done_sets_done_and_drops_rx() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::Done).unwrap();
         m.poll();
@@ -237,7 +253,7 @@ mod tests {
 
     #[test]
     fn poll_error_replaces_answer_and_marks_done() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let tx = open_modal(&mut m, "q");
         tx.send(BtwEvent::TextDelta("partial".into())).unwrap();
         tx.send(BtwEvent::Error("oops".into())).unwrap();
@@ -250,7 +266,7 @@ mod tests {
     #[test_case(KeyCode::Enter ; "enter_closes")]
     #[test_case(KeyCode::Char(' ') ; "space_closes")]
     fn dismiss_keys_close(code: KeyCode) {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let _tx = open_modal(&mut m, "q");
         m.handle_key(key_ev(code));
         assert!(!m.is_open());
@@ -259,7 +275,7 @@ mod tests {
 
     #[test]
     fn other_keys_consumed_but_stay_open() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let _tx = open_modal(&mut m, "q");
         m.handle_key(key_ev(KeyCode::Char('a')));
         assert!(m.is_open());
@@ -267,7 +283,7 @@ mod tests {
 
     #[test]
     fn scroll_up_down() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let _tx = open_modal(&mut m, "q");
         m.scroll.update_dimensions(100, 10);
         m.scroll.scroll(-5);
@@ -282,7 +298,7 @@ mod tests {
 
     #[test]
     fn double_open_resets_first() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let tx1 = open_modal(&mut m, "first");
         tx1.send(BtwEvent::TextDelta("leftover".into())).unwrap();
         m.poll();
@@ -297,7 +313,7 @@ mod tests {
 
     #[test]
     fn close_drops_rx_signaling_sender() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         let tx = open_modal(&mut m, "q");
         m.close();
         assert!(tx.send(BtwEvent::TextDelta("x".into())).is_err());
@@ -305,7 +321,7 @@ mod tests {
 
     #[test]
     fn poll_noop_when_no_rx() {
-        let mut m = BtwModal::new(0);
+        let mut m = BtwModal::new(0, false);
         m.poll();
         assert!(!m.is_open());
     }

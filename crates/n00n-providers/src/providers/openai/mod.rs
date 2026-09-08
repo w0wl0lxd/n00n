@@ -9,7 +9,8 @@ pub use platform::{CodexCacheCapabilities, OpenAi, OpenAiOptions};
 use std::cmp::Reverse;
 
 use crate::model::{
-    FastPricing, ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry,
+    DAYBREAK_BLUE_MODEL_ID, DAYBREAK_RED_MODEL_ID, FastPricing, GPT_5_6_CYBER_MODEL_ID, ModelEntry,
+    ModelFamily, ModelInfo, ModelPricing, ModelTier, codex_frontier_model_version, lookup_entry,
 };
 
 pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
@@ -468,6 +469,30 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
             true,
         ),
         with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[DAYBREAK_BLUE_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[DAYBREAK_RED_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
+            OPENAI_GPT_5_6_SOL,
+            &[GPT_5_6_CYBER_MODEL_ID],
+            GPT_5_6_MAX_OUTPUT_TOKENS,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
             OPENAI_GPT_5_5,
             &["gpt-5.5"],
             128_000,
@@ -576,6 +601,10 @@ fn parse_model_version(id: &str) -> (u32, u32) {
         Some((n, &s[end..]))
     }
 
+    if let Some((major, minor)) = codex_frontier_model_version(id) {
+        return (u32::from(major), u32::from(minor));
+    }
+
     let start = id
         .find(|c: char| c.is_ascii_digit())
         .unwrap_or_else(|| id.len());
@@ -661,6 +690,74 @@ mod tests {
         assert_eq!(model.pricing.cache_read, cache_read);
         assert_eq!(model.pricing.cache_write, cache_write);
         assert_eq!(model.pricing.output, output);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn gpt_6_astra_is_registered_for_openai_and_codex() {
+        let openai_model = models()
+            .iter()
+            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
+            .expect("GPT-6 Astra should be registered in the OpenAI catalog");
+        assert_eq!(openai_model.tier, ModelTier::Strong);
+        assert_eq!(openai_model.context_window, 1_050_000);
+        assert_eq!(openai_model.max_output_tokens, 128_000);
+        assert_eq!(openai_model.pricing.input, 10.0);
+        assert_eq!(openai_model.pricing.cache_read, 1.0);
+        assert_eq!(openai_model.pricing.cache_write, 12.5);
+        assert_eq!(openai_model.pricing.output, 50.0);
+        let fast = openai_model
+            .pricing
+            .fast
+            .expect("GPT-6 Astra should have fast pricing");
+        assert_eq!(fast.input, 20.0);
+        assert_eq!(fast.output, 100.0);
+        let effective_fast = openai_model.pricing.effective(true);
+        assert_eq!(effective_fast.cache_read, 2.0);
+        assert_eq!(effective_fast.cache_write, 25.0);
+        assert!(openai_model.vision);
+        assert!(openai_model.files);
+
+        let codex_model = codex_models()
+            .iter()
+            .find(|model| model.prefixes.contains(&GPT_6_ASTRA_MODEL_ID))
+            .expect("GPT-6 Astra should be registered in the Codex catalog");
+        assert_eq!(codex_model.tier, ModelTier::Strong);
+        assert_eq!(codex_model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+        assert_eq!(codex_model.max_output_tokens, 128_000);
+        assert!(codex_model.vision);
+        assert!(!codex_model.files);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn daybreak_and_cyber_models_are_registered_only_for_codex() {
+        for model_id in [
+            DAYBREAK_BLUE_MODEL_ID,
+            DAYBREAK_RED_MODEL_ID,
+            GPT_5_6_CYBER_MODEL_ID,
+        ] {
+            assert!(
+                models()
+                    .iter()
+                    .all(|model| !model.prefixes.contains(&model_id))
+            );
+
+            let model = codex_models()
+                .iter()
+                .find(|model| model.prefixes.contains(&model_id))
+                .expect("frontier security model should be registered in the Codex catalog");
+            assert_eq!(model.tier, ModelTier::Strong);
+            assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+            assert_eq!(model.max_output_tokens, GPT_5_6_MAX_OUTPUT_TOKENS);
+            assert_eq!(model.pricing.input, STRONG_PLAN_PRICING.input);
+            assert_eq!(model.pricing.output, STRONG_PLAN_PRICING.output);
+            assert_eq!(model.pricing.cache_write, STRONG_PLAN_PRICING.cache_write);
+            assert_eq!(model.pricing.cache_read, STRONG_PLAN_PRICING.cache_read);
+            assert!(model.vision);
+            assert!(!model.files);
+            assert!(!model.default);
+        }
     }
 
     #[test]
@@ -807,6 +904,25 @@ mod tests {
                 "gpt-5.6-luna",
                 "gpt-5.4"
             ]
+        );
+    }
+
+    #[test]
+    fn daybreak_aliases_sort_with_their_backing_generation() {
+        let mut listed = vec![
+            ModelInfo::id_only("gpt-5.4".into()),
+            ModelInfo::id_only(DAYBREAK_BLUE_MODEL_ID.into()),
+            ModelInfo::id_only(DAYBREAK_RED_MODEL_ID.into()),
+        ];
+
+        sort_models(&mut listed, codex_models());
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            [DAYBREAK_BLUE_MODEL_ID, DAYBREAK_RED_MODEL_ID, "gpt-5.4"]
         );
     }
 

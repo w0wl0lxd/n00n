@@ -466,10 +466,18 @@ mod tests {
         let generated = generate().unwrap();
         assert!(generated.contains("gpt-5.6-sol, **gpt-5.6** (default)"));
         assert!(
+            generated.contains("| Strong | gpt-6-astra | $10.00 / $50.00 | 1050K ctx / 128K out |")
+        );
+        assert!(
+            generated.contains("| Strong | gpt-6-astra | $5.00 / $30.00 | 272K ctx / 128K out |")
+        );
+        assert!(generated.contains("**gpt-5.6-sol** (default), gpt-daybreak-blue-latest"));
+        assert!(
             generated.contains(
                 "Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6 (strong)"
             )
         );
+        assert!(generated.contains("| Strong | gpt-5.5 | $5.00 / $30.00 | 1050K ctx / 128K out |"));
         assert!(
             generated.contains("| Strong | gpt-6-astra | $10.00 / $50.00 | 1050K ctx / 128K out |")
         );

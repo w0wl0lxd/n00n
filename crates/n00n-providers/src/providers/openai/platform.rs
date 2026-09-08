@@ -1515,24 +1515,29 @@ impl OpenAi {
         }
     }
 
-    fn reset_connection_local_chain(&self, session_id: Option<n00nId>) {
-        if let Some(session_id) = session_id {
-            self.session_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&session_id);
-        }
-    }
-
-    fn clear_local_response_chain(&self, session_id: n00nId) {
+    fn remove_local_session_state(&self, session_id: n00nId) {
         self.session_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
+    }
+
+    fn remove_local_response_connection(&self, session_id: n00nId) {
         self.response_connections
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
+    }
+
+    fn reset_connection_local_chain(&self, session_id: Option<n00nId>) {
+        if let Some(session_id) = session_id {
+            self.remove_local_session_state(session_id);
+        }
+    }
+
+    fn clear_local_response_chain(&self, session_id: n00nId) {
+        self.remove_local_session_state(session_id);
+        self.remove_local_response_connection(session_id);
     }
 
     async fn clear_response_chain(
@@ -2718,6 +2723,58 @@ fn is_definitive_responses_rejection(error: &AgentError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clear_local_response_chain_removes_session_state_and_connections() {
+        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
+        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+        let session_id = n00nId::generate();
+
+        // Populate state and connection slots
+        provider
+            .session_state
+            .lock()
+            .unwrap()
+            .insert(session_id, OpenAiSessionState::default());
+        provider
+            .response_connections
+            .lock()
+            .unwrap()
+            .insert(session_id, ResponseConnectionSlot::default());
+
+        assert!(
+            provider
+                .session_state
+                .lock()
+                .unwrap()
+                .contains_key(&session_id)
+        );
+        assert!(
+            provider
+                .response_connections
+                .lock()
+                .unwrap()
+                .contains_key(&session_id)
+        );
+
+        // Clear local response chain
+        provider.clear_local_response_chain(session_id);
+
+        assert!(
+            !provider
+                .session_state
+                .lock()
+                .unwrap()
+                .contains_key(&session_id)
+        );
+        assert!(
+            !provider
+                .response_connections
+                .lock()
+                .unwrap()
+                .contains_key(&session_id)
+        );
+    }
+
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

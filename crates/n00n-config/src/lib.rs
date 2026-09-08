@@ -388,6 +388,7 @@ pub struct PluginFileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct UiFileConfig {
     pub splash_animation: Option<bool>,
+    pub reduced_motion: Option<bool>,
     pub mascot: Option<bool>,
     pub scrollbar: Option<bool>,
     pub flash_duration_ms: Option<u64>,
@@ -405,6 +406,7 @@ impl UiFileConfig {
             self,
             overlay,
             splash_animation,
+            reduced_motion,
             mascot,
             scrollbar,
             flash_duration_ms,
@@ -1021,6 +1023,12 @@ pub struct UiConfig {
     pub splash_animation: bool,
 
     #[config(
+        default = false,
+        desc = "Replace animated spinners and the typewriter reveal with their finished state. Set N00N_REDUCED_MOTION to override the file value; N00N_REDUCED_MOTION=0 forces motion back on"
+    )]
+    pub reduced_motion: bool,
+
+    #[config(
         default = true,
         desc = "Show the n00n mascot on the idle splash screen"
     )]
@@ -1054,6 +1062,30 @@ pub struct UiConfig {
     pub tool_output_lines: ToolOutputLines,
 }
 
+/// Name of the environment variable that overrides `ui.reduced_motion`.
+pub const REDUCED_MOTION_ENV: &str = "N00N_REDUCED_MOTION";
+
+/// `Some` when the environment gives a definite answer, `None` to fall through
+/// to the file config.
+///
+/// Any value other than `0` turns reduced motion on, matching how
+/// `N00N_TRUECOLOR` is read in `n00n-ui`.
+fn reduced_motion_from_env(
+    get: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> Option<bool> {
+    match get(REDUCED_MOTION_ENV) {
+        Ok(value) => Some(value != "0"),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            warn!(
+                variable = REDUCED_MOTION_ENV,
+                "ignoring environment override that is not valid UTF-8"
+            );
+            None
+        }
+    }
+}
+
 impl UiConfig {
     #[must_use]
     pub fn flash_duration(&self) -> Duration {
@@ -1061,8 +1093,17 @@ impl UiConfig {
     }
 
     fn from_file(f: UiFileConfig) -> Self {
+        Self::from_file_with_env(f, |var| std::env::var(var))
+    }
+
+    fn from_file_with_env(
+        f: UiFileConfig,
+        get_env: impl Fn(&str) -> Result<String, std::env::VarError>,
+    ) -> Self {
         Self {
             splash_animation: f.splash_animation.is_none_or(|v| v),
+            reduced_motion: reduced_motion_from_env(get_env)
+                .unwrap_or_else(|| f.reduced_motion.is_some_and(|v| v)),
             mascot: f.mascot.is_none_or(|v| v),
             scrollbar: f.scrollbar.is_none_or(|v| v),
             flash_duration_ms: f
@@ -1200,7 +1241,7 @@ impl ToolOutputLines {
             "run_task" => "task",
             "run_workflow" => "workflow",
             "index_file" => "index",
-            "search_code" | "search_files" => "grep",
+            "search_code" | "search_files" | "search_text" => "grep",
             "map_codegraph" | "explore_code" => "explore",
             "read_file" => "read",
             "use_memory" => "memory",
@@ -2596,6 +2637,72 @@ mod tests {
         ));
     }
 
+    /// A fake environment holding exactly one variable, so these tests never
+    /// depend on the ambient environment of whoever runs them.
+    fn env_with(value: Option<&str>) -> impl Fn(&str) -> Result<String, std::env::VarError> + '_ {
+        move |var| {
+            assert_eq!(var, REDUCED_MOTION_ENV, "only this variable is read");
+            value
+                .map(ToOwned::to_owned)
+                .ok_or(std::env::VarError::NotPresent)
+        }
+    }
+
+    #[test]
+    fn reduced_motion_defaults_off_and_reads_the_file_value() {
+        let default = UiConfig::from_file_with_env(UiFileConfig::default(), env_with(None));
+        assert!(!default.reduced_motion, "default is full motion");
+
+        let opted_in = UiConfig::from_file_with_env(
+            UiFileConfig {
+                reduced_motion: Some(true),
+                ..Default::default()
+            },
+            env_with(None),
+        );
+        assert!(opted_in.reduced_motion, "file value is honoured");
+    }
+
+    #[test]
+    fn reduced_motion_env_override_beats_the_file() {
+        for (raw, want) in [("1", true), ("true", true), ("", true), ("0", false)] {
+            for file in [None, Some(true), Some(false)] {
+                let ui = UiConfig::from_file_with_env(
+                    UiFileConfig {
+                        reduced_motion: file,
+                        ..Default::default()
+                    },
+                    env_with(Some(raw)),
+                );
+                assert_eq!(
+                    ui.reduced_motion, want,
+                    "{REDUCED_MOTION_ENV}={raw:?} must beat file {file:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reduced_motion_unset_env_falls_through_to_the_file() {
+        assert_eq!(reduced_motion_from_env(env_with(None)), None);
+    }
+
+    #[test]
+    fn reduced_motion_merges_like_the_other_ui_flags() {
+        let mut base = UiFileConfig {
+            reduced_motion: Some(true),
+            ..Default::default()
+        };
+        base.merge(UiFileConfig::default());
+        assert_eq!(base.reduced_motion, Some(true), "base preserved");
+
+        base.merge(UiFileConfig {
+            reduced_motion: Some(false),
+            ..Default::default()
+        });
+        assert_eq!(base.reduced_motion, Some(false), "overlay wins");
+    }
+
     #[test]
     fn empty_config_returns_defaults() {
         let config = RawConfig::default().into_config(false).unwrap();
@@ -2906,6 +3013,16 @@ mod tests {
             config.ui.tool_output_lines.index,
             ToolOutputLines::DEFAULT.index
         );
+    }
+
+    #[test]
+    fn tool_output_lines_get_routes_semblem_search_text_to_grep_bucket() {
+        let mut tol = ToolOutputLines::DEFAULT;
+        tol.grep = 99;
+        tol.other = 1;
+
+        assert_eq!(tol.get("semblem"), 99);
+        assert_eq!(tol.get("search_text"), 99);
     }
 
     #[test_case("provider", "connect_timeout_secs", 0 ; "provider_zero_connect_timeout")]

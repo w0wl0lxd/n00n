@@ -1,0 +1,1 @@
+Routed the `semblem`/`search_text` tool alias into the `grep` output-line bucket instead of the generic fallback, and added a regression test that fails if `plugins/lib/n00n/policy.lua`'s `TOOL_ALIASES` table drifts from `n00n_config::TOOL_ALIASES`.

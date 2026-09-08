@@ -542,6 +542,21 @@ fn prompt_api_key(url: Option<&str>, display_name: &str, optional: bool) -> Resu
     Ok(api_key)
 }
 
+pub(super) fn auth_logout_action(provider: &str) -> String {
+    if provider.split_once('@').is_some() {
+        return format!(
+            "remove stored credentials and any saved account configuration for '{provider}'"
+        );
+    }
+
+    let slug = slugify(provider);
+    if matches!(slug.as_str(), "openai" | "codex" | "copilot") {
+        format!("remove stored credentials for '{provider}'")
+    } else {
+        format!("remove stored credentials and any saved provider configuration for '{provider}'")
+    }
+}
+
 pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
     if let Some((provider, account)) = provider.split_once('@') {
         let provider = slugify(provider);
@@ -1016,5 +1031,21 @@ mod tests {
             Some("devin2".to_string())
         );
         assert_eq!(legacy_devin_slug_for_account(&config, "work"), None);
+    }
+
+    #[test]
+    fn auth_logout_action_describes_all_removed_state() {
+        assert_eq!(
+            auth_logout_action("openai"),
+            "remove stored credentials for 'openai'"
+        );
+        assert_eq!(
+            auth_logout_action("custom"),
+            "remove stored credentials and any saved provider configuration for 'custom'"
+        );
+        assert_eq!(
+            auth_logout_action("devin@work"),
+            "remove stored credentials and any saved account configuration for 'devin@work'"
+        );
     }
 }

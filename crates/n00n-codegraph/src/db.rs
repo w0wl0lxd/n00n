@@ -256,6 +256,10 @@ fn search_nodes(
     limit: usize,
 ) -> Result<Vec<GraphNode>, CodegraphError> {
     let fts_query = fts_query(query);
+    if fts_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut stmt = conn
         .prepare(
             "SELECT n.id, n.name, n.qualified_name, n.file_path, n.start_line, n.end_line, \
@@ -470,8 +474,8 @@ fn fts_query(raw: &str) -> String {
     raw.split_whitespace()
         .filter(|part| !part.is_empty())
         .map(|part| {
-            let cleaned = part.replace('"', "");
-            format!("\"{cleaned}\"")
+            let escaped = part.replace('"', "\"\"");
+            format!("\"{escaped}\"")
         })
         .collect::<Vec<_>>()
         .join(" OR ")
@@ -673,8 +677,12 @@ mod tests {
         search_impact, search_nodes,
     };
     use rusqlite::Connection;
+    use test_case::test_case;
 
+    const CRAFTED_INPUT_ERROR: &str = "crafted input must remain valid";
+    const MEMORY_DB_ERROR: &str = "memory db";
     const SECRET: &str = "must not escape project root";
+    const UNEXPECTED_NODES_ERROR: &str = "crafted input returned unexpected nodes";
 
     fn write_fixture(conn: &Connection) {
         conn.execute_batch(
@@ -740,6 +748,82 @@ mod tests {
     #[test]
     fn fts_query_quotes_terms() {
         assert_eq!(fts_query("session restore"), "\"session\" OR \"restore\"");
+    }
+
+    #[test]
+    fn fts_query_escapes_internal_double_quotes() {
+        assert_eq!(fts_query("foo\"bar"), "\"foo\"\"bar\"");
+        assert_eq!(fts_query("\"quoted\""), "\"\"\"quoted\"\"\"");
+        assert_eq!(fts_query("   "), "");
+    }
+
+    #[test]
+    fn fts_query_escapes_fts_operators_and_syntax() {
+        assert_eq!(
+            fts_query("AND OR NOT NEAR"),
+            "\"AND\" OR \"OR\" OR \"NOT\" OR \"NEAR\""
+        );
+        assert_eq!(
+            fts_query("foo* bar:baz (test)"),
+            "\"foo*\" OR \"bar:baz\" OR \"(test)\""
+        );
+    }
+
+    #[test]
+    fn blank_search_returns_no_nodes() {
+        let conn = Connection::open_in_memory().expect(MEMORY_DB_ERROR);
+        write_fixture(&conn);
+
+        let nodes = search_nodes(&conn, "   ", 5).expect(CRAFTED_INPUT_ERROR);
+
+        assert!(nodes.is_empty(), "{UNEXPECTED_NODES_ERROR}: {nodes:?}");
+    }
+
+    #[test_case("\""; "bare_quote")]
+    #[test_case("\" OR \"1\"=\"1"; "boolean_expression")]
+    #[test_case("foo\" OR \"1\"=\"1"; "phrase_breakout")]
+    #[test_case("*"; "fts_wildcard")]
+    #[test_case("%"; "sql_wildcard")]
+    #[test_case("("; "opening_parenthesis")]
+    #[test_case(")"; "closing_parenthesis")]
+    #[test_case("column:value"; "column_filter")]
+    #[test_case("NEAR(a b)"; "near_expression")]
+    #[test_case("\"*\" AND \"*\""; "quoted_wildcards")]
+    fn crafted_fts_input_cannot_broaden_search_results(input: &str) {
+        let conn = Connection::open_in_memory().expect(MEMORY_DB_ERROR);
+        write_fixture(&conn);
+
+        let nodes = search_nodes(&conn, input, 5).expect(CRAFTED_INPUT_ERROR);
+
+        assert!(nodes.is_empty(), "{UNEXPECTED_NODES_ERROR}: {nodes:?}");
+    }
+
+    #[test_case("AND"; "and_operator")]
+    #[test_case("OR"; "or_operator")]
+    #[test_case("NOT"; "not_operator")]
+    fn quoted_fts_operator_remains_valid(input: &str) {
+        let conn = Connection::open_in_memory().expect(MEMORY_DB_ERROR);
+        write_fixture(&conn);
+        search_nodes(&conn, input, 5).expect(CRAFTED_INPUT_ERROR);
+    }
+
+    #[test]
+    fn embedded_quotes_preserve_tokenized_search_semantics() {
+        let conn = Connection::open_in_memory().expect(MEMORY_DB_ERROR);
+        write_fixture(&conn);
+
+        let crafted = search_nodes(&conn, "\" OR \"restore_item", 5).expect(CRAFTED_INPUT_ERROR);
+        let plain = search_nodes(&conn, "OR restore_item", 5).expect(CRAFTED_INPUT_ERROR);
+        let crafted_ids = crafted
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+        let plain_ids = plain
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(crafted_ids, plain_ids);
     }
 
     /// The fixture previously declared `edges(source_id, target_id)` while the

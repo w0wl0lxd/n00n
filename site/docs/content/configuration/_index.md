@@ -66,6 +66,7 @@ All fields are optional. Typos in field names cause an error right away.
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `splash_animation` | bool | `true` | - | Show splash animation on startup |
+| `reduced_motion` | bool | `false` | - | Replace animated spinners and the typewriter reveal with their finished state. Set N00N_REDUCED_MOTION to override the file value; N00N_REDUCED_MOTION=0 forces motion back on |
 | `mascot` | bool | `true` | - | Show the n00n mascot on the idle splash screen |
 | `scrollbar` | bool | `true` | - | Show vertical scrollbar in scrollable areas |
 | `flash_duration_ms` | u64 | `1500` | - | Duration of flash messages (ms) |
@@ -112,6 +113,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_active_descendants` | usize | `8` | 1 | Maximum active descendants per session lineage root |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
+| `session_roundtrip_timeout_secs` | u64 | `5` | 1 | TUI session roundtrip timeout (seconds) |
 
 Keep `max_depth` and `max_active_descendants` at or below `max_total_descendants`. n00n reports a configuration error at startup if either value is higher.
 
@@ -149,6 +151,7 @@ Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, o
 | `input_history_size` | usize | `100` | 10 | Number of input history entries to retain |
 | `max_retained_tool_outputs` | usize | `512` | 16 | Tool outputs a live session keeps in memory; older ones are read back from the session log on demand |
 | `max_retained_subagent_histories` | usize | `32` | 4 | Subagent histories a live session keeps in memory; older ones are read back from the session log on demand |
+| `snapshot_timeout_secs` | u64 | `2` | 1 | Storage snapshot timeout (seconds) |
 
 ## Plugins
 

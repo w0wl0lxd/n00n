@@ -257,6 +257,10 @@ impl StreamingContent {
         self.typewriter.is_animating()
     }
 
+    pub fn set_reduced_motion(&mut self, reduced_motion: bool) {
+        self.typewriter.set_reduced_motion(reduced_motion);
+    }
+
     pub fn set_style(&mut self, prefix: &'static str, text_style: Style, prefix_style: Style) {
         self.prefix = prefix;
         self.text_style = text_style;
