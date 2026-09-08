@@ -111,6 +111,7 @@ pub struct EventLoopParams {
     pub ui_config: UiConfig,
     pub input_history_size: usize,
     pub retention_budget: RetentionBudget,
+    pub snapshot_timeout: std::time::Duration,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -1101,6 +1102,7 @@ impl<'t> EventLoop<'t> {
             ui_config,
             input_history_size,
             retention_budget,
+            snapshot_timeout,
             permissions,
             timeouts,
             openai_options,
@@ -1116,7 +1118,10 @@ impl<'t> EventLoop<'t> {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
         });
-        let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
+        let storage_writer = Arc::new(StorageWriter::new_with_timeout(
+            storage.clone(),
+            snapshot_timeout,
+        )?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
         let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(
             &cwd,

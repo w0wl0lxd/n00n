@@ -7706,10 +7706,10 @@ fn bundled_todo_prompt_rejects_invalid_records_and_quotes_content(_unit: ()) {
             StoredStateScope::Root,
             serde_json::json!({
                 "todos": [
-                    { "content": injection, "status": "pending" },
+                    { "content": injection, "status": "in_progress" },
                     { "content": "bad status", "status": "unknown" },
                     { "content": 42, "status": "pending" },
-                    { "content": oversized, "status": "completed" },
+                    { "content": oversized, "status": "pending" },
                     "not a record"
                 ]
             }),
