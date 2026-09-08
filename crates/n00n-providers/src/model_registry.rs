@@ -15,12 +15,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use n00n_storage::sessions::StoredThinking;
 use n00n_storage::{StateDir, atomic_write};
 use tracing::warn;
 
 use crate::model::{ModelInfo, ModelTier};
 
 const TIERS_FILE: &str = "model-tiers";
+const THINKING_FILE: &str = "model-thinking";
 
 static REGISTRY: OnceLock<RwLock<ModelRegistry>> = OnceLock::new();
 
@@ -30,10 +32,23 @@ pub fn model_registry() -> &'static RwLock<ModelRegistry> {
 
 pub fn load_from_storage(dir: &StateDir) {
     let overrides = read_overrides(dir.path().join(TIERS_FILE).as_path());
-    model_registry()
+    let thinking = read_thinking(dir.path().join(THINKING_FILE).as_path());
+    let mut reg = model_registry()
         .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .set_overrides(overrides);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reg.set_overrides(overrides);
+    reg.set_remembered_thinking(thinking);
+}
+
+pub fn set_thinking_and_persist(spec: String, thinking: StoredThinking, dir: &StateDir) {
+    let snapshot = {
+        let mut reg = model_registry()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reg.remember_thinking(spec, thinking);
+        reg.thinking.clone()
+    };
+    write_thinking(dir.path().join(THINKING_FILE).as_path(), &snapshot);
 }
 
 pub fn set_and_persist(spec: String, tier: ModelTier, dir: &StateDir) {
@@ -67,11 +82,26 @@ pub struct ModelRegistry {
     /// Not persisted - rebuilt every session. Used for auto-tier assignment
     /// and discovered metadata lookup.
     known_models: HashMap<Arc<str>, Vec<ModelInfo>>,
+    /// Last thinking level the user picked per spec. Persisted to disk.
+    thinking: BTreeMap<String, StoredThinking>,
 }
 
 impl ModelRegistry {
     pub fn set_overrides(&mut self, overrides: BTreeMap<ModelTier, String>) {
         self.overrides = overrides;
+    }
+
+    pub fn set_remembered_thinking(&mut self, thinking: BTreeMap<String, StoredThinking>) {
+        self.thinking = thinking;
+    }
+
+    pub fn remember_thinking(&mut self, spec: String, thinking: StoredThinking) {
+        self.thinking.insert(spec, thinking);
+    }
+
+    #[must_use]
+    pub fn remembered_thinking(&self, spec: &str) -> Option<StoredThinking> {
+        self.thinking.get(spec).copied()
     }
 
     pub fn set_known_models(&mut self, provider: &Arc<str>, models: Vec<ModelInfo>) {
@@ -258,6 +288,35 @@ fn write_overrides(path: &Path, overrides: &BTreeMap<ModelTier, String>) {
     };
     if let Err(e) = atomic_write(path, &json) {
         warn!(path = %path.display(), error = %e, "failed to persist tier overrides");
+    }
+}
+
+fn read_thinking(path: &Path) -> BTreeMap<String, StoredThinking> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    if raw.trim().is_empty() {
+        return BTreeMap::new();
+    }
+    match serde_json::from_str(&raw) {
+        Ok(map) => map,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "failed to parse thinking memory, ignoring");
+            BTreeMap::new()
+        }
+    }
+}
+
+fn write_thinking(path: &Path, thinking: &BTreeMap<String, StoredThinking>) {
+    let json = match serde_json::to_vec_pretty(thinking) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to serialize thinking memory");
+            return;
+        }
+    };
+    if let Err(e) = atomic_write(path, &json) {
+        warn!(path = %path.display(), error = %e, "failed to persist thinking memory");
     }
 }
 
@@ -519,5 +578,66 @@ mod tests {
         assert_eq!(&loaded[&ModelTier::Strong], "ollama/qwen3");
         assert_eq!(&loaded[&ModelTier::Medium], "ollama/qwen3");
         assert_eq!(&loaded[&ModelTier::Weak], "ollama/qwen3:8b");
+    }
+
+    #[test]
+    fn thinking_memory_round_trip() {
+        use n00n_storage::sessions::Effort;
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(THINKING_FILE);
+
+        assert!(read_thinking(&path).is_empty());
+
+        let mut m = BTreeMap::new();
+        m.insert(
+            "codex/gpt-6-astra".into(),
+            StoredThinking::Effort { level: Effort::Max },
+        );
+        m.insert("codex/gpt-5.6-sol".into(), StoredThinking::Adaptive);
+        write_thinking(&path, &m);
+
+        let loaded = read_thinking(&path);
+        assert_eq!(
+            loaded["codex/gpt-6-astra"],
+            StoredThinking::Effort { level: Effort::Max }
+        );
+        assert_eq!(loaded["codex/gpt-5.6-sol"], StoredThinking::Adaptive);
+    }
+
+    #[test]
+    fn thinking_memory_handles_missing_or_invalid_input() {
+        let tmp = TempDir::new().unwrap();
+        assert!(read_thinking(&tmp.path().join("does-not-exist")).is_empty());
+
+        for bad in [
+            b"".as_slice(),
+            b"   \n".as_slice(),
+            b"not json at all".as_slice(),
+        ] {
+            let path = tmp.path().join(THINKING_FILE);
+            std::fs::write(&path, bad).unwrap();
+            assert!(read_thinking(&path).is_empty());
+        }
+    }
+
+    #[test]
+    fn remembered_thinking_lookup() {
+        use n00n_storage::sessions::Effort;
+        let mut reg = ModelRegistry::default();
+        assert!(reg.remembered_thinking("codex/gpt-6-astra").is_none());
+
+        reg.remember_thinking(
+            "codex/gpt-6-astra".into(),
+            StoredThinking::Effort {
+                level: Effort::High,
+            },
+        );
+        assert_eq!(
+            reg.remembered_thinking("codex/gpt-6-astra"),
+            Some(StoredThinking::Effort {
+                level: Effort::High
+            })
+        );
+        assert!(reg.remembered_thinking("codex/other").is_none());
     }
 }

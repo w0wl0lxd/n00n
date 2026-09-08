@@ -7,11 +7,13 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 
 use n00n_providers::ModelTier;
+use n00n_providers::ThinkingConfig;
 use n00n_providers::dynamic;
 use n00n_providers::model_registry;
 use n00n_providers::provider::ProviderKind;
 
 use crate::components::Overlay;
+use crate::components::keybindings::key::THINKING_ALT;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 use crate::theme;
 
@@ -31,6 +33,8 @@ fn footer_line() -> Line<'static> {
         Span::styled(" weak", t.tool_dim),
         Span::styled("  $", t.keybind_key),
         Span::styled(" compaction", t.tool_dim),
+        Span::styled(format!("  {}", THINKING_ALT.label), t.keybind_key),
+        Span::styled(" thinking", t.tool_dim),
     ])
 }
 
@@ -59,6 +63,7 @@ pub enum ModelPickerAction {
     Select(String),
     AssignTier(String, ModelTier),
     UnassignTier(String, ModelTier),
+    CycleThinking,
     Close,
 }
 
@@ -68,7 +73,7 @@ struct ModelEntry {
     name: Option<String>,
     provider_display: String,
     suffix: Option<String>,
-    tier: String,
+    detail: String,
     override_tiers: Vec<ModelTier>,
 }
 
@@ -86,7 +91,7 @@ impl PickerItem for ModelEntry {
     }
 
     fn detail(&self) -> Option<&str> {
-        Some(&self.tier)
+        Some(&self.detail)
     }
 
     fn section(&self) -> Option<&str> {
@@ -201,6 +206,9 @@ impl ModelPicker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ModelPickerAction {
+        if THINKING_ALT.matches(key) {
+            return ModelPickerAction::CycleThinking;
+        }
         if let Some(tier) = tier_for_shortcut(key)
             && let Some(entry) = self.picker.selected_item()
         {
@@ -263,18 +271,23 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     .filter(|&t| map.has_override(spec, t))
     .collect();
     let override_label = map.override_tier_label(spec);
+    let remembered = map.remembered_thinking(spec);
     drop(map);
     let tier = override_label.unwrap_or_else(|| match n00n_providers::Model::from_spec(spec) {
         Ok(m) => m.tier.to_string(),
         Err(_) => String::new(),
     });
+    let detail = match remembered {
+        Some(stored) => format!("{tier} · {}", ThinkingConfig::from(stored)),
+        None => tier,
+    };
     Some(ModelEntry {
         spec: spec.to_string(),
         id: model_id.to_string(),
         name,
         provider_display,
         suffix: None,
-        tier,
+        detail,
         override_tiers,
     })
 }
@@ -372,12 +385,21 @@ mod tests {
         let entry = parse_model_entry("anthropic/claude-sonnet-4-20250514").unwrap();
         assert_eq!(entry.id, "claude-sonnet-4-20250514");
         assert_eq!(entry.provider_display, "Anthropic");
-        assert!(!entry.tier.is_empty());
+        assert!(!entry.detail.is_empty());
     }
 
     #[test]
     fn parse_model_entry_no_slash() {
         assert!(parse_model_entry("no-slash").is_none());
+    }
+
+    #[test]
+    fn alt_t_cycles_thinking_and_keeps_picker_open() {
+        let mut p = ModelPicker::new(test_models());
+        p.open("");
+        let action = p.handle_key(kb::THINKING_ALT.to_key_event());
+        assert!(matches!(action, ModelPickerAction::CycleThinking));
+        assert!(p.is_open());
     }
 
     #[test_case(key(KeyCode::Char('!')),           ModelTier::Strong     ; "legacy_bang_strong")]

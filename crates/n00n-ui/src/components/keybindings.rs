@@ -146,9 +146,9 @@ pub mod key {
     pub const OPEN_EDITOR: Bind = ctrl_bind!('o');
     pub const PLAN_TOGGLE: Bind = ctrl_bind!('t');
     pub const TRANSCRIPT_DETAILS: Bind = Bind {
-        code: KeyCode::Char('t'),
+        code: KeyCode::Char('i'),
         modifiers: KeyModifiers::ALT,
-        label: "Alt+T",
+        label: "Alt+I",
     };
     pub const TASKS: Bind = ctrl_bind!('x');
     pub const REFRESH: Bind = ctrl_bind!('r');
@@ -175,6 +175,11 @@ pub mod key {
             KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits(),
         ),
         label: "Ctrl+Shift+T",
+    };
+    pub const THINKING_ALT: Bind = Bind {
+        code: KeyCode::Char('t'),
+        modifiers: KeyModifiers::ALT,
+        label: "Alt+T",
     };
 }
 
@@ -390,7 +395,10 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::All,
     },
     Keybind {
-        label: KeyLabel::Single(key::THINKING.label),
+        label: KeyLabel::MacMulti(
+            &[key::THINKING_ALT.label, key::THINKING.label],
+            &["⌥T", "⌃⇧T"],
+        ),
         description: "Cycle thinking level",
         context: KeybindContext::General,
         platform: Platform::All,
@@ -590,6 +598,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single("!/@/#/$"),
         description: "Set tier (strong/medium/weak/compaction)",
+        context: KeybindContext::ModelPicker,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::THINKING_ALT.label),
+        description: "Cycle thinking level",
         context: KeybindContext::ModelPicker,
         platform: Platform::All,
     },

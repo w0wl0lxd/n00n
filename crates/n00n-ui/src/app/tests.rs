@@ -4545,6 +4545,84 @@ fn thinking_unsupported_model_flashes_error() {
     assert!(app.status_bar.flash_text().is_some());
 }
 
+fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Vec<Action> {
+    app.handle_key(KeyEvent::new(code, modifiers))
+}
+
+#[test]
+fn alt_t_cycles_thinking() {
+    let mut app = test_app();
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+
+    press(&mut app, KeyCode::Char('t'), KeyModifiers::ALT);
+    assert_eq!(app.state.thinking, ThinkingConfig::Adaptive);
+
+    press(&mut app, KeyCode::Char('t'), KeyModifiers::ALT);
+    assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::Minimal));
+}
+
+#[test]
+fn ctrl_shift_t_still_cycles_thinking() {
+    let mut app = test_app();
+    press(
+        &mut app,
+        KeyCode::Char('t'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(app.state.thinking, ThinkingConfig::Adaptive);
+}
+
+#[test]
+fn alt_i_toggles_transcript_details() {
+    let mut app = test_app();
+    press(&mut app, KeyCode::Char('i'), KeyModifiers::ALT);
+    assert_eq!(
+        app.status_bar.flash_text(),
+        Some("Transcript details hidden")
+    );
+}
+
+#[test]
+fn thinking_change_persists_model_memory() {
+    let mut app = test_app();
+    app.execute_command(ParsedCommand {
+        name: "/thinking".into(),
+        args: "high".into(),
+    });
+    let raw = std::fs::read_to_string(app.storage.path().join("model-thinking")).unwrap();
+    assert!(raw.contains("anthropic/test-model"), "memory file: {raw}");
+    assert!(raw.contains("high"), "memory file: {raw}");
+}
+
+#[test]
+fn update_model_applies_remembered_thinking() {
+    let mut app = test_app();
+    let spec = app.state.model.spec();
+    n00n_providers::model_registry::set_thinking_and_persist(
+        spec,
+        n00n_storage::sessions::StoredThinking::Effort {
+            level: n00n_storage::sessions::Effort::XHigh,
+        },
+        &app.storage,
+    );
+
+    app.update_model(&test_model());
+    assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::XHigh));
+}
+
+#[test]
+fn update_model_without_memory_keeps_thinking() {
+    let mut app = test_app();
+    app.execute_command(ParsedCommand {
+        name: "/thinking".into(),
+        args: "low".into(),
+    });
+
+    let model = n00n_providers::Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    app.update_model(&model);
+    assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::Low));
+}
+
 #[test]
 fn thinking_restored_from_session_meta() {
     let tmp = TempDir::new().unwrap();
