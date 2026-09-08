@@ -699,7 +699,7 @@ impl ToolOutput {
                 summary,
                 telemetry,
             } => Self::Diff {
-                path: path.clone(),
+                path,
                 before: crate::tools::truncate_output(&before, max_lines, max_bytes / 2),
                 after: crate::tools::truncate_output(&after, max_lines, max_bytes / 2),
                 summary: crate::tools::truncate_output(&summary, max_lines, max_bytes),

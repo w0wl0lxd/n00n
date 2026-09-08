@@ -15,7 +15,7 @@ use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const BLACKBOARD_SOURCE: &str = include_str!("../../plugins/blackboard/init.lua");
+const BLACKBOARD_SOURCE: &str = include_str!("../../../plugins/blackboard/init.lua");
 
 fn fixture_host(state_dir: &Path, agent_id: &str) -> (Arc<ToolRegistry>, PluginHost) {
     let registry = Arc::new(ToolRegistry::new());

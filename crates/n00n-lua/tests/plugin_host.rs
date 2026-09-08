@@ -378,7 +378,7 @@ fn model_facing_builtin_prompts_use_canonical_tool_names() {
         }
     }
 
-    let project_instructions = include_str!("../../AGENTS.md");
+    let project_instructions = include_str!("../../../AGENTS.md");
     for legacy_reference in [
         "`bash` tool",
         "Use `bash`",
@@ -3538,7 +3538,7 @@ fn sessions_plugin_registers_commands() {
 
 #[test]
 fn sessions_plugin_declares_render_before_callbacks() {
-    let source = include_str!("../../plugins/sessions/init.lua");
+    let source = include_str!("../../../plugins/sessions/init.lua");
     let render_decl = source
         .find("\nlocal render\n")
         .expect("sessions plugin must forward-declare local render");
@@ -3553,7 +3553,7 @@ fn sessions_plugin_declares_render_before_callbacks() {
 
 #[test]
 fn sessions_plugin_rename_persists_kind_prefix_in_stored_title() {
-    let source = include_str!("../../plugins/sessions/init.lua");
+    let source = include_str!("../../../plugins/sessions/init.lua");
     let commit = source
         .find("local function commit_rename()")
         .expect("commit_rename");
@@ -3572,7 +3572,7 @@ fn sessions_plugin_rename_persists_kind_prefix_in_stored_title() {
 fn sessions_picker_groups_more_than_twenty_children() {
     let registry = fresh_registry();
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
-    let mut source = include_str!("../../plugins/sessions/init.lua").to_string();
+    let mut source = include_str!("../../../plugins/sessions/init.lua").to_string();
     source.push_str(
         r#"
 n00n.api.register_tool({
@@ -3637,7 +3637,7 @@ n00n.api.register_tool({
 fn sessions_picker_groups_descendants_by_category_without_dropping_orphans(_: ()) {
     let registry = fresh_registry();
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
-    let mut source = include_str!("../../plugins/sessions/init.lua").to_string();
+    let mut source = include_str!("../../../plugins/sessions/init.lua").to_string();
     source.push_str(
         r#"
 n00n.api.register_tool({
@@ -6153,7 +6153,7 @@ fn session_accepts_empty_lua_tools_table() {
 fn team_validation_wave_reaches_session_boundary_with_empty_tools_table() {
     let registry = fresh_registry();
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
-    let validation_source = include_str!("../../plugins/team/validation.lua");
+    let validation_source = include_str!("../../../plugins/team/validation.lua");
     let source = format!(
         r#"local validation = (function()
 {validation_source}
@@ -6769,7 +6769,7 @@ fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
 
 #[test]
 fn agent_control_policy_list_uses_loaded_rules() {
-    let source = include_str!("../../plugins/agent_control/init.lua");
+    let source = include_str!("../../../plugins/agent_control/init.lua");
     assert!(source.contains("for _, rule in ipairs(policies.rules) do"));
     assert!(source.contains("local count = #policies.rules"));
     assert!(!source.contains("ipairs(rules)"));

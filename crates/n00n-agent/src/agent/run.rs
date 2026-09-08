@@ -1054,7 +1054,7 @@ impl<'h> Agent<'h> {
         let active_snapshot = self
             .active_tools
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let mut definitions = self.registry.deferred_definitions(
             &vars,
@@ -1148,7 +1148,7 @@ impl<'h> Agent<'h> {
         let active_snapshot = self
             .active_tools
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let mut tools = self.registry.definitions_active(
             &vars,
@@ -1170,7 +1170,7 @@ impl<'h> Agent<'h> {
         let mut active = self
             .active_tools
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for def in arr {
             let Some(name) = def.get("name").and_then(|v| v.as_str()) else {
                 continue;
@@ -1188,7 +1188,7 @@ impl<'h> Agent<'h> {
         let mut active = self
             .active_tools
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for done in results {
             match n00n_config::canonical_tool_name(done.tool.as_ref()) {
                 "search_tools" => {
@@ -2612,7 +2612,7 @@ mod tests {
             let active = agent
                 .active_tools
                 .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert!(active.names.contains("fetch_url"));
             assert!(active.namespaces.contains("knowledge"));
         }
@@ -2636,7 +2636,7 @@ mod tests {
             let active = agent
                 .active_tools
                 .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert!(active.names.is_empty());
             assert!(active.namespaces.is_empty());
         }

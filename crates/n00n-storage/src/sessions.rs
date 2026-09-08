@@ -1078,6 +1078,11 @@ impl StoredCompactionStateCheckpoints {
     /// the session's `transcript_compaction_depth` chain (i.e. every
     /// `TranscriptEntry::Compaction { state_revision: Some(..) }` recursively
     /// reachable). This keeps rewound sessions loadable.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompactionStateError` when the snapshot cannot be applied or the
+    /// checkpoint set remains invalid after all protected checkpoints are kept.
     pub fn insert_pruning_oldest_with_protected(
         &mut self,
         snapshot: StoredSessionStateSnapshot,
@@ -1090,8 +1095,8 @@ impl StoredCompactionStateCheckpoints {
             match validate_compaction_state_checkpoints(&candidate) {
                 Ok(()) => break,
                 Err(
-                    CompactionStateError::TooManyCheckpoints { .. }
-                    | CompactionStateError::CheckpointsTooLarge { .. },
+                    error @ (CompactionStateError::TooManyCheckpoints { .. }
+                    | CompactionStateError::CheckpointsTooLarge { .. }),
                 ) if candidate.checkpoints.len() > 1 => {
                     if let Some(pos) = candidate.checkpoints.iter().position(|s| {
                         s.state_revision()
@@ -1102,7 +1107,7 @@ impl StoredCompactionStateCheckpoints {
                         // All remaining checkpoints are protected – cannot prune
                         // without breaking a rewound session. Surface the
                         // validation error to the caller.
-                        return Err(validate_compaction_state_checkpoints(&candidate).unwrap_err());
+                        return Err(error);
                     }
                 }
                 Err(error) => return Err(error),

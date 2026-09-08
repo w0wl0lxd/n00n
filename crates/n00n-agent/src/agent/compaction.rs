@@ -85,6 +85,9 @@ pub(super) async fn compact_history(
     run_hooks: bool,
     state_revision: Option<u64>,
 ) -> Result<(TokenUsage, String), AgentError> {
+    const MIN_KEEP_ROUNDS: u32 = 2;
+    const MIN_KEEP_MESSAGES: u32 = MIN_KEEP_ROUNDS * 2;
+
     if run_hooks {
         run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
     }
@@ -109,14 +112,10 @@ pub(super) async fn compact_history(
     // Keep at least 2 rounds (user+assistant pairs) to avoid draining the context
     // to a single message on tiny windows or mis-estimated budgets. Bound target
     // to history_len * avg_tokens so the floor scales with actual message size.
-    const MIN_KEEP_ROUNDS: usize = 2;
-    const MIN_KEEP_MESSAGES: usize = MIN_KEEP_ROUNDS * 2;
     if !compaction_history.is_empty() {
-        let avg_tokens = current_usage
-            .checked_div(u32::try_from(compaction_history.len()).unwrap_or(1))
-            .unwrap_or(0)
-            .max(1);
-        let floor = avg_tokens.saturating_mul(u32::try_from(MIN_KEEP_MESSAGES).unwrap_or(4));
+        let len = u32::try_from(compaction_history.len()).unwrap_or_else(|_| u32::MAX);
+        let avg_tokens = current_usage.checked_div(len).map_or(1, |avg| avg.max(1));
+        let floor = avg_tokens.saturating_mul(MIN_KEEP_MESSAGES);
         // Never target less than the floor, and never more than the current usage
         // would already satisfy (otherwise we'd skip truncation entirely on large histories).
         let bounded_floor = floor.min(current_usage);
@@ -124,7 +123,10 @@ pub(super) async fn compact_history(
     }
     let original_len = compaction_history.len();
     let mut current_usage = current_usage;
-    while current_usage > target && compaction_history.len() > MIN_KEEP_MESSAGES {
+    while current_usage > target
+        && compaction_history.len()
+            > usize::try_from(MIN_KEEP_MESSAGES).unwrap_or_else(|_| usize::MAX)
+    {
         truncate_oldest_round(&mut compaction_history);
         current_usage = estimate_message_tokens(&compaction_history, &model.id);
     }
@@ -373,7 +375,7 @@ fn strip_images(messages: &mut [Message]) {
                     } else if derived.starts_with("[image:") {
                         derived
                     } else {
-                        format!("[image: {}]", derived)
+                        format!("[image: {derived}]")
                     }
                 };
                 *block = ContentBlock::Text { text };

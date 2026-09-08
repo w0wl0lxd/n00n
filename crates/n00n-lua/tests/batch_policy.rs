@@ -19,7 +19,7 @@ use n00n_config::ToolOutputLines;
 use n00n_lua::{CANCEL_INTERRUPT_GRACE, PluginHost};
 use serde_json::{Value, json};
 
-const BATCH_PLUGIN_SRC: &str = include_str!("../../plugins/batch/init.lua");
+const BATCH_PLUGIN_SRC: &str = include_str!("../../../plugins/batch/init.lua");
 
 // Mirrors of the plugin's format contracts.
 const MAX_BATCH_SIZE: usize = 4;
