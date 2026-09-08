@@ -36,7 +36,7 @@ const NATIVE_EFFICIENT_TOOLS: &[&str] = &["explore_code", "index_file", "run_bat
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 /// Max bytes for dynamic todo injection via `AfterInstructions`.
 /// Todos ride as `System::Dynamic` which is never `cache_read` (see `assemble_system`), so every byte is billed as input.
-/// At `CHARS_PER_TOKEN=4` (scripts/tool_token_analysis.py) this is ~512 tokens. Capped by truncating oldest `pending` first, keeping `in_progress`.
+/// At `CHARS_PER_TOKEN=4` (`scripts/tool_token_analysis.py`) this is ~512 tokens. Capped by truncating oldest `pending` first, keeping `in_progress`.
 /// History injection via `compaction_state` would still be dynamic tail and lose visibility after `History` truncation; `System` Dynamic preserves visibility and survives compaction via plugin state.
 const MAX_AFTER_INSTRUCTIONS_BYTES: usize = 2048;
 
@@ -310,23 +310,21 @@ fn cap_after_instructions(content: String) -> String {
                     .saturating_sub(total.saturating_sub(line.len() + 1));
                 if line.len() > avail {
                     if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(obj) = val.as_object_mut() {
-                            if let Some(content_val) = obj.get_mut("content") {
-                                if let Some(content_str) = content_val.as_str() {
-                                    let overhead = line.len().saturating_sub(content_str.len());
-                                    let max_content =
-                                        avail.saturating_sub(overhead).saturating_sub(3);
-                                    let truncated_content = if content_str.len() > max_content {
-                                        let boundary = content_str.floor_char_boundary(max_content);
-                                        format!("{}...", &content_str[..boundary])
-                                    } else {
-                                        content_str.to_string()
-                                    };
-                                    *content_val = serde_json::Value::String(truncated_content);
-                                    if let Ok(new_line) = serde_json::to_string(&val) {
-                                        *line = new_line;
-                                    }
-                                }
+                        if let Some(obj) = val.as_object_mut()
+                            && let Some(content_val) = obj.get_mut("content")
+                            && let Some(content_str) = content_val.as_str()
+                        {
+                            let overhead = line.len().saturating_sub(content_str.len());
+                            let max_content = avail.saturating_sub(overhead).saturating_sub(3);
+                            let truncated_content = if content_str.len() > max_content {
+                                let boundary = content_str.floor_char_boundary(max_content);
+                                format!("{}...", &content_str[..boundary])
+                            } else {
+                                content_str.to_string()
+                            };
+                            *content_val = serde_json::Value::String(truncated_content);
+                            if let Ok(new_line) = serde_json::to_string(&val) {
+                                *line = new_line;
                             }
                         }
                     } else {

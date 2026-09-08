@@ -23,21 +23,21 @@ use n00n_config::{PluginsConfig, ToolOutputLines};
 use n00n_lua::PluginHost;
 use serde_json::{Map, Value, json};
 
-const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
-const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
-const BLACKBOARD_SRC: &str = include_str!("../../plugins/blackboard/init.lua");
-const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
-const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
-const FUSION_SRC: &str = include_str!("../../plugins/fusion/init.lua");
-const GIT_SRC: &str = include_str!("../../plugins/git/init.lua");
-const GITHUB_SRC: &str = include_str!("../../plugins/github/init.lua");
-const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
-const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
-const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
-const TMUX_SRC: &str = include_str!("../../plugins/tmux/init.lua");
-const WEBFETCH_SRC: &str = include_str!("../../plugins/webfetch/init.lua");
-const WEBSEARCH_SRC: &str = include_str!("../../plugins/websearch/init.lua");
-const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
+const BASH_SRC: &str = include_str!("../../../plugins/bash/init.lua");
+const BATCH_SRC: &str = include_str!("../../../plugins/batch/init.lua");
+const BLACKBOARD_SRC: &str = include_str!("../../../plugins/blackboard/init.lua");
+const CODEGRAPH_SRC: &str = include_str!("../../../plugins/codegraph/init.lua");
+const EXPLORE_SRC: &str = include_str!("../../../plugins/explore/init.lua");
+const FUSION_SRC: &str = include_str!("../../../plugins/fusion/init.lua");
+const GIT_SRC: &str = include_str!("../../../plugins/git/init.lua");
+const GITHUB_SRC: &str = include_str!("../../../plugins/github/init.lua");
+const GREP_SRC: &str = include_str!("../../../plugins/grep/init.lua");
+const SEMBLEM_SRC: &str = include_str!("../../../plugins/semblem/init.lua");
+const TASK_SRC: &str = include_str!("../../../plugins/task/init.lua");
+const TMUX_SRC: &str = include_str!("../../../plugins/tmux/init.lua");
+const WEBFETCH_SRC: &str = include_str!("../../../plugins/webfetch/init.lua");
+const WEBSEARCH_SRC: &str = include_str!("../../../plugins/websearch/init.lua");
+const WORKFLOW_SRC: &str = include_str!("../../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
 const EXPAND_HINT: &str = "click to expand";

@@ -18,7 +18,7 @@ use n00n_agent::{AgentMode, ToolDoneEvent, ToolOutput};
 use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 
-const TASK_PLUGIN_SRC: &str = include_str!("../../plugins/task/init.lua");
+const TASK_PLUGIN_SRC: &str = include_str!("../../../plugins/task/init.lua");
 
 // Mirrors of the plugin's error contracts and policy numbers.
 const STRUCTURED_OUTPUT_TOOL: &str = "structured_output";

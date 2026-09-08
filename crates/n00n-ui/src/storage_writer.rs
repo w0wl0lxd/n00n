@@ -25,6 +25,18 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 const LATEST_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_RETRY_ATTEMPTS: u32 = 5;
 
+/// Reads snapshot timeout from `N00N_SNAPSHOT_TIMEOUT_SECS` env var or returns the default.
+#[must_use]
+pub fn default_snapshot_timeout() -> Duration {
+    match std::env::var("N00N_SNAPSHOT_TIMEOUT_SECS") {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs),
+            Err(_) => LATEST_SNAPSHOT_TIMEOUT,
+        },
+        Err(_) => LATEST_SNAPSHOT_TIMEOUT,
+    }
+}
+
 #[derive(Clone)]
 struct PendingSnapshot {
     version: SnapshotVersion,
@@ -171,10 +183,16 @@ pub struct StorageWriter {
     durable_records: DurableLedger,
     ops: flume::Sender<Op>,
     done_rx: flume::Receiver<Result<(), usize>>,
+    snapshot_timeout: Duration,
 }
 
 impl StorageWriter {
     pub fn new(dir: StateDir) -> std::io::Result<Self> {
+        Self::new_with_timeout(dir, default_snapshot_timeout())
+    }
+
+    /// Configurable constructor that uses `snapshot_timeout` for `latest_snapshot`.
+    pub fn new_with_timeout(dir: StateDir, snapshot_timeout: Duration) -> std::io::Result<Self> {
         let inbox = SnapshotInbox::default();
         let writer_inbox = Arc::clone(&inbox);
         let tracker = CommandTracker::default();
@@ -280,7 +298,16 @@ impl StorageWriter {
             durable_records,
             ops,
             done_rx,
+            snapshot_timeout,
         })
+    }
+
+    /// Convenience constructor wired to [`n00n_config::StorageConfig`].
+    pub fn new_with_config(
+        dir: StateDir,
+        config: &n00n_config::StorageConfig,
+    ) -> std::io::Result<Self> {
+        Self::new_with_timeout(dir, config.snapshot_timeout)
     }
 
     pub(crate) fn register_loaded(&self, session: &AppSession) {
@@ -317,7 +344,7 @@ impl StorageWriter {
         &self,
         id: n00nId,
     ) -> Result<Option<Arc<AppSession>>, SessionError> {
-        self.latest_snapshot_with_timeout(id, LATEST_SNAPSHOT_TIMEOUT)
+        self.latest_snapshot_with_timeout(id, self.snapshot_timeout)
     }
 
     fn latest_snapshot_with_timeout(
@@ -331,7 +358,19 @@ impl StorageWriter {
             .map_err(|_| writer_gone())?;
         match done_rx.recv_timeout(timeout) {
             Ok(session) => Ok(session),
-            Err(flume::RecvTimeoutError::Timeout) => Err(latest_snapshot_timeout(timeout)),
+            Err(flume::RecvTimeoutError::Timeout) => {
+                let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or_else(|_| u64::MAX);
+                warn!(
+                    timeout_ms,
+                    %id,
+                    "storage writer latest_snapshot timed out, retrying once"
+                );
+                match done_rx.recv_timeout(timeout) {
+                    Ok(session) => Ok(session),
+                    Err(flume::RecvTimeoutError::Timeout) => Err(latest_snapshot_timeout(timeout)),
+                    Err(flume::RecvTimeoutError::Disconnected) => Err(writer_gone()),
+                }
+            }
             Err(flume::RecvTimeoutError::Disconnected) => Err(writer_gone()),
         }
     }
@@ -369,10 +408,21 @@ impl StorageWriter {
         match done_rx.recv_timeout(timeout) {
             Ok(result) => result,
             Err(flume::RecvTimeoutError::Timeout) => {
-                Err(SessionError::Storage(StorageError::Io(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!("session checkpoint did not complete within {timeout:?}"),
-                ))))
+                let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or_else(|_| u64::MAX);
+                warn!(
+                    timeout_ms,
+                    "storage writer persist timed out, retrying once"
+                );
+                match done_rx.recv_timeout(timeout) {
+                    Ok(result) => result,
+                    Err(flume::RecvTimeoutError::Timeout) => {
+                        Err(SessionError::Storage(StorageError::Io(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            format!("session checkpoint did not complete within {timeout:?}"),
+                        ))))
+                    }
+                    Err(flume::RecvTimeoutError::Disconnected) => Err(writer_gone()),
+                }
             }
             Err(flume::RecvTimeoutError::Disconnected) => Err(writer_gone()),
         }
@@ -446,7 +496,23 @@ impl StorageWriter {
             Ok(Ok(())) => Ok(()),
             Ok(Err(count)) => Err(StorageWriterShutdownError::UnpersistedSnapshots { count }),
             Err(flume::RecvTimeoutError::Timeout) => {
-                Err(StorageWriterShutdownError::Timeout { timeout })
+                let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or_else(|_| u64::MAX);
+                warn!(
+                    timeout_ms,
+                    "storage writer shutdown timed out, retrying once"
+                );
+                match done_rx.recv_timeout(timeout) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(count)) => {
+                        Err(StorageWriterShutdownError::UnpersistedSnapshots { count })
+                    }
+                    Err(flume::RecvTimeoutError::Timeout) => {
+                        Err(StorageWriterShutdownError::Timeout { timeout })
+                    }
+                    Err(flume::RecvTimeoutError::Disconnected) => {
+                        Err(StorageWriterShutdownError::Disconnected)
+                    }
+                }
             }
             Err(flume::RecvTimeoutError::Disconnected) => {
                 Err(StorageWriterShutdownError::Disconnected)

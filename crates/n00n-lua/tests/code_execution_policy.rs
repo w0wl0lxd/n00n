@@ -17,7 +17,7 @@ use n00n_agent::tools::test_support::stub_ctx;
 use n00n_agent::tools::{DescriptionContext, ToolAudience, ToolContext, ToolFilter, ToolRegistry};
 use n00n_lua::PluginHost;
 
-const CODE_EXECUTION_SRC: &str = include_str!("../../plugins/code_execution/init.lua");
+const CODE_EXECUTION_SRC: &str = include_str!("../../../plugins/code_execution/init.lua");
 
 const ECHO_PREFIX: &str = "echo:";
 const TASK_PREFIX: &str = "task:";

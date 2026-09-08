@@ -17,7 +17,7 @@ use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const MEMORY_SOURCE: &str = include_str!("../../plugins/memory/init.lua");
+const MEMORY_SOURCE: &str = include_str!("../../../plugins/memory/init.lua");
 const CONFINEMENT_ERROR: &str = "symbolic link";
 const NO_MATCHING_MEMORIES: &str = "No matching memories";
 

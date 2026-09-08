@@ -325,7 +325,7 @@ fn session_call_with_timeout(
     let (reply_tx, reply_rx) = flume::bounded(1);
     tx.try_send(UiAction::Session { req, reply_tx })
         .map_err(|_| ControlError::Unavailable(UI_CHANNEL_CLOSED.into()))?;
-    let timeout_ms = timeout.as_millis() as u64;
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or_else(|_| u64::MAX);
     match reply_rx.recv_timeout(timeout) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(ControlError::Unavailable(e)),

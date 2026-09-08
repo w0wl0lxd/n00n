@@ -47,6 +47,9 @@ pub const DEFAULT_FUSION_LEAD_MODEL: &str = "codex/gpt-5.6-sol";
 pub const DEFAULT_FUSION_SIDEKICK_MODEL: &str = "codex/gpt-5.6-luna";
 pub const DEFAULT_FUSION_SIDEKICK_THINKING: &str = "max";
 
+pub const DEFAULT_SESSION_ROUNDTRIP_TIMEOUT_SECS: u64 = 5;
+pub const DEFAULT_SNAPSHOT_TIMEOUT_SECS: u64 = 2;
+
 pub const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
 pub const DEFAULT_MAX_LOG_FILES: u32 = 10;
 pub const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
@@ -70,6 +73,8 @@ pub const MIN_INPUT_HISTORY_SIZE: usize = 10;
 /// outputs and histories of the most recent turns resident.
 pub const MIN_MAX_RETAINED_TOOL_OUTPUTS: usize = 16;
 pub const MIN_MAX_RETAINED_SUBAGENT_HISTORIES: usize = 4;
+pub const MIN_SESSION_ROUNDTRIP_TIMEOUT_SECS: u64 = 1;
+pub const MIN_SNAPSHOT_TIMEOUT_SECS: u64 = 1;
 pub const MIN_CONNECT_TIMEOUT_SECS: u64 = 1;
 pub const MIN_LOW_SPEED_TIMEOUT_SECS: u64 = 1;
 pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
@@ -537,6 +542,7 @@ pub struct AgentFileConfig {
     pub max_active_descendants: Option<usize>,
     pub compaction_buffer: Option<CompactionBuffer>,
     pub mcp_tool_desc_max_chars: Option<usize>,
+    pub session_roundtrip_timeout_secs: Option<u64>,
     pub dynamic_tools: Option<DynamicToolFileConfig>,
     pub fusion: Option<FusionFileConfig>,
 }
@@ -568,7 +574,8 @@ impl AgentFileConfig {
             max_total_descendants,
             max_active_descendants,
             compaction_buffer,
-            mcp_tool_desc_max_chars
+            mcp_tool_desc_max_chars,
+            session_roundtrip_timeout_secs
         );
         match (self.dynamic_tools.as_mut(), overlay.dynamic_tools.clone()) {
             (Some(base), Some(over)) => {
@@ -656,6 +663,7 @@ pub struct StorageFileConfig {
     pub input_history_size: Option<usize>,
     pub max_retained_tool_outputs: Option<usize>,
     pub max_retained_subagent_histories: Option<usize>,
+    pub snapshot_timeout_secs: Option<u64>,
 }
 
 impl StorageFileConfig {
@@ -667,7 +675,8 @@ impl StorageFileConfig {
             max_log_files,
             input_history_size,
             max_retained_tool_outputs,
-            max_retained_subagent_histories
+            max_retained_subagent_histories,
+            snapshot_timeout_secs
         );
     }
 }
@@ -1247,6 +1256,9 @@ pub struct AgentConfig {
     #[config(default = DEFAULT_MCP_TOOL_DESC_MAX_CHARS, min = 10, desc = "Max MCP tool description length (characters)")]
     pub mcp_tool_desc_max_chars: usize,
 
+    #[config(default = DEFAULT_SESSION_ROUNDTRIP_TIMEOUT_SECS, min = MIN_SESSION_ROUNDTRIP_TIMEOUT_SECS, desc = "TUI session roundtrip timeout (seconds)")]
+    pub session_roundtrip_timeout_secs: u64,
+
     #[config(skip, default = false)]
     pub no_rtk: bool,
 
@@ -1369,6 +1381,9 @@ impl AgentConfig {
             mcp_tool_desc_max_chars: file
                 .mcp_tool_desc_max_chars
                 .unwrap_or_else(|| DEFAULT_MCP_TOOL_DESC_MAX_CHARS),
+            session_roundtrip_timeout_secs: file
+                .session_roundtrip_timeout_secs
+                .unwrap_or_else(|| DEFAULT_SESSION_ROUNDTRIP_TIMEOUT_SECS),
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,
@@ -1388,6 +1403,11 @@ impl AgentConfig {
             });
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn session_roundtrip_timeout(&self) -> Duration {
+        Duration::from_secs(self.session_roundtrip_timeout_secs)
     }
 }
 
@@ -1534,6 +1554,11 @@ pub struct StorageConfig {
     #[config(default = DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES, min = MIN_MAX_RETAINED_SUBAGENT_HISTORIES,
              desc = "Subagent histories a live session keeps in memory; older ones are read back from the session log on demand")]
     pub max_retained_subagent_histories: usize,
+
+    #[config(key = "snapshot_timeout_secs", ty = "u64", default = DEFAULT_SNAPSHOT_TIMEOUT_SECS,
+             min = MIN_SNAPSHOT_TIMEOUT_SECS, val = "self.snapshot_timeout.as_secs()",
+             desc = "Storage snapshot timeout (seconds)")]
+    pub snapshot_timeout: Duration,
 }
 
 impl Default for StorageConfig {
@@ -1544,6 +1569,7 @@ impl Default for StorageConfig {
             input_history_size: DEFAULT_INPUT_HISTORY_SIZE,
             max_retained_tool_outputs: DEFAULT_MAX_RETAINED_TOOL_OUTPUTS,
             max_retained_subagent_histories: DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES,
+            snapshot_timeout: Duration::from_secs(DEFAULT_SNAPSHOT_TIMEOUT_SECS),
         }
     }
 }
@@ -1566,6 +1592,10 @@ impl StorageConfig {
             max_retained_subagent_histories: f
                 .max_retained_subagent_histories
                 .unwrap_or_else(|| DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES),
+            snapshot_timeout: Duration::from_secs(
+                f.snapshot_timeout_secs
+                    .unwrap_or_else(|| DEFAULT_SNAPSHOT_TIMEOUT_SECS),
+            ),
         }
     }
 
