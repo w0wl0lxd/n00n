@@ -477,6 +477,7 @@ mod tests {
             generated.contains("| Strong | gpt-6-astra | $5.00 / $30.00 | 272K ctx / 128K out |")
         );
         assert!(generated.contains("| Strong | gpt-5.5 | $5.00 / $30.00 | 1050K ctx / 128K out |"));
+        assert!(generated.contains("| Strong | gpt-5.5 | $5.00 / $30.00 | 272K ctx / 128K out |"));
         assert!(
             generated.contains("| Strong | gpt-5.5-pro | $7.50 / $45.00 | 1050K ctx / 128K out |")
         );
