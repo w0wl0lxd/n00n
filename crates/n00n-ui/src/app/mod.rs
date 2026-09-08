@@ -61,6 +61,7 @@ use n00n_agent::{
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
+use n00n_providers::model_registry::{model_registry, set_thinking_and_persist};
 use n00n_providers::{Effort, Message, Model, ModelPricing, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
@@ -452,8 +453,39 @@ impl App {
     }
 
     pub(crate) fn update_model(&mut self, model: &Model) {
+        let spec_changed = self.state.session.model != model.spec();
         self.state.update_model(model);
+        if spec_changed
+            && model.supports_thinking()
+            && let Some(remembered) = model_registry()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remembered_thinking(&model.spec())
+        {
+            self.state.thinking = remembered.into();
+        }
         persist_model(&self.storage, &self.state.session.model);
+    }
+
+    fn set_thinking(&mut self, thinking: ThinkingConfig) {
+        self.state.thinking = thinking;
+        if self.state.model.supports_thinking() {
+            set_thinking_and_persist(self.state.model.spec(), thinking.into(), &self.storage);
+        }
+    }
+
+    fn cycle_thinking(&mut self) {
+        if !self.state.model.supports_thinking() {
+            self.flash("Thinking requires a model that supports it".into());
+            return;
+        }
+        let idx = THINKING_CYCLE
+            .iter()
+            .position(|&c| c == self.state.thinking)
+            .unwrap_or_else(|| 0);
+        let next = THINKING_CYCLE[(idx + 1) % THINKING_CYCLE.len()];
+        self.set_thinking(next);
+        self.flash(format!("Thinking: {next}"));
     }
 
     pub(crate) fn record_recent_model(&mut self, spec: &str) {
@@ -940,6 +972,10 @@ impl App {
                 ModelPickerAction::UnassignTier(spec, tier) => {
                     vec![Action::UnassignTier(spec, tier)]
                 }
+                ModelPickerAction::CycleThinking => {
+                    self.cycle_thinking();
+                    vec![]
+                }
                 ModelPickerAction::Close => {
                     if let Some(reply) = self.model_picker_reply.take() {
                         let _ = reply.send(None);
@@ -1067,6 +1103,10 @@ impl App {
             );
             return vec![];
         }
+        if key::THINKING_ALT.matches(key) {
+            self.cycle_thinking();
+            return vec![];
+        }
         if key::EDIT_INPUT.matches(key) {
             return vec![Action::EditInputInEditor];
         }
@@ -1089,17 +1129,7 @@ impl App {
             } else if key.code == KeyCode::Char('v') && self.image_paste_rx.is_empty() {
                 self.start_image_paste();
             } else if key::THINKING.matches(key) {
-                if !self.state.model.supports_thinking() {
-                    self.flash("Thinking requires a model that supports it".into());
-                    return vec![];
-                }
-                let idx = THINKING_CYCLE
-                    .iter()
-                    .position(|&c| c == self.state.thinking)
-                    .unwrap_or_else(|| 0);
-                let next = THINKING_CYCLE[(idx + 1) % THINKING_CYCLE.len()];
-                self.state.thinking = next;
-                self.flash(format!("Thinking: {next}"));
+                self.cycle_thinking();
                 return vec![];
             } else if key::COPY.matches(key) {
                 if let Some(SelectionState::Dragging { sel, .. }) = self.selection_state.take()
@@ -1936,7 +1966,7 @@ impl App {
                 }
                 match ThinkingConfig::parse(cmd.args.trim(), self.state.thinking) {
                     Ok(thinking) => {
-                        self.state.thinking = thinking;
+                        self.set_thinking(thinking);
                         self.flash(format!("Thinking: {thinking}"));
                     }
                     Err(msg) => self.flash(msg.into()),
