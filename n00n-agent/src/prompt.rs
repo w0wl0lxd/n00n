@@ -466,6 +466,41 @@ mod tests {
         );
     }
 
+    #[test_case(PromptId::System ; "system")]
+    #[test_case(PromptId::General ; "general")]
+    fn implementation_policy_is_risk_based(id: PromptId) {
+        const REQUIRED: &[&str] = &[
+            "independently complete ordinary reversible in-scope engineering tasks",
+            "verify changes, commit and push your own branch",
+            "review the PR, and merge when all repository-required checks pass and all review comments are resolved",
+            "explicit user/project restrictions and owner gates",
+            "Routine reviewed deploys are not blanket-prohibited",
+            "Ask approval before destructive, hard-to-reverse, or high-blast-radius operations",
+            "data deletion, history rewriting/force-push, security/credentials/access-control changes",
+            "risky production migrations or outage risk",
+            "inspect first; ask if safe scope cannot be established",
+            "Never bypass the permission engine",
+            "Never commit unrelated work or expose secrets",
+            "Read-only tasks do not commit",
+        ];
+        const PROHIBITED: &[&str] = &[
+            "Never commit unrelated work, force-push, push the default branch, or merge",
+            "never merge",
+            "do not merge",
+        ];
+        let out = assemble(id, &ResolvedSlots::default(), "");
+        for required in REQUIRED {
+            assert!(out.contains(required), "missing policy clause: {required}");
+        }
+        let lower = out.to_lowercase();
+        for prohibited in PROHIBITED {
+            assert!(
+                !lower.contains(&prohibited.to_lowercase()),
+                "blanket prohibition: {prohibited}"
+            );
+        }
+    }
+
     #[test]
     fn efficient_tools_extras_join_native_list() {
         let s = slots(
@@ -641,10 +676,10 @@ mod tests {
     #[test]
     fn prompt_templates_within_size_baselines() {
         // Baseline sizes before compression (from T061 audit, updated after origin/main merge).
-        // Most prompts still aim for >=10% compression; system.md is intentionally capped
-        // because it carries required static instructions that are not meant to shrink.
-        const SYSTEM_BASELINE: usize = 1710;
-        const GENERAL_BASELINE: usize = 1759;
+        // Most prompts still aim for >=10% compression; implementation prompts are capped
+        // because they carry required static instructions, including risk-based autonomy.
+        const SYSTEM_BASELINE: usize = 2100;
+        const GENERAL_BASELINE: usize = 2117;
         const RESEARCH_BASELINE: usize = 1530;
         const COMPACTION_USER_BASELINE: usize = 927;
         const COMPACTION_BASELINE: usize = 669;
@@ -663,9 +698,8 @@ mod tests {
             "system.md size: {system_current} bytes (baseline: {SYSTEM_BASELINE})"
         );
         assert!(
-            general_current <= (GENERAL_BASELINE * 9 / 10),
-            "general.md not compressed enough: {general_current} bytes (baseline: {GENERAL_BASELINE}, target: {})",
-            GENERAL_BASELINE * 9 / 10
+            general_current <= GENERAL_BASELINE,
+            "general.md size: {general_current} bytes (baseline: {GENERAL_BASELINE})"
         );
         assert!(
             research_current <= (RESEARCH_BASELINE * 9 / 10),
