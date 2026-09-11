@@ -4,6 +4,7 @@ local QuestionForm = {}
 
 local MAX_HEIGHT_RATIO = 0.75
 local CUSTOM_OPTION = "Type your own answer"
+local BORDER_WIDTH = 2
 local CHROME = 3
 local DESC_SEP = " — "
 local DESC_SEP_WIDTH = 3
@@ -388,7 +389,20 @@ local function render_option_rows(pointer, chk, chk_style, label, lbl_style, des
   local label_w = display_width(label)
   local has_desc = desc and desc ~= ""
 
-  if has_desc and label_w > label_text_max then
+  if not has_desc or label_text_max < 1 or usable - label_col_max - DESC_SEP_WIDTH < 1 then
+    local spans = { { label, lbl_style } }
+    if has_desc then
+      spans[#spans + 1] = { DESC_SEP .. desc, "dim" }
+    end
+    local prefix = { { pointer, "dim" }, { chk, chk_style } }
+    for i, line in ipairs(wrap_spans(spans, math.max(1, usable - prefix_w))) do
+      local row = i == 1 and prefix or { { string.rep(" ", prefix_w), "" } }
+      for _, span in ipairs(line) do
+        row[#row + 1] = span
+      end
+      rows[#rows + 1] = row
+    end
+  elseif has_desc and label_w > label_text_max then
     local label_lines = wrap_spans({ { label, lbl_style } }, label_text_max)
     local desc_max = usable - label_col_max - DESC_SEP_WIDTH
     local desc_lines = wrap_spans({ { desc, "dim" } }, desc_max)
@@ -473,7 +487,14 @@ local function render_selecting(state, width)
   for _, md_line in ipairs(question_md(state, state.tab, usable)) do
     append_wrapped(lines, md_line, usable, " ", "", " ")
   end
-  lines[#lines + 1] = { { q.multiple and "  (multiple answers)" or "  (single answer)", "dim" } }
+  append_wrapped(
+    lines,
+    { { q.multiple and "(multiple answers)" or "(single answer)", "dim" } },
+    math.max(1, usable - 2),
+    "  ",
+    "dim",
+    "  "
+  )
   lines[#lines + 1] = {}
 
   local opts = q.options or {}
@@ -535,7 +556,7 @@ local function render_selecting(state, width)
     end
 
     if custom_cur then
-      focus_row = #lines + 1
+      focus_row = #lines
     end
   end
 
@@ -546,8 +567,10 @@ local function render_selecting(state, width)
     footer = { { "Enter", "submit" }, { "Alt+Enter", "newline" }, { "Esc", "cancel" } }
   elseif q.multiple then
     footer = { { "Enter", "toggle" }, { "Tab", "next" }, { "Esc", "dismiss" } }
-  else
+  elseif has_confirm(state) then
     footer = { { "Enter", "submit" }, { "Tab", "next" }, { "Esc", "dismiss" } }
+  else
+    footer = { { "Enter", "submit" }, { "Esc", "dismiss" } }
   end
 
   return { lines = lines, focus_row = focus_row, reserved_top = reserved_top, footer = footer }
@@ -601,11 +624,16 @@ QuestionForm.MODE = MODE
 function QuestionForm.open(questions)
   local state = initial_state(questions)
   local buf = n00n.ui.buf()
-  local max_h = math.floor(n00n.ui.terminal_size().rows * MAX_HEIGHT_RATIO)
+  local size = n00n.ui.terminal_size()
+  local max_h = math.max(CHROME + 1, math.floor(size.rows * MAX_HEIGHT_RATIO))
+  local initial = render(state, math.max(1, size.cols - BORDER_WIDTH))
+  buf:set_lines(initial.lines)
 
   local win = n00n.ui.open_win(buf, {
     title = " Question ",
-    height = max_h,
+    height = math.min(#initial.lines + CHROME, max_h),
+    reserved_top = initial.reserved_top,
+    footer = initial.footer,
     width = "100%",
     border = "rounded",
     reserved_bottom = 1,
@@ -631,7 +659,7 @@ function QuestionForm.open(questions)
 
     if ev.type == "resize" then
       width = ev.width
-      max_h = math.floor(n00n.ui.terminal_size().rows * MAX_HEIGHT_RATIO)
+      max_h = math.max(CHROME + 1, math.floor(n00n.ui.terminal_size().rows * MAX_HEIGHT_RATIO))
     elseif ev.type == "paste" and state.mode == MODE.EDITING_CUSTOM then
       state.custom_input:insert_text(ev.text)
     elseif ev.type == "key" then
