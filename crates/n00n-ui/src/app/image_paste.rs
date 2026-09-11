@@ -6,6 +6,8 @@ use n00n_agent::{ImageMediaType, ImageSource};
 
 use super::App;
 
+pub(super) const IMAGE_LOADING_MSG: &str = "Wait for image loading to finish before sending";
+const IMAGE_LOAD_DISCONNECTED_MSG: &str = "Image loader disconnected before returning a result";
 const IMAGE_NOT_SUPPORTED_MSG: &str = "Model does not support image input";
 
 impl App {
@@ -42,9 +44,13 @@ impl App {
     pub fn poll_image_paste(&mut self) {
         let mut i = 0;
         while i < self.image_paste_rx.len() {
-            let Ok(result) = self.image_paste_rx[i].try_recv() else {
-                i += 1;
-                continue;
+            let result = match self.image_paste_rx[i].try_recv() {
+                Ok(result) => result,
+                Err(flume::TryRecvError::Empty) => {
+                    i += 1;
+                    continue;
+                }
+                Err(flume::TryRecvError::Disconnected) => Err(IMAGE_LOAD_DISCONNECTED_MSG.into()),
             };
             self.image_paste_rx.remove(i);
             match result {
