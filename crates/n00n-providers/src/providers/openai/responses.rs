@@ -1316,6 +1316,7 @@ impl ResponseAccumulator {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn parse_sse(
     reader: impl AsyncBufRead + Unpin,
     event_tx: &Sender<ProviderEvent>,

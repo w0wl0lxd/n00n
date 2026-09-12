@@ -289,10 +289,7 @@ async fn read_worker_event(stdout: &mut BufReader<ChildStdout>) -> io::Result<Op
         if line.len() > MAX_WORKER_EVENT_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "interpreter worker event exceeded frame limit {}",
-                    MAX_WORKER_EVENT_BYTES
-                ),
+                format!("interpreter worker event exceeded frame limit {MAX_WORKER_EVENT_BYTES}"),
             ));
         }
         if !line.trim_start().starts_with('{') {

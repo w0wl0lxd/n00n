@@ -250,7 +250,7 @@ mod tests {
                 CancelToken::none(),
                 None,
                 None,
-                Some(SessionIdentity::child(caller.clone(), root.clone())),
+                Some(SessionIdentity::child(caller.clone(), root)),
             ),
         );
         let expected_caller = caller.clone();

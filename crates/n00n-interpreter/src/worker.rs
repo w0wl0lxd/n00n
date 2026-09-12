@@ -172,7 +172,7 @@ fn read_request_frame(
             "interpreter worker request exceeded the frame limit".into(),
         ));
     }
-    if !line.ends_with('\n') && u64::try_from(line.len()).unwrap_or(0) == read_limit {
+    if !line.ends_with('\n') && u64::try_from(line.len()) == Ok(read_limit) {
         let mut discard = String::new();
         loop {
             discard.clear();

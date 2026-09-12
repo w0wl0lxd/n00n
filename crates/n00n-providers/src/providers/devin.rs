@@ -1260,12 +1260,11 @@ impl Devin {
                         }
                         smol::Timer::after(std::time::Duration::from_millis(20)).await;
                     }
-                } else {
-                    std::future::pending::<
-                        Result<Result<isahc::Response<isahc::AsyncBody>, isahc::Error>, AgentError>,
-                    >()
-                    .await
                 }
+                std::future::pending::<
+                    Result<Result<isahc::Response<isahc::AsyncBody>, isahc::Error>, AgentError>,
+                >()
+                .await
             },
         )
         .await
@@ -1319,9 +1318,8 @@ impl Devin {
                             }
                             smol::Timer::after(std::time::Duration::from_millis(20)).await;
                         }
-                    } else {
-                        std::future::pending::<Result<usize, AgentError>>().await
                     }
+                    std::future::pending::<Result<usize, AgentError>>().await
                 },
             )
             .await

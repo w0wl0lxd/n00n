@@ -358,9 +358,8 @@ impl<R: AsyncBufRead + Unpin> SseStream<R> {
                                 }
                                 smol::Timer::after(Duration::from_millis(20)).await;
                             }
-                        } else {
-                            std::future::pending::<Result<Option<bool>, AgentError>>().await
                         }
+                        std::future::pending::<Result<Option<bool>, AgentError>>().await
                     },
                 ),
             )

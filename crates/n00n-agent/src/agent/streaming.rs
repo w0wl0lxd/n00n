@@ -66,7 +66,7 @@ pub(crate) async fn stream_with_retry(
     let mut retry = RetryState::new();
     let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
-        let flag = cancel_flag.clone();
+        let flag = std::sync::Arc::clone(&cancel_flag);
         let cancel = ctx.cancel.clone();
         smol::spawn(async move {
             cancel.cancelled().await;
@@ -74,7 +74,7 @@ pub(crate) async fn stream_with_retry(
         })
         .detach();
     }
-    opts.cancel_flag = Some(cancel_flag.clone());
+    opts.cancel_flag = Some(std::sync::Arc::clone(&cancel_flag));
     loop {
         let (ptx, prx) = flume::bounded(PROVIDER_EVENT_QUEUE_CAPACITY);
         let forwarder = smol::spawn({

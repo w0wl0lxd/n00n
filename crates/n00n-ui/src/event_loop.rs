@@ -5349,20 +5349,20 @@ mod tests {
     }
 
     #[test_case(
-        AgentEvent::PermissionRequest { id: "permission".to_owned(), tool: n00n_config::ToolKey::native("bash"), scopes: Vec::new() },
+        &AgentEvent::PermissionRequest { id: "permission".to_owned(), tool: n00n_config::ToolKey::native("bash"), scopes: Vec::new() },
         n00n_runs::WaitReasonCode::Permission;
         "permission wait"
     )]
     #[test_case(
-        AgentEvent::AuthRequired,
+        &AgentEvent::AuthRequired,
         n00n_runs::WaitReasonCode::Authentication;
         "authentication wait"
     )]
     fn canonical_waiting_projection_has_typed_reason(
-        event: AgentEvent,
+        event: &AgentEvent,
         expected: n00n_runs::WaitReasonCode,
     ) {
-        let projection = canonical_run_projection(&event, false).expect("waiting projection");
+        let projection = canonical_run_projection(event, false).expect("waiting projection");
         assert_eq!(projection.target, n00n_runs::RunLifecycle::WaitingInput);
         assert_eq!(projection.wait_reason.expect("wait reason").code, expected);
         assert!(projection.outcome.is_none());

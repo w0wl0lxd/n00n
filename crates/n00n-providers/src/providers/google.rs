@@ -1038,6 +1038,7 @@ struct ApiModelInfo {
     supported_generation_methods: Vec<String>,
 }
 
+#[cfg(test)]
 async fn parse_sse(
     response: isahc::Response<isahc::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
