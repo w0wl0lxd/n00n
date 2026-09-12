@@ -1,0 +1,508 @@
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
+use std::io::{Error as IoError, Write};
+use std::mem;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use arc_swap::ArcSwap;
+use n00n_agent::ToolOutput;
+use n00n_agent::permissions::PermissionManager;
+use n00n_config::Effect;
+use n00n_providers::model_registry::model_registry;
+use n00n_providers::{Message, Model, ModelResolver, ThinkingConfig, TokenUsage};
+use n00n_storage::sessions::{StoredEffect, StoredMode, StoredRule};
+use n00n_storage::{StateDir, TranscriptEntry};
+use serde::Serialize;
+
+use crate::AppSession;
+
+use super::mode::{Mode, PlanState};
+
+pub(crate) struct SessionState {
+    pub session: AppSession,
+    pub model: Model,
+    pub token_usage: TokenUsage,
+    pub context_size: u32,
+    pub mode: Mode,
+    pub plan: PlanState,
+    pub warnings: Vec<String>,
+    pub thinking: ThinkingConfig,
+    pub fast: bool,
+    pub workflow: bool,
+    transcript_revision: u64,
+    shared_history_snapshot: Option<Arc<Vec<Message>>>,
+    shared_transcript_snapshot: Option<Arc<Vec<TranscriptEntry<Message>>>>,
+    last_fingerprint: Option<u64>,
+    #[cfg(test)]
+    fingerprint_count: usize,
+    #[cfg(test)]
+    history_sync_count: usize,
+}
+
+/// Change detection used to keep a whole `serde_json::Value` of the session
+/// resident as its baseline. On a long session that tree dwarfed the session
+/// itself, so hash the encoding as it streams and keep only the digest.
+struct FingerprintWriter(DefaultHasher);
+
+impl Write for FingerprintWriter {
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, IoError> {
+        Hasher::write(&mut self.0, bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> Result<(), IoError> {
+        Ok(())
+    }
+}
+
+fn hash_serialized<T: Serialize>(value: &T) -> Option<u64> {
+    let mut writer = FingerprintWriter(DefaultHasher::new());
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Some(writer.0.finish()),
+        Err(error) => {
+            tracing::warn!(%error, "session change detection failed; advancing revision");
+            None
+        }
+    }
+}
+
+/// The two `tool_use_id`-keyed maps iterate in unspecified order, so they are
+/// folded commutatively and the rest of the session is hashed with them lifted
+/// out. Lifting them (rather than listing the other fields) keeps the digest
+/// correct when `Session` gains a field.
+fn session_fingerprint(session: &mut AppSession) -> Option<u64> {
+    let tool_outputs = mem::take(&mut session.tool_outputs);
+    let subagent_messages = mem::take(&mut session.subagent_messages);
+    let revision = mem::take(&mut session.meta.revision);
+    let updated_at = mem::take(&mut session.updated_at);
+    let base = hash_serialized(&*session);
+    session.tool_outputs = tool_outputs;
+    session.subagent_messages = subagent_messages;
+    session.meta.revision = revision;
+    session.updated_at = updated_at;
+
+    let mut fingerprint = base?;
+    for entry in &session.tool_outputs {
+        fingerprint ^= hash_serialized(&entry)?;
+    }
+    for entry in &session.subagent_messages {
+        fingerprint ^= hash_serialized(&entry)?;
+    }
+    Some(fingerprint)
+}
+
+const PLAN_FILE_MISSING_WARNING: &str = "Plan file was deleted \u{2014} started a new plan";
+
+impl SessionState {
+    pub fn from_session(
+        mut session: AppSession,
+        fallback_model: &Model,
+        storage: &StateDir,
+    ) -> Self {
+        let model = if let Ok(model) = ModelResolver::current().resolve(&session.model) {
+            model
+        } else if let Ok(model) = Model::from_spec(&session.model) {
+            // Fall back to the static tables when the provider is currently
+            // unconfigured, so the session keeps its model capabilities
+            // (thinking, fast, plan mode) instead of collapsing to the default.
+            model
+        } else {
+            tracing::warn!(
+                "saved session model is no longer configured or available; using current model"
+            );
+            session.model = fallback_model.spec();
+            fallback_model.clone()
+        };
+
+        let mode = match session.meta.mode {
+            Some(StoredMode::Plan) => Mode::Plan,
+            _ => Mode::Build,
+        };
+
+        let mut warnings = Vec::new();
+
+        let mut plan = match &session.meta.plan_path {
+            Some(p) if Path::new(p).exists() => {
+                let nonempty = std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > 0);
+                if session.meta.plan_written || (mode == Mode::Build && nonempty) {
+                    PlanState::Ready(PathBuf::from(p))
+                } else {
+                    PlanState::Drafting(PathBuf::from(p))
+                }
+            }
+            Some(_) => {
+                warnings.push(PLAN_FILE_MISSING_WARNING.into());
+                PlanState::None
+            }
+            None => PlanState::None,
+        };
+
+        if mode == Mode::Plan {
+            plan.allocate_path(storage);
+        }
+
+        let token_usage = session.token_usage;
+        let context_size = session.meta.context_size;
+        let last_fingerprint = session_fingerprint(&mut session);
+
+        Self {
+            // Saved model may differ from the live one (updated, removed, etc).
+            // Reconcile so the UI badge and agent always see the truth.
+            thinking: session
+                .meta
+                .thinking
+                .map(Into::into)
+                .or_else(|| {
+                    model_registry()
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remembered_thinking(&model.spec())
+                        .map(Into::into)
+                })
+                .filter(|_| model.supports_thinking())
+                .unwrap_or_else(Default::default),
+            fast: session.meta.fast && model.supports_fast(),
+            workflow: session.meta.workflow,
+            session,
+            model,
+            token_usage,
+            context_size,
+            mode,
+            plan,
+            warnings,
+            transcript_revision: 0,
+            shared_history_snapshot: None,
+            shared_transcript_snapshot: None,
+            last_fingerprint,
+            #[cfg(test)]
+            fingerprint_count: 1,
+            #[cfg(test)]
+            history_sync_count: 0,
+        }
+    }
+
+    pub fn sync_session(
+        &mut self,
+        shared_history: Option<&Arc<ArcSwap<Vec<Message>>>>,
+        shared_transcript: Option<&n00n_agent::SharedTranscript>,
+        shared_tool_outputs: Option<&Arc<Mutex<HashMap<String, ToolOutput>>>>,
+        permissions: &Arc<PermissionManager>,
+    ) {
+        if let Some(history) = shared_history {
+            let snapshot = history.load_full();
+            let changed = self
+                .shared_history_snapshot
+                .as_ref()
+                .is_none_or(|saved| !Arc::ptr_eq(saved, &snapshot));
+            if changed {
+                Clone::clone_from(&mut self.session.messages, &snapshot);
+                self.shared_history_snapshot = Some(snapshot);
+                #[cfg(test)]
+                {
+                    self.history_sync_count += 1;
+                }
+            }
+        } else {
+            self.shared_history_snapshot = None;
+        }
+        if let Some(transcript) = shared_transcript {
+            let snapshot = transcript.load_full();
+            let changed = self
+                .shared_transcript_snapshot
+                .as_ref()
+                .is_none_or(|saved| !Arc::ptr_eq(saved, &snapshot));
+            if changed {
+                self.transcript_revision = self.transcript_revision.saturating_add(1);
+                Clone::clone_from(&mut self.session.transcript, &snapshot);
+                self.shared_transcript_snapshot = Some(snapshot);
+            }
+            self.session
+                .set_transcript_revision(Some(self.transcript_revision));
+        } else {
+            self.session.set_transcript_revision(None);
+            self.shared_transcript_snapshot = None;
+        }
+        if let Some(outputs) = shared_tool_outputs {
+            Clone::clone_from(
+                &mut self.session.tool_outputs,
+                &outputs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        }
+        self.session.token_usage = self.token_usage;
+        self.session.meta.context_size = self.context_size;
+        self.session.meta.mode = Some(self.mode.into());
+        self.session.meta.plan_path = self.plan.path().map(|p| p.to_string_lossy().into_owned());
+        self.session.meta.plan_written = self.plan.is_ready();
+        self.session.meta.session_rules = rules_to_stored(&permissions.session_rules_snapshot());
+        self.session.meta.thinking = Some(self.thinking.into());
+        self.session.meta.fast = self.fast;
+        self.session.meta.workflow = self.workflow;
+        self.session.update_title_if_default();
+    }
+
+    pub fn finish_snapshot(&mut self) {
+        let current = self.fingerprint();
+        let changed = current.is_none_or(|current| self.last_fingerprint != Some(current));
+        if changed {
+            self.session.meta.revision = self.session.meta.revision.saturating_add(1);
+            self.session.updated_at = n00n_storage::now_epoch();
+            self.last_fingerprint = current;
+        }
+    }
+
+    fn fingerprint(&mut self) -> Option<u64> {
+        #[cfg(test)]
+        {
+            self.fingerprint_count += 1;
+        }
+        session_fingerprint(&mut self.session)
+    }
+
+    pub fn update_model(&mut self, model: &Model) {
+        if !model.supports_thinking() {
+            self.thinking = ThinkingConfig::Off;
+        }
+        if !model.supports_fast() {
+            self.fast = false;
+        }
+        self.session.model = model.spec();
+        self.model = model.clone();
+    }
+}
+
+impl From<Mode> for StoredMode {
+    fn from(mode: Mode) -> Self {
+        match mode {
+            Mode::Build => StoredMode::Build,
+            Mode::Plan => StoredMode::Plan,
+        }
+    }
+}
+
+pub(crate) fn rules_to_stored(rules: &[n00n_config::PermissionRule]) -> Vec<StoredRule> {
+    rules
+        .iter()
+        .map(|r| {
+            let effect = match r.effect {
+                Effect::Allow => StoredEffect::Allow,
+                Effect::Deny => StoredEffect::Deny,
+            };
+            StoredRule {
+                tool: r.tool.to_string(),
+                scope: r.scope.clone(),
+                effect,
+            }
+        })
+        .collect()
+}
+
+/// Migrate old stored tool key formats to `ToolKey`.
+/// Handles `"mcp:server__tool"` (pre-PR1 format) -> `McpTool`.
+/// All other formats go through `ToolKey::parse` (current format: `server.tool`).
+fn migrate_stored_tool_key(s: &str) -> Option<n00n_config::ToolKey> {
+    // Pre-PR1 format: "mcp:server__tool" — rewrite to new format and parse.
+    if let Some(rest) = s.strip_prefix("mcp:")
+        && let Some((server, tool)) = rest.split_once("__")
+    {
+        let new_form = format!("{server}.{tool}");
+        return n00n_config::ToolKey::parse(&new_form)
+            .map_err(
+                |e| tracing::warn!(key = s, error = %e, "malformed stored tool key — skipping"),
+            )
+            .ok();
+    }
+    match n00n_config::ToolKey::parse(s) {
+        Ok(key) => Some(key),
+        Err(e) => {
+            tracing::error!(key = s, error = %e, "malformed stored tool key — rule DROPPED; a deny rule may have been lost");
+            None
+        }
+    }
+}
+
+pub(crate) fn stored_to_rules(stored: &[StoredRule]) -> Vec<n00n_config::PermissionRule> {
+    stored
+        .iter()
+        .filter_map(|r| {
+            let Some(tool) = migrate_stored_tool_key(&r.tool) else {
+                if matches!(r.effect, StoredEffect::Deny) {
+                    tracing::error!(
+                        key = %r.tool,
+                        "SECURITY: stored DENY rule dropped — tool may now be accessible. \
+                         Re-add this rule manually in permissions.toml"
+                    );
+                }
+                return None;
+            };
+            let effect = match r.effect {
+                StoredEffect::Allow => Effect::Allow,
+                StoredEffect::Deny => Effect::Deny,
+            };
+            Some(n00n_config::PermissionRule {
+                tool,
+                scope: r.scope.clone(),
+                effect,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::test_model;
+
+    fn make_plan_session(mode: Option<StoredMode>, plan_path: Option<String>) -> AppSession {
+        let mut session = AppSession::new("test-model", "/tmp");
+        session.meta.mode = mode;
+        session.meta.plan_path = plan_path;
+        session
+    }
+
+    #[test]
+    fn changed_snapshot_fingerprints_session_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let session = AppSession::new("test-model", "/tmp");
+        let mut state = SessionState::from_session(session, &test_model(), &storage);
+        let fingerprint_count = state.fingerprint_count;
+        let revision = state.session.meta.revision;
+
+        state.session.title.push_str(" changed");
+        state.finish_snapshot();
+
+        assert_eq!(state.fingerprint_count - fingerprint_count, 1);
+        assert_eq!(state.session.meta.revision, revision + 1);
+        let updated_at = state.session.updated_at;
+        state.finish_snapshot();
+        assert_eq!(state.session.meta.revision, revision + 1);
+        assert_eq!(state.session.updated_at, updated_at);
+    }
+
+    #[test]
+    fn shared_history_clones_only_after_pointer_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let session = AppSession::new("test-model", "/tmp");
+        let mut state = SessionState::from_session(session, &test_model(), &storage);
+        let history = Arc::new(ArcSwap::from_pointee(vec![Message::user("first".into())]));
+        let permissions = Arc::new(PermissionManager::new(
+            n00n_config::PermissionsConfig::default(),
+            PathBuf::from("/tmp"),
+        ));
+
+        state.sync_session(Some(&history), None, None, &permissions);
+        state.sync_session(Some(&history), None, None, &permissions);
+        assert_eq!(state.history_sync_count, 1);
+
+        history.store(Arc::new(vec![Message::user("second".into())]));
+        state.sync_session(Some(&history), None, None, &permissions);
+        assert_eq!(state.history_sync_count, 2);
+        assert_eq!(
+            serde_json::to_value(&state.session.messages).unwrap(),
+            serde_json::to_value(history.load().as_ref()).unwrap()
+        );
+    }
+
+    #[test]
+    fn plan_mode_without_path_allocates_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let session = make_plan_session(Some(StoredMode::Plan), None);
+        let state = SessionState::from_session(session, &test_model(), &storage);
+        assert_eq!(state.mode, Mode::Plan);
+        assert!(state.plan.path().is_some(), "plan path should be allocated");
+    }
+
+    #[test]
+    fn plan_mode_with_missing_file_allocates_new_path_and_warns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let session =
+            make_plan_session(Some(StoredMode::Plan), Some("/nonexistent/plan.md".into()));
+        let state = SessionState::from_session(session, &test_model(), &storage);
+        assert_eq!(state.mode, Mode::Plan);
+        let path = state.plan.path().expect("plan path should be allocated");
+        assert_ne!(path, Path::new("/nonexistent/plan.md"));
+        assert_eq!(state.warnings.len(), 1);
+        assert_eq!(state.warnings[0], PLAN_FILE_MISSING_WARNING);
+    }
+
+    #[test]
+    fn plan_mode_with_existing_file_preserves_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let plan_file = tmp.path().join("existing-plan.md");
+        std::fs::write(&plan_file, "# Plan").unwrap();
+        let session = make_plan_session(
+            Some(StoredMode::Plan),
+            Some(plan_file.to_string_lossy().into_owned()),
+        );
+        let state = SessionState::from_session(session, &test_model(), &storage);
+        assert_eq!(state.mode, Mode::Plan);
+        assert_eq!(state.plan.path(), Some(plan_file.as_path()));
+    }
+    #[test]
+    fn build_mode_does_not_allocate_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let session = make_plan_session(Some(StoredMode::Build), None);
+        let state = SessionState::from_session(session, &test_model(), &storage);
+        assert_eq!(state.mode, Mode::Build);
+        assert!(state.plan.path().is_none());
+    }
+
+    #[test]
+    fn new_session_applies_remembered_thinking_without_model_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let mut model = test_model();
+        model.id = "remembered-startup-model".into();
+        model.supports_thinking_override = Some(true);
+        n00n_providers::model_registry::set_thinking_and_persist(
+            model.spec(),
+            n00n_storage::sessions::StoredThinking::Effort {
+                level: n00n_storage::sessions::Effort::XHigh,
+            },
+            &storage,
+        );
+
+        let mut session = AppSession::new(&model.spec(), "/tmp");
+        session.meta.thinking = None;
+        let state = SessionState::from_session(session, &model, &storage);
+        assert_eq!(
+            state.thinking,
+            ThinkingConfig::Effort(n00n_providers::Effort::XHigh)
+        );
+    }
+
+    #[test]
+    fn explicit_session_thinking_beats_remembered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let mut model = test_model();
+        model.id = "explicit-beats-remembered-model".into();
+        model.supports_thinking_override = Some(true);
+        n00n_providers::model_registry::set_thinking_and_persist(
+            model.spec(),
+            n00n_storage::sessions::StoredThinking::Effort {
+                level: n00n_storage::sessions::Effort::Max,
+            },
+            &storage,
+        );
+
+        let mut session = AppSession::new(&model.spec(), "/tmp");
+        session.meta.thinking = Some(n00n_storage::sessions::StoredThinking::Effort {
+            level: n00n_storage::sessions::Effort::Low,
+        });
+        let state = SessionState::from_session(session, &model, &storage);
+        assert_eq!(
+            state.thinking,
+            ThinkingConfig::Effort(n00n_providers::Effort::Low)
+        );
+    }
+}

@@ -113,6 +113,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_active_descendants` | usize | `8` | 1 | Maximum active descendants per session lineage root |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
+| `session_roundtrip_timeout_secs` | u64 | `5` | 1 | TUI session roundtrip timeout (seconds) |
 
 Keep `max_depth` and `max_active_descendants` at or below `max_total_descendants`. n00n reports a configuration error at startup if either value is higher.
 
@@ -150,6 +151,7 @@ Fusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, o
 | `input_history_size` | usize | `100` | 10 | Number of input history entries to retain |
 | `max_retained_tool_outputs` | usize | `512` | 16 | Tool outputs a live session keeps in memory; older ones are read back from the session log on demand |
 | `max_retained_subagent_histories` | usize | `32` | 4 | Subagent histories a live session keeps in memory; older ones are read back from the session log on demand |
+| `snapshot_timeout_secs` | u64 | `2` | 1 | Storage snapshot timeout (seconds) |
 
 ## Plugins
 

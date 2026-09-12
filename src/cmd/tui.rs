@@ -455,10 +455,13 @@ fn run_ui_loop(
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`
         // unions live TUI sessions. Dropped on exit / before `/reload`.
-        let daemon = stack
-            .plugin_host
-            .ui_action_tx()
-            .and_then(|tx| crate::cmd::tui_bridge::try_spawn(storage.path(), tx));
+        let daemon = stack.plugin_host.ui_action_tx().and_then(|tx| {
+            crate::cmd::tui_bridge::try_spawn_with_timeout(
+                storage.path(),
+                tx,
+                stack.config.agent.session_roundtrip_timeout(),
+            )
+        });
 
         let outcome = n00n_ui::run(
             n00n_ui::EventLoopParams {
@@ -474,6 +477,7 @@ fn run_ui_loop(
                 ui_config: stack.config.ui.clone(),
                 input_history_size: stack.config.storage.input_history_size,
                 retention_budget: stack.config.storage.retention_budget(),
+                snapshot_timeout: stack.config.storage.snapshot_timeout,
                 permissions: Arc::new(n00n_agent::permissions::PermissionManager::new(
                     stack.config.permissions.clone(),
                     cwd.to_path_buf(),
