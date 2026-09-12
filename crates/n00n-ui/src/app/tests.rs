@@ -683,12 +683,102 @@ fn paste_normalizes_line_endings(input: &str, expected: &str) {
     assert_eq!(app.input_box.buffer.value(), expected);
 }
 
+#[test_case(Status::Idle; "idle")]
+#[test_case(Status::Streaming; "streaming")]
+fn image_load_completion_allows_submission_with_image(status: Status) {
+    let mut app = test_app();
+    app.status = status;
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    let InputAction::Submit(submission) = app.input_box.handle_key(key(KeyCode::Enter)) else {
+        panic!("expected submission");
+    };
+    assert_eq!(submission.text, "describe image");
+    assert_eq!(submission.images.len(), 1);
+}
+
+#[test]
+fn unsupported_image_path_paste_preserves_text() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    let mut app = test_app();
+    app.state.model.supports_vision_override = Some(false);
+    app.update(Msg::Paste(TEXT.into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
+#[test]
+fn failed_image_load_preserves_text_and_unblocks_submission() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    const ERROR: &str = "file unavailable";
+    let mut app = test_app();
+    app.input_box.set_input(TEXT);
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    tx.send(Err(ERROR.into())).unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!("Image paste failed: {ERROR}")
+    );
+}
+
+#[test_case(KeyCode::Enter; "enter")]
+#[test_case(KeyCode::Tab; "queued_tab")]
+fn pending_image_load_blocks_submission(submit_key: KeyCode) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    assert!(app.update(Msg::Key(key(submit_key))).is_empty());
+    assert_eq!(app.input_box.buffer.value(), "describe image");
+}
+
+#[test]
+fn disconnected_image_load_is_removed() {
+    let mut app = test_app();
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    drop(tx);
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+}
+
+#[test]
+fn image_path_paste_in_search_does_not_load_image() {
+    let mut app = test_app();
+    app.update(Msg::Key(kb::SEARCH.to_key_event()));
+    app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn image_path_paste_preserves_original_text() {
+    const TEXT: &str = "describe\nfile:///tmp/nonexistent.png\nplease";
+    let mut app = test_app();
+    app.update(Msg::Paste(TEXT.into()));
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
 #[test]
 fn paste_file_path_triggers_image_load() {
     let mut app = test_app();
     app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
     assert!(!app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), "");
+    assert_eq!(app.input_box.buffer.value(), "file:///tmp/nonexistent.png");
 }
 
 #[test]
@@ -701,7 +791,7 @@ fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     assert_eq!(app.image_paste_rx.len(), 2);
     assert_eq!(
         app.input_box.buffer.value(),
-        "Please compare these:\nThanks"
+        "Please compare these:\nfile:///tmp/first.png\nfile:///tmp/second.jpg\nThanks"
     );
 }
 
