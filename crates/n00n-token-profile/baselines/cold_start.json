@@ -5,32 +5,32 @@
     "cache_prefix": {
       "name": "cache_prefix",
       "tool_count": 22,
-      "bytes": 20118,
-      "tokens": 4885
+      "bytes": 20119,
+      "tokens": 4886
     },
     "deferred_catalog_payload": {
       "name": "deferred_catalog_payload",
       "tool_count": 16,
-      "bytes": 18862,
-      "tokens": 4715
+      "bytes": 18866,
+      "tokens": 4716
     },
     "deferred_catalog_schemas": {
       "name": "deferred_catalog_schemas",
       "tool_count": 16,
-      "bytes": 14526,
-      "tokens": 3631
+      "bytes": 14530,
+      "tokens": 3632
     },
     "full_catalog_payload": {
       "name": "full_catalog_payload",
       "tool_count": 35,
-      "bytes": 32086,
-      "tokens": 8021
+      "bytes": 32090,
+      "tokens": 8022
     },
     "full_catalog_schemas": {
       "name": "full_catalog_schemas",
       "tool_count": 35,
-      "bytes": 22604,
-      "tokens": 5651
+      "bytes": 22608,
+      "tokens": 5652
     },
     "main_tools_payload": {
       "name": "main_tools_payload",
@@ -64,8 +64,8 @@
     },
     "system_prompt": {
       "name": "system_prompt",
-      "bytes": 4054,
-      "tokens": 874
+      "bytes": 4101,
+      "tokens": 888
     }
   },
   "tools": [
@@ -218,7 +218,7 @@
       "namespace": "orchestration",
       "deferred": true,
       "initially_active": false,
-      "bytes": 1325,
+      "bytes": 1329,
       "tokens": 283
     },
     {
