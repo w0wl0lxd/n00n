@@ -1656,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_record_fails_fast_instead_of_retrying() {
+    fn oversized_record_is_tombstoned_and_save_continues() {
         let (_tmp, dir) = state_dir();
         let mut state = WriterState::default();
         let session = oversized_session("/tmp/oversized");
@@ -1665,29 +1665,32 @@ mod tests {
 
         state.flush(&dir);
 
-        assert!(state.retries.exhausted.contains_key(&id));
+        // The oversized message is tombstoned in place: nothing stays pending,
+        // no retry state accumulates, and the session still loads.
+        assert!(!state.retries.exhausted.contains_key(&id));
         assert!(!state.pending.contains_key(&id));
-        assert!(state.retries.oversized_logged.contains(&id));
+        assert!(!state.retries.oversized_logged.contains(&id));
+        assert!(AppSession::load(id, &dir).unwrap().messages.is_empty());
     }
 
     #[test]
-    fn oversized_record_does_not_relog_on_next_generation() {
+    fn oversized_record_keeps_future_generations_saving() {
         let (_tmp, dir) = state_dir();
         let mut state = WriterState::default();
         let mut session = oversized_session("/tmp/oversized-repeat");
         let id = session.id;
         state.stage_snapshot(PendingSnapshot::new(1, session.clone()));
         state.flush(&dir);
-        assert!(state.retries.exhausted.contains_key(&id));
+        assert!(!state.retries.exhausted.contains_key(&id));
 
         session.meta.revision += 1;
+        session.messages.push(Message::user("still saving".into()));
         state.stage_snapshot(PendingSnapshot::new(2, session));
         state.flush(&dir);
 
-        assert!(state.retries.exhausted.contains_key(&id));
         assert!(!state.pending.contains_key(&id));
-        assert_eq!(state.retries.oversized_logged.len(), 1);
-        assert!(state.retries.oversized_logged.contains(&id));
+        let loaded = AppSession::load(id, &dir).unwrap();
+        assert_eq!(loaded.messages.len(), 1);
     }
 
     #[test]

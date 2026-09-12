@@ -2226,6 +2226,13 @@ enum LogRecord<M, U, T> {
         #[serde(flatten)]
         meta: SessionMeta,
     },
+    /// Tombstone written in place of a record that exceeded the size limit, so
+    /// positional cursors stay aligned and the log stays appendable.
+    #[serde(rename = "oversized")]
+    Oversized {
+        #[serde(default)]
+        kind: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -2363,7 +2370,7 @@ impl SessionLog {
         let _lock = lock_session_in(dir, session.id)?;
         let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Self::cursor_from(dir, session, file, 0, decoded_bytes)
+        Self::cursor_from(dir, session, file, 0, decoded_bytes, limits)
     }
 
     /// # Errors
@@ -2419,7 +2426,7 @@ impl SessionLog {
             )
         };
         let appended_frames = if rewrite { 0 } else { log_appends };
-        let log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes)?;
+        let log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes, limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
         Ok((session, log))
     }
@@ -2469,7 +2476,14 @@ impl SessionLog {
             )
         };
         let appended_frames = if rewrite { 0 } else { log_appends };
-        let mut log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes)?;
+        let mut log = Self::cursor_from(
+            dir,
+            &session,
+            file,
+            appended_frames,
+            decoded_bytes,
+            DecodeLimits::LOAD,
+        )?;
         log.saved_tool_ids = index.tool_outputs;
         log.saved_sub_msg_counts = index.subagent_message_counts;
         update_cwd_index(dir, &session.cwd, session.id)?;
@@ -2544,18 +2558,20 @@ impl SessionLog {
             let mut new_tool_ids = Vec::new();
 
             for msg in &session.messages[self.saved_messages.len()..] {
-                append_record_with_limits(
+                append_record_or_tombstone::<_, &M, &U, &T>(
                     &mut buf,
                     &LogRecord::<&M, &U, &T>::Msg { d: msg },
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
+                    self.session_id,
+                    "msg",
                 )?;
             }
 
             for (id, output) in &session.tool_outputs {
                 if !self.saved_tool_ids.contains(id) {
-                    append_record_with_limits(
+                    append_record_or_tombstone::<_, &M, &U, &T>(
                         &mut buf,
                         &LogRecord::<&M, &U, &T>::Out {
                             id: id.clone(),
@@ -2564,6 +2580,8 @@ impl SessionLog {
                         &path,
                         &limits,
                         &mut next_decoded_bytes,
+                        self.session_id,
+                        "out",
                     )?;
                     new_tool_ids.push(id.clone());
                 }
@@ -2578,36 +2596,52 @@ impl SessionLog {
             )?;
 
             for entry in &session.transcript[self.saved_transcript.len()..] {
-                write_transcript_entry_with_limits(
+                let entry_start = buf.len();
+                let entry_decoded = next_decoded_bytes;
+                match write_transcript_entry_with_limits(
                     &mut buf,
                     entry,
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
-                )?;
+                ) {
+                    Err(SessionError::RecordTooLarge { .. }) => {
+                        buf.truncate(entry_start);
+                        next_decoded_bytes = entry_decoded;
+                        warn!(
+                            session_id = %self.session_id,
+                            record_kind = "transcript",
+                            "session record exceeds the record limit; writing an oversized tombstone"
+                        );
+                        append_record_with_limits(
+                            &mut buf,
+                            &LogRecord::<&M, &U, &T>::Oversized {
+                                kind: "transcript".to_owned(),
+                            },
+                            &path,
+                            &limits,
+                            &mut next_decoded_bytes,
+                        )?;
+                    }
+                    result => result?,
+                }
             }
 
-            let current_meta = meta_record_bytes(session, self.appended_frames)?;
+            let current_meta =
+                meta_record_bytes(session, self.appended_frames, &path, limits.line_bytes)?;
             let meta_changed = current_meta != self.saved_meta;
             if buf.is_empty() && !meta_changed {
                 return Ok(None);
             }
 
             let next_log_appends = self.appended_frames + 1;
-            let mut persisted_meta = Vec::new();
-            append_record_with_limits(
-                &mut persisted_meta,
-                &LogRecord::<M, &U, &T>::Meta {
-                    title: session.title.clone(),
-                    token_usage: &session.token_usage,
-                    updated_at: session.updated_at,
-                    log_appends: next_log_appends,
-                    transcript: None,
-                    meta: session.meta.clone(),
-                },
+            let persisted_meta =
+                meta_record_bytes(session, next_log_appends, &path, limits.line_bytes)?;
+            account_record_bytes(
+                &mut next_decoded_bytes,
+                persisted_meta.len(),
                 &path,
                 &limits,
-                &mut next_decoded_bytes,
             )?;
             buf.extend_from_slice(&persisted_meta);
 
@@ -2692,7 +2726,7 @@ impl SessionLog {
                 .copied()
                 .unwrap_or_else(|| 0);
             for msg in &msgs[saved..] {
-                append_record_with_limits(
+                append_record_or_tombstone::<_, &M, &U, &T>(
                     buf,
                     &LogRecord::<&M, &U, &T>::SubMsg {
                         sub: sub_id.clone(),
@@ -2701,6 +2735,8 @@ impl SessionLog {
                     path,
                     limits,
                     decoded_bytes,
+                    self.session_id,
+                    "sub_msg",
                 )?;
             }
             if msgs.len() > saved {
@@ -2756,7 +2792,7 @@ impl SessionLog {
         self.require_same_id(session)?;
 
         let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
-        *self = Self::cursor_from(dir, session, file, 0, decoded_bytes)?;
+        *self = Self::cursor_from(dir, session, file, 0, decoded_bytes, limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
 
         Ok(())
@@ -2789,6 +2825,7 @@ impl SessionLog {
         file: File,
         appended_frames: u64,
         decoded_bytes: usize,
+        limits: DecodeLimits,
     ) -> Result<Self, SessionError>
     where
         M: Serialize + Clone,
@@ -2811,7 +2848,12 @@ impl SessionLog {
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
             appended_frames,
             saved_transcript_revision: session.transcript_revision,
-            saved_meta: meta_record_bytes(session, appended_frames)?,
+            saved_meta: meta_record_bytes(
+                session,
+                appended_frames,
+                &jsonl_path(dir, session.id),
+                limits.line_bytes,
+            )?,
             saved_title: session.title.clone(),
             decoded_bytes,
             file_revision,
@@ -2860,25 +2902,168 @@ impl SessionLog {
 fn meta_record_bytes<M, U, T>(
     session: &Session<M, U, T>,
     log_appends: u64,
+    path: &Path,
+    line_bytes: usize,
 ) -> Result<Vec<u8>, SessionError>
 where
     M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
-    let mut buf = Vec::new();
-    append_record(
-        &mut buf,
-        &LogRecord::<M, &U, &T>::Meta {
-            title: session.title.clone(),
-            token_usage: &session.token_usage,
-            updated_at: session.updated_at,
-            log_appends,
-            transcript: None,
-            meta: session.meta.clone(),
-        },
-    )?;
-    Ok(buf)
+    let mut meta = session.meta.clone();
+    loop {
+        let mut buf = Vec::new();
+        let mut limited = RecordLimitWriter {
+            writer: &mut buf,
+            written: 0,
+            limit: line_bytes,
+            exceeded: false,
+        };
+        let result = serde_json::to_writer(
+            &mut limited,
+            &LogRecord::<M, &U, &T>::Meta {
+                title: session.title.clone(),
+                token_usage: &session.token_usage,
+                updated_at: session.updated_at,
+                log_appends,
+                transcript: None,
+                meta: meta.clone(),
+            },
+        );
+        if limited.exceeded {
+            // Recovery fields are unbounded; a meta record that can never fit
+            // must not wedge every later save. Shed them before failing: the
+            // plugin snapshot first, then the queued/subagent resume state.
+            if meta.state_snapshot.is_some() {
+                warn!(
+                    session_id = %session.id,
+                    "session meta record exceeds the record limit; dropping plugin state snapshot"
+                );
+                meta.state_snapshot = None;
+                continue;
+            }
+            let shed = !meta.queued_submissions.is_empty()
+                || !meta.queued_messages.is_empty()
+                || !meta.queued_direct_tools.is_empty()
+                || !meta.consumed_run_deliveries.is_empty()
+                || !meta.subagents.is_empty()
+                || meta.direct_paused_team.is_some()
+                || meta.direct_output.is_some();
+            if shed {
+                warn!(
+                    session_id = %session.id,
+                    "session meta record exceeds the record limit; dropping queued and subagent state"
+                );
+                meta.queued_submissions.clear();
+                meta.queued_messages.clear();
+                meta.queued_direct_tools.clear();
+                meta.consumed_run_deliveries.clear();
+                meta.subagents.clear();
+                meta.direct_paused_team = None;
+                meta.direct_output = None;
+                continue;
+            }
+            return Err(SessionError::RecordTooLarge {
+                path: path.display().to_string(),
+                limit: line_bytes,
+            });
+        }
+        result.map_err(StorageError::from)?;
+        buf.push(b'\n');
+        return Ok(buf);
+    }
+}
+
+/// Appends one record, writing an `Oversized` tombstone in its place when it
+/// can never fit. The tombstone occupies the same sequence position, so
+/// cursors stay aligned and later saves keep appending.
+fn append_record_or_tombstone<R: Serialize, M, U, T>(
+    buf: &mut Vec<u8>,
+    record: &R,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+    session_id: n00nId,
+    record_kind: &'static str,
+) -> Result<(), SessionError>
+where
+    M: Serialize,
+    U: Serialize,
+    T: Serialize,
+{
+    match append_record_with_limits(buf, record, path, limits, decoded_bytes) {
+        Err(SessionError::RecordTooLarge { .. }) => {
+            warn!(
+                session_id = %session_id,
+                record_kind,
+                "session record exceeds the record limit; writing an oversized tombstone"
+            );
+            append_record_with_limits(
+                buf,
+                &LogRecord::<M, U, T>::Oversized {
+                    kind: record_kind.to_owned(),
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )
+        }
+        result => result,
+    }
+}
+
+/// Serializes into a scratch buffer so a record that can never fit is
+/// tombstoned atomically instead of leaving partial bytes on `writer`. Used by
+/// the full-rewrite path, where retraction is impossible.
+fn write_or_tombstone_record<W: Write, R: Serialize, M, U, T>(
+    writer: &mut W,
+    record: &R,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+    session_id: n00nId,
+    record_kind: &'static str,
+) -> Result<(), SessionError>
+where
+    M: Serialize,
+    U: Serialize,
+    T: Serialize,
+{
+    let mut scratch = Vec::new();
+    match append_record_or_tombstone::<R, M, U, T>(
+        &mut scratch,
+        record,
+        path,
+        limits,
+        decoded_bytes,
+        session_id,
+        record_kind,
+    ) {
+        Err(error) => Err(error),
+        Ok(()) => Ok(writer.write_all(&scratch).map_err(StorageError::from)?),
+    }
+}
+
+fn account_record_bytes(
+    decoded_bytes: &mut usize,
+    written: usize,
+    path: &Path,
+    limits: &DecodeLimits,
+) -> Result<(), SessionError> {
+    let Some(next_decoded_bytes) = decoded_bytes.checked_add(written) else {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    };
+    if next_decoded_bytes > limits.decoded_bytes {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    }
+    *decoded_bytes = next_decoded_bytes;
+    Ok(())
 }
 
 fn write_session_file_with_limits<M, U, T>(
@@ -2936,19 +3121,21 @@ where
         &mut decoded_bytes,
     )?;
     for msg in &session.messages {
-        write_record_with_limits(
+        write_or_tombstone_record::<_, _, &M, &U, &T>(
             writer,
             &LogRecord::<&M, &U, &T>::Msg { d: msg },
             path,
             limits,
             &mut decoded_bytes,
+            session.id,
+            "msg",
         )?;
     }
     for (id, output) in &session.tool_outputs {
         if session.evicted_tool_outputs.contains(id) {
             continue;
         }
-        write_record_with_limits(
+        write_or_tombstone_record::<_, _, &M, &U, &T>(
             writer,
             &LogRecord::<&M, &U, &T>::Out {
                 id: id.clone(),
@@ -2957,6 +3144,8 @@ where
             path,
             limits,
             &mut decoded_bytes,
+            session.id,
+            "out",
         )?;
     }
     for (sub_id, msgs) in &session.subagent_messages {
@@ -2964,7 +3153,7 @@ where
             continue;
         }
         for msg in msgs {
-            write_record_with_limits(
+            write_or_tombstone_record::<_, _, &M, &U, &T>(
                 writer,
                 &LogRecord::<&M, &U, &T>::SubMsg {
                     sub: sub_id.clone(),
@@ -2973,6 +3162,8 @@ where
                 path,
                 limits,
                 &mut decoded_bytes,
+                session.id,
+                "sub_msg",
             )?;
         }
     }
@@ -2980,22 +3171,43 @@ where
         copy_evicted_records(writer, path, session, limits, &mut decoded_bytes)?;
     }
     for entry in &session.transcript {
-        write_transcript_entry_with_limits(writer, entry, path, limits, &mut decoded_bytes)?;
+        let mut scratch = Vec::new();
+        let entry_decoded = decoded_bytes;
+        match write_transcript_entry_with_limits(
+            &mut scratch,
+            entry,
+            path,
+            limits,
+            &mut decoded_bytes,
+        ) {
+            Err(SessionError::RecordTooLarge { .. }) => {
+                decoded_bytes = entry_decoded;
+                scratch.clear();
+                warn!(
+                    session_id = %session.id,
+                    record_kind = "transcript",
+                    "session record exceeds the record limit; writing an oversized tombstone"
+                );
+                append_record_with_limits(
+                    &mut scratch,
+                    &LogRecord::<&M, &U, &T>::Oversized {
+                        kind: "transcript".to_owned(),
+                    },
+                    path,
+                    limits,
+                    &mut decoded_bytes,
+                )?;
+                writer.write_all(&scratch).map_err(StorageError::from)?;
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {
+                writer.write_all(&scratch).map_err(StorageError::from)?;
+            }
+        }
     }
-    write_record_with_limits(
-        writer,
-        &LogRecord::<M, &U, &T>::Meta {
-            title: session.title.clone(),
-            token_usage: &session.token_usage,
-            updated_at: session.updated_at,
-            log_appends: 0,
-            transcript: None,
-            meta: session.meta.clone(),
-        },
-        path,
-        limits,
-        &mut decoded_bytes,
-    )?;
+    let meta = meta_record_bytes(session, 0, path, limits.line_bytes)?;
+    account_record_bytes(&mut decoded_bytes, meta.len(), path, limits)?;
+    writer.write_all(&meta).map_err(StorageError::from)?;
     Ok(decoded_bytes)
 }
 
@@ -3258,12 +3470,14 @@ fn append_record_with_limits<R: Serialize>(
     Ok(())
 }
 
+#[cfg(test)]
 struct BoundedRecordBuffer {
     bytes: Vec<u8>,
     limit: usize,
     exceeded: bool,
 }
 
+#[cfg(test)]
 impl BoundedRecordBuffer {
     fn new(limit: usize) -> Self {
         Self {
@@ -3274,6 +3488,7 @@ impl BoundedRecordBuffer {
     }
 }
 
+#[cfg(test)]
 impl Write for BoundedRecordBuffer {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let Some(next_len) = self.bytes.len().checked_add(bytes.len()) else {
@@ -3293,6 +3508,7 @@ impl Write for BoundedRecordBuffer {
     }
 }
 
+#[cfg(test)]
 fn append_record<W: Write, R: Serialize>(writer: &mut W, record: &R) -> Result<(), SessionError> {
     let mut encoded = BoundedRecordBuffer::new(MAX_SESSION_RECORD_BYTES.saturating_sub(1));
     if let Err(error) = serde_json::to_writer(&mut encoded, record) {
@@ -3811,6 +4027,7 @@ where
             }
             builder.meta = m_meta;
         }
+        LogRecord::Oversized { .. } => {}
         LogRecord::Unknown => return Err(SessionError::UnknownRecord),
     }
     Ok(())
@@ -6892,6 +7109,52 @@ mod tests {
             Err(SessionError::DecodedBudgetExceeded { .. })
         ));
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn oversized_records_are_dropped_instead_of_wedging_saves() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let limits = super::DecodeLimits::new(1_024, 128 * 1_024, 27);
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(Value::String("small".into()));
+        session.messages.push(Value::String("x".repeat(8 * 1_024)));
+        session.messages.push(Value::String("after".into()));
+
+        let mut log = SessionLog::create_with_limits(dir, &session, limits).unwrap();
+        session.messages.push(Value::String("appended".into()));
+        session.messages.push(Value::String("y".repeat(8 * 1_024)));
+        session.meta.revision = 1;
+        log.append_with_limits(&session, limits).unwrap();
+
+        let (reloaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+        assert_eq!(
+            reloaded.messages,
+            [
+                Value::String("small".into()),
+                Value::String("after".into()),
+                Value::String("appended".into()),
+            ]
+        );
+        assert_eq!(reloaded.meta.revision, 1);
+    }
+
+    #[test]
+    fn oversized_meta_record_sheds_recovery_state_instead_of_failing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.meta.queued_messages = vec!["q".repeat(8 * 1_024)];
+        session.meta.state_snapshot = Some(super::StoredSessionStateSnapshot::new(3));
+        let limits = super::DecodeLimits::new(1_024, 128 * 1_024, 27);
+
+        let log = SessionLog::create_with_limits(dir, &session, limits).unwrap();
+        drop(log);
+        let (loaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+        assert!(loaded.meta.state_snapshot.is_none());
+        assert!(loaded.meta.queued_messages.is_empty());
     }
     #[test]
     fn append_compacts_when_history_exhausts_decoded_budget() {
