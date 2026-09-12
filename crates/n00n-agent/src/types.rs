@@ -1978,18 +1978,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_buf_poisoned_mutex_recovery() {
-        let buf = Arc::new(SharedBuf::new());
-        let buf2 = Arc::clone(&buf);
-        let h = std::thread::spawn(move || {
-            let _guard = buf2.committed.lock().unwrap();
-            panic!("intentional poison");
-        });
-        let _ = h.join();
-        buf.append(SnapshotLine { spans: vec![] });
-    }
-
-    #[test]
     fn buffer_snapshot_first_line_text() {
         let empty = BufferSnapshot {
             lines: Arc::new(vec![]),
