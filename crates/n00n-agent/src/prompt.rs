@@ -376,7 +376,7 @@ fn shrink_todo_line(line: &str, avail: usize) -> Option<String> {
         let mut hi = original.len();
         let mut best = None;
         while lo <= hi {
-            let mid = original.floor_char_boundary((lo + hi) / 2);
+            let mid = original.floor_char_boundary(lo.midpoint(hi));
             if let Some(slot) = val.get_mut("content") {
                 *slot = serde_json::Value::String(format!("{}...", &original[..mid]));
             }
