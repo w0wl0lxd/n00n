@@ -193,6 +193,7 @@ static BUNDLED_DIRS: LazyLock<&'static [&'static Dir<'static>]> = LazyLock::new(
 pub struct PluginHost {
     inner: Option<LuaThread>,
     state_leases: Arc<StateLeases>,
+    prompt_slot_cache: Arc<Mutex<HashMap<Option<PluginStateIdentity>, ResolvedSlots>>>,
 }
 
 #[derive(Default)]
@@ -251,6 +252,7 @@ impl PluginHost {
         Ok(Self {
             inner: Some(lua),
             state_leases: Arc::new(StateLeases::default()),
+            prompt_slot_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -259,6 +261,7 @@ impl PluginHost {
         Self {
             inner: None,
             state_leases: Arc::new(StateLeases::default()),
+            prompt_slot_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -609,6 +612,7 @@ impl PluginHost {
             prio_tx: t.prio_tx.clone(),
             shutdown: Arc::clone(&t.shutdown),
             state_leases: Arc::clone(&self.state_leases),
+            prompt_slot_cache: Arc::clone(&self.prompt_slot_cache),
         })
     }
 
@@ -650,6 +654,9 @@ pub struct EventHandle {
     prio_tx: flume::Sender<Request>,
     shutdown: Arc<AtomicBool>,
     state_leases: Arc<StateLeases>,
+    /// Last successful prompt-slot resolution per session identity. A timed
+    /// out or dead collection reuses it so the system prompt stays stable.
+    prompt_slot_cache: Arc<Mutex<HashMap<Option<PluginStateIdentity>, ResolvedSlots>>>,
 }
 
 impl SessionStatePersistence for EventHandle {
@@ -719,6 +726,7 @@ impl EventHandle {
             prio_tx: flume::unbounded().0,
             shutdown: Arc::new(AtomicBool::new(false)),
             state_leases: Arc::new(StateLeases::default()),
+            prompt_slot_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -738,6 +746,7 @@ impl EventHandle {
             prio_tx: shared,
             shutdown: Arc::new(AtomicBool::new(false)),
             state_leases: Arc::new(StateLeases::default()),
+            prompt_slot_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -771,32 +780,70 @@ impl EventHandle {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(PluginError::HostDead);
         }
+        let key = identity.map(PluginStateIdentity::from);
         let (reply, recv) = flume::bounded(1);
         self.tx
             .send(Request::CollectPromptSlots {
-                identity: identity.map(PluginStateIdentity::from),
+                identity: key.clone(),
                 reply,
             })
             .map_err(|_| PluginError::HostDead)?;
-        recv.recv_timeout(SHUTDOWN_TIMEOUT)
-            .map_err(|_| PluginError::HostDead)
+        let slots = recv
+            .recv_timeout(SHUTDOWN_TIMEOUT)
+            .map_err(|_| PluginError::HostDead)?;
+        self.store_prompt_slots(key, &slots);
+        Ok(slots)
+    }
+
+    fn store_prompt_slots(&self, key: Option<PluginStateIdentity>, slots: &ResolvedSlots) {
+        self.prompt_slot_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, slots.clone());
+    }
+
+    fn cached_prompt_slots(&self, key: Option<&PluginStateIdentity>) -> Option<ResolvedSlots> {
+        self.prompt_slot_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key.cloned())
+            .cloned()
+    }
+
+    /// Transient collection failures (busy host, watchdog abort, timeout)
+    /// must not silently drop plugin slots: a different system prompt shifts
+    /// the provider's cacheable prefix and resets the response chain. Reuse
+    /// the last successful resolution until the host answers again.
+    fn prompt_slots_fallback(
+        &self,
+        key: Option<&PluginStateIdentity>,
+        error: &PluginError,
+    ) -> ResolvedSlots {
+        if let Some(slots) = self.cached_prompt_slots(key) {
+            tracing::warn!(%error, "plugin prompt slots unavailable; reusing last collected slots");
+            slots
+        } else {
+            tracing::warn!(%error, "plugin prompt slots unavailable; using empty slots");
+            ResolvedSlots::default()
+        }
+    }
+
+    fn cached_or_empty_slots(&self, key: Option<&PluginStateIdentity>) -> ResolvedSlots {
+        self.cached_prompt_slots(key)
+            .unwrap_or_else(ResolvedSlots::default)
     }
 
     #[must_use]
     pub fn collect_prompt_slots(&self) -> ResolvedSlots {
-        self.try_collect_prompt_slots().unwrap_or_else(|error| {
-            tracing::warn!(%error, "plugin prompt slots unavailable; using empty slots");
-            ResolvedSlots::default()
-        })
+        self.try_collect_prompt_slots()
+            .unwrap_or_else(|error| self.prompt_slots_fallback(None, &error))
     }
 
     #[must_use]
     pub fn collect_prompt_slots_for(&self, identity: &SessionIdentity) -> ResolvedSlots {
+        let key = PluginStateIdentity::from(identity);
         self.try_collect_prompt_slots_for_identity(Some(identity))
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "session prompt slots unavailable; using empty slots");
-                ResolvedSlots::default()
-            })
+            .unwrap_or_else(|error| self.prompt_slots_fallback(Some(&key), &error))
     }
 
     pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
@@ -815,34 +862,42 @@ impl EventHandle {
         &self,
         identity: Option<&SessionIdentity>,
     ) -> ResolvedSlots {
+        let key = identity.map(PluginStateIdentity::from);
         if self.shutdown.load(Ordering::Acquire) {
-            return ResolvedSlots::default();
+            return self.cached_or_empty_slots(key.as_ref());
         }
         let (tx, rx) = flume::bounded(1);
         if let Err(error) = self.tx.send(Request::CollectPromptSlots {
-            identity: identity.map(PluginStateIdentity::from),
+            identity: key.clone(),
             reply: tx,
         }) {
             tracing::warn!(%error, "plugin prompt slot request failed");
-            return ResolvedSlots::default();
+            return self.cached_or_empty_slots(key.as_ref());
         }
-        futures_lite::future::race(
+        let collected = futures_lite::future::race(
             async {
                 match rx.recv_async().await {
-                    Ok(slots) => slots,
+                    Ok(slots) => Some(slots),
                     Err(error) => {
                         tracing::warn!(%error, "plugin prompt slot response disconnected");
-                        ResolvedSlots::default()
+                        None
                     }
                 }
             },
             async {
                 smol::Timer::after(SHUTDOWN_TIMEOUT).await;
                 tracing::warn!("plugin prompt slot collection timed out");
-                ResolvedSlots::default()
+                None
             },
         )
-        .await
+        .await;
+        match collected {
+            Some(slots) => {
+                self.store_prompt_slots(key, &slots);
+                slots
+            }
+            None => self.cached_or_empty_slots(key.as_ref()),
+        }
     }
     /// Hydrates host-owned plugin state after all in-flight Lua work drains.
     ///
@@ -1096,7 +1151,7 @@ impl EventHandle {
 mod tests {
     use super::*;
     use crate::api::util::command::{LuaCommandInfo, LuaCommandWriter};
-    use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot};
+    use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot, SlotEntry};
     use n00n_agent::tools::{SessionIdentity, ToolRegistry};
     use n00n_storage::{id::SessionRef, sessions::StoredStateScope};
     use std::time::Instant;
@@ -1195,6 +1250,52 @@ mod tests {
             handle.try_collect_prompt_slots(),
             Err(PluginError::HostDead)
         ));
+    }
+
+    #[test]
+    fn prompt_slot_failures_reuse_last_collected_slots() {
+        let handle = EventHandle::disconnected_for_test();
+        let mut slots = ResolvedSlots::default();
+        slots.insert(
+            PromptId::System,
+            Slot::ToolUsage,
+            SlotEntry {
+                plugin: Arc::from("test-plugin"),
+                content: "cached tool rules".to_owned(),
+            },
+        );
+        handle.store_prompt_slots(None, &slots);
+
+        let resolved = handle.collect_prompt_slots();
+        let entries = resolved.get(PromptId::System, Slot::ToolUsage);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "cached tool rules");
+    }
+
+    #[test]
+    fn prompt_slot_cache_is_scoped_by_session_identity() {
+        let handle = EventHandle::disconnected_for_test();
+        let identity = SessionIdentity::root(SessionRef::generate());
+        let mut slots = ResolvedSlots::default();
+        slots.insert(
+            PromptId::System,
+            Slot::Environment,
+            SlotEntry {
+                plugin: Arc::from("env"),
+                content: "session env".to_owned(),
+            },
+        );
+        handle.store_prompt_slots(Some(PluginStateIdentity::from(&identity)), &slots);
+
+        // Another session's failure falls back to empty, not this cache entry.
+        let other = SessionIdentity::root(SessionRef::generate());
+        let resolved = handle.collect_prompt_slots_for(&other);
+        assert!(resolved.get(PromptId::System, Slot::Environment).is_empty());
+
+        let resolved = handle.collect_prompt_slots_for(&identity);
+        let entries = resolved.get(PromptId::System, Slot::Environment);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "session env");
     }
 
     #[test]
@@ -1353,6 +1454,7 @@ mod tests {
             prio_tx,
             shutdown: Arc::new(AtomicBool::new(false)),
             state_leases: Arc::new(StateLeases::default()),
+            prompt_slot_cache: Arc::new(Mutex::new(HashMap::new())),
         };
         let identity = SessionIdentity::root(n00n_storage::id::SessionRef::generate());
         handle.run_command(

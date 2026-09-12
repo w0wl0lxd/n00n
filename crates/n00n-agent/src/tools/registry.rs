@@ -793,6 +793,7 @@ impl ToolRegistry {
                     name: name.to_owned(),
                     namespace: entry.namespace.as_deref().map(String::from),
                     description,
+                    input_schema: sanitize_tool_input_schema(entry.tool.schema()),
                 },
             ));
         }
@@ -899,9 +900,12 @@ impl ToolRegistry {
             {
                 continue;
             }
-            let Some(namespace) = entry.namespace.as_deref() else {
-                continue;
-            };
+            // Deferred tools without an explicit namespace still need a
+            // hosted-search surface, so they land in a stable catch-all group.
+            let namespace = entry
+                .namespace
+                .as_deref()
+                .map_or_else(|| DEFAULT_DEFERRED_NAMESPACE, |namespace| namespace);
             let description = vars.apply(&entry.tool.description(ctx)).into_owned();
             let sanitized_schema = sanitize_tool_input_schema(entry.tool.schema());
             let mut definition = json!({
@@ -980,11 +984,16 @@ impl RegistrySnapshot {
     }
 }
 
+/// Catch-all namespace for deferred tools that do not declare one. Without
+/// this they would be invisible to hosted tool search and unreachable.
+const DEFAULT_DEFERRED_NAMESPACE: &str = "general";
+
 #[derive(Debug, Clone)]
 pub struct ToolSearchResult {
     pub name: String,
     pub namespace: Option<String>,
     pub description: String,
+    pub input_schema: Value,
 }
 
 #[derive(Clone, Default)]
@@ -1653,8 +1662,12 @@ mod tests {
 
         let definitions = reg.deferred_definitions(&Vars::new(), &ctx, false, &active);
 
-        assert_eq!(definitions.len(), 1);
-        assert_eq!(definitions[0].namespace, "knowledge");
-        assert_eq!(definitions[0].definition["name"], "alpha");
+        // Unnamespaced deferred tools land in the catch-all namespace so
+        // hosted tool search can still surface them.
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].namespace, DEFAULT_DEFERRED_NAMESPACE);
+        assert_eq!(definitions[0].definition["name"], "unnamespaced");
+        assert_eq!(definitions[1].namespace, "knowledge");
+        assert_eq!(definitions[1].definition["name"], "alpha");
     }
 }

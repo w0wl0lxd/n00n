@@ -492,6 +492,19 @@ impl McpSession {
     /// what's left deferred, so loading tools mid-session can never flip
     /// the remainder into the context.
     pub fn extend_tools(&self, tools: &mut Value) {
+        self.extend_tools_inner(tools, false);
+    }
+
+    /// Hosted-search variant for providers with a server-side discovery
+    /// surface: only `always_load` tools are promoted. Deferred tools stay
+    /// inside the request namespaces from `deferred_definitions`, so the wire
+    /// list never changes when `loaded` grows and the prompt-cache prefix
+    /// stays stable.
+    pub fn extend_tools_hosted(&self, tools: &mut Value) {
+        self.extend_tools_inner(tools, true);
+    }
+
+    fn extend_tools_inner(&self, tools: &mut Value, hosted: bool) {
         let Some(arr) = tools.as_array_mut() else {
             debug_assert!(false, "tools must be a JSON array");
             return;
@@ -509,9 +522,9 @@ impl McpSession {
             if self.excluded.contains(&d.qualified_name) || existing.contains(d.wire_name()) {
                 continue;
             }
-            if !defer || d.always_load || loaded.contains(&*d.qualified_name) {
+            if !defer || d.always_load || (!hosted && loaded.contains(&*d.qualified_name)) {
                 arr.push(d.definition.clone());
-            } else {
+            } else if !hosted {
                 deferred.push(d);
             }
         }
@@ -531,6 +544,9 @@ impl McpSession {
         }
     }
 
+    /// Deferred MCP definitions for the hosted tool-search surface. Loaded
+    /// tools stay inside their namespaces so discovery never rewrites the
+    /// wire list or the prompt-cache prefix.
     #[must_use]
     pub fn deferred_definitions(&self) -> Vec<n00n_providers::DeferredToolDefinition> {
         let index = self.handle.index.load();
@@ -543,12 +559,10 @@ impl McpSession {
         if !should_defer {
             return Vec::new();
         }
-        let loaded = self.lock_loaded();
         let mut definitions: Vec<n00n_providers::DeferredToolDefinition> = index
             .descriptors
             .iter()
             .filter(|descriptor| !descriptor.always_load)
-            .filter(|descriptor| !loaded.contains(&*descriptor.qualified_name))
             .filter(|descriptor| !self.excluded.contains(&descriptor.qualified_name))
             .filter_map(|descriptor| {
                 Some(n00n_providers::DeferredToolDefinition {
@@ -692,6 +706,17 @@ impl McpSession {
             .find(|descriptor| descriptor.wire_name() == wire_name)
             .and_then(|descriptor| descriptor.definition["description"].as_str())
             .map(String::from)
+    }
+
+    #[must_use]
+    pub fn tool_input_schema(&self, wire_name: &str) -> Option<Value> {
+        self.handle
+            .index
+            .load()
+            .descriptors
+            .iter()
+            .find(|descriptor| descriptor.wire_name() == wire_name)
+            .and_then(|descriptor| descriptor.definition.get("input_schema").cloned())
     }
 
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
@@ -2189,6 +2214,24 @@ mod tests {
         let mut tools = json!([]);
         handle.extend_tools(&mut tools);
         assert_eq!(tool_names(&tools), vec![WIRE_TOOL_NAME]);
+    }
+
+    #[test]
+    fn hosted_extend_keeps_loaded_tools_in_namespaces() {
+        let (_inner, handle) = setup(vec![fake_entry("srv", FakeTransport::new())]);
+        handle.search_tools("TOOL").unwrap();
+
+        // Hosted tool search never promotes loaded tools onto the wire and
+        // never emits the client-side search catalog.
+        let mut tools = json!([]);
+        handle.extend_tools_hosted(&mut tools);
+        assert!(tool_names(&tools).is_empty());
+
+        // Loaded tools stay inside their hosted namespaces so the deferred
+        // list, and with it the prompt-cache prefix, is stable.
+        let definitions = handle.deferred_definitions();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].definition["name"], WIRE_TOOL_NAME);
     }
 
     #[test]

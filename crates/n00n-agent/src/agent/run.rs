@@ -455,8 +455,13 @@ impl<'h> Agent<'h> {
         // (e.g. structured_output) and expand restricted ToolFilter sets.
         // Extend MCP definitions first (always-load + loaded tools) so the
         // filtered list is complete without rebuilding from the registry.
+        let hosted_search = self.provider.supports_hosted_tool_search(&self.model);
         if let Some(mcp) = self.mcp.as_ref() {
-            mcp.extend_tools(&mut self.tools);
+            if hosted_search {
+                mcp.extend_tools_hosted(&mut self.tools);
+            } else {
+                mcp.extend_tools(&mut self.tools);
+            }
         }
         let tool_filter = self.effective_tool_filter();
         filter_provider_tools(&mut self.tools, &tool_filter, &self.mode);
@@ -480,6 +485,12 @@ impl<'h> Agent<'h> {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            // Subagent runs share the root session's cache shard so sibling
+            // bursts reuse one warm prefix bucket.
+            cache_shard_key: self
+                .identity
+                .as_ref()
+                .map(|identity| identity.root_session_id().id().to_string()),
         };
 
         info!(
@@ -1020,10 +1031,13 @@ impl<'h> Agent<'h> {
         }
         let capability_exclusions = crate::tools::capability_exclusions(&self.model);
         let mut definitions = Value::Array(Vec::new());
-        mcp.extend_tools(&mut definitions);
-        if self.provider.supports_hosted_tool_search(&self.model)
-            && let Some(items) = definitions.as_array_mut()
-        {
+        let hosted_search = self.provider.supports_hosted_tool_search(&self.model);
+        if hosted_search {
+            mcp.extend_tools_hosted(&mut definitions);
+        } else {
+            mcp.extend_tools(&mut definitions);
+        }
+        if hosted_search && let Some(items) = definitions.as_array_mut() {
             items.extend(
                 mcp.deferred_definitions()
                     .into_iter()
@@ -1157,7 +1171,11 @@ impl<'h> Agent<'h> {
             &active_snapshot,
         );
         if let Some(mcp) = &self.mcp {
-            mcp.extend_tools(&mut tools);
+            if self.provider.supports_hosted_tool_search(&self.model) {
+                mcp.extend_tools_hosted(&mut tools);
+            } else {
+                mcp.extend_tools(&mut tools);
+            }
         }
         filter_provider_tools(&mut tools, &effective_filter, &self.mode);
         self.tools = tools;
@@ -1184,6 +1202,13 @@ impl<'h> Agent<'h> {
     }
 
     fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
+        // Hosted tool search keeps deferred tools inside their wire
+        // namespaces for the whole session, so client-side activation must
+        // not churn the tools array or the prompt-cache prefix. The results
+        // already carry the schemas the model needs to call them.
+        if self.provider.supports_hosted_tool_search(&self.model) {
+            return false;
+        }
         let mut dirty = false;
         let mut active = self
             .active_tools
@@ -2207,8 +2232,10 @@ mod tests {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
         tool_requests: Arc<Mutex<Vec<Value>>>,
+        hosted_requests: Arc<Mutex<Vec<Option<n00n_providers::HostedToolSearch>>>>,
         cancel_on_request: Option<usize>,
         calls: AtomicUsize,
+        hosted_tool_search: bool,
     }
 
     impl MockProvider {
@@ -2217,8 +2244,17 @@ mod tests {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
                 tool_requests: Arc::new(Mutex::new(Vec::new())),
+                hosted_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: None,
                 calls: AtomicUsize::new(0),
+                hosted_tool_search: false,
+            }
+        }
+
+        fn hosted_search(responses: Vec<StreamResponse>) -> Self {
+            Self {
+                hosted_tool_search: true,
+                ..Self::new(responses)
             }
         }
 
@@ -2229,8 +2265,10 @@ mod tests {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
                     tool_requests: Arc::new(Mutex::new(Vec::new())),
+                    hosted_requests: Arc::new(Mutex::new(Vec::new())),
                     cancel_on_request: None,
                     calls: AtomicUsize::new(0),
+                    hosted_tool_search: false,
                 },
                 requests,
             )
@@ -2241,8 +2279,10 @@ mod tests {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
                 tool_requests: Arc::new(Mutex::new(Vec::new())),
+                hosted_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: Some(request),
                 calls: AtomicUsize::new(0),
+                hosted_tool_search: false,
             }
         }
     }
@@ -2255,7 +2295,7 @@ mod tests {
             _: &'a System,
             tools: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
-            _: RequestOptions,
+            opts: RequestOptions,
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
@@ -2265,6 +2305,10 @@ mod tests {
                 }
                 self.requests.lock().unwrap().push(messages.to_vec());
                 self.tool_requests.lock().unwrap().push(tools.clone());
+                self.hosted_requests
+                    .lock()
+                    .unwrap()
+                    .push(opts.hosted_tool_search);
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -2273,6 +2317,10 @@ mod tests {
 
         fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
             Box::pin(async { Ok(vec![]) })
+        }
+
+        fn supports_hosted_tool_search(&self, _model: &Model) -> bool {
+            self.hosted_tool_search
         }
     }
 
@@ -2641,6 +2689,155 @@ mod tests {
             assert!(active.namespaces.is_empty());
         }
     }
+
+    #[test]
+    fn hosted_tool_search_keeps_wire_tools_frozen() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _events) =
+            make_agent(MockProvider::hosted_search(Vec::new()), &mut history);
+        let tools_before = agent.tools.clone();
+        let search_result = ToolDoneEvent {
+            id: "search".to_owned(),
+            tool: Arc::from("tool_search"),
+            output: ToolOutput::Plain(
+                r#"[{"name":"fetch_url","namespace":"web","description":"Fetch URL"}]"#.into(),
+            ),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        };
+        let namespace_result = ToolDoneEvent {
+            id: "namespace".to_owned(),
+            tool: Arc::from("load_namespace"),
+            output: ToolOutput::Plain(r#"{"namespace":"knowledge","tools":["load_skill"]}"#.into()),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        };
+
+        assert!(!agent.apply_tool_search_results(&[search_result, namespace_result]));
+        {
+            let active = agent
+                .active_tools
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(active.names.is_empty());
+            assert!(active.namespaces.is_empty());
+        }
+        assert_eq!(agent.tools, tools_before);
+    }
+
+    struct DeferredFetch;
+
+    struct DeferredFetchInvocation;
+
+    impl ToolInvocation for DeferredFetchInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("fetch".into()))
+        }
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            Box::pin(async {
+                crate::tools::ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ok".into())))
+            })
+        }
+    }
+
+    impl Tool for DeferredFetch {
+        fn name(&self) -> &'static str {
+            "deferred_fetch"
+        }
+        fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
+            "deferred fetch".into()
+        }
+        fn schema(&self) -> Value {
+            json!({"type": "object", "properties": {}})
+        }
+        fn defer_loading(&self) -> bool {
+            true
+        }
+        fn namespace(&self) -> Option<&str> {
+            Some("web")
+        }
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(DeferredFetchInvocation))
+        }
+    }
+
+    /// End-to-end: under hosted tool search, a `search_tools` call mid-run
+    /// must leave both the wire `tools` array and the deferred namespace
+    /// payload identical on the next request — `tools_hash` and the hosted
+    /// surface are what the provider hashes into the prompt-cache key.
+    #[test]
+    fn hosted_tool_search_keeps_requests_identical_across_discovery() {
+        smol::block_on(async {
+            let registry = ToolRegistry::new();
+            let search: Arc<dyn Tool> = Arc::new(crate::tools::tool_search::ToolSearch::new());
+            let deferred: Arc<dyn Tool> = Arc::new(DeferredFetch);
+            for tool in [&search, &deferred] {
+                registry
+                    .register(tool, &ToolSource::Lua { plugin: "p".into() })
+                    .unwrap();
+            }
+            let provider = MockProvider::hosted_search(vec![
+                tool_use_response("search_tools", "call-search", json!({"query": "fetch"})),
+                text_response(StopReason::EndTurn),
+            ]);
+            let tool_requests = Arc::clone(&provider.tool_requests);
+            let hosted_requests = Arc::clone(&provider.hosted_requests);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _events) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(registry),
+            );
+            // The test helper seeds `agent.tools` with `definitions()`, which
+            // lists deferred tools at top level. Production init goes through
+            // `runtime_tool_definitions` → `definitions_active`, so mirror that
+            // here and reset the active set `warm_active_tools` just polluted.
+            let vars = crate::template::env_vars();
+            let filter = agent.tool_filter.clone();
+            let ctx = crate::tools::DescriptionContext {
+                filter: &filter,
+                audience: agent.audience,
+                workflow: agent.workflow,
+            };
+            agent.tools = agent.registry.definitions_active(
+                &vars,
+                &ctx,
+                false,
+                &crate::tools::default_active_tools(),
+            );
+            *agent
+                .active_tools
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                crate::tools::default_active_tools();
+
+            agent.run(default_input()).await.unwrap();
+
+            let tool_requests = tool_requests.lock().unwrap();
+            let hosted_requests = hosted_requests.lock().unwrap();
+            assert_eq!(tool_requests.len(), 2);
+            assert_eq!(hosted_requests.len(), 2);
+            assert_eq!(
+                tool_requests[0], tool_requests[1],
+                "wire tools must not change after tool discovery"
+            );
+            assert_eq!(
+                hosted_requests[0], hosted_requests[1],
+                "hosted search surface must not change after tool discovery"
+            );
+            let deferred_names: Vec<&str> = hosted_requests[1]
+                .as_ref()
+                .into_iter()
+                .flat_map(|search| search.tools.iter())
+                .filter_map(|tool| tool.definition["name"].as_str())
+                .collect();
+            assert!(deferred_names.contains(&"deferred_fetch"));
+        });
+    }
+
     fn default_input() -> AgentInput {
         AgentInput {
             message: "hello".into(),
@@ -2782,6 +2979,22 @@ mod tests {
                     } else {
                         serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"})
                     },
+                }],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some(StopReason::ToolUse),
+        }
+    }
+
+    fn tool_use_response(tool_name: &str, tool_id: &str, input: Value) -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: tool_id.into(),
+                    name: tool_name.into(),
+                    input,
                 }],
                 ..Default::default()
             },
