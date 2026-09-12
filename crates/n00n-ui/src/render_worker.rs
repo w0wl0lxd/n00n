@@ -31,8 +31,6 @@ pub struct RenderResult {
     pub lines: Vec<Line<'static>>,
 }
 
-static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
-
 #[derive(Clone, Default)]
 pub struct RenderIdentity {
     latest_job_id: Arc<Mutex<u64>>,
@@ -66,6 +64,7 @@ pub struct RenderWorker {
     job_tx: flume::Sender<RenderJob>,
     inner: Arc<PoolInner>,
     result_rx: flume::Receiver<RenderResult>,
+    next_job_id: Arc<AtomicU64>,
 }
 
 impl RenderWorker {
@@ -85,6 +84,7 @@ impl RenderWorker {
                 max_threads,
             }),
             result_rx,
+            next_job_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -117,7 +117,7 @@ impl RenderWorker {
         tool_output: Option<Arc<ToolOutput>>,
         limits: RenderLimits,
     ) -> (u64, bool) {
-        let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+        let id = self.next_job_id.fetch_add(1, Ordering::Relaxed);
         let mut latest_job_id = identity
             .latest_job_id
             .lock()
@@ -182,6 +182,7 @@ impl RenderWorker {
                 max_threads: 1,
             }),
             result_rx,
+            next_job_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -280,6 +281,7 @@ mod tests {
                 max_threads: max,
             }),
             result_rx,
+            next_job_id: Arc::new(AtomicU64::new(1)),
         }
     }
 

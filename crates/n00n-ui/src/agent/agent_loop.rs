@@ -182,7 +182,13 @@ impl AgentLoop {
                 && let Some(generation) = self.queue.drain_generation()
             {
                 let event_tx = EventSender::new(self.agent_tx.clone(), run_id);
-                let _ = event_tx.send(AgentEvent::QueueDrained { generation });
+                if event_tx
+                    .send_wait(AgentEvent::QueueDrained { generation })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
             }
         }
     }

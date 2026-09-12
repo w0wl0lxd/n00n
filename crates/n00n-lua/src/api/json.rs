@@ -203,7 +203,9 @@ fn record_toon_stats(json_len: usize, toon_len: usize, used_toon: bool) {
         }
         if let Some(path) = toon_stats_path()
             && let Ok(bytes) = serde_json::to_vec(&*stats)
+            && let Err(e) = n00n_storage::atomic_write(&path, &bytes)
         {
+            tracing::warn!(error = %e, "failed to write toon stats");
             let _ = n00n_storage::atomic_write(&path, &bytes);
         }
     }

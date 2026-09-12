@@ -142,11 +142,16 @@ impl Splash {
     #[must_use]
     pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
-        getrandom::fill(&mut rng).ok();
-        let tip_idx = u32::from_le_bytes([rng[4], rng[5], rng[6], rng[7]]) as usize % TIPS.len();
-        let field_offset = crate::cast::usize_to_f32(
-            u32::from_le_bytes([rng[0], rng[1], rng[2], rng[3]]) as usize % 10_000,
-        );
+        let (tip_idx, field_offset) = if getrandom::fill(&mut rng).is_ok() {
+            (
+                u32::from_le_bytes([rng[4], rng[5], rng[6], rng[7]]) as usize % TIPS.len(),
+                crate::cast::usize_to_f32(
+                    u32::from_le_bytes([rng[0], rng[1], rng[2], rng[3]]) as usize % 10_000,
+                ),
+            )
+        } else {
+            (0, 0.0)
+        };
         Self {
             start: Instant::now(),
             field_offset,

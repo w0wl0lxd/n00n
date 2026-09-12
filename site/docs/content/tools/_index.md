@@ -263,7 +263,7 @@ Show status for one live background agent.
 
 ### `control_agent` *(lua plugin)*
 
-Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.
+Mutate background agents: message, stop, resume, reap idle or stuck agents, fully kill a session, or manage policy. Reap without agent_id removes all idle descendants. Kill permanently removes the target and descendants. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

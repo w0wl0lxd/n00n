@@ -89,6 +89,8 @@ impl Drop for TerminalGuard {
 #[allow(unsafe_code)]
 pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
     teardown();
+    // SAFETY: Sending SIGTSTP to ourselves is the standard way to suspend a Unix
+    // process and return to the shell; teardown has already restored the terminal.
     #[cfg(unix)]
     unsafe {
         libc::raise(libc::SIGTSTP);
@@ -198,7 +200,10 @@ pub(crate) fn open_in_editor(
     resume(terminal);
 
     match result {
-        Ok(status) => Ok(status.code().unwrap_or_else(|| -1)),
+        Ok(status) => match status.code() {
+            Some(code) => Ok(code),
+            None => Err(format!("{editor} exited without a status code")),
+        },
         Err(e) => Err(format!(
             "Failed to open {editor}: {e} - set $VISUAL or $EDITOR"
         )),

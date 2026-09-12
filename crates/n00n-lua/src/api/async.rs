@@ -621,7 +621,8 @@ mod tests {
     fn cancelled_task_handle() -> TaskHandle {
         let (trigger, token) = CancelToken::new();
         trigger.cancel();
-        Arc::new(Mutex::new(TaskCell::new(token, None, None, None)))
+        let lua = Lua::new();
+        Arc::new(Mutex::new(TaskCell::new(&lua, token, None, None, None)))
     }
 
     #[test_case(0 ; "zero_clamps_to_capacity_one")]

@@ -84,7 +84,7 @@ const COALESCE_BUDGET: usize = 64;
 const HANDLE_INPUT_BUDGET: usize = 64;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(5);
+const TERMINAL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_COMPACTION_CHECKPOINT_ATTEMPTS: u8 = 3;
 const COMPACTION_SHUTDOWN_TIMEOUT_ERROR: &str = "compaction checkpoint timed out during shutdown";
 const STORAGE_WRITER_REFS_ERR: &str =
@@ -346,20 +346,52 @@ fn delete_sessions_sequentially(
     writer: &Arc<StorageWriter>,
     mut targets: Vec<n00nId>,
     reply_tx: flume::Sender<SessionReply>,
+    completion: Value,
 ) {
     let Some(target) = targets.pop() else {
-        let _ = reply_tx.send(Ok(json!(true)));
+        let _ = reply_tx.send(Ok(completion));
         return;
     };
     let next_writer = Arc::clone(writer);
     writer.delete(target, move |result| match result {
         Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_))) => {
-            delete_sessions_sequentially(&next_writer, targets, reply_tx);
+            delete_sessions_sequentially(&next_writer, targets, reply_tx, completion);
         }
         Err(error) => {
             let _ = reply_tx.send(Err(error.to_string()));
         }
     });
+}
+
+#[derive(Clone, Copy)]
+struct ReapCandidate {
+    id: n00nId,
+    parent_id: Option<n00nId>,
+    reapable: bool,
+}
+
+fn select_reapable_sessions(candidates: &[ReapCandidate]) -> HashSet<n00nId> {
+    let mut children = HashMap::<n00nId, Vec<n00nId>>::new();
+    for candidate in candidates {
+        if let Some(parent_id) = candidate.parent_id {
+            children.entry(parent_id).or_default().push(candidate.id);
+        }
+    }
+    let mut subtree_reapable = HashMap::new();
+    let mut selected = HashSet::new();
+    for candidate in candidates {
+        let descendants_reapable = children.get(&candidate.id).is_none_or(|child_ids| {
+            child_ids
+                .iter()
+                .all(|child_id| subtree_reapable.get(child_id).copied() == Some(true))
+        });
+        let reapable = candidate.reapable && descendants_reapable;
+        subtree_reapable.insert(candidate.id, reapable);
+        if reapable {
+            selected.insert(candidate.id);
+        }
+    }
+    selected
 }
 
 fn resolved_root(
@@ -872,6 +904,14 @@ impl PendingCompaction {
 impl SessionRuntime {
     fn id(&self) -> n00nId {
         self.app.state.session.id
+    }
+
+    fn is_reapable(&self) -> bool {
+        SessionStatus::of(&self.app) == SessionStatus::Idle
+            && self.app.queue.is_empty()
+            && !has_restorable_work(&self.app.state.session)
+            && !self.direct_bootstrap_active
+            && self.pending_compactions.is_empty()
     }
 }
 
@@ -2824,7 +2864,137 @@ impl<'t> EventLoop<'t> {
                 }
                 self.lineage.remove_sessions(&targets);
                 targets.reverse();
-                delete_sessions_sequentially(&self.ctx.storage_writer, targets, reply_tx);
+                delete_sessions_sequentially(
+                    &self.ctx.storage_writer,
+                    targets,
+                    reply_tx,
+                    json!(true),
+                );
+            }
+            SessionRequest::Kill { id, caller_id } => {
+                let reply = (|| {
+                    let caller = caller_session_id(caller_id)?;
+                    let target = parse_session_id(&id)?;
+                    if target == caller {
+                        return Err("cannot kill the caller session".to_owned());
+                    }
+                    self.lineage
+                        .authorize_prompt(caller, Some(target))
+                        .map_err(|error| error.to_string())?;
+                    let mut targets = self
+                        .lineage
+                        .descendants_for_delete(target)
+                        .map_err(|error| error.to_string())?;
+                    targets.push(target);
+                    let focused_id = self.sessions[self.focused].id();
+                    if targets.contains(&focused_id) {
+                        return Err("cannot kill the focused session".to_owned());
+                    }
+                    Ok(targets)
+                })();
+                let mut targets = match reply {
+                    Ok(targets) => targets,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let killed = targets
+                    .iter()
+                    .filter(|target| self.position(**target).is_some())
+                    .count();
+                let mut runtime_indices = targets
+                    .iter()
+                    .filter_map(|target| self.position(*target))
+                    .collect::<Vec<_>>();
+                runtime_indices.sort_unstable_by(|left, right| right.cmp(left));
+                for index in runtime_indices {
+                    let rt = self.remove_runtime(index);
+                    let runtime_id = rt.id();
+                    rt.app.drop_plugin_state(runtime_id);
+                    rt.handles.cancel();
+                }
+                self.lineage.remove_sessions(&targets);
+                targets.reverse();
+                delete_sessions_sequentially(
+                    &self.ctx.storage_writer,
+                    targets,
+                    reply_tx,
+                    json!(killed),
+                );
+            }
+            SessionRequest::Reap { id, caller_id } => {
+                let reply = (|| {
+                    let caller = caller_session_id(caller_id)?;
+                    let explicit_target = id.as_deref().map(parse_session_id).transpose()?;
+                    let mut targets = match explicit_target {
+                        Some(target) => {
+                            if target == caller {
+                                return Err("cannot reap the caller session".to_owned());
+                            }
+                            self.lineage
+                                .authorize_prompt(caller, Some(target))
+                                .map_err(|error| error.to_string())?;
+                            let mut targets = self
+                                .lineage
+                                .descendants_for_delete(target)
+                                .map_err(|error| error.to_string())?;
+                            targets.push(target);
+                            targets
+                        }
+                        None => self
+                            .lineage
+                            .descendants_for_delete(caller)
+                            .map_err(|error| error.to_string())?,
+                    };
+                    let candidates = targets
+                        .iter()
+                        .filter_map(|target| {
+                            let idx = self.position(*target)?;
+                            let session = &self.sessions[idx].app.state.session;
+                            Some(ReapCandidate {
+                                id: *target,
+                                parent_id: session.meta.parent_id,
+                                reapable: idx != self.focused && self.sessions[idx].is_reapable(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let selected = select_reapable_sessions(&candidates);
+                    if let Some(target) = explicit_target
+                        && !selected.contains(&target)
+                    {
+                        return Err(format!("session is not idle: {target}"));
+                    }
+                    targets.retain(|target| selected.contains(target));
+                    Ok(targets)
+                })();
+                let mut targets = match reply {
+                    Ok(targets) => targets,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let reaped = targets.len();
+                let mut runtime_indices = targets
+                    .iter()
+                    .filter_map(|target| self.position(*target))
+                    .collect::<Vec<_>>();
+                runtime_indices.sort_unstable_by(|left, right| right.cmp(left));
+                for index in runtime_indices {
+                    let rt = self.remove_runtime(index);
+                    let runtime_id = rt.id();
+                    rt.app.drop_plugin_state(runtime_id);
+                    rt.handles.cancel();
+                }
+                self.lineage.remove_sessions(&targets);
+                targets.reverse();
+                delete_sessions_sequentially(
+                    &self.ctx.storage_writer,
+                    targets,
+                    reply_tx,
+                    json!(reaped),
+                );
             }
             SessionRequest::Live => {
                 let list: Vec<_> = self
@@ -4120,17 +4290,17 @@ mod tests {
     use super::{
         COALESCE_BUDGET, CompactionPersistStage, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES,
         DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg,
-        PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, RunTransitionWriter, SessionStatus,
-        TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll, authorize_ui_delete,
-        begin_state_capture, bounded_direct_output, cancel_stored_session,
+        PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, ReapCandidate, RunTransitionWriter,
+        SessionStatus, TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll,
+        authorize_ui_delete, begin_state_capture, bounded_direct_output, cancel_stored_session,
         canonical_run_projection, capture_revision_matches, coalesce_drag,
         complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
         handle_input_bounded, initial_state_revision, merge_compaction_metadata, merge_model_batch,
         outer_compaction_state_revision, paused_team_payload, paused_team_run,
         prepare_compaction_checkpoint, projected_session_lifecycle, publish_model_refresh,
-        resolve_model_selection, resume_state_snapshot, should_save_periodically,
-        startup_login_completed, startup_provider_with, take_painted_submissions, try_recv_input,
-        validated_paused_team_payload,
+        resolve_model_selection, resume_state_snapshot, select_reapable_sessions,
+        should_save_periodically, startup_login_completed, startup_provider_with,
+        take_painted_submissions, try_recv_input, validated_paused_team_payload,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::{ArcSwap, ArcSwapOption};
@@ -4729,6 +4899,41 @@ mod tests {
         });
 
         assert!(Arc::ptr_eq(&model_slot.load_full(), &replacement));
+    }
+
+    #[test]
+    fn reap_selects_only_fully_finished_subtrees() {
+        let root: n00nId = "00000000-0000-7000-8000-000000000001"
+            .parse()
+            .expect("root id");
+        let finished_leaf: n00nId = "00000000-0000-7000-8000-000000000002"
+            .parse()
+            .expect("leaf id");
+        let blocked_parent: n00nId = "00000000-0000-7000-8000-000000000003"
+            .parse()
+            .expect("parent id");
+        let active_child: n00nId = "00000000-0000-7000-8000-000000000004"
+            .parse()
+            .expect("active id");
+        let selected = select_reapable_sessions(&[
+            ReapCandidate {
+                id: finished_leaf,
+                parent_id: Some(root),
+                reapable: true,
+            },
+            ReapCandidate {
+                id: active_child,
+                parent_id: Some(blocked_parent),
+                reapable: false,
+            },
+            ReapCandidate {
+                id: blocked_parent,
+                parent_id: Some(root),
+                reapable: true,
+            },
+        ]);
+
+        assert_eq!(selected, HashSet::from([finished_leaf]));
     }
 
     #[test]

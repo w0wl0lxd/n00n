@@ -7,8 +7,6 @@ use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::dispatch::{DepthGuard, call_isolated};
 
-static NEXT_AUTOCMD_ID: AtomicU64 = AtomicU64::new(1);
-
 const WILDCARD_PATTERN: &str = "*";
 
 pub(crate) struct AutocmdEntry {
@@ -19,12 +17,25 @@ pub(crate) struct AutocmdEntry {
     pub patterns: Option<Vec<String>>,
 }
 
-#[derive(Default)]
 pub(crate) struct AutocmdStore {
     pub(crate) listeners: HashMap<String, Vec<AutocmdEntry>>,
+    next_id: Arc<AtomicU64>,
+}
+
+impl Default for AutocmdStore {
+    fn default() -> Self {
+        Self {
+            listeners: HashMap::new(),
+            next_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
 }
 
 impl AutocmdStore {
+    pub fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
     pub fn register(&mut self, event: String, entry: AutocmdEntry) {
         self.listeners.entry(event).or_default().push(entry);
     }
@@ -156,10 +167,10 @@ fn create_autocmd(lua: &Lua, #[ctx] plugin: Arc<str>, event: Value, opts: Table)
         Value::Nil => None,
         v => Some(parse_string_or_seq(v, "pattern")?),
     };
-    let id = NEXT_AUTOCMD_ID.fetch_add(1, Ordering::Relaxed);
     let mut store = lua
         .app_data_mut::<AutocmdStore>()
         .ok_or_else(|| mlua::Error::runtime("autocmd store not initialized"))?;
+    let id = store.next_id();
     for event in events {
         store.register(
             event,

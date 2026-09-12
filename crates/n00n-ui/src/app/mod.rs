@@ -776,13 +776,6 @@ impl App {
             self.active_chat().jump_to_bottom();
             return Some(vec![]);
         }
-        if key::PLAN_TOGGLE.matches(key)
-            && self.state.mode == Mode::Plan
-            && self.state.plan.is_ready()
-        {
-            self.plan_form.toggle();
-            return Some(vec![]);
-        }
         None
     }
 
@@ -988,6 +981,21 @@ impl App {
                     vec![Action::ToggleMcp(server_name, enabled)]
                 }
             });
+        }
+
+        if key::PLAN_TOGGLE.matches(key)
+            && self.state.mode == Mode::Plan
+            && self.state.plan.is_ready()
+        {
+            self.plan_form.toggle();
+            return Some(vec![]);
+        }
+
+        if key::OPEN_EDITOR.matches(key)
+            && self.state.mode == Mode::Plan
+            && let Some(p) = self.state.plan.path()
+        {
+            return Some(vec![Action::OpenEditor(p.to_path_buf())]);
         }
 
         None
@@ -1850,7 +1858,9 @@ impl App {
                 ChatEventResult::AuthRequired
                 | ChatEventResult::SubagentInputRequired
                 | ChatEventResult::PermissionRequest { .. }
-                | ChatEventResult::QueueItemConsumed { .. } => unreachable!(),
+                | ChatEventResult::QueueItemConsumed { .. } => {
+                    tracing::warn!("unexpected ChatEventResult in turn error handler");
+                }
                 ChatEventResult::Continue => {}
             }
         }

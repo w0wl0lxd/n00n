@@ -3051,6 +3051,40 @@ local _, err = n00n.session.delete(id)
 
 ---
 
+### `n00n.session.reap()` {#n00n-session-reap}
+
+```lua
+n00n.session.reap({id?})
+```
+
+Deletes idle background sessions in the caller's lineage, including
+sessions with stale active lifecycle state. When `id` is nil, all idle
+descendants are reaped.
+
+**Parameters:**
+
+- `{id?}` (`string?`) Idle agent id, or nil for all idle descendants.
+
+**Returns:** (`integer|nil`, `string|nil`) Number of sessions reaped, or nil and an error.
+
+---
+
+### `n00n.session.kill()` {#n00n-session-kill}
+
+```lua
+n00n.session.kill({id})
+```
+
+Cancels and permanently deletes an agent session and all descendants.
+
+**Parameters:**
+
+- `{id}` (`string`) Agent id to kill.
+
+**Returns:** (`integer|nil`, `string|nil`) Number of sessions killed, or nil and an error.
+
+---
+
 ### `n00n.session.new()` {#n00n-session-new}
 
 ```lua

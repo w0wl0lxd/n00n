@@ -450,6 +450,14 @@ pub enum SessionRequest {
         caller_id: Option<SessionRef>,
         trusted_ui_control: bool,
     },
+    Reap {
+        id: Option<String>,
+        caller_id: Option<SessionRef>,
+    },
+    Kill {
+        id: String,
+        caller_id: Option<SessionRef>,
+    },
     SetTitle {
         id: String,
         title: String,
