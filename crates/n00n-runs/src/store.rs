@@ -1065,7 +1065,7 @@ impl RunStore {
     ) -> Result<(), RunStoreError> {
         self.update_outbox(
             delivery_id,
-            "UPDATE parent_outbox SET attempt_count = attempt_count + 1, next_attempt_at = ?2 WHERE delivery_id = ?1 AND state = 'pending' AND EXISTS (SELECT 1 FROM runs r JOIN run_chains c ON c.chain_id = r.chain_id WHERE r.run_id = parent_outbox.child_run_id AND c.project_key = ?3)",
+            "UPDATE parent_outbox SET attempt_count = attempt_count + 1, next_attempt_at = ?2 WHERE delivery_id = ?1 AND state IN ('pending', 'delivered') AND EXISTS (SELECT 1 FROM runs r JOIN run_chains c ON c.chain_id = r.chain_id WHERE r.run_id = parent_outbox.child_run_id AND c.project_key = ?3)",
             next_attempt_at,
             None,
         )

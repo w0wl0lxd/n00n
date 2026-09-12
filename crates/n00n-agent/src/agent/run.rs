@@ -1415,7 +1415,7 @@ impl<'h> Agent<'h> {
                         image_count: input.images.len(),
                         images: input.images.clone(),
                         control: input.control,
-                        run_delivery: None,
+                        run_delivery: input.run_delivery.clone(),
                     })?;
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
@@ -2663,6 +2663,7 @@ mod tests {
             control: false,
             prompt: None,
             plan_path: None,
+            run_delivery: None,
         }
     }
 
@@ -3351,6 +3352,41 @@ mod tests {
             assert_eq!(message.control, control);
             assert!(message.content.iter().any(|block| matches!(block,
                 ContentBlock::Image { source } if source.data == image.data && source.media_type == image.media_type)));
+        });
+    }
+
+    #[test]
+    fn queued_interrupt_emits_run_delivery_metadata() {
+        smol::block_on(async {
+            let mut input = default_input();
+            input.control = true;
+            input.run_delivery = Some(crate::ControlDeliveryMetadata {
+                delivery_id: "delivery-x".into(),
+                child_run_id: "run-42".into(),
+                source_revision: 5,
+            });
+            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent = agent.with_interrupt_source(source);
+            agent
+                .handle_queued_commands(InterruptPoint::Safe)
+                .await
+                .unwrap();
+            let events = drain_events(&event_rx);
+            let Some(AgentEvent::QueueItemConsumed { run_delivery, .. }) = events
+                .iter()
+                .map(|envelope| &envelope.event)
+                .find(|event| matches!(event, AgentEvent::QueueItemConsumed { .. }))
+            else {
+                panic!("expected QueueItemConsumed");
+            };
+            let delivery = run_delivery
+                .as_ref()
+                .expect("run delivery metadata on consumed event");
+            assert_eq!(delivery.delivery_id, "delivery-x");
+            assert_eq!(delivery.child_run_id, "run-42");
+            assert_eq!(delivery.source_revision, 5);
         });
     }
 

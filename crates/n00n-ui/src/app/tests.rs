@@ -356,6 +356,71 @@ fn session_api_control_prompt_steers_with_control_tag() {
 }
 
 #[test]
+fn control_run_delivery_survives_interrupt_extraction() {
+    let mut app = test_app();
+    let (sender, receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    app.status = Status::Streaming;
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-int".to_owned(),
+        child_run_id: "run-9".to_owned(),
+        source_revision: 2,
+    };
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "child finished".into(),
+            images: Vec::new(),
+            control: true,
+            run_delivery: Some(delivery.clone()),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    let Some(n00n_agent::ExtractedCommand::Interrupt(input, _)) =
+        receiver.poll(n00n_agent::InterruptPoint::ToolComplete)
+    else {
+        panic!("expected steering interrupt");
+    };
+    let extracted = input.run_delivery.expect("run delivery on interrupt input");
+    assert_eq!(extracted.delivery_id, delivery.delivery_id);
+    assert_eq!(extracted.child_run_id, delivery.child_run_id);
+    assert_eq!(extracted.source_revision, delivery.source_revision);
+}
+
+#[test]
+fn control_run_delivery_reaches_idle_start_dispatch() {
+    let mut app = test_app();
+    let (sender, _receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-idle".to_owned(),
+        child_run_id: "run-7".to_owned(),
+        source_revision: 1,
+    };
+
+    let SubmitOutcome::Started(actions) = app.submit_control_prompt(QueuedMessage {
+        text: "child finished".into(),
+        images: Vec::new(),
+        control: true,
+        run_delivery: Some(delivery),
+    }) else {
+        panic!("expected control prompt to start");
+    };
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+    assert_eq!(
+        dispatch
+            .input
+            .run_delivery
+            .as_ref()
+            .map(|d| d.delivery_id.as_str()),
+        Some("delivery-idle")
+    );
+}
+
+#[test]
 fn parent_run_delivery_metadata_is_persisted_with_control_queue_item() {
     let mut app = test_app();
     let (shared, _receiver) = shared_queue::queue();

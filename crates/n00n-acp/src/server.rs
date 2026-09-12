@@ -442,6 +442,7 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         control: false,
         prompt: None,
         plan_path: session.plan_path.clone(),
+        run_delivery: None,
     };
 
     let mut pending = session

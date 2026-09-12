@@ -647,6 +647,7 @@ pub fn spawn(mut params: HeadlessParams) -> HeadlessHandle {
                     control: false,
                     prompt: None,
                     plan_path: plan_path.clone(),
+                    run_delivery: None,
                 })
                 .await;
             drop(agent);

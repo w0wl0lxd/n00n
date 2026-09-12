@@ -435,6 +435,7 @@ mod tests {
     struct FakeInbox {
         logical_insertions: Mutex<HashSet<String>>,
         fail_after_insert: AtomicBool,
+        fail_insert: AtomicBool,
         unavailable: AtomicBool,
         consumed: AtomicBool,
     }
@@ -444,7 +445,12 @@ mod tests {
             &'a self,
             delivery: &'a crate::ParentOutboxRecord,
         ) -> AdapterFuture<'a, ParentInsertResult> {
-            let result = if self.consumed.load(Ordering::SeqCst) {
+            let result = if self.fail_insert.load(Ordering::SeqCst) {
+                Err(RunAdapterError {
+                    code: "transient".to_owned(),
+                    message: "simulated transient insert failure".to_owned(),
+                })
+            } else if self.consumed.load(Ordering::SeqCst) {
                 Ok(ParentInsertResult::AlreadyConsumed)
             } else if self.unavailable.load(Ordering::SeqCst) {
                 Ok(ParentInsertResult::PermanentUnavailable {
@@ -686,6 +692,40 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn dispatcher_retries_delivered_rows_when_reinsertion_fails() {
+        let temp = TempDir::new().unwrap();
+        let store = RunStore::open_path(
+            temp.path().join("runs.sqlite3"),
+            crate::ProjectKey::new("/project").unwrap(),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let service = RunService::new(store);
+        let mut spec = NewRunSpec::new(RunKind::Task, ExecutionBackend::TuiSession, "child");
+        spec.parent_session_id = Some("parent".to_owned());
+        let queued = smol::block_on(service.create_run(spec)).unwrap();
+        smol::block_on(service.transition(transition(
+            &queued,
+            RunLifecycle::Cancelled,
+            "cancelled",
+        )))
+        .unwrap();
+
+        let inbox = FakeInbox::default();
+        let first = smol::block_on(service.dispatch_parent_outbox(&inbox, 10, 5, 10)).unwrap();
+        assert_eq!(first.delivered, 1);
+
+        inbox.fail_insert.store(true, Ordering::SeqCst);
+        let second = smol::block_on(service.dispatch_parent_outbox(&inbox, 15, 5, 10)).unwrap();
+        assert_eq!(second.retried, 1);
+
+        inbox.fail_insert.store(false, Ordering::SeqCst);
+        let third = smol::block_on(service.dispatch_parent_outbox(&inbox, 20, 5, 10)).unwrap();
+        assert_eq!(third.delivered, 1);
+        assert_eq!(inbox.logical_insertions.lock().unwrap().len(), 1);
     }
 
     #[test]

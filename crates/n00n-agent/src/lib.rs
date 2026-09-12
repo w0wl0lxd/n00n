@@ -134,4 +134,7 @@ pub struct AgentInput {
     pub control: bool,
     pub prompt: Option<Box<McpPromptRef>>,
     pub plan_path: Option<PathBuf>,
+    /// Durable parent-outbox delivery this input consumes. Carried through the
+    /// interrupt path so `QueueItemConsumed` can acknowledge it.
+    pub run_delivery: Option<ControlDeliveryMetadata>,
 }

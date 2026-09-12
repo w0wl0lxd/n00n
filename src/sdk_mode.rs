@@ -775,6 +775,7 @@ fn handle_user_message(
         control: false,
         prompt: None,
         plan_path: None,
+        run_delivery: None,
     };
     match handle.input_tx.send(input) {
         Ok(()) => true,

@@ -857,6 +857,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
             prompt: None,
             control: false,
             plan_path,
+            run_delivery: None,
         };
         smol::spawn(async move {
             let _lock = message_lock.lock().await;
@@ -1094,6 +1095,7 @@ async fn handle_connection(
                     prompt: None,
                     control: true,
                     plan_path,
+                    run_delivery: None,
                 })
                 .wrap_err("failed to send input")?;
 

@@ -133,6 +133,7 @@ impl App {
             control: msg.control,
             prompt: None,
             plan_path: self.state.plan.path().map(Path::to_path_buf),
+            run_delivery: msg.run_delivery.clone(),
         }
     }
 

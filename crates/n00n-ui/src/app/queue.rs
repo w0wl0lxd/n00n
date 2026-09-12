@@ -81,6 +81,7 @@ impl MessageQueue {
         // Atomic check-and-push: hold the lock across both operations to prevent race
         let image_count = dispatch.input.images.len();
         let text = dispatch.input.message.clone();
+        let run_delivery = dispatch.input.run_delivery.clone();
         shared.push_front_if_missing(QueueItem::Message {
             text,
             image_count,
@@ -91,7 +92,7 @@ impl MessageQueue {
             ready: Arc::new(AtomicBool::new(false)),
             displayed: false,
             delivery: Delivery::TurnEnd,
-            run_delivery: None,
+            run_delivery,
         });
     }
 
@@ -523,6 +524,7 @@ mod tests {
                 control: false,
                 prompt: None,
                 plan_path: None,
+                run_delivery: None,
             },
             run_id: 0,
             submission_id: 0,
