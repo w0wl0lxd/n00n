@@ -1095,8 +1095,8 @@ impl StoredCompactionStateCheckpoints {
             match validate_compaction_state_checkpoints(&candidate) {
                 Ok(()) => break,
                 Err(
-                    error @ (CompactionStateError::TooManyCheckpoints { .. }
-                    | CompactionStateError::CheckpointsTooLarge { .. }),
+                    CompactionStateError::TooManyCheckpoints { .. }
+                    | CompactionStateError::CheckpointsTooLarge { .. },
                 ) if candidate.checkpoints.len() > 1 => {
                     if let Some(pos) = candidate.checkpoints.iter().position(|s| {
                         s.state_revision()
@@ -1104,10 +1104,17 @@ impl StoredCompactionStateCheckpoints {
                     }) {
                         candidate.checkpoints.remove(pos);
                     } else {
-                        // All remaining checkpoints are protected – cannot prune
-                        // without breaking a rewound session. Surface the
-                        // validation error to the caller.
-                        return Err(error);
+                        // Every remaining checkpoint is transcript-protected.
+                        // Keep storage bounded by evicting the oldest anyway:
+                        // failing persistence here would lose the new compaction
+                        // boundary outright, which is worse than dropping the
+                        // oldest rewind target.
+                        let evicted = candidate.checkpoints.remove(0);
+                        warn!(
+                            evicted_revision = evicted.state_revision(),
+                            remaining = candidate.checkpoints.len(),
+                            "evicted transcript-protected compaction checkpoint to keep storage bounded"
+                        );
                     }
                 }
                 Err(error) => return Err(error),
