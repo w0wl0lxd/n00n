@@ -312,13 +312,12 @@ rusqlite = { version = "0.40.1", default-features = false, features = [
   "bundled",
   "modern_sqlite",
 ] }
-gix = { version = "0.86", default-features = false, features = [
+gix = { version = "0.87", default-features = false, features = [
   "sha1",
   "revision",
   "status",
   "blob-diff",
   "blame",
-  "tree-editor",
 ] }
 tantivy = "0.26.1"
 fs2 = "0.4.3"
