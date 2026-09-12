@@ -495,7 +495,16 @@ impl AgentLoop {
         }
         let mut tools = self.build_tools(model, workflow);
         if let Some(ref mcp) = self.mcp {
-            mcp.extend_tools(&mut tools);
+            let hosted_search = self
+                .model_slot
+                .load()
+                .provider
+                .supports_hosted_tool_search(model);
+            if hosted_search {
+                mcp.extend_tools_hosted(&mut tools);
+            } else {
+                mcp.extend_tools(&mut tools);
+            }
         }
         self.tools = tools;
         self.tools_cache = Some(ToolsCache {
