@@ -74,6 +74,7 @@ a string belongs.
 | [`n00n.keymap`](#n00n-keymap) | Key mappings, modeled after `vim.keymap`. |
 | [`n00n.log`](#n00n-log) | Structured logging for plugins. |
 | [`n00n.net`](#n00n-net) | HTTP client for fetching web content. |
+| [`n00n.run`](#n00n-run) |  |
 | [`n00n.search`](#n00n-search) | Native, keyless extraction of bounded public web content. |
 | [`n00n.session`](#n00n-session) | Host session primitives. |
 | [`n00n.text`](#n00n-text) | Text transformation utilities. |
@@ -2868,6 +2869,25 @@ else
   print(res.status, res.body)
 end
 ```
+
+
+## n00n.run {#n00n-run}
+
+---
+
+### `n00n.run.start()` {#n00n-run-start}
+
+```lua
+n00n.run.start({opts})
+```
+
+Starts a trusted background run backed by a child TUI session.
+
+**Parameters:**
+
+- `{opts}` (`table`) Required task kind, bootstrap tool, input, and title.
+
+**Returns:** (`table|nil`, `string|nil`) Run identity and lifecycle, or nil and an error.
 
 
 ## n00n.search {#n00n-search}

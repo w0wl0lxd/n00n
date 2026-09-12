@@ -326,7 +326,7 @@ Launch isolated agent; combine independent calls with batch. research (default) 
 | `description` | string | yes | Task summary (3-5 words). |
 | `model_tier` | string | no | Tier: weak/medium/strong. |
 | `auto_tier` | boolean | no | Auto-route tier from prompt. |
-| `background` | boolean | no | Start in background; return agent_id immediately. |
+| `background` | boolean | no | Start in background; return run identity immediately. |
 | `model` | string | no | Exact model override. |
 | `output_schema` | object | no | Output JSON schema. Result returned as validated JSON string. |
 | `prompt` | string | yes | Task prompt. |
