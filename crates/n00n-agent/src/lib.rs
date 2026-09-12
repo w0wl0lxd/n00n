@@ -42,10 +42,10 @@ pub use n00n_providers::{ImageMediaType, ImageSource, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::sessions::{SessionMeta, StoredMode};
 pub use types::{
-    AgentEvent, BufferSnapshot, Envelope, EventSender, GrepFileEntry, GrepLine, GrepMatchGroup,
-    InstructionBlock, NO_FILES_FOUND, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle,
-    SubagentInfo, SubagentPrompt, TextOutput, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
-    ToolTelemetry, ToolUsage, TurnCompleteEvent,
+    AgentEvent, BufferSnapshot, ControlDeliveryMetadata, Envelope, EventSender, GrepFileEntry,
+    GrepLine, GrepMatchGroup, InstructionBlock, NO_FILES_FOUND, SharedBuf, SnapshotLine,
+    SnapshotSpan, SpanStyle, SubagentInfo, SubagentPrompt, TextOutput, ToolDoneEvent, ToolInput,
+    ToolOutput, ToolStartEvent, ToolTelemetry, ToolUsage, TurnCompleteEvent,
 };
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -134,4 +134,7 @@ pub struct AgentInput {
     pub control: bool,
     pub prompt: Option<Box<McpPromptRef>>,
     pub plan_path: Option<PathBuf>,
+    /// Durable parent-outbox delivery this input consumes. Carried through the
+    /// interrupt path so `QueueItemConsumed` can acknowledge it.
+    pub run_delivery: Option<ControlDeliveryMetadata>,
 }

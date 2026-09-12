@@ -695,9 +695,7 @@ impl McpSession {
     }
 
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
-        self.loaded
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.loaded.lock().unwrap_or_else(|_| std::process::abort())
     }
 }
 
@@ -1688,7 +1686,7 @@ fn intern(name: String) -> Arc<str> {
     let mut map = CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .unwrap_or_else(|_| std::process::abort());
     if let Some(existing) = map.get(&name) {
         return Arc::clone(existing);
     }

@@ -22,7 +22,6 @@ const ORCHESTRATOR_TOOLS: &[&str] = &[
     "run_team",
     "run_workflow",
 ];
-static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 const CHEAP_TOOL_KINDS: &[&str] = &["cheap", "read", "metadata", "search"];
 const ORCHESTRATOR_TOOL_KINDS: &[&str] = &["orchestrator", "fanout"];
 
@@ -104,6 +103,7 @@ pub struct ToolAdmission {
     process_active: AtomicUsize,
     cheap_active: AtomicUsize,
     interactive_active: AtomicUsize,
+    next_scope: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for ToolAdmission {
@@ -141,10 +141,10 @@ impl ToolAdmission {
     }
 
     #[must_use]
-    pub fn new_scope() -> Arc<str> {
+    pub fn new_scope(&self) -> Arc<str> {
         Arc::from(format!(
             "agent-{}",
-            NEXT_SCOPE.fetch_add(1, Ordering::Relaxed)
+            self.next_scope.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
@@ -171,6 +171,7 @@ impl ToolAdmission {
             process_active: AtomicUsize::new(0),
             cheap_active: AtomicUsize::new(0),
             interactive_active: AtomicUsize::new(0),
+            next_scope: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -223,7 +224,7 @@ impl ToolAdmission {
                 .state
                 .agents
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(|_| std::process::abort());
             let slot = Arc::clone(agents.entry(scope.clone()).or_insert_with(|| {
                 Arc::new(AgentSlot {
                     semaphore: Arc::new(Semaphore::new(self.agent_limit)),
@@ -263,7 +264,7 @@ impl ToolAdmission {
             .state
             .agents
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         if !agents
             .get(scope)
             .is_some_and(|current| Arc::ptr_eq(current, slot))
@@ -332,7 +333,7 @@ impl Drop for ToolAdmissionGuard<'_> {
         let mut agents = state
             .agents
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         let Some(slot) = agents.get(&scope).cloned() else {
             return;
         };

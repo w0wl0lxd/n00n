@@ -12,7 +12,7 @@ use nucleo::pattern::{CaseMatching, Normalization};
 use nucleo::{Config, Matcher, Nucleo, Utf32String};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use tracing::warn;
@@ -119,7 +119,10 @@ impl MentionFlyout {
                             {
                                 return ignore::WalkState::Continue;
                             }
-                            let path = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                            let path = match entry.path().strip_prefix(&root) {
+                                Ok(p) => p,
+                                Err(_) => entry.path(),
+                            };
                             let mut name = path.to_string_lossy().into_owned();
                             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                                 name.push(std::path::MAIN_SEPARATOR);
@@ -493,7 +496,7 @@ impl MentionFlyout {
     ) -> Line<'a> {
         let base = if selected { t.item_selected } else { t.item };
         let highlight = base
-            .fg(t.accent.fg.unwrap_or_default())
+            .fg(t.accent.fg.unwrap_or_else(|| Color::Reset))
             .add_modifier(Modifier::BOLD);
 
         let mut spans = vec![Span::styled(LABEL_INDENT, base)];
@@ -502,7 +505,7 @@ impl MentionFlyout {
         let mut width = 0usize;
 
         for (i, ch) in text.chars().enumerate() {
-            let cw = ch.width().unwrap_or(0);
+            let cw = ch.width().unwrap_or_else(|| 0);
             if width + cw > max_width {
                 break;
             }

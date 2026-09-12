@@ -278,11 +278,19 @@ async fn send_worker_request(stdin: &mut ChildStdin, request: &WorkerRequest) ->
     stdin.flush().await
 }
 
+const MAX_WORKER_EVENT_BYTES: usize = 10 * 1024 * 1024;
+
 async fn read_worker_event(stdout: &mut BufReader<ChildStdout>) -> io::Result<Option<WorkerEvent>> {
     loop {
         let mut line = String::new();
         if stdout.read_line(&mut line).await? == 0 {
             return Ok(None);
+        }
+        if line.len() > MAX_WORKER_EVENT_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("interpreter worker event exceeded frame limit {MAX_WORKER_EVENT_BYTES}"),
+            ));
         }
         if !line.trim_start().starts_with('{') {
             continue;

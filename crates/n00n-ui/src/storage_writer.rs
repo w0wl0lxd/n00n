@@ -84,6 +84,7 @@ struct FailedSnapshot {
     /// is only kept for the flush target), so `RetryState` can fail fast
     /// on a structurally oversized record instead of burning retries on it.
     structural_limit: Option<usize>,
+    concurrent_modification: bool,
 }
 
 type FailedSnapshots = HashMap<n00nId, FailedSnapshot>;
@@ -114,6 +115,7 @@ struct RetryState {
     /// logged for, so it isn't repeated on every later save. Cleared once
     /// the session persists successfully, so a fresh occurrence logs again.
     oversized_logged: HashSet<n00nId>,
+    conflicts_logged: HashSet<n00nId>,
 }
 
 /// Per-session record ids the writer has actually put on disk. The UI consults
@@ -780,12 +782,22 @@ impl RetryState {
                 .entry((*id, failure.version.generation))
                 .or_default();
             *attempts += 1;
-            let exhausted_now =
-                failure.structural_limit.is_some() || *attempts >= MAX_RETRY_ATTEMPTS;
+            let exhausted_now = failure.structural_limit.is_some()
+                || failure.concurrent_modification
+                || *attempts >= MAX_RETRY_ATTEMPTS;
             if !exhausted_now {
                 continue;
             }
-            if let Some(limit) = failure.structural_limit {
+            if failure.concurrent_modification {
+                if self.conflicts_logged.insert(*id) {
+                    warn!(
+                        %id,
+                        revision = failure.version.revision,
+                        "storage writer rejected snapshot: session log changed concurrently; \
+                         snapshot not retried to avoid overwriting external changes"
+                    );
+                }
+            } else if let Some(limit) = failure.structural_limit {
                 if self.oversized_logged.insert(*id) {
                     warn!(
                         %id,
@@ -828,6 +840,7 @@ impl RetryState {
                 self.exhausted.remove(session_id);
             }
             self.oversized_logged.remove(session_id);
+            self.conflicts_logged.remove(session_id);
         }
     }
 
@@ -835,6 +848,7 @@ impl RetryState {
         self.attempts.retain(|(session_id, _), _| *session_id != id);
         self.exhausted.remove(&id);
         self.oversized_logged.remove(&id);
+        self.conflicts_logged.remove(&id);
     }
 
     fn unpersisted_count(&self, failed: &FailedSnapshots) -> usize {
@@ -922,6 +936,7 @@ fn flush(
                         version: snapshot.version.clone(),
                         error,
                         structural_limit: None,
+                        concurrent_modification: false,
                     },
                 );
                 pending.insert(id, snapshot);
@@ -949,7 +964,9 @@ fn flush(
             }
             Err(error) => {
                 let structural_limit = structural_failure_limit(&error);
-                if structural_limit.is_none() {
+                let concurrent_modification =
+                    matches!(error, SessionError::ConcurrentModification { .. });
+                if structural_limit.is_none() && !concurrent_modification {
                     warn!(error = %error, %id, "session write failed");
                 }
                 let is_target = target.is_some_and(|(target_id, version)| {
@@ -961,6 +978,7 @@ fn flush(
                         version: snapshot.version.clone(),
                         error: is_target.then_some(error),
                         structural_limit,
+                        concurrent_modification,
                     },
                 );
                 pending.insert(id, snapshot);
@@ -1065,6 +1083,7 @@ mod tests {
     const NONBLOCKING_TIMEOUT: Duration = Duration::from_secs(2);
     const OPENAI_RESPONSE_SUFFIX: &str = "openai-response.json";
     const STRESS_SNAPSHOT_COUNT: u64 = 10_000;
+    const EXTERNAL_TITLE: &str = "external writer";
 
     fn state_dir() -> (TempDir, StateDir) {
         let tmp = TempDir::new().unwrap();
@@ -1473,6 +1492,7 @@ mod tests {
                 version: failed_version.clone(),
                 error: None,
                 structural_limit: None,
+                concurrent_modification: false,
             },
         )]);
         for _ in 0..MAX_RETRY_ATTEMPTS {
@@ -1573,6 +1593,45 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_modification_fails_fast_without_overwriting_disk() {
+        let (_tmp, dir) = state_dir();
+        let mut state = WriterState::default();
+        let mut session = AppSession::new("test-model", "/tmp/concurrent");
+        let id = session.id;
+        state.persist(1, Box::new(session.clone()), &dir).unwrap();
+        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR).unwrap();
+        let (mut external, mut log) = SessionLog::open::<
+            n00n_providers::Message,
+            n00n_providers::TokenUsage,
+            n00n_agent::ToolOutput,
+        >(&sessions_dir, id)
+        .unwrap();
+        external.title = EXTERNAL_TITLE.into();
+        log.append(&external).unwrap();
+
+        session.meta.revision += 1;
+        let error = state
+            .persist(2, Box::new(session.clone()), &dir)
+            .unwrap_err();
+        assert!(matches!(error, SessionError::ConcurrentModification { .. }));
+        assert!(!state.pending.contains_key(&id));
+        assert!(state.retries.exhausted.contains_key(&id));
+        assert!(state.retries.conflicts_logged.contains(&id));
+        assert_eq!(state.retries.unpersisted_count(&FailedSnapshots::new()), 1);
+
+        session.meta.revision += 1;
+        assert!(matches!(
+            state.persist(3, Box::new(session), &dir),
+            Err(SessionError::ConcurrentModification { .. })
+        ));
+        assert!(!state.pending.contains_key(&id));
+        assert_eq!(AppSession::load(id, &dir).unwrap().title, EXTERNAL_TITLE);
+        assert_eq!(state.retries.conflicts_logged.len(), 1);
+        state.retries.clear(id);
+        assert!(!state.retries.conflicts_logged.contains(&id));
+    }
+
+    #[test]
     fn structural_failure_limit_covers_both_oversized_variants() {
         assert_eq!(
             structural_failure_limit(&SessionError::RecordTooLarge {
@@ -1597,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_record_fails_fast_instead_of_retrying() {
+    fn oversized_record_is_tombstoned_and_save_continues() {
         let (_tmp, dir) = state_dir();
         let mut state = WriterState::default();
         let session = oversized_session("/tmp/oversized");
@@ -1606,29 +1665,32 @@ mod tests {
 
         state.flush(&dir);
 
-        assert!(state.retries.exhausted.contains_key(&id));
+        // The oversized message is tombstoned in place: nothing stays pending,
+        // no retry state accumulates, and the session still loads.
+        assert!(!state.retries.exhausted.contains_key(&id));
         assert!(!state.pending.contains_key(&id));
-        assert!(state.retries.oversized_logged.contains(&id));
+        assert!(!state.retries.oversized_logged.contains(&id));
+        assert!(AppSession::load(id, &dir).unwrap().messages.is_empty());
     }
 
     #[test]
-    fn oversized_record_does_not_relog_on_next_generation() {
+    fn oversized_record_keeps_future_generations_saving() {
         let (_tmp, dir) = state_dir();
         let mut state = WriterState::default();
         let mut session = oversized_session("/tmp/oversized-repeat");
         let id = session.id;
         state.stage_snapshot(PendingSnapshot::new(1, session.clone()));
         state.flush(&dir);
-        assert!(state.retries.exhausted.contains_key(&id));
+        assert!(!state.retries.exhausted.contains_key(&id));
 
         session.meta.revision += 1;
+        session.messages.push(Message::user("still saving".into()));
         state.stage_snapshot(PendingSnapshot::new(2, session));
         state.flush(&dir);
 
-        assert!(state.retries.exhausted.contains_key(&id));
         assert!(!state.pending.contains_key(&id));
-        assert_eq!(state.retries.oversized_logged.len(), 1);
-        assert!(state.retries.oversized_logged.contains(&id));
+        let loaded = AppSession::load(id, &dir).unwrap();
+        assert_eq!(loaded.messages.len(), 1);
     }
 
     #[test]

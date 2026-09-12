@@ -74,6 +74,7 @@ a string belongs.
 | [`n00n.keymap`](#n00n-keymap) | Key mappings, modeled after `vim.keymap`. |
 | [`n00n.log`](#n00n-log) | Structured logging for plugins. |
 | [`n00n.net`](#n00n-net) | HTTP client for fetching web content. |
+| [`n00n.run`](#n00n-run) |  |
 | [`n00n.search`](#n00n-search) | Native, keyless extraction of bounded public web content. |
 | [`n00n.session`](#n00n-session) | Host session primitives. |
 | [`n00n.text`](#n00n-text) | Text transformation utilities. |
@@ -2870,6 +2871,25 @@ end
 ```
 
 
+## n00n.run {#n00n-run}
+
+---
+
+### `n00n.run.start()` {#n00n-run-start}
+
+```lua
+n00n.run.start({opts})
+```
+
+Starts a trusted background run backed by a child TUI session.
+
+**Parameters:**
+
+- `{opts}` (`table`) Required task kind, bootstrap tool, input, and title.
+
+**Returns:** (`table|nil`, `string|nil`) Run identity and lifecycle, or nil and an error.
+
+
 ## n00n.search {#n00n-search}
 
 Native, keyless extraction of bounded public web content.
@@ -3028,6 +3048,40 @@ is running. The focused session cannot be deleted.
 ```lua
 local _, err = n00n.session.delete(id)
 ```
+
+---
+
+### `n00n.session.reap()` {#n00n-session-reap}
+
+```lua
+n00n.session.reap({id?})
+```
+
+Deletes idle background sessions in the caller's lineage, including
+sessions with stale active lifecycle state. When `id` is nil, all idle
+descendants are reaped.
+
+**Parameters:**
+
+- `{id?}` (`string?`) Idle agent id, or nil for all idle descendants.
+
+**Returns:** (`integer|nil`, `string|nil`) Number of sessions reaped, or nil and an error.
+
+---
+
+### `n00n.session.kill()` {#n00n-session-kill}
+
+```lua
+n00n.session.kill({id})
+```
+
+Cancels and permanently deletes an agent session and all descendants.
+
+**Parameters:**
+
+- `{id}` (`string`) Agent id to kill.
+
+**Returns:** (`integer|nil`, `string|nil`) Number of sessions killed, or nil and an error.
 
 ---
 

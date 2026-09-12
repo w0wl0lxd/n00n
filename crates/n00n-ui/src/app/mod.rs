@@ -545,28 +545,7 @@ impl App {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
                 let text = text.replace("\r\n", "\n").replace('\r', "\n");
-                if text.is_empty() {
-                    if self.is_main_chat() && self.image_paste_rx.is_empty() {
-                        self.start_image_paste();
-                    }
-                } else {
-                    let mut text_lines = Vec::new();
-                    if self.is_main_chat() {
-                        for line in text.split('\n') {
-                            if let Some((path, mt)) = image::try_parse_image_path(line) {
-                                self.start_file_image_paste(path, mt);
-                            } else {
-                                text_lines.push(line);
-                            }
-                        }
-                    } else {
-                        text_lines.push(&text);
-                    }
-                    let text = text_lines.join("\n");
-                    if !text.is_empty() {
-                        self.route_text_paste(&text);
-                    }
-                }
+                self.route_text_paste(&text);
                 vec![]
             }
             Msg::Mouse(event) => {
@@ -797,13 +776,6 @@ impl App {
             self.active_chat().jump_to_bottom();
             return Some(vec![]);
         }
-        if key::PLAN_TOGGLE.matches(key)
-            && self.state.mode == Mode::Plan
-            && self.state.plan.is_ready()
-        {
-            self.plan_form.toggle();
-            return Some(vec![]);
-        }
         None
     }
 
@@ -1011,6 +983,21 @@ impl App {
             });
         }
 
+        if key::PLAN_TOGGLE.matches(key)
+            && self.state.mode == Mode::Plan
+            && self.state.plan.is_ready()
+        {
+            self.plan_form.toggle();
+            return Some(vec![]);
+        }
+
+        if key::OPEN_EDITOR.matches(key)
+            && self.state.mode == Mode::Plan
+            && let Some(p) = self.state.plan.path()
+        {
+            return Some(vec![Action::OpenEditor(p.to_path_buf())]);
+        }
+
         None
     }
 
@@ -1093,6 +1080,15 @@ impl App {
     }
 
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        if !self.image_paste_rx.is_empty()
+            && (key.code == KeyCode::Enter
+                || (key.code == KeyCode::Tab
+                    && self.status == Status::Streaming
+                    && !self.is_bash_input()))
+        {
+            self.status_bar.flash(image_paste::IMAGE_LOADING_MSG.into());
+            return vec![];
+        }
         if key::TRANSCRIPT_DETAILS.matches(key) {
             let visible = self.active_chat().toggle_transcript_details();
             self.flash(
@@ -1242,6 +1238,14 @@ impl App {
     }
 
     pub(crate) fn handle_submit(&mut self, sub: Submission) -> Vec<Action> {
+        if !self.image_paste_rx.is_empty() {
+            self.input_box.set_input(&sub.text);
+            for image in sub.images {
+                self.input_box.attach_image(image);
+            }
+            self.status_bar.flash(image_paste::IMAGE_LOADING_MSG.into());
+            return vec![];
+        }
         match std::mem::take(&mut self.pending_input) {
             PendingInput::AuthRetry { subagent_id } => {
                 self.send_to_agent(subagent_id.as_deref(), String::new());
@@ -1854,7 +1858,9 @@ impl App {
                 ChatEventResult::AuthRequired
                 | ChatEventResult::SubagentInputRequired
                 | ChatEventResult::PermissionRequest { .. }
-                | ChatEventResult::QueueItemConsumed { .. } => unreachable!(),
+                | ChatEventResult::QueueItemConsumed { .. } => {
+                    tracing::warn!("unexpected ChatEventResult in turn error handler");
+                }
                 ChatEventResult::Continue => {}
             }
         }
@@ -2064,6 +2070,7 @@ impl App {
             text: display_text.clone(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         });
         input.prompt = Some(Box::new(prompt_ref));
 
@@ -2077,6 +2084,7 @@ impl App {
                     text: display_text,
                     images: Vec::new(),
                     control: false,
+                    run_delivery: None,
                 },
                 input,
                 true,
@@ -2117,6 +2125,7 @@ impl App {
             text: cmd.render(args),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         })
     }
 
@@ -2265,6 +2274,17 @@ impl App {
         try_picker!(self.model_picker);
         try_picker!(self.mcp_picker);
         try_picker!(self.login_picker);
+        if self.is_main_chat() {
+            if text.is_empty() && self.image_paste_rx.is_empty() {
+                self.start_image_paste();
+            } else {
+                for line in text.split('\n') {
+                    if let Some((path, media_type)) = image::try_parse_image_path(line) {
+                        self.start_file_image_paste(path, media_type);
+                    }
+                }
+            }
+        }
         if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text)
             && self.is_main_chat()
         {
@@ -2324,6 +2344,7 @@ impl App {
             text,
             images: vec![],
             control: false,
+            run_delivery: None,
         };
 
         if clear_context {

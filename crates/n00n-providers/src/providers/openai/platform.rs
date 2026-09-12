@@ -2700,6 +2700,9 @@ fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
     let normalized = message.trim().to_ascii_lowercase();
     if *status == 400
         && (normalized.starts_with("previous_response_not_found:")
+            // The API rejects a dead chain with `Invalid 'previous_response_id'`;
+            // replaying without the id is the right recovery either way.
+            || normalized.contains("previous_response_id")
             || normalized.contains("previous response") && normalized.contains("not found"))
     {
         return true;
@@ -5650,6 +5653,20 @@ mod tests {
                 true,
             )));
         }
+        assert!(is_missing_previous_response(&attempt(
+            RequestDeliveryPhase::NotSent,
+            400,
+            "Invalid `previous_response_id`.",
+            false,
+            true,
+        )));
+        assert!(is_missing_previous_response(&attempt(
+            RequestDeliveryPhase::SentAwaitingAcceptance,
+            400,
+            "Invalid 'previous_response_id': 'resp_1' not found.",
+            false,
+            true,
+        )));
         assert!(!is_missing_previous_response(&attempt(
             RequestDeliveryPhase::Accepted,
             400,

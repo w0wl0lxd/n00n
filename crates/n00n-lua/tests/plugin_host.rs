@@ -6320,6 +6320,75 @@ fn plugin_state_capture_waits_for_inflight_handler_callbacks() {
 }
 
 #[test]
+fn abandoned_state_capture_releases_the_runtime_drain() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let gate_dir = std::env::temp_dir().join(format!("n00n-drain-{}", std::process::id()));
+    std::fs::create_dir_all(&gate_dir).unwrap();
+    let gate = gate_dir.join("release");
+    let source = format!(
+        r#"
+        n00n.api.register_tool({{
+            name = "gated_state", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                local buf = n00n.ui.buf()
+                buf:set_lines({{ "waiting" }})
+                ctx:live_buf(buf)
+                local id = n00n.fn.jobstart("while [ ! -f '{}' ]; do sleep 0.05; done")
+                n00n.fn.jobwait(id)
+                return "released"
+            end,
+        }})
+        "#,
+        gate.display()
+    );
+    host.load_source("gated_state", &source).unwrap();
+    let entry = reg.get("gated_state").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let sender = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&sender),
+        Some("gated-state"),
+    );
+    let identity = SessionIdentity::root(SessionRef::generate());
+    ctx.identity = Some(identity.clone());
+    let worker = std::thread::spawn(move || smol::block_on(invocation.execute(&ctx)));
+
+    loop {
+        let event = event_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if matches!(
+            event.event,
+            n00n_agent::AgentEvent::LiveToolBuf { ref id, .. } if id == "gated-state"
+        ) {
+            break;
+        }
+    }
+
+    let handle = host.event_handle().unwrap();
+    {
+        // Let the dispatcher dequeue the request and park inside the drain,
+        // then abandon it by dropping the future's reply receiver.
+        smol::block_on(async {
+            let mut capture = pin!(handle.capture_state_async(&identity, 1));
+            assert!(poll_once(capture.as_mut()).await.is_none());
+            smol::Timer::after(Duration::from_millis(200)).await;
+        });
+    }
+
+    // The abandoned drain must release the dispatcher: a request deferred by
+    // the drain has to complete while the tool still holds the lifecycle.
+    // `try_collect_prompt_slots` bounds itself, so a held drain fails instead
+    // of hanging this test.
+    handle.try_collect_prompt_slots().unwrap();
+
+    std::fs::write(&gate, b"release").unwrap();
+    assert_eq!(worker.join().unwrap().output.unwrap().as_text(), "released");
+    std::fs::remove_dir_all(&gate_dir).unwrap();
+}
+
+#[test]
 fn plugin_options_empty_when_no_options_registered() {
     let reg = fresh_registry();
     let host = PluginHost::new(reg).unwrap();

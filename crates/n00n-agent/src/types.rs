@@ -1085,6 +1085,13 @@ pub fn tool_results(results: Vec<ToolDoneEvent>) -> Message {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ControlDeliveryMetadata {
+    pub delivery_id: String,
+    pub child_run_id: String,
+    pub source_revision: u64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -1115,6 +1122,8 @@ pub enum AgentEvent {
         image_count: usize,
         images: Vec<ImageSource>,
         control: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_delivery: Option<ControlDeliveryMetadata>,
     },
     QueueDrained {
         generation: u64,
@@ -1215,24 +1224,18 @@ impl SharedBuf {
     }
 
     pub fn set_click(&self, f: Arc<dyn Any + Send + Sync>) {
-        *self
-            .click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
+        *self.click.lock().unwrap_or_else(|_| std::process::abort()) = Some(f);
     }
 
     pub fn click(&self) -> Option<Arc<dyn Any + Send + Sync>> {
         self.click
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .clone()
     }
 
     pub fn clear_click(&self) {
-        *self
-            .click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.click.lock().unwrap_or_else(|_| std::process::abort()) = None;
     }
 
     /// Fires synchronously after every `append`/`set_lines`, on the
@@ -1243,7 +1246,7 @@ impl SharedBuf {
         *self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
+            .unwrap_or_else(|_| std::process::abort()) = Some(Arc::new(f));
     }
 
     /// A watcher keeps everything it captured alive for as long as it is
@@ -1252,7 +1255,7 @@ impl SharedBuf {
         *self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(|_| std::process::abort()) = None;
     }
 
     fn notify_change(&self) {
@@ -1262,7 +1265,7 @@ impl SharedBuf {
         let cb = self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .clone();
         if let Some(cb) = cb {
             cb();
@@ -1274,7 +1277,7 @@ impl SharedBuf {
         let mut guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Arc::make_mut(&mut guard).push(line);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -1285,7 +1288,7 @@ impl SharedBuf {
         let mut guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         *guard = Arc::new(lines);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -1295,7 +1298,7 @@ impl SharedBuf {
     pub fn len(&self) -> usize {
         self.committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .len()
     }
 
@@ -1307,7 +1310,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Arc::clone(&guard)
     }
 
@@ -1318,7 +1321,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Some(Arc::clone(&guard))
     }
 
@@ -1327,7 +1330,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         BufferSnapshot::from_arc(Arc::clone(&guard))
     }
 }
@@ -1490,6 +1493,22 @@ impl EventSender {
             .map_err(|_| AgentError::Channel)
     }
 
+    /// Waits for channel capacity and sends an agent event.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError` if the channel is closed.
+    pub async fn send_wait(&self, event: impl Into<AgentEvent>) -> Result<(), AgentError> {
+        self.tx
+            .send_async(Envelope {
+                event: event.into(),
+                subagent: None,
+                run_id: self.run_id,
+            })
+            .await
+            .map_err(|_| AgentError::Channel)
+    }
+
     /// Sends an envelope directly.
     ///
     /// # Errors
@@ -1500,11 +1519,13 @@ impl EventSender {
     }
 
     pub fn try_send(&self, event: impl Into<AgentEvent>) {
-        let _ = self.tx.try_send(Envelope {
+        if let Err(error) = self.tx.try_send(Envelope {
             event: event.into(),
             subagent: None,
             run_id: self.run_id,
-        });
+        }) {
+            warn!(%error, run_id = self.run_id, "EventSender try_send failed");
+        }
     }
 
     #[must_use]
@@ -1531,6 +1552,36 @@ pub struct Envelope {
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    #[test]
+    fn send_wait_delivers_lifecycle_event_after_backpressure() {
+        smol::block_on(async {
+            let (tx, rx) = flume::bounded(1);
+            let sender = EventSender::new(tx, 7);
+            sender
+                .send(AgentEvent::TextDelta {
+                    text: "full".into(),
+                })
+                .expect("fill channel");
+
+            let waiting_sender = sender.clone();
+            let pending = smol::spawn(async move {
+                waiting_sender
+                    .send_wait(AgentEvent::QueueDrained { generation: 9 })
+                    .await
+            });
+            let first = rx.recv_async().await.expect("first event");
+            pending.await.expect("reliable send");
+            let second = rx.recv_async().await.expect("lifecycle event");
+
+            assert!(matches!(first.event, AgentEvent::TextDelta { .. }));
+            assert!(matches!(
+                second.event,
+                AgentEvent::QueueDrained { generation: 9 }
+            ));
+            assert_eq!(second.run_id, 7);
+        });
+    }
 
     #[test_case(ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
     #[test_case(ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
@@ -1970,18 +2021,6 @@ mod tests {
         assert_eq!(snap.len(), 2, "held Arc must not see new appends");
         let snap2 = buf.read_if_dirty().unwrap();
         assert_eq!(snap2.len(), 3);
-    }
-
-    #[test]
-    fn shared_buf_poisoned_mutex_recovery() {
-        let buf = Arc::new(SharedBuf::new());
-        let buf2 = Arc::clone(&buf);
-        let h = std::thread::spawn(move || {
-            let _guard = buf2.committed.lock().unwrap();
-            panic!("intentional poison");
-        });
-        let _ = h.join();
-        buf.append(SnapshotLine { spans: vec![] });
     }
 
     #[test]

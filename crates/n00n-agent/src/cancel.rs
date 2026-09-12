@@ -190,9 +190,9 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
         let mut map = self
             .entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         match map.remove(&id) {
-            Some(Entry::PreCancelled) => drop(trigger),
+            Some(Entry::PreCancelled) => trigger.cancel(),
             _ => {
                 map.insert(id, Entry::Live(trigger));
             }
@@ -203,9 +203,9 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
         let mut map = self
             .entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         match map.remove(&id) {
-            Some(Entry::Live(_)) => {} // trigger dropped, fires cancel
+            Some(Entry::Live(trigger)) => trigger.cancel(),
             _ => {
                 map.insert(id, Entry::PreCancelled);
             }
@@ -215,15 +215,22 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
     pub fn remove(&self, id: &K) {
         self.entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .remove(id);
     }
 
     pub fn cancel_all(&self) {
-        self.entries
+        let entries: Vec<(K, Entry)> = self
+            .entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain();
+            .unwrap_or_else(|_| std::process::abort())
+            .drain()
+            .collect();
+        for (_, entry) in entries {
+            if let Entry::Live(trigger) = entry {
+                trigger.cancel();
+            }
+        }
     }
 }
 

@@ -75,11 +75,12 @@ impl ToolFilter {
         match self {
             Self::Only(mut allowed) => {
                 for name in names {
+                    let canonical = canonical_tool_name(&name).to_owned();
                     if !allowed
                         .iter()
-                        .any(|held| canonical_tool_name(held) == canonical_tool_name(&name))
+                        .any(|held| canonical_tool_name(held) == canonical)
                     {
-                        allowed.push(name);
+                        allowed.push(canonical);
                     }
                 }
                 Self::Only(allowed)
@@ -181,7 +182,7 @@ impl ToolFilter {
                     .allowed_tools
                     .iter()
                     .filter(|s| is_builtin_tool(s))
-                    .cloned()
+                    .map(|s| canonical_tool_name(s).to_owned())
                     .collect(),
             )
         };
@@ -749,6 +750,7 @@ pub fn interpreter_ctx(
             .or_else(|_| Model::from_spec("anthropic/claude-3-haiku-20240307"))
             .unwrap_or_else(|_| fallback_model()),
     );
+    let admission_scope = registry.admission().new_scope();
     ToolContext {
         provider: Arc::clone(&PROVIDER),
         model,
@@ -771,7 +773,7 @@ pub fn interpreter_ctx(
         subagent_cancels: Arc::new(CancelMap::new()),
         identity: None,
         registry,
-        admission_scope: crate::tools::ToolAdmission::new_scope(),
+        admission_scope,
         tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,

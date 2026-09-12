@@ -59,7 +59,7 @@ local schema = {
     },
     background = {
       type = "boolean",
-      description = "Start in background; return agent_id immediately.",
+      description = "Start in background; return run identity immediately.",
     },
     output_schema = {
       description = "Output JSON schema. Result returned as validated JSON string.",
@@ -83,16 +83,20 @@ local function handler(input, ctx)
     end
     forwarded.background = false
     local title = "task: " .. n00n.ui.truncate_text(input.description or input.prompt or "background task", 60).head
-    local id, err = n00n.session.new({
+    local run, err = n00n.run.start({
+      kind = "task",
       tool = "run_task",
       input = forwarded,
       title = title,
-      focus = false,
     })
-    if not id then
+    if not run then
       return { llm_output = err, is_error = true }
     end
-    local output, output_err = n00n.json.encode({ agent_id = id, status = "started" })
+    local output, output_err = n00n.json.encode({
+      run_id = run.run_id,
+      chain_id = run.chain_id,
+      lifecycle = run.lifecycle,
+    })
     if output_err then
       return { llm_output = "failed to encode task status: " .. tostring(output_err), is_error = true }
     end

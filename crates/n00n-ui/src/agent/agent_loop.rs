@@ -182,7 +182,13 @@ impl AgentLoop {
                 && let Some(generation) = self.queue.drain_generation()
             {
                 let event_tx = EventSender::new(self.agent_tx.clone(), run_id);
-                let _ = event_tx.send(AgentEvent::QueueDrained { generation });
+                if event_tx
+                    .send_wait(AgentEvent::QueueDrained { generation })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
             }
         }
     }
@@ -198,6 +204,7 @@ impl AgentLoop {
                 input,
                 displayed,
                 pre_dispatch_gate,
+                run_delivery,
                 ..
             } => {
                 if !displayed {
@@ -206,6 +213,7 @@ impl AgentLoop {
                         image_count,
                         images: input.images.clone(),
                         control: input.control,
+                        run_delivery,
                     });
                 }
                 self.do_agent_run(input, event_tx, run_id, pre_dispatch_gate)

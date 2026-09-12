@@ -244,9 +244,10 @@ impl<'h> Agent<'h> {
             .identity
             .as_ref()
             .map(SessionIdentity::session_id)
-            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
-                Arc::<str>::from(id.to_string())
-            });
+            .map_or_else(
+                || params.registry.admission().new_scope(),
+                |id| Arc::<str>::from(id.to_string()),
+            );
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
         } else {
@@ -480,6 +481,7 @@ impl<'h> Agent<'h> {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
 
         info!(
@@ -1062,7 +1064,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             definitions.extend(mcp.deferred_definitions());
             definitions.sort_by(|left, right| {
                 left.namespace.cmp(&right.namespace).then_with(|| {
@@ -1156,7 +1160,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             mcp.extend_tools(&mut tools);
         }
         filter_provider_tools(&mut tools, &effective_filter, &self.mode);
@@ -1235,11 +1241,8 @@ impl<'h> Agent<'h> {
             if matches!(error, AgentError::Cancelled) {
                 return Err(error);
             }
-            warn!(
-                error = %error,
-                "auto-compaction failed; continuing without compacting"
-            );
-            return Ok(false);
+            warn!(error = %error, "auto-compaction failed");
+            return Err(error);
         }
         Ok(true)
     }
@@ -1412,6 +1415,7 @@ impl<'h> Agent<'h> {
                         image_count: input.images.len(),
                         images: input.images.clone(),
                         control: input.control,
+                        run_delivery: input.run_delivery.clone(),
                     })?;
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
@@ -1421,18 +1425,24 @@ impl<'h> Agent<'h> {
                         state.set_request_kind(crate::fusion::classify_delegation(&input.message));
                     }
                     let display = input.message;
-                    if input.control {
+                    let mut message = if input.control {
                         let wrapped = format!(
                             "<control-interrupt>\nA control message was sent to this session. Address it and continue.\n\n{display}\n</control-interrupt>"
                         );
-                        self.history
-                            .push(Message::control_display(wrapped, display));
+                        Message::control_display(wrapped, display)
                     } else {
                         let wrapped = format!(
                             "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
                         );
-                        self.history.push(Message::user_display(wrapped, display));
-                    }
+                        Message::user_display(wrapped, display)
+                    };
+                    message.content.extend(
+                        input
+                            .images
+                            .into_iter()
+                            .map(|source| ContentBlock::Image { source }),
+                    );
+                    self.history.push(message);
                 }
                 ExtractedCommand::Compact(_) => {
                     self.do_compact_with_status().await?;
@@ -2653,6 +2663,7 @@ mod tests {
             control: false,
             prompt: None,
             plan_path: None,
+            run_delivery: None,
         }
     }
 
@@ -3315,6 +3326,67 @@ mod tests {
             agent.run(default_input()).await.unwrap();
 
             assert_eq!(agent.context_size, 150);
+        });
+    }
+
+    #[test_case("", false; "image_only")]
+    #[test_case("describe", false; "text_and_image")]
+    #[test_case("", true; "control_image_only")]
+    fn queued_interrupt_preserves_images(text: &str, control: bool) {
+        smol::block_on(async {
+            let mut input = default_input();
+            input.message = text.into();
+            input.control = control;
+            let image = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+            input.images = vec![image.clone()];
+            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent = agent.with_interrupt_source(source);
+            agent
+                .handle_queued_commands(InterruptPoint::Safe)
+                .await
+                .unwrap();
+            let message = history.as_slice().last().unwrap();
+            assert_eq!(message.display_text.as_deref(), Some(text));
+            assert_eq!(message.control, control);
+            assert!(message.content.iter().any(|block| matches!(block,
+                ContentBlock::Image { source } if source.data == image.data && source.media_type == image.media_type)));
+        });
+    }
+
+    #[test]
+    fn queued_interrupt_emits_run_delivery_metadata() {
+        smol::block_on(async {
+            let mut input = default_input();
+            input.control = true;
+            input.run_delivery = Some(crate::ControlDeliveryMetadata {
+                delivery_id: "delivery-x".into(),
+                child_run_id: "run-42".into(),
+                source_revision: 5,
+            });
+            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent = agent.with_interrupt_source(source);
+            agent
+                .handle_queued_commands(InterruptPoint::Safe)
+                .await
+                .unwrap();
+            let events = drain_events(&event_rx);
+            let Some(AgentEvent::QueueItemConsumed { run_delivery, .. }) = events
+                .iter()
+                .map(|envelope| &envelope.event)
+                .find(|event| matches!(event, AgentEvent::QueueItemConsumed { .. }))
+            else {
+                panic!("expected QueueItemConsumed");
+            };
+            let delivery = run_delivery
+                .as_ref()
+                .expect("run delivery metadata on consumed event");
+            assert_eq!(delivery.delivery_id, "delivery-x");
+            assert_eq!(delivery.child_run_id, "run-42");
+            assert_eq!(delivery.source_revision, 5);
         });
     }
 

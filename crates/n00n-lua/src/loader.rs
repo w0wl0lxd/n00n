@@ -9,6 +9,7 @@ use include_dir::{Dir, include_dir};
 use n00n_agent::headless::SessionStatePersistence;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_config::{PluginsConfig, RawConfig, SearchConfig};
+use n00n_runs::RunService;
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredSessionStateSnapshot;
 
@@ -235,7 +236,24 @@ impl PluginHost {
     /// # Errors
     /// Returns an error if the Lua runtime cannot be spawned.
     pub fn with_jit(registry: Arc<ToolRegistry>, jit: bool) -> Result<Self, PluginError> {
-        Self::with_jit_and_search_config(registry, jit, Arc::new(SearchConfig::default()))
+        Self::with_jit_and_services(registry, jit, Arc::new(SearchConfig::default()), None)
+    }
+
+    /// Creates a plugin host with the project-scoped background run service.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua runtime cannot be spawned.
+    pub fn with_jit_and_run_service(
+        registry: Arc<ToolRegistry>,
+        jit: bool,
+        run_service: Arc<RunService>,
+    ) -> Result<Self, PluginError> {
+        Self::with_jit_and_services(
+            registry,
+            jit,
+            Arc::new(SearchConfig::default()),
+            Some(run_service),
+        )
     }
 
     /// Creates a plugin host with immutable search configuration available to native APIs.
@@ -247,7 +265,20 @@ impl PluginHost {
         jit: bool,
         search_config: Arc<SearchConfig>,
     ) -> Result<Self, PluginError> {
-        let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit)?;
+        let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit, None)?;
+        Ok(Self {
+            inner: Some(lua),
+            state_leases: Arc::new(StateLeases::default()),
+        })
+    }
+
+    fn with_jit_and_services(
+        registry: Arc<ToolRegistry>,
+        jit: bool,
+        search_config: Arc<SearchConfig>,
+        run_service: Option<Arc<RunService>>,
+    ) -> Result<Self, PluginError> {
+        let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit, run_service)?;
         Ok(Self {
             inner: Some(lua),
             state_leases: Arc::new(StateLeases::default()),
@@ -1271,6 +1302,57 @@ mod tests {
             ));
             drop(reply);
         });
+    }
+
+    #[test_case(())]
+    fn abandoned_capture_does_not_advance_revision(_unit: ()) {
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        let handle = host.event_handle().unwrap();
+        let identity = SessionIdentity::root(SessionRef::generate());
+        let (reply, recv) = flume::bounded(1);
+        drop(recv);
+        handle
+            .tx
+            .send(Request::CaptureState {
+                identity: PluginStateIdentity::from(&identity),
+                revision: 2,
+                reply,
+            })
+            .unwrap();
+
+        handle.capture_state(&identity, 1).unwrap();
+    }
+
+    #[test_case(())]
+    fn abandoned_prompt_collection_does_not_run_callbacks(_unit: ()) {
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        host.load_source(
+            "counted_hint",
+            r#"
+            local calls = 0
+            n00n.api.register_prompt_hint({
+                slot = "tool_usage",
+                content = function()
+                    calls += 1
+                    return tostring(calls)
+                end,
+            })
+            "#,
+        )
+        .unwrap();
+        let handle = host.event_handle().unwrap();
+        let (reply, recv) = flume::bounded(1);
+        drop(recv);
+        handle
+            .tx
+            .send(Request::CollectPromptSlots {
+                identity: None,
+                reply,
+            })
+            .unwrap();
+
+        let slots = handle.try_collect_prompt_slots().unwrap();
+        assert_eq!(contents(&slots, PromptId::System, Slot::ToolUsage), ["1"]);
     }
 
     #[test]

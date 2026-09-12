@@ -317,6 +317,7 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
         text: "background prompt".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     });
     let SubmitOutcome::Started(actions) = outcome else {
         panic!("expected background prompt to start");
@@ -341,6 +342,7 @@ fn session_api_control_prompt_steers_with_control_tag() {
             text: "resume".into(),
             images: Vec::new(),
             control: true,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -354,12 +356,112 @@ fn session_api_control_prompt_steers_with_control_tag() {
 }
 
 #[test]
+fn control_run_delivery_survives_interrupt_extraction() {
+    let mut app = test_app();
+    let (sender, receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    app.status = Status::Streaming;
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-int".to_owned(),
+        child_run_id: "run-9".to_owned(),
+        source_revision: 2,
+    };
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "child finished".into(),
+            images: Vec::new(),
+            control: true,
+            run_delivery: Some(delivery.clone()),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    let Some(n00n_agent::ExtractedCommand::Interrupt(input, _)) =
+        receiver.poll(n00n_agent::InterruptPoint::ToolComplete)
+    else {
+        panic!("expected steering interrupt");
+    };
+    let extracted = input.run_delivery.expect("run delivery on interrupt input");
+    assert_eq!(extracted.delivery_id, delivery.delivery_id);
+    assert_eq!(extracted.child_run_id, delivery.child_run_id);
+    assert_eq!(extracted.source_revision, delivery.source_revision);
+}
+
+#[test]
+fn control_run_delivery_reaches_idle_start_dispatch() {
+    let mut app = test_app();
+    let (sender, _receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-idle".to_owned(),
+        child_run_id: "run-7".to_owned(),
+        source_revision: 1,
+    };
+
+    let SubmitOutcome::Started(actions) = app.submit_control_prompt(QueuedMessage {
+        text: "child finished".into(),
+        images: Vec::new(),
+        control: true,
+        run_delivery: Some(delivery),
+    }) else {
+        panic!("expected control prompt to start");
+    };
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+    assert_eq!(
+        dispatch
+            .input
+            .run_delivery
+            .as_ref()
+            .map(|d| d.delivery_id.as_str()),
+        Some("delivery-idle")
+    );
+}
+
+#[test]
+fn parent_run_delivery_metadata_is_persisted_with_control_queue_item() {
+    let mut app = test_app();
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-1".to_owned(),
+        child_run_id: "run-1".to_owned(),
+        source_revision: 3,
+    };
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "child completed".to_owned(),
+            images: Vec::new(),
+            control: true,
+            run_delivery: Some(delivery),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    let snapshot = app.session_snapshot();
+    assert!(snapshot.meta.contains_run_delivery("delivery-1"));
+    let stored = snapshot
+        .meta
+        .queued_submissions
+        .first()
+        .and_then(|message| message.run_delivery.as_ref())
+        .expect("stored run delivery");
+    assert_eq!(stored.child_run_id, "run-1");
+    assert_eq!(stored.source_revision, 3);
+}
+#[test]
 fn background_persistence_failure_is_terminal_without_composer_restore() {
     let mut app = test_app();
     let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {
         text: "background prompt".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     }) else {
         panic!("expected background prompt to start");
     };
@@ -373,6 +475,7 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
             text: "queued after failure".into(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -683,12 +786,102 @@ fn paste_normalizes_line_endings(input: &str, expected: &str) {
     assert_eq!(app.input_box.buffer.value(), expected);
 }
 
+#[test_case(Status::Idle; "idle")]
+#[test_case(Status::Streaming; "streaming")]
+fn image_load_completion_allows_submission_with_image(status: Status) {
+    let mut app = test_app();
+    app.status = status;
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    let InputAction::Submit(submission) = app.input_box.handle_key(key(KeyCode::Enter)) else {
+        panic!("expected submission");
+    };
+    assert_eq!(submission.text, "describe image");
+    assert_eq!(submission.images.len(), 1);
+}
+
+#[test]
+fn unsupported_image_path_paste_preserves_text() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    let mut app = test_app();
+    app.state.model.supports_vision_override = Some(false);
+    app.update(Msg::Paste(TEXT.into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
+#[test]
+fn failed_image_load_preserves_text_and_unblocks_submission() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    const ERROR: &str = "file unavailable";
+    let mut app = test_app();
+    app.input_box.set_input(TEXT);
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    tx.send(Err(ERROR.into())).unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!("Image paste failed: {ERROR}")
+    );
+}
+
+#[test_case(KeyCode::Enter; "enter")]
+#[test_case(KeyCode::Tab; "queued_tab")]
+fn pending_image_load_blocks_submission(submit_key: KeyCode) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    assert!(app.update(Msg::Key(key(submit_key))).is_empty());
+    assert_eq!(app.input_box.buffer.value(), "describe image");
+}
+
+#[test]
+fn disconnected_image_load_is_removed() {
+    let mut app = test_app();
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    drop(tx);
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+}
+
+#[test]
+fn image_path_paste_in_search_does_not_load_image() {
+    let mut app = test_app();
+    app.update(Msg::Key(kb::SEARCH.to_key_event()));
+    app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn image_path_paste_preserves_original_text() {
+    const TEXT: &str = "describe\nfile:///tmp/nonexistent.png\nplease";
+    let mut app = test_app();
+    app.update(Msg::Paste(TEXT.into()));
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
 #[test]
 fn paste_file_path_triggers_image_load() {
     let mut app = test_app();
     app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
     assert!(!app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), "");
+    assert_eq!(app.input_box.buffer.value(), "file:///tmp/nonexistent.png");
 }
 
 #[test]
@@ -701,7 +894,7 @@ fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     assert_eq!(app.image_paste_rx.len(), 2);
     assert_eq!(
         app.input_box.buffer.value(),
-        "Please compare these:\nThanks"
+        "Please compare these:\nfile:///tmp/first.png\nfile:///tmp/second.jpg\nThanks"
     );
 }
 
@@ -757,6 +950,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
             image_count: 0,
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         },
         app.run_id,
     ));
@@ -821,6 +1015,7 @@ fn queued_msg(text: &str) -> QueuedMessage {
         text: text.into(),
         images: vec![],
         control: false,
+        run_delivery: None,
     }
 }
 
@@ -2223,6 +2418,7 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
         text: "original".into(),
         images: vec![image],
         control: true,
+        run_delivery: None,
     }));
     app.queue_and_notify(queued_msg("after"));
     app.queue.set_focus_at(1);
@@ -2235,9 +2431,10 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
     assert!(app.queue.editing().is_none());
     assert!(app.input_box.is_empty());
     let queued = app.queue.queued_inputs();
-    let (input, delivery) = &queued[1];
+    let (input, delivery, run_delivery) = &queued[1];
     assert_eq!(input.message, "original");
     assert_eq!(*delivery, Delivery::Steering);
+    assert!(run_delivery.is_none());
     assert!(input.control);
     assert_eq!(input.images.len(), 1);
     assert_eq!(input.images[0].media_type, ImageMediaType::Png);
@@ -2924,6 +3121,7 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
             text: "queued through turn error".into(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -2990,6 +3188,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
             text: "second control in fifo".into(),
             images: Vec::new(),
             control: true,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -4372,7 +4571,7 @@ fn builtin_runs_when_no_override() {
     assert!(app.help_modal.is_open());
 }
 #[test]
-fn overlay_wins_over_override_when_plan_form_open() {
+fn plan_toggle_beats_override_when_open_and_after_dismiss() {
     let entry = n00n_lua::KeymapEntry {
         key: kb::PLAN_TOGGLE.code,
         modifiers: kb::PLAN_TOGGLE.modifiers,
@@ -4382,12 +4581,62 @@ fn overlay_wins_over_override_when_plan_form_open() {
     };
     let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
     app.keymap_reader = reader;
     assert!(app.plan_form.is_visible());
-    assert!(app.lua_event_handle.is_none());
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(
+        !app.plan_form.is_visible(),
+        "open plan form must consume Ctrl+T before the override"
+    );
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(
+        app.plan_form.is_visible(),
+        "Ctrl+T must reopen the dismissed plan form despite the override"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not be dispatched when plan toggle wins"
+    );
+}
+
+#[test]
+fn open_editor_beats_override_after_plan_form_dismiss() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::OPEN_EDITOR.code,
+        modifiers: kb::OPEN_EDITOR.modifiers,
+        desc: "plugin open editor override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 12,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+    assert!(app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "open plan editor must run from the visible plan form"
+    );
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
     assert!(!app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "open plan editor must beat a plugin override in plan mode"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not be dispatched when open editor wins"
+    );
 }
 
 #[test]
@@ -4679,6 +4928,7 @@ fn workflow_toggle_flows_into_agent_input() {
         text: "hi".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     };
     assert!(!app.build_agent_input(&msg).workflow);
 

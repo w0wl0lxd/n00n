@@ -1,6 +1,6 @@
 use std::fmt::Write;
 use std::io::{Error as IoError, ErrorKind};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -265,6 +265,7 @@ pub(crate) struct SseStream<R> {
     frame_limit: usize,
     stream_limit: usize,
     bytes_read: usize,
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl<R: AsyncBufRead + Unpin> SseStream<R> {
@@ -291,6 +292,7 @@ impl<R: AsyncBufRead + Unpin> SseStream<R> {
             frame_limit,
             stream_limit,
             bytes_read: 0,
+            cancel_flag: None,
         }
     }
 
@@ -299,14 +301,24 @@ impl<R: AsyncBufRead + Unpin> SseStream<R> {
         self.deadline = self.deadline.min(deadline_cap);
     }
 
+    pub(crate) fn set_cancel_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancel_flag = Some(flag);
+    }
+
     async fn next_line(
         &mut self,
         remaining_frame_bytes: usize,
     ) -> Result<Option<String>, AgentError> {
         let mut line = Vec::new();
         loop {
+            if let Some(flag) = &self.cancel_flag
+                && flag.load(Ordering::Acquire)
+            {
+                return Err(AgentError::Cancelled);
+            }
             let remaining = self.deadline.saturating_duration_since(Instant::now());
             let stream_timeout = self.stream_timeout;
+            let cancel_flag = self.cancel_flag.clone();
             let read = futures_lite::future::or(
                 async {
                     let buffer = self.reader.fill_buf().await.map_err(AgentError::from)?;
@@ -331,12 +343,25 @@ impl<R: AsyncBufRead + Unpin> SseStream<R> {
                     self.bytes_read += consumed;
                     Ok(Some(newline.is_some()))
                 },
-                async {
-                    smol::Timer::after(remaining).await;
-                    Err(AgentError::Timeout {
-                        secs: stream_timeout.as_secs(),
-                    })
-                },
+                futures_lite::future::or(
+                    async {
+                        smol::Timer::after(remaining).await;
+                        Err(AgentError::Timeout {
+                            secs: stream_timeout.as_secs(),
+                        })
+                    },
+                    async {
+                        if let Some(flag) = cancel_flag {
+                            loop {
+                                if flag.load(Ordering::Acquire) {
+                                    return Err(AgentError::Cancelled);
+                                }
+                                smol::Timer::after(Duration::from_millis(20)).await;
+                            }
+                        }
+                        std::future::pending::<Result<Option<bool>, AgentError>>().await
+                    },
+                ),
             )
             .await?;
 
@@ -380,7 +405,7 @@ impl<R: AsyncBufRead + Unpin> SseStream<R> {
                     Ok(None)
                 };
             };
-            frame_bytes = frame_bytes.saturating_add(line.len());
+            frame_bytes = frame_bytes.saturating_add(line.len()).saturating_add(1);
 
             if line.is_empty() {
                 if has_data {

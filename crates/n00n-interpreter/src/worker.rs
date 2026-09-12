@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::error::InterpreterError;
 use crate::runner::{self, AsyncResolver, PendingCall, ToolFn};
 
-const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartRequest {
@@ -142,8 +142,10 @@ fn read_request_frame(
     let read_limit = u64::try_from(max_bytes.saturating_add(2)).map_err(|error| {
         WorkerError::Protocol(format!("invalid interpreter worker frame limit: {error}"))
     })?;
-    let mut limited = std::io::Read::take(reader, read_limit);
-    let read = limited.read_line(&mut line)?;
+    let read = {
+        let mut limited = std::io::Read::take(&mut *reader, read_limit);
+        limited.read_line(&mut line)?
+    };
     if read == 0 {
         return Err(WorkerError::Protocol(
             "parent closed the protocol stream".into(),
@@ -158,9 +160,27 @@ fn read_request_frame(
         None => payload,
     };
     if payload.len() > max_bytes {
+        let mut discard = String::new();
+        loop {
+            discard.clear();
+            let n = reader.read_line(&mut discard)?;
+            if n == 0 || discard.ends_with('\n') {
+                break;
+            }
+        }
         return Err(WorkerError::Protocol(
             "interpreter worker request exceeded the frame limit".into(),
         ));
+    }
+    if !line.ends_with('\n') && u64::try_from(line.len()) == Ok(read_limit) {
+        let mut discard = String::new();
+        loop {
+            discard.clear();
+            let n = reader.read_line(&mut discard)?;
+            if n == 0 || discard.ends_with('\n') {
+                break;
+            }
+        }
     }
     Ok(serde_json::from_str(payload)?)
 }

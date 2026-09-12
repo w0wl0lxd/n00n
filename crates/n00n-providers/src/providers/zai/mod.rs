@@ -331,7 +331,8 @@ impl Provider for Zai {
             {
                 Err(AgentError::Api { status, message })
                     if (status == 429 || status >= 500)
-                        && (message.contains("1113") || message.contains("nsufficien")) =>
+                        && (message.contains("1113")
+                            || message.to_lowercase().contains("insufficient")) =>
                 {
                     warn!(status, "insufficient funds, bailing out");
                     Err(AgentError::Api {

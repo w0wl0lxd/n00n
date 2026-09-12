@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 pub use n00n_storage::sessions::Effort;
 pub use n00n_storage::sessions::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
@@ -1300,7 +1301,7 @@ pub struct HostedToolSearch {
     pub tools: Vec<DeferredToolDefinition>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
     /// Raw user preference, reconciled by [`RequestOptions::clamped`] before use.
@@ -1326,6 +1327,10 @@ pub struct RequestOptions {
     /// present and this flag is set.
     pub idempotency_supported: bool,
     pub hosted_tool_search: Option<HostedToolSearch>,
+    /// Optional cooperative cancellation flag. When set, long-running stream
+    /// reads abort early with `Cancelled` instead of waiting for the next
+    /// timeout. The flag is set by the caller when user cancels.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl Default for RequestOptions {
@@ -1342,9 +1347,28 @@ impl Default for RequestOptions {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         }
     }
 }
+
+impl PartialEq for RequestOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.thinking == other.thinking
+            && self.fast == other.fast
+            && self.message_cache_breakpoints == other.message_cache_breakpoints
+            && self.openai_prompt_cache_mode == other.openai_prompt_cache_mode
+            && self.protect_history_replay == other.protect_history_replay
+            && self.allow_history_replay == other.allow_history_replay
+            && self.safety_identifier == other.safety_identifier
+            && self.moderation == other.moderation
+            && self.idempotency_key == other.idempotency_key
+            && self.idempotency_supported == other.idempotency_supported
+            && self.hosted_tool_search == other.hosted_tool_search
+    }
+}
+
+impl Eq for RequestOptions {}
 
 impl RequestOptions {
     /// Generates a client-side idempotency key for this request if one is not
@@ -1387,6 +1411,7 @@ impl RequestOptions {
             idempotency_key: self.idempotency_key,
             idempotency_supported: self.idempotency_supported,
             hosted_tool_search: self.hosted_tool_search,
+            cancel_flag: self.cancel_flag,
         }
     }
 }
@@ -1903,6 +1928,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1922,6 +1948,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -2052,6 +2079,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
         };
         let clamped = opts.clamped(&model);
         assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));
