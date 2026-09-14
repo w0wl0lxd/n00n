@@ -1580,6 +1580,7 @@ mod tests {
     use mlua::Lua;
     use tempfile::TempDir;
 
+    #[cfg(unix)]
     #[test_case::test_case("/.." => "/" ; "dotdot_at_root")]
     #[test_case::test_case("/a/../.." => "/" ; "dotdot_above_root")]
     #[test_case::test_case("//../.." => "/" ; "repeated_slash_above_root")]
