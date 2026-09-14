@@ -391,7 +391,7 @@ fn prepare_agent_env(opts: &AgentRunOptions<'_>) -> Result<PreparedEnv> {
     n00n_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-    load_env_files(&cwd);
+    load_env_files(&cwd, opts.project_trusted);
 
     let mut plugin_host =
         PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !opts.no_jit)

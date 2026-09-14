@@ -18,7 +18,7 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool, project_trusted: b
     n00n_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-    load_env_files(&cwd);
+    load_env_files(&cwd, project_trusted);
 
     let mut plugin_host = PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !no_jit)
         .context("initialize lua plugin host")?;
