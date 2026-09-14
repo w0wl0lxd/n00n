@@ -7,12 +7,20 @@ on:
       - "crates/n00n-docgen/**"
       - "justfile"
       - ".github/workflows/docs.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "site/**"
+      - "crates/n00n-docgen/**"
+      - "justfile"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a Pages deploy; superseded PR builds can be cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   build:
     name: Build site
@@ -42,6 +50,8 @@ jobs:
   deploy:
     name: Deploy
     needs: build
+    # Pull requests only build the site; publishing stays on main (push/dispatch).
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
