@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use tantivy::collector::TopDocs;
+use tantivy::collector::{DocSetCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::query::QueryParser;
+use tantivy::query::{QueryParser, TermQuery};
 use tantivy::schema::{
-    Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
+    Field, IndexRecordOption, STORED, STRING, Schema, Term, TextFieldIndexing, TextOptions, Value,
 };
 use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 
@@ -248,17 +248,19 @@ impl SearchIndex {
             .try_into()
             .map_err(Error::from)?;
         let searcher = reader.searcher();
-        let query = tantivy::query::AllQuery;
-        let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(10_000).order_by_score())
+        let query = TermQuery::new(
+            Term::from_field_text(self.path_field, file_path),
+            IndexRecordOption::Basic,
+        );
+        let docs = searcher
+            .search(&query, &DocSetCollector)
             .map_err(Error::from)?;
 
         let mut anchor: Option<SearchResult> = None;
-        for (score, doc_address) in top_docs {
+        for doc_address in docs {
             let retrieved: TantivyDocument = searcher.doc(doc_address).map_err(Error::from)?;
-            let result = document_to_result(&retrieved, self, score)?;
-            if result.file_path == file_path && line >= result.start_line && line <= result.end_line
-            {
+            let result = document_to_result(&retrieved, self, 1.0)?;
+            if line >= result.start_line && line <= result.end_line {
                 anchor = Some(result);
                 break;
             }
@@ -384,6 +386,53 @@ mod tests {
     use super::{Query, SearchConfig, SearchIndex, SearchMode};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn find_related_locates_anchor_beyond_ten_thousand_chunks() {
+        use std::collections::HashSet;
+        use tantivy::TantivyDocument;
+        use tantivy::collector::TopDocs;
+        use tantivy::query::AllQuery;
+        use tantivy::schema::Value as _;
+
+        let repo = tempdir().expect("tempdir");
+        let root = repo.path();
+        let mut body = String::new();
+        for _ in 0..10_001 {
+            body.push_str("anchor_symbol\n\n");
+        }
+        fs::write(root.join("big.rs"), &body).expect("write");
+
+        let index_dir = root.join(".n00n/search");
+        let mut index =
+            SearchIndex::open_or_create(&index_dir, &SearchConfig::default()).expect("open");
+        index.update(root, |_| {}).expect("update");
+        assert_eq!(index.metadata().expect("metadata").chunk_count, 10_001);
+
+        let searcher = index.index.reader().expect("reader").searcher();
+        let top_docs = searcher
+            .search(&AllQuery, &TopDocs::with_limit(10_000).order_by_score())
+            .expect("all query");
+        let mut covered = HashSet::new();
+        for (_, address) in top_docs {
+            let document: TantivyDocument = searcher.doc(address).expect("doc");
+            covered.insert(
+                document
+                    .get_first(index.start_line_field)
+                    .and_then(|value| value.as_u64())
+                    .expect("start line"),
+            );
+        }
+        let missing_line = (1..=20_001usize)
+            .step_by(2)
+            .find(|line| !covered.contains(&u64::try_from(*line).unwrap()))
+            .expect("one chunk must fall outside the top-10_000 scan");
+
+        let results = index
+            .find_related("big.rs", missing_line)
+            .expect("anchor chunk exists in the index");
+        assert!(!results.is_empty());
+    }
 
     #[test]
     fn search_returns_ranked_chunks() {

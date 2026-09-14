@@ -4242,13 +4242,16 @@ struct ScannedHeader {
 }
 
 /// Cached scan result for one session file, keyed by file name and validated
-/// by (size, mtime): stale entries are rescanned, deleted files pruned.
+/// by (size, mtime, inode): stale entries are rescanned, deleted files pruned.
+/// The inode catches atomic rewrites that keep both size and timestamp.
 /// `header: None` marks files that failed to scan (wrong version, foreign
 /// format), so they are not re-read on every list either.
 #[derive(Serialize, Deserialize)]
 struct ScanCacheEntry {
     size: u64,
     mtime_ms: u64,
+    #[serde(default)]
+    inode: u64,
     header: Option<ScannedHeader>,
 }
 
@@ -4261,14 +4264,18 @@ fn load_scan_cache(dir: &Path) -> ScanCache {
         .unwrap_or_else(HashMap::new)
 }
 
-fn file_signature(path: &Path) -> Option<(u64, u64)> {
+fn file_signature(path: &Path) -> Option<(u64, u64, u64)> {
     let meta = fs::metadata(path).ok()?;
     let mtime_ms = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .and_then(|d| u64::try_from(d.as_millis()).ok())?;
-    Some((meta.len(), mtime_ms))
+    #[cfg(unix)]
+    let inode = meta.ino();
+    #[cfg(not(unix))]
+    let inode = 0;
+    Some((meta.len(), mtime_ms, inode))
 }
 
 fn scan_headers<M>(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageError>
@@ -4283,17 +4290,18 @@ where
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some((size, mtime_ms)) = file_signature(&path) else {
+        let Some((size, mtime_ms, inode)) = file_signature(&path) else {
             continue;
         };
         let entry = match cache.remove(name) {
-            Some(e) if e.size == size && e.mtime_ms == mtime_ms => e,
+            Some(e) if e.size == size && e.mtime_ms == mtime_ms && e.inode == inode => e,
             _ => {
                 dirty = true;
                 let header = scan_zst_header::<M>(&path);
                 ScanCacheEntry {
                     size,
                     mtime_ms,
+                    inode,
                     header,
                 }
             }
@@ -5225,7 +5233,7 @@ mod tests {
         generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
     };
     use super::{
-        DecodeLimits, SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError,
+        DecodeLimits, SCAN_CACHE_FILE, ScanCache, Session, SessionError, SessionLog, StorageError,
         StoredFusionUsage, StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
@@ -5250,6 +5258,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::UNIX_EPOCH;
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -7857,6 +7866,50 @@ mod tests {
         let list = TestSession::list_in("/project", dir).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, s.id);
+    }
+
+    #[test]
+    fn list_rescans_after_same_size_rewrite_with_unchanged_mtime() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.title = "alpha".into();
+        save_with_time(&mut session, dir, 1000);
+        assert_eq!(
+            TestSession::list_in("/project", dir).unwrap()[0].title,
+            "alpha"
+        );
+
+        let path = jsonl_path(dir, session.id);
+        session.title = "bravo".into();
+        save_with_time(&mut session, dir, 1000);
+
+        // The cache key is (size, mtime_ms). Pin the cached entry to the new
+        // file's signature so the rewrite collides with it, as a same-tick
+        // rewrite does when millisecond precision rounds both writes together.
+        let mut cache: ScanCache =
+            serde_json::from_slice(&fs::read(dir.join(SCAN_CACHE_FILE)).unwrap()).unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        let mtime_ms = meta
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .try_into()
+            .unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let entry = cache.get_mut(name).unwrap();
+        entry.size = meta.len();
+        entry.mtime_ms = mtime_ms;
+        fs::write(
+            dir.join(SCAN_CACHE_FILE),
+            serde_json::to_vec(&cache).unwrap(),
+        )
+        .unwrap();
+
+        let list = TestSession::list_in("/project", dir).unwrap();
+        assert_eq!(list[0].title, "bravo");
     }
 
     fn save_with_time(session: &mut TestSession, dir: &Path, time: u64) {
