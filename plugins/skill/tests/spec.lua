@@ -460,6 +460,35 @@ case("skill_fingerprint_includes_content_digest", function()
   n00n.fs.rm(tmpdir, { recursive = true })
 end)
 
+case("build_skill_list_truncates_multibyte_descriptions_on_a_boundary", function()
+  local skills = { s = { name = "s", description = "ab" .. string.rep("\xc3\xa9", 70) } }
+  local result = build_skill_list(skills)
+  assert(utf8.len(result), "description truncation must not split a UTF-8 sequence")
+  assert(
+    result:find("ab" .. string.rep("\xc3\xa9", 57) .. "...", 1, true),
+    "should keep the UTF-8 prefix plus ellipsis: " .. result
+  )
+end)
+
+case("discovery_survives_an_unreadable_skill_file", function()
+  local dir = "/tmp/n00n_spec_unreadable_" .. tostring(os.clock()):gsub("%.", "")
+  assert(n00n.fs.mkdir(dir, { parents = true }))
+  assert(n00n.fs.write(n00n.fs.joinpath(dir, "SKILL.md"), "body"))
+  local old_read = n00n.fs.read
+  -- n00n.fs.read throws (does not return nil) for non-UTF-8 content; a project
+  -- can commit such a SKILL.md, so discovery must not propagate the throw.
+  n00n.fs.read = function()
+    error("non-utf8 content; use read_bytes")
+  end
+
+  local ok, list = pcall(helpers.collect_skill_fingerprints, dir, {})
+
+  n00n.fs.read = old_read
+  assert(ok, "unreadable skill content must not abort discovery: " .. tostring(list))
+  eq(#list, 0, "an unreadable SKILL.md must not contribute a fingerprint")
+  n00n.fs.rm(dir, { recursive = true })
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

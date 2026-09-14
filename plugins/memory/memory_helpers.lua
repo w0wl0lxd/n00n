@@ -1,5 +1,7 @@
 local M = {}
 
+local utf8_prefix = require("n00n.utf8").prefix
+
 M.MAX_LINES_PER_FILE = 200
 M.MAX_DIR_BYTES = 1024 * 1024
 M.LARGEST_ENTRIES_HINT = 3
@@ -548,7 +550,7 @@ function M.sanitize_hint_text(text, max_len)
   trimmed = strip_ci(trimmed, "human%s*:")
   trimmed = trimmed:match("^%s*(.-)%s*$")
   if #trimmed > max_len then
-    trimmed = trimmed:sub(1, max_len) .. "..."
+    trimmed = utf8_prefix(trimmed, max_len) .. "..."
   end
   return trimmed
 end
@@ -559,7 +561,7 @@ local function sanitize_hint_path(path)
   end
   local safe = path:gsub("[%c]", ""):gsub(":", "_")
   if #safe > 64 then
-    safe = safe:sub(1, 64)
+    safe = utf8_prefix(safe, 64)
   end
   return safe
 end

@@ -340,6 +340,30 @@ case("normalize_metadata_clears_empty_topic", function()
   eq(meta.tags[2], "b")
 end)
 
+case("sanitize_hint_text_keeps_utf8_boundaries", function()
+  local out = h.sanitize_hint_text("a" .. string.rep("\xc3\xa9", 70), 120)
+  assert(utf8.len(out), "hint text truncation must not split a UTF-8 sequence")
+  assert(#out <= 123, "hint text should stay near the byte cap")
+end)
+
+case("build_lite_hint_keeps_utf8_boundaries", function()
+  local entries = {
+    {
+      path = "a" .. string.rep("\xc3\xa9", 40) .. ".md",
+      meta = { layer = "lite", importance = 1 },
+      body = "path case",
+    },
+    {
+      path = "notes.md",
+      meta = { layer = "lite", importance = 1, synopsis = "a" .. string.rep("\xc3\xa9", 70) },
+      body = "synopsis case",
+    },
+  }
+  local out = h.build_lite_hint(entries)
+  assert(out ~= nil, "lite hint should exist")
+  assert(utf8.len(out), "lite hint must stay valid UTF-8")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

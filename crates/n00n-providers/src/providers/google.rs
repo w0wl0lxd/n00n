@@ -17,8 +17,9 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::types::{ThinkingFieldConfig, ToggleEntry};
 use crate::{
-    AgentError, CacheHealth, ContentBlock, Message, ProviderEvent, RequestOptions, Role,
-    StopReason, StreamResponse, System, ThinkingConfig, TokenUsage, dialect,
+    AgentError, CacheHealth, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, ThinkingConfig,
+    TokenUsage, dialect,
 };
 
 use super::anthropic::shared::stream_truncated_error;
@@ -26,6 +27,7 @@ use super::{KeyPool, ResolvedAuth, SseStream, http_client};
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const ENV_VAR: &str = "GEMINI_API_KEY";
+const PROVIDER_SLUG: &str = "google";
 const FLASH_MAX_THINKING: u32 = 24_576;
 const THINKING_BUDGET_PATH: &str = "generationConfig.thinkingConfig.thinkingBudget";
 const INCLUDE_THOUGHTS_PATH: &str = "generationConfig.thinkingConfig.includeThoughts";
@@ -787,6 +789,24 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
 
     for msg in messages {
+        // Gemini 3 returns a thought signature on function-call parts and
+        // rejects replays that omit it. The signature is carried on the
+        // adjacent `ProviderItem` so `ContentBlock::ToolUse` stays
+        // provider-neutral. Synthetic tool ids restart per response, so the
+        // lookup must not span messages.
+        let thought_signatures: HashMap<&str, &str> = msg
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ProviderItem { provider, data } if provider == PROVIDER_SLUG => {
+                    let tool_use_id = data.get("toolUseId")?.as_str()?;
+                    let signature = data.get("thoughtSignature")?.as_str()?;
+                    Some((tool_use_id, signature))
+                }
+                _ => None,
+            })
+            .collect();
+
         let role = match msg.role {
             Role::User => "user",
             Role::Assistant => "model",
@@ -818,14 +838,20 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     parts.push(part);
                 }
                 ContentBlock::RedactedThinking { .. } | ContentBlock::ProviderItem { .. } => {}
-                ContentBlock::ToolUse { id: _, name, input }
-                | ContentBlock::NamespacedToolUse { name, input, .. } => {
-                    parts.push(json!({
+                ContentBlock::ToolUse { id, name, input }
+                | ContentBlock::NamespacedToolUse {
+                    id, name, input, ..
+                } => {
+                    let mut part = json!({
                         "functionCall": {
                             "name": name,
                             "args": input,
                         }
-                    }));
+                    });
+                    if let Some(signature) = thought_signatures.get(id.as_str()) {
+                        part["thoughtSignature"] = json!(signature);
+                    }
+                    parts.push(part);
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
@@ -1013,6 +1039,12 @@ struct ApiModelInfo {
     supported_generation_methods: Vec<String>,
 }
 
+fn delivery_metadata(emitted_event: bool) -> RequestDeliveryMetadata {
+    let mut metadata = RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+    metadata.emitted_event = emitted_event;
+    metadata
+}
+
 async fn parse_sse(
     response: isahc::Response<isahc::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
@@ -1025,6 +1057,7 @@ async fn parse_sse(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
     let mut tool_call_count = 0usize;
+    let mut emitted_event = false;
 
     while let Some(event) = stream.next_event().await? {
         let data = event.data.trim();
@@ -1032,10 +1065,10 @@ async fn parse_sse(
             && let Ok(payload) = serde_json::from_str::<GoogleErrorPayload>(data)
         {
             warn!(code = payload.error.code, status = %payload.error.status, "Google stream error");
-            return Err(AgentError::api(
-                payload.error.http_status(),
-                payload.error.message,
-            ));
+            return Err(
+                AgentError::api(payload.error.http_status(), payload.error.message)
+                    .suppress_retry_after_send(Some(delivery_metadata(emitted_event))),
+            );
         }
 
         let chunk: SseResponse = match serde_json::from_str(data) {
@@ -1092,11 +1125,18 @@ async fn parse_sse(
                             name: func_call.name.clone(),
                         })
                         .await?;
+                    emitted_event = true;
                     content_blocks.push(ContentBlock::ToolUse {
-                        id,
+                        id: id.clone(),
                         name: func_call.name,
                         input,
                     });
+                    if let Some(signature) = part.thought_signature {
+                        content_blocks.push(ContentBlock::ProviderItem {
+                            provider: PROVIDER_SLUG.to_string(),
+                            data: json!({"thoughtSignature": signature, "toolUseId": id}),
+                        });
+                    }
                     stop_reason = Some(StopReason::ToolUse);
                 } else if let Some(text) = part.text {
                     if part.thought.unwrap_or_else(|| false) {
@@ -1104,6 +1144,7 @@ async fn parse_sse(
                             event_tx
                                 .send_async(ProviderEvent::ThinkingDelta { text: text.clone() })
                                 .await?;
+                            emitted_event = true;
                         }
                         content_blocks.push(ContentBlock::Thinking {
                             thinking: text,
@@ -1113,6 +1154,7 @@ async fn parse_sse(
                         event_tx
                             .send_async(ProviderEvent::TextDelta { text: text.clone() })
                             .await?;
+                        emitted_event = true;
                         content_blocks.push(ContentBlock::Text { text });
                     }
                 }
@@ -1569,6 +1611,70 @@ mod tests {
             &result.message.content[0],
             ContentBlock::ToolUse { name, .. } if name == "bash"
         ));
+    }
+
+    #[test]
+    fn parse_sse_function_call_replays_thought_signature() {
+        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}},\"thoughtSignature\":\"sig-fc\"}]},\"finishReason\":\"STOP\"}]}\n\n";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let replayed = convert_messages(&[result.message]);
+        assert_eq!(replayed[0]["parts"][0]["functionCall"]["name"], "bash");
+        assert_eq!(
+            replayed[0]["parts"][0]["thoughtSignature"], "sig-fc",
+            "Gemini 3 rejects function-call replays that omit the thought signature"
+        );
+    }
+
+    #[test]
+    fn convert_messages_scopes_thought_signatures_to_their_message() {
+        let assistant_turn = |signature: &str| Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "call_bash_0".into(),
+                    name: "bash".into(),
+                    input: json!({}),
+                },
+                ContentBlock::ProviderItem {
+                    provider: PROVIDER_SLUG.into(),
+                    data: json!({"thoughtSignature": signature, "toolUseId": "call_bash_0"}),
+                },
+            ],
+            ..Default::default()
+        };
+        let result = convert_messages(&[assistant_turn("sig-one"), assistant_turn("sig-two")]);
+        assert_eq!(result[0]["parts"][0]["thoughtSignature"], "sig-one");
+        assert_eq!(result[1]["parts"][0]["thoughtSignature"], "sig-two");
+    }
+
+    #[test]
+    fn parse_sse_error_after_output_is_not_retryable() {
+        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial answer\"}]}}]}\n\ndata: {\"error\":{\"code\":429,\"message\":\"quota exceeded\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let error = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
+        assert!(
+            !error.is_retryable(),
+            "mid-stream error after emitted output must not be retried: {error:?}"
+        );
+        assert!(
+            matches!(error, AgentError::RequestSent { .. }),
+            "expected RequestSent, got: {error:?}"
+        );
+    }
+
+    #[test]
+    fn parse_sse_error_before_output_stays_retryable() {
+        let data = b"data: {\"error\":{\"code\":429,\"message\":\"quota exceeded\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let error = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
+        assert!(
+            error.is_retryable(),
+            "error before any output must stay retryable: {error:?}"
+        );
     }
 
     #[test]

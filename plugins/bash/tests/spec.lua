@@ -123,6 +123,64 @@ end)
 -- output_collector: the LLM-facing accumulator must stay bounded while
 -- streaming, not just at the final truncate() call.
 
+-- sanitize_git_command: the newline separator must survive. Re-joining the
+-- split words with spaces used to turn `git status\nrm x` into one git
+-- invocation with `rm x` as arguments.
+
+case("sanitize_git_preserves_newline_separated_commands", function()
+  local command = "git status\nrm x"
+  eq(command_guard.sanitize_git_command(command), command)
+end)
+
+case("sanitize_git_preserves_second_command", function()
+  local sanitized = command_guard.sanitize_git_command("git status\ngit diff")
+  has(sanitized, "\n")
+  has(sanitized, "git diff")
+end)
+
+case("sanitize_git_keeps_semicolon_separators", function()
+  local sanitized = command_guard.sanitize_git_command("git status; rm x")
+  has(sanitized, "status; rm x")
+end)
+
+case("sanitize_git_still_hardens_plain_commands", function()
+  local sanitized = command_guard.sanitize_git_command("git status")
+  has(sanitized, "core.fsmonitor=false")
+  has(sanitized, "--no-optional-locks")
+end)
+
+case("sanitize_git_hardens_through_quoted_newlines", function()
+  local sanitized = command_guard.sanitize_git_command('git log --format="a\nb"')
+  has(sanitized, "core.fsmonitor=false")
+  has(sanitized, "--no-ext-diff")
+end)
+
+-- Repo config can attach `diff.<driver>.textconv` commands; git runs them by
+-- default for diff/show/log, so plan-mode git must disable textconv as well.
+
+case("sanitize_git_disables_textconv_and_drops_the_opt_in", function()
+  local sanitized = command_guard.sanitize_git_command("git diff --textconv HEAD")
+  has(sanitized, "--no-textconv")
+  eq(sanitized:find("--textconv", 1, true), nil, "explicit --textconv must be removed")
+end)
+
+case("sanitize_git_keeps_a_single_no_textconv", function()
+  local sanitized = command_guard.sanitize_git_command("git log --no-textconv -p")
+  local _, count = sanitized:gsub("%-%-no%-textconv", "")
+  eq(count, 1, "exactly one --no-textconv")
+end)
+
+case("sanitize_git_leaves_status_alone", function()
+  local sanitized = command_guard.sanitize_git_command("git status")
+  eq(sanitized:find("--no-textconv", 1, true), nil)
+end)
+
+case("has_unquoted_newline_ignores_quoted_newlines", function()
+  eq(command_guard.has_unquoted_newline("git status\nrm x"), true)
+  eq(command_guard.has_unquoted_newline('git commit -m "a\nb"'), false)
+  eq(command_guard.has_unquoted_newline("git status"), false)
+end)
+
 case("output_collector_caps_stored_bytes_while_streaming", function()
   local collector = output_collector.new()
   for _ = 1, 100 do
