@@ -83,6 +83,23 @@ case("oversized_content_is_ellipsis_truncated_not_dropped", function()
   assert(out:find("...", 1, true), "truncated entry must carry ellipsis")
 end)
 
+-- A byte-wise cut that lands inside a multibyte character produces invalid
+-- UTF-8; json.encode then fails and the whole todo block disappeared instead
+-- of being truncated.
+case("oversized_multibyte_content_is_truncated_not_dropped", function()
+  for _, content in ipairs({
+    string.rep("任", 1000),
+    string.rep(utf8.char(0x1F389), 500),
+    string.rep("é", 1100),
+  }) do
+    local out = TodoPrompt.build({ todo("in_progress", content) })
+    assert(type(out) == "string", "multibyte todo must still render a block")
+    assert(#out <= CAP, "block must be within cap, got " .. #out)
+    assert(utf8.len(out) ~= nil, "rendered block must stay valid UTF-8")
+    assert(out:find("...", 1, true), "truncated entry must carry ellipsis")
+  end
+end)
+
 case("completed_dropped_when_over_cap_but_pending_first", function()
   local filler = string.rep("c", CAP)
   local out = TodoPrompt.build({
