@@ -846,7 +846,7 @@ async fn execute_mcp_tool(
     let perm_scope = {
         let json = input.to_string();
         if json.len() > 200 {
-            format!("{}\u{2026}", &json[..200])
+            format!("{}\u{2026}", &json[..json.floor_char_boundary(200)])
         } else {
             json
         }
@@ -1996,6 +1996,29 @@ mod tests {
                 &serde_json::json!({}),
             )
             .await;
+            assert!(result.is_error);
+            assert!(result.output.as_text().contains("not available"));
+        });
+    }
+
+    /// Tool arguments come from the model, so byte 200 can fall inside a
+    /// multi-byte char. Slicing there panicked before the permission prompt.
+    #[test]
+    fn mcp_permission_scope_preview_does_not_split_a_multibyte_char() {
+        smol::block_on(async {
+            let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            let input = serde_json::json!({
+                "text": format!("{}{}", "b".repeat(190), "é".repeat(10)),
+            });
+            let json = input.to_string();
+            assert!(json.len() > 200, "fixture must pass 200 bytes");
+            assert!(
+                !json.is_char_boundary(200),
+                "fixture must split a multi-byte char at byte 200"
+            );
+
+            let result = dispatch_mcp(&ctx, "t1", "myserver.mytool", &input).await;
+
             assert!(result.is_error);
             assert!(result.output.as_text().contains("not available"));
         });

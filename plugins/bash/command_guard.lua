@@ -8,6 +8,19 @@ local function trim(s)
   return s:match("^%s*(.-)%s*$")
 end
 
+-- Short options cluster in one word: `du -sh` sets -s, `ls -lR` sets -R,
+-- and `tree -L2` sets -L. Match a single-letter option anywhere after the
+-- leading dash, not only as a word of its own.
+local function has_clustered_short_option(command, option)
+  local letter = option:sub(2)
+  for word in command:gmatch("%S+") do
+    if word:sub(1, 1) == "-" and word:sub(1, 2) ~= "--" and word:find(letter, 2, true) then
+      return true
+    end
+  end
+  return false
+end
+
 function M.has_option(command, option)
   if command == option then
     return true
@@ -28,6 +41,10 @@ function M.has_option(command, option)
 
   if padded:find(" " .. option .. "=", 1, true) then
     return true
+  end
+
+  if #option == 2 and option:sub(1, 1) == "-" then
+    return has_clustered_short_option(command, option)
   end
 
   return false

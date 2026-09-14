@@ -17,6 +17,11 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    # paths-filter reads the PR file list from the REST API, so the token needs
+    # pull-requests: read on top of the workflow-level contents: read.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
@@ -284,6 +289,7 @@ jobs:
     name: CI
     if: always()
     needs:
+      - changes
       - fmt
       - fmt-lua
       - lint
@@ -294,6 +300,8 @@ jobs:
       - lint-windows
       - build-windows
       - test-windows
+      - lint-macos
+      - test-macos
       - coverage
       - rustdoc
     runs-on: ubuntu-latest

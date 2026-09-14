@@ -320,6 +320,9 @@ class N00nAgent(BaseInstalledAgent):
                     label="copy mounted n00n",
                 )
 
+                # Auth lives in $XDG_STATE_HOME/n00n/auth and provider scripts
+                # in $XDG_CONFIG_HOME/n00n/providers; run() points both vars at
+                # /opt/n00n, so the mounted copies must land inside /opt/n00n.
                 auth_check = await self._timed_exec(
                     self.exec_as_root,
                     environment,
@@ -334,8 +337,8 @@ class N00nAgent(BaseInstalledAgent):
                         command=(
                             "if [ -d /mnt/n00n-auth ] && [ -n "
                             '"$(ls -A /mnt/n00n-auth 2>/dev/null)" ]; then '
-                            "mkdir -p /root/.n00n/auth && "
-                            "cp -r /mnt/n00n-auth/. /root/.n00n/auth/; "
+                            "mkdir -p /opt/n00n/.local/state/n00n/auth && "
+                            "cp -r /mnt/n00n-auth/. /opt/n00n/.local/state/n00n/auth/; "
                             "fi"
                         ),
                         timeout_sec=self._INSTALL_TIMEOUT_SEC,
@@ -356,9 +359,10 @@ class N00nAgent(BaseInstalledAgent):
                         command=(
                             "if [ -d /mnt/n00n-providers ] && [ -n "
                             '"$(ls -A /mnt/n00n-providers 2>/dev/null)" ]; then '
-                            "mkdir -p /root/.n00n/providers && "
-                            "cp -r /mnt/n00n-providers/. /root/.n00n/providers/ && "
-                            "chmod -R +x /root/.n00n/providers; "
+                            "mkdir -p /opt/n00n/.config/n00n/providers && "
+                            "cp -r /mnt/n00n-providers/. "
+                            "/opt/n00n/.config/n00n/providers/ && "
+                            "chmod -R +x /opt/n00n/.config/n00n/providers; "
                             "fi"
                         ),
                         timeout_sec=self._INSTALL_TIMEOUT_SEC,
@@ -404,7 +408,7 @@ class N00nAgent(BaseInstalledAgent):
             environment,
             command=(
                 "mkdir -p /opt/n00n/.config /opt/n00n/.local/share "
-                "/opt/n00n/.cache "
+                "/opt/n00n/.local/state /opt/n00n/.cache "
                 "&& chmod -R a+rwX,+t /opt/n00n/.config /opt/n00n/.local "
                 "/opt/n00n/.cache"
             ),
@@ -545,6 +549,7 @@ class N00nAgent(BaseInstalledAgent):
             "PATH": "/opt/n00n:/opt/n00n/bin:/usr/local/bin:/usr/bin:/bin",
             "XDG_CONFIG_HOME": "/opt/n00n/.config",
             "XDG_DATA_HOME": "/opt/n00n/.local/share",
+            "XDG_STATE_HOME": "/opt/n00n/.local/state",
             "XDG_CACHE_HOME": "/opt/n00n/.cache",
             # Keep provider logs at warning level so raw ACP traffic is not
             # persisted to the sandbox log via tee.

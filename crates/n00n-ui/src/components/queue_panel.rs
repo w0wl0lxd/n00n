@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const ELLIPSIS: &str = "...";
 const QUEUE_LABEL: &str = " Queue ";
@@ -75,15 +76,27 @@ fn truncate_line(
     hint: (&'static str, &'static str, &'static str),
 ) -> Line<'static> {
     let hint_style = theme::current().tool_dim;
-    let hint_len = hint.0.len() + hint.1.len() + hint.2.len();
+    let hint_len = UnicodeWidthStr::width(hint.0)
+        + UnicodeWidthStr::width(hint.1)
+        + UnicodeWidthStr::width(hint.2);
     let available = max_width.saturating_sub(hint_len);
 
-    let (text_span, ellipsis) = if text.len() <= available {
+    let (text_span, ellipsis) = if text.width() <= available {
         (Span::styled(text.to_string(), style), None)
     } else {
-        let truncated_len = text.floor_char_boundary(available.saturating_sub(ELLIPSIS.len()));
+        let target = available.saturating_sub(UnicodeWidthStr::width(ELLIPSIS));
+        let mut width = 0;
+        let mut end = 0;
+        for (idx, ch) in text.char_indices() {
+            let ch_width = ch.width().unwrap_or_else(|| 1);
+            if width + ch_width > target {
+                break;
+            }
+            width += ch_width;
+            end = idx + ch.len_utf8();
+        }
         (
-            Span::styled(text[..truncated_len].to_string(), style),
+            Span::styled(text[..end].to_string(), style),
             Some(Span::styled(ELLIPSIS, hint_style)),
         )
     };
@@ -129,8 +142,9 @@ mod tests {
     #[test_case("abcdefghij", 7, NO_HINT, &["abcd", ELLIPSIS]                             ; "no_hint_truncated")]
     #[test_case("abcde", 5, NO_HINT, &["abcde"]                                           ; "no_hint_exact_width")]
     #[test_case("abcdef", 2, NO_HINT, &[ELLIPSIS]                                     ; "no_hint_tiny_width")]
-    #[test_case("●abc", 5, NO_HINT, &[ELLIPSIS]                                       ; "no_hint_multibyte_narrow")]
-    #[test_case("●●●", 8, NO_HINT, &["●", ELLIPSIS]                                      ; "no_hint_multibyte_fits_one")]
+    #[test_case("●abc", 5, NO_HINT, &["●abc"]                                        ; "no_hint_multibyte_fits_exactly")]
+    #[test_case("●●●", 8, NO_HINT, &["●●●"]                                          ; "no_hint_multibyte_fits")]
+    #[test_case("ab日本cd", 6, NO_HINT, &["ab", ELLIPSIS]                             ; "no_hint_cjk_truncated")]
     #[test_case("hello", 20, HINT, &["hello", HINT_STR]                                   ; "hint_short")]
     #[test_case("abcdefghijklmnopqrstuvwxyz", 18, HINT, &["abcdefgh", ELLIPSIS, HINT_STR]  ; "hint_truncated")]
     #[test_case("ab", 9, HINT, &["ab", HINT_STR]                                          ; "hint_exact_fit")]

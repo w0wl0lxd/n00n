@@ -1,4 +1,4 @@
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::time::Duration;
 
 use futures_lite::io::AsyncReadExt;
@@ -23,6 +23,9 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 const CF_MITIGATED: &str = "cf-mitigated";
 const CF_CHALLENGE: &str = "challenge";
 const FALLBACK_USER_AGENT: &str = "n00n";
+const SHARED_FIRST_OCTET: u8 = 100;
+const SHARED_SECOND_OCTET_MIN: u8 = 64;
+const SHARED_SECOND_OCTET_MAX: u8 = 127;
 
 struct RequestParams {
     url: Url,
@@ -413,10 +416,23 @@ fn validate_ip(ip: IpAddr) -> Result<(), String> {
     }
 }
 
+/// RFC 6598 shared address space (100.64.0.0/10). Carrier NAT and mesh VPNs
+/// hand out addresses there, so it is not globally routable and must be
+/// treated like a private range by the SSRF guard.
+fn is_shared_address_space(v4: Ipv4Addr) -> bool {
+    let octets = v4.octets();
+    octets[0] == SHARED_FIRST_OCTET
+        && (SHARED_SECOND_OCTET_MIN..=SHARED_SECOND_OCTET_MAX).contains(&octets[1])
+}
+
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || is_shared_address_space(*v4)
         }
         IpAddr::V6(v6) => {
             if v6.is_loopback() || v6.is_unspecified() {
@@ -547,6 +563,15 @@ mod tests {
     #[test_case(IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)), true ; "v6_unique_local_fd")]
     #[test_case(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)), false ; "v6_global_unicast")]
     fn is_private_ip_cases(ip: IpAddr, expected: bool) {
+        assert_eq!(is_private_ip(&ip), expected);
+    }
+
+    #[test_case(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)), true ; "v4_cgnat_lower")]
+    #[test_case(IpAddr::V4(Ipv4Addr::new(100, 100, 100, 100)), true ; "v4_cgnat_mesh_vpn")]
+    #[test_case(IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255)), true ; "v4_cgnat_upper")]
+    #[test_case(IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1)), false ; "v4_just_above_cgnat")]
+    #[test_case(IpAddr::V4(Ipv4Addr::new(99, 64, 0, 1)), false ; "v4_just_below_cgnat")]
+    fn is_private_ip_shared_address_space_cases(ip: IpAddr, expected: bool) {
         assert_eq!(is_private_ip(&ip), expected);
     }
 

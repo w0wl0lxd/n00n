@@ -792,6 +792,28 @@ case("team_summary_rejects_tuple_write_errors", function()
   assert(err and err:find("disk full", 1, true), "summary write error must be preserved")
 end)
 
+case("team_summary_retrieve_reads_fs_dir_entry_arrays", function()
+  local summary = require("summary")
+  local old_dir = n00n.fs.dir
+  local old_read = n00n.fs.read
+  local stored = n00n.json.encode({ path = "src/retry.rs", text = "RetryHelper owns exponential backoff." })
+
+  -- n00n.fs.dir returns {name, type} two-element arrays.
+  n00n.fs.dir = function()
+    return { { "abc.json", "file" }, { "nested", "directory" } }
+  end
+  n00n.fs.read = function()
+    return stored
+  end
+
+  local block = summary.retrieve({}, "retry helper backoff", 3)
+
+  n00n.fs.dir = old_dir
+  n00n.fs.read = old_read
+  assert(block ~= nil, "stored summaries must be retrievable")
+  assert(block:find("RetryHelper", 1, true) ~= nil, "retrieved summary text must be returned")
+end)
+
 case("team_memory_rejects_tuple_write_errors", function()
   local memory = require("mem")
   local old_mkdir = n00n.fs.mkdir

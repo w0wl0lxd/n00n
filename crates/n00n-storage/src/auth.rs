@@ -11,6 +11,8 @@ use crate::{StateDir, StorageError, atomic_write_permissions};
 const AUTH_DIR: &str = "auth";
 const AUTH_FILE_MODE: u32 = 0o600;
 const REFRESH_BUFFER_SECS: u64 = 60;
+const MASK_VISIBLE_CHARS: usize = 4;
+const MASK_MIN_CHARS: usize = MASK_VISIBLE_CHARS * 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OAuthTokens {
@@ -54,12 +56,15 @@ pub struct ProviderCredentials {
 impl ProviderCredentials {
     #[must_use]
     pub fn masked_api_key(&self) -> String {
-        if self.api_key.len() > 8 {
-            format!(
-                "{}...{}",
-                &self.api_key[..4],
-                &self.api_key[self.api_key.len() - 4..]
-            )
+        let char_count = self.api_key.chars().count();
+        if char_count > MASK_MIN_CHARS {
+            let prefix: String = self.api_key.chars().take(MASK_VISIBLE_CHARS).collect();
+            let suffix: String = self
+                .api_key
+                .chars()
+                .skip(char_count.saturating_sub(MASK_VISIBLE_CHARS))
+                .collect();
+            format!("{prefix}...{suffix}")
         } else {
             "****".to_string()
         }
@@ -74,8 +79,18 @@ pub fn now_millis() -> u64 {
     )
 }
 
-fn auth_path(dir: &StateDir, filename: &str) -> PathBuf {
-    dir.path().join(AUTH_DIR).join(format!("{filename}.json"))
+/// Auth file names become path components, so they must not contain
+/// separators or parent-directory components.
+fn valid_auth_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+}
+
+fn auth_path(dir: &StateDir, filename: &str) -> Option<PathBuf> {
+    valid_auth_name(filename).then(|| dir.path().join(AUTH_DIR).join(format!("{filename}.json")))
+}
+
+fn auth_path_checked(dir: &StateDir, filename: &str) -> Result<PathBuf, StorageError> {
+    auth_path(dir, filename).ok_or_else(|| StorageError::InvalidFileName(filename.to_owned()))
 }
 
 fn load_auth<T: DeserializeOwned>(path: &Path) -> Option<T> {
@@ -104,7 +119,7 @@ fn delete_auth(path: &Path) -> Result<bool, StorageError> {
 
 #[must_use]
 pub fn load_tokens(dir: &StateDir, provider: &str) -> Option<OAuthTokens> {
-    load_auth(&auth_path(dir, provider))
+    load_auth(&auth_path(dir, provider)?)
 }
 
 /// # Errors
@@ -114,18 +129,18 @@ pub fn save_tokens(
     provider: &str,
     tokens: &OAuthTokens,
 ) -> Result<(), StorageError> {
-    save_auth(&auth_path(dir, provider), tokens)
+    save_auth(&auth_path_checked(dir, provider)?, tokens)
 }
 
 /// # Errors
 /// Returns an error if the file cannot be removed.
 pub fn delete_tokens(dir: &StateDir, provider: &str) -> Result<bool, StorageError> {
-    delete_auth(&auth_path(dir, provider))
+    delete_auth(&auth_path_checked(dir, provider)?)
 }
 
 #[must_use]
 pub fn load_mcp_auth(dir: &StateDir, server_name: &str, expected_url: &str) -> Option<McpAuthData> {
-    let data: McpAuthData = load_auth(&auth_path(dir, &format!("mcp-{server_name}")))?;
+    let data: McpAuthData = load_auth(&auth_path(dir, &format!("mcp-{server_name}"))?)?;
     if data.server_url != expected_url {
         return None;
     }
@@ -144,18 +159,21 @@ pub fn save_mcp_auth(
     server_name: &str,
     data: &McpAuthData,
 ) -> Result<(), StorageError> {
-    save_auth(&auth_path(dir, &format!("mcp-{server_name}")), data)
+    save_auth(
+        &auth_path_checked(dir, &format!("mcp-{server_name}"))?,
+        data,
+    )
 }
 
 /// # Errors
 /// Returns an error if the file cannot be removed.
 pub fn delete_mcp_auth(dir: &StateDir, server_name: &str) -> Result<bool, StorageError> {
-    delete_auth(&auth_path(dir, &format!("mcp-{server_name}")))
+    delete_auth(&auth_path_checked(dir, &format!("mcp-{server_name}"))?)
 }
 
 #[must_use]
 pub fn load_provider_credentials(dir: &StateDir, slug: &str) -> Option<ProviderCredentials> {
-    load_auth(&auth_path(dir, slug))
+    load_auth(&auth_path(dir, slug)?)
 }
 
 /// # Errors
@@ -165,13 +183,13 @@ pub fn save_provider_credentials(
     slug: &str,
     creds: &ProviderCredentials,
 ) -> Result<(), StorageError> {
-    save_auth(&auth_path(dir, slug), creds)
+    save_auth(&auth_path_checked(dir, slug)?, creds)
 }
 
 /// # Errors
 /// Returns an error if the file cannot be removed.
 pub fn delete_provider_credentials(dir: &StateDir, slug: &str) -> Result<bool, StorageError> {
-    delete_auth(&auth_path(dir, slug))
+    delete_auth(&auth_path_checked(dir, slug)?)
 }
 
 #[cfg(test)]
@@ -226,7 +244,7 @@ mod tests {
 
         #[cfg(unix)]
         {
-            let metadata = fs::metadata(auth_path(&dir, "anthropic")).unwrap();
+            let metadata = fs::metadata(auth_path(&dir, "anthropic").unwrap()).unwrap();
             assert_eq!(metadata.permissions().mode() & 0o777, AUTH_FILE_MODE);
         }
 
@@ -273,5 +291,38 @@ mod tests {
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         save_mcp_auth(&dir, "srv", data).unwrap();
         assert!(load_mcp_auth(&dir, "srv", lookup_url).is_none());
+    }
+
+    #[test_case("123é56789", "123é...6789" ; "non_ascii_prefix_boundary")]
+    #[test_case("1234567éabc", "1234...éabc" ; "non_ascii_suffix_boundary")]
+    #[test_case("sk-abcdef-1234", "sk-a...1234" ; "ascii_keys_keep_masking")]
+    #[test_case("short", "****" ; "short_keys_are_fully_masked")]
+    fn masked_api_key_never_slices_inside_a_character(api_key: &str, expected: &str) {
+        let creds = ProviderCredentials {
+            api_key: api_key.into(),
+            host: None,
+        };
+        assert_eq!(creds.masked_api_key(), expected);
+    }
+
+    #[test]
+    fn auth_names_cannot_escape_the_auth_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let stem = format!("n00n-escape-test-{}", std::process::id());
+        let escaped = tmp.path().parent().unwrap().join(format!("{stem}.json"));
+        let traversal = format!("srv/../../../{stem}");
+
+        let result = save_mcp_auth(&dir, &traversal, &test_mcp_data());
+
+        assert!(
+            !escaped.exists(),
+            "auth write escaped the state directory: {}",
+            escaped.display()
+        );
+        let error = result.expect_err("traversal name must be rejected");
+        assert!(matches!(error, StorageError::InvalidFileName(_)));
+        assert!(load_mcp_auth(&dir, &traversal, TEST_URL).is_none());
+        assert!(delete_mcp_auth(&dir, &traversal).is_err());
     }
 }

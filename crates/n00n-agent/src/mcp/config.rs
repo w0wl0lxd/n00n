@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -13,6 +14,11 @@ const MCP_CONFIG_FILE: &str = "mcp.toml";
 const PROJECT_DIR: &str = ".n00n";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 300_000;
+
+/// Serializes the read-modify-write of `mcp.toml` inside this process. Toggles
+/// are persisted from detached tasks, so two quick toggles otherwise race:
+/// both read the same file and the last writer silently drops the other change.
+static PERSIST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone)]
 pub enum McpConfigError {
@@ -343,6 +349,9 @@ pub fn persist_enabled(
     server_name: &str,
     enabled: bool,
 ) -> Result<(), McpError> {
+    let _guard = PERSIST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let content = match fs::read_to_string(config_path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -616,6 +625,57 @@ enabled = true
         assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
         assert!(doc["mcp"]["srv"]["command"].is_array());
         assert_eq!(doc["mcp"]["srv"]["timeout"].as_integer(), Some(5000));
+    }
+
+    /// Toggles persist from detached tasks, so two quick toggles can run
+    /// concurrently. Each one reads the file, edits its own server, and writes
+    /// the whole document back; without serialization the later writer drops
+    /// the earlier writer's change.
+    #[test]
+    fn concurrent_toggles_do_not_lose_updates() {
+        use std::sync::{Arc, Barrier};
+
+        use std::fmt::Write as _;
+
+        const SERVERS: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
+
+        for round in 0..4 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("mcp.toml");
+            let mut seed = String::new();
+            for server in SERVERS {
+                let _ = write!(
+                    seed,
+                    "[mcp.{server}]\ncommand = [\"echo\"]\nenabled = false\n\n"
+                );
+            }
+            fs::write(&path, seed).unwrap();
+
+            let barrier = Arc::new(Barrier::new(SERVERS.len()));
+            let handles: Vec<_> = SERVERS
+                .iter()
+                .map(|server| {
+                    let path = path.clone();
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        persist_enabled(&path, server, true)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+
+            let doc: DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
+            for server in SERVERS {
+                assert_eq!(
+                    doc["mcp"][server]["enabled"].as_bool(),
+                    Some(true),
+                    "round {round}: the {server} toggle was lost"
+                );
+            }
+        }
     }
 
     #[test]

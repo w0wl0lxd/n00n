@@ -439,6 +439,7 @@ impl From<n00n_storage::StorageError> for AgentError {
             n00n_storage::StorageError::Json(j) => Self::Json(j),
             n00n_storage::StorageError::HomeNotSet
             | n00n_storage::StorageError::NotFound(_)
+            | n00n_storage::StorageError::InvalidFileName(_)
             | n00n_storage::StorageError::SlugCollision
             | n00n_storage::StorageError::Toon(_)
             | n00n_storage::StorageError::GetRandom(_) => Self::Storage,

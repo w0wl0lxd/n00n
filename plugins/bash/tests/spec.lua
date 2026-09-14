@@ -92,6 +92,29 @@ case("git_subcommand_nil_for_non_git", function()
   eq(command_guard.git_subcommand("gh pr list"), nil)
 end)
 
+-- Short options cluster in one word: `du -sh` is the same bound as `du -s`,
+-- `tree -L2` as `tree -L 2`, and `ls -lR` as `ls -R`. `has_option` only saw
+-- standalone words, so `du -sh`/`tree -L2` were rejected as unbounded while
+-- `ls -laR` slipped past the recursive-ls guard.
+
+case("du_short_option_cluster_is_a_summarize_bound", function()
+  eq(command_guard.broad_bash_command_reason("du -sh ."), nil)
+  eq(command_guard.broad_bash_command_reason("du -d1 ."), nil)
+end)
+
+case("tree_short_option_cluster_is_a_depth_bound", function()
+  eq(command_guard.broad_bash_command_reason("tree -L2 ."), nil)
+end)
+
+case("ls_recursive_short_option_cluster_needs_an_output_cap", function()
+  has(command_guard.broad_bash_command_reason("ls -lR ."), "recursive ls without output cap")
+  has(command_guard.broad_bash_command_reason("ls -laR /tmp"), "recursive ls without output cap")
+end)
+
+case("ls_lowercase_r_reverse_is_not_recursive", function()
+  eq(command_guard.broad_bash_command_reason("ls -r ."), nil)
+end)
+
 case("git_uses_machine_format_detects_porcelain", function()
   eq(command_guard.git_uses_machine_format("git worktree list --porcelain"), true)
   eq(command_guard.git_uses_machine_format("git status"), false)

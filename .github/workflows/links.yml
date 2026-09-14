@@ -1,5 +1,4 @@
 name: Links
-
 on:
   push:
     branches: ["main"]
@@ -8,19 +7,17 @@ on:
   schedule:
     - cron: "47 5 * * 1"
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   lychee:
     name: Check links
     runs-on: ubuntu-latest
     steps:
-      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' # v4
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: lychee
       - name: Link Checker
@@ -31,6 +28,9 @@ jobs:
             --timeout 20 \
             --retry-wait-time 2 \
             --accept 200..=299,403,429 \
-            --exclude-mail \
             "README.md" "CONTRIBUTING.md" "site/index.html" "site/docs/content/**/*.md"
+        # The step now actually runs (invalid --exclude-mail flag removed above).
+        # Keep it non-blocking until the pre-existing link debt (root-relative
+        # /docs/ links in raw Zola sources, a few dead URLs) is cleaned up, so
+        # the required "Check links" check does not block unrelated PRs.
         continue-on-error: true

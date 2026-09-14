@@ -80,8 +80,10 @@ fn get_node_text(_lua: &Lua, node: AnyUserData, source: String) -> LuaResult<Str
     let ts = lua_node.ts_node()?;
     let start = ts.start_byte();
     let end = ts.end_byte();
-    if end > source.len() {
-        return Err(mlua::Error::runtime("node range exceeds source length"));
+    if end > source.len() || !source.is_char_boundary(start) || !source.is_char_boundary(end) {
+        return Err(mlua::Error::runtime(format!(
+            "node byte range {start}..{end} does not fit the given source"
+        )));
     }
     Ok(source[start..end].to_owned())
 }
@@ -355,4 +357,34 @@ pub(crate) fn create_treesitter_table(lua: &Lua) -> LuaResult<Table> {
     t.set("language", language::create_language_module(lua)?)?;
     t.set("query", query::create_query_module(lua)?)?;
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use mlua::Lua;
+    use tree_sitter::Parser;
+
+    use super::get_node_text;
+    use crate::api::treesitter::node::LuaNode;
+    use crate::language::Language;
+
+    #[test]
+    fn node_text_rejects_source_that_does_not_match_the_node_range() {
+        let lua = Lua::new();
+        let language = Language::from_name("rust").expect("rust grammar");
+        let mut parser = Parser::new();
+        parser
+            .set_language(&language.ts_language())
+            .expect("set rust grammar");
+        let tree = Arc::new(parser.parse("é", None).expect("parse source"));
+        let root = LuaNode::new(tree.root_node(), Arc::clone(&tree));
+        let node = lua.create_userdata(root).expect("node userdata");
+
+        // "é" is 2 bytes, so the root node spans bytes 0..2. Byte 1 is inside
+        // the 4-byte char U+1F600, so slicing must return an error, not panic.
+        let result = get_node_text(&lua, node, "\u{1F600}".to_string());
+        assert!(result.is_err(), "expected range error, got {result:?}");
+    }
 }
