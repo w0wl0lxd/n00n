@@ -455,6 +455,11 @@ async fn interpreter_run(
                 }
             }
             WorkerEvent::ToolCalls { request_id, calls } => {
+                enum DispatchOutcome {
+                    Results(Vec<WireCallResult>),
+                    Cancelled,
+                }
+
                 let futures = calls.into_iter().map(|call| {
                     let function = fns.get(&call.name).cloned();
                     let lua = lua.clone();
@@ -465,9 +470,27 @@ async fn interpreter_run(
                         }
                     }
                 });
+                let outcome = futures_lite::future::race(
+                    async { DispatchOutcome::Results(join_all(futures).await) },
+                    async {
+                        cancel.cancelled().await;
+                        DispatchOutcome::Cancelled
+                    },
+                )
+                .await;
+                let results = match outcome {
+                    DispatchOutcome::Results(results) => results,
+                    // Dropping the losing branch drops the pending Lua tool
+                    // futures; the worker must not stay blocked on a response
+                    // that will never arrive.
+                    DispatchOutcome::Cancelled => {
+                        worker.kill_and_reap().await;
+                        return Err(mlua::Error::runtime("cancelled"));
+                    }
+                };
                 let response = WorkerRequest::CallResults {
                     request_id,
-                    results: join_all(futures).await,
+                    results,
                 };
                 if let Err(error) = send_worker_request(&mut worker_stdin, &response).await {
                     worker.kill_and_reap().await;
@@ -577,6 +600,70 @@ mod tests {
                 .unwrap();
             assert_eq!(error, None);
             assert_eq!(result.get::<String>("stdout").unwrap(), "ok");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_interrupts_pending_tool_dispatch() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::runtime::{TaskCell, TaskHandle};
+
+        smol::block_on(async {
+            let (trigger, cancel) = CancelToken::new();
+            let lua = Lua::new();
+            lua.set_app_data::<TaskHandle>(Arc::new(Mutex::new(TaskCell::new(
+                cancel, None, None, None,
+            ))));
+
+            let opts = lua.create_table().unwrap();
+            opts.set("timeout", 30).unwrap();
+            opts.set("max_memory_mb", 16).unwrap();
+            opts.set(
+                "on_output",
+                lua.create_function(|_, _: String| Ok(())).unwrap(),
+            )
+            .unwrap();
+
+            let (entered_tx, entered_rx) = flume::bounded::<()>(1);
+            let tools = lua.create_table().unwrap();
+            let hang = lua
+                .create_async_function(move |_, _: mlua::Value| {
+                    let entered_tx = entered_tx.clone();
+                    async move {
+                        let _ = entered_tx.send_async(()).await;
+                        std::future::pending::<()>().await;
+                        Ok(mlua::Value::Nil)
+                    }
+                })
+                .unwrap();
+            tools.set("hang", hang).unwrap();
+            opts.set("tools", tools).unwrap();
+
+            let _keepalive = lua.clone();
+            let run = smol::spawn(interpreter_run(lua, "await hang()".to_owned(), opts));
+            entered_rx
+                .recv_async()
+                .await
+                .expect("python tool callback never started");
+            trigger.cancel();
+
+            let finished = futures_lite::future::race(
+                async {
+                    let _ = run.await;
+                    true
+                },
+                async {
+                    smol::Timer::after(Duration::from_secs(5)).await;
+                    false
+                },
+            )
+            .await;
+            assert!(
+                finished,
+                "interpreter_run ignored cancellation while a tool callback was pending"
+            );
         });
     }
 

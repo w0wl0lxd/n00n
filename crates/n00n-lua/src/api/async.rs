@@ -324,7 +324,9 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
             local async_tbl = ...
             return function(max_jobs, funs)
                 if #funs == 0 then return end
-                max_jobs = math.min(max_jobs, #funs)
+                -- A non-positive or fractional cap would leave some functions
+                -- unqueued and `on_finish` unreachable (the call never returns).
+                max_jobs = math.max(1, math.floor(math.min(max_jobs, #funs)))
                 local remaining = {}
                 for i = max_jobs + 1, #funs do
                     remaining[#remaining + 1] = funs[i]
@@ -699,6 +701,90 @@ mod tests {
                 msg.contains(CANCELLED_MSG),
                 "expected error containing {CANCELLED_MSG:?}, got: {msg}"
             );
+        });
+    }
+
+    #[test]
+    fn join_with_zero_max_jobs_still_runs_every_function() {
+        smol::block_on(async {
+            let (lua, _tbl) = setup();
+            // Replace the async primitives the join choreography calls: `run`
+            // executes the work and its finish callback inline, and `await`
+            // fails unless the producer ever reached `on_finish`.
+            lua.load(
+                r"
+                runs = 0
+                async_tbl.run = function(work, on_finish)
+                    runs = runs + 1
+                    work()
+                    on_finish()
+                end
+                async_tbl.await = function(_, producer)
+                    local finished = false
+                    producer(function() finished = true end)
+                    assert(finished, 'join never reached on_finish')
+                end
+                ",
+            )
+            .exec()
+            .unwrap();
+            let runs: i64 = lua
+                .load(
+                    r"
+                    async_tbl.join(0, {
+                        function() end,
+                        function() end,
+                    })
+                    return runs
+                    ",
+                )
+                .eval_async()
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("join(0, fns) never completes: {error}");
+                });
+            assert_eq!(runs, 2, "every function must run exactly once");
+        });
+    }
+
+    #[test]
+    fn join_with_fractional_max_jobs_still_runs_every_function() {
+        smol::block_on(async {
+            let (lua, _tbl) = setup();
+            lua.load(
+                r"
+                runs = 0
+                async_tbl.run = function(work, on_finish)
+                    runs = runs + 1
+                    work()
+                    on_finish()
+                end
+                async_tbl.await = function(_, producer)
+                    local finished = false
+                    producer(function() finished = true end)
+                    assert(finished, 'join never reached on_finish')
+                end
+                ",
+            )
+            .exec()
+            .unwrap();
+            let runs: i64 = lua
+                .load(
+                    r"
+                    async_tbl.join(2.5, {
+                        function() end,
+                        function() end,
+                        function() end,
+                    })
+                    return runs
+                    ",
+                )
+                .eval_async()
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("join(2.5, fns) never completes: {error}");
+                });
+            assert_eq!(runs, 3, "every function must run exactly once");
         });
     }
 }

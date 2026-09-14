@@ -1296,7 +1296,8 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             ));
         }
     };
-    let description: String = spec.get("description").unwrap_or_else(|_| String::new());
+    let description: String =
+        spec_opt(spec, "description", "a string")?.unwrap_or_else(String::new);
     if description.trim().is_empty() {
         return Err(mlua::Error::runtime(
             "register_tool: description must be non-empty",
@@ -1308,7 +1309,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
     let schema_table: LuaValue = spec
         .get("schema")
         .map_err(|_| mlua::Error::runtime("register_tool: missing 'schema'"))?;
-    let audiences: Option<mlua::Table> = spec.get("audiences").ok();
+    let audiences: Option<mlua::Table> = spec_opt(spec, "audiences", "a list of strings")?;
 
     let schema_val: Value = lua.from_value(schema_table)?;
     let param_schema = try_from_json(&schema_val).map_err(mlua::Error::runtime)?;
@@ -1335,13 +1336,11 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         }
     };
 
-    let header_fn: Option<Function> = spec.get("header").ok();
-    let restore_fn: Option<Function> = spec.get("restore").ok();
-    let start_fn: Option<Function> = spec.get("start").ok();
-    let kind: Option<Arc<str>> = spec
-        .get::<String>("kind")
-        .ok()
-        .map(|s| Arc::from(s.as_str()));
+    let header_fn: Option<Function> = spec_opt(spec, "header", "a function")?;
+    let restore_fn: Option<Function> = spec_opt(spec, "restore", "a function")?;
+    let start_fn: Option<Function> = spec_opt(spec, "start", "a function")?;
+    let kind: Option<Arc<str>> =
+        spec_opt::<String>(spec, "kind", "a string")?.map(|s| Arc::from(s.as_str()));
     let workload = match spec.get::<Option<String>>("workload")? {
         Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
             mlua::Error::runtime(
@@ -1362,7 +1361,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .transpose()?;
     let start_key = start_fn.map(|f| lua.create_registry_value(f)).transpose()?;
 
-    let describe_fn: Option<Function> = spec.get("describe").ok();
+    let describe_fn: Option<Function> = spec_opt(spec, "describe", "a function")?;
     let describe_key = describe_fn
         .map(|f| lua.create_registry_value(f))
         .transpose()?;
@@ -1384,10 +1383,8 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<Option<bool>>("deadline_grace")?
         .unwrap_or_else(|| false);
 
-    let namespace: Option<Arc<str>> = spec
-        .get("namespace")
-        .ok()
-        .map(|s: String| Arc::from(s.as_str()));
+    let namespace: Option<Arc<str>> =
+        spec_opt::<String>(spec, "namespace", "a string")?.map(|s| Arc::from(s.as_str()));
 
     let name: Arc<str> = Arc::from(name.as_str());
 
@@ -1826,6 +1823,31 @@ mod tests {
     #[test_case::test_case(&"a".repeat(TOOL_NAME_MAX + 1), false ; "too_long")]
     fn tool_name_validation(name: &str, expected: bool) {
         assert_eq!(is_valid_tool_name(name), expected);
+    }
+
+    #[test]
+    fn register_tool_rejects_wrong_typed_hooks() {
+        let lua = Lua::new();
+        let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
+        let spec: LuaValue = lua
+            .load(
+                r#"return {
+                    name = "sample",
+                    description = "sample tool",
+                    handler = function() end,
+                    schema = { type = "object", properties = {} },
+                    restore = "not a function",
+                }"#,
+            )
+            .eval()
+            .unwrap();
+
+        let error = register_tool_from_lua(&lua, spec.as_table().unwrap(), pending)
+            .expect_err("a wrong-typed restore hook must not be silently dropped");
+        assert!(
+            error.to_string().contains("restore"),
+            "error should name the offending field: {error}"
+        );
     }
 
     #[test_case::test_case(

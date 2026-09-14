@@ -307,7 +307,8 @@ fn stateful_iter<E: IterEntry>(lua: &mlua::Lua, results: Vec<E>) -> mlua::Result
 fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> QueryCursor {
     const NO_LIMIT: usize = usize::MAX;
     let mut cursor = QueryCursor::new();
-    if let Some(start) = start_row {
+    if start_row.is_some() || stop_row.is_some() {
+        let start = start_row.unwrap_or_else(|| 0);
         let end = stop_row.unwrap_or_else(|| NO_LIMIT);
         cursor.set_point_range(tree_sitter::Point::new(start, 0)..tree_sitter::Point::new(end, 0));
     }
@@ -609,5 +610,69 @@ fn lua_to_usize(v: LuaValue) -> Option<usize> {
         LuaValue::Integer(n) => usize::try_from(n).ok(),
         LuaValue::Number(n) => usize::try_from(n as i64).ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tree_sitter::Parser;
+
+    use super::*;
+
+    const SOURCE: &str = "let first = 1;\nlet second = 2;\nlet third = 3;\n";
+
+    fn rust_node() -> LuaNode {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::Rust.ts_language())
+            .expect("rust grammar loads");
+        let tree = Arc::new(parser.parse(SOURCE, None).expect("rust source parses"));
+        LuaNode::new(tree.root_node(), Arc::clone(&tree))
+    }
+
+    fn rust_query() -> Query {
+        Query::new(&Language::Rust.ts_language(), "(identifier) @id").expect("query compiles")
+    }
+
+    fn empty_regex_cache() -> Mutex<HashMap<String, Option<Regex>>> {
+        Mutex::new(HashMap::new())
+    }
+
+    #[test]
+    fn stop_row_alone_bounds_captures() {
+        let query = rust_query();
+        let args = IterArgs {
+            lua_node: rust_node(),
+            source: SOURCE.to_owned(),
+            start_row: None,
+            stop_row: Some(1),
+        };
+
+        let captures = collect_captures(&query, &args, &empty_regex_cache()).unwrap();
+
+        assert_eq!(
+            captures.len(),
+            1,
+            "stop_row must bound the scan even when start_row is omitted"
+        );
+    }
+
+    #[test]
+    fn stop_row_alone_bounds_matches() {
+        let query = rust_query();
+        let args = IterArgs {
+            lua_node: rust_node(),
+            source: SOURCE.to_owned(),
+            start_row: None,
+            stop_row: Some(1),
+        };
+
+        let matches = collect_matches(&query, &args, &empty_regex_cache()).unwrap();
+
+        assert_eq!(
+            matches.len(),
+            1,
+            "stop_row must bound the scan even when start_row is omitted"
+        );
     }
 }
