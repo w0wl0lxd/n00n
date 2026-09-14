@@ -545,28 +545,7 @@ impl App {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
                 let text = text.replace("\r\n", "\n").replace('\r', "\n");
-                if text.is_empty() {
-                    if self.is_main_chat() && self.image_paste_rx.is_empty() {
-                        self.start_image_paste();
-                    }
-                } else {
-                    let mut text_lines = Vec::new();
-                    if self.is_main_chat() {
-                        for line in text.split('\n') {
-                            if let Some((path, mt)) = image::try_parse_image_path(line) {
-                                self.start_file_image_paste(path, mt);
-                            } else {
-                                text_lines.push(line);
-                            }
-                        }
-                    } else {
-                        text_lines.push(&text);
-                    }
-                    let text = text_lines.join("\n");
-                    if !text.is_empty() {
-                        self.route_text_paste(&text);
-                    }
-                }
+                self.route_text_paste(&text);
                 vec![]
             }
             Msg::Mouse(event) => {
@@ -797,13 +776,6 @@ impl App {
             self.active_chat().jump_to_bottom();
             return Some(vec![]);
         }
-        if key::PLAN_TOGGLE.matches(key)
-            && self.state.mode == Mode::Plan
-            && self.state.plan.is_ready()
-        {
-            self.plan_form.toggle();
-            return Some(vec![]);
-        }
         None
     }
 
@@ -1023,6 +995,22 @@ impl App {
 
         if let Some(actions) = self.dispatch_overlay(key) {
             return actions;
+        }
+
+        // The plan form and the approved plan are core UI, so a plugin
+        // keymap override of the same chord must not make them unreachable.
+        if self.state.mode == Mode::Plan
+            && self.state.plan.is_ready()
+            && key::PLAN_TOGGLE.matches(key)
+        {
+            self.plan_form.toggle();
+            return vec![];
+        }
+        if self.state.mode == Mode::Plan
+            && key::OPEN_EDITOR.matches(key)
+            && let Some(path) = self.state.plan.path()
+        {
+            return vec![Action::OpenEditor(path.to_path_buf())];
         }
 
         if !(self.status == Status::Streaming && is_streaming_stop_key(key))
@@ -2265,10 +2253,30 @@ impl App {
         try_picker!(self.model_picker);
         try_picker!(self.mcp_picker);
         try_picker!(self.login_picker);
+        if self.is_main_chat() {
+            self.route_image_paste(text);
+        }
         if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text)
             && self.is_main_chat()
         {
             self.command_palette.sync(&val);
+        }
+    }
+
+    /// An empty paste asks for the clipboard image; a paste containing image
+    /// paths starts a load for each. The text still reaches the composer, so a
+    /// failed or unsupported load never swallows what the user pasted.
+    fn route_image_paste(&mut self, text: &str) {
+        if text.is_empty() {
+            if self.image_paste_rx.is_empty() {
+                self.start_image_paste();
+            }
+            return;
+        }
+        for line in text.split('\n') {
+            if let Some((path, media_type)) = image::try_parse_image_path(line) {
+                self.start_file_image_paste(path, media_type);
+            }
         }
     }
 

@@ -688,7 +688,7 @@ fn paste_file_path_triggers_image_load() {
     let mut app = test_app();
     app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
     assert!(!app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), "");
+    assert_eq!(app.input_box.buffer.value(), "file:///tmp/nonexistent.png");
 }
 
 #[test]
@@ -701,7 +701,66 @@ fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     assert_eq!(app.image_paste_rx.len(), 2);
     assert_eq!(
         app.input_box.buffer.value(),
-        "Please compare these:\nThanks"
+        "Please compare these:\nfile:///tmp/first.png\nfile:///tmp/second.jpg\nThanks"
+    );
+}
+
+#[test]
+fn unsupported_image_path_paste_preserves_text() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    let mut app = test_app();
+    app.state.model.supports_vision_override = Some(false);
+    app.update(Msg::Paste(TEXT.into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
+#[test]
+fn image_path_paste_in_search_does_not_load_image() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    let mut app = test_app();
+    app.update(Msg::Key(kb::SEARCH.to_key_event()));
+    assert!(app.search_modal.is_open());
+
+    app.update(Msg::Paste(TEXT.into()));
+
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), "");
+    assert_eq!(app.search_modal.query_text(), TEXT);
+}
+
+#[test]
+fn disconnected_image_load_is_removed() {
+    let mut app = test_app();
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    drop(tx);
+
+    app.poll_image_paste();
+
+    assert!(
+        app.image_paste_rx.is_empty(),
+        "a disconnected loader must not stay parked in the pending list"
+    );
+}
+
+#[test]
+fn failed_image_load_preserves_text_and_unblocks_submission() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    const ERROR: &str = "file unavailable";
+    let mut app = test_app();
+    app.input_box.set_input(TEXT);
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    tx.send(Err(ERROR.into())).unwrap();
+
+    app.poll_image_paste();
+
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!("Image paste failed: {ERROR}")
     );
 }
 
@@ -715,11 +774,11 @@ fn busy_enter_queues_steering_and_second_chord_promotes_latest() {
     app.input_box.set_input("steer two");
     assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
     assert_eq!(app.queue.len(), 2);
-    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
-    assert_eq!(app.queue.panel_entries()[1].text, "↪ steer two");
+    assert_eq!(app.queue.panel_entries()[0].text, "\u{21AA} steer one");
+    assert_eq!(app.queue.panel_entries()[1].text, "\u{21AA} steer two");
 
     app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
+    assert_eq!(app.queue.panel_entries()[0].text, "\u{21AA} steer one");
     assert_eq!(app.queue.panel_entries()[1].text, "↯ steer two");
 }
 
@@ -4388,6 +4447,67 @@ fn overlay_wins_over_override_when_plan_form_open() {
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
     assert!(!app.plan_form.is_visible());
+}
+
+#[test]
+fn plan_toggle_beats_override_when_form_hidden() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::PLAN_TOGGLE.code,
+        modifiers: kb::PLAN_TOGGLE.modifiers,
+        desc: "plugin plan override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 2,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+    assert!(app.plan_form.is_visible());
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(!app.plan_form.is_visible(), "first press hides the form");
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+
+    assert!(
+        app.plan_form.is_visible(),
+        "Ctrl+T must reopen the plan form even when a plugin overrides it"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not run when the plan toggle wins"
+    );
+}
+
+#[test]
+fn open_editor_beats_override_in_plan_mode() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::OPEN_EDITOR.code,
+        modifiers: kb::OPEN_EDITOR.modifiers,
+        desc: "plugin open editor override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 12,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(!app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "Ctrl+O must open the approved plan even when a plugin overrides it"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not run when open-editor wins"
+    );
 }
 
 #[test]
