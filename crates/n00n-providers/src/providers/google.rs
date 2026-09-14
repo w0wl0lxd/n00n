@@ -832,8 +832,13 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     content,
                     is_error,
                 } => {
-                    let mut response_val = serde_json::from_str(content)
-                        .unwrap_or_else(|_| json!({"result": content}));
+                    // Gemini types `response` as an object; a tool that returns
+                    // a bare number, bool, null, or list must be wrapped.
+                    let mut response_val = match serde_json::from_str::<Value>(content) {
+                        Ok(Value::Object(object)) => Value::Object(object),
+                        Ok(scalar) => json!({"result": scalar}),
+                        Err(_) => json!({"result": content}),
+                    };
                     if *is_error {
                         response_val = json!({"error": response_val});
                     }
@@ -962,6 +967,39 @@ struct SseResponse {
 }
 
 #[derive(Deserialize)]
+struct GoogleErrorPayload {
+    error: GoogleErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct GoogleErrorDetail {
+    #[serde(default)]
+    code: u16,
+    message: String,
+    #[serde(default)]
+    status: String,
+}
+
+impl GoogleErrorDetail {
+    /// Google reports the HTTP status in `code` and a gRPC-style `status`
+    /// string. Only 429 and 5xx stay retryable, per Google's retry guidance.
+    fn http_status(&self) -> u16 {
+        if self.code >= 400 {
+            return self.code;
+        }
+        match self.status.as_str() {
+            "RESOURCE_EXHAUSTED" | "RATE_LIMIT_EXCEEDED" => 429,
+            "UNAVAILABLE" => 503,
+            "DEADLINE_EXCEEDED" => 504,
+            "UNAUTHENTICATED" => 401,
+            "PERMISSION_DENIED" => 403,
+            "NOT_FOUND" => 404,
+            _ => 400,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelsListResponse {
     models: Vec<ApiModelInfo>,
@@ -986,9 +1024,21 @@ async fn parse_sse(
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
+    let mut tool_call_count = 0usize;
 
     while let Some(event) = stream.next_event().await? {
-        let chunk: SseResponse = match serde_json::from_str(&event.data) {
+        let data = event.data.trim();
+        if data.contains("\"error\"")
+            && let Ok(payload) = serde_json::from_str::<GoogleErrorPayload>(data)
+        {
+            warn!(code = payload.error.code, status = %payload.error.status, "Google stream error");
+            return Err(AgentError::api(
+                payload.error.http_status(),
+                payload.error.message,
+            ));
+        }
+
+        let chunk: SseResponse = match serde_json::from_str(data) {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "failed to parse Gemini SSE chunk");
@@ -1016,8 +1066,10 @@ async fn parse_sse(
         };
 
         for candidate in candidates {
-            if let Some(reason) = candidate.finish_reason {
-                stop_reason = Some(StopReason::from_google(&reason)).or(stop_reason);
+            if let Some(reason) = candidate.finish_reason
+                && stop_reason.is_none()
+            {
+                stop_reason = Some(StopReason::from_google(&reason));
             }
 
             let Some(content) = candidate.content else {
@@ -1029,7 +1081,10 @@ async fn parse_sse(
 
             for part in parts {
                 if let Some(func_call) = part.function_call {
-                    let id = format!("call_{}", func_call.name);
+                    // Gemini function calls carry no id, so synthesize a unique
+                    // one: the same tool can run twice in one response.
+                    let id = format!("call_{}_{}", func_call.name, tool_call_count);
+                    tool_call_count += 1;
                     let input = func_call.args.unwrap_or_else(Default::default);
                     event_tx
                         .send_async(ProviderEvent::ToolUseStart {
@@ -1306,6 +1361,37 @@ mod tests {
     }
 
     #[test]
+    fn convert_messages_wraps_scalar_tool_results_in_an_object() {
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    input: json!({}),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "42".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+        ];
+        let result = convert_messages(&messages);
+        let response = &result[1]["parts"][0]["functionResponse"]["response"];
+        assert!(
+            response.is_object(),
+            "Gemini requires an object response, got {response}"
+        );
+        assert_eq!(response["result"], json!(42));
+    }
+
+    #[test]
     fn convert_messages_tool_returned_image_gets_own_user_turn() {
         let messages = vec![Message {
             role: Role::User,
@@ -1483,6 +1569,45 @@ mod tests {
             &result.message.content[0],
             ContentBlock::ToolUse { name, .. } if name == "bash"
         ));
+    }
+
+    #[test]
+    fn parse_sse_repeated_function_call_gets_distinct_ids() {
+        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"a\"}}},{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"b\"}}}]},\"finishReason\":\"STOP\"}]}\n\n";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let ids: Vec<&str> = result.message.tool_uses().map(|(id, _, _)| id).collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "ids must be unique per call: {ids:?}");
+    }
+
+    #[test]
+    fn parse_sse_tool_call_finish_reason_in_later_chunk_stays_tool_use() {
+        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":15}}\n\n";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
+    }
+
+    #[test]
+    fn parse_sse_error_payload_reports_provider_error() {
+        let data = b"data: {\"error\":{\"code\":400,\"message\":\"Invalid tool schema\",\"status\":\"INVALID_ARGUMENT\"}}\n\n";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let error = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
+        assert!(
+            !error.is_retryable(),
+            "unexpected retryable error: {error:?}"
+        );
+        match error {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("Invalid tool schema"), "{message}");
+            }
+            other => panic!("expected Api error, got: {other:?}"),
+        }
     }
 
     #[test]

@@ -973,6 +973,32 @@ data: {\"type\":\"message_stop\"}\n";
     }
 
     #[test]
+    fn mid_stream_error_after_text_delta_is_not_retried() {
+        smol::block_on(async {
+            let sse_data = b"\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial answer\"}}\n\
+\n\
+event: error\n\
+data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"internal fault\"}}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let error = parse_sse(mock_response(sse_data), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(error, AgentError::RequestSent { .. }),
+                "expected RequestSent, got: {error:?}"
+            );
+            assert!(!error.is_retryable());
+        });
+    }
+
+    #[test]
     fn parse_sse_malformed_tool_json_is_rejected() {
         smol::block_on(async {
             let sse_data = "\
