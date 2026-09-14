@@ -1,0 +1,10 @@
+- Fixed Gemini 3 tool loops by round-tripping function-call thought signatures, stopped retrying Google streams after output was emitted, and made Anthropic model-list pagination fail fast when a response has no usable cursor.
+- Fixed prompt assembly returning an over-cap prompt when the injected header alone exceeds the budget, and inverted project command precedence for nested directories.
+- Fixed a tree-sitter predicate panic on a mismatched source, silently-defaulted window options, and interpreter stdout send failures being discarded mid-run.
+- Fixed skill discovery aborting on an unreadable `SKILL.md`, multibyte truncation in skill lists and memory hints, policy stores that could never be loaded again, and path traversal through checkpoint ids.
+- Disabled repo-configured text conversion filters (`--no-textconv`) in sanitized git commands, alongside the existing external-diff block.
+- Fixed team quorum counting a `NOT APPROVED` verdict as approval, and git command sanitization merging newline-separated commands into one invocation.
+- Fixed a markdown wrap-budget underflow on tabs and emoji-presentation text, stale highlighter state after the input shrank, and daemon connection tasks outliving shutdown.
+- Fixed log rotation underflowing at zero max files, session title cache staleness after a same-size rewrite, and a remote allowlist bypass in `n00n-semble`.
+- Fixed ACP stdout write errors being discarded (framing desync) and `find_related` missing anchors beyond the first 10,000 chunks.
+- Fixed Rust CI skipping crate manifests and build scripts, release checksums hashing a stale checksum file into itself, docs never building on pull requests, silent `$0` pricing for newer models, benchmark run dedupe dropping distinct runs, and an unquoted model argument in the Terminal-Bench wrapper.
