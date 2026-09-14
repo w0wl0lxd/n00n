@@ -5224,6 +5224,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::ScanCache;
     use super::ThinkingParseError;
     use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
@@ -5233,7 +5235,7 @@ mod tests {
         generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
     };
     use super::{
-        DecodeLimits, SCAN_CACHE_FILE, ScanCache, Session, SessionError, SessionLog, StorageError,
+        DecodeLimits, SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError,
         StoredFusionUsage, StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
@@ -5258,6 +5260,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(unix)]
     use std::time::UNIX_EPOCH;
     use tempfile::TempDir;
     use test_case::test_case;
