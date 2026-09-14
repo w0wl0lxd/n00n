@@ -259,6 +259,7 @@ pub fn highlight_ansi(lang: &str, code: &str, bg: (u8, u8, u8)) -> String {
 }
 
 pub struct CodeHighlighter {
+    syntax: &'static SyntaxReference,
     checkpoint_parse: ParseState,
     checkpoint_highlight: HighlightState,
     completed_lines: usize,
@@ -277,15 +278,30 @@ impl std::fmt::Debug for CodeHighlighter {
 impl CodeHighlighter {
     #[must_use]
     pub fn new(lang: &str) -> Self {
-        let syntax = syntax_for_token(lang);
-        let t = theme();
-        let highlighter = SynHighlighter::new(&t);
+        Self::from_syntax(syntax_for_token(lang))
+    }
+
+    fn from_syntax(syntax: &'static SyntaxReference) -> Self {
+        let theme = theme();
+        let syn_hl = SynHighlighter::new(&theme);
         Self {
+            syntax,
             checkpoint_parse: ParseState::new(syntax),
-            checkpoint_highlight: HighlightState::new(&highlighter, ScopeStack::new()),
+            checkpoint_highlight: HighlightState::new(&syn_hl, ScopeStack::new()),
             completed_lines: 0,
             cached_segments: Vec::new(),
         }
+    }
+
+    /// Drop cached lines and rewind the parse state, so a shorter `code` cannot
+    /// leave the checkpoint describing text that no longer exists.
+    fn reset(&mut self) {
+        let theme = theme();
+        let syn_hl = SynHighlighter::new(&theme);
+        self.checkpoint_parse = ParseState::new(self.syntax);
+        self.checkpoint_highlight = HighlightState::new(&syn_hl, ScopeStack::new());
+        self.completed_lines = 0;
+        self.cached_segments.clear();
     }
 
     fn set_or_push(&mut self, index: usize, segments: Vec<StyledSegment>) {
@@ -300,8 +316,7 @@ impl CodeHighlighter {
         let raw_lines: Vec<&str> = LinesWithEndings::from(code).collect();
         let total = raw_lines.len();
         if total == 0 {
-            self.cached_segments.clear();
-            self.completed_lines = 0;
+            self.reset();
             return &[];
         }
 
@@ -310,6 +325,10 @@ impl CodeHighlighter {
         } else {
             total - 1
         };
+
+        if new_completed < self.completed_lines {
+            self.reset();
+        }
 
         if new_completed > self.completed_lines {
             let mut hl = Highlighter::from_state(
@@ -451,6 +470,46 @@ mod tests {
         ch.update("let a = 1;\nlet b = 2;\nlet c = 3;\n");
         let segs = ch.update("let a = 1;\n");
         assert_eq!(segs.len(), 1);
+    }
+
+    #[test]
+    fn code_highlighter_regrows_after_shrink() {
+        warmup();
+        let mut ch = CodeHighlighter::new("rust");
+        ch.update("let a = 1;\nlet b = 2;\nlet c = 3;\n");
+        ch.update("let a = 1;\n");
+        let regrown = ch.update("let a = 1;\nlet b = 2;\n");
+        assert_eq!(
+            regrown.len(),
+            2,
+            "regrown code must render every completed line"
+        );
+    }
+
+    #[test]
+    fn code_highlighter_rewind_recomputes_state() {
+        warmup();
+        let code = "/* start\nstill comment\n*/\nlet z = 1;\n";
+        let mut ch = CodeHighlighter::new("rust");
+        ch.update(code);
+        ch.update("/* start\nstill comment\n");
+        assert_eq!(
+            lines_text(ch.update(code)),
+            lines_text(&highlight_code("rust", code, "")),
+            "shrinking must not keep highlight state from the longer text"
+        );
+    }
+
+    #[test]
+    fn code_highlighter_empty_input_clears_state() {
+        warmup();
+        let mut ch = CodeHighlighter::new("rust");
+        ch.update("/* open comment\n");
+        ch.update("");
+        let regrown = ch.update("let x = 1;\n");
+        let fresh = highlight_code("rust", "let x = 1;\n", "");
+        assert_eq!(regrown.len(), 1);
+        assert_eq!(regrown[0], fresh[0], "empty input must reset parse state");
     }
 
     #[test]

@@ -279,3 +279,66 @@ fn unknown_agent_returns_not_found() -> Result<(), String> {
         Ok(())
     })
 }
+
+#[test]
+fn shutdown_releases_idle_connections() -> Result<(), String> {
+    let tmp = TempDir::new().map_err(|e| e.to_string())?;
+    let state_dir = tmp.path().to_path_buf();
+
+    let plane = Arc::new(ControlPlane::new(None, None));
+    let (cancel_tx, cancel_rx) = flume::bounded(1);
+    let probe = Arc::clone(&plane);
+
+    let server_dir = state_dir.clone();
+    let handle = thread::spawn(move || {
+        smol::block_on(server::serve(
+            &server_dir,
+            plane,
+            cancel_rx,
+            DaemonRole::Tui,
+        ))
+        .map_err(|e| e.to_string())
+    });
+
+    let socket_path = state_dir.join("daemon.sock");
+    wait_for_socket(&socket_path)?;
+
+    // Connect but never send a request line: a client that stalls here must not
+    // outlive the server.
+    let idle = std::os::unix::net::UnixStream::connect(&socket_path).map_err(|e| e.to_string())?;
+
+    let mut accepted = false;
+    for _ in 0..200 {
+        // One clone lives in `serve`'s frame for the whole loop; the extra
+        // clone means the per-connection task exists.
+        if Arc::strong_count(&probe) > 2 {
+            accepted = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    if !accepted {
+        return Err("server never accepted the idle connection".into());
+    }
+
+    cancel_tx.send(()).map_err(|e| e.to_string())?;
+    if let Err(e) = handle.join() {
+        return Err(format!("server thread panicked: {e:?}"));
+    }
+
+    // Cancellation releases the clone asynchronously; the leaked task keeps it
+    // for as long as this client stays connected.
+    let mut leaked = true;
+    for _ in 0..40 {
+        if Arc::strong_count(&probe) == 1 {
+            leaked = false;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    drop(idle);
+    if leaked {
+        return Err("idle connection task still holds the control plane after cancel".into());
+    }
+    Ok(())
+}

@@ -124,7 +124,11 @@ async fn serve_uds(
     }
 
     let mut incoming = Box::pin(listener.incoming());
+    // Retain per-connection handles so shutdown cancels clients that never send
+    // a request line; otherwise those tasks outlive `serve` holding `plane`.
+    let mut connections: Vec<smol::Task<()>> = Vec::new();
     loop {
+        connections.retain(|task| !task.is_finished());
         let next = futures_lite::future::or(
             async {
                 let _ = cancel.recv_async().await;
@@ -143,16 +147,16 @@ async fn serve_uds(
                     continue;
                 }
                 let plane = Arc::clone(&plane);
-                smol::spawn(async move {
+                connections.push(smol::spawn(async move {
                     let (reader, writer) = futures_lite::io::split(stream);
                     if let Err(e) = exchange(reader, writer, plane).await {
                         tracing::warn!(error = %e, "daemon connection failed");
                     }
-                })
-                .detach();
+                }));
             }
         }
     }
+    drop(connections);
     let _ = std::fs::remove_file(socket_path);
     Ok(())
 }
@@ -166,7 +170,10 @@ async fn serve_tcp(
     use futures_lite::StreamExt;
 
     let mut incoming = Box::pin(listener.incoming());
+    // See `serve_uds`: connection tasks must not outlive the accept loop.
+    let mut connections: Vec<smol::Task<()>> = Vec::new();
     loop {
+        connections.retain(|task| !task.is_finished());
         let next = futures_lite::future::or(
             async {
                 let _ = cancel.recv_async().await;
@@ -181,15 +188,15 @@ async fn serve_tcp(
             Some(Err(e)) => return Err(ControlError::io(e)),
             Some(Ok(stream)) => {
                 let plane = Arc::clone(&plane);
-                smol::spawn(async move {
+                connections.push(smol::spawn(async move {
                     let (reader, writer) = futures_lite::io::split(stream);
                     if let Err(e) = exchange(reader, writer, plane).await {
                         tracing::warn!(error = %e, "daemon connection failed");
                     }
-                })
-                .detach();
+                }));
             }
         }
     }
+    drop(connections);
     Ok(())
 }
