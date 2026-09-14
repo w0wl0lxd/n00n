@@ -7868,6 +7868,7 @@ mod tests {
         assert_eq!(list[0].id, s.id);
     }
 
+    #[cfg(unix)]
     #[test]
     fn list_rescans_after_same_size_rewrite_with_unchanged_mtime() {
         let tmp = TempDir::new().unwrap();
