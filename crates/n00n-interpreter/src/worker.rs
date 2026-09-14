@@ -165,6 +165,34 @@ fn read_request_frame(
     Ok(serde_json::from_str(payload)?)
 }
 
+/// Streams interpreter stdout to the parent. The first failed send is kept so
+/// it can be returned after the run; later lines are skipped instead of
+/// repeating the same closed-channel error and reporting success.
+struct OutputStream<'a, R: BufRead, W: Write> {
+    bridge: &'a Bridge<R, W>,
+    failure: RefCell<Option<WorkerError>>,
+}
+
+impl<R: BufRead, W: Write> OutputStream<'_, R, W> {
+    fn write_chunk(&self, chunk: &str) {
+        if self.failure.borrow().is_some() {
+            return;
+        }
+        for line in chunk.lines() {
+            if let Err(error) = self.bridge.send(&WorkerEvent::Output {
+                line: line.to_owned(),
+            }) {
+                *self.failure.borrow_mut() = Some(error);
+                return;
+            }
+        }
+    }
+
+    fn into_error(self) -> Option<WorkerError> {
+        self.failure.into_inner()
+    }
+}
+
 /// Runs the framed interpreter worker protocol over standard input and output.
 ///
 /// # Errors
@@ -216,14 +244,17 @@ pub fn run_stdio() -> Result<(), WorkerError> {
     );
 
     bridge.send(&WorkerEvent::Started)?;
+    let output = OutputStream {
+        bridge: bridge.as_ref(),
+        failure: RefCell::new(None),
+    };
     let result =
         runner::run_streaming(&start.code, &tools, Some(&resolver), limits, &mut |chunk| {
-            for line in chunk.lines() {
-                let _ = bridge.send(&WorkerEvent::Output {
-                    line: line.to_owned(),
-                });
-            }
+            output.write_chunk(chunk);
         });
+    if let Some(error) = output.into_error() {
+        return Err(error);
+    }
     match result {
         Ok(result) => bridge.send(&WorkerEvent::Complete {
             output: result.output,
@@ -239,14 +270,72 @@ pub fn run_stdio() -> Result<(), WorkerError> {
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::io::{BufReader, Cursor};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use serde_json::{Value, json};
     use test_case::test_case;
 
-    use super::{Bridge, StartRequest, WorkerEvent, WorkerRequest, read_request_frame};
+    use super::{
+        Bridge, OutputStream, StartRequest, WorkerError, WorkerEvent, WorkerRequest,
+        read_request_frame,
+    };
     use crate::runner::PendingCall;
 
     const TEST_FRAME_LIMIT: usize = 128;
+
+    struct FailingWriter {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "parent closed the pipe",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn output_stream_records_the_first_failed_send() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let bridge = Bridge {
+            reader: RefCell::new(BufReader::new(Cursor::new(Vec::new()))),
+            writer: RefCell::new(FailingWriter {
+                attempts: Arc::clone(&attempts),
+            }),
+            next_request_id: Cell::new(1),
+        };
+        let output = OutputStream {
+            bridge: &bridge,
+            failure: RefCell::new(None),
+        };
+
+        output.write_chunk("first\n");
+        let after_first = attempts.load(Ordering::Relaxed);
+        assert!(after_first > 0, "the first line must reach the writer");
+
+        output.write_chunk("second\n");
+        assert_eq!(
+            attempts.load(Ordering::Relaxed),
+            after_first,
+            "a recorded send failure must stop further writes"
+        );
+
+        let error = output
+            .into_error()
+            .expect("a failed output send must not be discarded");
+        assert!(
+            matches!(error, WorkerError::Io(_) | WorkerError::Json(_)),
+            "{error}"
+        );
+    }
 
     fn framed_request(request: &WorkerRequest) -> Vec<u8> {
         let mut frame = serde_json::to_vec(request).unwrap();

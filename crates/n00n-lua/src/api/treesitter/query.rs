@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use include_dir::{Dir, include_dir};
-use mlua::{Lua, MultiValue, Value as LuaValue};
+use mlua::{FromLua, Lua, MultiValue, Value as LuaValue};
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use regex::Regex;
 use tree_sitter::{Query, QueryCursor, QueryPredicateArg, StreamingIterator};
@@ -96,13 +96,13 @@ fn query_fields<F: mlua::UserDataFields<LuaQuery>>(fields: &mut F) {
 
 fn query_methods<M: mlua::UserDataMethods<LuaQuery>>(methods: &mut M) {
     methods.add_method("iter_captures", |lua, this, args: MultiValue| {
-        let parsed = IterArgs::parse(args, "iter_captures")?;
+        let parsed = IterArgs::parse(lua, args, "iter_captures")?;
         let results = collect_captures(&this.inner, &parsed, &this.regex_cache)?;
         stateful_iter(lua, results)
     });
 
     methods.add_method("iter_matches", |lua, this, args: MultiValue| {
-        let parsed = IterArgs::parse(args, "iter_matches")?;
+        let parsed = IterArgs::parse(lua, args, "iter_matches")?;
         let results = collect_matches(&this.inner, &parsed, &this.regex_cache)?;
         stateful_iter(lua, results)
     });
@@ -205,7 +205,7 @@ struct IterArgs {
 }
 
 impl IterArgs {
-    fn parse(args: MultiValue, fn_name: &str) -> mlua::Result<Self> {
+    fn parse(lua: &Lua, args: MultiValue, fn_name: &str) -> mlua::Result<Self> {
         let mut args_iter = args.into_iter();
 
         let node_ud = args_iter
@@ -222,8 +222,8 @@ impl IterArgs {
             })
             .ok_or_else(|| mlua::Error::runtime(format!("{fn_name}: expected source as arg 2")))?;
 
-        let start_row = args_iter.next().and_then(lua_to_usize);
-        let stop_row = args_iter.next().and_then(lua_to_usize);
+        let start_row = parse_row_arg(next_arg(&mut args_iter), lua, fn_name, "start_row")?;
+        let stop_row = parse_row_arg(next_arg(&mut args_iter), lua, fn_name, "stop_row")?;
 
         Ok(Self {
             lua_node: (*lua_node).clone(),
@@ -231,6 +231,32 @@ impl IterArgs {
             start_row,
             stop_row,
         })
+    }
+}
+
+fn next_arg(iter: &mut impl Iterator<Item = LuaValue>) -> LuaValue {
+    match iter.next() {
+        Some(value) => value,
+        None => LuaValue::Nil,
+    }
+}
+
+/// Row bounds are optional, but a present value must be a non-negative
+/// integer; a wrong type must not silently widen the scan to the whole tree.
+fn parse_row_arg(
+    value: LuaValue,
+    lua: &Lua,
+    fn_name: &str,
+    name: &str,
+) -> mlua::Result<Option<usize>> {
+    if matches!(value, LuaValue::Nil) {
+        return Ok(None);
+    }
+    match usize::from_lua(value, lua) {
+        Ok(row) => Ok(Some(row)),
+        Err(_) => Err(mlua::Error::runtime(format!(
+            "{fn_name}: {name} must be a non-negative integer"
+        ))),
     }
 }
 
@@ -457,7 +483,19 @@ fn capture_text<'a>(
     captures
         .iter()
         .find(|c| c.index == idx)
-        .and_then(|c| std::str::from_utf8(&source[c.node.start_byte()..c.node.end_byte()]).ok())
+        .and_then(|c| node_text(source, c.node))
+}
+
+/// Slices a node's byte range out of a caller-supplied `source`. The source
+/// can be shorter than the tree, or split a multi-byte character, and both
+/// must fail the predicate instead of panicking on the slice.
+fn node_text<'a>(source: &'a [u8], node: tree_sitter::Node<'_>) -> Option<&'a str> {
+    let start = node.start_byte();
+    let end = node.end_byte();
+    if start > end || end > source.len() {
+        return None;
+    }
+    std::str::from_utf8(&source[start..end]).ok()
 }
 
 fn resolve_arg<'a>(
@@ -604,15 +642,6 @@ fn eval_set(args: &[QueryPredicateArg], metadata: &mut HashMap<String, String>) 
     metadata.insert(key.to_string(), value.to_string());
 }
 
-#[allow(clippy::cast_possible_truncation)]
-fn lua_to_usize(v: LuaValue) -> Option<usize> {
-    match v {
-        LuaValue::Integer(n) => usize::try_from(n).ok(),
-        LuaValue::Number(n) => usize::try_from(n as i64).ok(),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use tree_sitter::Parser;
@@ -655,6 +684,55 @@ mod tests {
             1,
             "stop_row must bound the scan even when start_row is omitted"
         );
+    }
+
+    #[test]
+    fn node_text_rejects_ranges_outside_the_source() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::Rust.ts_language())
+            .expect("rust grammar loads");
+        let tree = parser.parse(SOURCE, None).expect("rust source parses");
+
+        assert!(node_text(b"", tree.root_node()).is_none());
+        assert_eq!(
+            node_text(SOURCE.as_bytes(), tree.root_node()).unwrap(),
+            SOURCE
+        );
+    }
+
+    #[test]
+    fn eq_predicate_with_mismatched_source_is_false_instead_of_panicking() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::Rust.ts_language())
+            .expect("rust grammar loads");
+        let tree = parser.parse(SOURCE, None).expect("rust source parses");
+        let captures = [tree_sitter::QueryCapture {
+            node: tree.root_node(),
+            index: 0,
+        }];
+        let args = [
+            QueryPredicateArg::Capture(0),
+            QueryPredicateArg::String("let".into()),
+        ];
+
+        assert!(!eval_eq(&captures, b"", &args, false));
+    }
+
+    #[test]
+    fn iter_args_reject_wrong_typed_row_bounds() {
+        let lua = Lua::new();
+        let args = MultiValue::from_iter([
+            LuaValue::UserData(lua.create_userdata(rust_node()).unwrap()),
+            LuaValue::String(lua.create_string(SOURCE).unwrap()),
+            LuaValue::Boolean(true),
+        ]);
+
+        let Err(error) = IterArgs::parse(&lua, args, "iter_captures") else {
+            panic!("a boolean start_row must not silently scan the whole tree");
+        };
+        assert!(error.to_string().contains("start_row"), "{error}");
     }
 
     #[test]
