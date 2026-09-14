@@ -32,6 +32,18 @@ local function pick_validators(ctx, opts)
   return pairs, has_diversity
 end
 
+-- A verdict counts as approval only when the final non-empty line is exactly
+-- APPROVED. Matching the word anywhere would accept "NOT APPROVED".
+local function is_approval(text)
+  local last
+  for line in text:gmatch("[^\n]+") do
+    if line:match("%S") then
+      last = line
+    end
+  end
+  return last ~= nil and last:match("^%s*APPROVED%s*$") ~= nil
+end
+
 local function run_one(ctx, v, artifact, opts)
   if opts.budget then
     local budget_ok, budget_err = opts.budget:consume()
@@ -81,7 +93,7 @@ local function run_one(ctx, v, artifact, opts)
     }
   end
 
-  local approved = res.text:match(APPROVED) ~= nil
+  local approved = is_approval(res.text)
   local issues = {}
   if not approved then
     for line in res.text:gmatch("[^\n]+") do

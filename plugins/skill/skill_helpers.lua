@@ -1,6 +1,19 @@
 local M = {}
 
+local utf8_prefix = require("n00n.utf8").prefix
+
 local DEFAULT_PREVIEW_LINES = 40
+
+--- Read a file as UTF-8 text. Returns nil when the file is missing, is not
+--- readable, or holds bytes that are not valid UTF-8 (n00n.fs.read throws for
+--- those). Untrusted project skill files must never sink discovery.
+function M.read_skill_file(path)
+  local ok, content = pcall(n00n.fs.read, path)
+  if not ok or type(content) ~= "string" then
+    return nil
+  end
+  return content
+end
 
 local function normalize_string_list(values)
   if values == nil then
@@ -73,7 +86,12 @@ function M.skill_fingerprint(path)
   if not meta then
     return nil
   end
-  local content = n00n.fs.read(path) or ""
+  local content = M.read_skill_file(path)
+  if content == nil then
+    -- A file that cannot be read as UTF-8 is not a skill body; returning no
+    -- fingerprint keeps it out of discovery instead of erroring every caller.
+    return nil
+  end
   local digest = "0"
   local ok, hash = pcall(function()
     return n00n.workflow.hash(content)
@@ -264,7 +282,7 @@ function M.read_skill_body(skill)
   if not skill.location or skill.location:sub(1, 8) == "builtin:" then
     return nil, "skill body unavailable"
   end
-  local raw = n00n.fs.read(skill.location)
+  local raw = M.read_skill_file(skill.location)
   if not raw then
     return nil, "failed to read skill file"
   end
@@ -567,7 +585,7 @@ function M.build_skill_list(skills, ranked)
       desc = "[manual-only] " .. desc
     end
     if #desc > 120 then
-      desc = desc:sub(1, 117) .. "..."
+      desc = utf8_prefix(desc, 117) .. "..."
     end
     local prefix = ""
     if score and score > 0 then

@@ -296,4 +296,126 @@ function M.broad_bash_command_reason(command)
   return nil
 end
 
+-- True when the command contains a newline that bash treats as a command
+-- separator (i.e. outside quotes). `split_shell_words` folds such newlines
+-- into ordinary whitespace, so any caller that re-joins the words with spaces
+-- must bail instead of silently merging two commands into one.
+function M.has_unquoted_newline(command)
+  local quote
+  local index = 1
+  while index <= #command do
+    local char = command:sub(index, index)
+    if quote then
+      if char == quote then
+        quote = nil
+      elseif char == "\\" and quote == '"' then
+        index = index + 1
+      end
+    elseif char == "'" or char == '"' then
+      quote = char
+    elseif char == "\\" then
+      index = index + 1
+    elseif char == "\n" then
+      return true
+    end
+    index = index + 1
+  end
+  return false
+end
+
+local GIT_SANITIZE_SUBCOMMANDS = {
+  diff = true,
+  show = true,
+  log = true,
+}
+
+-- Force `negative` and drop any explicit `positive` opt-in for a subcommand.
+-- Removing the opt-in keeps a later `negative` from being overridden by it.
+local function force_git_flag(words, subcommand_index, positive, negative)
+  local present = false
+  local index = subcommand_index + 1
+  while index <= #words do
+    if words[index] == negative then
+      present = true
+      index = index + 1
+    elseif words[index] == positive then
+      table.remove(words, index)
+    else
+      index = index + 1
+    end
+  end
+  if not present then
+    table.insert(words, subcommand_index + 1, negative)
+  end
+end
+
+-- Harden git commands against repo-config injection of external diff drivers
+-- and text conversion filters. Inserts `--no-optional-locks` (prevents write
+-- locks), `--no-ext-diff` and `--no-textconv` for subcommands that may run
+-- repo-configured commands (diff, show, log).
+function M.sanitize_git_command(command)
+  local trimmed = trim(command)
+  if not trimmed:lower():match("^git%s") then
+    return command
+  end
+  if M.has_unquoted_newline(trimmed) then
+    -- Rebuilding the command from words would replace the newline separator
+    -- with a plain space, turning the second command into arguments of the
+    -- first. Leave compound commands to the shell untouched.
+    return command
+  end
+
+  local words = split_shell_words(trimmed)
+  if #words < 2 or words[1]:lower() ~= "git" then
+    return command
+  end
+
+  -- Strip any -c core.fsmonitor=... override and force it to false. A repo or
+  -- parent config with core.fsmonitor set to a command can execute code during
+  -- git status/diff/log; this disables it without trusting the environment.
+  local i = 2
+  while i <= #words do
+    if words[i] == "-c" and words[i + 1] then
+      local value = words[i + 1]:lower()
+      if value:sub(1, #"core.fsmonitor") == "core.fsmonitor" then
+        table.remove(words, i)
+        table.remove(words, i)
+      else
+        i = i + 2
+      end
+    else
+      i = i + 1
+    end
+  end
+  table.insert(words, 2, "-c")
+  table.insert(words, 3, "core.fsmonitor=false")
+
+  local subcommand_index = git_subcommand_index(words, 2)
+  local option_end = subcommand_index and subcommand_index - 1 or #words
+  local has_optional_locks = false
+  for i = 2, option_end do
+    if words[i] == "--no-optional-locks" then
+      has_optional_locks = true
+      break
+    end
+  end
+
+  if not has_optional_locks then
+    table.insert(words, 2, "--no-optional-locks")
+    if subcommand_index then
+      subcommand_index = subcommand_index + 1
+    end
+  end
+
+  if subcommand_index then
+    local subcommand = words[subcommand_index]:lower()
+    if GIT_SANITIZE_SUBCOMMANDS[subcommand] then
+      force_git_flag(words, subcommand_index, "--ext-diff", "--no-ext-diff")
+      force_git_flag(words, subcommand_index, "--textconv", "--no-textconv")
+    end
+  end
+
+  return table.concat(words, " ")
+end
+
 return M
