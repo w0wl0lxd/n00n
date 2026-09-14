@@ -2,6 +2,8 @@
 //!
 //! `CancelTrigger` fires on Drop, so cleanup happens even if the trigger is forgotten.
 //! `cancelled()` uses a double-check around the listener to close the TOCTOU window between flag read and listener registration.
+//! A child token holds a strong reference to its parent, so parent cancellation propagates
+//! without a background task and the child is collectible as soon as its own handles drop.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -14,12 +16,20 @@ use event_listener::Event;
 struct Shared {
     cancelled: AtomicBool,
     event: Event,
+    /// Cancelling this token also cancels every token descended from it.
+    /// The edge points child-to-parent so no task has to watch the parent.
+    parent: Option<CancelToken>,
 }
 
 impl Shared {
     fn fire(&self) {
         self.cancelled.store(true, Ordering::Release);
         self.event.notify(usize::MAX);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+            || self.parent.as_ref().is_some_and(CancelToken::is_cancelled)
     }
 }
 
@@ -91,6 +101,7 @@ impl CancelToken {
         let shared = Arc::new(Shared {
             cancelled: AtomicBool::new(false),
             event: Event::new(),
+            parent: None,
         });
         (CancelTrigger(Arc::clone(&shared)), Self(shared))
     }
@@ -100,12 +111,13 @@ impl CancelToken {
         Self(Arc::new(Shared {
             cancelled: AtomicBool::new(false),
             event: Event::new(),
+            parent: None,
         }))
     }
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.cancelled.load(Ordering::Acquire)
+        self.0.is_cancelled()
     }
 
     /// Run `future` until it completes or the token is cancelled.
@@ -133,21 +145,25 @@ impl CancelToken {
             if self.is_cancelled() {
                 return;
             }
-            listener.await;
+            match &self.0.parent {
+                // Wake on either edge: own trigger or an ancestor's cancellation.
+                // Boxed because this is the recursion point of an async fn.
+                Some(parent) => {
+                    futures_lite::future::race(listener, Box::pin(parent.cancelled())).await;
+                }
+                None => listener.await,
+            }
         }
     }
 
     #[must_use]
     pub fn child(&self) -> (CancelTrigger, Self) {
-        let (child_trigger, child_token) = Self::new();
-        let parent = self.clone();
-        let child_shared = Arc::clone(&child_token.0);
-        smol::spawn(async move {
-            parent.cancelled().await;
-            child_shared.fire();
-        })
-        .detach();
-        (child_trigger, child_token)
+        let shared = Arc::new(Shared {
+            cancelled: AtomicBool::new(false),
+            event: Event::new(),
+            parent: Some(self.clone()),
+        });
+        (CancelTrigger(Arc::clone(&shared)), Self(shared))
     }
 }
 
@@ -251,6 +267,43 @@ mod tests {
             child_token.cancelled().await;
             assert!(child_token.is_cancelled());
         });
+    }
+
+    #[test]
+    fn child_of_cancelled_parent_is_cancelled() {
+        smol::block_on(async {
+            let (parent_trigger, parent_token) = CancelToken::new();
+            parent_trigger.cancel();
+            let (_child_trigger, child_token) = parent_token.child();
+            assert!(child_token.is_cancelled());
+            child_token.cancelled().await;
+        });
+    }
+
+    #[test]
+    fn grandchild_is_cancelled_by_root() {
+        smol::block_on(async {
+            let (root_trigger, root_token) = CancelToken::new();
+            let (_child_trigger, child_token) = root_token.child();
+            let (_grandchild_trigger, grandchild_token) = child_token.child();
+            root_trigger.cancel();
+            grandchild_token.cancelled().await;
+            assert!(grandchild_token.is_cancelled());
+            assert!(child_token.is_cancelled());
+        });
+    }
+
+    #[test]
+    fn dropping_child_handles_releases_child_state() {
+        let (_parent_trigger, parent_token) = CancelToken::new();
+        let (child_trigger, child_token) = parent_token.child();
+        let child_shared = Arc::downgrade(&child_token.0);
+        drop(child_trigger);
+        drop(child_token);
+        assert!(
+            child_shared.upgrade().is_none(),
+            "child cancellation state outlived every child handle"
+        );
     }
 
     #[test]
