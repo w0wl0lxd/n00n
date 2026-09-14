@@ -13,6 +13,9 @@ regexes = [
   # Feature/version date identifiers, e.g. "oauth-2025-04-20" or
   # "interleaved-thinking-2025-05-14". Not credentials.
   '''(oauth|interleaved-thinking)-\d{4}-\d{2}-\d{2}''',
+  # Fake OAuth tokens in the removed subprojects' test fixtures.
+  '''copilot_xyz789''',
+  '''gho_abc123xyz''',
 ]
 
 [[allowlists]]
@@ -23,3 +26,9 @@ regexes = [
   '''eyJhbGciOiJIUzI1Ni''',
   '''AIzaSyD0123456789abcdefghijklmnopqrstuv''',
 ]
+
+[[allowlists]]
+description = "Fake Stripe key in the Lua secret-check spec"
+condition = "AND"
+paths = ['''plugins/lib/tests/spec\.lua''']
+regexes = ['''(sk|rk)_(test|live|prod)_''']

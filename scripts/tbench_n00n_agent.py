@@ -7,7 +7,7 @@ Setup:
     harbor dataset download terminal-bench/terminal-bench-2
 
 Run a single task:
-    MOUNTS='["/usr/local/bin/n00n:/mnt/n00n:ro", "~/.n00n/auth:/mnt/n00n-auth:ro", "~/.n00n/providers:/mnt/n00n-providers:ro"]'
+    MOUNTS='["/usr/local/bin/n00n:/mnt/n00n:ro", "~/.local/state/n00n/auth:/mnt/n00n-auth:ro", "~/.config/n00n/providers:/mnt/n00n-providers:ro"]'
 
     harbor run \
       -t terminal-bench/fix-git \
@@ -142,11 +142,11 @@ class n00nAgent(BaseInstalledAgent):
         )
         await self.exec_as_root(
             environment,
-            command="if [ -d /mnt/n00n-auth ]; then mkdir -p /root/.n00n/auth && cp /mnt/n00n-auth/* /root/.n00n/auth/; fi",
+            command="if [ -d /mnt/n00n-auth ]; then mkdir -p /root/.local/state/n00n/auth && cp -r /mnt/n00n-auth/. /root/.local/state/n00n/auth/; fi",
         )
         await self.exec_as_root(
             environment,
-            command="if [ -d /mnt/n00n-providers ]; then mkdir -p /root/.n00n/providers && cp /mnt/n00n-providers/* /root/.n00n/providers/ && chmod +x /root/.n00n/providers/*; fi",
+            command="if [ -d /mnt/n00n-providers ]; then mkdir -p /root/.config/n00n/providers && cp -r /mnt/n00n-providers/. /root/.config/n00n/providers/ && chmod -R +x /root/.config/n00n/providers; fi",
         )
 
     @with_prompt_template
