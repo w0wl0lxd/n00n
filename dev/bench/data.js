@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789197542885,
+  "lastUpdate": 1789802959699,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -25903,6 +25903,112 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 143696,
             "range": "± 6789",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8b048cdf68f81d9d75a0d09fc4ba82d19707655e",
+          "message": "Merge pull request #504 from w0wl0lxd/fix/compaction-robust-state-and-jank-audit\n\nfix: robust compaction state, crates/ layout, Codex catalog, thinking quick-switch",
+          "timestamp": "2026-09-12T05:47:49Z",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/8b048cdf68f81d9d75a0d09fc4ba82d19707655e"
+        },
+        "date": 1789802958485,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5947762,
+            "range": "± 165195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1298922,
+            "range": "± 32047",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1299462,
+            "range": "± 57011",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 6701073,
+            "range": "± 222778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2422496,
+            "range": "± 77268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2418928,
+            "range": "± 89421",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 644815,
+            "range": "± 27333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 75420,
+            "range": "± 3272",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 75305,
+            "range": "± 3132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 902931,
+            "range": "± 24423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 400948,
+            "range": "± 951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 400679,
+            "range": "± 812",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 50467,
+            "range": "± 3217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 109932,
+            "range": "± 9914",
             "unit": "ns/iter"
           }
         ]
