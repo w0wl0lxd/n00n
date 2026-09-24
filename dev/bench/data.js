@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789802959699,
+  "lastUpdate": 1790286677488,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -26009,6 +26009,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 109932,
             "range": "± 9914",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bfa8a2969f9b66d19acdd85a1f084b96e8c904f5",
+          "message": "Merge pull request #519 from w0wl0lxd/fix/rustls-advisory\n\nfix(deps): bump rustls to 0.23.45 for RUSTSEC-2026-0285",
+          "timestamp": "2026-09-24T17:36:14-04:00",
+          "tree_id": "45319d717ef4889aa53c497ebe5efe34c98b7e14",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/bfa8a2969f9b66d19acdd85a1f084b96e8c904f5"
+        },
+        "date": 1790286675151,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6415014,
+            "range": "± 129295",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2442548,
+            "range": "± 6103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2440706,
+            "range": "± 76716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7782699,
+            "range": "± 18722",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3886744,
+            "range": "± 25005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3879343,
+            "range": "± 7008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554726,
+            "range": "± 3023",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168103,
+            "range": "± 3668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167998,
+            "range": "± 484",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1053034,
+            "range": "± 16956",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 627306,
+            "range": "± 7542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 625920,
+            "range": "± 11693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48632,
+            "range": "± 3228",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 158884,
+            "range": "± 15631",
             "unit": "ns/iter"
           }
         ]
