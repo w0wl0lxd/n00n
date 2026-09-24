@@ -4384,9 +4384,21 @@ mod tests {
 
         assert!(cancel_stored_session(&mut session));
         assert_eq!(session.meta.lifecycle, StoredSessionLifecycle::Cancelled);
-        assert!(session.meta.queued_messages.is_empty());
-        assert!(session.meta.queued_submissions.is_empty());
-        assert!(session.meta.queued_direct_tools.is_empty());
+        assert!(
+            session.meta.queued_messages.is_empty(),
+            "expected empty, got {:?}",
+            session.meta.queued_messages
+        );
+        assert!(
+            session.meta.queued_submissions.is_empty(),
+            "expected empty, got {:?}",
+            session.meta.queued_submissions
+        );
+        assert!(
+            session.meta.queued_direct_tools.is_empty(),
+            "expected empty, got {:?}",
+            session.meta.queued_direct_tools
+        );
         assert!(session.meta.direct_paused_team.is_none());
 
         let mut inactive = AppSession::new("model", "/project");
@@ -4395,7 +4407,11 @@ mod tests {
         assert_eq!(inactive.meta.lifecycle, StoredSessionLifecycle::Succeeded);
         inactive.meta.queued_messages = vec!["pending".into()];
         assert!(cancel_stored_session(&mut inactive));
-        assert!(inactive.meta.queued_messages.is_empty());
+        assert!(
+            inactive.meta.queued_messages.is_empty(),
+            "expected empty, got {:?}",
+            inactive.meta.queued_messages
+        );
     }
 
     struct FailingBackend(TestBackend);

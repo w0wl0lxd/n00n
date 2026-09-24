@@ -207,7 +207,7 @@ mod tests {
                 maximum: MAX_CONNECT_FRAME_LEN
             } if length == MAX_CONNECT_FRAME_LEN + 1
         ));
-        assert!(buf.is_empty());
+        assert!(buf.is_empty(), "expected empty, got {buf:?}");
     }
 
     #[test]

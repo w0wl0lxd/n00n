@@ -408,7 +408,7 @@ mod tests {
                 top_k: 3,
             })
             .expect("search");
-        assert!(!results.is_empty());
+        assert!(!results.is_empty(), "expected non-empty, got {results:?}");
         assert!(results[0].file_path.contains("auth.rs"));
         assert!(results[0].snippet.contains("login"));
     }

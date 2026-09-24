@@ -699,7 +699,11 @@ mod tests {
         type_text(&mut input, " x ");
         let sub = input.submit().unwrap();
         assert_eq!(sub.text, "x");
-        assert!(sub.images.is_empty());
+        assert!(
+            sub.images.is_empty(),
+            "expected empty, got {:?}",
+            sub.images
+        );
         assert_eq!(input.buffer.value(), "");
 
         type_text(&mut input, "line1");
@@ -1033,7 +1037,7 @@ mod tests {
 
         input.attach_image(test_image());
         let sub = input.submit().unwrap();
-        assert!(sub.text.is_empty());
+        assert!(sub.text.is_empty(), "expected empty, got {:?}", sub.text);
         assert_eq!(sub.images.len(), 1);
         assert!(input.submit().is_none(), "images cleared after submit");
 
