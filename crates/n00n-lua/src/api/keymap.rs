@@ -441,7 +441,11 @@ mod tests {
 
         let removed = store.del(KeyCode::Char('x'), KeyModifiers::ALT);
         assert!(removed.is_some());
-        assert!(store.bindings.is_empty());
+        assert!(
+            store.bindings.is_empty(),
+            "expected empty, got {} bindings",
+            store.bindings.len()
+        );
 
         let missing = store.del(KeyCode::Char('x'), KeyModifiers::ALT);
         assert!(missing.is_none());
@@ -480,7 +484,12 @@ mod tests {
     #[test]
     fn snapshot_reader_writer() {
         let (writer, reader) = KeymapWriter::new();
-        assert!(reader.load().entries.is_empty());
+        let n00n_empty_check_23 = reader.load();
+        assert!(
+            n00n_empty_check_23.entries.is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_23.entries
+        );
 
         writer.publish(vec![KeymapEntry {
             key: KeyCode::Char('t'),

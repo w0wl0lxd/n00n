@@ -144,7 +144,7 @@ mod tests {
         history.push("");
         history.push("   ");
         history.push("\n");
-        assert!(history.is_empty());
+        assert!(history.is_empty(), "expected empty, got {history:?}");
 
         history.push("  hello  ");
         assert_eq!(history.get(0), Some("hello"));
@@ -158,6 +158,6 @@ mod tests {
             fs::write(dir.path().join(HISTORY_FILE), data).unwrap();
         }
         let history = InputHistory::load(&dir, MAX_ENTRIES);
-        assert!(history.is_empty());
+        assert!(history.is_empty(), "expected empty, got {history:?}");
     }
 }

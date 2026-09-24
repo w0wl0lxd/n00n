@@ -559,7 +559,11 @@ mod tests {
 
         let history = History::restored_with_transcript(Vec::new(), transcript);
 
-        assert!(history.is_empty());
+        assert!(
+            history.is_empty(),
+            "expected empty, got {} messages",
+            history.len()
+        );
         assert!(matches!(
             history.transcript(),
             [TranscriptEntry::Compaction { entries, .. }]
@@ -629,8 +633,16 @@ mod tests {
 
         history.truncate(0);
 
-        assert!(history.as_slice().is_empty());
-        assert!(history.transcript().is_empty());
+        let n00n_empty_check_2 = history.as_slice();
+        assert!(
+            n00n_empty_check_2.is_empty(),
+            "expected empty, got {n00n_empty_check_2:?}"
+        );
+        let n00n_empty_check_3 = history.transcript();
+        assert!(
+            n00n_empty_check_3.is_empty(),
+            "expected empty, got {n00n_empty_check_3:?}"
+        );
     }
 
     #[test]

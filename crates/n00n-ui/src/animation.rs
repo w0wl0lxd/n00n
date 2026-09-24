@@ -370,7 +370,7 @@ mod tests {
         let mut tw = Typewriter::new();
         tw.push("");
         assert!(!tw.is_animating());
-        assert!(tw.is_empty());
+        assert!(tw.is_empty(), "expected empty, got {tw:?}");
 
         tw.push("hello world, this is a longer string");
         assert_eq!(tw.visible(), "");
@@ -412,14 +412,14 @@ mod tests {
         tw.push("🔥🔥🔥");
         assert_eq!(tw.visible(), "🔥🔥🔥");
         tw.clear();
-        assert!(tw.is_empty());
+        assert!(tw.is_empty(), "expected empty, got {tw:?}");
         assert_eq!(tw.visible(), "");
 
         tw.push("日本語");
         assert_eq!(tw.visible(), "日本語");
         let taken = tw.take_all();
         assert_eq!(taken, "日本語");
-        assert!(tw.is_empty());
+        assert!(tw.is_empty(), "expected empty, got {tw:?}");
         assert_eq!(tw.visible(), "");
 
         tw.push("ok");
