@@ -5,14 +5,14 @@
     "cache_prefix": {
       "name": "cache_prefix",
       "tool_count": 22,
-      "bytes": 19503,
-      "tokens": 4777
+      "bytes": 19538,
+      "tokens": 4786
     },
     "deferred_catalog_payload": {
       "name": "deferred_catalog_payload",
       "tool_count": 16,
-      "bytes": 18692,
-      "tokens": 4673
+      "bytes": 18862,
+      "tokens": 4715
     },
     "deferred_catalog_schemas": {
       "name": "deferred_catalog_schemas",
@@ -23,8 +23,8 @@
     "full_catalog_payload": {
       "name": "full_catalog_payload",
       "tool_count": 35,
-      "bytes": 31916,
-      "tokens": 7979
+      "bytes": 32121,
+      "tokens": 8030
     },
     "full_catalog_schemas": {
       "name": "full_catalog_schemas",
@@ -35,8 +35,8 @@
     "main_tools_payload": {
       "name": "main_tools_payload",
       "tool_count": 22,
-      "bytes": 16103,
-      "tokens": 4025
+      "bytes": 16138,
+      "tokens": 4034
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
@@ -218,16 +218,16 @@
       "namespace": "orchestration",
       "deferred": true,
       "initially_active": false,
-      "bytes": 1240,
-      "tokens": 267
+      "bytes": 1325,
+      "tokens": 283
     },
     {
       "name": "run_team",
       "namespace": "orchestration",
       "deferred": true,
       "initially_active": false,
-      "bytes": 2251,
-      "tokens": 494
+      "bytes": 2336,
+      "tokens": 510
     },
     {
       "name": "run_workflow",
@@ -263,8 +263,8 @@
       "name": "search_tools",
       "deferred": false,
       "initially_active": true,
-      "bytes": 482,
-      "tokens": 92
+      "bytes": 517,
+      "tokens": 97
     },
     {
       "name": "search_web",
