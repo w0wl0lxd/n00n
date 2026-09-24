@@ -20,10 +20,10 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Ctrl+S` | File picker |
 | `Ctrl+O` | Open plan in editor |
 | `Ctrl+T` | Toggle plan panel |
-| `Alt+T` | Toggle transcript details |
+| `Alt+I` | Toggle transcript details |
 | `Ctrl+X` | Open tasks |
 | `Ctrl+Shift+C` | Copy selection |
-| `Ctrl+Shift+T` | Cycle thinking level |
+| `Alt+T` / `Ctrl+Shift+T` | Cycle thinking level |
 
 ## Editing
 
@@ -88,6 +88,7 @@ Some pickers add extra bindings on top of the defaults:
 | Queue | `Enter` | Remove item |
 | Commands | `Tab` | Complete command |
 | Model Picker | `!/@/#/$` | Set tier (strong/medium/weak/compaction) |
+| Model Picker | `Alt+T` | Cycle thinking level |
 | Session Picker | `Ctrl+N` | New session |
 | Session Picker | `Ctrl+R` | Rename session |
 | Session Picker | `Ctrl+D` | Delete session (press twice) |

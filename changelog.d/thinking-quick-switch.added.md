@@ -1,0 +1,1 @@
+Alt+T now cycles the thinking level and each model remembers its last-used level across sessions, so switching back to a model restores its thinking setting. The model picker shows the remembered level per model and supports Alt+T as well. Transcript details moved to Alt+I; Ctrl+Shift+T still cycles thinking.
