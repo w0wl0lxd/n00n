@@ -387,9 +387,11 @@ impl SessionStore {
         if quarantined {
             warn!(session_id = %candidate.id, checkpoint_revision = revision, "compaction checkpoint metadata is unusable; compacting without an exact checkpoint");
         } else if let Some(snapshot) = self.compaction_snapshot(&candidate, revision)? {
+            let protected =
+                n00n_storage::sessions::transcript_referenced_revisions(&candidate.transcript);
             candidate
                 .meta
-                .checkpoint_compaction_state(snapshot.clone())
+                .checkpoint_compaction_state_with_protected(snapshot.clone(), &protected)
                 .map_err(|error| error.to_string())?;
             if state_revision_or_initial(candidate.meta.state_snapshot.as_ref()) <= revision {
                 candidate.meta.state_snapshot = Some(snapshot);
@@ -1820,6 +1822,59 @@ mod tests {
             restart_probe.hydrated_snapshots.lock().unwrap().as_slice(),
             &[Some(durable_checkpoint)]
         );
+    }
+
+    #[test]
+    fn rewound_checkpoint_survives_pruning_and_reload() {
+        const REWOUND_REVISION: u64 = 1;
+        const FILL_REVISIONS: u64 = 70;
+        let tmp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut store = SessionStore::open_in_with_state(
+            dir.clone(),
+            session_id(),
+            CWD,
+            MODEL_SPEC,
+            &AgentMode::Build,
+            None,
+        )
+        .unwrap();
+        let rewound = TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Message::user(
+                "rewound base".into(),
+            ))],
+            generated_summary: None,
+            state_revision: Some(REWOUND_REVISION),
+        };
+        store
+            .checkpoint_compaction(&[], from_ref(&rewound), MODEL_SPEC, REWOUND_REVISION)
+            .unwrap();
+        // The rewound transcript keeps referencing the base revision while newer
+        // compactions fill the checkpoint set past its pruning limit.
+        for revision in 2..=FILL_REVISIONS {
+            let transcript = vec![TranscriptEntry::Compaction {
+                entries: vec![rewound.clone()],
+                generated_summary: None,
+                state_revision: Some(revision),
+            }];
+            store
+                .checkpoint_compaction(&[], &transcript, MODEL_SPEC, revision)
+                .unwrap();
+        }
+
+        let persisted = StoredSession::load(session_id(), &dir).unwrap();
+        assert_eq!(
+            persisted
+                .meta
+                .compaction_state_at(REWOUND_REVISION)
+                .unwrap()
+                .state_revision(),
+            Some(REWOUND_REVISION)
+        );
+        assert!(matches!(
+            persisted.meta.compaction_state_at(2),
+            Err(CompactionStateError::MissingRevision { .. })
+        ));
     }
 
     #[test]

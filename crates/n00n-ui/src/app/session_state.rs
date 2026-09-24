@@ -10,6 +10,7 @@ use arc_swap::ArcSwap;
 use n00n_agent::ToolOutput;
 use n00n_agent::permissions::PermissionManager;
 use n00n_config::Effect;
+use n00n_providers::model_registry::model_registry;
 use n00n_providers::{Message, Model, ModelResolver, ThinkingConfig, TokenUsage};
 use n00n_storage::sessions::{StoredEffect, StoredMode, StoredRule};
 use n00n_storage::{StateDir, TranscriptEntry};
@@ -153,6 +154,13 @@ impl SessionState {
                 .meta
                 .thinking
                 .map(Into::into)
+                .or_else(|| {
+                    model_registry()
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remembered_thinking(&model.spec())
+                        .map(Into::into)
+                })
                 .filter(|_| model.supports_thinking())
                 .unwrap_or_else(Default::default),
             fast: session.meta.fast && model.supports_fast(),
@@ -446,5 +454,55 @@ mod tests {
         let state = SessionState::from_session(session, &test_model(), &storage);
         assert_eq!(state.mode, Mode::Build);
         assert!(state.plan.path().is_none());
+    }
+
+    #[test]
+    fn new_session_applies_remembered_thinking_without_model_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let mut model = test_model();
+        model.id = "remembered-startup-model".into();
+        model.supports_thinking_override = Some(true);
+        n00n_providers::model_registry::set_thinking_and_persist(
+            model.spec(),
+            n00n_storage::sessions::StoredThinking::Effort {
+                level: n00n_storage::sessions::Effort::XHigh,
+            },
+            &storage,
+        );
+
+        let mut session = AppSession::new(&model.spec(), "/tmp");
+        session.meta.thinking = None;
+        let state = SessionState::from_session(session, &model, &storage);
+        assert_eq!(
+            state.thinking,
+            ThinkingConfig::Effort(n00n_providers::Effort::XHigh)
+        );
+    }
+
+    #[test]
+    fn explicit_session_thinking_beats_remembered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        let mut model = test_model();
+        model.id = "explicit-beats-remembered-model".into();
+        model.supports_thinking_override = Some(true);
+        n00n_providers::model_registry::set_thinking_and_persist(
+            model.spec(),
+            n00n_storage::sessions::StoredThinking::Effort {
+                level: n00n_storage::sessions::Effort::Max,
+            },
+            &storage,
+        );
+
+        let mut session = AppSession::new(&model.spec(), "/tmp");
+        session.meta.thinking = Some(n00n_storage::sessions::StoredThinking::Effort {
+            level: n00n_storage::sessions::Effort::Low,
+        });
+        let state = SessionState::from_session(session, &model, &storage);
+        assert_eq!(
+            state.thinking,
+            ThinkingConfig::Effort(n00n_providers::Effort::Low)
+        );
     }
 }

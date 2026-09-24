@@ -3,7 +3,7 @@
 
 Replaces the stale tool_token_analysis.py path which expects plain JSON.
 Handles the real storage format: each session is zstd-compressed JSONL
-with multiple concatenated frames (n00n-storage/src/sessions.rs:1).
+with multiple concatenated frames (crates/n00n-storage/src/sessions.rs:1).
 
 Usage:
   python3 scripts/extract_n00n_sessions.py [--latest N] [--grep ERROR]
