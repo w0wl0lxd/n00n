@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790286677488,
+  "lastUpdate": 1790291237421,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -26117,6 +26117,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 158884,
             "range": "± 15631",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8ee4dc6dc61eb1d2a8bf94e4f1018880c6ddc957",
+          "message": "Merge pull request #506 from w0wl0lxd/fix/pr505-verification\n\nfix(agent): complete risk-based prompt autonomy verification",
+          "timestamp": "2026-09-24T18:51:25-04:00",
+          "tree_id": "892b7ed9aa1076aba80992d0fc2f094dcc28f524",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/8ee4dc6dc61eb1d2a8bf94e4f1018880c6ddc957"
+        },
+        "date": 1790291235886,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 8452959,
+            "range": "± 49018",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1715004,
+            "range": "± 4959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1717047,
+            "range": "± 6295",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9418822,
+            "range": "± 30141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3391125,
+            "range": "± 14110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3390457,
+            "range": "± 15027",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 852282,
+            "range": "± 1191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 103923,
+            "range": "± 14331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 104184,
+            "range": "± 241",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1263319,
+            "range": "± 4986",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 546580,
+            "range": "± 874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 546470,
+            "range": "± 1292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 44090,
+            "range": "± 2207",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 156605,
+            "range": "± 1046",
             "unit": "ns/iter"
           }
         ]
