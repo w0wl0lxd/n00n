@@ -745,7 +745,7 @@ fn encode_devin_tools(tools: &Value) -> Result<Vec<Vec<u8>>, AgentError> {
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
             name: name.to_string(),
             description: description.map_or(String::new(), std::string::ToString::to_string),
-            json_schema_string: schema_string.clone(),
+            json_schema_string: schema_string,
             strict,
         }));
     }

@@ -101,7 +101,7 @@ pub fn mode_and_plan_from_stored(
 }
 
 pub enum ExtractedCommand {
-    Interrupt(AgentInput, u64),
+    Interrupt(Box<AgentInput>, u64),
     Compact(u64),
 }
 

@@ -3339,7 +3339,8 @@ mod tests {
             input.control = control;
             let image = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
             input.images = vec![image.clone()];
-            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let source =
+                MockInterruptSource::new(vec![ExtractedCommand::Interrupt(Box::new(input), 0)]);
             let mut history = History::new(Vec::new());
             let (mut agent, _rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
             agent = agent.with_interrupt_source(source);
@@ -3365,7 +3366,8 @@ mod tests {
                 child_run_id: "run-42".into(),
                 source_revision: 5,
             });
-            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let source =
+                MockInterruptSource::new(vec![ExtractedCommand::Interrupt(Box::new(input), 0)]);
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
             agent = agent.with_interrupt_source(source);
@@ -3405,7 +3407,8 @@ mod tests {
                 let mut input = default_input();
                 input.control = control;
                 Some(MockInterruptSource::new(vec![ExtractedCommand::Interrupt(
-                    input, 0,
+                    Box::new(input),
+                    0,
                 )]))
             } else {
                 None

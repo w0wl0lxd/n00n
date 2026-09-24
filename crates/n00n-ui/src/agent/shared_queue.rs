@@ -119,7 +119,9 @@ impl QueueItem {
 
     fn into_extracted_command(self) -> Option<ExtractedCommand> {
         match self {
-            Self::Message { input, run_id, .. } => Some(ExtractedCommand::Interrupt(input, run_id)),
+            Self::Message { input, run_id, .. } => {
+                Some(ExtractedCommand::Interrupt(Box::new(input), run_id))
+            }
             Self::Compact { run_id } => Some(ExtractedCommand::Compact(run_id)),
             Self::DirectTool { .. } => None,
         }
