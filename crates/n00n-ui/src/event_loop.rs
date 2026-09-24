@@ -398,7 +398,11 @@ fn apply_compaction_checkpoint(
         .revision
         .checked_add(1)
         .ok_or_else(|| "session revision exhausted".to_owned())?;
-    match session.meta.checkpoint_compaction_state(snapshot.clone()) {
+    let protected = n00n_storage::sessions::transcript_referenced_revisions(&session.transcript);
+    match session
+        .meta
+        .checkpoint_compaction_state_with_protected(snapshot.clone(), &protected)
+    {
         Ok(()) => {}
         Err(
             CompactionStateError::UnsupportedSchemaVersion { .. }
@@ -459,9 +463,10 @@ fn merge_compaction_metadata(
         .compaction_state_at(revision)
         .cloned()
         .map_err(|error| error.to_string())?;
+    let protected = n00n_storage::sessions::transcript_referenced_revisions(&target.transcript);
     target
         .meta
-        .checkpoint_compaction_state(snapshot)
+        .checkpoint_compaction_state_with_protected(snapshot, &protected)
         .map_err(|error| error.to_string())?;
     if state_revision_or_initial(target.meta.state_snapshot.as_ref())
         <= state_revision_or_initial(checkpoint.meta.state_snapshot.as_ref())

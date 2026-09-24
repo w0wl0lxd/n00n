@@ -241,14 +241,16 @@ fn cap_after_instructions(content: String) -> String {
         if line.trim().is_empty() {
             continue;
         }
-        let status = serde_json::from_str::<serde_json::Value>(line)
-            .ok()
-            .and_then(|v| {
-                v.get("status")
-                    .and_then(|s| s.as_str())
-                    .map(std::string::ToString::to_string)
-            })
-            .unwrap_or_else(|| "pending".to_string());
+        let status = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => v
+                .get("status")
+                .and_then(|s| s.as_str())
+                .map_or_else(|| "pending".to_string(), std::string::ToString::to_string),
+            Err(error) => {
+                warn!(error = %error, "malformed todo line in AfterInstructions; treating as pending");
+                "pending".to_string()
+            }
+        };
         entries.push(((*line).to_string(), status));
     }
     if entries.is_empty() {
@@ -263,9 +265,14 @@ fn cap_after_instructions(content: String) -> String {
         );
         return truncated;
     }
-    let mut total: usize = entries.iter().map(|(l, _)| l.len() + 1).sum();
+    let mut total: usize = header.len() + entries.iter().map(|(l, _)| l.len() + 1).sum::<usize>();
     if total <= MAX_AFTER_INSTRUCTIONS_BYTES {
-        return content;
+        let mut out = header;
+        for (line, _) in &entries {
+            out.push('\n');
+            out.push_str(line);
+        }
+        return out;
     }
     let original_bytes = content.len();
     let mut keep = vec![true; entries.len()];
@@ -305,42 +312,36 @@ fn cap_after_instructions(content: String) -> String {
     }
     if total > MAX_AFTER_INSTRUCTIONS_BYTES {
         for (idx, (line, _)) in entries.iter_mut().enumerate() {
-            if keep[idx] {
-                let avail = MAX_AFTER_INSTRUCTIONS_BYTES
-                    .saturating_sub(total.saturating_sub(line.len() + 1));
-                if line.len() > avail {
-                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(obj) = val.as_object_mut()
-                            && let Some(content_val) = obj.get_mut("content")
-                            && let Some(content_str) = content_val.as_str()
-                        {
-                            let overhead = line.len().saturating_sub(content_str.len());
-                            let max_content = avail.saturating_sub(overhead).saturating_sub(3);
-                            let truncated_content = if content_str.len() > max_content {
-                                let boundary = content_str.floor_char_boundary(max_content);
-                                format!("{}...", &content_str[..boundary])
-                            } else {
-                                content_str.to_string()
-                            };
-                            *content_val = serde_json::Value::String(truncated_content);
-                            if let Ok(new_line) = serde_json::to_string(&val) {
-                                *line = new_line;
-                            }
-                        }
-                    } else {
-                        let boundary = line.floor_char_boundary(avail.saturating_sub(3));
-                        *line = format!("{}...", &line[..boundary]);
-                    }
-                }
-                break;
+            if !keep[idx] || total <= MAX_AFTER_INSTRUCTIONS_BYTES {
+                continue;
+            }
+            let avail =
+                MAX_AFTER_INSTRUCTIONS_BYTES.saturating_sub(total.saturating_sub(line.len()));
+            if let Some(shrunk) = shrink_todo_line(line, avail) {
+                total = total.saturating_sub(line.len()) + shrunk.len();
+                *line = shrunk;
+            } else {
+                total = total.saturating_sub(line.len() + 1);
+                keep[idx] = false;
             }
         }
     }
+    let header_len = header.len();
     let mut out = header;
     for (idx, (line, _)) in entries.into_iter().enumerate() {
         if keep[idx] {
             out.push('\n');
             out.push_str(&line);
+        }
+    }
+    if out.len() > MAX_AFTER_INSTRUCTIONS_BYTES {
+        // Never emit a partially cut line: the injected todo payload must stay
+        // well-formed JSON. Drop trailing whole lines until the block fits.
+        while out.len() > MAX_AFTER_INSTRUCTIONS_BYTES
+            && let Some(nl) = out.rfind('\n')
+            && nl >= header_len
+        {
+            out.truncate(nl);
         }
     }
     warn!(
@@ -351,6 +352,54 @@ fn cap_after_instructions(content: String) -> String {
         "truncated AfterInstructions todo budget"
     );
     out
+}
+
+/// Shrink one serialized todo line to fit `avail` bytes. Returns `None` when the
+/// line cannot fit even with an empty content payload.
+fn shrink_todo_line(line: &str, avail: usize) -> Option<String> {
+    if avail == 0 {
+        return None;
+    }
+    if line.len() <= avail {
+        return Some(line.to_string());
+    }
+    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(line)
+        && let Some(original) = val
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    {
+        // JSON escaping makes the re-encoded line longer than the decoded
+        // content suggests, so size against the serialized form. Encoded
+        // length is monotonic in the decoded prefix, hence binary search.
+        let mut lo = 0usize;
+        let mut hi = original.len();
+        let mut best = None;
+        while lo <= hi {
+            let mid = original.floor_char_boundary(lo.midpoint(hi));
+            if let Some(slot) = val.get_mut("content") {
+                *slot = serde_json::Value::String(format!("{}...", &original[..mid]));
+            }
+            let Ok(candidate) = serde_json::to_string(&val) else {
+                warn!("todo line re-serialization failed; dropping entry");
+                return None;
+            };
+            if candidate.len() <= avail {
+                best = Some(candidate);
+                lo = mid.saturating_add(1);
+            } else if mid == 0 {
+                break;
+            } else {
+                hi = mid.saturating_sub(1);
+            }
+        }
+        return best;
+    }
+    if avail < 4 {
+        return None;
+    }
+    let boundary = line.floor_char_boundary(avail - 3);
+    Some(format!("{}...", &line[..boundary]))
 }
 
 /// Fill each `{{slot}}` marker in the template with its rendered content and
@@ -763,6 +812,90 @@ mod tests {
         assert!(out.contains("SECOND"));
         assert!(!out.contains("FIRST"));
         assert!(!out.contains("You are n00n"));
+    }
+
+    fn todo_line(status: &str, content: &str) -> String {
+        serde_json::json!({ "status": status, "content": content }).to_string()
+    }
+
+    #[test]
+    fn todo_cap_enforced_with_multiple_oversized_in_progress() {
+        let big = "x".repeat(MAX_AFTER_INSTRUCTIONS_BYTES);
+        let content = format!(
+            "# Current todos\n{}\n{}",
+            todo_line("in_progress", &big),
+            todo_line("in_progress", &big)
+        );
+        let out = cap_after_instructions(content);
+        assert!(
+            out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES,
+            "len={}",
+            out.len()
+        );
+        assert!(out.contains("in_progress"));
+    }
+
+    #[test]
+    fn todo_cap_includes_header_bytes() {
+        let header = "h".repeat(MAX_AFTER_INSTRUCTIONS_BYTES - 100);
+        let content = format!(
+            "# Current todos\n{header}\n{}",
+            todo_line("in_progress", "task")
+        );
+        let out = cap_after_instructions(content);
+        assert!(
+            out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES,
+            "len={}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn todo_cap_drops_pending_before_in_progress() {
+        let big = "p".repeat(MAX_AFTER_INSTRUCTIONS_BYTES);
+        let content = format!(
+            "# Current todos\n{}\n{}",
+            todo_line("in_progress", "keep me"),
+            todo_line("pending", &big)
+        );
+        let out = cap_after_instructions(content);
+        assert!(out.contains("keep me"));
+        assert!(!out.contains(&big));
+        assert!(out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES);
+    }
+
+    #[test]
+    fn todo_cap_blank_line_overhead_rebuilt() {
+        let padding = "\n\n\n".repeat(200);
+        let content = format!(
+            "# Current todos\n{padding}{}",
+            todo_line("in_progress", &"x".repeat(MAX_AFTER_INSTRUCTIONS_BYTES))
+        );
+        let out = cap_after_instructions(content);
+        assert!(
+            out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES,
+            "len={}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn todo_cap_escaped_content_stays_well_formed_json() {
+        // Escapable chars inflate the serialized line; the cap must measure the
+        // re-encoded form so every emitted line stays valid JSON.
+        let escaped = "\"\\".repeat(MAX_AFTER_INSTRUCTIONS_BYTES);
+        let content = format!("# Current todos\n{}", todo_line("in_progress", &escaped));
+        let out = cap_after_instructions(content);
+        assert!(
+            out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES,
+            "len={}",
+            out.len()
+        );
+        for line in out.lines().filter(|l| l.trim_start().starts_with('{')) {
+            serde_json::from_str::<serde_json::Value>(line).unwrap_or_else(|_| {
+                panic!("malformed todo line: {}", &line[..line.len().min(120)])
+            });
+        }
     }
 
     #[test]
