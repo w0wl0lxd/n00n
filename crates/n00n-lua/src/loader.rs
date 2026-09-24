@@ -707,6 +707,8 @@ impl SessionStatePersistence for EventHandle {
             return Ok(());
         }
         current.remove(&owner);
+        drop(current);
+        self.evict_prompt_slot_cache_for_owner(owner);
         self.drop_state_owner(owner)
             .map_err(|error| error.to_string())
     }
@@ -808,6 +810,18 @@ impl EventHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&key.cloned())
             .cloned()
+    }
+
+    /// Called only after `drop_owner`'s lease check passes, so this never
+    /// races a live session; the `None`/global entry is never matched.
+    fn evict_prompt_slot_cache_for_owner(&self, owner: n00nId) {
+        self.prompt_slot_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|key, _| match key {
+                Some(identity) => !identity.matches_owner(owner),
+                None => true,
+            });
     }
 
     /// Transient collection failures (busy host, watchdog abort, timeout)
@@ -1151,6 +1165,7 @@ impl EventHandle {
 mod tests {
     use super::*;
     use crate::api::util::command::{LuaCommandInfo, LuaCommandWriter};
+    use n00n_agent::headless::SessionStatePersistence;
     use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot, SlotEntry};
     use n00n_agent::tools::{SessionIdentity, ToolRegistry};
     use n00n_storage::{id::SessionRef, sessions::StoredStateScope};
@@ -1296,6 +1311,61 @@ mod tests {
         let entries = resolved.get(PromptId::System, Slot::Environment);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].content, "session env");
+    }
+
+    #[test]
+    fn drop_owner_evicts_that_sessions_prompt_slot_cache_entry() {
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        let handle = host.event_handle().unwrap();
+
+        let identity_a = SessionIdentity::root(SessionRef::generate());
+        let identity_b = SessionIdentity::root(SessionRef::generate());
+        let lease_a =
+            SessionStatePersistence::hydrate(&handle, &identity_a, None).expect("hydrate a");
+        SessionStatePersistence::hydrate(&handle, &identity_b, None).expect("hydrate b");
+
+        let mut slots_a = ResolvedSlots::default();
+        slots_a.insert(
+            PromptId::System,
+            Slot::Environment,
+            SlotEntry {
+                plugin: Arc::from("a"),
+                content: "a-slots".to_owned(),
+            },
+        );
+        handle.store_prompt_slots(Some(PluginStateIdentity::from(&identity_a)), &slots_a);
+
+        let mut slots_b = ResolvedSlots::default();
+        slots_b.insert(
+            PromptId::System,
+            Slot::Environment,
+            SlotEntry {
+                plugin: Arc::from("b"),
+                content: "b-slots".to_owned(),
+            },
+        );
+        handle.store_prompt_slots(Some(PluginStateIdentity::from(&identity_b)), &slots_b);
+        handle.store_prompt_slots(None, &ResolvedSlots::default());
+
+        SessionStatePersistence::drop_owner(&handle, identity_a.session_id().id(), lease_a)
+            .expect("drop a");
+
+        assert!(
+            handle
+                .cached_prompt_slots(Some(&PluginStateIdentity::from(&identity_a)))
+                .is_none(),
+            "identity A's entry must be evicted once its session is torn down"
+        );
+        assert!(
+            handle
+                .cached_prompt_slots(Some(&PluginStateIdentity::from(&identity_b)))
+                .is_some(),
+            "identity B's entry must survive identity A's teardown"
+        );
+        assert!(
+            handle.cached_prompt_slots(None).is_some(),
+            "the None/global entry must survive an unrelated session's teardown"
+        );
     }
 
     #[test]
