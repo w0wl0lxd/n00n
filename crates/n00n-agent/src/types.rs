@@ -719,8 +719,21 @@ impl ToolOutput {
                         "truncated tool output items"
                     );
                 }
+                let mut any_item_truncated = false;
                 for item in &mut items {
-                    item.content = crate::tools::truncate_output_quiet(&item.content, 1, max_bytes);
+                    let shrunk = crate::tools::truncate_output_quiet(&item.content, 1, max_bytes);
+                    if shrunk.len() != item.content.len() {
+                        any_item_truncated = true;
+                    }
+                    item.content = shrunk;
+                }
+                if any_item_truncated {
+                    warn!(
+                        tool = "TodoList",
+                        path = "",
+                        max_bytes,
+                        "truncated todo item content; as_text() is unaffected"
+                    );
                 }
                 Self::TodoList(items)
             }
@@ -742,8 +755,21 @@ impl ToolOutput {
                         "truncated tool output lines"
                     );
                 }
+                let mut any_line_truncated = false;
                 for line in &mut lines {
-                    *line = crate::tools::truncate_output_quiet(line, 1, max_bytes);
+                    let shrunk = crate::tools::truncate_output_quiet(line, 1, max_bytes);
+                    if shrunk.len() != line.len() {
+                        any_line_truncated = true;
+                    }
+                    *line = shrunk;
+                }
+                if any_line_truncated {
+                    warn!(
+                        tool = "WriteCode",
+                        path = %path,
+                        max_bytes,
+                        "truncated write-code line content; as_text() is unaffected"
+                    );
                 }
                 Self::WriteCode {
                     path,
@@ -1601,6 +1627,79 @@ mod tests {
         });
         let bounded = output.bounded(10, 100);
         assert!(bounded.as_text().contains("Instructions from: AGENTS.md"));
+    }
+
+    /// Records event messages so a `warn!` call can be asserted without a
+    /// `tracing-subscriber` dev-dependency.
+    struct EventCapture {
+        messages: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct MessageVisitor(String);
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl tracing::Subscriber for EventCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            let Ok(mut messages) = self.messages.lock() else {
+                return;
+            };
+            messages.push(visitor.0);
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    #[test_case("TodoList" ; "todo_list_item_truncation_warns_even_though_as_text_is_ok")]
+    #[test_case("WriteCode" ; "write_code_line_truncation_warns_even_though_as_text_omits_lines")]
+    fn bounded_output_warns_on_quiet_item_truncation(variant: &str) {
+        let output = match variant {
+            "TodoList" => ToolOutput::TodoList(vec![TodoItem {
+                content: "x".repeat(500),
+                status: TodoStatus::InProgress,
+                priority: TodoPriority::default(),
+            }]),
+            "WriteCode" => ToolOutput::WriteCode {
+                path: "a.rs".into(),
+                byte_count: 500,
+                lines: vec!["x".repeat(500)],
+            },
+            other => panic!("unexpected variant {other}"),
+        };
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = EventCapture {
+            messages: Arc::clone(&messages),
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            let _bounded = output.bounded(10, 64);
+        });
+        let captured = messages.lock().expect("capture mutex must not be poisoned");
+        assert!(
+            captured.iter().any(|message| message.contains("truncated")),
+            "expected a truncation warning, got {captured:?}"
+        );
     }
 
     #[test]
