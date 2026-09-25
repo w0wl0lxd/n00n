@@ -289,13 +289,19 @@ fn flash(_lua: &Lua, #[ctx] tx: flume::Sender<UiAction>, msg: String) -> LuaResu
 /// notify fires even while the terminal is focused.
 ///
 /// @param msg string Notification text.
-/// @return
+/// @return (boolean, string?) true on success, or false and an error message.
 /// @example
 /// n00n.ui.notify("Release build finished")
 #[lua_fn]
-fn notify(_lua: &Lua, #[ctx] tx: flume::Sender<UiAction>, msg: String) -> LuaResult<()> {
-    let _ = tx.try_send(UiAction::Notify(msg));
-    Ok(())
+fn notify(
+    _lua: &Lua,
+    #[ctx] tx: flume::Sender<UiAction>,
+    msg: String,
+) -> LuaResult<(bool, Option<String>)> {
+    match tx.try_send(UiAction::Notify(msg)) {
+        Ok(()) => Ok((true, None)),
+        Err(err) => Ok((false, Some(err.to_string()))),
+    }
 }
 
 /// Opens {path} in the user's `$EDITOR` (e.g. vim, nano) and waits for
@@ -754,6 +760,26 @@ mod tests {
         t.raw_set(1, key).unwrap();
         t.raw_set(2, label).unwrap();
         t
+    }
+
+    #[test]
+    fn notify_reports_disconnected_channel_instead_of_silently_succeeding() {
+        let lua = Lua::new();
+        let (tx, rx) = flume::bounded(1);
+        drop(rx);
+        let (sent, err) = notify(&lua, tx, "hi".to_string()).unwrap();
+        assert!(!sent);
+        assert!(err.is_some());
+    }
+
+    #[test]
+    fn notify_reports_success_and_forwards_the_message() {
+        let lua = Lua::new();
+        let (tx, rx) = flume::bounded(1);
+        let (sent, err) = notify(&lua, tx, "hi".to_string()).unwrap();
+        assert!(sent);
+        assert!(err.is_none());
+        assert!(matches!(rx.try_recv(), Ok(UiAction::Notify(msg)) if msg == "hi"));
     }
 
     #[test]
