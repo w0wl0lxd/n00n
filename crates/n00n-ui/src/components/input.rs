@@ -3,7 +3,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::shell::parse_shell_prefix;
 use crate::cast;
 use crate::highlight;
-use crate::text_buffer::{EditResult, TextBuffer, is_newline_key};
+use crate::keymap::KeyAction;
+use crate::text_buffer::{EditResult, TextBuffer};
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -42,11 +43,8 @@ const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
 ];
 
 pub enum InputAction {
-    Submit(Submission),
-    ContinueLine,
     OpenFilePicker,
     PaletteSync(String),
-    Passthrough(KeyEvent),
     None,
 }
 
@@ -70,11 +68,49 @@ impl Submission {
     }
 }
 
+/// A stashed composer draft: text, attached images, and paste chips move
+/// out of the way together and come back together on restore.
+struct StashedDraft {
+    text: String,
+    images: Vec<ImageSource>,
+    pastes: Vec<String>,
+}
+
+/// Result of a `stash_toggle` press.
+pub enum StashOutcome {
+    /// Non-empty composer moved into the stash.
+    Stashed,
+    /// Stash contents restored into an empty composer.
+    Restored,
+    /// Nothing in the composer and nothing stashed.
+    NothingToStash,
+    /// Composer non-empty but a stash already exists — refused rather than
+    /// silently overwriting it.
+    Occupied,
+}
+
+/// Inline reverse-history-search state (Ctrl+R). `saved` restores the
+/// pre-search buffer on cancel; `matches` are history indices containing
+/// `query`, oldest to newest; `pos` is the highlighted match.
+pub struct HistorySearch {
+    pub query: String,
+    matches: Vec<usize>,
+    pos: usize,
+    saved: String,
+}
+
+/// Pastes longer than this collapse into a `[Pasted #N +L lines]` chip in
+/// the composer; the full text expands back on submit.
+const PASTE_COLLAPSE_LINES: usize = 5;
+
 pub struct InputBox {
     pub(crate) buffer: TextBuffer,
     history: InputHistory,
     history_index: Option<usize>,
     draft: String,
+    stash: Option<StashedDraft>,
+    history_search: Option<HistorySearch>,
+    pastes: Vec<String>,
     scroll_y: u16,
     follow_cursor: bool,
     placeholder_hint: &'static str,
@@ -89,54 +125,354 @@ pub struct InputBox {
 }
 
 impl InputBox {
+    /// Handles only unbound composer keys (printable chars, `@` trigger).
+    /// Bound keys never reach here — `app` resolves them through the keymap
+    /// and dispatches `edit_action`/`submit` directly.
     pub fn handle_key(&mut self, key: KeyEvent) -> InputAction {
         self.follow_cursor = true;
 
-        match key.code {
-            KeyCode::Up if self.is_at_first_line() => {
-                self.history_up();
-                return InputAction::None;
+        if self.history_search.is_some() {
+            if let KeyCode::Char(c) = key.code {
+                // `Char`+Ctrl+Alt is `AltGr` — printable input, not a chord.
+                let altgr = key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::ALT);
+                if altgr
+                    || !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+                {
+                    self.history_search_push(c);
+                }
             }
-            KeyCode::Down if self.is_at_last_line() => {
-                self.history_down();
-                return InputAction::None;
-            }
-            KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
-            KeyCode::Char('@')
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    && self.char_before_cursor_is_whitespace_or_start() =>
-            {
-                return InputAction::OpenFilePicker;
-            }
-            _ if is_newline_key(&key) => {
-                self.buffer.add_line();
-                return InputAction::ContinueLine;
-            }
-            KeyCode::Enter if self.char_before_cursor_is_backslash() => {
-                self.continue_line();
-                return InputAction::ContinueLine;
-            }
-            KeyCode::Enter => {
-                return match self.submit() {
-                    Some(sub) => InputAction::Submit(sub),
-                    None => InputAction::Submit(Submission::empty()),
-                };
-            }
-            _ => {}
+            return InputAction::None;
         }
 
+        if let KeyCode::Char('@') = key.code
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.char_before_cursor_is_whitespace_or_start()
+        {
+            return InputAction::OpenFilePicker;
+        }
+
+        self.evict_chip_under_cursor();
         match self.buffer.handle_key(key) {
             EditResult::Changed => InputAction::PaletteSync(self.buffer.value()),
             EditResult::Moved | EditResult::Ignored => InputAction::None,
         }
     }
 
+    /// Execute a resolved editing-context action. `Changed` maps to
+    /// `PaletteSync` so the command palette tracks the new text.
+    pub fn edit_action(&mut self, action: KeyAction) -> InputAction {
+        self.follow_cursor = true;
+        // An editing key during history search accepts the shown match
+        // first, then applies — the readline model.
+        if self.history_search.is_some() {
+            self.history_search_accept();
+        }
+        let changed = match action {
+            KeyAction::InputUp => {
+                if self.is_at_first_line() {
+                    self.history_up();
+                } else {
+                    self.buffer.move_up();
+                }
+                false
+            }
+            KeyAction::InputDown => {
+                if self.is_at_last_line() {
+                    self.history_down();
+                } else {
+                    self.buffer.move_down();
+                }
+                false
+            }
+            KeyAction::CharLeft => {
+                self.buffer.move_left();
+                false
+            }
+            KeyAction::CharRight => {
+                self.buffer.move_right();
+                false
+            }
+            KeyAction::WordLeft => {
+                self.buffer.move_word_left();
+                false
+            }
+            KeyAction::WordRight => {
+                self.buffer.move_word_right();
+                false
+            }
+            KeyAction::LineStart => {
+                self.buffer.move_home();
+                false
+            }
+            KeyAction::LineEnd => {
+                self.buffer.move_end();
+                false
+            }
+            KeyAction::DeleteCharBack => {
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.remove_char();
+                }
+                true
+            }
+            KeyAction::DeleteCharForward => {
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.delete_char();
+                }
+                true
+            }
+            KeyAction::DeleteWordBack => {
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.remove_word_before_cursor();
+                }
+                true
+            }
+            KeyAction::DeleteWordForward => {
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.delete_word_after_cursor();
+                }
+                true
+            }
+            KeyAction::KillLineEnd => {
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.kill_to_end_of_line();
+                }
+                true
+            }
+            KeyAction::KillLineStart => {
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.kill_to_start_of_line();
+                }
+                true
+            }
+            KeyAction::Yank => self.buffer.yank(),
+            KeyAction::YankPop => self.buffer.yank_pop(),
+            KeyAction::Undo => self.buffer.undo(),
+            KeyAction::Redo => self.buffer.redo(),
+            KeyAction::Newline => {
+                self.evict_chip_under_cursor();
+                self.buffer.add_line();
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            InputAction::PaletteSync(self.buffer.value())
+        } else {
+            InputAction::None
+        }
+    }
+
+    /// Stash a non-empty draft for later, or restore the stash when the
+    /// composer is empty. An occupied stash is never overwritten — the
+    /// caller flashes a hint instead.
+    pub fn stash_toggle(&mut self) -> StashOutcome {
+        self.history_search_cancel();
+        if !self.buffer.value().trim().is_empty() || !self.pending_images.is_empty() {
+            if self.stash.is_some() {
+                return StashOutcome::Occupied;
+            }
+            self.stash = Some(StashedDraft {
+                text: self.buffer.value(),
+                images: mem::take(&mut self.pending_images),
+                pastes: mem::take(&mut self.pastes),
+            });
+            self.discard();
+            return StashOutcome::Stashed;
+        }
+        if let Some(stashed) = self.stash.take() {
+            self.buffer.set_text(&stashed.text);
+            self.pending_images = stashed.images;
+            self.pastes = stashed.pastes;
+            self.buffer.move_to_end();
+            return StashOutcome::Restored;
+        }
+        StashOutcome::NothingToStash
+    }
+
+    pub fn history_search_active(&self) -> bool {
+        self.history_search.is_some()
+    }
+
+    pub fn history_search_query(&self) -> Option<&str> {
+        self.history_search.as_ref().map(|s| s.query.as_str())
+    }
+
+    pub fn start_history_search(&mut self) {
+        if self.history_search.is_some() {
+            return;
+        }
+        let saved = self.buffer.value();
+        self.history_search = Some(HistorySearch {
+            query: String::new(),
+            matches: Vec::new(),
+            pos: 0,
+            saved,
+        });
+        self.search_apply();
+    }
+
+    pub fn history_search_push(&mut self, c: char) {
+        if let Some(search) = &mut self.history_search {
+            search.query.push(c);
+        }
+        self.search_apply();
+    }
+
+    pub fn history_search_backspace(&mut self) {
+        if let Some(search) = &mut self.history_search {
+            search.query.pop();
+        }
+        self.search_apply();
+    }
+
+    pub fn history_search_older(&mut self) {
+        self.search_step(true);
+    }
+
+    pub fn history_search_newer(&mut self) {
+        self.search_step(false);
+    }
+
+    /// Accept: keep the matched entry in the composer.
+    pub fn history_search_accept(&mut self) {
+        self.history_search = None;
+        self.history_index = None;
+        self.draft.clear();
+    }
+
+    /// Cancel: restore the buffer as it was before the search. The restore
+    /// skips undo recording — the search itself is the recovery mechanism.
+    pub fn history_search_cancel(&mut self) {
+        if let Some(search) = self.history_search.take() {
+            self.buffer.set_text_silent(&search.saved);
+            self.buffer.move_to_end();
+        }
+    }
+
+    fn search_apply(&mut self) {
+        let Some(search) = &self.history_search else {
+            return;
+        };
+        let query = search.query.clone();
+        let matches: Vec<usize> = (0..self.history.len())
+            .filter(|&i| {
+                self.history
+                    .get(i)
+                    .is_some_and(|entry| entry.contains(query.as_str()))
+            })
+            .collect();
+        let Some(search) = &mut self.history_search else {
+            return;
+        };
+        search.pos = matches.len().saturating_sub(1);
+        search.matches = matches;
+        self.search_show_current();
+    }
+
+    /// Step through `matches`: `older=true` moves toward older history
+    /// entries (lower index), `false` toward newer ones.
+    fn search_step(&mut self, older: bool) {
+        let Some(search) = &mut self.history_search else {
+            return;
+        };
+        let next = if older {
+            search.pos.checked_sub(1)
+        } else {
+            search.pos.checked_add(1)
+        };
+        let Some(next) = next else {
+            return;
+        };
+        if next >= search.matches.len() {
+            return;
+        }
+        search.pos = next;
+        self.search_show_current();
+    }
+
+    fn search_show_current(&mut self) {
+        let Some(search) = &self.history_search else {
+            return;
+        };
+        let Some(&idx) = search.matches.get(search.pos) else {
+            return;
+        };
+        if let Some(entry) = self.history.get(idx) {
+            let text = entry.to_string();
+            self.buffer.set_text_silent(&text);
+            self.buffer.move_to_end();
+        }
+    }
+
     pub fn handle_paste(&mut self, text: &str) -> InputAction {
         self.follow_cursor = true;
-        self.buffer.insert_text(text);
+        // Pasting mid-search restores the pre-search draft first, so the
+        // paste lands on real content instead of a shown match.
+        self.history_search_cancel();
+        let line_count = text.split('\n').count();
+        if line_count >= PASTE_COLLAPSE_LINES {
+            self.pastes.push(text.to_string());
+            let chip = self.paste_chip(self.pastes.len() - 1);
+            self.buffer.insert_text(&chip);
+        } else {
+            self.buffer.insert_text(text);
+        }
         InputAction::PaletteSync(self.buffer.value())
+    }
+
+    /// The chip embeds a zero-width space so text typed to *look* like a
+    /// chip can never collide with a real marker on expand.
+    fn paste_chip(&self, idx: usize) -> String {
+        let line_count = self.pastes[idx].split('\n').count();
+        format!("[Pasted\u{200B}#{} +{line_count} lines]", idx + 1)
+    }
+
+    /// Char span `[start, end)` of paste `idx`'s chip on the cursor's
+    /// current line, if it is still present intact.
+    fn chip_char_span(&self, idx: usize) -> Option<(usize, usize)> {
+        let line = &self.buffer.lines()[self.buffer.y()];
+        let chip = self.paste_chip(idx);
+        let byte_start = line.find(&chip)?;
+        let char_start = line[..byte_start].chars().count();
+        Some((char_start, char_start + chip.chars().count()))
+    }
+
+    /// A single-char edit landing inside an intact chip would corrupt its
+    /// marker, orphaning the stored paste. Evict the whole chip instead;
+    /// returns whether it did.
+    fn evict_chip_under_cursor(&mut self) -> bool {
+        let x = self.buffer.x();
+        let y = self.buffer.y();
+        for idx in 0..self.pastes.len() {
+            let Some((start, end)) = self.chip_char_span(idx) else {
+                continue;
+            };
+            if start < x && x < end {
+                self.buffer.remove_range(y, start, end);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Swap paste chips back for their stored content, in place. Every
+    /// occurrence expands — a duplicated chip pastes its content twice.
+    fn expand_pastes(&self, text: &str) -> String {
+        let mut expanded = text.to_string();
+        for (i, content) in self.pastes.iter().enumerate() {
+            let chip = self.paste_chip(i);
+            let mut from = 0;
+            while let Some(pos) = expanded[from..].find(&chip).map(|p| from + p) {
+                expanded.replace_range(pos..pos + chip.len(), content);
+                from = pos + content.len();
+            }
+        }
+        expanded
     }
 
     /// Inserting a file path mid-word looks broken ("read/tmp/x" instead of
@@ -179,6 +515,9 @@ impl InputBox {
             history,
             history_index: None,
             draft: String::new(),
+            stash: None,
+            history_search: None,
+            pastes: Vec::new(),
             scroll_y: 0,
             follow_cursor: true,
             placeholder_hint: PLACEHOLDER_SUGGESTIONS[0],
@@ -263,7 +602,7 @@ impl InputBox {
     }
 
     pub fn submit(&mut self) -> Option<Submission> {
-        let text = self.buffer.value().trim().to_string();
+        let text = self.expand_pastes(&self.buffer.value()).trim().to_string();
         let images = mem::take(&mut self.pending_images);
         if text.is_empty() && images.is_empty() {
             return None;
@@ -280,7 +619,9 @@ impl InputBox {
     pub fn discard(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.pending_images.clear();
+        self.pastes.clear();
         self.history_index = None;
+        self.history_search = None;
         self.draft.clear();
         self.buffer.clear();
         self.scroll_y = 0;
@@ -301,11 +642,13 @@ impl InputBox {
     }
 
     pub fn set_input(&mut self, s: &str) {
-        self.buffer = TextBuffer::new(s);
+        self.history_search = None;
+        self.buffer.set_text(s);
     }
 
     pub fn set_submission(&mut self, sub: Submission) {
-        self.buffer = TextBuffer::new(&sub.text);
+        self.history_search = None;
+        self.buffer.set_text(&sub.text);
         self.pending_images = sub.images;
     }
 
@@ -473,6 +816,15 @@ impl InputBox {
             .border_style(border_style);
         if let Some(hint) = top_right_hint {
             block = block.title_top(hint.right_aligned());
+        }
+        if let Some(query) = self.history_search_query() {
+            block = block.title_bottom(
+                Line::from(Span::styled(
+                    format!("(ctrl+r) `{query}`"),
+                    theme::current().input_placeholder,
+                ))
+                .left_aligned(),
+            );
         }
         let paragraph = Paragraph::new(text)
             .style(Style::new().fg(theme::current().foreground))
@@ -1208,5 +1560,299 @@ mod tests {
         let action = input.handle_key(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL));
         assert!(!matches!(action, InputAction::OpenFilePicker));
         assert_eq!(input.buffer.value(), "");
+    }
+
+    #[test]
+    fn stash_hides_and_restores_draft() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "draft text");
+        input.attach_image(test_image());
+
+        assert!(matches!(input.stash_toggle(), StashOutcome::Stashed));
+        assert!(input.is_empty());
+        assert_eq!(input.buffer.value(), "");
+
+        assert!(matches!(input.stash_toggle(), StashOutcome::Restored));
+        assert_eq!(input.buffer.value(), "draft text");
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.images.len(), 1);
+    }
+
+    #[test]
+    fn stash_toggle_empty_is_noop() {
+        let mut input = InputBox::new(InputHistory::default());
+        assert!(matches!(input.stash_toggle(), StashOutcome::NothingToStash));
+        assert_eq!(input.buffer.value(), "");
+    }
+
+    #[test]
+    fn stash_occupied_is_refused_not_overwritten() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "first");
+        assert!(matches!(input.stash_toggle(), StashOutcome::Stashed));
+
+        type_text(&mut input, "second");
+        assert!(matches!(input.stash_toggle(), StashOutcome::Occupied));
+        assert_eq!(input.buffer.value(), "second");
+
+        input.discard();
+        assert!(matches!(input.stash_toggle(), StashOutcome::Restored));
+        assert_eq!(input.buffer.value(), "first");
+    }
+
+    #[test]
+    fn history_search_finds_and_accepts_match() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "first command");
+        submit_text(&mut input, "second command");
+        submit_text(&mut input, "third thing");
+
+        input.start_history_search();
+        assert!(input.history_search_active());
+        for c in "com".chars() {
+            input.history_search_push(c);
+        }
+        assert_eq!(input.buffer.value(), "second command");
+
+        input.history_search_older();
+        assert_eq!(input.buffer.value(), "first command");
+        input.history_search_newer();
+        assert_eq!(input.buffer.value(), "second command");
+
+        input.history_search_accept();
+        assert!(!input.history_search_active());
+        assert_eq!(input.buffer.value(), "second command");
+    }
+
+    #[test]
+    fn history_search_cancel_restores_draft() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "old entry");
+        type_text(&mut input, "wip");
+
+        input.start_history_search();
+        input.history_search_push('o');
+        assert_eq!(input.buffer.value(), "old entry");
+
+        input.history_search_cancel();
+        assert!(!input.history_search_active());
+        assert_eq!(input.buffer.value(), "wip");
+    }
+
+    #[test]
+    fn history_search_backspace_edits_query() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "alpha");
+        submit_text(&mut input, "alpine");
+
+        input.start_history_search();
+        for c in "alpz".chars() {
+            input.history_search_push(c);
+        }
+        assert_eq!(input.buffer.value(), "alpine", "no match keeps last shown");
+        input.history_search_backspace();
+        input.history_search_backspace();
+        assert_eq!(input.history_search_query(), Some("al"));
+        assert_eq!(input.buffer.value(), "alpine");
+    }
+
+    #[test]
+    fn long_paste_collapses_to_chip_and_expands_on_submit() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        assert_eq!(input.buffer.value(), "[Pasted\u{200B}#1 +6 lines]");
+
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "l1\nl2\nl3\nl4\nl5\nl6");
+    }
+
+    #[test]
+    fn short_paste_inserts_verbatim() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("a\nb");
+        assert_eq!(input.buffer.value(), "a\nb");
+    }
+
+    #[test]
+    fn chip_expands_inline_with_surrounding_text() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "run this ");
+        input.handle_paste("a\nb\nc\nd\ne\nf");
+        type_text(&mut input, " now");
+
+        assert_eq!(
+            input.buffer.value(),
+            "run this [Pasted\u{200B}#1 +6 lines] now"
+        );
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "run this a\nb\nc\nd\ne\nf now");
+    }
+
+    #[test]
+    fn paste_chip_survives_stash_round_trip() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("x\ny\nz\nw\nv\nu");
+
+        assert!(matches!(input.stash_toggle(), StashOutcome::Stashed));
+        assert!(matches!(input.stash_toggle(), StashOutcome::Restored));
+        assert_eq!(input.buffer.value(), "[Pasted\u{200B}#1 +6 lines]");
+
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "x\ny\nz\nw\nv\nu");
+    }
+
+    #[test_case(KeyAction::DeleteCharBack ; "delete_char_back")]
+    #[test_case(KeyAction::DeleteCharForward ; "delete_char_forward")]
+    #[test_case(KeyAction::DeleteWordBack ; "delete_word_back")]
+    #[test_case(KeyAction::DeleteWordForward ; "delete_word_forward")]
+    #[test_case(KeyAction::KillLineEnd ; "kill_line_end")]
+    #[test_case(KeyAction::KillLineStart ; "kill_line_start")]
+    fn edit_inside_chip_evicts_whole_chip_not_partial(action: KeyAction) {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        // Chip is `[Pasted<ZWSP>#1 +6 lines]`, 20 chars; land the cursor
+        // strictly inside it (past the marker prefix, before the suffix).
+        for _ in 0..10 {
+            input.buffer.move_left();
+        }
+        input.edit_action(action);
+        let remaining = input.buffer.value();
+        assert!(
+            !remaining.contains('\u{200B}'),
+            "edit must evict the whole chip, not leave a corrupted \
+             remainder: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn typing_inside_chip_evicts_it_before_inserting() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        for _ in 0..10 {
+            input.buffer.move_left();
+        }
+        input.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(input.buffer.value(), "x");
+    }
+
+    #[test]
+    fn corrupted_chip_never_reaches_submit() {
+        // Regression guard for the underlying report: a broken chip marker
+        // must never be sent as literal text while its stored paste is
+        // silently dropped. After an in-chip edit the chip is gone
+        // entirely, so submit sees plain typed text only.
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        for _ in 0..10 {
+            input.buffer.move_left();
+        }
+        input.edit_action(KeyAction::DeleteCharBack);
+        type_text(&mut input, "hi");
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "hi");
+        assert!(!sub.text.contains('\u{200B}'));
+        assert!(!sub.text.contains("[Pasted"));
+    }
+
+    #[test]
+    fn delete_before_chip_leaves_it_intact() {
+        // Editing right at the chip's boundary (not inside it) is a normal
+        // edit and must leave the chip intact.
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "x");
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        let chip_len = "[Pasted\u{200B}#1 +6 lines]".chars().count();
+        for _ in 0..chip_len {
+            input.buffer.move_left();
+        }
+        // Cursor now sits right before the chip, right after "x".
+        input.edit_action(KeyAction::DeleteCharBack);
+        assert_eq!(input.buffer.value(), "[Pasted\u{200B}#1 +6 lines]");
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "l1\nl2\nl3\nl4\nl5\nl6");
+    }
+
+    #[test]
+    fn typed_chip_lookalike_does_not_collide() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("real\npaste\ncontent\nhere\nyes\nok");
+        // A literal that LOOKS like the chip but lacks the ZWSP marker must
+        // pass through untouched while the real chip still expands.
+        type_text(&mut input, " [Pasted #1 +6 lines]");
+        let sub = input.submit().unwrap();
+        assert_eq!(
+            sub.text,
+            "real\npaste\ncontent\nhere\nyes\nok [Pasted #1 +6 lines]"
+        );
+    }
+
+    #[test]
+    fn paste_during_search_restores_draft_then_inserts() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "old cmd");
+        type_text(&mut input, "wip");
+
+        input.start_history_search();
+        assert_eq!(input.buffer.value(), "old cmd");
+        input.handle_paste("a\nb\nc\nd\ne\nf");
+
+        assert!(!input.history_search_active());
+        assert_eq!(input.buffer.value(), "wip[Pasted\u{200B}#1 +6 lines]");
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "wipa\nb\nc\nd\ne\nf");
+    }
+
+    #[test]
+    fn discard_clears_history_search() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "old cmd");
+        type_text(&mut input, "wip");
+        input.start_history_search();
+
+        input.discard();
+        assert!(!input.history_search_active());
+        // Nothing is resurrected: the discard is final.
+        assert_eq!(input.buffer.value(), "");
+    }
+
+    #[test]
+    fn edit_action_during_search_accepts_match_first() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "old cmd");
+        input.start_history_search();
+        assert_eq!(input.buffer.value(), "old cmd");
+
+        // A bound edit key acts on the accepted match, not the query.
+        input.edit_action(crate::keymap::KeyAction::KillLineStart);
+        assert!(!input.history_search_active());
+        assert_eq!(input.buffer.value(), "");
+        let sub = input.submit();
+        assert!(sub.is_none());
+    }
+
+    #[test]
+    fn undo_after_search_cancel_ignores_search_edits() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "old cmd");
+        type_text(&mut input, "wip");
+        input.start_history_search();
+        input.history_search_push('o');
+        input.history_search_cancel();
+        assert_eq!(input.buffer.value(), "wip");
+
+        input.buffer.undo();
+        assert_eq!(input.buffer.value(), "", "undo rewinds typing, not search");
+    }
+
+    #[test]
+    fn altgr_chars_reach_search_query() {
+        let mut input = InputBox::new(InputHistory::default());
+        submit_text(&mut input, "find \\ me");
+        input.start_history_search();
+        input.handle_key(KeyEvent::new(
+            KeyCode::Char('\\'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        assert_eq!(input.history_search_query(), Some("\\"));
     }
 }
