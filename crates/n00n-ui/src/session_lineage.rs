@@ -523,6 +523,14 @@ impl SessionLineageGuard {
         Ok(descendants)
     }
 
+    pub(crate) fn parent_of(&self, id: n00nId) -> Option<n00nId> {
+        self.sessions.get(&id).and_then(|node| node.parent_id)
+    }
+
+    pub(crate) fn is_deleted(&self, id: n00nId) -> bool {
+        self.sessions.get(&id).is_some_and(|node| node.deleted)
+    }
+
     pub(crate) fn remove_sessions(&mut self, ids: &[n00nId]) {
         let removed: HashSet<_> = ids.iter().copied().collect();
         for id in &removed {

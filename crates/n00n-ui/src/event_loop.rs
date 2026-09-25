@@ -94,6 +94,7 @@ const DIRECT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 const PARENT_OUTBOX_INTERVAL: Duration = Duration::from_millis(250);
 const PARENT_OUTBOX_RETRY_MILLIS: i64 = 1_000;
 const PARENT_OUTBOX_BATCH_SIZE: usize = 32;
+const RUN_TRANSITION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const DELETE_UI_ONLY_ERR: &str = "session deletion is available only from trusted UI controls";
 const NOT_LIVE_ERR: &str = "session not live";
@@ -116,7 +117,7 @@ pub struct EventLoopParams {
     pub focused: usize,
     pub startup_warnings: Vec<String>,
     pub storage: StateDir,
-    pub run_service: Arc<RunService>,
+    pub run_service: Option<Arc<RunService>>,
     pub config: AgentConfig,
     pub project_trusted: bool,
     pub ui_config: UiConfig,
@@ -249,6 +250,11 @@ fn has_restorable_work(session: &AppSession) -> bool {
         || !session.meta.queued_submissions.is_empty()
         || !session.meta.queued_direct_tools.is_empty()
 }
+
+fn stored_session_is_reapable(session: &AppSession) -> bool {
+    !session.meta.lifecycle.is_active() && !has_restorable_work(session)
+}
+
 fn cancel_stored_session(session: &mut AppSession) -> bool {
     let had_work = session.meta.lifecycle.is_active()
         || !session.meta.queued_messages.is_empty()
@@ -282,14 +288,71 @@ struct CanonicalRunProjection {
     summary: &'static str,
 }
 
-fn canonical_run_projection(
-    event: &n00n_agent::AgentEvent,
-    direct_bootstrap_failed: bool,
-) -> Option<CanonicalRunProjection> {
-    let terminal = |target: RunLifecycle,
-                    status: OutcomeStatus,
-                    event_type: &'static str,
-                    summary: &'static str| CanonicalRunProjection {
+impl CanonicalRunProjection {
+    fn key(&self) -> (RunLifecycle, Option<WaitReasonCode>) {
+        (
+            self.target,
+            self.wait_reason.as_ref().map(|reason| reason.code),
+        )
+    }
+}
+
+#[derive(Default)]
+struct RunProjectionTracker {
+    last: Option<(RunLifecycle, Option<WaitReasonCode>)>,
+}
+
+impl RunProjectionTracker {
+    fn admit(&mut self, projection: CanonicalRunProjection) -> Option<CanonicalRunProjection> {
+        let key = projection.key();
+        let settled = self
+            .last
+            .is_some_and(|(lifecycle, _)| lifecycle.is_terminal());
+        if settled || self.last == Some(key) {
+            return None;
+        }
+        self.last = Some(key);
+        Some(projection)
+    }
+
+    fn cancel(&mut self) -> Vec<CanonicalRunProjection> {
+        [
+            CanonicalRunProjection {
+                target: RunLifecycle::Cancelling,
+                wait_reason: None,
+                outcome: None,
+                event_type: "cancelling",
+                summary: "TUI background task is cancelling",
+            },
+            terminal_run_projection(
+                RunLifecycle::Cancelled,
+                OutcomeStatus::Cancelled,
+                "cancelled",
+                "TUI background task was cancelled",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|projection| self.admit(projection))
+        .collect()
+    }
+
+    fn interrupt(&mut self) -> Option<CanonicalRunProjection> {
+        self.admit(terminal_run_projection(
+            RunLifecycle::Interrupted,
+            OutcomeStatus::Interrupted,
+            "interrupted",
+            "TUI exited before the background task finished",
+        ))
+    }
+}
+
+fn terminal_run_projection(
+    target: RunLifecycle,
+    status: OutcomeStatus,
+    event_type: &'static str,
+    summary: &'static str,
+) -> CanonicalRunProjection {
+    CanonicalRunProjection {
         target,
         wait_reason: None,
         outcome: Some(RunOutcome {
@@ -310,7 +373,14 @@ fn canonical_run_projection(
         }),
         event_type,
         summary,
-    };
+    }
+}
+
+fn canonical_run_projection(
+    event: &n00n_agent::AgentEvent,
+    direct_bootstrap_failed: bool,
+) -> Option<CanonicalRunProjection> {
+    let terminal = terminal_run_projection;
     let waiting = |code: WaitReasonCode, summary: &'static str| CanonicalRunProjection {
         target: RunLifecycle::WaitingInput,
         wait_reason: Some(WaitReason {
@@ -422,21 +492,35 @@ fn select_reapable_sessions(candidates: &[ReapCandidate]) -> HashSet<n00nId> {
             children.entry(parent_id).or_default().push(candidate.id);
         }
     }
-    let mut subtree_reapable = HashMap::new();
-    let mut selected = HashSet::new();
+    let own_reapable = candidates
+        .iter()
+        .map(|candidate| (candidate.id, candidate.reapable))
+        .collect::<HashMap<_, _>>();
+    let mut subtree_reapable = HashMap::<n00nId, bool>::new();
+    let mut entered = HashSet::new();
     for candidate in candidates {
-        let descendants_reapable = children.get(&candidate.id).is_none_or(|child_ids| {
-            child_ids
-                .iter()
-                .all(|child_id| subtree_reapable.get(child_id).copied() == Some(true))
-        });
-        let reapable = candidate.reapable && descendants_reapable;
-        subtree_reapable.insert(candidate.id, reapable);
-        if reapable {
-            selected.insert(candidate.id);
+        let mut stack = vec![(candidate.id, false)];
+        while let Some((id, children_done)) = stack.pop() {
+            if subtree_reapable.contains_key(&id) || (!children_done && !entered.insert(id)) {
+                continue;
+            }
+            let child_ids = children.get(&id).map_or(&[][..], Vec::as_slice);
+            if children_done {
+                let reapable = own_reapable.get(&id).copied() == Some(true)
+                    && child_ids
+                        .iter()
+                        .all(|child_id| subtree_reapable.get(child_id).copied() == Some(true));
+                subtree_reapable.insert(id, reapable);
+            } else {
+                stack.push((id, true));
+                stack.extend(child_ids.iter().map(|child_id| (*child_id, false)));
+            }
         }
     }
-    selected
+    subtree_reapable
+        .into_iter()
+        .filter_map(|(id, reapable)| reapable.then_some(id))
+        .collect()
 }
 
 fn resolved_root(
@@ -814,6 +898,24 @@ impl ParentInboxAdapter for TuiParentInbox {
     }
 }
 
+fn load_stored_session(ctx: &SpawnCtx, id: n00nId) -> Result<AppSession, SessionError> {
+    load_pending_or_stored_session(&ctx.storage_writer, &ctx.storage, ctx.retention_budget, id)
+}
+
+fn load_pending_or_stored_session(
+    writer: &StorageWriter,
+    storage: &StateDir,
+    retention_budget: RetentionBudget,
+    id: n00nId,
+) -> Result<AppSession, SessionError> {
+    match writer.latest_snapshot(id)? {
+        Some(session) => Ok(Arc::unwrap_or_clone(session)),
+        None => {
+            AppSession::load_with_retention(id, storage, retention_budget, message_tool_use_ids)
+        }
+    }
+}
+
 fn spawn_parent_outbox_dispatcher(
     service: Arc<RunService>,
     tx: Option<flume::Sender<UiAction>>,
@@ -850,7 +952,7 @@ struct RunTransitionCommand {
 
 struct RunTransitionWriter {
     tx: flume::Sender<RunTransitionCommand>,
-    _task: smol::Task<()>,
+    task: smol::Task<()>,
 }
 
 impl RunTransitionWriter {
@@ -889,7 +991,7 @@ impl RunTransitionWriter {
                 }
             }
         });
-        Self { tx, _task: task }
+        Self { tx, task }
     }
 
     fn project(&self, run_id: RunId, projection: CanonicalRunProjection) {
@@ -901,11 +1003,33 @@ impl RunTransitionWriter {
             warn!(%run_id, "canonical run transition writer is unavailable");
         }
     }
+
+    fn shutdown(self, timeout: Duration) {
+        let Self { tx, task } = self;
+        drop(tx);
+        let drained = smol::block_on(futures_lite::future::or(
+            async {
+                task.await;
+                true
+            },
+            async {
+                smol::Timer::after(timeout).await;
+                false
+            },
+        ));
+        if !drained {
+            warn!(
+                timeout_ms = timeout.as_millis(),
+                "timed out flushing canonical run transitions during shutdown"
+            );
+        }
+    }
 }
 
 struct SessionRuntime {
     app: App,
     managed_run_id: Option<RunId>,
+    run_projection: RunProjectionTracker,
     handles: AgentHandles,
     shell_tx: flume::Sender<ShellEvent>,
     shell_rx: flume::Receiver<ShellEvent>,
@@ -1004,22 +1128,10 @@ impl SpawnCtx {
         let root = if root_id == session.id {
             None
         } else {
-            match self.storage_writer.latest_snapshot(root_id) {
-                Ok(Some(root)) => Some(Arc::unwrap_or_clone(root)),
-                Ok(None) => match AppSession::load_with_retention(
-                    root_id,
-                    &self.storage,
-                    self.retention_budget,
-                    message_tool_use_ids,
-                ) {
-                    Ok(root) => Some(root),
-                    Err(error) => {
-                        warn!(session_id = %session.id, %root_id, %error, "root session state unavailable; using child plugin state");
-                        None
-                    }
-                },
+            match load_stored_session(self, root_id) {
+                Ok(root) => Some(root),
                 Err(error) => {
-                    warn!(session_id = %session.id, %root_id, %error, "current root session state unavailable; using child plugin state");
+                    warn!(session_id = %session.id, %root_id, %error, "root session state unavailable; using child plugin state");
                     None
                 }
             }
@@ -1133,6 +1245,7 @@ impl SpawnCtx {
         Ok(SessionRuntime {
             app,
             managed_run_id: None,
+            run_projection: RunProjectionTracker::default(),
             handles,
             shell_tx,
             shell_rx,
@@ -1150,8 +1263,8 @@ pub(crate) struct EventLoop<'t> {
     focused: usize,
     lineage: SessionLineageGuard,
     ctx: SpawnCtx,
-    run_service: Arc<RunService>,
-    run_transitions: RunTransitionWriter,
+    run_service: Option<Arc<RunService>>,
+    run_transitions: Option<RunTransitionWriter>,
     _parent_outbox_task: Option<smol::Task<()>>,
     input: InputReader,
     pending_input: RefCell<VecDeque<Event>>,
@@ -1160,6 +1273,8 @@ pub(crate) struct EventLoop<'t> {
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     submission_persist_tx: flume::Sender<SubmissionPersistence>,
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
+    run_ack_tx: flume::Sender<AcknowledgedRunDelivery>,
+    run_ack_rx: flume::Receiver<AcknowledgedRunDelivery>,
     compaction_capture_tx: flume::Sender<CompactionCaptureCompletion>,
     compaction_capture_rx: flume::Receiver<CompactionCaptureCompletion>,
     compaction_persist_tx: flume::Sender<CompactionPersistence>,
@@ -1245,7 +1360,13 @@ enum Wake {
     CompactionCaptured(Box<CompactionCaptureCompletion>),
     CompactionPersisted(CompactionPersistence),
     StateCaptured(StateCaptureCompletion),
+    RunDeliveryAcknowledged(AcknowledgedRunDelivery),
     Warn(String),
+}
+
+struct AcknowledgedRunDelivery {
+    session_id: n00nId,
+    delivery_id: String,
 }
 
 struct DrainScheduler {
@@ -1653,6 +1774,7 @@ impl<'t> EventLoop<'t> {
         app.fire_session_focus_autocmd();
 
         let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
+        let (run_ack_tx, run_ack_rx) = flume::unbounded();
         let (compaction_capture_tx, compaction_capture_rx) = flume::unbounded();
         let (compaction_persist_tx, compaction_persist_rx) = flume::unbounded();
         let (state_capture_tx, state_capture_rx) = flume::unbounded();
@@ -1662,9 +1784,13 @@ impl<'t> EventLoop<'t> {
             focused,
             lineage,
             ctx,
-            run_service: Arc::clone(&run_service),
-            run_transitions: RunTransitionWriter::spawn(Arc::clone(&run_service)),
-            _parent_outbox_task: spawn_parent_outbox_dispatcher(run_service, ui_action_tx),
+            run_transitions: run_service
+                .as_ref()
+                .map(|service| RunTransitionWriter::spawn(Arc::clone(service))),
+            _parent_outbox_task: run_service.as_ref().and_then(|service| {
+                spawn_parent_outbox_dispatcher(Arc::clone(service), ui_action_tx)
+            }),
+            run_service,
             input: InputReader::spawn()?,
             pending_input: RefCell::new(VecDeque::new()),
             warn_rx: bg.warn_rx,
@@ -1672,6 +1798,8 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             submission_persist_tx,
             submission_persist_rx,
+            run_ack_tx,
+            run_ack_rx,
             compaction_capture_tx,
             compaction_capture_rx,
             compaction_persist_tx,
@@ -1820,6 +1948,9 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.state_capture_rx, |res| {
             res.ok().map(Wake::StateCaptured)
         });
+        sel = sel.recv(&self.run_ack_rx, |res| {
+            res.ok().map(Wake::RunDeliveryAcknowledged)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -1859,6 +1990,9 @@ impl<'t> EventLoop<'t> {
         sel = sel.recv(&self.state_capture_rx, |res| {
             res.ok().map(Wake::StateCaptured)
         });
+        sel = sel.recv(&self.run_ack_rx, |res| {
+            res.ok().map(Wake::RunDeliveryAcknowledged)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -1884,6 +2018,9 @@ impl<'t> EventLoop<'t> {
             Wake::CompactionCaptured(completion) => self.handle_compaction_captured(*completion),
             Wake::CompactionPersisted(completion) => self.handle_compaction_persisted(completion),
             Wake::StateCaptured(completion) => self.handle_state_captured(completion),
+            Wake::RunDeliveryAcknowledged(acknowledged) => {
+                self.mark_run_delivery_acknowledged(acknowledged);
+            }
             Wake::Warn(warning) => self.focused_app().flash(warning),
         }
         Ok(())
@@ -2051,10 +2188,8 @@ impl<'t> EventLoop<'t> {
         if let Some(delivery) = consumed_run_delivery {
             self.acknowledge_consumed_run_delivery(idx, delivery);
         }
-        if let (Some(run_id), Some(projection)) =
-            (self.sessions[idx].managed_run_id, canonical_projection)
-        {
-            self.run_transitions.project(run_id, projection);
+        if let Some(projection) = canonical_projection {
+            self.project_run(idx, projection);
         }
         if terminal {
             self.sessions[idx]
@@ -2063,6 +2198,54 @@ impl<'t> EventLoop<'t> {
         }
         if capture && self.sessions[idx].pending_compactions.is_empty() {
             self.schedule_plugin_state_capture(idx);
+        }
+    }
+
+    fn reap_candidate(&self, id: n00nId) -> ReapCandidate {
+        if let Some(idx) = self.position(id) {
+            return ReapCandidate {
+                id,
+                parent_id: self.sessions[idx].app.state.session.meta.parent_id,
+                reapable: idx != self.focused && self.sessions[idx].is_reapable(),
+            };
+        }
+        match load_stored_session(&self.ctx, id) {
+            Ok(session) => ReapCandidate {
+                id,
+                parent_id: session.meta.parent_id,
+                reapable: stored_session_is_reapable(&session),
+            },
+            Err(error) => {
+                warn!(session_id = %id, %error, "stored session unavailable; blocking reap of its ancestors");
+                ReapCandidate {
+                    id,
+                    parent_id: self.lineage.parent_of(id),
+                    reapable: false,
+                }
+            }
+        }
+    }
+
+    fn project_run(&mut self, idx: usize, projection: CanonicalRunProjection) {
+        if let Some(projection) = self.sessions[idx].run_projection.admit(projection) {
+            self.send_run_projection(idx, projection);
+        }
+    }
+
+    fn cancel_managed_run(&mut self, idx: usize) {
+        for projection in self.sessions[idx].run_projection.cancel() {
+            self.send_run_projection(idx, projection);
+        }
+    }
+
+    fn send_run_projection(&self, idx: usize, projection: CanonicalRunProjection) {
+        let Some(run_id) = self.sessions[idx].managed_run_id else {
+            return;
+        };
+        if let Some(writer) = &self.run_transitions {
+            writer.project(run_id, projection);
+        } else {
+            warn!(%run_id, "canonical run store is unavailable for TUI projection");
         }
     }
 
@@ -2075,6 +2258,7 @@ impl<'t> EventLoop<'t> {
             delivery_id: delivery.delivery_id.clone(),
             child_run_id: delivery.child_run_id,
             source_revision: delivery.source_revision,
+            acknowledged: false,
         };
         if let Err(error) = self.sessions[idx]
             .app
@@ -2094,19 +2278,31 @@ impl<'t> EventLoop<'t> {
             }
         };
         let snapshot = self.sessions[idx].app.session_snapshot();
-        let service = Arc::clone(&self.run_service);
+        let session_id = snapshot.id;
+        let Some(service) = self.run_service.clone() else {
+            warn!(%delivery_id, "canonical run store is unavailable; consumed parent delivery stays unacknowledged");
+            self.ctx.storage_writer.send(Box::new(snapshot));
+            return;
+        };
+        let ack_tx = self.run_ack_tx.clone();
         self.ctx.storage_writer.persist(Box::new(snapshot), move |result| match result {
             Ok(()) => {
                 smol::spawn(async move {
                     match now_millis() {
-                        Ok(now) => {
-                            if let Err(error) = service
-                                .acknowledge_parent_delivery(delivery_id, now)
-                                .await
-                            {
-                                warn!(%delivery_id, %error, "failed to acknowledge consumed parent delivery");
+                        Ok(now) => match service.acknowledge_parent_delivery(delivery_id, now).await {
+                            Ok(()) => {
+                                if ack_tx
+                                    .send(AcknowledgedRunDelivery {
+                                        session_id,
+                                        delivery_id: delivery_id.to_string(),
+                                    })
+                                    .is_err()
+                                {
+                                    warn!(%delivery_id, "event loop closed before parent delivery acknowledgement was recorded");
+                                }
                             }
-                        }
+                            Err(error) => warn!(%delivery_id, %error, "failed to acknowledge consumed parent delivery"),
+                        },
                         Err(error) => warn!(%delivery_id, %error, "parent delivery acknowledgement clock failed"),
                     }
                 })
@@ -2116,6 +2312,32 @@ impl<'t> EventLoop<'t> {
                 warn!(%delivery_id, %error, "failed to persist consumed parent delivery");
             }
         });
+    }
+
+    fn mark_run_delivery_acknowledged(&mut self, acknowledged: AcknowledgedRunDelivery) {
+        let AcknowledgedRunDelivery {
+            session_id,
+            delivery_id,
+        } = acknowledged;
+        if let Some(idx) = self.position(session_id) {
+            self.sessions[idx]
+                .app
+                .state
+                .session
+                .meta
+                .mark_run_delivery_acknowledged(&delivery_id);
+            return;
+        }
+        let mut session = match load_stored_session(&self.ctx, session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                warn!(%session_id, %delivery_id, %error, "failed to load session to record parent delivery acknowledgement");
+                return;
+            }
+        };
+        if session.meta.mark_run_delivery_acknowledged(&delivery_id) {
+            self.ctx.storage_writer.send(Box::new(session));
+        }
     }
 
     fn compaction_snapshots(
@@ -2129,21 +2351,8 @@ impl<'t> EventLoop<'t> {
         } else {
             let root = if let Some(root_idx) = self.position(root_id) {
                 self.sessions[root_idx].app.session_snapshot()
-            } else if let Some(root) = self
-                .ctx
-                .storage_writer
-                .latest_snapshot(root_id)
-                .map_err(|error| error.to_string())?
-            {
-                Arc::unwrap_or_clone(root)
             } else {
-                AppSession::load_with_retention(
-                    root_id,
-                    &self.ctx.storage,
-                    self.ctx.retention_budget,
-                    message_tool_use_ids,
-                )
-                .map_err(|error| error.to_string())?
+                load_stored_session(&self.ctx, root_id).map_err(|error| error.to_string())?
             };
             Some(root)
         };
@@ -2571,22 +2780,10 @@ impl<'t> EventLoop<'t> {
             warn!(%root_id, expected = captured.revision, actual = ?snapshot.state_revision(), "root plugin state capture returned the wrong revision");
             return;
         }
-        let mut root = match self.ctx.storage_writer.latest_snapshot(root_id) {
-            Ok(Some(root)) => Arc::unwrap_or_clone(root),
-            Ok(None) => match AppSession::load_with_retention(
-                root_id,
-                &self.ctx.storage,
-                self.ctx.retention_budget,
-                message_tool_use_ids,
-            ) {
-                Ok(root) => root,
-                Err(error) => {
-                    warn!(%root_id, %error, "failed to load root for plugin state capture");
-                    return;
-                }
-            },
+        let mut root = match load_stored_session(&self.ctx, root_id) {
+            Ok(root) => root,
             Err(error) => {
-                warn!(%root_id, %error, "failed to read root plugin state snapshot");
+                warn!(%root_id, %error, "failed to load root for plugin state capture");
                 return;
             }
         };
@@ -2721,6 +2918,7 @@ impl<'t> EventLoop<'t> {
             delivery_id: delivery.delivery_id.to_string(),
             child_run_id: delivery.child_run_id.to_string(),
             source_revision,
+            acknowledged: false,
         };
         let text = delivery.payload.summary.clone().unwrap_or_else(|| {
             format!(
@@ -2771,12 +2969,7 @@ impl<'t> EventLoop<'t> {
                 },
             )
         } else {
-            let mut session = match AppSession::load_with_retention(
-                parent_id,
-                &self.ctx.storage,
-                self.ctx.retention_budget,
-                message_tool_use_ids,
-            ) {
+            let mut session = match load_stored_session(&self.ctx, parent_id) {
                 Ok(session) => session,
                 Err(SessionError::Storage(StorageError::NotFound(_))) => {
                     let _ = reply_tx.send(Ok(ParentInsertResult::PermanentUnavailable {
@@ -2968,6 +3161,7 @@ impl<'t> EventLoop<'t> {
                     .collect();
                 runtime_indices.sort_unstable_by(|left, right| right.cmp(left));
                 for index in runtime_indices {
+                    self.cancel_managed_run(index);
                     let rt = self.remove_runtime(index);
                     let runtime_id = rt.id();
                     rt.app.drop_plugin_state(runtime_id);
@@ -3020,6 +3214,7 @@ impl<'t> EventLoop<'t> {
                     .collect::<Vec<_>>();
                 runtime_indices.sort_unstable_by(|left, right| right.cmp(left));
                 for index in runtime_indices {
+                    self.cancel_managed_run(index);
                     let rt = self.remove_runtime(index);
                     let runtime_id = rt.id();
                     rt.app.drop_plugin_state(runtime_id);
@@ -3060,15 +3255,8 @@ impl<'t> EventLoop<'t> {
                     };
                     let candidates = targets
                         .iter()
-                        .filter_map(|target| {
-                            let idx = self.position(*target)?;
-                            let session = &self.sessions[idx].app.state.session;
-                            Some(ReapCandidate {
-                                id: *target,
-                                parent_id: session.meta.parent_id,
-                                reapable: idx != self.focused && self.sessions[idx].is_reapable(),
-                            })
-                        })
+                        .filter(|target| !self.lineage.is_deleted(**target))
+                        .map(|target| self.reap_candidate(*target))
                         .collect::<Vec<_>>();
                     let selected = select_reapable_sessions(&candidates);
                     if let Some(target) = explicit_target
@@ -3093,6 +3281,7 @@ impl<'t> EventLoop<'t> {
                     .collect::<Vec<_>>();
                 runtime_indices.sort_unstable_by(|left, right| right.cmp(left));
                 for index in runtime_indices {
+                    self.cancel_managed_run(index);
                     let rt = self.remove_runtime(index);
                     let runtime_id = rt.id();
                     rt.app.drop_plugin_state(runtime_id);
@@ -3285,18 +3474,16 @@ impl<'t> EventLoop<'t> {
                         );
                         return Err(error);
                     }
-                    if let Some(run_id) = self.sessions[idx].managed_run_id {
-                        self.run_transitions.project(
-                            run_id,
-                            CanonicalRunProjection {
-                                target: RunLifecycle::Running,
-                                wait_reason: None,
-                                outcome: None,
-                                event_type: "running",
-                                summary: "TUI background task started",
-                            },
-                        );
-                    }
+                    self.project_run(
+                        idx,
+                        CanonicalRunProjection {
+                            target: RunLifecycle::Running,
+                            wait_reason: None,
+                            outcome: None,
+                            event_type: "running",
+                            summary: "TUI background task started",
+                        },
+                    );
                     self.sessions[idx]
                         .app
                         .save_session_without_plugin_state_capture();
@@ -3377,21 +3564,8 @@ impl<'t> EventLoop<'t> {
                     let mut cancelled = false;
                     for session_id in targets {
                         let Some(idx) = self.position(session_id) else {
-                            let mut session = match self
-                                .ctx
-                                .storage_writer
-                                .latest_snapshot(session_id)
-                                .map_err(|error| error.to_string())?
-                            {
-                                Some(session) => Arc::unwrap_or_clone(session),
-                                None => AppSession::load_with_retention(
-                                    session_id,
-                                    &self.ctx.storage,
-                                    self.ctx.retention_budget,
-                                    message_tool_use_ids,
-                                )
-                                .map_err(|error| error.to_string())?,
-                            };
+                            let mut session = load_stored_session(&self.ctx, session_id)
+                                .map_err(|error| error.to_string())?;
                             if cancel_stored_session(&mut session) {
                                 cancelled = true;
                                 self.ctx.storage_writer.send(Box::new(session));
@@ -3452,13 +3626,8 @@ impl<'t> EventLoop<'t> {
                         app.state.session.title = title;
                         app.save_session_without_plugin_state_capture();
                     } else {
-                        let mut session = AppSession::load_with_retention(
-                            id,
-                            &self.ctx.storage,
-                            self.ctx.retention_budget,
-                            message_tool_use_ids,
-                        )
-                        .map_err(|e| e.to_string())?;
+                        let mut session =
+                            load_stored_session(&self.ctx, id).map_err(|e| e.to_string())?;
                         session.title = title;
                         session.updated_at = n00n_storage::now_epoch();
                         self.ctx.storage_writer.send(Box::new(session));
@@ -3589,21 +3758,8 @@ impl<'t> EventLoop<'t> {
             self.set_focus(i);
             return Ok(());
         }
-        let session = match self
-            .ctx
-            .storage_writer
-            .latest_snapshot(id)
-            .map_err(|error| format!("Failed to load pending session state: {error}"))?
-        {
-            Some(session) => Arc::unwrap_or_clone(session),
-            None => AppSession::load_with_retention(
-                id,
-                &self.ctx.storage,
-                self.ctx.retention_budget,
-                message_tool_use_ids,
-            )
-            .map_err(|error| format!("Failed to load session: {error}"))?,
-        };
+        let session = load_stored_session(&self.ctx, id)
+            .map_err(|error| format!("Failed to load session: {error}"))?;
         let restore_execution = has_restorable_work(&session);
         let mut live = live_session(&session).map_err(|error| error.to_string())?;
         live.execution_active = false;
@@ -3847,6 +4003,7 @@ impl<'t> EventLoop<'t> {
                     });
             }
             Action::CancelAgent { run_id } => {
+                self.cancel_managed_run(idx);
                 let id = self.sessions[idx].id();
                 if let Err(error) = self.sessions[idx]
                     .handles
@@ -4230,6 +4387,11 @@ impl<'t> EventLoop<'t> {
     fn shutdown(mut self) -> Result<ShutdownReport> {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
+        for idx in 0..self.sessions.len() {
+            if let Some(projection) = self.sessions[idx].run_projection.interrupt() {
+                self.send_run_projection(idx, projection);
+            }
+        }
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
@@ -4252,6 +4414,9 @@ impl<'t> EventLoop<'t> {
             smol::block_on(h.shutdown());
         }
         crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
+        if let Some(writer) = self.run_transitions.take() {
+            writer.shutdown(RUN_TRANSITION_SHUTDOWN_TIMEOUT);
+        }
         let storage_result = match Arc::try_unwrap(self.ctx.storage_writer) {
             Ok(writer) => writer
                 .shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT)
@@ -4419,12 +4584,13 @@ mod tests {
     use super::{
         COALESCE_BUDGET, CompactionPersistStage, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES,
         DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg,
-        PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, ReapCandidate, RunTransitionWriter,
-        SessionStatus, TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll,
-        attention_message, authorize_ui_delete, begin_state_capture, bounded_direct_output,
-        cancel_stored_session, canonical_run_projection, capture_revision_matches, coalesce_drag,
-        complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
-        handle_input_bounded, initial_state_revision, merge_compaction_metadata, merge_model_batch,
+        PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, ReapCandidate, RetentionBudget,
+        RunTransitionWriter, SessionStatus, TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT,
+        aggregate_scroll, attention_message, authorize_ui_delete, begin_state_capture,
+        bounded_direct_output, cancel_stored_session, canonical_run_projection,
+        capture_revision_matches, coalesce_drag, complete_model_fetch_with,
+        direct_paused_team_payload, draw_then_post_terminal, handle_input_bounded,
+        initial_state_revision, merge_compaction_metadata, merge_model_batch,
         outer_compaction_state_revision, paused_team_payload, paused_team_run,
         prepare_compaction_checkpoint, projected_session_lifecycle, publish_model_refresh,
         resolve_model_selection, resume_state_snapshot, select_reapable_sessions,
@@ -5766,5 +5932,295 @@ mod tests {
         assert_eq!(projection.target, n00n_runs::RunLifecycle::WaitingInput);
         assert_eq!(projection.wait_reason.expect("wait reason").code, expected);
         assert!(projection.outcome.is_none());
+    }
+
+    fn running_projection() -> super::CanonicalRunProjection {
+        super::CanonicalRunProjection {
+            target: n00n_runs::RunLifecycle::Running,
+            wait_reason: None,
+            outcome: None,
+            event_type: "running",
+            summary: "running",
+        }
+    }
+
+    fn waiting_projection(code: n00n_runs::WaitReasonCode) -> super::CanonicalRunProjection {
+        super::CanonicalRunProjection {
+            target: n00n_runs::RunLifecycle::WaitingInput,
+            wait_reason: Some(n00n_runs::WaitReason {
+                code,
+                summary: "waiting".to_owned(),
+            }),
+            outcome: None,
+            event_type: "waiting_input",
+            summary: "waiting",
+        }
+    }
+
+    fn succeeded_projection() -> super::CanonicalRunProjection {
+        super::terminal_run_projection(
+            n00n_runs::RunLifecycle::Succeeded,
+            n00n_runs::OutcomeStatus::Succeeded,
+            "succeeded",
+            "succeeded",
+        )
+    }
+
+    fn admitted_targets(
+        projections: Vec<super::CanonicalRunProjection>,
+    ) -> Vec<n00n_runs::RunLifecycle> {
+        let mut tracker = super::RunProjectionTracker::default();
+        projections
+            .into_iter()
+            .filter_map(|projection| tracker.admit(projection))
+            .map(|projection| projection.target)
+            .collect()
+    }
+
+    #[test]
+    fn run_projection_tracker_drops_repeated_streaming_projections() {
+        let admitted = admitted_targets(vec![
+            running_projection(),
+            running_projection(),
+            running_projection(),
+        ]);
+
+        assert_eq!(admitted, vec![n00n_runs::RunLifecycle::Running]);
+    }
+
+    #[test]
+    fn run_projection_tracker_admits_changed_wait_reasons() {
+        let admitted = admitted_targets(vec![
+            waiting_projection(n00n_runs::WaitReasonCode::Permission),
+            waiting_projection(n00n_runs::WaitReasonCode::Permission),
+            waiting_projection(n00n_runs::WaitReasonCode::Authentication),
+            running_projection(),
+        ]);
+
+        assert_eq!(
+            admitted,
+            vec![
+                n00n_runs::RunLifecycle::WaitingInput,
+                n00n_runs::RunLifecycle::WaitingInput,
+                n00n_runs::RunLifecycle::Running,
+            ]
+        );
+    }
+
+    #[test]
+    fn run_projection_tracker_ignores_projections_after_terminal() {
+        let admitted = admitted_targets(vec![
+            running_projection(),
+            succeeded_projection(),
+            running_projection(),
+            succeeded_projection(),
+        ]);
+
+        assert_eq!(
+            admitted,
+            vec![
+                n00n_runs::RunLifecycle::Running,
+                n00n_runs::RunLifecycle::Succeeded,
+            ]
+        );
+    }
+
+    #[test_case(None, &[n00n_runs::RunLifecycle::Cancelling, n00n_runs::RunLifecycle::Cancelled]; "cancel before any projection")]
+    #[test_case(Some(running_projection), &[n00n_runs::RunLifecycle::Cancelling, n00n_runs::RunLifecycle::Cancelled]; "cancel running run")]
+    #[test_case(Some(succeeded_projection), &[]; "cancel after success is ignored")]
+    fn run_projection_tracker_cancel_goes_through_cancelling(
+        prior: Option<fn() -> super::CanonicalRunProjection>,
+        expected: &[n00n_runs::RunLifecycle],
+    ) {
+        let mut tracker = super::RunProjectionTracker::default();
+        if let Some(prior) = prior {
+            assert!(tracker.admit(prior()).is_some());
+        }
+
+        let targets = tracker
+            .cancel()
+            .into_iter()
+            .map(|projection| projection.target)
+            .collect::<Vec<_>>();
+
+        assert_eq!(targets, expected);
+        let cancelled_done = AgentEvent::Done {
+            usage: n00n_providers::TokenUsage::default(),
+            num_turns: 0,
+            stop_reason: None,
+            fusion: None,
+        };
+        let late_success =
+            canonical_run_projection(&cancelled_done, false).expect("terminal projection");
+        assert!(tracker.admit(late_success).is_none());
+    }
+
+    #[test_case(false, Some(n00n_runs::RunLifecycle::Interrupted); "interrupt live run")]
+    #[test_case(true, None; "interrupt after cancel is ignored")]
+    fn run_projection_tracker_interrupts_unfinished_runs_once(
+        cancelled: bool,
+        expected: Option<n00n_runs::RunLifecycle>,
+    ) {
+        let mut tracker = super::RunProjectionTracker::default();
+        assert!(tracker.admit(running_projection()).is_some());
+        if cancelled {
+            assert_eq!(tracker.cancel().len(), 2);
+        }
+
+        let interrupted = tracker.interrupt().map(|projection| projection.target);
+
+        assert_eq!(interrupted, expected);
+        assert!(tracker.interrupt().is_none());
+    }
+
+    #[test_case(n00n_runs::RunLifecycle::Cancelled, n00n_runs::OutcomeStatus::Cancelled; "cancel")]
+    #[test_case(n00n_runs::RunLifecycle::Interrupted, n00n_runs::OutcomeStatus::Interrupted; "interrupt")]
+    fn canonical_writer_shutdown_flushes_cancel_and_interrupt(
+        expected: n00n_runs::RunLifecycle,
+        status: n00n_runs::OutcomeStatus,
+    ) {
+        let temp = TempDir::new().expect("temporary state directory");
+        let store = n00n_runs::RunStore::open_path(
+            temp.path().join("runs.sqlite3"),
+            n00n_runs::ProjectKey::new("/project").expect("project key"),
+            std::time::Duration::from_millis(50),
+        )
+        .expect("run store");
+        let service = Arc::new(n00n_runs::RunService::new(store));
+        let queued = smol::block_on(service.create_run(n00n_runs::NewRunSpec::new(
+            n00n_runs::RunKind::Task,
+            n00n_runs::ExecutionBackend::TuiSession,
+            "task",
+        )))
+        .expect("queued run");
+        let starting = smol::block_on(service.transition(n00n_runs::TransitionRequest {
+            run_id: queued.run_id,
+            expected_revision: queued.revision,
+            owner: None,
+            target: n00n_runs::RunLifecycle::Starting,
+            wait_reason: None,
+            outcome: None,
+            event_type: "starting".to_owned(),
+            event: n00n_runs::RunEventPayload::empty(),
+            operation_id: "starting".to_owned(),
+            progress: false,
+        }))
+        .expect("starting run");
+        let writer = RunTransitionWriter::spawn(Arc::clone(&service));
+        let mut tracker = super::RunProjectionTracker::default();
+        let mut projections = tracker
+            .admit(running_projection())
+            .into_iter()
+            .collect::<Vec<_>>();
+        if expected == n00n_runs::RunLifecycle::Cancelled {
+            projections.extend(tracker.cancel());
+        } else {
+            projections.extend(tracker.interrupt());
+        }
+        for projection in projections {
+            writer.project(starting.run_id, projection);
+        }
+
+        writer.shutdown(std::time::Duration::from_secs(5));
+
+        let run = smol::block_on(service.get_run(starting.run_id)).expect("stored run");
+        assert_eq!(run.lifecycle, expected);
+        assert_eq!(run.outcome.expect("terminal outcome").status, status);
+    }
+
+    #[test]
+    fn select_reapable_sessions_handles_parents_listed_before_children() {
+        let parent = n00nId::generate();
+        let child = n00nId::generate();
+        let grandchild = n00nId::generate();
+        let blocked = n00nId::generate();
+        let blocked_child = n00nId::generate();
+        let selected = select_reapable_sessions(&[
+            ReapCandidate {
+                id: parent,
+                parent_id: None,
+                reapable: true,
+            },
+            ReapCandidate {
+                id: child,
+                parent_id: Some(parent),
+                reapable: true,
+            },
+            ReapCandidate {
+                id: grandchild,
+                parent_id: Some(child),
+                reapable: true,
+            },
+            ReapCandidate {
+                id: blocked,
+                parent_id: None,
+                reapable: true,
+            },
+            ReapCandidate {
+                id: blocked_child,
+                parent_id: Some(blocked),
+                reapable: false,
+            },
+        ]);
+
+        assert_eq!(selected, HashSet::from([parent, child, grandchild]));
+    }
+
+    #[test]
+    fn select_reapable_sessions_terminates_on_cycles() {
+        let first = n00nId::generate();
+        let second = n00nId::generate();
+        let selected = select_reapable_sessions(&[
+            ReapCandidate {
+                id: first,
+                parent_id: Some(second),
+                reapable: true,
+            },
+            ReapCandidate {
+                id: second,
+                parent_id: Some(first),
+                reapable: true,
+            },
+        ]);
+
+        assert!(selected.len() <= 1, "a cycle must not select both sessions");
+    }
+
+    #[test_case(StoredSessionLifecycle::Idle, false, true; "idle stored session")]
+    #[test_case(StoredSessionLifecycle::Running, false, false; "active stored session")]
+    #[test_case(StoredSessionLifecycle::Idle, true, false; "stored session with queued work")]
+    fn stored_session_reapability(lifecycle: StoredSessionLifecycle, queued: bool, expected: bool) {
+        let mut session = AppSession::new("model", "/project");
+        session.meta.lifecycle = lifecycle;
+        if queued {
+            session.meta.queued_messages.push("pending".to_owned());
+        }
+
+        assert_eq!(super::stored_session_is_reapable(&session), expected);
+    }
+
+    #[test]
+    fn stored_session_load_prefers_queued_snapshot_over_disk() {
+        let temp = TempDir::new().unwrap();
+        let dir = StateDir::from_path(temp.path().to_path_buf());
+        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let mut session = AppSession::new("model", "/project");
+        session.title = "durable".into();
+        writer
+            .persist_and_wait(Box::new(session.clone()), TERMINAL_CHECKPOINT_TIMEOUT)
+            .unwrap();
+        session.title = "queued".into();
+        writer.send(Box::new(session.clone()));
+
+        let loaded = super::load_pending_or_stored_session(
+            &writer,
+            &dir,
+            RetentionBudget::default(),
+            session.id,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.title, "queued");
+        writer.shutdown(TERMINAL_CHECKPOINT_TIMEOUT).unwrap();
     }
 }

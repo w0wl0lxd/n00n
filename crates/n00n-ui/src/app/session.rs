@@ -201,6 +201,7 @@ fn stored_message(
             delivery_id: delivery.delivery_id,
             child_run_id: delivery.child_run_id,
             source_revision: delivery.source_revision,
+            acknowledged: false,
         }),
     }
 }
