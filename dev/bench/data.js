@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790291237421,
+  "lastUpdate": 1790309106151,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -26225,6 +26225,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 156605,
             "range": "± 1046",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bfde76940f78d125f20d963bcbe739d099c5f94a",
+          "message": "Merge pull request #507 from w0wl0lxd/fix/question-context-attachments\n\nfix(ui): preserve image submissions and repair question dialogs",
+          "timestamp": "2026-09-24T23:50:12-04:00",
+          "tree_id": "726d2e461b2940b2fe26282483b6c8fc293bf6b5",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/bfde76940f78d125f20d963bcbe739d099c5f94a"
+        },
+        "date": 1790309104827,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7033554,
+            "range": "± 128717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2439622,
+            "range": "± 6263",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2444772,
+            "range": "± 36748",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7666282,
+            "range": "± 256475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3874438,
+            "range": "± 13960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3861995,
+            "range": "± 39377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 555641,
+            "range": "± 973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168246,
+            "range": "± 248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 168099,
+            "range": "± 222",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1077656,
+            "range": "± 5399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 616064,
+            "range": "± 1674",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 615165,
+            "range": "± 1534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 54510,
+            "range": "± 4154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 186663,
+            "range": "± 3957",
             "unit": "ns/iter"
           }
         ]
