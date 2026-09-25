@@ -80,7 +80,7 @@ local function scan_skill_dir(dir, root_dir, scope_root, skills, conflicts, visi
   end
 
   local skill_path = n00n.fs.joinpath(dir, SKILL_FILE)
-  local content = helpers.read_skill_file(skill_path)
+  local content = helpers.load_skill_file(skill_path)
   if content then
     local fm, body = parse_frontmatter(content)
     if body and #body > 0 then

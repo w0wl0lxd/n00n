@@ -489,6 +489,68 @@ case("discovery_survives_an_unreadable_skill_file", function()
   n00n.fs.rm(dir, { recursive = true })
 end)
 
+-- A SKILL.md that exists but cannot be read must be reported, not treated
+-- like a missing file. The warning must not carry raw control characters.
+
+local function with_stubs(read, fn)
+  local old_read, old_warn = n00n.fs.read, n00n.log.warn
+  local warnings = {}
+  n00n.fs.read = read
+  n00n.log.warn = function(message)
+    warnings[#warnings + 1] = message
+  end
+  local ok, err = pcall(fn, warnings)
+  n00n.fs.read, n00n.log.warn = old_read, old_warn
+  assert(ok, tostring(err))
+  return warnings
+end
+
+local function temp_skill_path(tag)
+  local dir = "/tmp/n00n_spec_" .. tag .. "_" .. tostring(os.clock()):gsub("%.", "")
+  assert(n00n.fs.mkdir(dir, { parents = true }))
+  local path = n00n.fs.joinpath(dir, "SKILL.md")
+  assert(n00n.fs.write(path, "body"))
+  return dir, path
+end
+
+case("read_skill_file_reports_invalid_utf8_but_not_a_missing_file", function()
+  local dir, path = temp_skill_path("skill_utf8")
+  with_stubs(function()
+    error("non-utf8 content; use read_bytes")
+  end, function()
+    local content, reason = helpers.read_skill_file(path)
+    eq(content, nil)
+    assert(reason and reason:find("non-utf8", 1, true), "reason should name the failure: " .. tostring(reason))
+  end)
+  n00n.fs.rm(dir, { recursive = true })
+
+  local content, reason = helpers.read_skill_file(dir .. "/missing/SKILL.md")
+  eq(content, nil)
+  eq(reason, nil, "a missing file is not an error")
+end)
+
+case("load_skill_file_warns_once_with_a_sanitized_reason", function()
+  local dir, path = temp_skill_path("skill_warn")
+  local warnings = with_stubs(function()
+    return nil, "permission denied\n\27[31mforged line"
+  end, function()
+    eq(helpers.load_skill_file(path), nil)
+  end)
+  n00n.fs.rm(dir, { recursive = true })
+
+  eq(#warnings, 1)
+  assert(warnings[1]:find(path, 1, true), "warning should name the file: " .. warnings[1])
+  assert(warnings[1]:find("permission denied", 1, true), "warning should carry the reason: " .. warnings[1])
+  eq(warnings[1]:find("%c"), nil, "warning must not contain control characters")
+end)
+
+case("load_skill_file_is_silent_for_a_missing_file", function()
+  local warnings = with_stubs(n00n.fs.read, function()
+    eq(helpers.load_skill_file("/tmp/n00n_spec_no_such_dir/SKILL.md"), nil)
+  end)
+  eq(#warnings, 0)
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

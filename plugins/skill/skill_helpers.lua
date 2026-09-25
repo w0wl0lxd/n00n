@@ -4,13 +4,35 @@ local utf8_prefix = require("n00n.utf8").prefix
 
 local DEFAULT_PREVIEW_LINES = 40
 
---- Read a file as UTF-8 text. Returns nil when the file is missing, is not
---- readable, or holds bytes that are not valid UTF-8 (n00n.fs.read throws for
---- those). Untrusted project skill files must never sink discovery.
+local function sanitize_log_text(text)
+  return (tostring(text):gsub("%c", "?"))
+end
+
+--- Read a skill file as UTF-8 text. Returns the content; nil and nil when the
+--- file does not exist; or nil and a reason when it exists but cannot be read
+--- (n00n.fs.read throws for invalid UTF-8). Untrusted project skill files
+--- must never sink discovery.
 function M.read_skill_file(path)
-  local ok, content = pcall(n00n.fs.read, path)
-  if not ok or type(content) ~= "string" then
-    return nil
+  local ok, content, read_error = pcall(n00n.fs.read, path)
+  if ok and type(content) == "string" then
+    return content, nil
+  end
+  if not n00n.fs.metadata(path) then
+    return nil, nil
+  end
+  if not ok then
+    return nil, tostring(content)
+  end
+  return nil, tostring(read_error)
+end
+
+--- Read a skill file for discovery. A file that exists but cannot be read is
+--- skipped with a sanitized warning, so a broken skill is not mistaken for a
+--- missing one.
+function M.load_skill_file(path)
+  local content, reason = M.read_skill_file(path)
+  if reason then
+    n00n.log.warn("skipping unreadable skill file " .. sanitize_log_text(path) .. ": " .. sanitize_log_text(reason))
   end
   return content
 end
@@ -282,9 +304,9 @@ function M.read_skill_body(skill)
   if not skill.location or skill.location:sub(1, 8) == "builtin:" then
     return nil, "skill body unavailable"
   end
-  local raw = M.read_skill_file(skill.location)
+  local raw, reason = M.read_skill_file(skill.location)
   if not raw then
-    return nil, "failed to read skill file"
+    return nil, "failed to read skill file: " .. sanitize_log_text(reason or "file not found")
   end
   local _, body = M.parse_frontmatter(raw)
   if not body or #body == 0 then
