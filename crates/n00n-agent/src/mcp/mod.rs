@@ -2225,7 +2225,7 @@ mod tests {
         // never emits the client-side search catalog.
         let mut tools = json!([]);
         handle.extend_tools_hosted(&mut tools);
-        assert!(tool_names(&tools).is_empty());
+        assert_eq!(tool_names(&tools), Vec::<&str>::new());
 
         // Loaded tools stay inside their hosted namespaces so the deferred
         // list, and with it the prompt-cache prefix, is stable.
