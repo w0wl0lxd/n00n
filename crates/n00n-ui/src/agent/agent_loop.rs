@@ -73,6 +73,39 @@ struct ToolsCache {
     supports_vision: bool,
     workflow: bool,
     vars_hash: u64,
+    hosted_search: bool,
+}
+
+impl std::fmt::Debug for ToolsCache {
+    // `ToolsSnapshot` doesn't implement `Debug`, so this reports every field
+    // but the snapshot's contents.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolsCache")
+            .field("mcp_gen", &self.mcp_gen)
+            .field("model_id", &self.model_id)
+            .field("supports_tool_examples", &self.supports_tool_examples)
+            .field("supports_vision", &self.supports_vision)
+            .field("workflow", &self.workflow)
+            .field("vars_hash", &self.vars_hash)
+            .field("hosted_search", &self.hosted_search)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ToolsCache {
+    /// Every input that changes the generated tool definitions is compared
+    /// here, `hosted_search` included, so a provider swap that flips it
+    /// invalidates the cache instead of retaining the wrong discovery surface.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.snap, &other.snap)
+            && self.mcp_gen == other.mcp_gen
+            && self.model_id == other.model_id
+            && self.supports_tool_examples == other.supports_tool_examples
+            && self.supports_vision == other.supports_vision
+            && self.workflow == other.workflow
+            && self.vars_hash == other.vars_hash
+            && self.hosted_search == other.hosted_search
+    }
 }
 
 pub(super) struct AgentLoopInit {
@@ -482,32 +515,12 @@ impl AgentLoop {
         let vars_hash = self.vars.content_hash();
         let supports_tool_examples = model.supports_tool_examples();
         let supports_vision = model.supports_vision();
-        if let Some(ref cache) = self.tools_cache
-            && Arc::ptr_eq(&cache.snap, &snap)
-            && cache.mcp_gen == mcp_gen
-            && cache.model_id == model.id
-            && cache.supports_tool_examples == supports_tool_examples
-            && cache.supports_vision == supports_vision
-            && cache.workflow == workflow
-            && cache.vars_hash == vars_hash
-        {
-            return;
-        }
-        let mut tools = self.build_tools(model, workflow);
-        if let Some(ref mcp) = self.mcp {
-            let hosted_search = self
-                .model_slot
-                .load()
-                .provider
-                .supports_hosted_tool_search(model);
-            if hosted_search {
-                mcp.extend_tools_hosted(&mut tools);
-            } else {
-                mcp.extend_tools(&mut tools);
-            }
-        }
-        self.tools = tools;
-        self.tools_cache = Some(ToolsCache {
+        let hosted_search = self
+            .model_slot
+            .load()
+            .provider
+            .supports_hosted_tool_search(model);
+        let candidate = ToolsCache {
             snap,
             mcp_gen,
             model_id: model.id.clone(),
@@ -515,7 +528,21 @@ impl AgentLoop {
             supports_vision,
             workflow,
             vars_hash,
-        });
+            hosted_search,
+        };
+        if self.tools_cache.as_ref() == Some(&candidate) {
+            return;
+        }
+        let mut tools = self.build_tools(model, workflow);
+        if let Some(ref mcp) = self.mcp {
+            if hosted_search {
+                mcp.extend_tools_hosted(&mut tools);
+            } else {
+                mcp.extend_tools(&mut tools);
+            }
+        }
+        self.tools = tools;
+        self.tools_cache = Some(candidate);
     }
 
     fn build_tools(&mut self, model: &Model, workflow: bool) -> Value {
@@ -657,8 +684,38 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
 mod tests {
     use n00n_agent::AgentMode;
     use std::path::Path;
+    use std::sync::Arc;
 
-    use super::build_plan_path;
+    use super::{ToolsCache, ToolsSnapshot, build_plan_path};
+
+    fn base_cache(snap: &Arc<ToolsSnapshot>, hosted_search: bool) -> ToolsCache {
+        ToolsCache {
+            snap: Arc::clone(snap),
+            mcp_gen: Some(1),
+            model_id: "model-a".to_owned(),
+            supports_tool_examples: true,
+            supports_vision: false,
+            workflow: false,
+            vars_hash: 42,
+            hosted_search,
+        }
+    }
+
+    #[test]
+    fn tools_cache_matches_when_every_input_matches() {
+        let snap = Arc::new(ToolsSnapshot::empty());
+        let cache = base_cache(&snap, true);
+        assert_eq!(cache, base_cache(&snap, true));
+    }
+
+    #[test]
+    fn tools_cache_differs_when_hosted_search_changes() {
+        let snap = Arc::new(ToolsSnapshot::empty());
+        let cache = base_cache(&snap, true);
+        // Same provider/model, but hosted-search support flipped (e.g. after
+        // `refresh_provider` swapped providers while keeping the model id).
+        assert_ne!(cache, base_cache(&snap, false));
+    }
 
     #[test]
     fn plan_mode_does_not_read_unwritten_plan() {
