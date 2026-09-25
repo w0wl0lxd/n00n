@@ -215,6 +215,24 @@ pub enum KeymapWarning {
         context: &'static str,
         action: &'static str,
     },
+    /// Restoring a protected default stroke found another action already
+    /// claiming that exact key; the claim was evicted so the protected
+    /// action stays reachable.
+    ProtectedActionReclaimedKey {
+        context: &'static str,
+        key: String,
+        action: &'static str,
+        displaced: &'static str,
+    },
+    /// A higher-priority context's claim shadowed a protected action's
+    /// stroke across the resolve stack; the claim was rejected instead.
+    ProtectedActionShadow {
+        context: &'static str,
+        key: String,
+        rejected: &'static str,
+        protects: &'static str,
+        protected_context: &'static str,
+    },
 }
 
 impl fmt::Display for KeymapWarning {
@@ -286,6 +304,25 @@ impl fmt::Display for KeymapWarning {
             Self::ProtectedAction { context, action } => write!(
                 f,
                 "'[{context}] {action}': cannot be left with no key bound, keeping the default"
+            ),
+            Self::ProtectedActionReclaimedKey {
+                context,
+                key,
+                action,
+                displaced,
+            } => write!(
+                f,
+                "'[{context}]': '{key}' was claimed by '{displaced}', but '{action}' needs it to stay reachable; '{displaced}' was dropped"
+            ),
+            Self::ProtectedActionShadow {
+                context,
+                key,
+                rejected,
+                protects,
+                protected_context,
+            } => write!(
+                f,
+                "'[{context}]': '{key}' bound to '{rejected}' would shadow '[{protected_context}] {protects}'; the binding was rejected"
             ),
         }
     }
@@ -421,6 +458,7 @@ fn parse_entry(
         });
         return None;
     };
+    let had_requested_keys = !raw_keys.is_empty();
     let mut strokes = Vec::with_capacity(raw_keys.len());
     for raw in raw_keys {
         match parse_stroke(raw) {
@@ -439,6 +477,12 @@ fn parse_entry(
                 reason,
             }),
         }
+    }
+    // Every requested key was rejected (reserved/invalid) — that is not the
+    // same as the user writing `[]`, so leave the default binding in place
+    // instead of merging an accidental unbind.
+    if had_requested_keys && strokes.is_empty() {
+        return None;
     }
     Some(UserEntry {
         context,
@@ -559,6 +603,7 @@ mod tests {
     use test_case::test_case;
 
     const GENERAL: &str = "general";
+    const EDITING: &str = "editing";
     const STREAMING: &str = "streaming";
     const QUIT: &str = "quit";
     const CANCEL: &str = "cancel";
@@ -840,9 +885,32 @@ mod tests {
                 key: "ctrl-z".into()
             }]
         );
-        // The action still applied — just with no strokes left.
-        assert_eq!(user.entries.len(), 1);
-        assert_eq!(user.entries[0].strokes.len(), 0);
+        // The only requested key was rejected — this is not the same as
+        // writing `[]`, so the entry is dropped and the default survives.
+        assert_eq!(user.entries.len(), 0);
+    }
+
+    #[test]
+    fn all_keys_rejected_leaves_the_default_untouched() {
+        // `help = "ctrl-z"` must not merge as an accidental unbind of the
+        // default HelpToggle binding (CodeRabbit finding on PR #515).
+        let (user, warnings) = parse_ok("[general]\nhelp = \"ctrl-z\"");
+        assert_eq!(user.entries.len(), 0);
+        assert_eq!(
+            warnings,
+            vec![KeymapWarning::ReservedKey {
+                context: "general",
+                action: "help".into(),
+                key: "ctrl-z".into()
+            }]
+        );
+        let (map, build_warnings) = EffectiveKeymap::build(&user);
+        assert_eq!(build_warnings.len(), 0);
+        let stack = [KeybindContext::General];
+        assert_eq!(
+            map.resolve(&stack, key(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+            Some(KeyAction::HelpToggle)
+        );
     }
 
     #[test]
@@ -1030,15 +1098,10 @@ mod tests {
         let (user, warnings) = parse_ok("[general]\nquit = \"ctrl-z\"\nsuspend = \"ctrl-x\"");
         assert_eq!(warnings.len(), 2);
         let (map, warnings) = EffectiveKeymap::build(&user);
-        // quit's only stroke was the reserved ctrl-z, so it would have ended
-        // with zero effective strokes; its default is restored instead.
-        assert_eq!(
-            warnings,
-            vec![KeymapWarning::ProtectedAction {
-                context: GENERAL,
-                action: QUIT,
-            }]
-        );
+        // quit's only stroke was the reserved ctrl-z, so the entry was
+        // dropped entirely and the default was never disturbed — no
+        // restore, no warning.
+        assert_eq!(warnings, vec![]);
         let stack = [KeybindContext::General];
         // The default ctrl-z → Suspend claim stays (handle_key intercepts
         // it before resolution anyway); the file cannot move it to ctrl-x.
@@ -1058,6 +1121,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn protected_action_reclaims_a_key_taken_by_another_binding() {
+        // CodeRabbit thread on PR #515: rebinding `help` onto quit's only
+        // stroke must not leave `QuitOrCancel` unreachable just because
+        // the restored default is appended after the newer claim in the
+        // context's binding Vec — the newer claim has to be evicted.
+        let (user, _) = parse_ok("[general]\nhelp = \"ctrl-c\"");
+        let (map, warnings) = EffectiveKeymap::build(&user);
+        assert!(
+            warnings.contains(&KeymapWarning::ProtectedActionReclaimedKey {
+                context: GENERAL,
+                key: "ctrl-c".into(),
+                action: QUIT,
+                displaced: "help",
+            }),
+            "{warnings:?}"
+        );
+        let stack = [KeybindContext::General];
+        assert_eq!(
+            map.resolve(&stack, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(KeyAction::QuitOrCancel)
+        );
+    }
+
+    #[test]
+    fn protected_action_rejects_a_higher_context_shadow() {
+        // CodeRabbit thread on PR #515: `resolve` checks Editing before
+        // General, so a user claim on quit's only stroke in the more
+        // specific context made `QuitOrCancel` unreachable while Editing
+        // was live, even though General's own binding was untouched.
+        let (user, _) = parse_ok("[editing]\nkill_line_start = \"ctrl-c\"");
+        let (map, warnings) = EffectiveKeymap::build(&user);
+        assert!(
+            warnings.contains(&KeymapWarning::ProtectedActionShadow {
+                context: EDITING,
+                key: "ctrl-c".into(),
+                rejected: "kill_line_start",
+                protects: QUIT,
+                protected_context: GENERAL,
+            }),
+            "{warnings:?}"
+        );
+        let stack = [KeybindContext::Editing, KeybindContext::General];
+        assert_eq!(
+            map.resolve(&stack, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(KeyAction::QuitOrCancel)
+        );
+    }
+
     #[test_case(
         "[general]\nquit = []",
         KeybindContext::General,
@@ -1065,7 +1177,8 @@ mod tests {
         QUIT,
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
-        KeyAction::QuitOrCancel;
+        KeyAction::QuitOrCancel,
+        true;
         "unbinding quit keeps the default"
     )]
     #[test_case(
@@ -1075,7 +1188,8 @@ mod tests {
         CANCEL,
         KeyCode::Esc,
         KeyModifiers::NONE,
-        KeyAction::CancelAgent;
+        KeyAction::CancelAgent,
+        true;
         "unbinding cancel keeps the default"
     )]
     #[test_case(
@@ -1085,7 +1199,8 @@ mod tests {
         QUIT,
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
-        KeyAction::QuitOrCancel;
+        KeyAction::QuitOrCancel,
+        false;
         "all invalid keys for quit keeps the default"
     )]
     fn protected_action_keeps_default_when_left_unbound(
@@ -1096,11 +1211,18 @@ mod tests {
         default_code: KeyCode,
         default_mods: KeyModifiers,
         expected_action: KeyAction,
+        // `[]` is an explicit unbind: the entry is kept, the default is
+        // removed then restored, and the restore warns. An input that had
+        // keys but had all of them rejected is skipped entirely (see
+        // `all_keys_rejected_leaves_the_default_untouched`), so the default
+        // is never removed and no restore warning fires.
+        expect_protected_warning: bool,
     ) {
         let (user, _) = parse_ok(source);
         let (map, warnings) = EffectiveKeymap::build(&user);
-        assert!(
+        assert_eq!(
             warnings.contains(&KeymapWarning::ProtectedAction { context, action }),
+            expect_protected_warning,
             "{warnings:?}"
         );
         let stack = [stack_ctx];

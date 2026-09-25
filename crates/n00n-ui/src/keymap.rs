@@ -747,6 +747,19 @@ const PROTECTED_ACTIONS: &[(KeybindContext, KeyAction)] = &[
     (KeybindContext::Streaming, KeyAction::CancelAgent),
 ];
 
+/// The contexts `App::context_stack` can push together, most specific
+/// (checked first by [`EffectiveKeymap::resolve`]) to least specific.
+/// Picker-family contexts never appear here: `App::dispatch_overlay`
+/// handles them before `resolve` runs, so they can never shadow a
+/// [`PROTECTED_ACTIONS`] stroke and are intentionally left out.
+const CONTEXT_STACK_PRIORITY: &[KeybindContext] = &[
+    KeybindContext::HistorySearch,
+    KeybindContext::SubagentChat,
+    KeybindContext::Streaming,
+    KeybindContext::Editing,
+    KeybindContext::General,
+];
+
 /// `BINDINGS` merged with the user's `keymap.toml` overrides, built once
 /// per UI generation and held by `App`. [`Self::resolve`] walks the
 /// context stack against this map; [`BINDINGS`] stays the compiled-in
@@ -832,11 +845,24 @@ impl EffectiveKeymap {
                 .flat_map(|(_, bs)| bs.iter())
                 .filter(|b| b.action == action);
             for default in defaults {
+                let stroke =
+                    KeyStroke::normalize_parts(default.stroke.code, default.stroke.modifiers);
+                // A claim may already sit on this exact stroke (e.g. the
+                // user rebound another action onto it). Evict it first:
+                // `resolve` returns the first Vec match, so appending the
+                // restored binding after a live claim on the same stroke
+                // would leave the protected action unreachable.
+                if let Some(pos) = bindings.iter().position(|b| b.stroke == stroke) {
+                    let evicted = bindings.remove(pos);
+                    warnings.push(KeymapWarning::ProtectedActionReclaimedKey {
+                        context: ctx.name(),
+                        key: stroke.to_string(),
+                        action: file::action_name(action),
+                        displaced: file::action_name(evicted.action),
+                    });
+                }
                 bindings.push(EffectiveBinding {
-                    stroke: KeyStroke::normalize_parts(
-                        default.stroke.code,
-                        default.stroke.modifiers,
-                    ),
+                    stroke,
                     action,
                     platform: default.platform,
                     from_user: false,
@@ -846,6 +872,44 @@ impl EffectiveKeymap {
                 context: ctx.name(),
                 action: file::action_name(action),
             });
+        }
+        // A higher-priority context's user claim can still shadow a
+        // protected action's stroke across the resolve stack even though
+        // the stroke is present (and reachable) within its own context —
+        // `resolve` checks contexts outer-to-inner, most specific first.
+        // Reject that claim rather than leave the protected action dead
+        // whenever its own context is live alongside the shadowing one.
+        for &(ctx, action) in PROTECTED_ACTIONS {
+            let Some(ctx_priority) = CONTEXT_STACK_PRIORITY.iter().position(|c| *c == ctx) else {
+                continue;
+            };
+            let protected_strokes: Vec<KeyStroke> = contexts
+                .iter()
+                .find(|(c, _)| *c == ctx)
+                .into_iter()
+                .flat_map(|(_, bs)| bs.iter())
+                .filter(|b| b.action == action)
+                .map(|b| b.stroke)
+                .collect();
+            for &higher in &CONTEXT_STACK_PRIORITY[..ctx_priority] {
+                let Some((_, bindings)) = contexts.iter_mut().find(|(c, _)| *c == higher) else {
+                    continue;
+                };
+                bindings.retain(|binding| {
+                    let shadows_protected =
+                        binding.from_user && protected_strokes.contains(&binding.stroke);
+                    if shadows_protected {
+                        warnings.push(KeymapWarning::ProtectedActionShadow {
+                            context: higher.name(),
+                            key: binding.stroke.to_string(),
+                            rejected: file::action_name(binding.action),
+                            protects: file::action_name(action),
+                            protected_context: ctx.name(),
+                        });
+                    }
+                    !shadows_protected
+                });
+            }
         }
         (Self { contexts }, warnings)
     }
