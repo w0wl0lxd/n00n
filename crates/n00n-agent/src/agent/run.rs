@@ -143,12 +143,26 @@ pub fn resolve_compaction_model(
         // to that model, and the summarizer request must fit the compaction
         // model's own window. The minimum satisfies both constraints. Only
         // pricing and streaming use the compaction model's other fields.
-        if model.context_window != 0 {
-            m.context_window = m.context_window.min(model.context_window);
-        }
+        m.context_window =
+            effective_compaction_context_window(m.context_window, model.context_window);
         return (Arc::from(p), m);
     }
     (Arc::clone(provider), model.clone())
+}
+
+/// Caps the compaction model's context window at the main model's, without
+/// letting a zero (undiscovered) window on either side collapse the budget
+/// to zero. A `0` means "unknown", not "no capacity": falling through to
+/// `min` when the compaction model reports `0` would zero out the whole
+/// compaction budget even though the main model's window is known and
+/// nonzero.
+#[must_use]
+fn effective_compaction_context_window(compaction_window: u32, main_window: u32) -> u32 {
+    match (compaction_window, main_window) {
+        (0, main) => main,
+        (compaction, 0) => compaction,
+        (compaction, main) => compaction.min(main),
+    }
 }
 
 enum TurnOutcome {
@@ -3054,6 +3068,22 @@ mod tests {
         model.context_window = context_window;
         model.max_output_tokens = Some(max_output_tokens);
         model
+    }
+
+    #[test_case(0,       200_000, 200_000 ; "zero_compaction_window_falls_back_to_main")]
+    #[test_case(50_000,  0,       50_000  ; "zero_main_window_keeps_compaction_window")]
+    #[test_case(0,       0,       0       ; "both_zero_stays_zero")]
+    #[test_case(80_000,  200_000, 80_000  ; "smaller_compaction_window_wins")]
+    #[test_case(200_000, 80_000,  80_000  ; "smaller_main_window_wins")]
+    fn effective_compaction_context_window_never_zeros_out_a_known_budget(
+        compaction_window: u32,
+        main_window: u32,
+        expected: u32,
+    ) {
+        assert_eq!(
+            effective_compaction_context_window(compaction_window, main_window),
+            expected
+        );
     }
 
     #[track_caller]
