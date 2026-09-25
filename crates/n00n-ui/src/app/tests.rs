@@ -1760,6 +1760,22 @@ fn ctrl_d_deletes_char_forward_with_text() {
 }
 
 #[test]
+fn ctrl_d_twice_does_not_discard_image_only_draft() {
+    let mut app = test_app();
+    with_image(&mut app);
+
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+
+    assert_eq!(
+        app.exit_request,
+        ExitRequest::None,
+        "an image-only draft is not empty and must not be discarded by Ctrl+D"
+    );
+    assert!(!app.input_box.is_empty());
+}
+
+#[test]
 fn unbound_ctrl_chords_never_insert_text() {
     let mut app = test_app();
     app.update(Msg::Key(KeyEvent::new(

@@ -153,6 +153,7 @@ impl InputBox {
             return InputAction::OpenFilePicker;
         }
 
+        self.evict_chip_under_cursor();
         match self.buffer.handle_key(key) {
             EditResult::Changed => InputAction::PaletteSync(self.buffer.value()),
             EditResult::Moved | EditResult::Ignored => InputAction::None,
@@ -210,27 +211,39 @@ impl InputBox {
                 false
             }
             KeyAction::DeleteCharBack => {
-                self.buffer.remove_char();
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.remove_char();
+                }
                 true
             }
             KeyAction::DeleteCharForward => {
-                self.buffer.delete_char();
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.delete_char();
+                }
                 true
             }
             KeyAction::DeleteWordBack => {
-                self.buffer.remove_word_before_cursor();
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.remove_word_before_cursor();
+                }
                 true
             }
             KeyAction::DeleteWordForward => {
-                self.buffer.delete_word_after_cursor();
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.delete_word_after_cursor();
+                }
                 true
             }
             KeyAction::KillLineEnd => {
-                self.buffer.kill_to_end_of_line();
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.kill_to_end_of_line();
+                }
                 true
             }
             KeyAction::KillLineStart => {
-                self.buffer.kill_to_start_of_line();
+                if !self.evict_chip_under_cursor() {
+                    self.buffer.kill_to_start_of_line();
+                }
                 true
             }
             KeyAction::Yank => self.buffer.yank(),
@@ -238,6 +251,7 @@ impl InputBox {
             KeyAction::Undo => self.buffer.undo(),
             KeyAction::Redo => self.buffer.redo(),
             KeyAction::Newline => {
+                self.evict_chip_under_cursor();
                 self.buffer.add_line();
                 true
             }
@@ -413,6 +427,34 @@ impl InputBox {
     fn paste_chip(&self, idx: usize) -> String {
         let line_count = self.pastes[idx].split('\n').count();
         format!("[Pasted\u{200B}#{} +{line_count} lines]", idx + 1)
+    }
+
+    /// Char span `[start, end)` of paste `idx`'s chip on the cursor's
+    /// current line, if it is still present intact.
+    fn chip_char_span(&self, idx: usize) -> Option<(usize, usize)> {
+        let line = &self.buffer.lines()[self.buffer.y()];
+        let chip = self.paste_chip(idx);
+        let byte_start = line.find(&chip)?;
+        let char_start = line[..byte_start].chars().count();
+        Some((char_start, char_start + chip.chars().count()))
+    }
+
+    /// A single-char edit landing inside an intact chip would corrupt its
+    /// marker, orphaning the stored paste. Evict the whole chip instead;
+    /// returns whether it did.
+    fn evict_chip_under_cursor(&mut self) -> bool {
+        let x = self.buffer.x();
+        let y = self.buffer.y();
+        for idx in 0..self.pastes.len() {
+            let Some((start, end)) = self.chip_char_span(idx) else {
+                continue;
+            };
+            if start < x && x < end {
+                self.buffer.remove_range(y, start, end);
+                return true;
+            }
+        }
+        false
     }
 
     /// Swap paste chips back for their stored content, in place. Every
@@ -1644,6 +1686,77 @@ mod tests {
 
         let sub = input.submit().unwrap();
         assert_eq!(sub.text, "x\ny\nz\nw\nv\nu");
+    }
+
+    #[test_case(KeyAction::DeleteCharBack ; "delete_char_back")]
+    #[test_case(KeyAction::DeleteCharForward ; "delete_char_forward")]
+    #[test_case(KeyAction::DeleteWordBack ; "delete_word_back")]
+    #[test_case(KeyAction::DeleteWordForward ; "delete_word_forward")]
+    #[test_case(KeyAction::KillLineEnd ; "kill_line_end")]
+    #[test_case(KeyAction::KillLineStart ; "kill_line_start")]
+    fn edit_inside_chip_evicts_whole_chip_not_partial(action: KeyAction) {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        // Chip is `[Pasted<ZWSP>#1 +6 lines]`, 20 chars; land the cursor
+        // strictly inside it (past the marker prefix, before the suffix).
+        for _ in 0..10 {
+            input.buffer.move_left();
+        }
+        input.edit_action(action);
+        let remaining = input.buffer.value();
+        assert!(
+            !remaining.contains('\u{200B}'),
+            "edit must evict the whole chip, not leave a corrupted \
+             remainder: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn typing_inside_chip_evicts_it_before_inserting() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        for _ in 0..10 {
+            input.buffer.move_left();
+        }
+        input.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(input.buffer.value(), "x");
+    }
+
+    #[test]
+    fn corrupted_chip_never_reaches_submit() {
+        // Regression guard for the underlying report: a broken chip marker
+        // must never be sent as literal text while its stored paste is
+        // silently dropped. After an in-chip edit the chip is gone
+        // entirely, so submit sees plain typed text only.
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        for _ in 0..10 {
+            input.buffer.move_left();
+        }
+        input.edit_action(KeyAction::DeleteCharBack);
+        type_text(&mut input, "hi");
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "hi");
+        assert!(!sub.text.contains('\u{200B}'));
+        assert!(!sub.text.contains("[Pasted"));
+    }
+
+    #[test]
+    fn delete_before_chip_leaves_it_intact() {
+        // Editing right at the chip's boundary (not inside it) is a normal
+        // edit and must leave the chip intact.
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "x");
+        input.handle_paste("l1\nl2\nl3\nl4\nl5\nl6");
+        let chip_len = "[Pasted\u{200B}#1 +6 lines]".chars().count();
+        for _ in 0..chip_len {
+            input.buffer.move_left();
+        }
+        // Cursor now sits right before the chip, right after "x".
+        input.edit_action(KeyAction::DeleteCharBack);
+        assert_eq!(input.buffer.value(), "[Pasted\u{200B}#1 +6 lines]");
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "l1\nl2\nl3\nl4\nl5\nl6");
     }
 
     #[test]

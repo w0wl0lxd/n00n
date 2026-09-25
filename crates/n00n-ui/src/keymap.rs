@@ -40,7 +40,9 @@ impl KeyStroke {
     pub fn normalize_parts(code: KeyCode, modifiers: KeyModifiers) -> Self {
         match code {
             KeyCode::Char(c) if c.is_uppercase() => {
-                let lower = c.to_lowercase().next().unwrap_or_else(|| c);
+                let lower = c.to_lowercase().next().unwrap_or_else(|| {
+                    unreachable!("an uppercase char always lowercases to at least one char")
+                });
                 Self {
                     code: KeyCode::Char(lower),
                     modifiers: modifiers | KeyModifiers::SHIFT,

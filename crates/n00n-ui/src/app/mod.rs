@@ -1230,7 +1230,7 @@ impl App {
                 }
             }
             KeyAction::ExitOrDeleteChar => {
-                if !self.input_box.buffer.value().is_empty() {
+                if !self.input_box.is_empty() {
                     return self.run_edit(KeyAction::DeleteCharForward);
                 }
                 if let Some(t) = self.last_ctrl_d.take()
