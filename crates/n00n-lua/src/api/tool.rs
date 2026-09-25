@@ -1205,6 +1205,17 @@ fn spec_opt<T: mlua::FromLua>(spec: &Table, key: &str, expected: &str) -> LuaRes
         .map_err(|_| mlua::Error::runtime(format!("register_tool: '{key}' must be {expected}")))
 }
 
+/// Reads an optional string field without mlua's number-to-string coercion.
+fn spec_opt_string(spec: &Table, key: &str) -> LuaResult<Option<String>> {
+    match spec.get::<LuaValue>(key)? {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(value) => Ok(Some(value.to_str()?.to_owned())),
+        _ => Err(mlua::Error::runtime(format!(
+            "register_tool: '{key}' must be a string"
+        ))),
+    }
+}
+
 fn check_schema_field(schema: &Value, key: &str, field: &str, expected: &str) -> LuaResult<()> {
     let matches = schema
         .get("properties")
@@ -1222,7 +1233,7 @@ fn check_schema_field(schema: &Value, key: &str, field: &str, expected: &str) ->
 }
 
 fn require_schema_field(spec: &Table, key: &str, schema: &Value) -> LuaResult<Option<Arc<str>>> {
-    let Some(field) = spec_opt::<String>(spec, key, "a string")? else {
+    let Some(field) = spec_opt_string(spec, key)? else {
         return Ok(None);
     };
     check_schema_field(schema, key, &field, "string")?;
@@ -1296,8 +1307,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             ));
         }
     };
-    let description: String =
-        spec_opt(spec, "description", "a string")?.unwrap_or_else(String::new);
+    let description: String = spec_opt_string(spec, "description")?.unwrap_or_else(String::new);
     if description.trim().is_empty() {
         return Err(mlua::Error::runtime(
             "register_tool: description must be non-empty",
@@ -1339,8 +1349,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
     let header_fn: Option<Function> = spec_opt(spec, "header", "a function")?;
     let restore_fn: Option<Function> = spec_opt(spec, "restore", "a function")?;
     let start_fn: Option<Function> = spec_opt(spec, "start", "a function")?;
-    let kind: Option<Arc<str>> =
-        spec_opt::<String>(spec, "kind", "a string")?.map(|s| Arc::from(s.as_str()));
+    let kind: Option<Arc<str>> = spec_opt_string(spec, "kind")?.map(|s| Arc::from(s.as_str()));
     let workload = match spec.get::<Option<String>>("workload")? {
         Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
             mlua::Error::runtime(
@@ -1384,7 +1393,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .unwrap_or_else(|| false);
 
     let namespace: Option<Arc<str>> =
-        spec_opt::<String>(spec, "namespace", "a string")?.map(|s| Arc::from(s.as_str()));
+        spec_opt_string(spec, "namespace")?.map(|s| Arc::from(s.as_str()));
 
     let name: Arc<str> = Arc::from(name.as_str());
 
@@ -1825,28 +1834,33 @@ mod tests {
         assert_eq!(is_valid_tool_name(name), expected);
     }
 
-    #[test]
-    fn register_tool_rejects_wrong_typed_hooks() {
+    #[test_case::test_case("restore", r#""not a function""# ; "restore_hook_string")]
+    #[test_case::test_case("description", "42" ; "description_number")]
+    #[test_case::test_case("kind", "42" ; "kind_number")]
+    #[test_case::test_case("namespace", "42" ; "namespace_number")]
+    fn register_tool_rejects_wrong_typed_fields(field: &str, value: &str) {
         let lua = Lua::new();
         let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
         let spec: LuaValue = lua
-            .load(
-                r#"return {
+            .load(format!(
+                r#"local spec = {{
                     name = "sample",
                     description = "sample tool",
                     handler = function() end,
-                    schema = { type = "object", properties = {} },
-                    restore = "not a function",
-                }"#,
-            )
+                    schema = {{ type = "object", properties = {{}} }},
+                }}
+                spec.{field} = {value}
+                return spec"#
+            ))
             .eval()
             .unwrap();
 
         let error = register_tool_from_lua(&lua, spec.as_table().unwrap(), pending)
-            .expect_err("a wrong-typed restore hook must not be silently dropped");
+            .expect_err("a wrong-typed field must not be silently accepted or dropped");
+        let expected = format!("register_tool: '{field}' must be");
         assert!(
-            error.to_string().contains("restore"),
-            "error should name the offending field: {error}"
+            error.to_string().contains(&expected),
+            "expected error containing {expected:?}, got: {error}"
         );
     }
 

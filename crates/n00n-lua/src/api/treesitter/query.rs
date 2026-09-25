@@ -304,15 +304,20 @@ fn stateful_iter<E: IterEntry>(lua: &mlua::Lua, results: Vec<E>) -> mlua::Result
     })
 }
 
-fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> QueryCursor {
+/// Returns `None` when the row range is empty. Tree-sitter reads a zero end
+/// point as unbounded and ignores an inverted range, so neither may reach it.
+fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> Option<QueryCursor> {
     const NO_LIMIT: usize = usize::MAX;
     let mut cursor = QueryCursor::new();
     if start_row.is_some() || stop_row.is_some() {
         let start = start_row.unwrap_or_else(|| 0);
         let end = stop_row.unwrap_or_else(|| NO_LIMIT);
+        if end <= start {
+            return None;
+        }
         cursor.set_point_range(tree_sitter::Point::new(start, 0)..tree_sitter::Point::new(end, 0));
     }
-    cursor
+    Some(cursor)
 }
 
 fn collect_captures(
@@ -321,7 +326,9 @@ fn collect_captures(
     regex_cache: &Mutex<HashMap<String, Option<Regex>>>,
 ) -> mlua::Result<Vec<CaptureEntry>> {
     let source_bytes = args.source.as_bytes();
-    let mut cursor = new_cursor(args.start_row, args.stop_row);
+    let Some(mut cursor) = new_cursor(args.start_row, args.stop_row) else {
+        return Ok(Vec::new());
+    };
     let mut results = Vec::new();
 
     let node = args.lua_node.ts_node()?;
@@ -354,7 +361,9 @@ fn collect_matches(
     regex_cache: &Mutex<HashMap<String, Option<Regex>>>,
 ) -> mlua::Result<Vec<MatchEntry>> {
     let source_bytes = args.source.as_bytes();
-    let mut cursor = new_cursor(args.start_row, args.stop_row);
+    let Some(mut cursor) = new_cursor(args.start_row, args.stop_row) else {
+        return Ok(Vec::new());
+    };
     let mut results = Vec::new();
 
     let node = args.lua_node.ts_node()?;
@@ -615,6 +624,7 @@ fn lua_to_usize(v: LuaValue) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
     use tree_sitter::Parser;
 
     use super::*;
@@ -638,41 +648,46 @@ mod tests {
         Mutex::new(HashMap::new())
     }
 
-    #[test]
-    fn stop_row_alone_bounds_captures() {
-        let query = rust_query();
-        let args = IterArgs {
+    fn row_args(start_row: Option<usize>, stop_row: Option<usize>) -> IterArgs {
+        IterArgs {
             lua_node: rust_node(),
             source: SOURCE.to_owned(),
-            start_row: None,
-            stop_row: Some(1),
-        };
+            start_row,
+            stop_row,
+        }
+    }
 
-        let captures = collect_captures(&query, &args, &empty_regex_cache()).unwrap();
+    #[test_case(None, Some(1), 1 ; "stop_row_alone")]
+    #[test_case(None, Some(0), 0 ; "zero_stop_row")]
+    #[test_case(Some(2), Some(1), 0 ; "stop_row_before_start_row")]
+    fn row_range_bounds_captures(
+        start_row: Option<usize>,
+        stop_row: Option<usize>,
+        expected: usize,
+    ) {
+        let args = row_args(start_row, stop_row);
+
+        let captures = collect_captures(&rust_query(), &args, &empty_regex_cache()).unwrap();
 
         assert_eq!(
             captures.len(),
-            1,
-            "stop_row must bound the scan even when start_row is omitted"
+            expected,
+            "the row range must bound the scan"
         );
     }
 
-    #[test]
-    fn stop_row_alone_bounds_matches() {
-        let query = rust_query();
-        let args = IterArgs {
-            lua_node: rust_node(),
-            source: SOURCE.to_owned(),
-            start_row: None,
-            stop_row: Some(1),
-        };
+    #[test_case(None, Some(1), 1 ; "stop_row_alone")]
+    #[test_case(None, Some(0), 0 ; "zero_stop_row")]
+    #[test_case(Some(2), Some(1), 0 ; "stop_row_before_start_row")]
+    fn row_range_bounds_matches(
+        start_row: Option<usize>,
+        stop_row: Option<usize>,
+        expected: usize,
+    ) {
+        let args = row_args(start_row, stop_row);
 
-        let matches = collect_matches(&query, &args, &empty_regex_cache()).unwrap();
+        let matches = collect_matches(&rust_query(), &args, &empty_regex_cache()).unwrap();
 
-        assert_eq!(
-            matches.len(),
-            1,
-            "stop_row must bound the scan even when start_row is omitted"
-        );
+        assert_eq!(matches.len(), expected, "the row range must bound the scan");
     }
 }
