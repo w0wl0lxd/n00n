@@ -288,6 +288,22 @@ case("render_selecting_uses_radio_for_single_and_check_for_multiple", function()
   assert(contains(multi_lines, "✓ Yes"), "multiple selected must use check")
 end)
 
+case("render_selecting_focuses_first_row_of_wrapped_custom_answer", function()
+  local s = QuestionForm._initial_state(single_question())
+  local opts = s.questions[s.tab].options
+  s.cursor = #opts + 1
+  s.answers[s.tab] = { string.rep("word ", 20) }
+
+  local rendered = QuestionForm._render(s, 30)
+  local focus_line = rendered.lines[rendered.focus_row]
+  local text = {}
+  for _, span in ipairs(focus_line) do
+    text[#text + 1] = span[1]
+  end
+  local focus_text = table.concat(text)
+  assert(focus_text:find("▸", 1, true), "focus_row must land on the custom option's pointer row, got: " .. focus_text)
+end)
+
 case("render_confirming_wraps_long_question_and_answer_within_width", function()
   local long_ans = string.rep("answerword ", 15)
   local long_q = string.rep("promptword ", 15)
@@ -732,6 +748,7 @@ case("open_requests_bottom_split", function()
   assert(ok, "open must not error: " .. tostring(err))
   assert(captured, "open_win must be called")
   eq(captured.split, "below", "form must request a bottom split")
+  assert(captured.height < 30, "short form must not initially reserve maximum terminal height")
 end)
 
 local function find_span(lines, text)
@@ -820,6 +837,35 @@ case("render_card_click_expands_description", function()
     assert(find_span(again, " (+)"), "second click must collapse back")
     assert(not find_span(again, "Expanded reasoning"), "description must hide after second click")
   end)
+end)
+
+case("render_long_label_without_description_wraps", function()
+  local s = QuestionForm._initial_state(single_question({
+    options = { { label = string.rep("long label ", 10) } },
+  }))
+  assert_all_within(QuestionForm._render(s, 30).lines, 30, "long label")
+end)
+
+case("render_narrow_options_stay_within_width", function()
+  local s = QuestionForm._initial_state(single_question())
+  for width = 8, 20 do
+    assert_all_within(QuestionForm._render(s, width).lines, width, "narrow options")
+  end
+end)
+
+case("single_question_footer_only_advertises_working_keys", function()
+  local result = QuestionForm._render(selecting_single(), 80)
+  for _, hint in ipairs(result.footer) do
+    assert(hint[1] ~= "Tab", "single question must not advertise inactive Tab key")
+  end
+end)
+
+case("custom_option_focus_points_at_option", function()
+  local s = selecting_single()
+  press_many(s, { "down", "down" })
+  local result = QuestionForm._render(s, 80)
+  local row = result.lines[result.focus_row]
+  assert(row and #row > 0, "focus must point to custom option, not blank padding")
 end)
 
 if #failures > 0 then

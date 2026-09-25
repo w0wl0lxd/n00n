@@ -5,8 +5,8 @@
     "cache_prefix": {
       "name": "cache_prefix",
       "tool_count": 22,
-      "bytes": 20145,
-      "tokens": 4892
+      "bytes": 20180,
+      "tokens": 4901
     },
     "deferred_catalog_payload": {
       "name": "deferred_catalog_payload",
@@ -23,8 +23,8 @@
     "full_catalog_payload": {
       "name": "full_catalog_payload",
       "tool_count": 35,
-      "bytes": 32086,
-      "tokens": 8021
+      "bytes": 32121,
+      "tokens": 8030
     },
     "full_catalog_schemas": {
       "name": "full_catalog_schemas",
@@ -35,8 +35,8 @@
     "main_tools_payload": {
       "name": "main_tools_payload",
       "tool_count": 22,
-      "bytes": 16103,
-      "tokens": 4025
+      "bytes": 16138,
+      "tokens": 4034
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
@@ -263,8 +263,8 @@
       "name": "search_tools",
       "deferred": false,
       "initially_active": true,
-      "bytes": 482,
-      "tokens": 92
+      "bytes": 517,
+      "tokens": 97
     },
     {
       "name": "search_web",

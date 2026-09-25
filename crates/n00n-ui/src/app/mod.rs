@@ -547,28 +547,7 @@ impl App {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
                 let text = text.replace("\r\n", "\n").replace('\r', "\n");
-                if text.is_empty() {
-                    if self.is_main_chat() && self.image_paste_rx.is_empty() {
-                        self.start_image_paste();
-                    }
-                } else {
-                    let mut text_lines = Vec::new();
-                    if self.is_main_chat() {
-                        for line in text.split('\n') {
-                            if let Some((path, mt)) = image::try_parse_image_path(line) {
-                                self.start_file_image_paste(path, mt);
-                            } else {
-                                text_lines.push(line);
-                            }
-                        }
-                    } else {
-                        text_lines.push(&text);
-                    }
-                    let text = text_lines.join("\n");
-                    if !text.is_empty() {
-                        self.route_text_paste(&text);
-                    }
-                }
+                self.route_text_paste(&text);
                 vec![]
             }
             Msg::Mouse(event) => {
@@ -1061,6 +1040,14 @@ impl App {
             }
         }
 
+        if !self.image_paste_rx.is_empty()
+            && (action == KeyAction::Submit
+                || (action == KeyAction::TabOrMode && streaming && !self.is_bash_input()))
+        {
+            self.status_bar.flash(image_paste::IMAGE_LOADING_MSG.into());
+            return vec![];
+        }
+
         match action {
             KeyAction::QuitOrCancel => {
                 self.command_palette.close();
@@ -1348,6 +1335,14 @@ impl App {
     }
 
     pub(crate) fn handle_submit(&mut self, sub: Submission) -> Vec<Action> {
+        if !self.image_paste_rx.is_empty() {
+            self.input_box.set_input(&sub.text);
+            for image in sub.images {
+                self.input_box.attach_image(image);
+            }
+            self.status_bar.flash(image_paste::IMAGE_LOADING_MSG.into());
+            return vec![];
+        }
         match std::mem::take(&mut self.pending_input) {
             PendingInput::AuthRetry { subagent_id } => {
                 self.send_to_agent(subagent_id.as_deref(), String::new());
@@ -2371,6 +2366,17 @@ impl App {
         try_picker!(self.model_picker);
         try_picker!(self.mcp_picker);
         try_picker!(self.login_picker);
+        if self.is_main_chat() {
+            if text.is_empty() && self.image_paste_rx.is_empty() {
+                self.start_image_paste();
+            } else {
+                for line in text.split('\n') {
+                    if let Some((path, media_type)) = image::try_parse_image_path(line) {
+                        self.start_file_image_paste(path, media_type);
+                    }
+                }
+            }
+        }
         if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text)
             && self.is_main_chat()
         {
