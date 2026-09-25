@@ -133,6 +133,26 @@ case("tree_attached_pattern_argument_is_not_a_depth_bound", function()
   has(command_guard.broad_bash_command_reason("tree -IL ."), "tree without depth bound")
 end)
 
+-- A standalone argument-taking option consumes the next word, and `--` ends
+-- option parsing: `tree -I -Lignored .` ignores the pattern `-Lignored`, and
+-- `tree -- -Lfolder` lists a directory named `-Lfolder`.
+
+case("tree_pattern_argument_word_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("tree -I -Lignored ."), "tree without depth bound")
+  has(command_guard.broad_bash_command_reason("tree -I -L ."), "tree without depth bound")
+  eq(command_guard.broad_bash_command_reason("tree -I target -L 2 ."), nil)
+end)
+
+case("tree_operand_after_double_dash_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("tree -- -Lfolder"), "tree without depth bound")
+  has(command_guard.broad_bash_command_reason("tree -- -L"), "tree without depth bound")
+  eq(command_guard.broad_bash_command_reason("tree -L 2 -- -Lfolder"), nil)
+end)
+
+case("journalctl_unit_argument_word_is_not_a_line_bound", function()
+  has(command_guard.broad_bash_command_reason("journalctl -u -n"), "journalctl without tail line bound")
+end)
+
 case("ls_lowercase_r_reverse_is_not_recursive", function()
   eq(command_guard.broad_bash_command_reason("ls -r ."), nil)
 end)

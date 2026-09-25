@@ -17,21 +17,30 @@ local DU_ARGUMENT_OPTIONS = "BXdt"
 local LS_ARGUMENT_OPTIONS = "ITw"
 local TREE_ARGUMENT_OPTIONS = "HILPTo"
 local GIT_HISTORY_ARGUMENT_OPTIONS = "BCGLMOSUln"
+local OPTION_TERMINATOR = "--"
 
 -- Short options cluster in one word: `du -sh` sets -s and -h, and `tree -L2`
 -- sets -L with argument 2. Scan each cluster letter by letter and stop at the
 -- first argument-taking option: `journalctl -unginx.service` is
--- `-u nginx.service`, not a `-n` bound.
+-- `-u nginx.service`, not a `-n` bound. An argument-taking option that ends
+-- its word consumes the next word (`tree -I -Lignored`), and `--` ends option
+-- parsing (`tree -- -Lfolder` names a directory).
 local function has_clustered_short_option(command, option, argument_options)
   local letter = option:sub(2)
+  local skip_argument = false
   for word in command:gmatch("%S+") do
-    if word:sub(1, 1) == "-" and word:sub(2, 2) ~= "-" then
+    if skip_argument then
+      skip_argument = false
+    elseif word == OPTION_TERMINATOR then
+      return false
+    elseif word:sub(1, 1) == "-" and word:sub(2, 2) ~= "-" then
       for index = 2, #word do
         local current = word:sub(index, index)
         if current == letter then
           return true
         end
         if argument_options:find(current, 1, true) then
+          skip_argument = index == #word
           break
         end
       end
@@ -41,6 +50,10 @@ local function has_clustered_short_option(command, option, argument_options)
 end
 
 function M.has_option(command, option, argument_options)
+  if argument_options and #option == 2 and option:sub(1, 1) == "-" then
+    return has_clustered_short_option(command, option, argument_options)
+  end
+
   if command == option then
     return true
   end
@@ -60,10 +73,6 @@ function M.has_option(command, option, argument_options)
 
   if padded:find(" " .. option .. "=", 1, true) then
     return true
-  end
-
-  if argument_options and #option == 2 and option:sub(1, 1) == "-" then
-    return has_clustered_short_option(command, option, argument_options)
   end
 
   return false
