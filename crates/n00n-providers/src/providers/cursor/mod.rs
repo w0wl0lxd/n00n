@@ -1270,7 +1270,7 @@ printf '%s\n' 'composer-2.5 - Composer 2.5'"#,
 
     #[test]
     fn models_list_is_not_empty() {
-        assert!(!MODELS.is_empty());
+        assert!(!MODELS.is_empty(), "expected non-empty, got {MODELS:?}");
         assert!(lookup_entry(MODELS, "composer-2.5").is_ok());
         assert!(lookup_entry(MODELS, "claude-opus-5-thinking-low-fast").is_ok());
     }

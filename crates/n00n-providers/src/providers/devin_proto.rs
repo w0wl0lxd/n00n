@@ -711,7 +711,7 @@ mod tests {
     fn chat_tool_choice_unset_encodes_empty() {
         let choice = ChatToolChoice { choice: None };
         let buf = choice.encode_to_vec();
-        assert!(buf.is_empty());
+        assert!(buf.is_empty(), "expected empty, got {buf:?}");
         let decoded = ChatToolChoice::decode(&buf[..]).expect("decode");
         assert!(decoded.choice.is_none());
     }
@@ -719,7 +719,11 @@ mod tests {
     #[test]
     fn empty_payload_decodes_to_default() {
         let decoded = GetChatMessageResponse::decode(&[][..]).expect("empty default");
-        assert!(decoded.message_id.is_empty());
+        assert!(
+            decoded.message_id.is_empty(),
+            "expected empty, got {:?}",
+            decoded.message_id
+        );
     }
 
     /// `N00N_DEVIN_CLI_VERSION` is process-global. nextest gives each test its

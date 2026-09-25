@@ -1233,7 +1233,11 @@ aws_session_token = MYTOKEN\n";
         .unwrap();
 
         assert_eq!(endpoint.url.as_str(), "http://[fd00:ec2::23]/creds");
-        assert!(endpoint.resolved_addresses.is_empty());
+        assert!(
+            endpoint.resolved_addresses.is_empty(),
+            "expected empty, got {:?}",
+            endpoint.resolved_addresses
+        );
     }
 
     #[test]
@@ -1247,7 +1251,11 @@ aws_session_token = MYTOKEN\n";
         .unwrap();
 
         assert_eq!(endpoint.url.as_str(), "https://credentials.example/creds");
-        assert!(endpoint.resolved_addresses.is_empty());
+        assert!(
+            endpoint.resolved_addresses.is_empty(),
+            "expected empty, got {:?}",
+            endpoint.resolved_addresses
+        );
     }
 
     #[test]

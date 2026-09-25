@@ -1891,7 +1891,10 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                     _ => None,
                 })
                 .collect();
-            assert!(thinking_deltas.is_empty());
+            assert!(
+                thinking_deltas.is_empty(),
+                "expected empty, got {thinking_deltas:?}"
+            );
 
             let text_deltas: Vec<_> = events
                 .iter()
@@ -1950,7 +1953,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
             let (resp, _) = run_sse(sse).await;
             let (_, resp) = resp.unwrap();
 
-            assert!(resp.message.content.is_empty());
+            assert!(
+                resp.message.content.is_empty(),
+                "expected empty, got {:?}",
+                resp.message.content
+            );
             assert_eq!(resp.usage.output, 5);
         });
     }

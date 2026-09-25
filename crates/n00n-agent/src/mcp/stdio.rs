@@ -597,7 +597,11 @@ mod tests {
 
             drop(PendingRequestGuard::new(Arc::clone(&pending), 1));
 
-            assert!(pending.lock().await.is_empty());
+            let n00n_empty_check_10 = pending.lock().await;
+            assert!(
+                n00n_empty_check_10.is_empty(),
+                "expected empty, got {n00n_empty_check_10:?}"
+            );
         });
     }
 
