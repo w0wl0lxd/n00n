@@ -1004,7 +1004,7 @@ impl RunTransitionWriter {
         }
     }
 
-    fn shutdown(self, timeout: Duration) {
+    fn shutdown(self, timeout: Duration) -> bool {
         let Self { tx, task } = self;
         drop(tx);
         let drained = smol::block_on(future::or(
@@ -1023,6 +1023,7 @@ impl RunTransitionWriter {
                 "timed out flushing canonical run transitions during shutdown"
             );
         }
+        drained
     }
 }
 
@@ -4632,6 +4633,10 @@ mod tests {
     use tempfile::TempDir;
     use test_case::test_case;
 
+    const WRITER_DRAIN_GUARD: Duration = Duration::from_secs(30);
+    const WRITER_DRAIN_HUNG: &str = "canonical run transition writer did not drain";
+    const RUN_EVENT_PAGE: usize = 16;
+
     #[test_case(5, 5, true; "matching revision")]
     #[test_case(4, 5, false; "mismatched revision")]
     fn stored_root_capture_revision_must_match(
@@ -5849,44 +5854,34 @@ mod tests {
             progress: false,
         }))
         .expect("starting run");
-        let writer = RunTransitionWriter::spawn(Arc::clone(&service));
-        writer.project(
-            starting.run_id,
-            CanonicalRunProjection {
-                target: RunLifecycle::Running,
-                wait_reason: None,
-                outcome: None,
-                event_type: "running",
-                summary: "running",
-            },
-        );
-        let running = smol::block_on(service.wait_for_revision(
-            starting.run_id,
-            starting.revision,
-            Duration::from_secs(1),
-        ))
-        .expect("running update")
-        .run;
-        assert_eq!(running.lifecycle, RunLifecycle::Running);
-
         let done = AgentEvent::Done {
             usage: TokenUsage::default(),
             num_turns: 1,
             stop_reason: None,
             fusion: None,
         };
-        writer.project(
-            running.run_id,
-            canonical_run_projection(&done, false).expect("terminal projection"),
-        );
-        let terminal = smol::block_on(service.wait_for_revision(
-            running.run_id,
-            running.revision,
-            Duration::from_secs(1),
-        ))
-        .expect("terminal update")
-        .run;
-        assert_eq!(terminal.lifecycle, RunLifecycle::Succeeded);
+        let running = running_projection();
+        let terminal = canonical_run_projection(&done, false).expect("terminal projection");
+        let expected_events = vec![
+            running.event_type.to_owned(),
+            terminal.event_type.to_owned(),
+        ];
+        let writer = RunTransitionWriter::spawn(Arc::clone(&service));
+        writer.project(starting.run_id, running);
+        writer.project(starting.run_id, terminal);
+
+        assert!(writer.shutdown(WRITER_DRAIN_GUARD), "{WRITER_DRAIN_HUNG}");
+
+        let run = smol::block_on(service.get_run(starting.run_id)).expect("stored run");
+        assert_eq!(run.lifecycle, RunLifecycle::Succeeded);
+        let events = service
+            .store()
+            .events(starting.run_id, starting.revision, RUN_EVENT_PAGE)
+            .expect("run events")
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        assert_eq!(events, expected_events);
     }
 
     #[test]
@@ -6113,7 +6108,7 @@ mod tests {
             writer.project(starting.run_id, projection);
         }
 
-        writer.shutdown(Duration::from_secs(5));
+        assert!(writer.shutdown(WRITER_DRAIN_GUARD), "{WRITER_DRAIN_HUNG}");
 
         let run = smol::block_on(service.get_run(starting.run_id)).expect("stored run");
         assert_eq!(run.lifecycle, expected);
