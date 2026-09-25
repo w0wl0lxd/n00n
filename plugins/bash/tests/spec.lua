@@ -201,6 +201,32 @@ case("sanitize_git_leaves_heredoc_bodies_untouched", function()
   eq(sanitized("cat " .. body), "cat " .. body)
 end)
 
+-- A heredoc makes only its body data. The command that owns the heredoc and
+-- every command after the closing delimiter must still be hardened.
+
+case("sanitize_git_hardens_the_command_that_owns_a_heredoc", function()
+  eq(sanitized("git status <<EOF\nEOF"), sanitized("git status <<EOF") .. "\nEOF")
+  has(sanitized("git status <<EOF\nEOF"), "core.fsmonitor=false")
+  eq(sanitized("git status <<'EOF'\ngit diff\nEOF"), sanitized("git status <<'EOF'") .. "\ngit diff\nEOF")
+end)
+
+case("sanitize_git_hardens_commands_after_the_heredoc_delimiter", function()
+  eq(sanitized("cat <<EOF\ngit diff\nEOF\ngit diff"), "cat <<EOF\ngit diff\nEOF\n" .. sanitized("git diff"))
+  eq(sanitized("cat <<-EOF\n\tgit diff\n\tEOF\ngit show"), "cat <<-EOF\n\tgit diff\n\tEOF\n" .. sanitized("git show"))
+  eq(
+    sanitized('cat <<A <<"B"\ngit diff\nA\ngit log\nB\ngit show'),
+    'cat <<A <<"B"\ngit diff\nA\ngit log\nB\n' .. sanitized("git show")
+  )
+end)
+
+case("sanitize_git_treats_a_here_string_as_a_plain_redirection", function()
+  eq(sanitized("git status <<< x\ngit diff"), sanitized("git status <<< x") .. "\n" .. sanitized("git diff"))
+end)
+
+case("sanitize_git_keeps_an_unterminated_heredoc_body_as_data", function()
+  eq(sanitized("cat <<EOF\ngit diff"), "cat <<EOF\ngit diff")
+end)
+
 case("sanitize_git_keeps_semicolon_separators", function()
   local sanitized = command_guard.sanitize_git_command("git status; rm x")
   has(sanitized, "status; rm x")

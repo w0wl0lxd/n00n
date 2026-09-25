@@ -8,3 +8,4 @@
 - Fixed log rotation underflowing at zero max files, session title cache staleness after a same-size rewrite, and a remote allowlist bypass in `n00n-semble`.
 - Fixed ACP stdout write errors being discarded (framing desync) and `find_related` missing anchors beyond the first 10,000 chunks.
 - Fixed Rust CI skipping crate manifests and build scripts, release checksums hashing a stale checksum file into itself, docs never building on pull requests, silent `$0` pricing for newer models, benchmark run dedupe dropping distinct runs, and an unquoted model argument in the Terminal-Bench wrapper.
+- Fixed git command sanitization skipping the command that owns a heredoc and every command after it, which let a repo `core.fsmonitor` hook run through `git status <<EOF`. Only the heredoc body is now kept as data.

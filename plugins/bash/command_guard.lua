@@ -345,10 +345,63 @@ local function is_command_separator(command, index)
   return true
 end
 
+local HEREDOC_OPERATOR = "<<"
+local HERE_STRING_OPERATOR = "<<<"
+local HEREDOC_WORD_END = "[%s;&|<>()]"
+
+-- Read the heredoc delimiter word that starts at or after `index`. Returns
+-- the quote-removed delimiter and the index of the word's last byte.
+local function read_heredoc_delimiter(command, index)
+  while command:sub(index, index):match("[ \t]") do
+    index = index + 1
+  end
+  local start = index
+  local quote
+  while index <= #command do
+    local char = command:sub(index, index)
+    if quote then
+      if char == quote then
+        quote = nil
+      end
+    elseif char == "'" or char == '"' then
+      quote = char
+    elseif char == "\\" then
+      index = index + 1
+    elseif char:match(HEREDOC_WORD_END) then
+      break
+    end
+    index = index + 1
+  end
+  local delimiter = command:sub(start, index - 1):gsub("[\"'\\]", "")
+  return delimiter, index - 1
+end
+
+-- Return the index of the last byte of the heredoc body that starts at
+-- `start`, including its closing delimiter line. An unterminated body runs to
+-- the end of the command, as in bash.
+local function heredoc_body_end(command, start, heredoc)
+  local line_start = start
+  while line_start <= #command do
+    local newline = command:find("\n", line_start, true)
+    local line_end = newline and newline - 1 or #command
+    local line = command:sub(line_start, line_end)
+    if heredoc.strip_tabs then
+      line = line:gsub("^\t+", "")
+    end
+    if line == heredoc.delimiter or not newline then
+      return line_end
+    end
+    line_start = newline + 1
+  end
+  return #command
+end
+
 -- Split a command at unquoted separators (newline, `;`, `&`, `|` and their
 -- doubled forms) into `command` and `separator` parts that concatenate back
--- to the input byte for byte. From an unquoted heredoc (`<<`) on, the rest is
--- one `verbatim` part: its body lines are data, not commands.
+-- to the input byte for byte. Heredoc bodies, from the newline after the
+-- `<<` operator through the closing delimiter line, are `verbatim` parts:
+-- their lines are data, not commands. The command that owns the heredoc and
+-- the commands after its delimiter are still split normally.
 function M.split_command_segments(command)
   local parts = {}
   local start = 1
@@ -357,6 +410,7 @@ function M.split_command_segments(command)
     start = stop + 1
   end
 
+  local pending_heredocs = {}
   local quote
   local index = 1
   while index <= #command do
@@ -371,9 +425,32 @@ function M.split_command_segments(command)
       quote = char
     elseif char == "\\" then
       index = index + 1
-    elseif command:sub(index, index + 1) == "<<" then
-      push("verbatim", #command)
-      return parts
+    elseif command:sub(index, index + #HERE_STRING_OPERATOR - 1) == HERE_STRING_OPERATOR then
+      index = index + #HERE_STRING_OPERATOR - 1
+    elseif command:sub(index, index + #HEREDOC_OPERATOR - 1) == HEREDOC_OPERATOR then
+      local word_start = index + #HEREDOC_OPERATOR
+      local strip_tabs = command:sub(word_start, word_start) == "-"
+      if strip_tabs then
+        word_start = word_start + 1
+      end
+      local delimiter, word_end = read_heredoc_delimiter(command, word_start)
+      pending_heredocs[#pending_heredocs + 1] = { delimiter = delimiter, strip_tabs = strip_tabs }
+      index = word_end
+    elseif char == "\n" and #pending_heredocs > 0 then
+      push("command", index - 1)
+      push("separator", index)
+      local body_end = index
+      for _, heredoc in ipairs(pending_heredocs) do
+        if body_end + 1 > #command then
+          break
+        end
+        body_end = heredoc_body_end(command, body_end + 1, heredoc)
+      end
+      pending_heredocs = {}
+      if body_end > index then
+        push("verbatim", body_end)
+      end
+      index = body_end
     elseif is_command_separator(command, index) then
       push("command", index - 1)
       local stop = index
