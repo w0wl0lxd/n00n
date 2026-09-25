@@ -1592,8 +1592,8 @@ mod tests {
         writer.shutdown(DRAIN_TIMEOUT).unwrap();
     }
 
-    #[test]
-    fn concurrent_modification_fails_fast_without_overwriting_disk() {
+    #[test_case::test_case(())]
+    fn concurrent_modification_fails_fast_without_overwriting_disk(_case: ()) {
         let (_tmp, dir) = state_dir();
         let mut state = WriterState::default();
         let mut session = AppSession::new("test-model", "/tmp/concurrent");
