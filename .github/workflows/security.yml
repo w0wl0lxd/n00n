@@ -22,15 +22,30 @@ on:
 permissions:
   contents: read
 jobs:
+  # rustsec/audit-check reports through the Checks API on push, PR and manual
+  # runs, and opens issues only on scheduled runs. Each job gets only the
+  # write scope its event needs; the workflow-level `contents: read` leaves
+  # both at none, so the report step would fail with a 403.
   audit:
     name: cargo-audit
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    # rustsec/audit-check reports through the Checks API on push/PR runs and
-    # opens an issue on scheduled runs. The workflow-level `contents: read`
-    # leaves both scopes at none, so the report step fails with a 403.
     permissions:
       contents: read
       checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+  audit-scheduled:
+    name: cargo-audit (scheduled)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
