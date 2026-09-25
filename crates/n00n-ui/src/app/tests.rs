@@ -4547,6 +4547,26 @@ fn thinking_unsupported_model_flashes_error() {
     assert!(app.status_bar.flash_text().is_some());
 }
 
+#[test_case("zai/glm-5.2", false ; "zai_glm_5_2_gains_thinking_via_provider_adjustment")]
+#[test_case("mistral/ministral-14b-latest", true ; "mistral_ministral_loses_thinking_via_provider_adjustment")]
+fn cycle_remembered_thinking_applies_provider_adjustment_for_highlighted_model(
+    spec: &str,
+    expect_rejected: bool,
+) {
+    const REJECTED_FLASH: &str = "Thinking requires a model that supports it";
+    let mut app = test_app();
+    assert_ne!(
+        app.state.model.spec(),
+        spec,
+        "spec must not be the current model"
+    );
+
+    app.cycle_remembered_thinking(spec);
+
+    let rejected = app.status_bar.flash_text() == Some(REJECTED_FLASH);
+    assert_eq!(rejected, expect_rejected, "spec={spec}");
+}
+
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Vec<Action> {
     app.handle_key(KeyEvent::new(code, modifiers))
 }

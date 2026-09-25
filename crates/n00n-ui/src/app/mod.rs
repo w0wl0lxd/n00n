@@ -63,6 +63,7 @@ use n00n_agent::{
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::model_registry::{model_registry, set_thinking_and_persist};
+use n00n_providers::provider::adjust_thinking_capability;
 use n00n_providers::{Effort, Message, Model, ModelPricing, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
@@ -498,7 +499,10 @@ impl App {
         let supports = if is_current {
             self.state.model.supports_thinking()
         } else {
-            Model::from_spec(spec).is_ok_and(|m| m.supports_thinking())
+            Model::from_spec(spec).is_ok_and(|mut m| {
+                adjust_thinking_capability(&mut m);
+                m.supports_thinking()
+            })
         };
         if !supports {
             self.flash("Thinking requires a model that supports it".into());
