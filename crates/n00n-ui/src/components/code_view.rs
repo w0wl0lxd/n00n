@@ -1003,7 +1003,11 @@ mod tests {
             RenderLimits::new(SectionFlags::default(), 10),
         );
 
-        assert!(content.lines.is_empty());
+        assert!(
+            content.lines.is_empty(),
+            "expected empty, got {:?}",
+            content.lines
+        );
         assert_eq!(content.truncation, SectionFlags::default());
     }
 

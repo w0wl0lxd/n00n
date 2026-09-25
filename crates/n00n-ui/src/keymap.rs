@@ -40,7 +40,9 @@ impl KeyStroke {
     pub fn normalize_parts(code: KeyCode, modifiers: KeyModifiers) -> Self {
         match code {
             KeyCode::Char(c) if c.is_uppercase() => {
-                let lower = c.to_lowercase().next().unwrap_or_else(|| c);
+                let lower = c.to_lowercase().next().unwrap_or_else(|| {
+                    unreachable!("an uppercase char always lowercases to at least one char")
+                });
                 Self {
                     code: KeyCode::Char(lower),
                     modifiers: modifiers | KeyModifiers::SHIFT,
@@ -403,7 +405,7 @@ pub static BINDINGS: &[(KeybindContext, &[KeyBinding])] = &[
             bind!(
                 modified!(Delete, KeyModifiers::CONTROL),
                 KeyAction::DeleteWordForward,
-                Some(KeyLabel::Alt("Ctrl+Del", "Alt+D")),
+                Some(KeyLabel::Alt("Ctrl+Del", "Alt+Del")),
                 "Delete word forward"
             ),
             bind!(
@@ -411,12 +413,6 @@ pub static BINDINGS: &[(KeybindContext, &[KeyBinding])] = &[
                 KeyAction::DeleteWordForward,
                 None,
                 ""
-            ),
-            bind!(
-                alt!('d'),
-                KeyAction::DeleteWordForward,
-                None,
-                "Delete word forward"
             ),
             bind!(
                 modified!(Left, KeyModifiers::CONTROL),
@@ -475,6 +471,11 @@ pub static BINDINGS: &[(KeybindContext, &[KeyBinding])] = &[
                 "Undo last edit"
             ),
             bind!(ctrl!('-'), KeyAction::Undo, None, "Undo last edit"),
+            // Legacy (non-Kitty-protocol) terminals report Ctrl+_ as byte
+            // 0x1F, which crossterm's non-Kitty parser decodes as
+            // `Char('7')+CONTROL` (bytes 0x1C..=0x1F map to '4'..='7').
+            // Without this, Undo is unreachable outside the Kitty protocol.
+            bind!(ctrl!('7'), KeyAction::Undo, None, "Undo last edit"),
             bind!(
                 ctrl_shift!('z'),
                 KeyAction::Redo,
@@ -743,6 +744,11 @@ pub fn reaches_composer(key: &KeyEvent) -> bool {
 mod tests {
     use super::*;
     use crossterm::event::KeyEventKind;
+    use test_case::test_case;
+
+    /// Strokes allowed to shadow between `Editing` and `General` (both are
+    /// always on the context stack together). Empty: no intentional overlap.
+    const EDITING_GENERAL_ALLOWED_OVERLAP: &[KeyStroke] = &[];
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {
@@ -751,6 +757,13 @@ mod tests {
             kind: KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         }
+    }
+
+    fn context_bindings(ctx: KeybindContext) -> &'static [KeyBinding] {
+        BINDINGS
+            .iter()
+            .find_map(|(c, list)| (*c == ctx).then_some(*list))
+            .expect("context present in BINDINGS")
     }
 
     #[test]
@@ -895,5 +908,45 @@ mod tests {
             resolve(&stack, key(KeyCode::Enter, KeyModifiers::SUPER)),
             None
         );
+    }
+
+    #[test]
+    fn alt_d_scrolls_half_page_down() {
+        let stack = [KeybindContext::Editing, KeybindContext::General];
+        assert_eq!(
+            resolve(&stack, key(KeyCode::Char('d'), KeyModifiers::ALT)),
+            Some(KeyAction::ScrollHalfDown)
+        );
+    }
+
+    #[test_case('_' ; "kitty_underscore")]
+    #[test_case('-' ; "plain_hyphen")]
+    #[test_case('7' ; "legacy_non_kitty_byte_0x1f")]
+    fn undo_resolves_on_every_terminal_encoding(c: char) {
+        let stack = [KeybindContext::Editing, KeybindContext::General];
+        assert_eq!(
+            resolve(&stack, key(KeyCode::Char(c), KeyModifiers::CONTROL)),
+            Some(KeyAction::Undo),
+            "Ctrl+{c} must resolve to Undo — legacy (non-Kitty) terminals report \
+             Ctrl+_ as byte 0x1F, which crossterm decodes as Char('7')+CONTROL"
+        );
+    }
+
+    #[test]
+    fn editing_and_general_bindings_never_overlap() {
+        let editing = context_bindings(KeybindContext::Editing);
+        let general = context_bindings(KeybindContext::General);
+        for e in editing.iter().filter(|b| b.platform.is_visible()) {
+            for g in general.iter().filter(|b| b.platform.is_visible()) {
+                assert!(
+                    e.stroke != g.stroke || EDITING_GENERAL_ALLOWED_OVERLAP.contains(&e.stroke),
+                    "stroke {:?} is bound in both Editing ({:?}) and General ({:?}); \
+                     General can never fire because Editing is checked first",
+                    e.stroke,
+                    e.action,
+                    g.action
+                );
+            }
+        }
     }
 }

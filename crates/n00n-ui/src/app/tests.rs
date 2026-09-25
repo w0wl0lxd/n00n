@@ -237,7 +237,11 @@ fn typing_and_submit() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(matches!(&actions[0], Action::SendMessage(s) if s.input.message == "hi"));
     assert_eq!(app.status, Status::Streaming);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     // Regression check: the bubble has to be on screen the same frame we
     // submit, otherwise it briefly sits one row too high before snapping down.
     assert_eq!(
@@ -385,7 +389,11 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
         Status::Error { message, .. } if message == PERSISTENCE_FAILURE_MSG
     ));
     assert_eq!(app.main_chat().last_message_text(), PERSISTENCE_FAILURE_MSG);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     assert_eq!(app.queue.text_messages(), vec!["queued after failure"]);
     assert_eq!(submission_id, dispatch.submission_id);
 }
@@ -406,7 +414,11 @@ fn escape_before_dispatch_restores_text_and_exact_images_once() {
 
     let cancel_actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
-    assert!(cancel_actions.is_empty());
+    assert!(
+        cancel_actions.is_empty(),
+        "expected empty, got {}",
+        cancel_actions.len()
+    );
     assert!(gate.is_cancelled());
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.main_chat().message_count(), 0);
@@ -418,7 +430,11 @@ fn escape_before_dispatch_restores_text_and_exact_images_once() {
 
     app.handle_submission_persistence_failure(dispatch);
     assert_eq!(app.main_chat().message_count(), 0);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
 }
 
 #[test]
@@ -449,7 +465,11 @@ fn shell_preamble_restores_once_on_cancel_and_resubmits_once() {
     };
     assert!(app.stage_submission_preamble(&mut dispatch));
     assert_eq!(dispatch.input.preamble.len(), 1);
-    assert!(app.shell.drain_results().is_empty());
+    let n00n_empty_check_71 = app.shell.drain_results();
+    assert!(
+        n00n_empty_check_71.is_empty(),
+        "expected empty, got {n00n_empty_check_71:?}"
+    );
 
     app.update(Msg::Key(key(KeyCode::Esc)));
     let restored_preamble = app.shell.drain_results();
@@ -464,7 +484,11 @@ fn shell_preamble_restores_once_on_cancel_and_resubmits_once() {
     assert!(app.stage_submission_preamble(&mut dispatch));
     assert_eq!(dispatch.input.preamble.len(), 1);
     assert_eq!(dispatch.input.preamble[0].user_text(), Some("shell output"));
-    assert!(app.shell.drain_results().is_empty());
+    let n00n_empty_check_72 = app.shell.drain_results();
+    assert!(
+        n00n_empty_check_72.is_empty(),
+        "expected empty, got {n00n_empty_check_72:?}"
+    );
 
     app.handle_submission_persistence_failure(&dispatch);
     let restored_after_failure = app.shell.drain_results();
@@ -502,7 +526,11 @@ fn escape_during_mcp_error_restores_and_resubmits_exactly_once() {
     };
     assert!(app.stage_submission_preamble(&mut retry));
     assert_eq!(retry.input.preamble.len(), 1);
-    assert!(app.shell.drain_results().is_empty());
+    let n00n_empty_check_73 = app.shell.drain_results();
+    assert!(
+        n00n_empty_check_73.is_empty(),
+        "expected empty, got {n00n_empty_check_73:?}"
+    );
 }
 
 #[test]
@@ -563,9 +591,13 @@ fn ctrl_c_clears_nonempty_input(setup: fn(&mut App)) {
     let mut app = test_app();
     setup(&mut app);
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.exit_request, ExitRequest::None);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
 }
 
 #[test]
@@ -574,7 +606,7 @@ fn ctrl_c_quits_when_input_empty() {
     app.status = Status::Idle;
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::Success);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
 }
 
 #[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None }, ExitRequest::Success ; "done_exits_success")]
@@ -681,12 +713,138 @@ fn paste_normalizes_line_endings(input: &str, expected: &str) {
     assert_eq!(app.input_box.buffer.value(), expected);
 }
 
+#[test_case(Status::Idle; "idle")]
+#[test_case(Status::Streaming; "streaming")]
+fn image_load_completion_allows_submission_with_image(status: Status) {
+    let mut app = test_app();
+    app.status = status;
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    let Some(submission) = app.input_box.submit() else {
+        panic!("expected submission");
+    };
+    assert_eq!(submission.text, "describe image");
+    assert_eq!(submission.images.len(), 1);
+}
+
+#[test]
+fn unsupported_image_path_paste_preserves_text() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    let mut app = test_app();
+    app.state.model.supports_vision_override = Some(false);
+    app.update(Msg::Paste(TEXT.into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
+#[test]
+fn failed_image_load_preserves_text_and_unblocks_submission() {
+    const TEXT: &str = "file:///tmp/nonexistent.png";
+    const ERROR: &str = "file unavailable";
+    let mut app = test_app();
+    app.input_box.set_input(TEXT);
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    tx.send(Err(ERROR.into())).unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!("Image paste failed: {ERROR}")
+    );
+}
+
+#[test_case(KeyCode::Enter; "enter")]
+#[test_case(KeyCode::Tab; "queued_tab")]
+fn pending_image_load_blocks_submission(submit_key: KeyCode) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    assert!(app.update(Msg::Key(key(submit_key))).is_empty());
+    assert_eq!(app.input_box.buffer.value(), "describe image");
+}
+
+#[test_case(KeyCode::Enter, KeyModifiers::SHIFT, "describe image\n"; "shift_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::ALT, "describe image\n"; "alt_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::CONTROL, "describe image\n"; "ctrl_enter_inserts_newline")]
+#[test_case(KeyCode::Char('j'), KeyModifiers::CONTROL, "describe image\n"; "ctrl_j_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::NONE, "describe image"; "plain_enter_still_blocked")]
+fn pending_image_load_does_not_swallow_newline_keys(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    expected: &str,
+) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    let newline_key = KeyEvent {
+        code,
+        modifiers,
+        kind: crossterm::event::KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    app.update(Msg::Key(newline_key));
+    assert_eq!(app.input_box.buffer.value(), expected);
+}
+
+#[test]
+fn disconnected_image_load_is_removed() {
+    let mut app = test_app();
+    let (tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    drop(tx);
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!(
+            "Image paste failed: {}",
+            image_paste::IMAGE_LOAD_DISCONNECTED_MSG
+        )
+    );
+}
+
+#[test]
+fn image_path_paste_in_search_does_not_load_image() {
+    let mut app = test_app();
+    app.update(Msg::Key(kb::SEARCH.to_key_event()));
+    app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn image_path_paste_preserves_original_text() {
+    const TEXT: &str = "describe\nfile:///tmp/nonexistent.png\nplease";
+    let mut app = test_app();
+    app.update(Msg::Paste(TEXT.into()));
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
 #[test]
 fn paste_file_path_triggers_image_load() {
     let mut app = test_app();
     app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
-    assert!(!app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), "");
+    assert!(
+        !app.image_paste_rx.is_empty(),
+        "expected non-empty, got {:?}",
+        app.image_paste_rx
+    );
+    assert_eq!(app.input_box.buffer.value(), "file:///tmp/nonexistent.png");
 }
 
 #[test]
@@ -699,7 +857,7 @@ fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     assert_eq!(app.image_paste_rx.len(), 2);
     assert_eq!(
         app.input_box.buffer.value(),
-        "Please compare these:\nThanks"
+        "Please compare these:\nfile:///tmp/first.png\nfile:///tmp/second.jpg\nThanks"
     );
 }
 
@@ -709,9 +867,19 @@ fn busy_enter_queues_steering_and_second_chord_promotes_latest() {
     type_and_submit(&mut app, "first");
 
     app.input_box.set_input("steer one");
-    assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
+    let n00n_empty_check_74 = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        n00n_empty_check_74.is_empty(),
+        "expected empty, got {}",
+        n00n_empty_check_74.len()
+    );
     app.input_box.set_input("steer two");
-    assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
+    let n00n_empty_check_75 = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        n00n_empty_check_75.is_empty(),
+        "expected empty, got {}",
+        n00n_empty_check_75.len()
+    );
     assert_eq!(app.queue.len(), 2);
     assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
     assert_eq!(app.queue.panel_entries()[1].text, "↪ steer two");
@@ -771,7 +939,11 @@ fn queue_item_consumed_pushes_deferred_user_message() {
 fn cancel_clears_queue() {
     let mut app = app_with_queued_message();
     cancel_app(&mut app);
-    assert!(app.queue.is_empty());
+    assert!(
+        app.queue.is_empty(),
+        "expected empty, got {}",
+        app.queue.len()
+    );
 }
 
 #[test_case("/compact" ; "slash_command")]
@@ -914,11 +1086,19 @@ fn reset_session_clears_plan() {
     assert_eq!(app.chats[0].context_size, 0);
     assert_eq!(app.state.mode, Mode::Build);
     assert_eq!(app.state.plan, PlanState::None);
-    assert!(app.queue.is_empty());
+    assert!(
+        app.queue.is_empty(),
+        "expected empty, got {}",
+        app.queue.len()
+    );
     assert_eq!(app.chats.len(), 1);
     assert_eq!(app.chats[0].name, "Main");
     assert_eq!(app.active_chat, 0);
-    assert!(app.chat_index.is_empty());
+    assert!(
+        app.chat_index.is_empty(),
+        "expected empty, got {:?}",
+        app.chat_index
+    );
     assert!(app.queue.focus().is_none());
     assert!(!app.help_modal.is_open());
     assert!(!app.btw_modal.is_open());
@@ -1301,7 +1481,11 @@ fn cancel_resets_all_chats_and_indices() {
     cancel_app(&mut app);
     assert_eq!(app.chats[0].in_progress_count(), 0);
     assert_eq!(app.chats[1].in_progress_count(), 0);
-    assert!(app.chat_index.is_empty());
+    assert!(
+        app.chat_index.is_empty(),
+        "expected empty, got {:?}",
+        app.chat_index
+    );
 }
 
 fn finish_subagent(app: &mut App, id: &str, is_error: bool) {
@@ -1723,11 +1907,11 @@ fn ctrl_s_stashes_and_restores_draft() {
 
     app.update(Msg::Key(kb::STASH.to_key_event()));
     assert!(app.input_box.is_empty());
-    assert_eq!(app.status_bar.flash_text(), Some("Draft stashed"));
+    assert_eq!(app.status_bar.flash_text(), Some(STASH_DRAFT_MSG));
 
     app.update(Msg::Key(kb::STASH.to_key_event()));
     assert_eq!(app.input_box.buffer.value(), "draft");
-    assert_eq!(app.status_bar.flash_text(), Some("Draft restored"));
+    assert_eq!(app.status_bar.flash_text(), Some(STASH_RESTORE_MSG));
 }
 
 #[test]
@@ -1757,6 +1941,22 @@ fn ctrl_d_deletes_char_forward_with_text() {
     assert!(actions.is_empty());
     assert_eq!(app.input_box.buffer.value(), "b");
     assert_eq!(app.exit_request, ExitRequest::None);
+}
+
+#[test]
+fn ctrl_d_twice_does_not_discard_image_only_draft() {
+    let mut app = test_app();
+    with_image(&mut app);
+
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+
+    assert_eq!(
+        app.exit_request,
+        ExitRequest::None,
+        "an image-only draft is not empty and must not be discarded by Ctrl+D"
+    );
+    assert!(!app.input_box.is_empty());
 }
 
 #[test]
@@ -1929,7 +2129,7 @@ fn compact_during_streaming_queues_item() {
     app.run_id = 1;
 
     let actions = app.execute_command(cmd("/compact"));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.queue.len(), 1);
     assert_eq!(app.queue.panel_entries()[0].text, "/compact");
 }
@@ -2418,7 +2618,11 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
 
     assert_eq!(app.queue.text_messages(), ["queued", "original", "after"]);
     assert!(app.queue.editing().is_none());
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     let queued = app.queue.queued_inputs();
     let (input, delivery) = &queued[1];
     assert_eq!(input.message, "original");
@@ -2687,7 +2891,7 @@ fn submit_exit_quits() {
         control: false,
     });
     assert_eq!(app.exit_request, ExitRequest::Success);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
 }
 
 #[test]
@@ -2811,7 +3015,11 @@ fn save_session_syncs_ephemeral_content_into_meta() {
     let mut queued = app_with_queued_message();
     queued.save_session();
     let session = &queued.state.session;
-    assert!(session.messages.is_empty());
+    assert!(
+        session.messages.is_empty(),
+        "expected empty, got {:?}",
+        session.messages
+    );
     assert!(session.meta.input_draft.is_none());
     assert_eq!(session.meta.mode, Some(StoredMode::Build));
     assert_eq!(session.meta.queued_messages, vec!["queued".to_string()]);
@@ -3035,7 +3243,7 @@ fn reload_persists_session_with_content_to_disk() {
         .push(Message::user("hello".into()));
     let actions = app.execute_command(cmd("/reload"));
     assert_eq!(app.exit_request, ExitRequest::Reload);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     let id = app.state.session.id;
     drain_writer(app, writer);
 
@@ -3121,14 +3329,22 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
         images: edited.images,
         control: edited.control,
     });
-    assert!(app.queue.text_messages().is_empty());
+    let n00n_empty_check_76 = app.queue.text_messages();
+    assert!(
+        n00n_empty_check_76.is_empty(),
+        "expected empty, got {n00n_empty_check_76:?}"
+    );
 
     app.update(agent_msg(AgentEvent::Error {
         message: PROVIDER_FAILED_ERR.into(),
     }));
 
     assert_eq!(app.queue.text_messages(), vec!["queued through turn error"]);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     app.save_session();
     let session_id = app.state.session.id;
     drain_writer(app, writer);
@@ -3416,7 +3632,7 @@ fn cd_command_behavior() {
 fn typed_slash_command_executes() {
     let mut app = test_app();
     let actions = type_and_submit(&mut app, "/help");
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(app.help_modal.is_open());
 }
 
@@ -3619,7 +3835,11 @@ fn rewind_to_first_turn_clears_everything() {
     };
     let actions = app.rewind_to(&entry);
 
-    assert!(app.state.session.messages.is_empty());
+    assert!(
+        app.state.session.messages.is_empty(),
+        "expected empty, got {:?}",
+        app.state.session.messages
+    );
     assert!(!app.state.session.tool_outputs.contains_key("tool-1"));
     assert_eq!(app.state.token_usage.input, 500);
     assert_eq!(app.state.token_usage.output, 200);
@@ -3713,7 +3933,7 @@ fn auth_retry_sends_empty_answer(submit: fn(&mut App) -> Vec<Action>) {
     ));
 
     let actions = submit(&mut app);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.pending_input, PendingInput::None);
     assert_eq!(rx.try_recv().unwrap(), "");
 }
@@ -3729,7 +3949,7 @@ fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     app.update(Msg::Key(key(KeyCode::Char('i'))));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     let prompt = prompt_rx.try_recv().unwrap();
     assert_eq!(prompt.text, "hi");
     assert_eq!(app.chats[1].last_message_text(), "hi");
@@ -3834,7 +4054,7 @@ fn expanded_subagent_chat_sends_typed_steering() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     let prompt = prompt_rx.try_recv().unwrap();
     assert_eq!(prompt.text, "expand");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
@@ -3872,7 +4092,7 @@ fn left_in_expanded_subagent_chat_returns_to_main_without_cancelling() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Left)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.active_chat, 0);
     assert!(!app.chats[1].is_finished());
     assert!(prompt_rx.try_recv().is_err());
@@ -3920,7 +4140,7 @@ fn auth_retry_in_subagent_routes_to_subagent_channel() {
     ));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.pending_input, PendingInput::None);
     assert_eq!(sub_rx.try_recv().unwrap(), "");
     assert!(main_rx.try_recv().is_err());
@@ -4060,7 +4280,7 @@ fn open_editor(plan: PlanState, expect_flash: bool) {
     app.state.plan = plan;
     let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
     if expect_flash {
-        assert!(actions.is_empty());
+        assert!(actions.is_empty(), "expected empty, got {}", actions.len());
         assert_eq!(app.status_bar.flash_text().unwrap(), FLASH_NO_PLAN);
         assert!(!app.plan_form.is_visible());
     } else {
@@ -4094,7 +4314,7 @@ fn btw_empty_flashes_error() {
         name: "/btw".into(),
         args: String::new(),
     });
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(
         app.status_bar.flash_text().unwrap(),
         "Usage: /btw <question>"
@@ -4119,12 +4339,12 @@ fn btw_modal_key_routing_and_animation() {
     assert!(app.btw_modal.is_animating());
 
     let actions = app.update(Msg::Key(key(KeyCode::Char('x'))));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(app.btw_modal.is_open());
     assert_eq!(app.input_box.buffer.value(), "");
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(!app.btw_modal.is_open());
     assert!(!app.btw_modal.is_animating());
 }
@@ -4175,7 +4395,11 @@ fn stale_terminal_event_after_cancel_saves_session(event: AgentEvent) {
     let old_run_id = app.run_id;
     cancel_app(&mut app);
     assert_ne!(app.run_id, old_run_id);
-    assert!(app.state.session.messages.is_empty());
+    assert!(
+        app.state.session.messages.is_empty(),
+        "expected empty, got {:?}",
+        app.state.session.messages
+    );
 
     app.update(agent_msg_with_run_id(event, old_run_id));
     assert_eq!(app.state.session.messages.len(), 2);
@@ -4196,7 +4420,11 @@ fn stale_non_terminal_event_does_not_save_session() {
         })),
         old_run_id,
     ));
-    assert!(app.state.session.messages.is_empty());
+    assert!(
+        app.state.session.messages.is_empty(),
+        "expected empty, got {:?}",
+        app.state.session.messages
+    );
 }
 
 #[test]
@@ -4357,7 +4585,11 @@ fn clear_and_implement_defers_submission_until_new_session() {
         pending.message.text,
         implement_msg(PlanForm::new().parallel())
     );
-    assert!(app.queue.is_empty());
+    assert!(
+        app.queue.is_empty(),
+        "expected empty, got {}",
+        app.queue.len()
+    );
     assert_eq!(app.main_chat().message_count(), 0);
 }
 
@@ -4454,7 +4686,7 @@ fn override_shadows_builtin_ctrl_when_no_overlay_open() {
 
     let actions = app.update(Msg::Key(kb::HELP.to_key_event()));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(
         !app.help_modal.is_open(),
         "override must consume the key before the built-in HELP handler runs"
@@ -4478,7 +4710,7 @@ fn override_shadows_quit_builtin() {
 
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(
         app.exit_request,
         ExitRequest::None,
@@ -4546,7 +4778,7 @@ fn override_shadows_tab_mode_toggle() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Tab)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(
         app.state.mode, initial_mode,
         "override must consume Tab before the built-in mode toggle runs"
@@ -4570,7 +4802,7 @@ fn override_shadows_esc_builtin() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(
         app.last_esc.is_none(),
         "override must consume Esc before the built-in esc handler runs"
@@ -4722,7 +4954,7 @@ fn ctrl_c_closes_overlay_instead_of_quitting() {
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::None);
     assert!(!app.help_modal.is_open());
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
 }
 
 #[test]
@@ -5063,7 +5295,7 @@ fn ctrl_c_denies_permission_prompt() {
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::None);
     assert!(!app.permission_prompt.is_open());
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
 }
 
 const TEST_AREA: Rect = Rect {
@@ -5104,7 +5336,7 @@ fn focused_lua_window_receives_app_key_input() {
 
     let actions = app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(matches!(
         event_rx.recv_timeout(Duration::from_secs(1)),
         Ok(n00n_lua::WinEvent::Key { key }) if key == "enter"
@@ -5259,7 +5491,11 @@ fn esc_in_main_chat_with_active_subagent_no_cancel() {
 #[test]
 fn cancel_subagent_removes_answer_sender() {
     let (mut app, _sub_rx, _main_rx) = app_with_subagent_tx("task1");
-    assert!(!app.subagent_answers.is_empty());
+    assert!(
+        !app.subagent_answers.is_empty(),
+        "expected non-empty, got {:?}",
+        app.subagent_answers
+    );
     app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
     assert_eq!(app.active_chat, 1);
     app.update(Msg::Key(key(KeyCode::Esc)));
@@ -5686,7 +5922,7 @@ fn retention_never_evicts_records_the_writer_has_not_persisted() {
                     .map(|(id, _, _)| id.to_owned())
                     .collect()
             });
-    assert!(!eviction.is_empty());
+    assert!(!eviction.is_empty(), "expected non-empty, got {eviction:?}");
     app.storage_writer
         .retain_durable(app.state.session.id, &mut eviction);
 

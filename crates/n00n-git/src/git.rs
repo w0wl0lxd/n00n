@@ -1207,7 +1207,11 @@ mod tests {
         assert!(matches!(err, GitError::InvalidReference(_)));
         // The worktree must be untouched: git never ran with `-f` as an option.
         let head = String::from_utf8(run(root, &["rev-parse", "HEAD"]).stdout).unwrap();
-        assert!(!head.trim().is_empty());
+        let n00n_empty_check_16 = head.trim();
+        assert!(
+            !n00n_empty_check_16.is_empty(),
+            "expected non-empty, got {n00n_empty_check_16:?}"
+        );
     }
 
     #[test]
@@ -1272,7 +1276,11 @@ mod tests {
             Err(GitError::GitOperation(_))
         ));
         let tracked = String::from_utf8(run(root, &["ls-files"]).stdout).unwrap();
-        assert!(tracked.trim().is_empty());
+        let n00n_empty_check_17 = tracked.trim();
+        assert!(
+            n00n_empty_check_17.is_empty(),
+            "expected empty, got {n00n_empty_check_17:?}"
+        );
     }
 
     #[test]
@@ -1360,11 +1368,11 @@ mod tests {
             add(root, &["link/secret.txt".to_string()]),
             Err(GitError::InvalidReference(_))
         ));
+        let n00n_empty_check_18 = String::from_utf8(run(root, &["ls-files"]).stdout).unwrap();
         assert!(
-            String::from_utf8(run(root, &["ls-files"]).stdout)
-                .unwrap()
-                .trim()
-                .is_empty()
+            n00n_empty_check_18.trim().is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_18.trim()
         );
     }
 
@@ -1444,11 +1452,12 @@ mod tests {
         std::fs::set_permissions(root.join("file.txt"), permissions).unwrap();
 
         add(root, &["file.txt".to_string()]).unwrap();
+        let n00n_empty_check_19 =
+            String::from_utf8(run(root, &["diff", "--cached", "--summary"]).stdout).unwrap();
         assert!(
-            String::from_utf8(run(root, &["diff", "--cached", "--summary"]).stdout)
-                .unwrap()
-                .trim()
-                .is_empty()
+            n00n_empty_check_19.trim().is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_19.trim()
         );
 
         std::fs::write(root.join("new.txt"), "new\n").unwrap();
@@ -1511,11 +1520,12 @@ mod tests {
         ));
         assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), conflicted);
         run(root, &["add", "conflict.txt"]);
+        let n00n_empty_check_20 =
+            String::from_utf8(run(root, &["ls-files", "--resolve-undo"]).stdout).unwrap();
         assert!(
-            !String::from_utf8(run(root, &["ls-files", "--resolve-undo"]).stdout)
-                .unwrap()
-                .trim()
-                .is_empty()
+            !n00n_empty_check_20.trim().is_empty(),
+            "expected non-empty, got {:?}",
+            n00n_empty_check_20.trim()
         );
         std::fs::write(root.join("other.txt"), "other\n").unwrap();
         let before = std::fs::read(root.join(".git/index")).unwrap();
@@ -1800,7 +1810,10 @@ mod tests {
         run(root, &["checkout", "--detach", &first_sha]);
 
         let branch_list = branches(root).unwrap();
-        assert!(!branch_list.is_empty());
+        assert!(
+            !branch_list.is_empty(),
+            "expected non-empty, got {branch_list:?}"
+        );
         for branch in &branch_list {
             assert!(
                 !branch.is_current,
@@ -1922,7 +1935,11 @@ mod tests {
         run(root, &["commit", "-m", "initial"]);
 
         let diff_result = diff(root, "HEAD", "HEAD").unwrap();
-        assert!(diff_result.files.is_empty());
+        assert!(
+            diff_result.files.is_empty(),
+            "expected empty, got {:?}",
+            diff_result.files
+        );
     }
 
     #[test]
@@ -2081,6 +2098,10 @@ mod tests {
         let single = log(root, 1).unwrap();
         assert_eq!(single.len(), 1);
         assert_eq!(single[0].id, third_id);
-        assert!(log(root, 0).unwrap().is_empty());
+        let n00n_empty_check_21 = log(root, 0).unwrap();
+        assert!(
+            n00n_empty_check_21.is_empty(),
+            "expected empty, got {n00n_empty_check_21:?}"
+        );
     }
 }

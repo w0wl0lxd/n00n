@@ -3419,7 +3419,11 @@ mod tests {
         let global = global_config_dir(dir.path());
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global), true);
         assert_eq!(perms.default, DefaultEffect::Prompt);
-        assert!(perms.rules.is_empty());
+        assert!(
+            perms.rules.is_empty(),
+            "expected empty, got {:?}",
+            perms.rules
+        );
     }
 
     #[test]
@@ -3913,7 +3917,11 @@ mod tests {
             config.plugins.opts["edit"]["edit_lines"],
             serde_json::json!(true)
         );
-        assert!(config.agent.disabled_tools.is_empty());
+        assert!(
+            config.agent.disabled_tools.is_empty(),
+            "expected empty, got {:?}",
+            config.agent.disabled_tools
+        );
     }
 
     #[test]
@@ -4114,8 +4122,16 @@ mod tests {
         let global = global_config_dir(dir.path());
         write_global_permissions(dir.path(), "[\"\"]\ndefault = \"allow\"\nallow = [\"x\"]\n");
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global), true);
-        assert!(perms.rules.is_empty());
-        assert!(perms.tool_defaults.is_empty());
+        assert!(
+            perms.rules.is_empty(),
+            "expected empty, got {:?}",
+            perms.rules
+        );
+        assert!(
+            perms.tool_defaults.is_empty(),
+            "expected empty, got {:?}",
+            perms.tool_defaults
+        );
     }
 
     #[cfg(unix)]

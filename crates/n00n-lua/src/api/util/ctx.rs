@@ -727,7 +727,11 @@ mod tests {
         };
         assert_eq!(actual_deadline, expected_deadline);
         assert_eq!(agent.tool_output_lines, ToolOutputLines::default());
-        assert!(agent.local_tools.is_empty());
+        assert!(
+            agent.local_tools.is_empty(),
+            "expected empty, got {} tools",
+            agent.local_tools.len()
+        );
         assert!(
             !agent
                 .loaded_instructions

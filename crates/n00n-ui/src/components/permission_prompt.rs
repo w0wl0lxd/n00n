@@ -405,7 +405,11 @@ mod tests {
         assert_eq!(prompt.handle_key(key(KeyCode::Esc)), None);
         if let PermissionPrompt::Open { state, buffer, .. } = &prompt {
             assert_eq!(*state, PromptState::Normal);
-            assert!(buffer.value().is_empty());
+            let n00n_empty_check_79 = buffer.value();
+            assert!(
+                n00n_empty_check_79.is_empty(),
+                "expected empty, got {n00n_empty_check_79:?}"
+            );
         } else {
             panic!("expected Open");
         }

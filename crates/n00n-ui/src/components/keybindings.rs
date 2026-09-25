@@ -1,3 +1,4 @@
+use crate::keymap::KeyStroke;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::fmt::Write;
 use std::sync::LazyLock;
@@ -114,7 +115,6 @@ impl Bind {
     /// folds it into the codepoint (Kitty `REPORT_ALTERNATE_KEYS`).
     #[must_use]
     pub fn matches(&self, key: KeyEvent) -> bool {
-        use crate::keymap::KeyStroke;
         KeyStroke::normalize(key) == KeyStroke::normalize_parts(self.code, self.modifiers)
     }
 

@@ -1053,7 +1053,11 @@ mod schema_tests {
         let schema = json!({});
         let sanitized = sanitize_tool_input_schema(schema);
         assert_eq!(sanitized["type"], "object");
-        assert!(sanitized["properties"].as_object().unwrap().is_empty());
+        let n00n_empty_check_15 = sanitized["properties"].as_object().unwrap();
+        assert!(
+            n00n_empty_check_15.is_empty(),
+            "expected empty, got {n00n_empty_check_15:?}"
+        );
     }
 
     #[test]

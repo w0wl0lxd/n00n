@@ -7590,7 +7590,12 @@ fn bundled_todo_focus_uses_persisted_session_state() {
     let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
     ctx.identity = Some(background.clone());
     smol::block_on(invocation.execute(&ctx)).output.unwrap();
-    assert!(host.hint_reader().load().entries.is_empty());
+    let n00n_empty_check_44 = host.hint_reader().load();
+    assert!(
+        n00n_empty_check_44.entries.is_empty(),
+        "expected empty, got {:?}",
+        n00n_empty_check_44.entries
+    );
 
     let snapshot = handle.capture_state(&background, 1).unwrap();
     handle.fire_autocmd(
