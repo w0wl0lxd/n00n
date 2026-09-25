@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790330365145,
+  "lastUpdate": 1790334359352,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -26765,6 +26765,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 160387,
             "range": "± 14933",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "80c8e7931cfb22daf74f1a5936ea34fa25fa83fc",
+          "message": "Merge pull request #514 from w0wl0lxd/feat/tui-notifications\n\nfeat(ui): terminal title and attention notifications",
+          "timestamp": "2026-09-25T06:51:05-04:00",
+          "tree_id": "06f44b3c001d5e452bb91888f8fc5d2841aa40d2",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/80c8e7931cfb22daf74f1a5936ea34fa25fa83fc"
+        },
+        "date": 1790334358397,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6673130,
+            "range": "± 39577",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221238,
+            "range": "± 4079",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218628,
+            "range": "± 51221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8011950,
+            "range": "± 46428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4309887,
+            "range": "± 14235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4285724,
+            "range": "± 18503",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585187,
+            "range": "± 3781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191428,
+            "range": "± 528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191860,
+            "range": "± 1318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1039479,
+            "range": "± 7953",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 587959,
+            "range": "± 1761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 587891,
+            "range": "± 1673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 56184,
+            "range": "± 3912",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 197580,
+            "range": "± 3234",
             "unit": "ns/iter"
           }
         ]
