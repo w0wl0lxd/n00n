@@ -2527,6 +2527,9 @@ mod tests {
     use tempfile::TempDir;
     use test_case::test_case;
 
+    const ENV_GLOBAL_VALUE: &str = "global";
+    const ENV_PROJECT_VALUE: &str = "project";
+
     fn plugin_enabled(enabled: bool) -> PluginFileConfig {
         PluginFileConfig {
             enabled: Some(enabled),
@@ -3093,26 +3096,24 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn max_log_bytes_mb_overflow_is_a_config_error() {
+    #[test_case(3, Some(3 * BYTES_PER_MB) ; "converts_to_bytes")]
+    #[test_case(u64::MAX, None ; "overflow_is_a_config_error")]
+    fn max_log_bytes_mb_conversion(max_log_bytes_mb: u64, expected_bytes: Option<u64>) {
         let mut raw = RawConfig::default();
-        raw.storage.max_log_bytes_mb = Some(u64::MAX);
+        raw.storage.max_log_bytes_mb = Some(max_log_bytes_mb);
 
-        let Err(err) = raw.into_config(false) else {
-            panic!("overflowing max_log_bytes_mb must be rejected");
-        };
-
-        assert!(matches!(err, ConfigError::LogBytesTooLarge { value } if value == u64::MAX));
-    }
-
-    #[test]
-    fn max_log_bytes_mb_converts_to_bytes() {
-        let mut raw = RawConfig::default();
-        raw.storage.max_log_bytes_mb = Some(3);
-
-        let config = raw.into_config(false).unwrap();
-
-        assert_eq!(config.storage.max_log_bytes, 3 * BYTES_PER_MB);
+        let max_log_bytes = raw
+            .into_config(false)
+            .map(|config| config.storage.max_log_bytes);
+        match (max_log_bytes, expected_bytes) {
+            (Ok(actual), Some(bytes)) => assert_eq!(actual, bytes),
+            (Err(ConfigError::LogBytesTooLarge { value }), None) => {
+                assert_eq!(value, max_log_bytes_mb);
+            }
+            (result, expected) => panic!(
+                "max_log_bytes_mb = {max_log_bytes_mb}: expected {expected:?}, got {result:?}"
+            ),
+        }
     }
 
     #[test_case(false, DefaultEffect::Prompt ; "untrusted_project_ignored")]
@@ -3149,13 +3150,14 @@ mod tests {
         assert_eq!(perms.rules[1].scope.as_deref(), Some("cargo *"));
     }
 
-    #[test]
-    fn scalar_tool_scope_value_is_coerced_not_dropped() {
+    #[test_case("\"rm -rf /\"" ; "scalar_is_coerced_not_dropped")]
+    #[test_case("[\"rm -rf /\"]" ; "array_is_kept")]
+    fn tool_scope_value_becomes_deny_rule(deny_value: &str) {
         let dir = TempDir::new().unwrap();
         let global = global_config_dir(dir.path());
         write_global_permissions(
             dir.path(),
-            "default = \"allow\"\n\n[bash]\ndeny = \"rm -rf /\"\n",
+            &format!("default = \"allow\"\n\n[bash]\ndeny = {deny_value}\n"),
         );
 
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global), true);
@@ -3165,7 +3167,7 @@ mod tests {
                     && r.effect == Effect::Deny
                     && r.scope.as_deref() == Some("rm -rf /")
             }),
-            "a scalar deny value must coerce to one scope instead of dropping the rule: {:?}",
+            "deny = {deny_value} must become one bash deny scope instead of being dropped: {:?}",
             perms.rules
         );
     }
@@ -3479,48 +3481,70 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case(
+        false,
+        ("TEST_N00N_UNTRUSTED_PROJECT_ENV_PROJECT", "TEST_N00N_UNTRUSTED_PROJECT_ENV_GLOBAL"),
+        None,
+        ENV_GLOBAL_VALUE ;
+        "untrusted_project_env_is_never_applied"
+    )]
+    #[test_case(
+        true,
+        ("TEST_N00N_TRUSTED_PROJECT_ENV_PROJECT", "TEST_N00N_TRUSTED_PROJECT_ENV_GLOBAL"),
+        Some(ENV_PROJECT_VALUE),
+        ENV_PROJECT_VALUE ;
+        "trusted_project_env_is_applied"
+    )]
     #[allow(unsafe_code)]
-    fn untrusted_project_env_is_never_applied() {
-        const PROJECT_ONLY: &str = "TEST_N00N_UNTRUSTED_PROJECT_ENV_PROJECT";
-        const GLOBAL_ONLY: &str = "TEST_N00N_UNTRUSTED_PROJECT_ENV_GLOBAL";
-
+    fn project_env_respects_trust(
+        project_trusted: bool,
+        (project_only, global_only): (&str, &str),
+        expected_project_only: Option<&str>,
+        expected_global_only: &str,
+    ) {
         let dir = TempDir::new().unwrap();
         let global = global_config_dir(dir.path());
         fs::create_dir_all(&global).unwrap();
-        fs::write(global.join(".env"), format!("{GLOBAL_ONLY}=global")).unwrap();
+        fs::write(
+            global.join(".env"),
+            format!("{global_only}={ENV_GLOBAL_VALUE}"),
+        )
+        .unwrap();
 
         let n00n_dir = dir.path().join(PROJECT_DIR);
         fs::create_dir_all(&n00n_dir).unwrap();
         fs::write(
             n00n_dir.join(".env"),
-            format!("{PROJECT_ONLY}=project\n{GLOBAL_ONLY}=project"),
+            format!("{project_only}={ENV_PROJECT_VALUE}\n{global_only}={ENV_PROJECT_VALUE}"),
         )
         .unwrap();
 
-        // SAFETY: tests run single-threaded; process env is the observable
-        // side effect under test.
+        // SAFETY: each case uses its own variable names; process env is the
+        // observable side effect under test.
         unsafe {
-            std::env::remove_var(PROJECT_ONLY);
-            std::env::remove_var(GLOBAL_ONLY);
+            std::env::remove_var(project_only);
+            std::env::remove_var(global_only);
         }
 
-        load_env_files_with_global(dir.path(), Some(&global), false);
+        load_env_files_with_global(dir.path(), Some(&global), project_trusted);
 
-        assert!(
-            std::env::var(PROJECT_ONLY).is_err(),
-            "untrusted project .env must not set process environment variables"
+        assert_eq!(
+            std::env::var_os(project_only)
+                .map(|value| value.into_string().unwrap())
+                .as_deref(),
+            expected_project_only,
+            "project .env must set process environment variables only when trusted"
         );
         assert_eq!(
-            std::env::var(GLOBAL_ONLY).unwrap(),
-            "global",
-            "untrusted project .env must not shadow the trusted global .env"
+            std::env::var(global_only).unwrap(),
+            expected_global_only,
+            "project .env may shadow the global .env only when trusted"
         );
 
         // SAFETY: cleanup of the variables set earlier in this test.
         unsafe {
-            std::env::remove_var(PROJECT_ONLY);
-            std::env::remove_var(GLOBAL_ONLY);
+            std::env::remove_var(project_only);
+            std::env::remove_var(global_only);
         }
     }
 
