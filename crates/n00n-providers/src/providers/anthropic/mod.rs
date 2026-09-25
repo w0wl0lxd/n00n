@@ -972,19 +972,26 @@ data: {\"type\":\"message_stop\"}\n";
         });
     }
 
-    #[test]
-    fn mid_stream_error_after_text_delta_is_not_retried() {
-        smol::block_on(async {
-            let sse_data = b"\
-event: content_block_start\n\
-data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
-\n\
-event: content_block_delta\n\
-data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial answer\"}}\n\
-\n\
-event: error\n\
-data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"internal fault\"}}\n";
+    macro_rules! text_delta_then_error {
+        ($error:literal) => {
+            concat!(
+                "event: content_block_start\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial answer\"}}\n\n",
+                "event: error\n",
+                "data: {\"type\":\"error\",\"error\":",
+                $error,
+                "}\n"
+            )
+            .as_bytes()
+        };
+    }
 
+    #[test_case(text_delta_then_error!(r#"{"type":"api_error","message":"internal fault"}"#) ; "internal_fault")]
+    #[test_case(text_delta_then_error!(r#"{"type":"overloaded_error","message":"server_is_overloaded: Our servers are currently overloaded. Please try again later."}"#) ; "server_overloaded")]
+    fn mid_stream_error_after_text_delta_is_not_retried(sse_data: &'static [u8]) {
+        smol::block_on(async {
             let (tx, _rx) = flume::unbounded();
             let error = parse_sse(mock_response(sse_data), &tx, TEST_STREAM_TIMEOUT)
                 .await

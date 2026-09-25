@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use async_lock::RwLock;
 use flume::Sender;
 use futures_lite::io::BufReader;
+use isahc::http::StatusCode;
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use n00n_storage::id::{SessionRef, n00nId};
 use serde::Deserialize;
@@ -37,6 +38,13 @@ const CACHE_TTL: Duration = Duration::from_secs(CACHE_TTL_SECONDS);
 const CACHE_FAILURE_RETRY_DELAY: Duration = Duration::from_mins(1);
 const PRO_CACHE_WRITE_PRICE: f64 = 1.625;
 const FLASH_CACHE_WRITE_PRICE: f64 = 0.233_333_333_333_333_34;
+const GRPC_RESOURCE_EXHAUSTED: &str = "RESOURCE_EXHAUSTED";
+const GRPC_RATE_LIMIT_EXCEEDED: &str = "RATE_LIMIT_EXCEEDED";
+const GRPC_UNAVAILABLE: &str = "UNAVAILABLE";
+const GRPC_DEADLINE_EXCEEDED: &str = "DEADLINE_EXCEEDED";
+const GRPC_UNAUTHENTICATED: &str = "UNAUTHENTICATED";
+const GRPC_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
+const GRPC_NOT_FOUND: &str = "NOT_FOUND";
 
 /// The generic per-model max, capped by Google's documented `thinkingBudget`
 /// hard limits per family.
@@ -818,10 +826,13 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     parts.push(part);
                 }
                 ContentBlock::RedactedThinking { .. } | ContentBlock::ProviderItem { .. } => {}
-                ContentBlock::ToolUse { id: _, name, input }
-                | ContentBlock::NamespacedToolUse { name, input, .. } => {
+                ContentBlock::ToolUse { id, name, input }
+                | ContentBlock::NamespacedToolUse {
+                    id, name, input, ..
+                } => {
                     parts.push(json!({
                         "functionCall": {
+                            "id": id,
                             "name": name,
                             "args": input,
                         }
@@ -848,6 +859,7 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                         .unwrap_or_else(|| "unknown");
                     parts.push(json!({
                         "functionResponse": {
+                            "id": tool_use_id,
                             "name": name,
                             "response": response_val,
                         }
@@ -939,6 +951,7 @@ struct SsePart {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SseFunctionCall {
+    id: Option<String>,
     name: String,
     args: Option<Value>,
 }
@@ -984,18 +997,19 @@ impl GoogleErrorDetail {
     /// Google reports the HTTP status in `code` and a gRPC-style `status`
     /// string. Only 429 and 5xx stay retryable, per Google's retry guidance.
     fn http_status(&self) -> u16 {
-        if self.code >= 400 {
+        if self.code >= StatusCode::BAD_REQUEST.as_u16() {
             return self.code;
         }
-        match self.status.as_str() {
-            "RESOURCE_EXHAUSTED" | "RATE_LIMIT_EXCEEDED" => 429,
-            "UNAVAILABLE" => 503,
-            "DEADLINE_EXCEEDED" => 504,
-            "UNAUTHENTICATED" => 401,
-            "PERMISSION_DENIED" => 403,
-            "NOT_FOUND" => 404,
-            _ => 400,
-        }
+        let status = match self.status.as_str() {
+            GRPC_RESOURCE_EXHAUSTED | GRPC_RATE_LIMIT_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
+            GRPC_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
+            GRPC_DEADLINE_EXCEEDED => StatusCode::GATEWAY_TIMEOUT,
+            GRPC_UNAUTHENTICATED => StatusCode::UNAUTHORIZED,
+            GRPC_PERMISSION_DENIED => StatusCode::FORBIDDEN,
+            GRPC_NOT_FOUND => StatusCode::NOT_FOUND,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        status.as_u16()
     }
 }
 
@@ -1081,9 +1095,12 @@ async fn parse_sse(
 
             for part in parts {
                 if let Some(func_call) = part.function_call {
-                    // Gemini function calls carry no id, so synthesize a unique
-                    // one: the same tool can run twice in one response.
-                    let id = format!("call_{}_{}", func_call.name, tool_call_count);
+                    // Gemini's id is optional; when it is absent, synthesize a
+                    // unique one: the same tool can run twice in one response.
+                    let id = match func_call.id {
+                        Some(id) if !id.is_empty() => id,
+                        _ => format!("call_{}_{}", func_call.name, tool_call_count),
+                    };
                     tool_call_count += 1;
                     let input = func_call.args.unwrap_or_else(Default::default);
                     event_tx
@@ -1140,6 +1157,13 @@ mod tests {
     use super::*;
     use crate::CacheKind;
     use test_case::test_case;
+
+    const TOOL_CALL_ID: &str = "call_1";
+    const PROVIDER_CALL_ID: &str = "fc_provider_1";
+    const SYNTHETIC_BASH_CALL_ID: &str = "call_bash_0";
+    const GRPC_INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
+    const NO_ERROR_CODE: u16 = 0;
+    const TEST_ERROR_MESSAGE: &str = "Invalid tool schema";
 
     #[test_case(ThinkingConfig::Off,           &json!({})                                                                  ; "off_sends_nothing")]
     #[test_case(ThinkingConfig::Adaptive,      &json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive_asks_for_thoughts")]
@@ -1336,7 +1360,7 @@ mod tests {
             Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
-                    id: "call_1".into(),
+                    id: TOOL_CALL_ID.into(),
                     name: "read_file".into(),
                     input: json!({"path": "/tmp/a"}),
                 }],
@@ -1345,7 +1369,7 @@ mod tests {
             Message {
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "call_1".into(),
+                    tool_use_id: TOOL_CALL_ID.into(),
                     content: "file contents".into(),
                     is_error: false,
                 }],
@@ -1354,19 +1378,28 @@ mod tests {
         ];
         let result = convert_messages(&messages);
         assert_eq!(result[0]["parts"][0]["functionCall"]["name"], "read_file");
+        assert_eq!(result[0]["parts"][0]["functionCall"]["id"], TOOL_CALL_ID);
         assert_eq!(
             result[1]["parts"][0]["functionResponse"]["name"],
             "read_file"
         );
+        assert_eq!(
+            result[1]["parts"][0]["functionResponse"]["id"],
+            TOOL_CALL_ID
+        );
     }
 
-    #[test]
-    fn convert_messages_wraps_scalar_tool_results_in_an_object() {
+    #[test_case("42", &json!(42) ; "number")]
+    #[test_case("true", &json!(true) ; "bool")]
+    #[test_case("null", &Value::Null ; "null")]
+    #[test_case("[1,2]", &json!([1, 2]) ; "list")]
+    #[test_case("plain text", &json!("plain text") ; "non_json_text")]
+    fn convert_messages_wraps_scalar_tool_results_in_an_object(content: &str, expected: &Value) {
         let messages = vec![
             Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
-                    id: "call_1".into(),
+                    id: TOOL_CALL_ID.into(),
                     name: "bash".into(),
                     input: json!({}),
                 }],
@@ -1375,8 +1408,8 @@ mod tests {
             Message {
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "call_1".into(),
-                    content: "42".into(),
+                    tool_use_id: TOOL_CALL_ID.into(),
+                    content: content.into(),
                     is_error: false,
                 }],
                 ..Default::default()
@@ -1388,7 +1421,7 @@ mod tests {
             response.is_object(),
             "Gemini requires an object response, got {response}"
         );
-        assert_eq!(response["result"], json!(42));
+        assert_eq!(response["result"], *expected);
     }
 
     #[test]
@@ -1482,8 +1515,8 @@ mod tests {
         }
     }
 
-    fn mock_response(data: &'static [u8]) -> isahc::Response<isahc::AsyncBody> {
-        let body = isahc::AsyncBody::from_bytes_static(data);
+    fn mock_response(data: &[u8]) -> isahc::Response<isahc::AsyncBody> {
+        let body = isahc::AsyncBody::from(data.to_vec());
         isahc::Response::builder().status(200).body(body).unwrap()
     }
 
@@ -1575,9 +1608,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn parse_sse_repeated_function_call_gets_distinct_ids() {
-        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"a\"}}},{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"b\"}}}]},\"finishReason\":\"STOP\"}]}\n\n";
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"a\"}}},{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"b\"}}}]},\"finishReason\":\"STOP\"}]}\n\n" ; "synthesized")]
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"fc_a\",\"name\":\"read\",\"args\":{\"path\":\"a\"}}},{\"functionCall\":{\"id\":\"fc_b\",\"name\":\"read\",\"args\":{\"path\":\"b\"}}}]},\"finishReason\":\"STOP\"}]}\n\n" ; "provider_assigned")]
+    fn parse_sse_repeated_function_call_gets_distinct_ids(data: &[u8]) {
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
         let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
@@ -1586,29 +1619,51 @@ mod tests {
         assert_ne!(ids[0], ids[1], "ids must be unique per call: {ids:?}");
     }
 
-    #[test]
-    fn parse_sse_tool_call_finish_reason_in_later_chunk_stays_tool_use() {
-        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":15}}\n\n";
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"fc_provider_1\",\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]},\"finishReason\":\"STOP\"}]}\n\n", PROVIDER_CALL_ID ; "provider_id_kept")]
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"\",\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]},\"finishReason\":\"STOP\"}]}\n\n", SYNTHETIC_BASH_CALL_ID ; "empty_id_synthesized")]
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]},\"finishReason\":\"STOP\"}]}\n\n", SYNTHETIC_BASH_CALL_ID ; "missing_id_synthesized")]
+    fn parse_sse_function_call_id(data: &[u8], expected_id: &str) {
         let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let ids: Vec<&str> = result.message.tool_uses().map(|(id, _, _)| id).collect();
+        assert_eq!(ids, [expected_id]);
+    }
+
+    #[test_case("STOP" ; "stop")]
+    #[test_case("MAX_TOKENS" ; "max_tokens")]
+    fn parse_sse_tool_call_finish_reason_in_later_chunk_stays_tool_use(finish_reason: &str) {
+        let data = format!(
+            "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"functionCall\":{{\"name\":\"bash\",\"args\":{{\"cmd\":\"ls\"}}}}}}]}}}}]}}\n\ndata: {{\"candidates\":[{{\"content\":{{\"parts\":[]}},\"finishReason\":\"{finish_reason}\"}}],\"usageMetadata\":{{\"promptTokenCount\":5,\"candidatesTokenCount\":15}}}}\n\n"
+        );
+        let response = mock_response(data.as_bytes());
         let (tx, _rx) = flume::unbounded();
         let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
     }
 
-    #[test]
-    fn parse_sse_error_payload_reports_provider_error() {
-        let data = b"data: {\"error\":{\"code\":400,\"message\":\"Invalid tool schema\",\"status\":\"INVALID_ARGUMENT\"}}\n\n";
-        let response = mock_response(data);
+    #[test_case(StatusCode::BAD_REQUEST.as_u16(), GRPC_INVALID_ARGUMENT, StatusCode::BAD_REQUEST, false ; "http_code_wins")]
+    #[test_case(NO_ERROR_CODE, GRPC_RESOURCE_EXHAUSTED, StatusCode::TOO_MANY_REQUESTS, true ; "resource_exhausted")]
+    #[test_case(NO_ERROR_CODE, GRPC_UNAVAILABLE, StatusCode::SERVICE_UNAVAILABLE, true ; "unavailable")]
+    #[test_case(NO_ERROR_CODE, GRPC_PERMISSION_DENIED, StatusCode::FORBIDDEN, false ; "permission_denied")]
+    #[test_case(NO_ERROR_CODE, GRPC_INVALID_ARGUMENT, StatusCode::BAD_REQUEST, false ; "unmapped_status")]
+    fn parse_sse_error_payload_reports_provider_error(
+        code: u16,
+        grpc_status: &str,
+        expected_status: StatusCode,
+        retryable: bool,
+    ) {
+        let data = format!(
+            "data: {{\"error\":{{\"code\":{code},\"message\":\"{TEST_ERROR_MESSAGE}\",\"status\":\"{grpc_status}\"}}}}\n\n"
+        );
+        let response = mock_response(data.as_bytes());
         let (tx, _rx) = flume::unbounded();
         let error = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
-        assert!(
-            !error.is_retryable(),
-            "unexpected retryable error: {error:?}"
-        );
+        assert_eq!(error.is_retryable(), retryable, "error: {error:?}");
         match error {
             AgentError::Api { status, message } => {
-                assert_eq!(status, 400);
-                assert!(message.contains("Invalid tool schema"), "{message}");
+                assert_eq!(status, expected_status.as_u16());
+                assert!(message.contains(TEST_ERROR_MESSAGE), "{message}");
             }
             other => panic!("expected Api error, got: {other:?}"),
         }
