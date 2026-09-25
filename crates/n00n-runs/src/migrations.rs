@@ -249,10 +249,9 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("runs.sqlite3");
         let mut first = Connection::open(&path).unwrap();
-        let other_path = path.clone();
         migrate_inner(&mut first, 1, false, move || {
             if concurrent {
-                let mut other = Connection::open(&other_path).unwrap();
+                let mut other = Connection::open(&path).unwrap();
                 migrate(&mut other, 1).unwrap();
             }
             Ok(())
