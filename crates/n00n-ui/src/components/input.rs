@@ -1937,14 +1937,14 @@ mod tests {
     #[test]
     fn edit_action_select_then_type_replaces() {
         let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "hello");
+        type_text(&mut input, "hell");
         input.edit_action(KeyAction::SelectCharLeft);
         input.edit_action(KeyAction::SelectCharLeft);
-        assert_eq!(input.selected_text().as_deref(), Some("lo"));
+        assert_eq!(input.selected_text().as_deref(), Some("ll"));
 
         let action = input.edit_action(KeyAction::DeleteCharBack);
         assert!(matches!(action, InputAction::PaletteSync(_)));
-        assert_eq!(input.buffer.value(), "hel");
+        assert_eq!(input.buffer.value(), "he");
         assert!(input.selected_text().is_none());
     }
 

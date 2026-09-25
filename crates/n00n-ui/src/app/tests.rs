@@ -2117,15 +2117,15 @@ fn shift_enter_inserts_newline() {
 #[test]
 fn shift_arrows_select_then_typing_replaces() {
     let mut app = test_app();
-    for c in "hello".chars() {
+    for c in "hell".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
     app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
-    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("lo"));
+    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("ll"));
 
     app.update(Msg::Key(key(KeyCode::Char('X'))));
-    assert_eq!(app.input_box.buffer.value(), "helX");
+    assert_eq!(app.input_box.buffer.value(), "heX");
     assert!(app.input_box.buffer.selected_text().is_none());
 }
 
