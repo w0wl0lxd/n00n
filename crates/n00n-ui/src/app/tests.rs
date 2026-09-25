@@ -746,6 +746,31 @@ fn pending_image_load_blocks_submission(submit_key: KeyCode) {
     assert_eq!(app.input_box.buffer.value(), "describe image");
 }
 
+#[test_case(KeyCode::Enter, KeyModifiers::SHIFT, "describe image\n"; "shift_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::ALT, "describe image\n"; "alt_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::CONTROL, "describe image\n"; "ctrl_enter_inserts_newline")]
+#[test_case(KeyCode::Char('j'), KeyModifiers::CONTROL, "describe image\n"; "ctrl_j_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::NONE, "describe image"; "plain_enter_still_blocked")]
+fn pending_image_load_does_not_swallow_newline_keys(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    expected: &str,
+) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.image_paste_rx.push(rx);
+    app.update(Msg::Paste("describe image".into()));
+    let newline_key = KeyEvent {
+        code,
+        modifiers,
+        kind: crossterm::event::KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    app.update(Msg::Key(newline_key));
+    assert_eq!(app.input_box.buffer.value(), expected);
+}
+
 #[test]
 fn disconnected_image_load_is_removed() {
     let mut app = test_app();

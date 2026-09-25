@@ -53,6 +53,7 @@ use crate::components::{
 };
 use crate::image;
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
+use crate::text_buffer::is_newline_key;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use n00n_agent::permissions::PermissionManager;
@@ -1073,7 +1074,7 @@ impl App {
 
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if !self.image_paste_rx.is_empty()
-            && (key.code == KeyCode::Enter
+            && ((key.code == KeyCode::Enter && !is_newline_key(&key))
                 || (key.code == KeyCode::Tab
                     && self.status == Status::Streaming
                     && !self.is_bash_input()))
