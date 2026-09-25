@@ -289,18 +289,69 @@ async fn send_worker_request(stdin: &mut ChildStdin, request: &WorkerRequest) ->
 
 const MAX_WORKER_EVENT_BYTES: usize = 10 * 1024 * 1024;
 
+enum WorkerFrame {
+    Eof,
+    Line(Vec<u8>),
+    Overflow,
+}
+
+/// Reads one `\n`-delimited frame without ever buffering more than
+/// `max_bytes`: a chunk that would cross the limit is dropped instead of
+/// appended, but still consumed, so the stream stays in sync and the next
+/// call starts at the following frame.
+async fn read_bounded_line(
+    reader: &mut (impl futures_lite::io::AsyncBufRead + Unpin),
+    max_bytes: usize,
+) -> io::Result<WorkerFrame> {
+    let mut line = Vec::new();
+    let mut overflow = false;
+    loop {
+        let buf = reader.fill_buf().await?;
+        if buf.is_empty() {
+            return Ok(if overflow {
+                WorkerFrame::Overflow
+            } else if line.is_empty() {
+                WorkerFrame::Eof
+            } else {
+                WorkerFrame::Line(line)
+            });
+        }
+        let newline_pos = buf.iter().position(|&byte| byte == b'\n');
+        let chunk_len = newline_pos.map_or(buf.len(), |pos| pos + 1);
+        if !overflow {
+            if line.len() + chunk_len > max_bytes {
+                overflow = true;
+            } else {
+                line.extend_from_slice(&buf[..chunk_len]);
+            }
+        }
+        reader.consume(chunk_len);
+        if newline_pos.is_some() {
+            return Ok(if overflow {
+                WorkerFrame::Overflow
+            } else {
+                WorkerFrame::Line(line)
+            });
+        }
+    }
+}
+
 async fn read_worker_event(stdout: &mut BufReader<ChildStdout>) -> io::Result<Option<WorkerEvent>> {
     loop {
-        let mut line = String::new();
-        if stdout.read_line(&mut line).await? == 0 {
-            return Ok(None);
-        }
-        if line.len() > MAX_WORKER_EVENT_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("interpreter worker event exceeded frame limit {MAX_WORKER_EVENT_BYTES}"),
-            ));
-        }
+        let line = match read_bounded_line(stdout, MAX_WORKER_EVENT_BYTES).await? {
+            WorkerFrame::Eof => return Ok(None),
+            WorkerFrame::Overflow => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "interpreter worker event exceeded frame limit {MAX_WORKER_EVENT_BYTES}"
+                    ),
+                ));
+            }
+            WorkerFrame::Line(line) => line,
+        };
+        let line = String::from_utf8(line)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if !line.trim_start().starts_with('{') {
             continue;
         }
@@ -534,9 +585,13 @@ async fn interpreter_run(
 mod tests {
     #[cfg(unix)]
     use super::{INTERPRETER_TIMEOUT_ERR, read_worker_event, send_worker_request, spawn_worker};
-    use super::{MAX_INTERPRETER_TIMEOUT_SECS, interpreter_run, ruff_fix};
+    use super::{
+        MAX_INTERPRETER_TIMEOUT_SECS, MAX_WORKER_EVENT_BYTES, WorkerFrame, interpreter_run,
+        read_bounded_line, ruff_fix,
+    };
     #[cfg(unix)]
     use crate::runtime::{CANCELLED_MSG, TaskCell, TaskHandle};
+    use futures_lite::io::Cursor;
     use mlua::Lua;
     #[cfg(unix)]
     use mlua::Table;
@@ -554,6 +609,64 @@ mod tests {
     #[ignore = "worker entrypoint fixture invoked by the integration harness"]
     fn interpreter_worker_entry() {
         n00n_interpreter::worker::run_stdio().unwrap();
+    }
+
+    #[test]
+    fn read_bounded_line_returns_eof_for_empty_input() {
+        smol::block_on(async {
+            let mut reader = Cursor::new(Vec::<u8>::new());
+            assert!(matches!(
+                read_bounded_line(&mut reader, MAX_WORKER_EVENT_BYTES)
+                    .await
+                    .unwrap(),
+                WorkerFrame::Eof
+            ));
+        });
+    }
+
+    #[test]
+    fn read_bounded_line_reads_a_line_within_the_limit() {
+        smol::block_on(async {
+            let mut reader = Cursor::new(b"hello\n".to_vec());
+            let frame = read_bounded_line(&mut reader, 10).await.unwrap();
+            assert!(matches!(frame, WorkerFrame::Line(line) if line.as_slice() == b"hello\n"));
+        });
+    }
+
+    #[test]
+    fn read_bounded_line_flags_overflow_at_exact_newline_boundary_and_preserves_next_frame() {
+        smol::block_on(async {
+            const LIMIT: usize = 8;
+            let mut stream = "x".repeat(LIMIT + 1).into_bytes();
+            stream.push(b'\n');
+            stream.extend_from_slice(b"next\n");
+            let mut reader = Cursor::new(stream);
+
+            assert!(matches!(
+                read_bounded_line(&mut reader, LIMIT).await.unwrap(),
+                WorkerFrame::Overflow
+            ));
+            let second = read_bounded_line(&mut reader, LIMIT).await.unwrap();
+            assert!(matches!(second, WorkerFrame::Line(line) if line.as_slice() == b"next\n"));
+        });
+    }
+
+    #[test]
+    fn read_bounded_line_flags_oversized_frame_without_early_newline_and_resyncs() {
+        smol::block_on(async {
+            const LIMIT: usize = 8;
+            let mut stream = "y".repeat(LIMIT * 50).into_bytes();
+            stream.push(b'\n');
+            stream.extend_from_slice(b"next\n");
+            let mut reader = Cursor::new(stream);
+
+            assert!(matches!(
+                read_bounded_line(&mut reader, LIMIT).await.unwrap(),
+                WorkerFrame::Overflow
+            ));
+            let second = read_bounded_line(&mut reader, LIMIT).await.unwrap();
+            assert!(matches!(second, WorkerFrame::Line(line) if line.as_slice() == b"next\n"));
+        });
     }
 
     #[test]
