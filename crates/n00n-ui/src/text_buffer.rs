@@ -270,6 +270,7 @@ impl TextBuffer {
     /// (typing over a selection) stays one undoable edit.
     fn delete_selection(&mut self) -> bool {
         let Some(((sy, sx), (ey, ex))) = self.selection() else {
+            self.selection = None;
             return false;
         };
         self.remove_span(sy, sx, ey, ex);
@@ -1346,6 +1347,16 @@ mod tests {
         assert_eq!(buf.selected_text().as_deref(), Some("one"));
         buf.select_word_right();
         assert_eq!(buf.selected_text().as_deref(), Some("one two"));
+    }
+
+    #[test]
+    fn collapsed_selection_anchor_does_not_reappear_on_typing() {
+        let mut buf = TextBuffer::new("");
+        buf.select_all();
+        assert!(!buf.has_selection());
+        buf.push_char('h');
+        buf.push_char('i');
+        assert_eq!(buf.value(), "hi");
     }
 
     #[test]

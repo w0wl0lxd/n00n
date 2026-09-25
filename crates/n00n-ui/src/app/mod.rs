@@ -1264,6 +1264,10 @@ impl App {
                 if self.try_restore_pending_submission() {
                     return vec![];
                 }
+                if self.queue.cancel_editing() {
+                    self.input_box.discard();
+                    return vec![];
+                }
                 if self.is_main_chat() {
                     self.handle_cancel()
                 } else {
