@@ -517,6 +517,8 @@ pub fn assemble_system(id: PromptId, slots: &ResolvedSlots, instructions: &str) 
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use test_case::test_case;
 
@@ -942,13 +944,16 @@ mod tests {
     /// A binary-search pivot inside a multi-byte char used to leave `lo`
     /// unchanged and spin forever. The watchdog turns that hang into a failure
     /// instead of a stuck test process.
-    #[test]
-    fn shrink_todo_line_terminates_when_the_pivot_splits_a_multibyte_char() {
-        use std::time::Duration;
-
-        let content = format!("aaaa{}", "é".repeat(50) + &"z".repeat(200));
+    #[test_case("é", 100 ; "two_byte_char")]
+    #[test_case("€", 100 ; "three_byte_char")]
+    #[test_case("\u{1F600}", 100 ; "four_byte_char")]
+    #[test_case("é", 60 ; "two_byte_char_tight_budget")]
+    fn shrink_todo_line_terminates_when_the_pivot_splits_a_multibyte_char(
+        multibyte: &str,
+        avail: usize,
+    ) {
+        let content = format!("aaaa{}", multibyte.repeat(50) + &"z".repeat(200));
         let line = todo_line("in_progress", &content);
-        let avail = 100usize;
         assert!(
             line.len() > avail,
             "fixture must need shrinking: len={}",
