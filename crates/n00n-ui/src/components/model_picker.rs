@@ -157,16 +157,10 @@ impl ModelPicker {
         drop(guard);
         self.dirty = false;
         let highlighted_spec = self.picker.selected_item().map(|e| e.spec.clone());
-        let (entries, current_idx) = self.load_entries();
-        let idx = match highlighted_spec
-            .as_deref()
-            .and_then(|spec| entries.iter().position(|e| e.spec == spec))
-        {
-            Some(preserved) => preserved,
-            None => current_idx,
-        };
+        let (entries, _current_idx) = self.load_entries();
+        let target_spec = highlighted_spec.unwrap_or_else(|| self.current_spec.clone());
         self.picker.replace_items(entries);
-        self.picker.select(idx);
+        self.picker.select_by(|e| e.spec == target_spec);
     }
 
     fn load_entries(&mut self) -> (Vec<ModelEntry>, usize) {
@@ -437,6 +431,40 @@ mod tests {
         assert!(
             matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
             "highlight should stay on the model that was cycled, not jump back to current"
+        );
+    }
+
+    #[test]
+    fn refresh_preserves_highlighted_selection_under_active_filter() {
+        let models = Arc::new(ArcSwapOption::empty());
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+            "zai/glm-5".into(),
+        ])));
+        let mut p = ModelPicker::new(Arc::clone(&models));
+        p.open("");
+
+        p.handle_key(key(KeyCode::Char('g')));
+        p.handle_key(key(KeyCode::Char('l')));
+        p.handle_key(key(KeyCode::Char('m')));
+
+        // glm-5 is highlighted at raw entries index 2. Adding glm-5-air keeps
+        // it matching the "glm" filter but moves its filtered-list position,
+        // so a refresh that selects by raw index instead of filtered
+        // position would land on the wrong entry.
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+            "zai/glm-5".into(),
+            "zai/glm-5-air".into(),
+        ])));
+        p.try_refresh();
+
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s == "zai/glm-5"),
+            "highlight should stay on glm-5, not shift to the newly filtered-in glm-5-air"
         );
     }
 

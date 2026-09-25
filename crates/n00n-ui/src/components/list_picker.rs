@@ -275,6 +275,27 @@ impl<T: PickerItem> ListPicker<T> {
         }
     }
 
+    /// Selects the first item matching `predicate`, resolved through the
+    /// active filter. Unlike `select`, whose argument indexes `items`
+    /// directly, this stays correct when a search has narrowed `filtered`.
+    // clippy would rewrite this to the workspace's banned `Option::unwrap_or`;
+    // the None arm is a named fallback, not a silent default.
+    #[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
+    pub fn select_by(&mut self, predicate: impl Fn(&T) -> bool) {
+        if let Some(s) = self.state.as_mut() {
+            let position = match s
+                .filtered
+                .iter()
+                .position(|&raw_idx| predicate(&s.items[raw_idx]))
+            {
+                Some(matched) => matched,
+                None => 0,
+            };
+            s.selected = position.min(s.filtered.len().saturating_sub(1));
+            s.ensure_visible();
+        }
+    }
+
     pub fn set_error_text(&mut self, text: Option<String>) {
         self.error_text = text;
     }
@@ -944,6 +965,24 @@ mod tests {
 
         p.handle_key(key(KeyCode::Char('l')));
         assert_eq!(ready_state(&p).filtered, vec![0]);
+    }
+
+    #[test]
+    fn select_by_resolves_predicate_through_active_filter() {
+        let mut p = ListPicker::new();
+        p.open(entries(&["Zulu", "Yankee", "Alpha", "Alphorn"]), " Test ");
+
+        p.handle_key(key(KeyCode::Char('A')));
+        p.handle_key(key(KeyCode::Char('l')));
+        p.handle_key(key(KeyCode::Char('p')));
+        p.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(ready_state(&p).filtered, vec![2, 3]);
+
+        // "Alpha" sits at raw index 2 but filtered position 0; a raw-index
+        // `select(2)` would clamp into filtered position 1 ("Alphorn").
+        p.select_by(|e| e.label == "Alpha");
+        let s = ready_state(&p);
+        assert_eq!(s.filtered[s.selected], 2);
     }
 
     #[test]
