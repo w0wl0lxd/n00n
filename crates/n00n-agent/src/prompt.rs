@@ -128,12 +128,13 @@ impl PromptId {
 impl ValidNames for Slot {}
 impl ValidNames for PromptId {}
 
+#[derive(Clone)]
 pub struct SlotEntry {
     pub plugin: Arc<str>,
     pub content: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ResolvedSlots {
     entries: HashMap<(PromptId, Slot), Vec<SlotEntry>>,
 }

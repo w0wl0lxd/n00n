@@ -53,12 +53,13 @@ use crate::components::{
 };
 use crate::image;
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
+use crate::text_buffer::is_newline_key;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    AgentEvent, Envelope, FusionPhase, ImageSource, McpConfigErrors, McpPromptInfo,
-    McpSnapshotReader, PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
+    AgentEvent, Envelope, FusionPhase, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
+    PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
@@ -1081,6 +1082,15 @@ impl App {
     }
 
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        if !self.image_paste_rx.is_empty()
+            && ((key.code == KeyCode::Enter && !is_newline_key(&key))
+                || (key.code == KeyCode::Tab
+                    && self.status == Status::Streaming
+                    && !self.is_bash_input()))
+        {
+            self.status_bar.flash(image_paste::IMAGE_LOADING_MSG.into());
+            return vec![];
+        }
         if key::TRANSCRIPT_DETAILS.matches(key) {
             let visible = self.active_chat().toggle_transcript_details();
             self.flash(
@@ -1230,6 +1240,14 @@ impl App {
     }
 
     pub(crate) fn handle_submit(&mut self, sub: Submission) -> Vec<Action> {
+        if !self.image_paste_rx.is_empty() {
+            self.input_box.set_input(&sub.text);
+            for image in sub.images {
+                self.input_box.attach_image(image);
+            }
+            self.status_bar.flash(image_paste::IMAGE_LOADING_MSG.into());
+            return vec![];
+        }
         match std::mem::take(&mut self.pending_input) {
             PendingInput::AuthRetry { subagent_id } => {
                 self.send_to_agent(subagent_id.as_deref(), String::new());

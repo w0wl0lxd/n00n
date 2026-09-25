@@ -1,4 +1,4 @@
-use super::image_paste::{IMAGE_LOADER_GONE_MSG, IMAGE_STALE_MSG};
+use super::image_paste::{IMAGE_LOAD_DISCONNECTED_MSG, IMAGE_STALE_MSG};
 use super::session::message_tool_use_ids;
 use super::*;
 use crate::agent::{Delivery, shared_queue};
@@ -12,9 +12,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventK
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_agent::{
-    ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
-    McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
-    ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ExtractedCommand, ImageMediaType, ImageSource, InterruptPoint, InterruptSource,
+    McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader,
+    ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
@@ -730,6 +730,74 @@ fn paste_normalizes_line_endings(input: &str, expected: &str) {
     assert_eq!(app.input_box.buffer.value(), expected);
 }
 
+#[test_case(Status::Idle; "idle")]
+#[test_case(Status::Streaming; "streaming")]
+fn image_load_completion_allows_submission_with_image(status: Status) {
+    let mut app = test_app();
+    app.status = status;
+    let (tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    app.update(Msg::Paste("describe image".into()));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    let InputAction::Submit(submission) = app.input_box.handle_key(key(KeyCode::Enter)) else {
+        panic!("expected submission");
+    };
+    assert_eq!(submission.text, "describe image");
+    assert_eq!(submission.images.len(), 1);
+}
+
+#[test_case(KeyCode::Enter; "enter")]
+#[test_case(KeyCode::Tab; "queued_tab")]
+fn pending_image_load_blocks_submission(submit_key: KeyCode) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    app.update(Msg::Paste("describe image".into()));
+    assert!(app.update(Msg::Key(key(submit_key))).is_empty());
+    assert_eq!(app.input_box.buffer.value(), "describe image");
+}
+
+#[test_case(KeyCode::Enter, KeyModifiers::SHIFT, "describe image\n"; "shift_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::ALT, "describe image\n"; "alt_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::CONTROL, "describe image\n"; "ctrl_enter_inserts_newline")]
+#[test_case(KeyCode::Char('j'), KeyModifiers::CONTROL, "describe image\n"; "ctrl_j_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::NONE, "describe image"; "plain_enter_still_blocked")]
+fn pending_image_load_does_not_swallow_newline_keys(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    expected: &str,
+) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    app.update(Msg::Paste("describe image".into()));
+    let newline_key = KeyEvent {
+        code,
+        modifiers,
+        kind: crossterm::event::KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    app.update(Msg::Key(newline_key));
+    assert_eq!(app.input_box.buffer.value(), expected);
+}
+
+#[test]
+fn image_path_paste_preserves_original_text() {
+    const TEXT: &str = "describe\nfile:///tmp/nonexistent.png\nplease";
+    let mut app = test_app();
+    app.update(Msg::Paste(TEXT.into()));
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
 #[test]
 fn paste_file_path_triggers_image_load() {
     let mut app = test_app();
@@ -780,7 +848,7 @@ fn image_path_paste_in_search_does_not_load_image(text: &str) {
     assert_eq!(app.search_modal.query_text(), text);
 }
 
-#[test_case(None,                   IMAGE_LOADER_GONE_MSG ; "disconnected_loader")]
+#[test_case(None,                   IMAGE_LOAD_DISCONNECTED_MSG ; "disconnected_loader")]
 #[test_case(Some("file unavailable"), "file unavailable"    ; "failed_load")]
 fn finished_image_load_preserves_text_and_unblocks_submission(
     error: Option<&str>,
@@ -808,17 +876,16 @@ fn finished_image_load_preserves_text_and_unblocks_submission(
     );
 }
 
-#[test_case(key(KeyCode::Enter)      ; "enter_submits")]
-#[test_case(kb::QUIT.to_key_event() ; "ctrl_c_discards")]
-fn image_loaded_after_composer_drained_is_not_attached(drain: KeyEvent) {
+#[test]
+fn image_loaded_after_composer_discarded_is_not_attached() {
     const TEXT: &str = "describe this";
     let mut app = test_app();
     app.input_box.set_input(TEXT);
     let (tx, rx) = flume::bounded(1);
     app.track_image_load(rx);
 
-    app.update(Msg::Key(drain));
-    assert!(app.input_box.is_empty(), "the key must drain the composer");
+    app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(app.input_box.is_empty(), "Ctrl+C must discard the composer");
     tx.send(Ok(ImageSource::new(
         ImageMediaType::Png,
         Arc::from("dGVzdA=="),

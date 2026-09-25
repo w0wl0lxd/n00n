@@ -6,8 +6,10 @@ use n00n_agent::{ImageMediaType, ImageSource};
 
 use super::App;
 
+pub(super) const IMAGE_LOADING_MSG: &str = "Wait for image loading to finish before sending";
+pub(super) const IMAGE_LOAD_DISCONNECTED_MSG: &str =
+    "Image loader disconnected before returning a result";
 const IMAGE_NOT_SUPPORTED_MSG: &str = "Model does not support image input";
-pub(super) const IMAGE_LOADER_GONE_MSG: &str = "Image loader stopped before returning a result";
 pub(super) const IMAGE_STALE_MSG: &str =
     "Image finished loading after the message left; not attached";
 
@@ -67,7 +69,7 @@ impl App {
                     i += 1;
                     continue;
                 }
-                Err(flume::TryRecvError::Disconnected) => Err(IMAGE_LOADER_GONE_MSG.to_owned()),
+                Err(flume::TryRecvError::Disconnected) => Err(IMAGE_LOAD_DISCONNECTED_MSG.into()),
             };
             let load = self.image_paste_rx.remove(i);
             match result {
