@@ -16,7 +16,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use tracing::warn;
 
@@ -4242,17 +4242,28 @@ struct ScannedHeader {
 }
 
 /// Cached scan result for one session file, keyed by file name and validated
-/// by (size, mtime, inode): stale entries are rescanned, deleted files pruned.
-/// The inode catches atomic rewrites that keep both size and timestamp.
+/// by its [`FileSignature`]: stale entries are rescanned, deleted files pruned.
 /// `header: None` marks files that failed to scan (wrong version, foreign
 /// format), so they are not re-read on every list either.
 #[derive(Serialize, Deserialize)]
 struct ScanCacheEntry {
-    size: u64,
-    mtime_ms: u64,
-    #[serde(default)]
-    inode: u64,
+    #[serde(flatten)]
+    signature: FileSignature,
     header: Option<ScannedHeader>,
+}
+
+/// Change detector for a session file. `mtime` keeps the full precision the
+/// filesystem reports, so same-size rewrites within one millisecond differ.
+/// `file_id` catches atomic rewrites that keep both size and timestamp: the
+/// inode on Unix, the creation time (100 ns ticks) on Windows. Fields missing
+/// from an older cache default to zero, which forces a rescan.
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct FileSignature {
+    size: u64,
+    #[serde(default)]
+    mtime: Duration,
+    #[serde(default)]
+    file_id: u64,
 }
 
 type ScanCache = HashMap<String, ScanCacheEntry>;
@@ -4264,18 +4275,23 @@ fn load_scan_cache(dir: &Path) -> ScanCache {
         .unwrap_or_else(HashMap::new)
 }
 
-fn file_signature(path: &Path) -> Option<(u64, u64, u64)> {
+fn file_signature(path: &Path) -> Option<FileSignature> {
     let meta = fs::metadata(path).ok()?;
-    let mtime_ms = meta
+    let mtime = meta
         .modified()
         .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .and_then(|d| u64::try_from(d.as_millis()).ok())?;
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())?;
     #[cfg(unix)]
-    let inode = meta.ino();
-    #[cfg(not(unix))]
-    let inode = 0;
-    Some((meta.len(), mtime_ms, inode))
+    let file_id = meta.ino();
+    #[cfg(windows)]
+    let file_id = meta.creation_time();
+    #[cfg(not(any(unix, windows)))]
+    let file_id = 0;
+    Some(FileSignature {
+        size: meta.len(),
+        mtime,
+        file_id,
+    })
 }
 
 fn scan_headers<M>(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageError>
@@ -4290,20 +4306,15 @@ where
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some((size, mtime_ms, inode)) = file_signature(&path) else {
+        let Some(signature) = file_signature(&path) else {
             continue;
         };
         let entry = match cache.remove(name) {
-            Some(e) if e.size == size && e.mtime_ms == mtime_ms && e.inode == inode => e,
+            Some(e) if e.signature == signature => e,
             _ => {
                 dirty = true;
                 let header = scan_zst_header::<M>(&path);
-                ScanCacheEntry {
-                    size,
-                    mtime_ms,
-                    inode,
-                    header,
-                }
+                ScanCacheEntry { signature, header }
             }
         };
         if let Some(h) = &entry.header
@@ -5227,6 +5238,7 @@ mod tests {
     #[cfg(unix)]
     use super::ScanCache;
     use super::ThinkingParseError;
+    use super::file_signature;
     use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
         COMPRESS_LEVEL, CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord,
@@ -5260,12 +5272,14 @@ mod tests {
     use std::io::{Read, Write};
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    #[cfg(unix)]
-    use std::time::UNIX_EPOCH;
+    use std::time::{Duration, UNIX_EPOCH};
     use tempfile::TempDir;
     use test_case::test_case;
 
     type TestSession = Session<Value, Value, Value>;
+
+    /// A millisecond-aligned mtime, so sub-millisecond offsets stay in its tick.
+    const SIGNATURE_BASE_MTIME: Duration = Duration::from_secs(1_700_000_000);
 
     /// Marks the one live entry a depth-cap test must not lose.
     const LIVE_TEXT: &str = "live";
@@ -7888,24 +7902,16 @@ mod tests {
         session.title = "bravo".into();
         save_with_time(&mut session, dir, 1000);
 
-        // The cache key is (size, mtime_ms). Pin the cached entry to the new
-        // file's signature so the rewrite collides with it, as a same-tick
-        // rewrite does when millisecond precision rounds both writes together.
+        // Pin the cached size and mtime to the new file's so the rewrite
+        // collides with them, as a same-tick rewrite does on a coarse clock.
+        // Only the inode still tells the two files apart.
         let mut cache: ScanCache =
             serde_json::from_slice(&fs::read(dir.join(SCAN_CACHE_FILE)).unwrap()).unwrap();
-        let meta = fs::metadata(&path).unwrap();
-        let mtime_ms = meta
-            .modified()
-            .unwrap()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-            .try_into()
-            .unwrap();
+        let current = file_signature(&path).unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
         let entry = cache.get_mut(name).unwrap();
-        entry.size = meta.len();
-        entry.mtime_ms = mtime_ms;
+        entry.signature.size = current.size;
+        entry.signature.mtime = current.mtime;
         fs::write(
             dir.join(SCAN_CACHE_FILE),
             serde_json::to_vec(&cache).unwrap(),
@@ -7914,6 +7920,22 @@ mod tests {
 
         let list = TestSession::list_in("/project", dir).unwrap();
         assert_eq!(list[0].title, "bravo");
+    }
+
+    #[test_case(Duration::ZERO, true ; "same_mtime")]
+    #[test_case(Duration::from_nanos(100), false ; "hundred_nanoseconds")]
+    #[test_case(Duration::from_micros(1), false ; "one_microsecond")]
+    #[test_case(Duration::from_micros(999), false ; "same_millisecond")]
+    fn file_signature_keeps_sub_millisecond_mtime(offset: Duration, same: bool) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl.zst");
+        let file = File::create(&path).unwrap();
+        let base = UNIX_EPOCH + SIGNATURE_BASE_MTIME;
+        file.set_modified(base).unwrap();
+        let before = file_signature(&path).unwrap();
+        file.set_modified(base + offset).unwrap();
+        let after = file_signature(&path).unwrap();
+        assert_eq!(before == after, same);
     }
 
     fn save_with_time(session: &mut TestSession, dir: &Path, time: u64) {
