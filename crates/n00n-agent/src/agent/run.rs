@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
@@ -137,9 +138,31 @@ pub fn resolve_compaction_model(
             openai_options,
         )
     {
+        // Compaction budgeting (target/budget/remaining) must never exceed the
+        // main chat model's context window: the retained transcript is fed back
+        // to that model, and the summarizer request must fit the compaction
+        // model's own window. The minimum satisfies both constraints. Only
+        // pricing and streaming use the compaction model's other fields.
+        m.context_window =
+            effective_compaction_context_window(m.context_window, model.context_window);
         return (Arc::from(p), m);
     }
     (Arc::clone(provider), model.clone())
+}
+
+/// Caps the compaction model's context window at the main model's, without
+/// letting a zero (undiscovered) window on either side collapse the budget
+/// to zero. A `0` means "unknown", not "no capacity": falling through to
+/// `min` when the compaction model reports `0` would zero out the whole
+/// compaction budget even though the main model's window is known and
+/// nonzero.
+#[must_use]
+fn effective_compaction_context_window(compaction_window: u32, main_window: u32) -> u32 {
+    match (compaction_window, main_window) {
+        (0, main) => main,
+        (compaction, 0) => compaction,
+        (compaction, main) => compaction.min(main),
+    }
 }
 
 enum TurnOutcome {
@@ -456,8 +479,13 @@ impl<'h> Agent<'h> {
         // (e.g. structured_output) and expand restricted ToolFilter sets.
         // Extend MCP definitions first (always-load + loaded tools) so the
         // filtered list is complete without rebuilding from the registry.
+        let hosted_search = self.provider.supports_hosted_tool_search(&self.model);
         if let Some(mcp) = self.mcp.as_ref() {
-            mcp.extend_tools(&mut self.tools);
+            if hosted_search {
+                mcp.extend_tools_hosted(&mut self.tools);
+            } else {
+                mcp.extend_tools(&mut self.tools);
+            }
         }
         let tool_filter = self.effective_tool_filter();
         filter_provider_tools(&mut self.tools, &tool_filter, &self.mode);
@@ -475,13 +503,20 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             openai_prompt_cache_mode: None,
             protect_history_replay,
-            allow_history_replay: self.permissions.is_yolo(),
+            allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
             cancel_flag: None,
+            // Subagent runs share the root session's cache shard so sibling
+            // bursts reuse one warm prefix bucket.
+            cache_shard_key: self
+                .identity
+                .as_ref()
+                .map(|identity| identity.root_session_id().id().to_string()),
         };
 
         info!(
@@ -496,7 +531,7 @@ impl<'h> Agent<'h> {
         }
 
         let result = async {
-            self.try_auto_compact().await?;
+            self.try_auto_compact(0).await?;
             self.run_loop().await
         }
         .await;
@@ -587,12 +622,13 @@ impl<'h> Agent<'h> {
 
     /// History replay resends the full transcript. In YOLO mode this is
     /// auto-approved because the cost is bounded and the operation is idempotent.
-    /// The flag `allow_history_replay` is set from `is_yolo()` at `run()` start and
-    /// flipped after an explicit approval, so this bypasses the permission prompt
-    /// only when that flag or YOLO is set. Ambiguous replay intentionally does
-    /// NOT auto-approve in YOLO — it may duplicate provider charges/output.
+    /// YOLO is checked live so a mid-run toggle takes effect immediately; the
+    /// per-request `allow_history_replay` flag is recomputed from `is_yolo()`
+    /// each turn and flipped after an explicit approval. Ambiguous replay
+    /// intentionally does NOT auto-approve in YOLO — it may duplicate provider
+    /// charges/output.
     async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
-        if self.opts.allow_history_replay || self.permissions.is_yolo() {
+        if self.permissions.is_yolo() {
             return Ok(());
         }
         let scope = history_replay_scope(
@@ -667,6 +703,12 @@ impl<'h> Agent<'h> {
             return Err(AgentError::Cancelled);
         }
         let mut opts = self.opts.clone();
+        opts.allow_history_replay = self.permissions.is_yolo();
+        let approved_history_replay_flag = Arc::new(AtomicBool::new(false));
+        opts.allow_history_replay_live = Some(history_replay_live_check(
+            Arc::clone(&self.permissions),
+            Arc::clone(&approved_history_replay_flag),
+        ));
         let mut approved_history_replay = false;
         let mut approved_ambiguous_replay = false;
         let response = loop {
@@ -675,6 +717,7 @@ impl<'h> Agent<'h> {
                     self.approve_history_replay(reason).await?;
                     approved_history_replay = true;
                     opts.allow_history_replay = true;
+                    approved_history_replay_flag.store(true, Ordering::Relaxed);
                 }
                 Err(error @ AgentError::RequestSent { .. }) if !approved_ambiguous_replay => {
                     let metadata = match &error {
@@ -821,19 +864,25 @@ impl<'h> Agent<'h> {
                     &self.history.as_slice()[self.history.len().saturating_sub(1)..],
                     &self.model.id,
                 ));
-                self.try_auto_compact().await?;
+                self.try_auto_compact(0).await?;
                 return Ok(TurnOutcome::Continue);
             }
         }
 
-        if self.try_auto_compact().await?
-            || self
-                .handle_queued_commands(if has_tools {
-                    InterruptPoint::ToolComplete
-                } else {
-                    InterruptPoint::Safe
-                })
-                .await?
+        let queue_point = if has_tools {
+            InterruptPoint::ToolComplete
+        } else {
+            InterruptPoint::Safe
+        };
+        let pending_image_tokens = self.interrupt_source.as_ref().map_or(0, |source| {
+            u32_from_usize_saturating(
+                source
+                    .peek_pending_image_count(queue_point)
+                    .saturating_mul(IMAGE_TOKEN_ESTIMATE),
+            )
+        });
+        if self.try_auto_compact(pending_image_tokens).await?
+            || self.handle_queued_commands(queue_point).await?
         {
             return Ok(TurnOutcome::Continue);
         }
@@ -1022,10 +1071,13 @@ impl<'h> Agent<'h> {
         }
         let capability_exclusions = crate::tools::capability_exclusions(&self.model);
         let mut definitions = Value::Array(Vec::new());
-        mcp.extend_tools(&mut definitions);
-        if self.provider.supports_hosted_tool_search(&self.model)
-            && let Some(items) = definitions.as_array_mut()
-        {
+        let hosted_search = self.provider.supports_hosted_tool_search(&self.model);
+        if hosted_search {
+            mcp.extend_tools_hosted(&mut definitions);
+        } else {
+            mcp.extend_tools(&mut definitions);
+        }
+        if hosted_search && let Some(items) = definitions.as_array_mut() {
             items.extend(
                 mcp.deferred_definitions()
                     .into_iter()
@@ -1163,7 +1215,11 @@ impl<'h> Agent<'h> {
         if self.allow_dynamic_mcp_tools
             && let Some(mcp) = &self.mcp
         {
-            mcp.extend_tools(&mut tools);
+            if self.provider.supports_hosted_tool_search(&self.model) {
+                mcp.extend_tools_hosted(&mut tools);
+            } else {
+                mcp.extend_tools(&mut tools);
+            }
         }
         filter_provider_tools(&mut tools, &effective_filter, &self.mode);
         self.tools = tools;
@@ -1190,6 +1246,13 @@ impl<'h> Agent<'h> {
     }
 
     fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
+        // Hosted tool search keeps deferred tools inside their wire
+        // namespaces for the whole session, so client-side activation must
+        // not churn the tools array or the prompt-cache prefix. The results
+        // already carry the schemas the model needs to call them.
+        if self.provider.supports_hosted_tool_search(&self.model) {
+            return false;
+        }
         let mut dirty = false;
         let mut active = self
             .active_tools
@@ -1223,11 +1286,12 @@ impl<'h> Agent<'h> {
         dirty
     }
 
-    async fn try_auto_compact(&mut self) -> Result<bool, AgentError> {
+    async fn try_auto_compact(&mut self, extra_pending_tokens: u32) -> Result<bool, AgentError> {
+        let projected_context_size = self.context_size.saturating_add(extra_pending_tokens);
         if !self.auto_compact
             || !compaction::is_overflow(
                 &TokenUsage {
-                    input: self.context_size,
+                    input: projected_context_size,
                     ..Default::default()
                 },
                 &self.model,
@@ -1236,7 +1300,7 @@ impl<'h> Agent<'h> {
         {
             return Ok(false);
         }
-        info!(context_size = self.context_size, "auto-compacting");
+        info!(context_size = projected_context_size, "auto-compacting");
         if let Err(error) = self.do_compact_with_status().await {
             if matches!(error, AgentError::Cancelled) {
                 return Err(error);
@@ -1292,19 +1356,12 @@ impl<'h> Agent<'h> {
             return Err(AgentError::Cancelled);
         }
         self.event_tx.send(AgentEvent::AutoCompacting)?;
-        let (compact_provider, mut compact_model) = resolve_compaction_model(
+        let (compact_provider, compact_model) = resolve_compaction_model(
             &self.provider,
             &self.model,
             self.timeouts,
             self.openai_options.clone(),
         );
-        // Budgeting (target/budget/remaining) must use the main chat model's
-        // context window, not the compaction model's window which may differ
-        // (e.g. a cheaper compaction tier with a larger window would otherwise
-        // under-truncate, or a smaller window would over-truncate). Only pricing
-        // and streaming should use the compaction model.
-        let main_context_window = self.model.context_window;
-        compact_model.context_window = main_context_window;
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         #[cfg(test)]
         let run_hooks = matches!(self.test_compaction_hooks, TestCompactionHooks::Enabled);
@@ -1417,6 +1474,7 @@ impl<'h> Agent<'h> {
                         control: input.control,
                         run_delivery: input.run_delivery.clone(),
                     })?;
+                    let appended_start = self.history.len();
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
                     }
@@ -1443,6 +1501,10 @@ impl<'h> Agent<'h> {
                             .map(|source| ContentBlock::Image { source }),
                     );
                     self.history.push(message);
+                    self.context_size = self.context_size.saturating_add(estimate_message_tokens(
+                        &self.history.as_slice()[appended_start..],
+                        &self.model.id,
+                    ));
                 }
                 ExtractedCommand::Compact(_) => {
                     self.do_compact_with_status().await?;
@@ -1495,6 +1557,15 @@ fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) ->
     format!(
         "Replay one provider request ({phase}; response ID {response_id}; output {output}). This may duplicate output or charges"
     )
+}
+
+/// Live YOLO check for `RequestOptions::allow_history_replay_live`; an
+/// explicit approval this turn stays sticky even if YOLO is toggled off after.
+fn history_replay_live_check(
+    permissions: Arc<PermissionManager>,
+    approved_this_turn: Arc<AtomicBool>,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    Arc::new(move || permissions.is_yolo() || approved_this_turn.load(Ordering::Relaxed))
 }
 
 fn history_replay_scope(
@@ -2217,8 +2288,10 @@ mod tests {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
         tool_requests: Arc<Mutex<Vec<Value>>>,
+        hosted_requests: Arc<Mutex<Vec<Option<n00n_providers::HostedToolSearch>>>>,
         cancel_on_request: Option<usize>,
         calls: AtomicUsize,
+        hosted_tool_search: bool,
     }
 
     impl MockProvider {
@@ -2227,8 +2300,17 @@ mod tests {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
                 tool_requests: Arc::new(Mutex::new(Vec::new())),
+                hosted_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: None,
                 calls: AtomicUsize::new(0),
+                hosted_tool_search: false,
+            }
+        }
+
+        fn hosted_search(responses: Vec<StreamResponse>) -> Self {
+            Self {
+                hosted_tool_search: true,
+                ..Self::new(responses)
             }
         }
 
@@ -2239,8 +2321,10 @@ mod tests {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
                     tool_requests: Arc::new(Mutex::new(Vec::new())),
+                    hosted_requests: Arc::new(Mutex::new(Vec::new())),
                     cancel_on_request: None,
                     calls: AtomicUsize::new(0),
+                    hosted_tool_search: false,
                 },
                 requests,
             )
@@ -2251,8 +2335,10 @@ mod tests {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
                 tool_requests: Arc::new(Mutex::new(Vec::new())),
+                hosted_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: Some(request),
                 calls: AtomicUsize::new(0),
+                hosted_tool_search: false,
             }
         }
     }
@@ -2265,7 +2351,7 @@ mod tests {
             _: &'a System,
             tools: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
-            _: RequestOptions,
+            opts: RequestOptions,
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
@@ -2275,6 +2361,10 @@ mod tests {
                 }
                 self.requests.lock().unwrap().push(messages.to_vec());
                 self.tool_requests.lock().unwrap().push(tools.clone());
+                self.hosted_requests
+                    .lock()
+                    .unwrap()
+                    .push(opts.hosted_tool_search);
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -2283,6 +2373,10 @@ mod tests {
 
         fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
             Box::pin(async { Ok(vec![]) })
+        }
+
+        fn supports_hosted_tool_search(&self, _model: &Model) -> bool {
+            self.hosted_tool_search
         }
     }
 
@@ -2647,10 +2741,167 @@ mod tests {
                 .active_tools
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                active.names.is_empty(),
+                "expected empty, got {:?}",
+                active.names
+            );
+            assert!(
+                active.namespaces.is_empty(),
+                "expected empty, got {:?}",
+                active.namespaces
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_tool_search_keeps_wire_tools_frozen() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _events) =
+            make_agent(MockProvider::hosted_search(Vec::new()), &mut history);
+        let tools_before = agent.tools.clone();
+        let search_result = ToolDoneEvent {
+            id: "search".to_owned(),
+            tool: Arc::from("tool_search"),
+            output: ToolOutput::Plain(
+                r#"[{"name":"fetch_url","namespace":"web","description":"Fetch URL"}]"#.into(),
+            ),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        };
+        let namespace_result = ToolDoneEvent {
+            id: "namespace".to_owned(),
+            tool: Arc::from("load_namespace"),
+            output: ToolOutput::Plain(r#"{"namespace":"knowledge","tools":["load_skill"]}"#.into()),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        };
+
+        assert!(!agent.apply_tool_search_results(&[search_result, namespace_result]));
+        {
+            let active = agent
+                .active_tools
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert!(active.names.is_empty());
             assert!(active.namespaces.is_empty());
         }
+        assert_eq!(agent.tools, tools_before);
     }
+
+    struct DeferredFetch;
+
+    struct DeferredFetchInvocation;
+
+    impl ToolInvocation for DeferredFetchInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("fetch".into()))
+        }
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            Box::pin(async {
+                crate::tools::ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ok".into())))
+            })
+        }
+    }
+
+    impl Tool for DeferredFetch {
+        fn name(&self) -> &'static str {
+            "deferred_fetch"
+        }
+        fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
+            "deferred fetch".into()
+        }
+        fn schema(&self) -> Value {
+            json!({"type": "object", "properties": {}})
+        }
+        fn defer_loading(&self) -> bool {
+            true
+        }
+        fn namespace(&self) -> Option<&str> {
+            Some("web")
+        }
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(DeferredFetchInvocation))
+        }
+    }
+
+    /// End-to-end: under hosted tool search, a `search_tools` call mid-run
+    /// must leave both the wire `tools` array and the deferred namespace
+    /// payload identical on the next request — `tools_hash` and the hosted
+    /// surface are what the provider hashes into the prompt-cache key.
+    #[test]
+    fn hosted_tool_search_keeps_requests_identical_across_discovery() {
+        smol::block_on(async {
+            let registry = ToolRegistry::new();
+            let search: Arc<dyn Tool> = Arc::new(crate::tools::tool_search::ToolSearch::new());
+            let deferred: Arc<dyn Tool> = Arc::new(DeferredFetch);
+            for tool in [&search, &deferred] {
+                registry
+                    .register(tool, &ToolSource::Lua { plugin: "p".into() })
+                    .unwrap();
+            }
+            let provider = MockProvider::hosted_search(vec![
+                tool_use_response("search_tools", "call-search", json!({"query": "fetch"})),
+                text_response(StopReason::EndTurn),
+            ]);
+            let tool_requests = Arc::clone(&provider.tool_requests);
+            let hosted_requests = Arc::clone(&provider.hosted_requests);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _events) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(registry),
+            );
+            // The test helper seeds `agent.tools` with `definitions()`, which
+            // lists deferred tools at top level. Production init goes through
+            // `runtime_tool_definitions` → `definitions_active`, so mirror that
+            // here and reset the active set `warm_active_tools` just polluted.
+            let vars = crate::template::env_vars();
+            let filter = agent.tool_filter.clone();
+            let ctx = crate::tools::DescriptionContext {
+                filter: &filter,
+                audience: agent.audience,
+                workflow: agent.workflow,
+            };
+            agent.tools = agent.registry.definitions_active(
+                &vars,
+                &ctx,
+                false,
+                &crate::tools::default_active_tools(),
+            );
+            *agent
+                .active_tools
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                crate::tools::default_active_tools();
+
+            agent.run(default_input()).await.unwrap();
+
+            let tool_requests = tool_requests.lock().unwrap();
+            let hosted_requests = hosted_requests.lock().unwrap();
+            assert_eq!(tool_requests.len(), 2);
+            assert_eq!(hosted_requests.len(), 2);
+            assert_eq!(
+                tool_requests[0], tool_requests[1],
+                "wire tools must not change after tool discovery"
+            );
+            assert_eq!(
+                hosted_requests[0], hosted_requests[1],
+                "hosted search surface must not change after tool discovery"
+            );
+            let deferred_names: Vec<&str> = hosted_requests[1]
+                .as_ref()
+                .into_iter()
+                .flat_map(|search| search.tools.iter())
+                .filter_map(|tool| tool.definition["name"].as_str())
+                .collect();
+            assert!(deferred_names.contains(&"deferred_fetch"));
+        });
+    }
+
     fn default_input() -> AgentInput {
         AgentInput {
             message: "hello".into(),
@@ -2801,11 +3052,43 @@ mod tests {
         }
     }
 
+    fn tool_use_response(tool_name: &str, tool_id: &str, input: Value) -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: tool_id.into(),
+                    name: tool_name.into(),
+                    input,
+                }],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some(StopReason::ToolUse),
+        }
+    }
+
     fn small_context_model(context_window: u32, max_output_tokens: u32) -> Model {
         let mut model = default_model();
         model.context_window = context_window;
         model.max_output_tokens = Some(max_output_tokens);
         model
+    }
+
+    #[test_case(0,       200_000, 200_000 ; "zero_compaction_window_falls_back_to_main")]
+    #[test_case(50_000,  0,       50_000  ; "zero_main_window_keeps_compaction_window")]
+    #[test_case(0,       0,       0       ; "both_zero_stays_zero")]
+    #[test_case(80_000,  200_000, 80_000  ; "smaller_compaction_window_wins")]
+    #[test_case(200_000, 80_000,  80_000  ; "smaller_main_window_wins")]
+    fn effective_compaction_context_window_never_zeros_out_a_known_budget(
+        compaction_window: u32,
+        main_window: u32,
+        expected: u32,
+    ) {
+        assert_eq!(
+            effective_compaction_context_window(compaction_window, main_window),
+            expected
+        );
     }
 
     #[track_caller]
@@ -3348,11 +3631,18 @@ mod tests {
                 .handle_queued_commands(InterruptPoint::Safe)
                 .await
                 .unwrap();
+            let context_size = agent.context_size;
+            let model_id = agent.model.id.clone();
             let message = history.as_slice().last().unwrap();
             assert_eq!(message.display_text.as_deref(), Some(text));
             assert_eq!(message.control, control);
             assert!(message.content.iter().any(|block| matches!(block,
                 ContentBlock::Image { source } if source.data == image.data && source.media_type == image.media_type)));
+            assert_eq!(
+                context_size,
+                estimate_message_tokens(std::slice::from_ref(message), &model_id),
+            );
+            assert!(context_size >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE));
         });
     }
 
@@ -3500,10 +3790,17 @@ mod tests {
         });
     }
 
-    #[test_case(true,  170_000, true  ; "enabled_and_over_threshold")]
-    #[test_case(true,  150_000, false ; "enabled_but_below_threshold")]
-    #[test_case(false, 170_000, false ; "disabled_even_over_threshold")]
-    fn try_auto_compact_behavior(enabled: bool, context_size: u32, expected: bool) {
+    #[test_case(true,  170_000, 0,      true  ; "enabled_and_over_threshold")]
+    #[test_case(true,  150_000, 0,      false ; "enabled_but_below_threshold")]
+    #[test_case(false, 170_000, 0,      false ; "disabled_even_over_threshold")]
+    #[test_case(true,  150_000, 15_000, true  ; "pending_tokens_push_over_threshold")]
+    #[test_case(true,  150_000, 5_000,  false ; "pending_tokens_still_under_threshold")]
+    fn try_auto_compact_behavior(
+        enabled: bool,
+        context_size: u32,
+        extra_pending_tokens: u32,
+        expected: bool,
+    ) {
         smol::block_on(async {
             let responses = if expected {
                 vec![text_response(StopReason::EndTurn)]
@@ -3515,7 +3812,7 @@ mod tests {
             agent.model = Arc::new(small_context_model(200_000, 8_192));
             agent.auto_compact = enabled;
             agent.context_size = context_size;
-            let result = agent.try_auto_compact().await.unwrap();
+            let result = agent.try_auto_compact(extra_pending_tokens).await.unwrap();
 
             assert_eq!(result, expected);
             drop(agent);

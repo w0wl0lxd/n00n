@@ -1937,7 +1937,8 @@ mod tests {
             second.events(run.run_id, 0, 10),
             Err(RunStoreError::NotFound(_))
         ));
-        assert!(second.pending_outbox(i64::MAX, 10).unwrap().is_empty());
+        let pending = second.pending_outbox(i64::MAX, 10).unwrap();
+        assert!(pending.is_empty(), "expected empty, got {pending:?}");
     }
 
     #[test]

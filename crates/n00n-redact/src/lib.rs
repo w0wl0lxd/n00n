@@ -442,6 +442,31 @@ mod tests {
     use serde_json::json;
     use test_case::test_case;
 
+    #[test_case("stripe_live", concat!("sk_live_", "51H8xYzAbCdEfGhIjKlMnOpQrStUvWxYz0123456789") ; "stripe_live_key")]
+    #[test_case("stripe_test", concat!("sk_test_", "51H8xYzAbCdEfGhIjKlMnOpQrStUvWxYz0123456789") ; "stripe_test_key")]
+    #[test_case("huggingface", "hf_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij" ; "huggingface_token")]
+    #[test_case("npm", "npm_abcdefghijklmnopqrstuvwxyz0123456789ABCD" ; "npm_token")]
+    #[test_case("pypi", "pypi-AgEIcHlwaS5vcmcCJGFiY2RlZmdoaWprbG1ub3A" ; "pypi_token")]
+    #[test_case("docker", "dckr_pat_abcdefghijklmnopqrstuvwxyz01" ; "docker_pat")]
+    #[test_case("age", "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ" ; "age_secret_key")]
+    #[test_case("sendgrid", "SG.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" ; "sendgrid_key")]
+    #[test_case("github", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij" ; "github_pat")]
+    fn common_credential_prefixes_are_redacted(name: &str, token: &str) {
+        let value = serde_json::json!({ "note": token });
+        let redacted = redact_json_value_for_log(&value);
+        assert_eq!(
+            redacted["note"], REDACTED,
+            "log redaction missed {name}: {}",
+            redacted["note"]
+        );
+
+        let sanitized = sanitize_text(&format!("value {token} trailing"), 500);
+        assert!(
+            !sanitized.contains(token),
+            "free-text sanitizer missed {name}: {sanitized}"
+        );
+    }
+
     #[test_case("api_key"; "snake")]
     #[test_case("API-KEY"; "upper")]
     #[test_case("accessKey"; "camel")]

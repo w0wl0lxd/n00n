@@ -63,7 +63,7 @@ pub enum ModelPickerAction {
     Select(String),
     AssignTier(String, ModelTier),
     UnassignTier(String, ModelTier),
-    CycleThinking,
+    CycleThinking(String),
     Close,
 }
 
@@ -156,9 +156,19 @@ impl ModelPicker {
         }
         drop(guard);
         self.dirty = false;
-        let (entries, idx) = self.load_entries();
+        let highlighted_spec = self.picker.selected_item().map(|e| e.spec.clone());
+        let (entries, _) = self.load_entries();
         self.picker.replace_items(entries);
-        self.picker.select(idx);
+        let restored_highlighted = match highlighted_spec {
+            Some(spec) => self.picker.select_by(|e| e.spec == spec),
+            None => false,
+        };
+        if !restored_highlighted {
+            let current_spec = self.current_spec.clone();
+            // Neither match is guaranteed to exist; a miss here keeps
+            // whatever `replace_items` already clamped the selection to.
+            let _restored_current = self.picker.select_by(|e| e.spec == current_spec);
+        }
     }
 
     fn load_entries(&mut self) -> (Vec<ModelEntry>, usize) {
@@ -207,7 +217,11 @@ impl ModelPicker {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ModelPickerAction {
         if THINKING_ALT.matches(key) {
-            return ModelPickerAction::CycleThinking;
+            let Some(entry) = self.picker.selected_item() else {
+                return ModelPickerAction::Consumed;
+            };
+            self.dirty = true;
+            return ModelPickerAction::CycleThinking(entry.spec.clone());
         }
         if let Some(tier) = tier_for_shortcut(key)
             && let Some(entry) = self.picker.selected_item()
@@ -386,7 +400,11 @@ mod tests {
         let entry = parse_model_entry("anthropic/claude-sonnet-4-20250514").unwrap();
         assert_eq!(entry.id, "claude-sonnet-4-20250514");
         assert_eq!(entry.provider_display, "Anthropic");
-        assert!(!entry.detail.is_empty());
+        assert!(
+            !entry.detail.is_empty(),
+            "expected non-empty, got {:?}",
+            entry.detail
+        );
     }
 
     #[test]
@@ -399,8 +417,94 @@ mod tests {
         let mut p = ModelPicker::new(test_models());
         p.open("");
         let action = p.handle_key(kb::THINKING_ALT.to_key_event());
-        assert!(matches!(action, ModelPickerAction::CycleThinking));
+        assert!(matches!(action, ModelPickerAction::CycleThinking(_)));
         assert!(p.is_open());
+    }
+
+    #[test]
+    fn thinking_cycle_preserves_highlighted_selection_across_refresh() {
+        let mut p = ModelPicker::new(test_models());
+        p.open("anthropic/claude-sonnet-4-20250514");
+
+        p.handle_key(key(KeyCode::Down));
+        let action = p.handle_key(kb::THINKING_ALT.to_key_event());
+        assert!(
+            matches!(action, ModelPickerAction::CycleThinking(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
+            "Alt+T should target the highlighted non-current model"
+        );
+
+        p.try_refresh();
+
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
+            "highlight should stay on the model that was cycled, not jump back to current"
+        );
+    }
+
+    #[test]
+    fn refresh_falls_back_to_current_model_when_highlighted_model_is_removed() {
+        let models = Arc::new(ArcSwapOption::empty());
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+            "zai/glm-5".into(),
+        ])));
+        let mut p = ModelPicker::new(Arc::clone(&models));
+        p.open("anthropic/claude-opus-4-6-20260101");
+
+        p.handle_key(key(KeyCode::Down));
+        let highlighted = p.handle_key(kb::THINKING_ALT.to_key_event());
+        assert!(
+            matches!(highlighted, ModelPickerAction::CycleThinking(ref s) if s == "zai/glm-5"),
+            "test setup: expected glm-5 highlighted before refresh"
+        );
+
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+        ])));
+        p.try_refresh();
+
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
+            "a vanished highlight should fall back to the current model, not the first entry"
+        );
+    }
+
+    #[test]
+    fn refresh_preserves_highlighted_selection_under_active_filter() {
+        let models = Arc::new(ArcSwapOption::empty());
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+            "zai/glm-5".into(),
+        ])));
+        let mut p = ModelPicker::new(Arc::clone(&models));
+        p.open("");
+
+        p.handle_key(key(KeyCode::Char('g')));
+        p.handle_key(key(KeyCode::Char('l')));
+        p.handle_key(key(KeyCode::Char('m')));
+
+        // glm-5 is highlighted at raw entries index 2. Adding glm-5-air keeps
+        // it matching the "glm" filter but moves its filtered-list position,
+        // so a refresh that selects by raw index instead of filtered
+        // position would land on the wrong entry.
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+            "zai/glm-5".into(),
+            "zai/glm-5-air".into(),
+        ])));
+        p.try_refresh();
+
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s == "zai/glm-5"),
+            "highlight should stay on glm-5, not shift to the newly filtered-in glm-5-air"
+        );
     }
 
     #[test_case(key(KeyCode::Char('!')),           ModelTier::Strong     ; "legacy_bang_strong")]

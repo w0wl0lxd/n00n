@@ -1205,6 +1205,17 @@ fn spec_opt<T: mlua::FromLua>(spec: &Table, key: &str, expected: &str) -> LuaRes
         .map_err(|_| mlua::Error::runtime(format!("register_tool: '{key}' must be {expected}")))
 }
 
+/// Reads an optional string field without mlua's number-to-string coercion.
+fn spec_opt_string(spec: &Table, key: &str) -> LuaResult<Option<String>> {
+    match spec.get::<LuaValue>(key)? {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(value) => Ok(Some(value.to_str()?.to_owned())),
+        _ => Err(mlua::Error::runtime(format!(
+            "register_tool: '{key}' must be a string"
+        ))),
+    }
+}
+
 fn check_schema_field(schema: &Value, key: &str, field: &str, expected: &str) -> LuaResult<()> {
     let matches = schema
         .get("properties")
@@ -1222,7 +1233,7 @@ fn check_schema_field(schema: &Value, key: &str, field: &str, expected: &str) ->
 }
 
 fn require_schema_field(spec: &Table, key: &str, schema: &Value) -> LuaResult<Option<Arc<str>>> {
-    let Some(field) = spec_opt::<String>(spec, key, "a string")? else {
+    let Some(field) = spec_opt_string(spec, key)? else {
         return Ok(None);
     };
     check_schema_field(schema, key, &field, "string")?;
@@ -1296,7 +1307,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             ));
         }
     };
-    let description: String = spec.get("description").unwrap_or_else(|_| String::new());
+    let description: String = spec_opt_string(spec, "description")?.unwrap_or_else(String::new);
     if description.trim().is_empty() {
         return Err(mlua::Error::runtime(
             "register_tool: description must be non-empty",
@@ -1308,7 +1319,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
     let schema_table: LuaValue = spec
         .get("schema")
         .map_err(|_| mlua::Error::runtime("register_tool: missing 'schema'"))?;
-    let audiences: Option<mlua::Table> = spec.get("audiences").ok();
+    let audiences: Option<mlua::Table> = spec_opt(spec, "audiences", "a list of strings")?;
 
     let schema_val: Value = lua.from_value(schema_table)?;
     let param_schema = try_from_json(&schema_val).map_err(mlua::Error::runtime)?;
@@ -1335,13 +1346,10 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         }
     };
 
-    let header_fn: Option<Function> = spec.get("header").ok();
-    let restore_fn: Option<Function> = spec.get("restore").ok();
-    let start_fn: Option<Function> = spec.get("start").ok();
-    let kind: Option<Arc<str>> = spec
-        .get::<String>("kind")
-        .ok()
-        .map(|s| Arc::from(s.as_str()));
+    let header_fn: Option<Function> = spec_opt(spec, "header", "a function")?;
+    let restore_fn: Option<Function> = spec_opt(spec, "restore", "a function")?;
+    let start_fn: Option<Function> = spec_opt(spec, "start", "a function")?;
+    let kind: Option<Arc<str>> = spec_opt_string(spec, "kind")?.map(|s| Arc::from(s.as_str()));
     let workload = match spec.get::<Option<String>>("workload")? {
         Some(value) => Some(ToolAdmissionClass::from_workload(&value).ok_or_else(|| {
             mlua::Error::runtime(
@@ -1362,7 +1370,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .transpose()?;
     let start_key = start_fn.map(|f| lua.create_registry_value(f)).transpose()?;
 
-    let describe_fn: Option<Function> = spec.get("describe").ok();
+    let describe_fn: Option<Function> = spec_opt(spec, "describe", "a function")?;
     let describe_key = describe_fn
         .map(|f| lua.create_registry_value(f))
         .transpose()?;
@@ -1384,10 +1392,8 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<Option<bool>>("deadline_grace")?
         .unwrap_or_else(|| false);
 
-    let namespace: Option<Arc<str>> = spec
-        .get("namespace")
-        .ok()
-        .map(|s: String| Arc::from(s.as_str()));
+    let namespace: Option<Arc<str>> =
+        spec_opt_string(spec, "namespace")?.map(|s| Arc::from(s.as_str()));
 
     let name: Arc<str> = Arc::from(name.as_str());
 
@@ -1828,6 +1834,36 @@ mod tests {
         assert_eq!(is_valid_tool_name(name), expected);
     }
 
+    #[test_case::test_case("restore", r#""not a function""# ; "restore_hook_string")]
+    #[test_case::test_case("description", "42" ; "description_number")]
+    #[test_case::test_case("kind", "42" ; "kind_number")]
+    #[test_case::test_case("namespace", "42" ; "namespace_number")]
+    fn register_tool_rejects_wrong_typed_fields(field: &str, value: &str) {
+        let lua = Lua::new();
+        let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
+        let spec: LuaValue = lua
+            .load(format!(
+                r#"local spec = {{
+                    name = "sample",
+                    description = "sample tool",
+                    handler = function() end,
+                    schema = {{ type = "object", properties = {{}} }},
+                }}
+                spec.{field} = {value}
+                return spec"#
+            ))
+            .eval()
+            .unwrap();
+
+        let error = register_tool_from_lua(&lua, spec.as_table().unwrap(), pending)
+            .expect_err("a wrong-typed field must not be silently accepted or dropped");
+        let expected = format!("register_tool: '{field}' must be");
+        assert!(
+            error.to_string().contains(&expected),
+            "expected error containing {expected:?}, got: {error}"
+        );
+    }
+
     #[test_case::test_case(
         r#"{ llm_output = "c", image = { data = "aGVsbG8=" } }"#,
         "missing 'media_type'" ; "missing_media_type")]
@@ -2079,7 +2115,11 @@ mod tests {
         };
         let scopes = smol::block_on(inv.permission_scopes()).expect("should fallback");
         assert!(scopes.force_prompt);
-        assert!(!scopes.scopes.is_empty());
+        assert!(
+            !scopes.scopes.is_empty(),
+            "expected non-empty, got {:?}",
+            scopes.scopes
+        );
 
         // Callback returns None → fallback to force_prompt
         let (tx2, rx2) = flume::bounded(1);

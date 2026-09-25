@@ -421,11 +421,13 @@ impl CachePrefixFingerprint {
         &self.prefix_hash
     }
 
-    fn prompt_cache_key(&self, session_id: Option<&SessionRef>) -> String {
+    fn prompt_cache_key(&self, session_id: Option<&SessionRef>, shard_key: Option<&str>) -> String {
         let prefix_hash = self.prefix_hash();
-        let shard = session_id.map_or(0, |session_id| {
-            Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
-                % PROMPT_CACHE_SHARDS
+        let shard_seed = shard_key
+            .map(str::to_owned)
+            .or_else(|| session_id.map(|id| canonical_session_key(id).to_string()));
+        let shard = shard_seed.map_or(0, |seed| {
+            Sha256::digest(seed.as_bytes())[0] % PROMPT_CACHE_SHARDS
         });
         format!("n00n-{prefix_hash}-s{shard}")
     }
@@ -536,6 +538,12 @@ fn full_history_replay_required(
         && previous_response_id.is_none()
         && message_count > 1
         && !allow_history_replay
+}
+
+/// Callers must pass `opts.history_replay_allowed()`, not the attempt-scoped
+/// `allow_history_replay` flag, which `run_codex_attempt` pins to `true`.
+fn full_history_send_allowed(protect_history_replay: bool, history_replay_allowed: bool) -> bool {
+    !protect_history_replay || history_replay_allowed
 }
 
 fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAttemptError {
@@ -1723,7 +1731,8 @@ impl OpenAi {
         }
         self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
             .await;
-        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
+        let prompt_cache_key =
+            fingerprint.prompt_cache_key(session_id, opts.cache_shard_key.as_deref());
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -1738,7 +1747,10 @@ impl OpenAi {
         let mut full_history_body = None;
         let full_history_fallback_available = previous_response_id.is_some()
             && !persist_response_chain
-            && (!opts.protect_history_replay || opts.allow_history_replay);
+            && full_history_send_allowed(
+                opts.protect_history_replay,
+                opts.history_replay_allowed(),
+            );
         log_responses_request(
             "websocket",
             &body,
@@ -1788,8 +1800,10 @@ impl OpenAi {
                 Ok((response_id, response)) => (response_id, response, true),
                 Err(error) if should_fallback_to_http(&error) => {
                     if previous_response_id.is_some()
-                        && opts.protect_history_replay
-                        && !opts.allow_history_replay
+                        && !full_history_send_allowed(
+                            opts.protect_history_replay,
+                            opts.history_replay_allowed(),
+                        )
                     {
                         return self
                             .finish_codex_attempt(
@@ -2085,7 +2099,8 @@ impl OpenAi {
         // reuse a store=false response ID safely, so every turn sends full history.
         let opts = clamp_responses_cache_breakpoints(model, opts);
         let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
-        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
+        let prompt_cache_key =
+            fingerprint.prompt_cache_key(session_id, opts.cache_shard_key.as_deref());
         let body = super::responses::build_body(
             model,
             messages,
@@ -2420,7 +2435,7 @@ impl Provider for OpenAi {
                     return attempt.result;
                 }
 
-                if opts.protect_history_replay && !opts.allow_history_replay {
+                if opts.protect_history_replay && !opts.history_replay_allowed() {
                     return Err(AgentError::HistoryReplayRequired {
                         reason: HistoryReplayReason::ContinuationNotFound,
                     });
@@ -2477,7 +2492,8 @@ impl Provider for OpenAi {
 
             // Fallback to Chat Completions
             let fingerprint = CachePrefixFingerprint::new(&model.id, &prefixed_system, &tools_hash);
-            let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
+            let prompt_cache_key =
+                fingerprint.prompt_cache_key(session_id, opts.cache_shard_key.as_deref());
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -4488,7 +4504,7 @@ mod tests {
         let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
         let system = System::from("stable instructions");
         let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash);
-        let key = fingerprint.prompt_cache_key(None);
+        let key = fingerprint.prompt_cache_key(None, None);
         let system_text = system.to_string();
         let mut legacy_digest = Sha256::new();
         legacy_digest.update("gpt-5.6".len().to_le_bytes());
@@ -4504,7 +4520,7 @@ mod tests {
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash)
         );
-        assert_eq!(key, fingerprint.prompt_cache_key(None));
+        assert_eq!(key, fingerprint.prompt_cache_key(None, None));
         assert_ne!(
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &System::from("changed"), &tools_hash)
@@ -4542,8 +4558,36 @@ mod tests {
         assert_eq!(first.system_hash, second.system_hash);
         assert_eq!(empty.prefix_hash(), first.prefix_hash());
         assert_eq!(first.prefix_hash(), second.prefix_hash());
-        assert_eq!(empty.prompt_cache_key(None), first.prompt_cache_key(None));
-        assert_eq!(first.prompt_cache_key(None), second.prompt_cache_key(None));
+        assert_eq!(
+            empty.prompt_cache_key(None, None),
+            first.prompt_cache_key(None, None)
+        );
+        assert_eq!(
+            first.prompt_cache_key(None, None),
+            second.prompt_cache_key(None, None)
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_shards_by_explicit_seed() {
+        let system = System::from("stable instructions");
+        let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &system, TOOLS_HASH);
+        let parent: SessionRef = "01965087-4c71-7f00-8000-000000000001".parse().unwrap();
+        let child: SessionRef = "01965087-4c71-7f00-8000-000000000002".parse().unwrap();
+        let parent_seed = parent.id().to_string();
+
+        // Child sessions seeded by the root session share the parent's shard.
+        assert_eq!(
+            fingerprint.prompt_cache_key(Some(&child), Some(&parent_seed)),
+            fingerprint.prompt_cache_key(Some(&parent), None)
+        );
+        // The seed is the shard source: an explicit seed of the child's own id
+        // reproduces the unseeded child key.
+        let child_seed = child.id().to_string();
+        assert_eq!(
+            fingerprint.prompt_cache_key(None, Some(&child_seed)),
+            fingerprint.prompt_cache_key(Some(&child), None)
+        );
     }
 
     #[test]
@@ -4572,8 +4616,8 @@ mod tests {
 
         assert_ne!(legacy.as_str(), canonical.as_str());
         assert_eq!(
-            fingerprint.prompt_cache_key(Some(&legacy)),
-            fingerprint.prompt_cache_key(Some(&canonical))
+            fingerprint.prompt_cache_key(Some(&legacy), None),
+            fingerprint.prompt_cache_key(Some(&canonical), None)
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
@@ -5605,6 +5649,132 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::large_futures)]
+    #[allow(clippy::too_many_lines)]
+    fn stale_previous_response_id_requires_approval_when_live_check_denies_replay() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let live_allow = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let server_live_allow = Arc::clone(&live_allow);
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let Some(Ok(WsMessage::Text(first))) = socket.next().await else {
+                    panic!("expected initial response.create");
+                };
+                let first: Value = serde_json::from_str(&first).unwrap();
+                assert!(first.get("previous_response_id").is_none());
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {"id": "resp_stale", "status": "completed"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+
+                let Some(Ok(WsMessage::Ping(payload))) = socket.next().await else {
+                    panic!("expected continuation preflight ping");
+                };
+                socket.send(WsMessage::Pong(payload)).await.unwrap();
+                let Some(Ok(WsMessage::Text(continuation))) = socket.next().await else {
+                    panic!("expected continuation response.create");
+                };
+                let continuation: Value = serde_json::from_str(&continuation).unwrap();
+                assert_eq!(continuation["previous_response_id"], "resp_stale");
+                // Simulates YOLO being disabled mid-turn, after `opts.allow_history_replay`
+                // was already snapshotted true, but before the fallback decision runs.
+                server_live_allow.store(false, Ordering::Relaxed);
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "code": "previous_response_not_found",
+                                "message": "Previous response not found"
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            });
+
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let provider = OpenAi::with_auth_options(
+                Arc::new(Mutex::new(auth)),
+                crate::providers::Timeouts {
+                    connect: Duration::from_secs(2),
+                    stream: Duration::from_secs(2),
+                    low_speed: Duration::from_secs(2),
+                },
+                OpenAiOptions::codex(),
+            )
+            .unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let tools = serde_json::json!([]);
+            let session = SessionRef::generate();
+            let (event_tx, _) = flume::unbounded();
+            let first_messages = [Message::user("hello".into())];
+            provider
+                .stream_message(
+                    &model,
+                    &first_messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    RequestOptions::default(),
+                    Some(&session),
+                )
+                .await
+                .unwrap();
+
+            let messages = [
+                Message::user("hello".into()),
+                assistant("hi"),
+                Message::user("what next".into()),
+            ];
+            let request_live_allow = Arc::clone(&live_allow);
+            let opts = RequestOptions {
+                protect_history_replay: true,
+                allow_history_replay: true,
+                allow_history_replay_live: Some(Arc::new(move || {
+                    request_live_allow.load(Ordering::Relaxed)
+                })),
+                ..Default::default()
+            };
+            let result = provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    opts,
+                    Some(&session),
+                )
+                .await;
+            server.await;
+
+            assert!(matches!(
+                result,
+                Err(AgentError::HistoryReplayRequired {
+                    reason: HistoryReplayReason::ContinuationNotFound
+                })
+            ));
+        });
+    }
+
+    #[test]
     fn full_history_replay_requires_explicit_approval() {
         assert!(full_history_replay_required(None, 2, true, false));
         assert!(!full_history_replay_required(None, 2, false, false));
@@ -5616,6 +5786,20 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test_case(false, false, true  ; "protection_disabled_always_allows")]
+    #[test_case(true,  true,  true  ; "protection_enabled_live_check_allows")]
+    #[test_case(true,  false, false ; "protection_enabled_live_check_denies")]
+    fn full_history_send_allowed_follows_live_check_not_stale_flag(
+        protect_history_replay: bool,
+        history_replay_allowed: bool,
+        expected: bool,
+    ) {
+        assert_eq!(
+            full_history_send_allowed(protect_history_replay, history_replay_allowed),
+            expected
+        );
     }
 
     #[test]
@@ -6072,7 +6256,11 @@ mod tests {
         let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
         let usage: ProviderUsage = parsed.into();
         assert_eq!(usage.plan.as_deref(), Some("prolite"));
-        assert!(usage.limits.is_empty());
+        assert!(
+            usage.limits.is_empty(),
+            "expected empty, got {:?}",
+            usage.limits
+        );
     }
 
     #[test_case(Some(18_000), Some("5h"))]

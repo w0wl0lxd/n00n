@@ -282,6 +282,28 @@ fn flash(_lua: &Lua, #[ctx] tx: flume::Sender<UiAction>, msg: String) -> LuaResu
     Ok(())
 }
 
+/// Sends a desktop notification carrying {msg} through the terminal. The
+/// mechanism comes from `ui.notifications`: "bell" rings the terminal
+/// bell, "osc9" emits a desktop-notification escape, "all" does both, and
+/// "off" stays silent. Unlike the automatic turn-end signal, an explicit
+/// notify fires even while the terminal is focused.
+///
+/// @param msg string Notification text.
+/// @return (boolean, string?) true on success, or false and an error message.
+/// @example
+/// n00n.ui.notify("Release build finished")
+#[lua_fn]
+fn notify(
+    _lua: &Lua,
+    #[ctx] tx: flume::Sender<UiAction>,
+    msg: String,
+) -> LuaResult<(bool, Option<String>)> {
+    match tx.try_send(UiAction::Notify(msg)) {
+        Ok(()) => Ok((true, None)),
+        Err(err) => Ok((false, Some(err.to_string()))),
+    }
+}
+
 /// Opens {path} in the user's `$EDITOR` (e.g. vim, nano) and waits for
 /// it to close. This suspends the TUI while the editor is running.
 /// Returns the editor's exit code so you can check if the user saved.
@@ -504,7 +526,8 @@ lua_table! {
     extend "n00n.ui" => pub(crate) fn add_ui_fns(), DOCS [
         buf, theme_color, highlight, markdown, humantime, terminal_size,
         display_width, truncate_text,
-        manual flash, manual open_editor, manual pick_model, manual open_win, manual set_status_hint,
+        manual flash, manual notify, manual open_editor, manual pick_model, manual open_win,
+        manual set_status_hint,
     ]
 }
 
@@ -518,6 +541,7 @@ pub(crate) fn create_ui_table(
 
     if let Some(tx) = ui_action_tx {
         flash__register(&t, lua, tx.clone())?;
+        notify__register(&t, lua, tx.clone())?;
         open_editor__register(&t, lua, tx.clone())?;
         pick_model__register(&t, lua, tx.clone())?;
         open_win__register(&t, lua, tx)?;
@@ -739,10 +763,34 @@ mod tests {
     }
 
     #[test]
+    fn notify_reports_disconnected_channel_instead_of_silently_succeeding() {
+        let lua = Lua::new();
+        let (tx, rx) = flume::bounded(1);
+        drop(rx);
+        let (sent, err) = notify(&lua, tx, "hi".to_string()).unwrap();
+        assert!(!sent);
+        assert!(err.is_some());
+    }
+
+    #[test]
+    fn notify_reports_success_and_forwards_the_message() {
+        let lua = Lua::new();
+        let (tx, rx) = flume::bounded(1);
+        let (sent, err) = notify(&lua, tx, "hi".to_string()).unwrap();
+        assert!(sent);
+        assert!(err.is_none());
+        assert!(matches!(rx.try_recv(), Ok(UiAction::Notify(msg)) if msg == "hi"));
+    }
+
+    #[test]
     fn parse_footer_missing_returns_empty() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
-        assert!(parse_footer(&tbl).unwrap().is_empty());
+        let n00n_empty_check_24 = parse_footer(&tbl).unwrap();
+        assert!(
+            n00n_empty_check_24.is_empty(),
+            "expected empty, got {n00n_empty_check_24:?}"
+        );
     }
 
     #[test]
@@ -750,7 +798,11 @@ mod tests {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("footer", "not a table").unwrap();
-        assert!(parse_footer(&tbl).unwrap().is_empty());
+        let n00n_empty_check_25 = parse_footer(&tbl).unwrap();
+        assert!(
+            n00n_empty_check_25.is_empty(),
+            "expected empty, got {n00n_empty_check_25:?}"
+        );
     }
 
     #[test]
@@ -1366,7 +1418,11 @@ mod tests {
         assert_eq!(store.snapshot_entries().len(), 1);
 
         store.clear_plugin("plug");
-        assert!(store.snapshot_entries().is_empty());
+        let n00n_empty_check_26 = store.snapshot_entries();
+        assert!(
+            n00n_empty_check_26.is_empty(),
+            "expected empty, got {n00n_empty_check_26:?}"
+        );
     }
 
     #[test]
@@ -1384,7 +1440,11 @@ mod tests {
         let mut store = HintStore::new();
         store.set(Arc::from("plug"), vec![("a".into(), "b".into())]);
         store.set(Arc::from("plug"), vec![]);
-        assert!(store.snapshot_entries().is_empty());
+        let n00n_empty_check_27 = store.snapshot_entries();
+        assert!(
+            n00n_empty_check_27.is_empty(),
+            "expected empty, got {n00n_empty_check_27:?}"
+        );
     }
 
     fn ui_table(lua: &Lua) -> Table {

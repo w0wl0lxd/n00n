@@ -26,7 +26,7 @@ use crate::runtime::run_non_yieldable;
 
 use crate::api::util::convert::{json_to_lua, lua_tool_result};
 use crate::plugin_permissions::PluginPermissions;
-use crate::runtime::{TaskHandle, lock_cell, task_deadline};
+use crate::runtime::{CANCELLED_MSG, TaskHandle, lock_cell, task_deadline};
 
 const MAX_INTERPRETER_TIMEOUT_SECS: u64 = 300;
 const INTERPRETER_TIMEOUT_ERR: &str = "interpreter timed out";
@@ -94,6 +94,15 @@ fn terminate_process_tree(pid: u32) {
 enum StopReason {
     Cancelled,
     Deadline,
+}
+
+impl StopReason {
+    fn into_lua_error(self) -> mlua::Error {
+        mlua::Error::runtime(match self {
+            Self::Cancelled => CANCELLED_MSG,
+            Self::Deadline => INTERPRETER_TIMEOUT_ERR,
+        })
+    }
 }
 
 async fn wait_for_stop(cancel: &CancelToken, deadline: Instant) -> StopReason {
@@ -378,13 +387,9 @@ async fn interpreter_run(
     let deadline =
         parent_deadline.map_or(requested_deadline, |parent| parent.min(requested_deadline));
     let code = if fix_with_ruff {
-        match ruff_fix(code, &cancel, deadline).await {
-            Ok(code) => code,
-            Err(StopReason::Cancelled) => return Err(mlua::Error::runtime("cancelled")),
-            Err(StopReason::Deadline) => {
-                return Err(mlua::Error::runtime(INTERPRETER_TIMEOUT_ERR));
-            }
-        }
+        ruff_fix(code, &cancel, deadline)
+            .await
+            .map_err(StopReason::into_lua_error)?
     } else {
         code
     };
@@ -399,11 +404,11 @@ async fn interpreter_run(
     let names: Vec<String> = fns.keys().cloned().collect();
 
     if cancel.is_cancelled() {
-        return Err(mlua::Error::runtime("cancelled"));
+        return Err(StopReason::Cancelled.into_lua_error());
     }
     let timeout = deadline.saturating_duration_since(Instant::now());
     if timeout.is_zero() {
-        return Err(mlua::Error::runtime(INTERPRETER_TIMEOUT_ERR));
+        return Err(StopReason::Deadline.into_lua_error());
     }
     let timeout_millis = u64::try_from(timeout.as_millis())
         .map_err(|_| mlua::Error::runtime("interpreter timeout is too large"))?;
@@ -448,10 +453,7 @@ async fn interpreter_run(
             }
             WorkerOutcome::Stopped(reason) => {
                 worker.kill_and_reap().await;
-                return Err(mlua::Error::runtime(match reason {
-                    StopReason::Cancelled => "cancelled",
-                    StopReason::Deadline => INTERPRETER_TIMEOUT_ERR,
-                }));
+                return Err(reason.into_lua_error());
             }
         };
         match event {
@@ -463,6 +465,11 @@ async fn interpreter_run(
                 }
             }
             WorkerEvent::ToolCalls { request_id, calls } => {
+                enum DispatchOutcome {
+                    Results(Vec<WireCallResult>),
+                    Stopped(StopReason),
+                }
+
                 let futures = calls.into_iter().map(|call| {
                     let function = fns.get(&call.name).cloned();
                     let lua = lua.clone();
@@ -473,9 +480,24 @@ async fn interpreter_run(
                         }
                     }
                 });
+                let outcome = futures_lite::future::race(
+                    async { DispatchOutcome::Results(join_all(futures).await) },
+                    async { DispatchOutcome::Stopped(wait_for_stop(&cancel, deadline).await) },
+                )
+                .await;
+                let results = match outcome {
+                    DispatchOutcome::Results(results) => results,
+                    // Dropping the losing branch drops the pending Lua tool
+                    // futures; the worker must not stay blocked on a response
+                    // that will never arrive.
+                    DispatchOutcome::Stopped(reason) => {
+                        worker.kill_and_reap().await;
+                        return Err(reason.into_lua_error());
+                    }
+                };
                 let response = WorkerRequest::CallResults {
                     request_id,
-                    results: join_all(futures).await,
+                    results,
                 };
                 if let Err(error) = send_worker_request(&mut worker_stdin, &response).await {
                     worker.kill_and_reap().await;
@@ -510,14 +532,23 @@ async fn interpreter_run(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::{INTERPRETER_TIMEOUT_ERR, read_worker_event, send_worker_request, spawn_worker};
     use super::{MAX_INTERPRETER_TIMEOUT_SECS, interpreter_run, ruff_fix};
     #[cfg(unix)]
-    use super::{read_worker_event, send_worker_request, spawn_worker};
+    use crate::runtime::{CANCELLED_MSG, TaskCell, TaskHandle};
     use mlua::Lua;
+    #[cfg(unix)]
+    use mlua::Table;
     use n00n_agent::cancel::CancelToken;
     #[cfg(unix)]
     use n00n_interpreter::worker::{StartRequest, WorkerEvent, WorkerRequest};
+    #[cfg(unix)]
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    const RUN_BOUND: Duration = Duration::from_secs(5);
 
     #[test]
     #[ignore = "worker entrypoint fixture invoked by the integration harness"]
@@ -585,6 +616,101 @@ mod tests {
                 .unwrap();
             assert_eq!(error, None);
             assert_eq!(result.get::<String>("stdout").unwrap(), "ok");
+        });
+    }
+
+    /// Builds run options whose `hang` tool signals `entered_tx` and never
+    /// completes.
+    #[cfg(unix)]
+    fn hanging_tool_opts(lua: &Lua, timeout_secs: u64, entered_tx: flume::Sender<()>) -> Table {
+        let opts = lua.create_table().unwrap();
+        opts.set("timeout", timeout_secs).unwrap();
+        opts.set("max_memory_mb", 16).unwrap();
+        opts.set(
+            "on_output",
+            lua.create_function(|_, _: String| Ok(())).unwrap(),
+        )
+        .unwrap();
+        let tools = lua.create_table().unwrap();
+        let hang = lua
+            .create_async_function(move |_, _: mlua::Value| {
+                let entered_tx = entered_tx.clone();
+                async move {
+                    let _ = entered_tx.send_async(()).await;
+                    std::future::pending::<()>().await;
+                    Ok(mlua::Value::Nil)
+                }
+            })
+            .unwrap();
+        tools.set("hang", hang).unwrap();
+        opts.set("tools", tools).unwrap();
+        opts
+    }
+
+    /// Awaits `run`, or returns `None` once `RUN_BOUND` elapses.
+    #[cfg(unix)]
+    async fn bounded<T>(run: smol::Task<T>) -> Option<T> {
+        futures_lite::future::race(async { Some(run.await) }, async {
+            smol::Timer::after(RUN_BOUND).await;
+            None
+        })
+        .await
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_interrupts_pending_tool_dispatch() {
+        smol::block_on(async {
+            let (trigger, cancel) = CancelToken::new();
+            let lua = Lua::new();
+            lua.set_app_data::<TaskHandle>(Arc::new(Mutex::new(TaskCell::new(
+                &lua, cancel, None, None, None,
+            ))));
+            let (entered_tx, entered_rx) = flume::bounded::<()>(1);
+            let opts = hanging_tool_opts(&lua, 30, entered_tx);
+
+            let _keepalive = lua.clone();
+            let run = smol::spawn(interpreter_run(lua, "await hang()".to_owned(), opts));
+            entered_rx
+                .recv_async()
+                .await
+                .expect("python tool callback never started");
+            trigger.cancel();
+
+            let error = bounded(run)
+                .await
+                .expect("interpreter_run ignored cancellation while a tool callback was pending")
+                .unwrap_err();
+            assert!(
+                error.to_string().contains(CANCELLED_MSG),
+                "expected error containing {CANCELLED_MSG:?}, got: {error}"
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deadline_interrupts_pending_tool_dispatch() {
+        smol::block_on(async {
+            let lua = Lua::new();
+            let (entered_tx, entered_rx) = flume::bounded::<()>(1);
+            let opts = hanging_tool_opts(&lua, 1, entered_tx);
+
+            let _keepalive = lua.clone();
+            let run = smol::spawn(interpreter_run(lua, "await hang()".to_owned(), opts));
+            entered_rx
+                .recv_async()
+                .await
+                .expect("python tool callback never started");
+
+            let error = bounded(run)
+                .await
+                .expect("interpreter_run ignored its deadline while a tool callback was pending")
+                .unwrap_err();
+            assert!(
+                error.to_string().contains(INTERPRETER_TIMEOUT_ERR),
+                "expected error containing {INTERPRETER_TIMEOUT_ERR:?}, got: {error}"
+            );
         });
     }
 

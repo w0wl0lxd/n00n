@@ -247,7 +247,7 @@ n00n.api.register_tool({
         start_line = start_line or tonumber(nr)
         lines[#lines + 1] = text
       else
-        local trunc_end = raw:match("Truncated lines: %d+%-(%d+)")
+        local trunc_end = raw:match("Truncated lines: %d+%-(%d+)") or raw:match("Omitted %d+ lines %(%d+%-(%d+)%)")
         if trunc_end then
           total_lines = tonumber(trunc_end)
         end
@@ -281,7 +281,7 @@ n00n.api.register_tool({
 -- Tests
 do
   local function test_utf8_truncate()
-    local s = "abc🎉xyz"
+    local s = "abc" .. utf8.char(0x1F389) .. "xyz"
     local max_bytes = 4
     local result = truncate_bytes(s, max_bytes)
     -- Emoji is 4 bytes, so with max_bytes=4 we should get "abc..." (emoji doesn't fit)
@@ -289,7 +289,7 @@ do
     assert(result:sub(-3) == "...", "should add ellipsis")
     -- Test with enough bytes for the emoji
     local result2 = truncate_bytes(s, 7)
-    assert(result2:sub(1, 7) == "abc🎉", "should include full emoji when it fits")
+    assert(result2:sub(1, 7) == "abc" .. utf8.char(0x1F389), "should include full emoji when it fits")
   end
 
   test_utf8_truncate()

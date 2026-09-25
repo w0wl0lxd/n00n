@@ -842,8 +842,13 @@ mod tests {
         let mut thinking = String::new();
         handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
         assert_eq!(text, "pong");
-        assert!(thinking.is_empty());
-        assert!(outbound.lock().expect("lock").queue.is_empty());
+        assert!(thinking.is_empty(), "expected empty, got {thinking:?}");
+        let n00n_empty_check_62 = outbound.lock().expect("lock");
+        assert!(
+            n00n_empty_check_62.queue.is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_62.queue
+        );
     }
 
     #[test]
@@ -900,7 +905,12 @@ mod tests {
         }
         assert_eq!(text, "existing text");
         assert_eq!(thinking, "existing thinking");
-        assert!(outbound.lock().expect("lock").queue.is_empty());
+        let n00n_empty_check_63 = outbound.lock().expect("lock");
+        assert!(
+            n00n_empty_check_63.queue.is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_63.queue
+        );
     }
 
     #[test]
@@ -975,7 +985,7 @@ mod tests {
         let mut text = String::new();
         let mut thinking = String::new();
         handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
-        assert!(text.is_empty());
+        assert!(text.is_empty(), "expected empty, got {text:?}");
         assert_eq!(
             store.lock().expect("lock").get(b"blob-id"),
             Some(b"blob-data".as_slice())
@@ -1103,7 +1113,11 @@ mod tests {
             .await
             .unwrap_or_else(|error| panic!("run failed: {error}"));
             assert_eq!(result.http_status, 200);
-            assert!(!result.conversation_id.is_empty());
+            assert!(
+                !result.conversation_id.is_empty(),
+                "expected non-empty, got {:?}",
+                result.conversation_id
+            );
             let _ = &result.thinking;
             assert!(
                 result.text.to_lowercase().contains("pong"),

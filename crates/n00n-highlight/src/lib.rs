@@ -397,7 +397,11 @@ mod tests {
             set_theme(Theme::default());
         }
         let mut hl = Highlighter::for_token("rust");
-        assert!(!hl.highlight_line("let x = 1;\n").is_empty());
+        let n00n_empty_check_22 = hl.highlight_line("let x = 1;\n");
+        assert!(
+            !n00n_empty_check_22.is_empty(),
+            "expected non-empty, got {n00n_empty_check_22:?}"
+        );
     }
 
     #[test]

@@ -288,6 +288,22 @@ case("render_selecting_uses_radio_for_single_and_check_for_multiple", function()
   assert(contains(multi_lines, "✓ Yes"), "multiple selected must use check")
 end)
 
+case("render_selecting_focuses_first_row_of_wrapped_custom_answer", function()
+  local s = QuestionForm._initial_state(single_question())
+  local opts = s.questions[s.tab].options
+  s.cursor = #opts + 1
+  s.answers[s.tab] = { string.rep("word ", 20) }
+
+  local rendered = QuestionForm._render(s, 30)
+  local focus_line = rendered.lines[rendered.focus_row]
+  local text = {}
+  for _, span in ipairs(focus_line) do
+    text[#text + 1] = span[1]
+  end
+  local focus_text = table.concat(text)
+  assert(focus_text:find("▸", 1, true), "focus_row must land on the custom option's pointer row, got: " .. focus_text)
+end)
+
 case("render_confirming_wraps_long_question_and_answer_within_width", function()
   local long_ans = string.rep("answerword ", 15)
   local long_q = string.rep("promptword ", 15)

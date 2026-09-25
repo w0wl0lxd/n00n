@@ -4069,7 +4069,12 @@ mod tests {
 
         register_task_cleanup_callback(&lua, lua.create_registry_value(callback).unwrap());
 
-        assert!(lock_cell(&child).cleanup_callbacks.is_empty());
+        let n00n_empty_check_41 = lock_cell(&child);
+        assert!(
+            n00n_empty_check_41.cleanup_callbacks.is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_41.cleanup_callbacks
+        );
         assert_eq!(lock_cell(&root).cleanup_callbacks.len(), 1);
     }
 
@@ -4154,7 +4159,12 @@ mod tests {
         run_task_cleanup_callbacks(&lua, &handle);
 
         assert_eq!(calls.load(Ordering::Relaxed), 2);
-        assert!(lock_cell(&handle).cleanup_callbacks.is_empty());
+        let n00n_empty_check_42 = lock_cell(&handle);
+        assert!(
+            n00n_empty_check_42.cleanup_callbacks.is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_42.cleanup_callbacks
+        );
     }
 
     #[test]
@@ -4163,7 +4173,11 @@ mod tests {
         let mut reply = ToolCallReply::err("job callback error: operation timed out elsewhere");
         reply.live_buf = Some(Arc::clone(&buf));
         restore_timeout_marker(&reply);
-        assert!(buf.read().is_empty());
+        let n00n_empty_check_43 = buf.read();
+        assert!(
+            n00n_empty_check_43.is_empty(),
+            "expected empty, got {n00n_empty_check_43:?}"
+        );
 
         let mut reply = ToolCallReply::err("tool bash timed out after 3s");
         reply.live_buf = Some(Arc::clone(&buf));

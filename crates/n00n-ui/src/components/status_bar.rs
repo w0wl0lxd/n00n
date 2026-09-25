@@ -1,6 +1,9 @@
 use std::borrow::Cow;
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 use super::{RetryInfo, Status};
@@ -26,6 +29,9 @@ const SECONDS_PER_HOUR: u64 = 60 * SECONDS_PER_MINUTE;
 const SECONDS_PER_DAY: u64 = 24 * SECONDS_PER_HOUR;
 const CACHE_GREEN_NUMERATOR: u64 = 2;
 const CACHE_YELLOW_NUMERATOR: u64 = 5;
+/// How long the branch watcher sleeps between stop-flag checks. Keeps the
+/// thread responsive to an unpark even if one is missed.
+const BRANCH_WATCHER_PARK_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(crate) fn format_tokens(n: u32) -> String {
     match n {
@@ -66,15 +72,21 @@ pub struct StatusBar {
     cwd_branch: String,
     pub flash_duration: Duration,
     branch_update_rx: Option<flume::Receiver<()>>,
+    _branch_watcher: Option<BranchWatcher>,
 }
 
 impl StatusBar {
     pub fn new(flash_duration: Duration) -> Self {
+        let (branch_update_rx, branch_watcher) = match spawn_branch_watcher() {
+            Some((rx, watcher)) => (Some(rx), Some(watcher)),
+            None => (None, None),
+        };
         Self {
             flash: None,
             cwd_branch: cwd_branch_label(),
             flash_duration,
-            branch_update_rx: spawn_branch_watcher(),
+            branch_update_rx,
+            _branch_watcher: branch_watcher,
         }
     }
 
@@ -370,27 +382,78 @@ fn find_git_dir(cwd: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-fn spawn_branch_watcher() -> Option<flume::Receiver<()>> {
+/// Owns one branch watcher thread. Dropping it signals the thread to stop,
+/// which then drops the `notify` watcher and its OS handle. Drop never joins:
+/// on macOS `FsEventWatcher::watch` can block forever inside
+/// `FSEventStreamStart` (notify-rs #942), and a join would hang the UI with it.
+struct BranchWatcher {
+    stop: Arc<AtomicBool>,
+    thread: Thread,
+}
+
+impl Drop for BranchWatcher {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.thread.unpark();
+    }
+}
+
+#[cfg(not(test))]
+fn spawn_branch_watcher() -> Option<(flume::Receiver<()>, BranchWatcher)> {
+    let cwd = env::current_dir().ok()?;
+    spawn_branch_watcher_for(find_git_dir(&cwd)?)
+}
+
+/// Unit tests build many status bars in parallel; they must not start real
+/// filesystem watchers on the ambient checkout.
+#[cfg(test)]
+fn spawn_branch_watcher() -> Option<(flume::Receiver<()>, BranchWatcher)> {
+    None
+}
+
+fn spawn_branch_watcher_for(git_dir: PathBuf) -> Option<(flume::Receiver<()>, BranchWatcher)> {
     use notify::{RecursiveMode, Watcher};
 
-    let cwd = env::current_dir().ok()?;
-    let git_dir = find_git_dir(&cwd)?;
     let (tx, rx) = flume::bounded(1);
-
-    std::thread::spawn(move || {
-        let Ok(mut watcher) = notify::recommended_watcher(move |res: Result<notify::Event, _>| {
-            if res.is_ok_and(|e| e.paths.iter().any(|p| p.ends_with("HEAD"))) {
-                let _ = tx.try_send(());
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let spawned = thread::Builder::new()
+        .name("branch-watcher".into())
+        .spawn(move || {
+            let Ok(mut watcher) =
+                notify::recommended_watcher(move |res: Result<notify::Event, _>| {
+                    if res.is_ok_and(|e| e.paths.iter().any(|p| p.ends_with("HEAD"))) {
+                        let _ = tx.try_send(());
+                    }
+                })
+            else {
+                return;
+            };
+            if watcher
+                .watch(&git_dir, RecursiveMode::NonRecursive)
+                .is_err()
+            {
+                return;
             }
-        }) else {
-            return;
-        };
-        if watcher.watch(&git_dir, RecursiveMode::NonRecursive).is_ok() {
-            std::thread::park();
+            while !thread_stop.load(Ordering::Acquire) {
+                thread::park_timeout(BRANCH_WATCHER_PARK_INTERVAL);
+            }
+        });
+    let handle = match spawned {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::warn!(%error, "failed to spawn branch watcher thread; branch label will not live-update");
+            return None;
         }
-    });
+    };
 
-    Some(rx)
+    Some((
+        rx,
+        BranchWatcher {
+            stop,
+            thread: handle.thread().clone(),
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -400,6 +463,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use test_case::test_case;
+
+    const WATCHER_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[test_case(FusionPhase::Planning, Some("planning") ; "planning")]
     #[test_case(FusionPhase::Executing, Some("executing") ; "executing")]
@@ -458,6 +523,30 @@ mod tests {
             detect_branch(&sub.to_string_lossy()),
             Some("main".to_string())
         );
+    }
+
+    #[test]
+    fn branch_watcher_stops_when_its_owner_drops() {
+        let (_dir, path) = tmp_with_head(Some("ref: refs/heads/main\n"));
+        let (rx, watcher) = spawn_branch_watcher_for(PathBuf::from(&path).join(".git"))
+            .expect("watcher starts for a git directory");
+        assert!(!rx.is_disconnected(), "watcher thread exited before drop");
+
+        drop(watcher);
+
+        // The thread owns the only sender (inside the notify callback), so the
+        // channel disconnects only once the thread has exited.
+        let deadline = Instant::now() + WATCHER_EXIT_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok(()) => {}
+                Err(flume::RecvTimeoutError::Disconnected) => break,
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    panic!("branch watcher thread outlived its owner")
+                }
+            }
+        }
     }
 
     #[test]

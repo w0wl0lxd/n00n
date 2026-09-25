@@ -1463,7 +1463,11 @@ mod tests {
         );
         assert_eq!(events[1]["usage"]["output_tokens"], 5);
 
-        assert!(synth.finish_message(&usage).is_empty());
+        let n00n_empty_check_86 = synth.finish_message(&usage);
+        assert!(
+            n00n_empty_check_86.is_empty(),
+            "expected empty, got {n00n_empty_check_86:?}"
+        );
 
         let next = synth.text_delta(MODEL, "new");
         assert_eq!(next[1]["index"], 0);
@@ -1472,7 +1476,11 @@ mod tests {
     #[test]
     fn finish_message_before_start_is_empty() {
         let mut synth = StreamSynth::new();
-        assert!(synth.finish_message(&TokenUsage::default()).is_empty());
+        let n00n_empty_check_87 = synth.finish_message(&TokenUsage::default());
+        assert!(
+            n00n_empty_check_87.is_empty(),
+            "expected empty, got {n00n_empty_check_87:?}"
+        );
     }
 
     #[test]
@@ -1545,9 +1553,17 @@ mod tests {
         assert_eq!(&*images[1].data, "BBBB");
 
         // Non-array content and malformed image blocks yield no images.
-        assert!(content_images(&serde_json::json!("hi")).is_empty());
+        let n00n_empty_check_88 = content_images(&serde_json::json!("hi"));
+        assert!(
+            n00n_empty_check_88.is_empty(),
+            "expected empty, got {n00n_empty_check_88:?}"
+        );
         let bad = serde_json::json!([{"type": "image", "source": {"data": "x"}}]);
-        assert!(content_images(&bad).is_empty());
+        let n00n_empty_check_89 = content_images(&bad);
+        assert!(
+            n00n_empty_check_89.is_empty(),
+            "expected empty, got {n00n_empty_check_89:?}"
+        );
     }
 
     #[test]

@@ -65,6 +65,7 @@ use crate::components::{
     Action, DisplayMessage, DisplayRole, ExitRequest, Status, SubmissionDispatch,
 };
 use crate::input::InputReader;
+use crate::keymap::{EffectiveKeymap, file};
 use crate::session_lineage::{LineageError, LineageLimits, LiveSession, SessionLineageGuard};
 
 use crate::color_compat;
@@ -163,6 +164,50 @@ impl SessionStatus {
     fn needs_shutdown_settle(self) -> bool {
         self == Self::Working
     }
+}
+
+/// The attention message for a session status edge, when the edge calls
+/// for one: entering `NeedsInput` means a prompt blocks the run, and
+/// leaving `Working` for `Idle` means the turn ended. Starting or
+/// resuming work stays silent, as does leaving a prompt without working.
+fn attention_message(
+    previous: SessionStatus,
+    next: SessionStatus,
+    failed: bool,
+) -> Option<&'static str> {
+    match (previous, next) {
+        (_, SessionStatus::NeedsInput) => Some("n00n: input required"),
+        (SessionStatus::Working, SessionStatus::Idle) => Some(if failed {
+            "n00n: turn failed"
+        } else {
+            "n00n: turn complete"
+        }),
+        _ => None,
+    }
+}
+
+/// A session's status edge needs an attention signal unless the user is
+/// already looking at it: the terminal is focused and it is the session
+/// shown. A backgrounded session (not `focused`) always signals, since
+/// its edge cannot otherwise be seen.
+fn should_signal_attention(term_focused: bool, focused: usize, session: usize) -> bool {
+    !term_focused || session != focused
+}
+
+/// `n00n: <title>` with a state marker while the session works or waits
+/// on input; bare `n00n` while it sits idle on an unnamed session.
+fn window_title(session_title: &str, status: SessionStatus) -> String {
+    let mut title = String::from("n00n");
+    if !session_title.is_empty() {
+        title.push_str(": ");
+        title.push_str(session_title);
+    }
+    match status {
+        SessionStatus::Working => title.push_str(" (working)"),
+        SessionStatus::NeedsInput => title.push_str(" (needs input)"),
+        SessionStatus::Idle => {}
+    }
+    title
 }
 
 fn parse_session_id(id: &str) -> Result<n00nId, String> {
@@ -930,6 +975,7 @@ struct SpawnCtx {
     custom_commands: Arc<[CustomCommand]>,
     lua_command_reader: LuaCommandReader,
     keymap_reader: KeymapReader,
+    effective_keymap: Arc<EffectiveKeymap>,
     hint_reader: HintReader,
     lua_event_handle: Option<EventHandle>,
     mcp_handle: Option<McpHandle>,
@@ -1067,6 +1113,7 @@ impl SpawnCtx {
             mcp_config_errors: handles.mcp_config_errors.clone(),
             lua_command_reader: self.lua_command_reader.clone(),
             keymap_reader: self.keymap_reader.clone(),
+            effective_keymap: Arc::clone(&self.effective_keymap),
             hint_reader: self.hint_reader.clone(),
             storage_writer: Arc::clone(&self.storage_writer),
             ui_config: self.ui_config.clone(),
@@ -1130,6 +1177,15 @@ pub(crate) struct EventLoop<'t> {
     /// gated on this (or active animation) so we don't re-diff the whole
     /// buffer on every idle tick. Resize also sets it.
     dirty: bool,
+    /// Terminal focus reported via `Event::FocusGained`/`FocusLost` (mode
+    /// ?1004), which reports only changes, never the state at startup.
+    /// Starts optimistic (focused): a launch-time false negative is
+    /// cheaper than notifying a user who is already looking. Unaffected:
+    /// a non-focused session in a multi-session run always notifies.
+    term_focused: bool,
+    /// Last title written to the terminal, so OSC 2 is only re-emitted when
+    /// the focused session's title or status actually changes.
+    emitted_title: String,
 }
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
@@ -1440,6 +1496,15 @@ impl<'t> EventLoop<'t> {
             project_trusted,
         ));
 
+        // User keymap file: loaded once per UI generation, so `/reload`
+        // rebuilds the effective map from disk. Problems degrade to
+        // warnings — never a startup failure.
+        let (effective_keymap, keymap_warnings) = file::load(&n00n_config::global_config_dirs());
+        for warning in &keymap_warnings {
+            warn!("keymap.toml: {warning}");
+        }
+        startup_warnings.extend(keymap_warnings.iter().map(ToString::to_string));
+
         let (provider, provider_warning) =
             startup_provider_with(&mut model, needs_login, |model| {
                 from_model_with_openai_options(model, timeouts, openai_options.clone())
@@ -1552,6 +1617,7 @@ impl<'t> EventLoop<'t> {
             custom_commands: Arc::from(commands),
             lua_command_reader,
             keymap_reader,
+            effective_keymap: Arc::new(effective_keymap),
             hint_reader,
             lua_event_handle,
             mcp_handle,
@@ -1620,6 +1686,8 @@ impl<'t> EventLoop<'t> {
             model_refresh_generation: bg.generation,
             _model_fetch_task: bg.task,
             dirty: true,
+            term_focused: true,
+            emitted_title: String::new(),
         })
     }
 
@@ -2566,6 +2634,7 @@ impl<'t> EventLoop<'t> {
         drop(slot_model);
 
         self.emit_status_changes();
+        self.sync_window_title();
         Ok(())
     }
 
@@ -2573,6 +2642,14 @@ impl<'t> EventLoop<'t> {
         match action {
             UiAction::Flash(msg) => {
                 self.focused_app().flash(msg);
+            }
+            // Plugin-initiated, so it is not focus-suppressed like the
+            // automatic attention signal; `ui.notifications` still picks
+            // the mechanism and "off" stays silent.
+            UiAction::Notify(message) => {
+                if let Err(error) = terminal::notify(self.ctx.ui_config.notifications, &message) {
+                    warn!(%error, "failed to emit plugin notification");
+                }
             }
             UiAction::OpenEditor { path, reply_tx } => {
                 let code = self.open_editor(self.focused, &path);
@@ -2765,6 +2842,8 @@ impl<'t> EventLoop<'t> {
             Ok(_pause) => terminal::open_in_editor(path, self.terminal),
             Err(e) => Err(e),
         };
+        // Resume restored the pre-n00n title; the next sync must re-emit.
+        self.emitted_title.clear();
         match result {
             Ok(code) => code,
             Err(e) => {
@@ -2775,25 +2854,57 @@ impl<'t> EventLoop<'t> {
     }
 
     fn emit_status_changes(&mut self) {
-        let Some(handle) = self.ctx.lua_event_handle.as_ref() else {
-            return;
-        };
+        let notifications = self.ctx.ui_config.notifications;
+        let term_focused = self.term_focused;
+        let focused = self.focused;
         for (i, rt) in self.sessions.iter_mut().enumerate() {
             let status = SessionStatus::of(&rt.app);
             if status == rt.last_status {
                 continue;
             }
+            let previous = rt.last_status;
             rt.last_status = status;
-            handle.fire_autocmd(
-                "SessionStatusChanged",
-                json!({
-                    "session_id": rt.id(),
-                    "title": rt.app.state.session.title,
-                    "status": status.as_str(),
-                    "focused": i == self.focused,
-                }),
-            );
+            if should_signal_attention(term_focused, focused, i)
+                && let Some(message) = attention_message(
+                    previous,
+                    status,
+                    matches!(rt.app.status, Status::Error { .. }),
+                )
+                && let Err(error) = terminal::notify(notifications, message)
+            {
+                warn!(%error, "failed to emit attention notification");
+            }
+            if let Some(handle) = self.ctx.lua_event_handle.as_ref() {
+                handle.fire_autocmd(
+                    "SessionStatusChanged",
+                    json!({
+                        "session_id": rt.id(),
+                        "title": rt.app.state.session.title,
+                        "status": status.as_str(),
+                        "focused": i == focused,
+                    }),
+                );
+            }
         }
+    }
+
+    /// Mirrors the focused session into the window title: `n00n: title`
+    /// plus a state marker while it is working or waiting on input. The
+    /// sequence is only re-emitted on change, and a failed write is cached
+    /// anyway so a broken tty cannot warn on every pass.
+    fn sync_window_title(&mut self) {
+        if !self.ctx.ui_config.terminal_title {
+            return;
+        }
+        let rt = &self.sessions[self.focused];
+        let title = window_title(&rt.app.state.session.title, SessionStatus::of(&rt.app));
+        if title == self.emitted_title {
+            return;
+        }
+        if let Err(error) = terminal::set_window_title(&title) {
+            warn!(%error, "failed to set terminal title");
+        }
+        self.emitted_title = title;
     }
 
     /// `List` replies from a background task (the scan can be slow); every
@@ -3548,7 +3659,16 @@ impl<'t> EventLoop<'t> {
             Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
-            _ => (None, None),
+            Event::FocusGained => {
+                self.term_focused = true;
+                (None, None)
+            }
+            Event::FocusLost => {
+                self.term_focused = false;
+                (None, None)
+            }
+            // Key releases and repeats are not turned into `Msg`s.
+            Event::Key(_) => (None, None),
         }
     }
 
@@ -3900,6 +4020,7 @@ impl<'t> EventLoop<'t> {
                     Ok(_pause) => terminal::edit_temp_content(&current_text, self.terminal),
                     Err(e) => Err(e),
                 };
+                self.emitted_title.clear();
                 match result {
                     Ok(edited) => self.sessions[idx].app.input_box.set_input(&edited),
                     Err(e) => self.sessions[idx].app.flash(e),
@@ -3913,10 +4034,18 @@ impl<'t> EventLoop<'t> {
                     slot.model.clone(),
                 );
             }
-            Action::Suspend => match self.input.pause() {
-                Ok(_pause) => terminal::suspend(self.terminal),
-                Err(e) => self.sessions[idx].app.flash(e),
-            },
+            Action::Suspend => {
+                match self.input.pause() {
+                    Ok(_pause) => terminal::suspend(self.terminal),
+                    Err(e) => self.sessions[idx].app.flash(e),
+                }
+                self.emitted_title.clear();
+            }
+            Action::Redraw => {
+                if let Err(e) = self.terminal.clear() {
+                    self.sessions[idx].app.flash(e.to_string());
+                }
+            }
             Action::RefreshModels => self.refresh_models(),
             Action::RefreshUsage => self.refresh_usage(),
         }
@@ -4292,15 +4421,16 @@ mod tests {
         DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg,
         PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, ReapCandidate, RunTransitionWriter,
         SessionStatus, TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll,
-        authorize_ui_delete, begin_state_capture, bounded_direct_output, cancel_stored_session,
-        canonical_run_projection, capture_revision_matches, coalesce_drag,
+        attention_message, authorize_ui_delete, begin_state_capture, bounded_direct_output,
+        cancel_stored_session, canonical_run_projection, capture_revision_matches, coalesce_drag,
         complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
         handle_input_bounded, initial_state_revision, merge_compaction_metadata, merge_model_batch,
         outer_compaction_state_revision, paused_team_payload, paused_team_run,
         prepare_compaction_checkpoint, projected_session_lifecycle, publish_model_refresh,
         resolve_model_selection, resume_state_snapshot, select_reapable_sessions,
-        should_save_periodically, startup_login_completed, startup_provider_with,
-        take_painted_submissions, try_recv_input, validated_paused_team_payload,
+        should_save_periodically, should_signal_attention, startup_login_completed,
+        startup_provider_with, take_painted_submissions, try_recv_input,
+        validated_paused_team_payload, window_title,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::{ArcSwap, ArcSwapOption};
@@ -4395,6 +4525,55 @@ mod tests {
         assert!(SessionStatus::Working.needs_shutdown_settle());
         assert!(!SessionStatus::NeedsInput.needs_shutdown_settle());
         assert!(!SessionStatus::Idle.needs_shutdown_settle());
+    }
+
+    #[test_case(SessionStatus::Idle, SessionStatus::NeedsInput, false, Some("n00n: input required") ; "idle_to_needs_input")]
+    #[test_case(SessionStatus::Working, SessionStatus::NeedsInput, false, Some("n00n: input required") ; "working_to_needs_input")]
+    #[test_case(SessionStatus::Working, SessionStatus::Idle, false, Some("n00n: turn complete") ; "working_to_idle")]
+    #[test_case(SessionStatus::Working, SessionStatus::Idle, true, Some("n00n: turn failed") ; "working_to_failed")]
+    #[test_case(SessionStatus::Idle, SessionStatus::Working, false, None ; "turn_start_is_silent")]
+    #[test_case(SessionStatus::NeedsInput, SessionStatus::Working, false, None ; "answered_prompt_is_silent")]
+    #[test_case(SessionStatus::NeedsInput, SessionStatus::Idle, false, None ; "dismissed_prompt_is_silent")]
+    fn attention_message_maps_status_edges(
+        previous: SessionStatus,
+        next: SessionStatus,
+        failed: bool,
+        expected: Option<&'static str>,
+    ) {
+        assert_eq!(attention_message(previous, next, failed), expected);
+    }
+
+    #[test_case(true, 0, 0, false ; "focused_session_focused_terminal_is_quiet")]
+    #[test_case(false, 0, 0, true ; "focused_session_unfocused_terminal_signals")]
+    #[test_case(true, 0, 1, true ; "background_session_still_signals_even_when_focused")]
+    #[test_case(false, 0, 1, true ; "background_session_signals_when_unfocused")]
+    fn should_signal_attention_covers_focus_and_backgrounding(
+        term_focused: bool,
+        focused: usize,
+        session: usize,
+        expected: bool,
+    ) {
+        assert_eq!(
+            should_signal_attention(term_focused, focused, session),
+            expected
+        );
+    }
+
+    #[test]
+    fn window_title_reflects_session_and_state() {
+        assert_eq!(
+            window_title("fix the bug", SessionStatus::Idle),
+            "n00n: fix the bug"
+        );
+        assert_eq!(
+            window_title("fix the bug", SessionStatus::Working),
+            "n00n: fix the bug (working)"
+        );
+        assert_eq!(
+            window_title("fix the bug", SessionStatus::NeedsInput),
+            "n00n: fix the bug (needs input)"
+        );
+        assert_eq!(window_title("", SessionStatus::Idle), "n00n");
     }
 
     #[test]
@@ -5094,9 +5273,21 @@ mod tests {
 
         assert!(cancel_stored_session(&mut session));
         assert_eq!(session.meta.lifecycle, StoredSessionLifecycle::Cancelled);
-        assert!(session.meta.queued_messages.is_empty());
-        assert!(session.meta.queued_submissions.is_empty());
-        assert!(session.meta.queued_direct_tools.is_empty());
+        assert!(
+            session.meta.queued_messages.is_empty(),
+            "expected empty, got {:?}",
+            session.meta.queued_messages
+        );
+        assert!(
+            session.meta.queued_submissions.is_empty(),
+            "expected empty, got {:?}",
+            session.meta.queued_submissions
+        );
+        assert!(
+            session.meta.queued_direct_tools.is_empty(),
+            "expected empty, got {:?}",
+            session.meta.queued_direct_tools
+        );
         assert!(session.meta.direct_paused_team.is_none());
 
         let mut inactive = AppSession::new("model", "/project");
@@ -5105,7 +5296,11 @@ mod tests {
         assert_eq!(inactive.meta.lifecycle, StoredSessionLifecycle::Succeeded);
         inactive.meta.queued_messages = vec!["pending".into()];
         assert!(cancel_stored_session(&mut inactive));
-        assert!(inactive.meta.queued_messages.is_empty());
+        assert!(
+            inactive.meta.queued_messages.is_empty(),
+            "expected empty, got {:?}",
+            inactive.meta.queued_messages
+        );
     }
 
     struct FailingBackend(TestBackend);

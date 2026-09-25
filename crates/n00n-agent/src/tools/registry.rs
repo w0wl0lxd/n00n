@@ -31,6 +31,9 @@ const NAMESPACE_TOKEN_SCORE: u32 = 80;
 const SCHEMA_TOKEN_SCORE: u32 = 30;
 const DESCRIPTION_TOKEN_SCORE: u32 = 10;
 const SEARCH_DESCRIPTION_LIMIT: usize = 120;
+/// Catch-all namespace for deferred tools that do not declare one. Without
+/// this they would be invisible to hosted tool search and unreachable.
+const DEFAULT_DEFERRED_NAMESPACE: &str = "general";
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -738,7 +741,17 @@ impl ToolRegistry {
             let aliases = entry.tool.aliases();
             let aliases_lower: Vec<String> =
                 aliases.iter().map(|alias| alias.to_lowercase()).collect();
-            let namespace_lower = entry.namespace.as_deref().map(str::to_lowercase);
+            // Namespace-less entries are advertised under the catch-all
+            // namespace (see `deferred_definitions`), so search must resolve
+            // to the same effective namespace or "general" queries would
+            // never find them.
+            let namespace_lower = Some(
+                entry
+                    .namespace
+                    .as_deref()
+                    .map_or_else(|| DEFAULT_DEFERRED_NAMESPACE, |namespace| namespace)
+                    .to_lowercase(),
+            );
             let description = vars.apply(&entry.tool.description(ctx)).into_owned();
             let description_lower = description.to_lowercase();
             let schema_lower = entry.tool.schema().to_string().to_lowercase();
@@ -793,6 +806,7 @@ impl ToolRegistry {
                     name: name.to_owned(),
                     namespace: entry.namespace.as_deref().map(String::from),
                     description,
+                    input_schema: sanitize_tool_input_schema(entry.tool.schema()),
                 },
             ));
         }
@@ -818,7 +832,12 @@ impl ToolRegistry {
         let mut names: Vec<String> = snapshot
             .iter()
             .filter(|entry| entry.defer_loading)
-            .filter(|entry| entry.namespace.as_deref() == Some(namespace))
+            .filter(|entry| {
+                entry.namespace.as_deref().map_or_else(
+                    || DEFAULT_DEFERRED_NAMESPACE,
+                    |entry_namespace| entry_namespace,
+                ) == namespace
+            })
             .filter(|entry| entry.tool.audience().contains(ctx.audience))
             .filter(|entry| ctx.filter.matches(entry.name()))
             .map(|entry| entry.name().to_owned())
@@ -899,9 +918,12 @@ impl ToolRegistry {
             {
                 continue;
             }
-            let Some(namespace) = entry.namespace.as_deref() else {
-                continue;
-            };
+            // Deferred tools without an explicit namespace still need a
+            // hosted-search surface, so they land in a stable catch-all group.
+            let namespace = entry
+                .namespace
+                .as_deref()
+                .map_or_else(|| DEFAULT_DEFERRED_NAMESPACE, |namespace| namespace);
             let description = vars.apply(&entry.tool.description(ctx)).into_owned();
             let sanitized_schema = sanitize_tool_input_schema(entry.tool.schema());
             let mut definition = json!({
@@ -985,6 +1007,7 @@ pub struct ToolSearchResult {
     pub name: String,
     pub namespace: Option<String>,
     pub description: String,
+    pub input_schema: Value,
 }
 
 #[derive(Clone, Default)]
@@ -1178,7 +1201,12 @@ mod tests {
             .register_many([(first, lua_source("a")), (second, lua_source("b"))])
             .expect_err("alias collision must reject the whole batch");
         assert!(matches!(err, RegistryError::NameConflict { name, .. } if name == "read"));
-        assert!(reg.snapshot().is_empty());
+        let n00n_empty_check_12 = reg.snapshot();
+        assert!(
+            n00n_empty_check_12.is_empty(),
+            "expected empty, got {} entries",
+            n00n_empty_check_12.len()
+        );
     }
 
     #[test]
@@ -1525,6 +1553,59 @@ mod tests {
     }
 
     #[test]
+    fn search_finds_unnamespaced_tool_under_catchall_namespace() {
+        let reg = ToolRegistry::new();
+        reg.register(
+            &deferred_mock("unnamespaced_tool", &[], ToolAudience::MAIN, None),
+            &lua_source("p"),
+        )
+        .unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        // Advertised via `deferred_definitions` under DEFAULT_DEFERRED_NAMESPACE,
+        // so searching that namespace must surface it too.
+        let results = reg.search(DEFAULT_DEFERRED_NAMESPACE, &ctx, 5);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unnamespaced_tool"]
+        );
+    }
+
+    #[test]
+    fn deferred_namespace_tools_returns_unnamespaced_tools_for_catchall() {
+        let reg = ToolRegistry::new();
+        reg.register(
+            &deferred_mock("unnamespaced_tool", &[], ToolAudience::MAIN, None),
+            &lua_source("p"),
+        )
+        .unwrap();
+        reg.register(
+            &deferred_mock("namespaced_tool", &[], ToolAudience::MAIN, Some("web")),
+            &lua_source("p"),
+        )
+        .unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        assert_eq!(
+            reg.deferred_namespace_tools(DEFAULT_DEFERRED_NAMESPACE, &ctx),
+            vec!["unnamespaced_tool"]
+        );
+    }
+
+    #[test]
     fn search_rejects_empty_queries_and_zero_limit() {
         let reg = ToolRegistry::new();
         let filter = crate::tools::ToolFilter::All;
@@ -1534,8 +1615,16 @@ mod tests {
             workflow: false,
         };
 
-        assert!(reg.search("  ", &ctx, 5).is_empty());
-        assert!(reg.search("tool", &ctx, 0).is_empty());
+        let n00n_empty_check_13 = reg.search("  ", &ctx, 5);
+        assert!(
+            n00n_empty_check_13.is_empty(),
+            "expected empty, got {n00n_empty_check_13:?}"
+        );
+        let n00n_empty_check_14 = reg.search("tool", &ctx, 0);
+        assert!(
+            n00n_empty_check_14.is_empty(),
+            "expected empty, got {n00n_empty_check_14:?}"
+        );
     }
 
     #[test]
@@ -1653,8 +1742,12 @@ mod tests {
 
         let definitions = reg.deferred_definitions(&Vars::new(), &ctx, false, &active);
 
-        assert_eq!(definitions.len(), 1);
-        assert_eq!(definitions[0].namespace, "knowledge");
-        assert_eq!(definitions[0].definition["name"], "alpha");
+        // Unnamespaced deferred tools land in the catch-all namespace so
+        // hosted tool search can still surface them.
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].namespace, DEFAULT_DEFERRED_NAMESPACE);
+        assert_eq!(definitions[0].definition["name"], "unnamespaced");
+        assert_eq!(definitions[1].namespace, "knowledge");
+        assert_eq!(definitions[1].definition["name"], "alpha");
     }
 }

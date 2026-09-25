@@ -1307,7 +1307,11 @@ mod tests {
         assert_eq!(loaded.model, MODEL_SPEC);
         assert_eq!(loaded.meta.mode, Some(StoredMode::Plan));
         assert_eq!(loaded.meta.plan_path.as_deref(), Some("plan.md"));
-        assert!(loaded.messages.is_empty());
+        assert!(
+            loaded.messages.is_empty(),
+            "expected empty, got {:?}",
+            loaded.messages
+        );
     }
 
     #[test]

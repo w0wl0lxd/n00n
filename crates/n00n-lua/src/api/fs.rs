@@ -184,6 +184,18 @@ fn optional_bool(table: &Table, field: &str) -> LuaResult<Option<bool>> {
     }
 }
 
+/// Reads an optional option field. A present-but-wrong-typed value is a
+/// programmer error and must not be silently treated as absent. The field is
+/// read once, so a stateful `__index` cannot validate one value and yield another.
+fn optional_field<T: mlua::FromLua>(lua: &Lua, table: &Table, field: &str) -> LuaResult<Option<T>> {
+    match table.get::<Value>(field)? {
+        Value::Nil => Ok(None),
+        value => T::from_lua(value, lua).map(Some).map_err(|error| {
+            mlua::Error::runtime(format!("option '{field}' has an invalid value: {error}"))
+        }),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum ReadBytesLimitedError {
     #[error("cannot open file: {0}")]
@@ -545,7 +557,11 @@ fn normalize(_lua: &Lua, path: String) -> LuaResult<String> {
     for comp in abs.components() {
         match comp {
             Component::ParentDir => {
-                components.pop();
+                // `..` at or above the filesystem root stays at the root;
+                // popping the root would yield an empty (relative) path.
+                if !matches!(components.last(), Some(Component::RootDir) | None) {
+                    components.pop();
+                }
             }
             Component::CurDir => {}
             _ => components.push(comp),
@@ -1490,22 +1506,22 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
 async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Value, Value)> {
     let mut params = n00n_agent::tools::grep::GrepParams::new(pattern);
     if let Some(ref opts) = opts {
-        if let Ok(v) = opts.get::<String>("path") {
+        if let Some(v) = optional_field::<String>(&lua, opts, "path")? {
             params.path = Some(v);
         }
-        if let Ok(v) = opts.get::<String>("include") {
+        if let Some(v) = optional_field::<String>(&lua, opts, "include")? {
             params.include = Some(v);
         }
-        if let Ok(v) = opts.get::<usize>("context_before") {
+        if let Some(v) = optional_field::<usize>(&lua, opts, "context_before")? {
             params.context_before = v;
         }
-        if let Ok(v) = opts.get::<usize>("context_after") {
+        if let Some(v) = optional_field::<usize>(&lua, opts, "context_after")? {
             params.context_after = v;
         }
-        if let Ok(v) = opts.get::<usize>("limit") {
+        if let Some(v) = optional_field::<usize>(&lua, opts, "limit")? {
             params.limit = v;
         }
-        if let Ok(v) = opts.get::<usize>("max_line_bytes") {
+        if let Some(v) = optional_field::<usize>(&lua, opts, "max_line_bytes")? {
             params.max_line_bytes = v;
         }
     }
@@ -1603,6 +1619,15 @@ mod tests {
     use crate::plugin_permissions::PluginPermissions;
     use mlua::Lua;
     use tempfile::TempDir;
+    use test_case::test_case;
+
+    #[cfg(unix)]
+    #[test_case::test_case("/.." => "/" ; "dotdot_at_root")]
+    #[test_case::test_case("/a/../.." => "/" ; "dotdot_above_root")]
+    #[test_case::test_case("//../.." => "/" ; "repeated_slash_above_root")]
+    fn normalize_keeps_root_when_climbing_above_it(path: &str) -> String {
+        normalize(&Lua::new(), path.to_owned()).unwrap()
+    }
 
     #[test]
     fn confined_functions_are_registered() {
@@ -2647,6 +2672,41 @@ mod tests {
         assert_eq!(err, mlua::Value::Nil);
         let result: Table = mlua::FromLua::from_lua(val, &lua).unwrap();
         assert_eq!(result.len().unwrap(), 0);
+    }
+
+    #[test_case("opts.limit = true" ; "wrong_typed_value")]
+    #[test_case(
+        r"
+        local reads = 0
+        setmetatable(opts, { __index = function(_, key)
+            if key ~= 'limit' then return nil end
+            reads = reads + 1
+            if reads == 1 then return true end
+            return 5
+        end })
+        " ;
+        "stateful_index_valid_on_second_read"
+    )]
+    fn grep_rejects_wrong_typed_options(set_limit: &str) {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "needle\n").unwrap();
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let grep: mlua::Function = tbl.get("grep").unwrap();
+
+        let opts = lua.create_table().unwrap();
+        opts.set("path", tmp.path().to_str().unwrap()).unwrap();
+        lua.globals().set("opts", &opts).unwrap();
+        lua.load(set_limit).exec().unwrap();
+
+        let error = smol::block_on(grep.call_async::<(mlua::Value, mlua::Value)>(("needle", opts)))
+            .expect_err("a wrong-typed option must not be silently defaulted away");
+        let message = error.to_string();
+        assert!(
+            message.contains("limit"),
+            "error should name the option: {message}"
+        );
     }
 
     #[test]

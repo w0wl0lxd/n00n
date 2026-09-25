@@ -1823,7 +1823,11 @@ data: [DONE]\n";
             )
             .await
             .unwrap();
-            assert!(resp.message.content.is_empty());
+            assert!(
+                resp.message.content.is_empty(),
+                "expected empty, got {:?}",
+                resp.message.content
+            );
             assert_eq!(resp.usage, TokenUsage::default());
             assert_eq!(resp.stop_reason, None);
         });

@@ -85,6 +85,12 @@ impl SearchModal {
         self.open
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub fn query_text(&self) -> String {
+        self.search.value()
+    }
+
     pub fn handle_paste(&mut self, text: &str) {
         self.search.insert_text(text);
     }
@@ -439,10 +445,22 @@ mod tests {
     #[test]
     fn close_clears_state() {
         let mut modal = modal_with_query("hello", &["hello world"]);
-        assert!(!modal.matches.is_empty());
+        assert!(
+            !modal.matches.is_empty(),
+            "expected non-empty, got {}",
+            modal.matches.len()
+        );
         modal.close();
-        assert!(modal.matches.is_empty());
-        assert!(modal.search.value().is_empty());
+        assert!(
+            modal.matches.is_empty(),
+            "expected empty, got {}",
+            modal.matches.len()
+        );
+        let n00n_empty_check_80 = modal.search.value();
+        assert!(
+            n00n_empty_check_80.is_empty(),
+            "expected empty, got {n00n_empty_check_80:?}"
+        );
         assert!(!modal.is_open());
     }
 

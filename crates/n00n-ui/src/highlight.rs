@@ -102,7 +102,11 @@ mod tests {
         };
         let style = convert_segment(&no_mods);
         assert_eq!(style.fg, Some(Color::Rgb(100, 100, 100)));
-        assert!(style.add_modifier.is_empty());
+        assert!(
+            style.add_modifier.is_empty(),
+            "expected empty, got {:?}",
+            style.add_modifier
+        );
     }
 
     #[test]

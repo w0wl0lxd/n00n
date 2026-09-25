@@ -394,7 +394,7 @@ Load a skill that provides instructions and workflows for specific tasks. Use `l
 
 ### `search_tools` *(lua plugin)*
 
-Search deferred built-in and MCP tools by name or description when the needed capability is absent. Loaded tools become callable on the next turn. Do not use this when a loaded sibling already matches the task.
+Search deferred built-in and MCP tools by name or description when the needed capability is absent. Results include each tool's input schema so found tools are callable immediately. Do not use this when a loaded sibling already matches the task.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

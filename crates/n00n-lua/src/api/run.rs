@@ -271,7 +271,11 @@ mod tests {
                 panic!("expected managed run bootstrap request");
             };
             assert_eq!(caller_id.as_ref(), Some(&expected_caller));
-            assert!(!managed_run_id.to_string().is_empty());
+            let managed_run_id = managed_run_id.to_string();
+            assert!(
+                !managed_run_id.is_empty(),
+                "expected non-empty, got {managed_run_id:?}"
+            );
             assert_eq!(bootstrap.tool, "run_task");
             assert_eq!(
                 bootstrap.input,
@@ -302,8 +306,8 @@ mod tests {
         let run_id = result.get::<String>("run_id").unwrap();
         let chain_id = result.get::<String>("chain_id").unwrap();
         let session_id = result.get::<String>("session_id").unwrap();
-        assert!(!run_id.is_empty());
-        assert!(!chain_id.is_empty());
+        assert!(!run_id.is_empty(), "expected non-empty, got {run_id:?}");
+        assert!(!chain_id.is_empty(), "expected non-empty, got {chain_id:?}");
         assert_eq!(result.get::<String>("lifecycle").unwrap(), "starting");
         let record = smol::block_on(service.get_run(run_id.parse().unwrap())).unwrap();
         assert_eq!(record.backend, ExecutionBackend::TuiSession);

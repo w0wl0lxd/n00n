@@ -335,7 +335,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
 
-    load_env_files(&cwd);
+    load_env_files(&cwd, cli.trust_project);
     warn_stale_config_toml(&cwd);
 
     let project_key = ProjectKey::from_path(&cwd).context("derive project identity")?;
@@ -695,7 +695,7 @@ mod tests {
             panic!("expected error without fallback");
         };
         assert!(err.to_string().contains("boom"));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
     }
 
     #[test]
@@ -734,7 +734,7 @@ mod tests {
         .unwrap();
 
         assert!(needs_login);
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
         assert_eq!(model.tier, n00n_providers::model::ModelTier::Strong);
     }
 
@@ -753,6 +753,6 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("explicit provider unavailable"));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
     }
 }

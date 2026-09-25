@@ -113,6 +113,12 @@ pub enum InterruptPoint {
 
 pub trait InterruptSource: Send + Sync {
     fn poll(&self, point: InterruptPoint) -> Option<ExtractedCommand>;
+
+    /// Images in the next command `poll(point)` would return, without consuming it.
+    fn peek_pending_image_count(&self, point: InterruptPoint) -> usize {
+        let _ = point;
+        0
+    }
 }
 
 #[derive(Clone)]

@@ -4633,6 +4633,32 @@ n00n.ui.flash("Copied to clipboard!")
 
 ---
 
+### `n00n.ui.notify()` {#n00n-ui-notify}
+
+```lua
+n00n.ui.notify({msg})
+```
+
+Sends a desktop notification carrying {msg} through the terminal. The
+mechanism comes from `ui.notifications`: "bell" rings the terminal
+bell, "osc9" emits a desktop-notification escape, "all" does both, and
+"off" stays silent. Unlike the automatic turn-end signal, an explicit
+notify fires even while the terminal is focused.
+
+**Parameters:**
+
+- `{msg}` (`string`) Notification text.
+
+**Returns:** (`boolean`, `string?`) true on success, or false and an error message.
+
+**Example:**
+
+```lua
+n00n.ui.notify("Release build finished")
+```
+
+---
+
 ### `n00n.ui.open_editor()` {#n00n-ui-open_editor}
 
 ```lua
