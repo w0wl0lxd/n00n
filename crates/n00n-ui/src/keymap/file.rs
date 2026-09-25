@@ -765,7 +765,7 @@ mod tests {
         assert_eq!(user.entries[1].action, KeyAction::Newline);
         assert_eq!(user.entries[1].strokes.len(), 2);
         assert_eq!(user.entries[2].action, KeyAction::QuitOrCancel);
-        assert!(user.entries[3].strokes.is_empty());
+        assert_eq!(user.entries[3].strokes.len(), 0);
     }
 
     #[test]
@@ -842,7 +842,7 @@ mod tests {
         );
         // The action still applied — just with no strokes left.
         assert_eq!(user.entries.len(), 1);
-        assert!(user.entries[0].strokes.is_empty());
+        assert_eq!(user.entries[0].strokes.len(), 0);
     }
 
     #[test]
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn defaults_survive_unspecified() {
         let (map, warnings) = EffectiveKeymap::build(&UserKeymap::default());
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
         assert_eq!(
             map.resolve(
                 &[KeybindContext::General],

@@ -942,7 +942,8 @@ pub fn reaches_composer(key: &KeyEvent) -> bool {
     {
         return true;
     }
-    !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    matches!(key.code, KeyCode::Char(_))
+        && !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
 }
 
 #[cfg(test)]
@@ -1033,10 +1034,28 @@ mod tests {
             KeyCode::Char('x'),
             KeyModifiers::NONE
         )));
-        assert!(reaches_composer(&key(
+    }
+
+    #[test]
+    fn unbound_non_printable_editing_keys_never_reach_composer() {
+        // A removed or unbound editing action (e.g. `[editing] char_left =
+        // []`) must leave that key dead, not fall back to TextBuffer's own
+        // raw handling — otherwise the override has no effect.
+        for code in [
             KeyCode::Backspace,
-            KeyModifiers::NONE
-        )));
+            KeyCode::Delete,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+        ] {
+            assert!(
+                !reaches_composer(&key(code, KeyModifiers::NONE)),
+                "{code:?} must not reach the composer as a fallback"
+            );
+        }
     }
 
     #[test]
