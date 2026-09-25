@@ -1263,9 +1263,19 @@ mod tests {
         post_delete.meta.revision = 4;
 
         state.stage_snapshot(PendingSnapshot::new(1, Box::new(pre_delete)));
-        assert!(state.flush(&dir).is_empty());
+        let n00n_empty_check_81 = state.flush(&dir);
+        assert!(
+            n00n_empty_check_81.is_empty(),
+            "expected empty, got {}",
+            n00n_empty_check_81.len()
+        );
         state.stage_snapshot(PendingSnapshot::new(3, Box::new(post_delete)));
-        assert!(state.flush(&dir).is_empty());
+        let n00n_empty_check_82 = state.flush(&dir);
+        assert!(
+            n00n_empty_check_82.is_empty(),
+            "expected empty, got {}",
+            n00n_empty_check_82.len()
+        );
         state.delete(id, 2, &dir).unwrap();
 
         let loaded = AppSession::load(id, &dir).unwrap();
@@ -1310,7 +1320,12 @@ mod tests {
         durable.meta.revision = 0;
 
         state.stage_snapshot(PendingSnapshot::new(0, Box::new(durable)));
-        assert!(state.flush(&dir).is_empty());
+        let n00n_empty_check_83 = state.flush(&dir);
+        assert!(
+            n00n_empty_check_83.is_empty(),
+            "expected empty, got {}",
+            n00n_empty_check_83.len()
+        );
         state.stage_snapshot(PendingSnapshot::new(1, Box::new(pre_delete)));
         state.stage_snapshot(PendingSnapshot::new(3, Box::new(post_delete)));
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR).unwrap();
@@ -1322,7 +1337,12 @@ mod tests {
         assert_eq!(state.pending[&id].version.generation, 3);
         assert_eq!(state.pending[&id].version.revision, 4);
 
-        assert!(state.flush(&dir).is_empty());
+        let n00n_empty_check_84 = state.flush(&dir);
+        assert!(
+            n00n_empty_check_84.is_empty(),
+            "expected empty, got {}",
+            n00n_empty_check_84.len()
+        );
         let loaded = AppSession::load(id, &dir).unwrap();
         assert_eq!(loaded.meta.revision, 4);
         assert_eq!(loaded.title, "post-delete revision four");
@@ -1450,7 +1470,11 @@ mod tests {
             state.flush(&dir);
         }
 
-        assert!(state.pending.is_empty());
+        assert!(
+            state.pending.is_empty(),
+            "expected empty, got {}",
+            state.pending.len()
+        );
         assert_eq!(state.retries.unpersisted_count(&FailedSnapshots::new()), 1);
     }
 
@@ -1461,7 +1485,12 @@ mod tests {
         let mut session = AppSession::new("test-model", "/tmp/delete-exhausted");
         let id = session.id;
         state.stage_snapshot(PendingSnapshot::new(1, Box::new(session.clone())));
-        assert!(state.flush(&dir).is_empty());
+        let n00n_empty_check_85 = state.flush(&dir);
+        assert!(
+            n00n_empty_check_85.is_empty(),
+            "expected empty, got {}",
+            n00n_empty_check_85.len()
+        );
 
         session.meta.revision += 1;
         let failed_snapshot = PendingSnapshot::new(2, Box::new(session));

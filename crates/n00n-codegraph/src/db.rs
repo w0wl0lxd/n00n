@@ -907,7 +907,7 @@ mod tests {
         write_fixture(&conn);
         let nodes = search_impact(&conn, "main", 5).expect("search impact");
         // main calls restore_item and process, so impact should include main + callees
-        assert!(!nodes.is_empty());
+        assert!(!nodes.is_empty(), "expected non-empty, got {nodes:?}");
         assert!(nodes.iter().any(|n| n.name == "main"));
         assert!(nodes.iter().any(|n| n.name == "restore_item"));
         assert!(nodes.iter().any(|n| n.name == "process"));

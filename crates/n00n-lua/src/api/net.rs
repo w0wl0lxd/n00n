@@ -627,8 +627,16 @@ mod tests {
         let params = extract_request_params("https://8.8.8.8", None).unwrap();
         assert_eq!(params.url.as_str(), "https://8.8.8.8/");
         assert_eq!(params.method, "GET");
-        assert!(params.headers.is_empty());
-        assert!(params.body.is_empty());
+        assert!(
+            params.headers.is_empty(),
+            "expected empty, got {:?}",
+            params.headers
+        );
+        assert!(
+            params.body.is_empty(),
+            "expected empty, got {:?}",
+            params.body
+        );
         assert_eq!(params.timeout, Duration::from_secs(DEFAULT_TIMEOUT_SECS));
         assert_eq!(params.max_bytes, DEFAULT_MAX_BYTES);
         assert_eq!(params.retries, MAX_RETRIES);

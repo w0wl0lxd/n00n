@@ -1942,7 +1942,7 @@ mod tests {
     fn shared_buf_lifecycle() {
         let buf = SharedBuf::new();
 
-        assert!(buf.is_empty());
+        assert!(buf.is_empty(), "expected empty, got {buf:?}");
         assert!(buf.read_if_dirty().is_none());
 
         for i in 0..3 {

@@ -822,7 +822,11 @@ mod tests {
     fn parse_footer_missing_returns_empty() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
-        assert!(parse_footer(&tbl).unwrap().is_empty());
+        let n00n_empty_check_24 = parse_footer(&tbl).unwrap();
+        assert!(
+            n00n_empty_check_24.is_empty(),
+            "expected empty, got {n00n_empty_check_24:?}"
+        );
     }
 
     #[test]
@@ -1514,7 +1518,11 @@ mod tests {
         assert_eq!(store.snapshot_entries().len(), 1);
 
         store.clear_plugin("plug");
-        assert!(store.snapshot_entries().is_empty());
+        let n00n_empty_check_26 = store.snapshot_entries();
+        assert!(
+            n00n_empty_check_26.is_empty(),
+            "expected empty, got {n00n_empty_check_26:?}"
+        );
     }
 
     #[test]
@@ -1532,7 +1540,11 @@ mod tests {
         let mut store = HintStore::new();
         store.set(Arc::from("plug"), vec![("a".into(), "b".into())]);
         store.set(Arc::from("plug"), vec![]);
-        assert!(store.snapshot_entries().is_empty());
+        let n00n_empty_check_27 = store.snapshot_entries();
+        assert!(
+            n00n_empty_check_27.is_empty(),
+            "expected empty, got {n00n_empty_check_27:?}"
+        );
     }
 
     fn ui_table(lua: &Lua) -> Table {

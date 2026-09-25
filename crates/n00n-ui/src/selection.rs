@@ -1236,7 +1236,7 @@ mod tests {
         let buf = Buffer::empty(buf_area);
         let mut out = String::new();
         append_rows(&buf, area, sel, from, to, &mut out, &LineBreaks::EveryRow);
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "expected empty, got {out:?}");
     }
 
     #[test]

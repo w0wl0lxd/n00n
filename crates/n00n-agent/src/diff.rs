@@ -124,7 +124,11 @@ mod tests {
     #[test]
     fn no_change_returns_empty() {
         let s = "a\nb\nc\n";
-        assert!(compute_hunks(s, s).is_empty());
+        let n00n_empty_check_6 = compute_hunks(s, s);
+        assert!(
+            n00n_empty_check_6.is_empty(),
+            "expected empty, got {n00n_empty_check_6:?}"
+        );
     }
 
     /// When an earlier insertion shifts subsequent line numbers, a later

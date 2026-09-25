@@ -1630,7 +1630,11 @@ mod tests {
             &dialect::TENSORX,
         ];
         for d in all {
-            assert!(!d.supported.is_empty());
+            assert!(
+                !d.supported.is_empty(),
+                "expected non-empty, got {:?}",
+                d.supported
+            );
             for pair in d.supported.windows(2) {
                 assert!(pair[0] < pair[1], "supported must be strictly ascending");
             }
