@@ -1696,9 +1696,12 @@ fn transport_url(transport: &Transport) -> Option<String> {
 }
 
 fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
+    let ticket = config::persist_ticket();
     let log_name = name.clone();
     smol::spawn(async move {
-        if let Err(e) = smol::unblock(move || config::persist_enabled(&path, &name, enabled)).await
+        if let Err(e) =
+            smol::unblock(move || config::persist_enabled_ordered(&path, &name, enabled, ticket))
+                .await
         {
             warn!(error = %e, server = %log_name, "failed to persist MCP toggle");
         }

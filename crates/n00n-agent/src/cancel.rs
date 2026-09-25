@@ -2,6 +2,8 @@
 //!
 //! `CancelTrigger` fires on Drop, so cleanup happens even if the trigger is forgotten.
 //! `cancelled()` uses a double-check around the listener to close the TOCTOU window between flag read and listener registration.
+//! A child token holds a strong reference to its parent, so parent cancellation propagates
+//! without a background task and the child is collectible as soon as its own handles drop.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -14,12 +16,20 @@ use event_listener::Event;
 struct Shared {
     cancelled: AtomicBool,
     event: Event,
+    /// Cancelling this token also cancels every token descended from it.
+    /// The edge points child-to-parent so no task has to watch the parent.
+    parent: Option<CancelToken>,
 }
 
 impl Shared {
     fn fire(&self) {
         self.cancelled.store(true, Ordering::Release);
         self.event.notify(usize::MAX);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+            || self.parent.as_ref().is_some_and(CancelToken::is_cancelled)
     }
 }
 
@@ -91,6 +101,7 @@ impl CancelToken {
         let shared = Arc::new(Shared {
             cancelled: AtomicBool::new(false),
             event: Event::new(),
+            parent: None,
         });
         (CancelTrigger(Arc::clone(&shared)), Self(shared))
     }
@@ -100,12 +111,13 @@ impl CancelToken {
         Self(Arc::new(Shared {
             cancelled: AtomicBool::new(false),
             event: Event::new(),
+            parent: None,
         }))
     }
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.cancelled.load(Ordering::Acquire)
+        self.0.is_cancelled()
     }
 
     /// Run `future` until it completes or the token is cancelled.
@@ -133,21 +145,25 @@ impl CancelToken {
             if self.is_cancelled() {
                 return;
             }
-            listener.await;
+            match &self.0.parent {
+                // Wake on either edge: own trigger or an ancestor's cancellation.
+                // Boxed because this is the recursion point of an async fn.
+                Some(parent) => {
+                    futures_lite::future::race(listener, Box::pin(parent.cancelled())).await;
+                }
+                None => listener.await,
+            }
         }
     }
 
     #[must_use]
     pub fn child(&self) -> (CancelTrigger, Self) {
-        let (child_trigger, child_token) = Self::new();
-        let parent = self.clone();
-        let child_shared = Arc::clone(&child_token.0);
-        smol::spawn(async move {
-            parent.cancelled().await;
-            child_shared.fire();
-        })
-        .detach();
-        (child_trigger, child_token)
+        let shared = Arc::new(Shared {
+            cancelled: AtomicBool::new(false),
+            event: Event::new(),
+            parent: Some(self.clone()),
+        });
+        (CancelTrigger(Arc::clone(&shared)), Self(shared))
     }
 }
 
@@ -230,6 +246,7 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     #[test]
     fn trigger_wakes_token() {
@@ -251,6 +268,60 @@ mod tests {
             child_token.cancelled().await;
             assert!(child_token.is_cancelled());
         });
+    }
+
+    #[test_case(1, true ; "child_created_after_parent_cancel")]
+    #[test_case(1, false ; "child_created_before_parent_cancel")]
+    #[test_case(2, true ; "grandchild_created_after_root_cancel")]
+    #[test_case(2, false ; "grandchild_created_before_root_cancel")]
+    fn descendants_are_cancelled_by_root(depth: usize, cancel_first: bool) {
+        smol::block_on(async {
+            let (root_trigger, root_token) = CancelToken::new();
+            let pending_trigger = if cancel_first {
+                root_trigger.cancel();
+                None
+            } else {
+                Some(root_trigger)
+            };
+            let mut triggers = Vec::with_capacity(depth);
+            let mut descendants = Vec::with_capacity(depth);
+            let mut parent = root_token;
+            for _ in 0..depth {
+                let (trigger, token) = parent.child();
+                triggers.push(trigger);
+                descendants.push(token.clone());
+                parent = token;
+            }
+            if let Some(trigger) = pending_trigger {
+                trigger.cancel();
+            }
+            parent.cancelled().await;
+            for (level, token) in descendants.iter().enumerate() {
+                assert!(
+                    token.is_cancelled(),
+                    "descendant at level {level} not cancelled"
+                );
+            }
+        });
+    }
+
+    #[test_case(true ; "trigger_dropped_first")]
+    #[test_case(false ; "token_dropped_first")]
+    fn dropping_child_handles_releases_child_state(trigger_first: bool) {
+        let (_parent_trigger, parent_token) = CancelToken::new();
+        let (child_trigger, child_token) = parent_token.child();
+        let child_shared = Arc::downgrade(&child_token.0);
+        if trigger_first {
+            drop(child_trigger);
+            drop(child_token);
+        } else {
+            drop(child_token);
+            drop(child_trigger);
+        }
+        assert!(
+            child_shared.upgrade().is_none(),
+            "child cancellation state outlived every child handle"
+        );
     }
 
     #[test]

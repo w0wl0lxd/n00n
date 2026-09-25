@@ -92,6 +92,71 @@ case("git_subcommand_nil_for_non_git", function()
   eq(command_guard.git_subcommand("gh pr list"), nil)
 end)
 
+-- Short options cluster in one word: `du -sh` is the same bound as `du -s`,
+-- `tree -L2` as `tree -L 2`, and `ls -lR` as `ls -R`. `has_option` only saw
+-- standalone words, so `du -sh`/`tree -L2` were rejected as unbounded while
+-- `ls -laR` slipped past the recursive-ls guard.
+
+case("du_short_option_cluster_is_a_summarize_bound", function()
+  eq(command_guard.broad_bash_command_reason("du -sh ."), nil)
+  eq(command_guard.broad_bash_command_reason("du -d1 ."), nil)
+end)
+
+case("tree_short_option_cluster_is_a_depth_bound", function()
+  eq(command_guard.broad_bash_command_reason("tree -L2 ."), nil)
+end)
+
+case("ls_recursive_short_option_cluster_needs_an_output_cap", function()
+  has(command_guard.broad_bash_command_reason("ls -lR ."), "recursive ls without output cap")
+  has(command_guard.broad_bash_command_reason("ls -laR /tmp"), "recursive ls without output cap")
+end)
+
+-- A short option that takes an argument consumes the rest of its cluster:
+-- `journalctl -unginx.service` is `-u nginx.service`, not a `-n` line bound.
+-- Option letters are case-sensitive: `du -D` dereferences, it is not `-d`.
+
+case("journalctl_attached_unit_argument_is_not_a_line_bound", function()
+  has(command_guard.broad_bash_command_reason("journalctl -unginx.service"), "journalctl without tail line bound")
+  eq(command_guard.broad_bash_command_reason("journalctl -unginx.service -n 50"), nil)
+  eq(command_guard.broad_bash_command_reason("journalctl -fn20"), nil)
+end)
+
+case("git_log_attached_pickaxe_argument_is_not_a_count_bound", function()
+  has(command_guard.broad_bash_command_reason("git log -Sfunction"), "history without a max count")
+end)
+
+case("du_uppercase_dereference_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("du -D ."), "du without depth/summarize bound")
+end)
+
+case("tree_attached_pattern_argument_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("tree -IL ."), "tree without depth bound")
+end)
+
+-- A standalone argument-taking option consumes the next word, and `--` ends
+-- option parsing: `tree -I -Lignored .` ignores the pattern `-Lignored`, and
+-- `tree -- -Lfolder` lists a directory named `-Lfolder`.
+
+case("tree_pattern_argument_word_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("tree -I -Lignored ."), "tree without depth bound")
+  has(command_guard.broad_bash_command_reason("tree -I -L ."), "tree without depth bound")
+  eq(command_guard.broad_bash_command_reason("tree -I target -L 2 ."), nil)
+end)
+
+case("tree_operand_after_double_dash_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("tree -- -Lfolder"), "tree without depth bound")
+  has(command_guard.broad_bash_command_reason("tree -- -L"), "tree without depth bound")
+  eq(command_guard.broad_bash_command_reason("tree -L 2 -- -Lfolder"), nil)
+end)
+
+case("journalctl_unit_argument_word_is_not_a_line_bound", function()
+  has(command_guard.broad_bash_command_reason("journalctl -u -n"), "journalctl without tail line bound")
+end)
+
+case("ls_lowercase_r_reverse_is_not_recursive", function()
+  eq(command_guard.broad_bash_command_reason("ls -r ."), nil)
+end)
+
 case("git_uses_machine_format_detects_porcelain", function()
   eq(command_guard.git_uses_machine_format("git worktree list --porcelain"), true)
   eq(command_guard.git_uses_machine_format("git status"), false)

@@ -156,8 +156,10 @@ function M.retrieve(ctx, goal, k)
   local goal_vec = retrieve.embed(goal)
   local scored = {}
   for _, entry in ipairs(entries) do
-    if entry.type == "file" and entry.name:match("%.json$") then
-      local full = n00n.fs.joinpath(dir, entry.name)
+    -- n00n.fs.dir entries are {name, type} arrays.
+    local name, kind = entry[1], entry[2]
+    if kind == "file" and name:match("%.json$") then
+      local full = n00n.fs.joinpath(dir, name)
       local text = read_summary_file(full)
       if text and #text > 0 then
         table.insert(scored, {

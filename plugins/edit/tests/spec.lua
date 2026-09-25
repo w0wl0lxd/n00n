@@ -164,6 +164,19 @@ case("empty_old_string_replace_all_does_not_hang", function()
   eq(err, EMPTY_OLD_STRING)
 end)
 
+-- A whitespace-only old_string normalizes to "" in the fuzzy passes. Treat
+-- that as no match instead of matching at every byte (replace_all then looped
+-- forever inserting the replacement).
+case("whitespace_only_replace_all_is_no_match_not_hang", function()
+  local result, err = fr.replace("abc\ndef", "\t", "x", true)
+  eq(result, nil)
+  eq(err, NO_MATCH)
+
+  local result2, err2 = fr.replace("abc\ndef", "  ", "x", true)
+  eq(result2, nil)
+  eq(err2, NO_MATCH)
+end)
+
 case("replace_all_no_occurrences", function()
   local result, err = fr.replace("abc", "xyz", "y", true)
   eq(result, nil)

@@ -330,7 +330,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
 
-    load_env_files(&cwd);
+    load_env_files(&cwd, cli.trust_project);
     warn_stale_config_toml(&cwd);
 
     let (stack, startup_warnings) = build_stack(&cli, &cwd, &storage, None)?;

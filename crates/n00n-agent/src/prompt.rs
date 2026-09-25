@@ -376,6 +376,9 @@ fn shrink_todo_line(line: &str, avail: usize) -> Option<String> {
         let mut lo = 0usize;
         let mut hi = original.len();
         let mut best = None;
+        // Advancing `lo` past a multi-byte char must land on the next char
+        // boundary; a raw `+ 1` there leaves the pivot inside the same char
+        // and the search never advances.
         while lo <= hi {
             let mid = original.floor_char_boundary(lo.midpoint(hi));
             if let Some(slot) = val.get_mut("content") {
@@ -387,7 +390,10 @@ fn shrink_todo_line(line: &str, avail: usize) -> Option<String> {
             };
             if candidate.len() <= avail {
                 best = Some(candidate);
-                lo = mid.saturating_add(1);
+                if mid == original.len() {
+                    break;
+                }
+                lo = original.ceil_char_boundary(mid + 1);
             } else if mid == 0 {
                 break;
             } else {
@@ -512,6 +518,8 @@ pub fn assemble_system(id: PromptId, slots: &ResolvedSlots, instructions: &str) 
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use test_case::test_case;
 
@@ -932,6 +940,41 @@ mod tests {
                 panic!("malformed todo line: {}", &line[..line.len().min(120)])
             });
         }
+    }
+
+    /// A binary-search pivot inside a multi-byte char used to leave `lo`
+    /// unchanged and spin forever. The watchdog turns that hang into a failure
+    /// instead of a stuck test process.
+    #[test_case("é", 100 ; "two_byte_char")]
+    #[test_case("€", 100 ; "three_byte_char")]
+    #[test_case("\u{1F600}", 100 ; "four_byte_char")]
+    #[test_case("é", 60 ; "two_byte_char_tight_budget")]
+    fn shrink_todo_line_terminates_when_the_pivot_splits_a_multibyte_char(
+        multibyte: &str,
+        avail: usize,
+    ) {
+        let content = format!("aaaa{}", multibyte.repeat(50) + &"z".repeat(200));
+        let line = todo_line("in_progress", &content);
+        assert!(
+            line.len() > avail,
+            "fixture must need shrinking: len={}",
+            line.len()
+        );
+
+        let (tx, rx) = flume::bounded(1);
+        std::thread::spawn(move || {
+            // A dropped receiver means the assertion below already failed.
+            drop(tx.send(shrink_todo_line(&line, avail)));
+        });
+        let shrunk = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("shrink_todo_line did not terminate within 5s")
+            .expect("the line must shrink to fit the budget");
+        assert!(shrunk.len() <= avail, "len={}", shrunk.len());
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&shrunk).is_ok(),
+            "shrunk line must stay well-formed JSON"
+        );
     }
 
     #[test]

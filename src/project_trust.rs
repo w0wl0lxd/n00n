@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use color_eyre::Result;
 use color_eyre::eyre::bail;
 
-const PROJECT_CONFIG_FILES: [&str; 3] = ["init.lua", "permissions.toml", "mcp.toml"];
+const PROJECT_CONFIG_FILES: [&str; 4] = ["init.lua", "permissions.toml", "mcp.toml", ".env"];
 
 pub fn require(cwd: &Path, trusted: bool) -> Result<bool> {
     let files = project_config_files(cwd);
@@ -55,6 +55,17 @@ mod tests {
         for name in PROJECT_CONFIG_FILES {
             std::fs::write(directory.path().join(".n00n").join(name), "").unwrap();
         }
+        assert!(require(directory.path(), true).unwrap());
+    }
+
+    #[test]
+    fn project_env_file_requires_the_same_opt_in() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".n00n")).unwrap();
+        std::fs::write(directory.path().join(".n00n/.env"), "PATH=/tmp/evil:$PATH").unwrap();
+
+        let error = require(directory.path(), false).unwrap_err();
+        assert!(error.to_string().contains("--trust-project"), "{error}");
         assert!(require(directory.path(), true).unwrap());
     }
 }

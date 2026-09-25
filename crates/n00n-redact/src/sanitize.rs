@@ -31,6 +31,9 @@ const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
 
 pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
     "sk-",
+    "sk_live_",
+    "sk_test_",
+    "rk_live_",
     "ghp_",
     "gho_",
     "ghu_",
@@ -40,6 +43,12 @@ pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
     "glpat-",
     "xoxb-",
     "xoxp-",
+    "hf_",
+    "npm_",
+    "pypi-",
+    "dckr_pat_",
+    "sg.",
+    "age-secret-key-1",
 ];
 
 /// Sanitizes a free-text string: `Bearer <token>`, `key=value` / `key:value`
@@ -234,6 +243,15 @@ fn sanitize_words(words: &[&str]) -> Vec<Option<String>> {
         let separator = word.find(['=', ':']);
         let key = separator.map_or(word, |position| &word[..position]);
         if is_sensitive_key(key) || is_sensitive_key(word) {
+            // A bare word can match a sensitive key fragment and still be the
+            // secret itself (for example `AGE-SECRET-KEY-1...`): the
+            // `key=[redacted]` form would echo it verbatim. Redact the whole
+            // word when it is secret-shaped and has no key/value separator.
+            if separator.is_none() && is_secret_token(word) {
+                result[index] = Some(REDACTED.to_owned());
+                index += 1;
+                continue;
+            }
             let separator_char =
                 separator.map_or('=', |position| word.as_bytes()[position] as char);
             result[index] = Some(format!("{key}{separator_char}{REDACTED}"));
@@ -487,6 +505,13 @@ mod tests {
     fn preserves_word_after_bare_sensitive_term() {
         let sanitized = sanitize_text("check authorization header format", 80);
         assert_eq!(sanitized, "check authorization=[redacted] header format");
+    }
+
+    #[test]
+    fn redacts_a_bare_secret_shaped_sensitive_word() {
+        let token = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
+        let sanitized = sanitize_text(&format!("value {token} trailing"), 500);
+        assert_eq!(sanitized, "value [redacted] trailing");
     }
 
     #[test]

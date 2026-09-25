@@ -17,8 +17,8 @@ PER_MILLION = 1_000_000
 PRICING = {
     "claude-3-haiku":    {"input": 0.25, "output": 1.25, "cache_write": 0.30, "cache_read": 0.03},
     "claude-3-5-haiku":  {"input": 0.80, "output": 4.00, "cache_write": 1.00, "cache_read": 0.08},
-    "claude-haiku-4-5":  {"input": 0.80, "output": 4.00, "cache_write": 1.00, "cache_read": 0.08},
-    "claude-3-sonnet":   {"input": 3.00, "output": 15.00, "cache_write": 0.30, "cache_read": 0.30},
+    "claude-haiku-4-5":  {"input": 1.00, "output": 5.00, "cache_write": 1.25, "cache_read": 0.10},
+    "claude-3-sonnet":   {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
     "claude-3-5-sonnet": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
     "claude-3-7-sonnet": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
     "claude-sonnet-4":   {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
@@ -352,7 +352,7 @@ def append_csv(csv_path, meta, summary, turn_usage, tool_calls):
     else:
         rows.append({**run_base, "turn": 0, "tool_name": "", "tool_input": "", **empty_turn})
 
-    write_header = not csv_path.exists()
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
     with open(csv_path, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         if write_header:

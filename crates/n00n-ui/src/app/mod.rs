@@ -58,8 +58,8 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    AgentEvent, Envelope, FusionPhase, ImageSource, McpConfigErrors, McpPromptInfo,
-    McpSnapshotReader, PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
+    AgentEvent, Envelope, FusionPhase, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
+    PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
@@ -294,7 +294,7 @@ pub struct App {
     pub(crate) shared_transcript: Option<n00n_agent::SharedTranscript>,
     pub(crate) btw_system: Option<Arc<ArcSwap<System>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
-    pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
+    pub(crate) image_paste_rx: Vec<image_paste::ImageLoad>,
     storage_writer: Arc<StorageWriter>,
     pending_save: bool,
     last_save_flush: Option<Instant>,
@@ -962,6 +962,22 @@ impl App {
 
         if let Some(actions) = self.dispatch_overlay(key) {
             return actions;
+        }
+
+        // The plan form and the approved plan are core UI, so a plugin
+        // keymap override of the same chord must not make them unreachable.
+        if self.state.mode == Mode::Plan
+            && self.state.plan.is_ready()
+            && key::PLAN_TOGGLE.matches(key)
+        {
+            self.plan_form.toggle();
+            return vec![];
+        }
+        if self.state.mode == Mode::Plan
+            && key::OPEN_EDITOR.matches(key)
+            && let Some(path) = self.state.plan.path()
+        {
+            return vec![Action::OpenEditor(path.to_path_buf())];
         }
 
         if !(self.status == Status::Streaming && is_streaming_stop_key(key))
@@ -2369,20 +2385,29 @@ impl App {
         try_picker!(self.mcp_picker);
         try_picker!(self.login_picker);
         if self.is_main_chat() {
-            if text.is_empty() && self.image_paste_rx.is_empty() {
-                self.start_image_paste();
-            } else {
-                for line in text.split('\n') {
-                    if let Some((path, media_type)) = image::try_parse_image_path(line) {
-                        self.start_file_image_paste(path, media_type);
-                    }
-                }
-            }
+            self.route_image_paste(text);
         }
         if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text)
             && self.is_main_chat()
         {
             self.command_palette.sync(&val);
+        }
+    }
+
+    /// An empty paste asks for the clipboard image; a paste containing image
+    /// paths starts a load for each. The text still reaches the composer, so a
+    /// failed or unsupported load never swallows what the user pasted.
+    fn route_image_paste(&mut self, text: &str) {
+        if text.is_empty() {
+            if self.image_paste_rx.is_empty() {
+                self.start_image_paste();
+            }
+            return;
+        }
+        for line in text.split('\n') {
+            if let Some((path, media_type)) = image::try_parse_image_path(line) {
+                self.start_file_image_paste(path, media_type);
+            }
         }
     }
 

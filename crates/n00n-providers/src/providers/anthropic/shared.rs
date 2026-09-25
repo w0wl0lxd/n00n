@@ -9,8 +9,8 @@ use tracing::{debug, warn};
 
 use crate::model::{FastPricing, Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::{
-    AgentError, CacheHealth, ContentBlock, Message, ProviderEvent, Role, StopReason,
-    StreamResponse, ThinkingConfig, TokenUsage,
+    AgentError, CacheHealth, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
+    RequestDeliveryPhase, Role, StopReason, StreamResponse, ThinkingConfig, TokenUsage,
 };
 
 pub(super) const BETA_TOOL_EXAMPLES_BEDROCK: &str = "tool-examples-2025-10-29";
@@ -305,6 +305,9 @@ pub(super) struct EventParser {
     stop_reason: Option<StopReason>,
     /// Set once `message_stop` is observed.
     terminated: bool,
+    /// Set once a delta or tool start reached the caller, so mid-stream errors
+    /// are not retried into duplicate output.
+    emitted_event: bool,
 }
 
 impl EventParser {
@@ -317,7 +320,15 @@ impl EventParser {
             usage: TokenUsage::default(),
             stop_reason: None,
             terminated: false,
+            emitted_event: false,
         }
+    }
+
+    fn delivery_metadata(&self) -> RequestDeliveryMetadata {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.emitted_event = self.emitted_event;
+        metadata
     }
 
     #[allow(clippy::too_many_lines)]
@@ -372,6 +383,7 @@ impl EventParser {
                             }
                             self.current_tool_json.clear();
                             self.current_tool_block_idx = Some(ev.index);
+                            self.emitted_event = true;
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: id.clone(),
@@ -398,6 +410,7 @@ impl EventParser {
                                 if let Some(ContentBlock::Text { text: t }) = block {
                                     t.push_str(&text);
                                 }
+                                self.emitted_event = true;
                                 event_tx
                                     .send_async(ProviderEvent::TextDelta { text })
                                     .await?;
@@ -408,6 +421,7 @@ impl EventParser {
                                 if let Some(ContentBlock::Thinking { thinking: t, .. }) = block {
                                     t.push_str(&thinking);
                                 }
+                                self.emitted_event = true;
                                 event_tx
                                     .send_async(ProviderEvent::ThinkingDelta { text: thinking })
                                     .await?;
@@ -482,13 +496,16 @@ impl EventParser {
             "error" => {
                 if let Ok(ev) = serde_json::from_str::<super::super::SseErrorPayload>(data) {
                     warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error event");
-                    return Err(ev.into_agent_error());
+                    return Err(ev
+                        .into_agent_error()
+                        .suppress_retry_after_send(Some(self.delivery_metadata())));
                 }
                 warn!(raw = %data, "unparseable SSE error event");
                 return Err(AgentError::Api {
                     status: 400,
                     message: data.to_string(),
-                });
+                }
+                .suppress_retry_after_send(Some(self.delivery_metadata())));
             }
             "message_stop" => {
                 if let Some(index) = self.current_tool_block_idx {

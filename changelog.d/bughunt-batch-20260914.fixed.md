@@ -1,0 +1,13 @@
+- Fixed Gemini tool-call id collisions, swallowed Gemini error payloads being misreported as retryable EOFs, non-object Gemini function responses, and Anthropic/Bedrock streams retrying after output was already emitted.
+- Fixed a prompt-assembly hang when shrinking oversized todo content split a multi-byte character, and a panic on multi-byte MCP tool arguments.
+- Fixed Lua runtime hangs from non-positive or fractional `async.join` caps and whitespace-only fuzzy replaces, filesystem `normalize` escaping the root, unbounded tree-sitter `stop_row` queries, and the SSRF guard missing RFC 6598 shared address space.
+- Fixed the team summary retrieve silently returning nothing, oversized multibyte todos being dropped whole, and clustered short options defeating the bash command guard.
+- Fixed pasted image paths being dropped from the composer, a disconnected image loader permanently blocking clipboard paste, plugin keymaps shadowing plan-mode Ctrl+T/Ctrl+O, and byte-length truncation of multibyte queue entries.
+- Fixed the read tool's restore losing the truncation notice, and hex color parsing and tree-sitter node text panicking on multi-byte input.
+- Fixed non-ASCII API-key masking panicking, auth file names escaping the state directory, `storage.max_log_bytes_mb` overflow while loading config, and the search index indexing its own state.
+- Fixed MCP server toggle races losing updates, interpreter runs ignoring cancellation while a tool callback was pending, cancel tokens leaking a parked task per child, and the status-bar branch watcher leaking a thread per session.
+- Hardened log redaction with Stripe, Hugging Face, npm, PyPI, Docker, SendGrid, age, and GitHub token prefixes plus bare secret-shaped words, and gated project `.env` loading behind `--trust-project`.
+- Fixed Rust CI change detection missing the pull-requests permission, the required CI gate not covering macOS jobs or change detection, cargo-audit missing checks/issues permissions, the link checker never running due to a removed lychee flag, and a rust-cache pin pointing at a tag object.
+- Fixed the installer aborting on pipefail and half-installing older releases, gitleaks failing on fake test fixtures, a dead x86_64-darwin flake output, the changelog recipe requiring an argument, and the site build leaking template markers into generated text.
+- Fixed Terminal-Bench mounts pointing at pre-XDG auth/provider paths, wrong Haiku 4.5 and Sonnet cache-write pricing in the benchmark tables, the Cursor model generator writing the wrong file with an unbuildable entry, and CSV output missing its header for a pre-created empty file.
+- Fixed `n00n.fs.grep` and tool registration silently defaulting wrong-typed options/hooks instead of reporting them.

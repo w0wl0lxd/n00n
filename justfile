@@ -55,7 +55,7 @@ docs-check: gen-docs-check
 
 # Aggregate changelog.d fragments into CHANGELOG.md (VERSION defaults to the
 # workspace version in Cargo.toml).
-changelog VERSION:
+changelog VERSION="":
     ./scripts/build-changelog.sh {{VERSION}}
 
 machete:

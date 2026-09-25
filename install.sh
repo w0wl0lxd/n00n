@@ -25,8 +25,7 @@ esac
 target="${target_arch}-${target_os}"
 
 tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
-  grep -m1 '"tag_name"' |
-  sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  sed -nE 's/.*"tag_name": *"([^"]+)".*/\1/p')"
 asset="n00n-${tag}-${target}.tar.gz"
 url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 
@@ -39,5 +38,8 @@ tar -xzf "$tmp/$asset" -C "$tmp"
 
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$tmp/n00n" "$INSTALL_DIR/n00n"
-install -m 0755 "$tmp/n00n-interpreter-worker" "$INSTALL_DIR/n00n-interpreter-worker"
+# Older releases only contain the main binary.
+if [ -f "$tmp/n00n-interpreter-worker" ]; then
+  install -m 0755 "$tmp/n00n-interpreter-worker" "$INSTALL_DIR/n00n-interpreter-worker"
+fi
 echo "Installed n00n to ${INSTALL_DIR}"
