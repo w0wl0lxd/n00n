@@ -540,6 +540,12 @@ fn full_history_replay_required(
         && !allow_history_replay
 }
 
+/// Callers must pass `opts.history_replay_allowed()`, not the attempt-scoped
+/// `allow_history_replay` flag, which `run_codex_attempt` pins to `true`.
+fn full_history_send_allowed(protect_history_replay: bool, history_replay_allowed: bool) -> bool {
+    !protect_history_replay || history_replay_allowed
+}
+
 fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAttemptError {
     super::websocket::WebSocketAttemptError::transport(
         error,
@@ -1741,7 +1747,10 @@ impl OpenAi {
         let mut full_history_body = None;
         let full_history_fallback_available = previous_response_id.is_some()
             && !persist_response_chain
-            && (!opts.protect_history_replay || opts.allow_history_replay);
+            && full_history_send_allowed(
+                opts.protect_history_replay,
+                opts.history_replay_allowed(),
+            );
         log_responses_request(
             "websocket",
             &body,
@@ -1791,8 +1800,10 @@ impl OpenAi {
                 Ok((response_id, response)) => (response_id, response, true),
                 Err(error) if should_fallback_to_http(&error) => {
                     if previous_response_id.is_some()
-                        && opts.protect_history_replay
-                        && !opts.allow_history_replay
+                        && !full_history_send_allowed(
+                            opts.protect_history_replay,
+                            opts.history_replay_allowed(),
+                        )
                     {
                         return self
                             .finish_codex_attempt(
@@ -5772,6 +5783,20 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test_case(false, false, true  ; "protection_disabled_always_allows")]
+    #[test_case(true,  true,  true  ; "protection_enabled_live_check_allows")]
+    #[test_case(true,  false, false ; "protection_enabled_live_check_denies")]
+    fn full_history_send_allowed_follows_live_check_not_stale_flag(
+        protect_history_replay: bool,
+        history_replay_allowed: bool,
+        expected: bool,
+    ) {
+        assert_eq!(
+            full_history_send_allowed(protect_history_replay, history_replay_allowed),
+            expected
+        );
     }
 
     #[test]
