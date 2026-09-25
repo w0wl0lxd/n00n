@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790336244820,
+  "lastUpdate": 1790355759136,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -26981,6 +26981,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 64237,
             "range": "± 7508",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7c054bdc2a1044dff2a6ecf437d2b16673cd30f0",
+          "message": "Merge pull request #512 from w0wl0lxd/fix/bughunt-review-fixes\n\nfix: resolve bughunt findings in compaction and todo-cap paths",
+          "timestamp": "2026-09-25T12:46:56-04:00",
+          "tree_id": "914ebd66485cac6dab937efc138025ac1ca5fc3a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/7c054bdc2a1044dff2a6ecf437d2b16673cd30f0"
+        },
+        "date": 1790355757285,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6744259,
+            "range": "± 217466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2222082,
+            "range": "± 10208",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2217704,
+            "range": "± 10181",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7989892,
+            "range": "± 123969",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4346988,
+            "range": "± 18526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4275409,
+            "range": "± 7936",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 594913,
+            "range": "± 3885",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192069,
+            "range": "± 308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192962,
+            "range": "± 445",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1067163,
+            "range": "± 13154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 591981,
+            "range": "± 6022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 589583,
+            "range": "± 1952",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 66533,
+            "range": "± 6741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 152119,
+            "range": "± 27375",
             "unit": "ns/iter"
           }
         ]
