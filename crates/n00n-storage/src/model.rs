@@ -136,12 +136,24 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = StateDir::from_path(tmp.path().to_path_buf());
 
-        assert!(read_recents(&dir).is_empty());
+        let n00n_empty_check_65 = read_recents(&dir);
+        assert!(
+            n00n_empty_check_65.is_empty(),
+            "expected empty, got {n00n_empty_check_65:?}"
+        );
 
         fs::write(dir.path().join(RECENT_FILE), "not json").unwrap();
-        assert!(read_recents(&dir).is_empty());
+        let n00n_empty_check_66 = read_recents(&dir);
+        assert!(
+            n00n_empty_check_66.is_empty(),
+            "expected empty, got {n00n_empty_check_66:?}"
+        );
 
         fs::write(dir.path().join(RECENT_FILE), "  \n").unwrap();
-        assert!(read_recents(&dir).is_empty());
+        let n00n_empty_check_67 = read_recents(&dir);
+        assert!(
+            n00n_empty_check_67.is_empty(),
+            "expected empty, got {n00n_empty_check_67:?}"
+        );
     }
 }

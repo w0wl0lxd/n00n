@@ -567,7 +567,12 @@ mod tests {
             tx.direct_tools(),
             vec![("task".into(), serde_json::json!({"prompt": "ship"}))]
         );
-        assert!(tx.queued_inputs().is_empty());
+        let n00n_empty_check_70 = tx.queued_inputs();
+        assert!(
+            n00n_empty_check_70.is_empty(),
+            "expected empty, got {}",
+            n00n_empty_check_70.len()
+        );
     }
 
     fn assert_single_wake(rx: &QueueReceiver) {

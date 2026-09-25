@@ -254,7 +254,11 @@ mod tests {
         let raw = json!({"prompts": [{"name": "simple"}]});
         let result: PromptsListResult = serde_json::from_value(raw).unwrap();
         assert!(result.prompts[0].description.is_none());
-        assert!(result.prompts[0].arguments.is_empty());
+        assert!(
+            result.prompts[0].arguments.is_empty(),
+            "expected empty, got {} arguments",
+            result.prompts[0].arguments.len()
+        );
     }
 
     #[test]

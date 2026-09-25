@@ -364,7 +364,11 @@ mod tests {
 
     #[test]
     fn replay_hides_synthetic_messages() {
-        assert!(updates_json(&[Message::synthetic("injected".into())]).is_empty());
+        let n00n_empty_check_1 = updates_json(&[Message::synthetic("injected".into())]);
+        assert!(
+            n00n_empty_check_1.is_empty(),
+            "expected empty, got {n00n_empty_check_1:?}"
+        );
     }
 
     #[test]

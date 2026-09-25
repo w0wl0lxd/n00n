@@ -198,7 +198,7 @@ mod tests {
         let _tx = open_modal(&mut m, "why?");
         assert!(m.is_open());
         assert_eq!(m.question, "why?");
-        assert!(m.answer.is_empty());
+        assert!(m.answer.is_empty(), "expected empty, got {:?}", m.answer);
         assert!(m.is_streaming());
     }
 
@@ -212,8 +212,12 @@ mod tests {
         m.scroll.scroll(-5);
         m.close();
         assert!(!m.is_open());
-        assert!(m.question.is_empty());
-        assert!(m.answer.is_empty());
+        assert!(
+            m.question.is_empty(),
+            "expected empty, got {:?}",
+            m.question
+        );
+        assert!(m.answer.is_empty(), "expected empty, got {:?}", m.answer);
         assert_eq!(m.scroll.offset(), 0);
         assert!(!m.is_streaming());
     }
@@ -307,7 +311,7 @@ mod tests {
         let _tx2 = open_modal(&mut m, "second");
         assert!(m.is_open());
         assert_eq!(m.question, "second");
-        assert!(m.answer.is_empty());
+        assert!(m.answer.is_empty(), "expected empty, got {:?}", m.answer);
         assert_eq!(m.scroll.offset(), 0);
     }
 

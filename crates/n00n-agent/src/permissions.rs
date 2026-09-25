@@ -1308,7 +1308,11 @@ mod tests {
     fn once_decisions_add_no_session_rules(answer: &PermissionAnswer) {
         let mgr = default_mgr();
         mgr.apply_decision(&ToolKey::native("bash"), &["cargo test".into()], answer);
-        assert!(mgr.session_rules_snapshot().is_empty());
+        let n00n_empty_check_11 = mgr.session_rules_snapshot();
+        assert!(
+            n00n_empty_check_11.is_empty(),
+            "expected empty, got {n00n_empty_check_11:?}"
+        );
     }
 
     #[test]

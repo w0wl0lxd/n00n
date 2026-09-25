@@ -638,7 +638,7 @@ mod tests {
                 top_k: 3,
             })
             .expect("search");
-        assert!(!results.is_empty());
+        assert!(!results.is_empty(), "expected non-empty, got {results:?}");
         assert_eq!(results[0].kind, "todo");
         assert!(results[0].path.ends_with("src/a.rs"));
     }

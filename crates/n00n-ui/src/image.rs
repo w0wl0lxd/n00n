@@ -152,6 +152,10 @@ mod tests {
         assert!(result.is_ok());
         let source = result.unwrap();
         assert_eq!(source.media_type, ImageMediaType::Png);
-        assert!(!source.data.is_empty());
+        assert!(
+            !source.data.is_empty(),
+            "expected non-empty, got {:?}",
+            source.data
+        );
     }
 }
