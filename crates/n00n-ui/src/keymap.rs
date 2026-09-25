@@ -403,7 +403,7 @@ pub static BINDINGS: &[(KeybindContext, &[KeyBinding])] = &[
             bind!(
                 modified!(Delete, KeyModifiers::CONTROL),
                 KeyAction::DeleteWordForward,
-                Some(KeyLabel::Alt("Ctrl+Del", "Alt+D")),
+                Some(KeyLabel::Alt("Ctrl+Del", "Alt+Del")),
                 "Delete word forward"
             ),
             bind!(
@@ -411,12 +411,6 @@ pub static BINDINGS: &[(KeybindContext, &[KeyBinding])] = &[
                 KeyAction::DeleteWordForward,
                 None,
                 ""
-            ),
-            bind!(
-                alt!('d'),
-                KeyAction::DeleteWordForward,
-                None,
-                "Delete word forward"
             ),
             bind!(
                 modified!(Left, KeyModifiers::CONTROL),
@@ -744,6 +738,10 @@ mod tests {
     use super::*;
     use crossterm::event::KeyEventKind;
 
+    /// Strokes allowed to shadow between `Editing` and `General` (both are
+    /// always on the context stack together). Empty: no intentional overlap.
+    const EDITING_GENERAL_ALLOWED_OVERLAP: &[KeyStroke] = &[];
+
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {
             code,
@@ -751,6 +749,13 @@ mod tests {
             kind: KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         }
+    }
+
+    fn context_bindings(ctx: KeybindContext) -> &'static [KeyBinding] {
+        BINDINGS
+            .iter()
+            .find_map(|(c, list)| (*c == ctx).then_some(*list))
+            .expect("context present in BINDINGS")
     }
 
     #[test]
@@ -895,5 +900,32 @@ mod tests {
             resolve(&stack, key(KeyCode::Enter, KeyModifiers::SUPER)),
             None
         );
+    }
+
+    #[test]
+    fn alt_d_scrolls_half_page_down() {
+        let stack = [KeybindContext::Editing, KeybindContext::General];
+        assert_eq!(
+            resolve(&stack, key(KeyCode::Char('d'), KeyModifiers::ALT)),
+            Some(KeyAction::ScrollHalfDown)
+        );
+    }
+
+    #[test]
+    fn editing_and_general_bindings_never_overlap() {
+        let editing = context_bindings(KeybindContext::Editing);
+        let general = context_bindings(KeybindContext::General);
+        for e in editing.iter().filter(|b| b.platform.is_visible()) {
+            for g in general.iter().filter(|b| b.platform.is_visible()) {
+                assert!(
+                    e.stroke != g.stroke || EDITING_GENERAL_ALLOWED_OVERLAP.contains(&e.stroke),
+                    "stroke {:?} is bound in both Editing ({:?}) and General ({:?}); \
+                     General can never fire because Editing is checked first",
+                    e.stroke,
+                    e.action,
+                    g.action
+                );
+            }
+        }
     }
 }

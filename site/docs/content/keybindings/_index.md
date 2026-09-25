@@ -45,7 +45,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Ctrl+A` | Jump to start of line |
 | `Ctrl+E` | Jump to end of line |
 | `Ctrl+W / Ctrl+Bksp` | Delete word backward |
-| `Ctrl+Del` / `Alt+D` | Delete word forward |
+| `Ctrl+Del` / `Alt+Del` | Delete word forward |
 | `Ctrl+←` / `Ctrl+→` | Move word left / right |
 | `Alt+←` / `Alt+→` | Move word left / right |
 | `Ctrl+K` | Delete to end of line |
