@@ -619,15 +619,19 @@ mod tests {
         sc.set_buffer("hello world");
         sc.render_lines(80);
         sc.clear();
-        assert!(sc.is_empty());
+        assert!(sc.is_empty(), "expected empty, got {sc:?}");
         assert!(sc.cache.key.is_none());
-        assert!(sc.cache.lines.is_empty());
+        assert!(
+            sc.cache.lines.is_empty(),
+            "expected empty, got {:?}",
+            sc.cache.lines
+        );
 
         sc.set_buffer("hello");
         sc.render_lines(80);
         let text = sc.take_all();
         assert_eq!(text, "hello");
-        assert!(sc.is_empty());
+        assert!(sc.is_empty(), "expected empty, got {sc:?}");
         assert!(sc.cache.key.is_none());
 
         let mut sc = StreamingContent::new("old> ", style, style, 4);
@@ -635,7 +639,11 @@ mod tests {
         sc.render_lines(80);
         let new_style = Style::default().fg(ratatui::style::Color::Red);
         sc.set_style("new> ", new_style, new_style);
-        assert!(sc.cache.lines.is_empty());
+        assert!(
+            sc.cache.lines.is_empty(),
+            "expected empty, got {:?}",
+            sc.cache.lines
+        );
     }
 
     #[test]

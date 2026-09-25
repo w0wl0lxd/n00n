@@ -1127,7 +1127,11 @@ mod tests {
         );
 
         assert!(chat.last_message_is_plan());
-        assert!(chat.last_message_text().is_empty());
+        let n00n_empty_check_77 = chat.last_message_text();
+        assert!(
+            n00n_empty_check_77.is_empty(),
+            "expected empty, got {n00n_empty_check_77:?}"
+        );
     }
 
     #[test]
@@ -1139,10 +1143,11 @@ mod tests {
             }],
             ..Default::default()
         }];
+        let n00n_empty_check_78 =
+            history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         assert!(
-            history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default())
-                .0
-                .is_empty()
+            n00n_empty_check_78.is_empty(),
+            "expected empty, got {n00n_empty_check_78:?}"
         );
     }
 

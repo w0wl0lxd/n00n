@@ -5853,7 +5853,11 @@ mod tests {
             "outer compaction was closed early: {:?}",
             loaded.transcript
         );
-        assert!(super::active_messages_from_transcript(&loaded.transcript).is_empty());
+        let n00n_empty_check_68 = super::active_messages_from_transcript(&loaded.transcript);
+        assert!(
+            n00n_empty_check_68.is_empty(),
+            "expected empty, got {n00n_empty_check_68:?}"
+        );
     }
 
     /// `TranscriptEntry` is a recursive tree walked by recursive consumers, so
@@ -7302,7 +7306,11 @@ mod tests {
 
         let loaded = TestSession::load_from(session.id, dir).unwrap();
         assert_eq!(loaded.messages.len(), 8);
-        assert!(loaded.subagent_messages.is_empty());
+        assert!(
+            loaded.subagent_messages.is_empty(),
+            "expected empty, got {:?}",
+            loaded.subagent_messages
+        );
     }
 
     /// A rename with no new messages must survive restart, while a no-op
@@ -7366,7 +7374,12 @@ mod tests {
             err,
             SessionError::Storage(StorageError::NotFound(_))
         ));
-        assert!(TestSession::list_in("/project", dir).unwrap().is_empty());
+        let n00n_empty_check_69 = TestSession::list_in("/project", dir).unwrap();
+        assert!(
+            n00n_empty_check_69.is_empty(),
+            "expected empty, got {} entries",
+            n00n_empty_check_69.len()
+        );
 
         let err = TestSession::delete_from(session.id, dir).unwrap_err();
         assert!(matches!(
@@ -9056,7 +9069,11 @@ mod tests {
         .unwrap();
 
         let list = TestSession::list_in("/project", dir).unwrap();
-        assert!(list.is_empty());
+        assert!(
+            list.is_empty(),
+            "expected empty, got {} entries",
+            list.len()
+        );
     }
 
     #[test]
@@ -9555,6 +9572,10 @@ mod tests {
             loaded.subagent_messages.keys().collect::<Vec<_>>(),
             [&survivor]
         );
-        assert!(loaded.tool_outputs.is_empty());
+        assert!(
+            loaded.tool_outputs.is_empty(),
+            "expected empty, got {:?}",
+            loaded.tool_outputs
+        );
     }
 }

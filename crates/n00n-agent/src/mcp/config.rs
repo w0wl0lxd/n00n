@@ -719,7 +719,7 @@ enabled = true
         merge_config(&mut merged, &mut errors, &global);
         merge_config(&mut merged, &mut errors, &project);
 
-        assert!(errors.is_empty());
+        assert!(errors.is_empty(), "expected empty, got {errors:?}");
         assert_eq!(merged.defer_tools, expected);
         assert_eq!(merged.origins["srv"], project, "later config must win");
     }
@@ -738,7 +738,7 @@ enabled = true
 
         let (config, errors) = load_config_inner(dir.path(), None, project_trusted);
 
-        assert!(errors.is_empty());
+        assert!(errors.is_empty(), "expected empty, got {errors:?}");
         assert_eq!(config.mcp.contains_key("project"), expected_loaded);
         assert_eq!(config.is_empty(), !expected_loaded);
     }

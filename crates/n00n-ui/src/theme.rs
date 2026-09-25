@@ -977,7 +977,11 @@ mod tests {
     #[test]
     fn dracula_syntax_scopes() {
         let t = dracula();
-        assert!(!t.syntax.scopes.is_empty());
+        assert!(
+            !t.syntax.scopes.is_empty(),
+            "expected non-empty, got {:?}",
+            t.syntax.scopes
+        );
         assert!(t.syntax.settings.foreground.is_some());
         assert!(t.syntax.settings.background.is_some());
     }
@@ -1103,7 +1107,11 @@ yellow = "#f1fa8c"
 comment = "#6272a4"
 "##;
         let theme = Theme::from_toml(toml).unwrap();
-        assert!(!theme.syntax.scopes.is_empty());
+        assert!(
+            !theme.syntax.scopes.is_empty(),
+            "expected non-empty, got {:?}",
+            theme.syntax.scopes
+        );
         assert_eq!(theme.background, Color::Rgb(0x28, 0x2a, 0x36));
     }
 

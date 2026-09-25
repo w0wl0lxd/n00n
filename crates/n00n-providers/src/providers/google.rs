@@ -1470,9 +1470,13 @@ mod tests {
     #[test]
     fn models_list_has_defaults() {
         let models = models();
-        assert!(!models.is_empty());
+        assert!(!models.is_empty(), "expected non-empty, got {models:?}");
         for entry in models {
-            assert!(!entry.prefixes.is_empty());
+            assert!(
+                !entry.prefixes.is_empty(),
+                "expected non-empty, got {:?}",
+                entry.prefixes
+            );
             assert!(entry.max_output_tokens > 0);
             assert!(entry.context_window >= entry.max_output_tokens);
         }

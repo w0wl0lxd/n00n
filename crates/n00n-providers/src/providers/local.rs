@@ -686,7 +686,11 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
-        assert!(auth.headers.is_empty());
+        assert!(
+            auth.headers.is_empty(),
+            "expected empty, got {:?}",
+            auth.headers
+        );
         assert!(ep.configured);
     }
 
@@ -757,7 +761,11 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
-        assert!(auth.headers.is_empty());
+        assert!(
+            auth.headers.is_empty(),
+            "expected empty, got {:?}",
+            auth.headers
+        );
         assert!(ep.configured);
     }
 
