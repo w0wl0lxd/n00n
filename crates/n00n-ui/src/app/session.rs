@@ -13,13 +13,14 @@ use crate::components::Status;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use n00n_agent::tools::SessionIdentity;
-use n00n_agent::{AgentInput, AgentMode, McpPromptRef, ToolOutput};
+use n00n_agent::{AgentInput, AgentMode, ControlDeliveryMetadata, McpPromptRef, ToolOutput};
 use n00n_providers::{Message, Model, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::{
-    CompactionStateError, SESSIONS_DIR, StoredDelivery, StoredDirectTool, StoredImageMediaType,
-    StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage, StoredSessionLifecycle,
-    StoredSessionStateSnapshot, StoredSubagent, StoredThinking, TranscriptEntry,
+    CompactionStateError, SESSIONS_DIR, StoredControlDelivery, StoredDelivery, StoredDirectTool,
+    StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage,
+    StoredSessionLifecycle, StoredSessionStateSnapshot, StoredSubagent, StoredThinking,
+    TranscriptEntry,
 };
 
 use crate::AppSession;
@@ -172,7 +173,7 @@ fn restored_delivery(delivery: StoredDelivery) -> Delivery {
 fn stored_message(
     input: AgentInput,
     delivery: Delivery,
-    run_delivery: Option<n00n_agent::ControlDeliveryMetadata>,
+    run_delivery: Option<ControlDeliveryMetadata>,
 ) -> StoredQueuedMessage {
     // Preamble contains live shell results and may include transient secrets.
     let (mode, plan_path) = match input.mode {
@@ -197,7 +198,7 @@ fn stored_message(
             qualified_name: prompt.qualified_name,
             arguments: prompt.arguments,
         }),
-        run_delivery: run_delivery.map(|delivery| n00n_storage::sessions::StoredControlDelivery {
+        run_delivery: run_delivery.map(|delivery| StoredControlDelivery {
             delivery_id: delivery.delivery_id,
             child_run_id: delivery.child_run_id,
             source_revision: delivery.source_revision,
@@ -217,7 +218,7 @@ fn restored_submission(
         control: message.control,
         run_delivery: message
             .run_delivery
-            .map(|delivery| n00n_agent::ControlDeliveryMetadata {
+            .map(|delivery| ControlDeliveryMetadata {
                 delivery_id: delivery.delivery_id,
                 child_run_id: delivery.child_run_id,
                 source_revision: delivery.source_revision,

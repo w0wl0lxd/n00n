@@ -14,7 +14,7 @@ use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::Message;
 use n00n_providers::model::Model;
-use n00n_runs::{ProjectKey, RunService, RunStore};
+use n00n_runs::{ProjectKey, RunService, RunStore, RunStoreError};
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::RetentionBudget;
@@ -376,7 +376,7 @@ fn open_run_service(
     warnings: &mut Vec<String>,
 ) -> Option<Arc<RunService>> {
     let opened = ProjectKey::from_path(cwd)
-        .map_err(n00n_runs::RunStoreError::from)
+        .map_err(RunStoreError::from)
         .and_then(|project_key| RunStore::open(storage, project_key));
     match opened {
         Ok(store) => Some(Arc::new(RunService::new(store))),

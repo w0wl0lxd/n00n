@@ -8,7 +8,7 @@
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,10 +20,13 @@ use color_eyre::eyre::eyre;
 use crossterm::event::{
     Event, KeyEventKind, MouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
 };
+use flume::{Receiver, Sender};
+use futures_lite::future;
 use n00n_agent::command::CustomCommand;
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, mcp,
+    AgentConfig, AgentEvent, CancelToken, ControlDeliveryMetadata, McpCommand, McpConfigErrors,
+    McpHandle, mcp,
     tools::{SessionIdentity, truncate_output},
 };
 use n00n_config::UiConfig;
@@ -38,9 +41,9 @@ use n00n_providers::{
     ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, OpenAiOptions,
 };
 use n00n_runs::{
-    AdapterFuture, OutcomeStatus, ParentInboxAdapter, ParentInsertResult, ParentOutboxRecord,
-    RunAdapterError, RunEventPayload, RunFailure, RunId, RunLifecycle, RunOutcome, RunService,
-    TransitionRequest, WaitReason, WaitReasonCode,
+    AdapterFuture, DeliveryId, OutcomeStatus, ParentInboxAdapter, ParentInsertResult,
+    ParentOutboxRecord, RunAdapterError, RunEventPayload, RunFailure, RunId, RunLifecycle,
+    RunOutcome, RunService, TransitionRequest, WaitReason, WaitReasonCode,
 };
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
@@ -51,6 +54,7 @@ use n00n_storage::sessions::{
     TranscriptEntry, normalize_title,
 };
 use serde_json::{Value, json};
+use smol::{Task, Timer};
 use tracing::warn;
 
 use crate::AppSession;
@@ -123,7 +127,7 @@ pub struct EventLoopParams {
     pub ui_config: UiConfig,
     pub input_history_size: usize,
     pub retention_budget: RetentionBudget,
-    pub snapshot_timeout: std::time::Duration,
+    pub snapshot_timeout: Duration,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -131,8 +135,8 @@ pub struct EventLoopParams {
     pub lua_command_reader: LuaCommandReader,
     pub keymap_reader: KeymapReader,
     pub hint_reader: HintReader,
-    pub ui_action_rx: Option<flume::Receiver<UiAction>>,
-    pub ui_action_tx: Option<flume::Sender<UiAction>>,
+    pub ui_action_rx: Option<Receiver<UiAction>>,
+    pub ui_action_tx: Option<Sender<UiAction>>,
     pub lua_event_handle: Option<EventHandle>,
 }
 
@@ -377,7 +381,7 @@ fn terminal_run_projection(
 }
 
 fn canonical_run_projection(
-    event: &n00n_agent::AgentEvent,
+    event: &AgentEvent,
     direct_bootstrap_failed: bool,
 ) -> Option<CanonicalRunProjection> {
     let terminal = terminal_run_projection;
@@ -392,38 +396,38 @@ fn canonical_run_projection(
         summary,
     };
     match event {
-        n00n_agent::AgentEvent::Done { .. } if direct_bootstrap_failed => Some(terminal(
+        AgentEvent::Done { .. } if direct_bootstrap_failed => Some(terminal(
             RunLifecycle::Failed,
             OutcomeStatus::Failed,
             "failed",
             "TUI background task failed",
         )),
-        n00n_agent::AgentEvent::Done { .. } => Some(terminal(
+        AgentEvent::Done { .. } => Some(terminal(
             RunLifecycle::Succeeded,
             OutcomeStatus::Succeeded,
             "succeeded",
             "TUI background task succeeded",
         )),
-        n00n_agent::AgentEvent::Error { .. } => Some(terminal(
+        AgentEvent::Error { .. } => Some(terminal(
             RunLifecycle::Failed,
             OutcomeStatus::Failed,
             "failed",
             "TUI background task failed",
         )),
-        n00n_agent::AgentEvent::PermissionRequest { .. } => {
+        AgentEvent::PermissionRequest { .. } => {
             Some(waiting(WaitReasonCode::Permission, "Permission required"))
         }
-        n00n_agent::AgentEvent::AuthRequired => Some(waiting(
+        AgentEvent::AuthRequired => Some(waiting(
             WaitReasonCode::Authentication,
             "Authentication required",
         )),
-        n00n_agent::AgentEvent::SubagentInputRequired { .. } => {
+        AgentEvent::SubagentInputRequired { .. } => {
             Some(waiting(WaitReasonCode::UserInput, "User input required"))
         }
-        n00n_agent::AgentEvent::ToolStart(_)
-        | n00n_agent::AgentEvent::TextDelta { .. }
-        | n00n_agent::AgentEvent::ThinkingDelta { .. }
-        | n00n_agent::AgentEvent::QueueItemConsumed { .. } => Some(CanonicalRunProjection {
+        AgentEvent::ToolStart(_)
+        | AgentEvent::TextDelta { .. }
+        | AgentEvent::ThinkingDelta { .. }
+        | AgentEvent::QueueItemConsumed { .. } => Some(CanonicalRunProjection {
             target: RunLifecycle::Running,
             wait_reason: None,
             outcome: None,
@@ -435,24 +439,20 @@ fn canonical_run_projection(
 }
 
 fn projected_session_lifecycle(
-    event: &n00n_agent::AgentEvent,
+    event: &AgentEvent,
     direct_bootstrap_failed: bool,
 ) -> Option<StoredSessionLifecycle> {
     match event {
-        n00n_agent::AgentEvent::Done { .. } if direct_bootstrap_failed => {
-            Some(StoredSessionLifecycle::Failed)
-        }
-        n00n_agent::AgentEvent::Done { .. } => Some(StoredSessionLifecycle::Succeeded),
-        n00n_agent::AgentEvent::Error { .. } => Some(StoredSessionLifecycle::Failed),
-        n00n_agent::AgentEvent::PermissionRequest { .. }
-        | n00n_agent::AgentEvent::AuthRequired
-        | n00n_agent::AgentEvent::SubagentInputRequired { .. } => {
-            Some(StoredSessionLifecycle::WaitingInput)
-        }
-        n00n_agent::AgentEvent::ToolStart(_)
-        | n00n_agent::AgentEvent::TextDelta { .. }
-        | n00n_agent::AgentEvent::ThinkingDelta { .. }
-        | n00n_agent::AgentEvent::QueueItemConsumed { .. } => Some(StoredSessionLifecycle::Running),
+        AgentEvent::Done { .. } if direct_bootstrap_failed => Some(StoredSessionLifecycle::Failed),
+        AgentEvent::Done { .. } => Some(StoredSessionLifecycle::Succeeded),
+        AgentEvent::Error { .. } => Some(StoredSessionLifecycle::Failed),
+        AgentEvent::PermissionRequest { .. }
+        | AgentEvent::AuthRequired
+        | AgentEvent::SubagentInputRequired { .. } => Some(StoredSessionLifecycle::WaitingInput),
+        AgentEvent::ToolStart(_)
+        | AgentEvent::TextDelta { .. }
+        | AgentEvent::ThinkingDelta { .. }
+        | AgentEvent::QueueItemConsumed { .. } => Some(StoredSessionLifecycle::Running),
         _ => None,
     }
 }
@@ -460,7 +460,7 @@ fn projected_session_lifecycle(
 fn delete_sessions_sequentially(
     writer: &Arc<StorageWriter>,
     mut targets: Vec<n00nId>,
-    reply_tx: flume::Sender<SessionReply>,
+    reply_tx: Sender<SessionReply>,
     completion: Value,
 ) {
     let Some(target) = targets.pop() else {
@@ -867,7 +867,7 @@ fn now_millis() -> Result<i64, RunAdapterError> {
 }
 
 struct TuiParentInbox {
-    tx: flume::Sender<UiAction>,
+    tx: Sender<UiAction>,
 }
 
 impl ParentInboxAdapter for TuiParentInbox {
@@ -918,8 +918,8 @@ fn load_pending_or_stored_session(
 
 fn spawn_parent_outbox_dispatcher(
     service: Arc<RunService>,
-    tx: Option<flume::Sender<UiAction>>,
-) -> Option<smol::Task<()>> {
+    tx: Option<Sender<UiAction>>,
+) -> Option<Task<()>> {
     let tx = tx?;
     Some(smol::spawn(async move {
         let inbox = TuiParentInbox { tx };
@@ -940,7 +940,7 @@ fn spawn_parent_outbox_dispatcher(
                 }
                 Err(error) => warn!(%error, "parent outbox clock failed"),
             }
-            smol::Timer::after(PARENT_OUTBOX_INTERVAL).await;
+            Timer::after(PARENT_OUTBOX_INTERVAL).await;
         }
     }))
 }
@@ -951,8 +951,8 @@ struct RunTransitionCommand {
 }
 
 struct RunTransitionWriter {
-    tx: flume::Sender<RunTransitionCommand>,
-    task: smol::Task<()>,
+    tx: Sender<RunTransitionCommand>,
+    task: Task<()>,
 }
 
 impl RunTransitionWriter {
@@ -981,7 +981,7 @@ impl RunTransitionWriter {
                     event_type: command.projection.event_type.to_owned(),
                     event: RunEventPayload {
                         summary: Some(command.projection.summary.to_owned()),
-                        details: std::collections::BTreeMap::new(),
+                        details: BTreeMap::new(),
                     },
                     operation_id: format!("tui:{}:{}", current.run_id, n00nId::generate()),
                     progress: command.projection.target == RunLifecycle::Running,
@@ -1007,13 +1007,13 @@ impl RunTransitionWriter {
     fn shutdown(self, timeout: Duration) {
         let Self { tx, task } = self;
         drop(tx);
-        let drained = smol::block_on(futures_lite::future::or(
+        let drained = smol::block_on(future::or(
             async {
                 task.await;
                 true
             },
             async {
-                smol::Timer::after(timeout).await;
+                Timer::after(timeout).await;
                 false
             },
         ));
@@ -1031,8 +1031,8 @@ struct SessionRuntime {
     managed_run_id: Option<RunId>,
     run_projection: RunProjectionTracker,
     handles: AgentHandles,
-    shell_tx: flume::Sender<ShellEvent>,
-    shell_rx: flume::Receiver<ShellEvent>,
+    shell_tx: Sender<ShellEvent>,
+    shell_rx: Receiver<ShellEvent>,
     last_status: SessionStatus,
     direct_bootstrap_active: bool,
     pending_compactions: VecDeque<PendingCompaction>,
@@ -1265,29 +1265,29 @@ pub(crate) struct EventLoop<'t> {
     ctx: SpawnCtx,
     run_service: Option<Arc<RunService>>,
     run_transitions: Option<RunTransitionWriter>,
-    _parent_outbox_task: Option<smol::Task<()>>,
+    _parent_outbox_task: Option<Task<()>>,
     input: InputReader,
     pending_input: RefCell<VecDeque<Event>>,
-    warn_rx: flume::Receiver<String>,
-    warn_tx: flume::Sender<String>,
-    ui_action_rx: Option<flume::Receiver<UiAction>>,
-    submission_persist_tx: flume::Sender<SubmissionPersistence>,
-    submission_persist_rx: flume::Receiver<SubmissionPersistence>,
-    run_ack_tx: flume::Sender<AcknowledgedRunDelivery>,
-    run_ack_rx: flume::Receiver<AcknowledgedRunDelivery>,
-    compaction_capture_tx: flume::Sender<CompactionCaptureCompletion>,
-    compaction_capture_rx: flume::Receiver<CompactionCaptureCompletion>,
-    compaction_persist_tx: flume::Sender<CompactionPersistence>,
-    compaction_persist_rx: flume::Receiver<CompactionPersistence>,
-    state_capture_tx: flume::Sender<StateCaptureCompletion>,
-    state_capture_rx: flume::Receiver<StateCaptureCompletion>,
+    warn_rx: Receiver<String>,
+    warn_tx: Sender<String>,
+    ui_action_rx: Option<Receiver<UiAction>>,
+    submission_persist_tx: Sender<SubmissionPersistence>,
+    submission_persist_rx: Receiver<SubmissionPersistence>,
+    run_ack_tx: Sender<AcknowledgedRunDelivery>,
+    run_ack_rx: Receiver<AcknowledgedRunDelivery>,
+    compaction_capture_tx: Sender<CompactionCaptureCompletion>,
+    compaction_capture_rx: Receiver<CompactionCaptureCompletion>,
+    compaction_persist_tx: Sender<CompactionPersistence>,
+    compaction_persist_rx: Receiver<CompactionPersistence>,
+    state_capture_tx: Sender<StateCaptureCompletion>,
+    state_capture_rx: Receiver<StateCaptureCompletion>,
     pending_state_captures: HashSet<n00nId>,
     deferred_state_captures: HashSet<n00nId>,
     post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     startup_login_slot: Option<Arc<ModelSlot>>,
     model_refresh_generation: Arc<Mutex<u64>>,
-    _model_fetch_task: smol::Task<()>,
+    _model_fetch_task: Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
     /// gated on this (or active animation) so we don't re-diff the whole
     /// buffer on every idle tick. Resize also sets it.
@@ -1401,16 +1401,16 @@ impl DrainScheduler {
 
 struct BackgroundModels {
     available: Arc<ArcSwapOption<Vec<String>>>,
-    warn_rx: flume::Receiver<String>,
-    warn_tx: flume::Sender<String>,
+    warn_rx: Receiver<String>,
+    warn_tx: Sender<String>,
     generation: Arc<Mutex<u64>>,
-    task: smol::Task<()>,
+    task: Task<()>,
 }
 
 fn merge_batch(
     available: &ArcSwapOption<Vec<String>>,
     batch: n00n_providers::provider::ModelBatch,
-    warn_tx: &flume::Sender<String>,
+    warn_tx: &Sender<String>,
 ) {
     for w in batch.warnings {
         let _ = warn_tx.try_send(w);
@@ -1437,7 +1437,7 @@ fn merge_batch(
 fn merge_model_batch(
     available: &ArcSwapOption<Vec<String>>,
     batch: n00n_providers::provider::ModelBatch,
-    warn_tx: &flume::Sender<String>,
+    warn_tx: &Sender<String>,
     generation: u64,
     current_generation: &Mutex<u64>,
 ) -> bool {
@@ -2064,7 +2064,7 @@ impl<'t> EventLoop<'t> {
     }
 
     fn handle_agent(&mut self, idx: usize, envelope: Box<n00n_agent::Envelope>) {
-        if let n00n_agent::AgentEvent::QueueDrained { generation } = &envelope.event {
+        if let AgentEvent::QueueDrained { generation } = &envelope.event {
             if self.sessions[idx].handles.queue.is_drained(*generation) {
                 let id = self.sessions[idx].id();
                 if let Err(error) = self.lineage.set_execution_active(id, false) {
@@ -2087,14 +2087,14 @@ impl<'t> EventLoop<'t> {
         }
         if self.sessions[idx].direct_bootstrap_active {
             match &envelope.event {
-                n00n_agent::AgentEvent::ToolDone(done) => {
+                AgentEvent::ToolDone(done) => {
                     let output = done.output.as_text();
                     let meta = &mut self.sessions[idx].app.state.session.meta;
                     meta.direct_paused_team = direct_paused_team_payload(&done.tool, &output);
                     meta.direct_output = Some(bounded_direct_output(&output, &self.ctx.config));
                     meta.direct_output_is_error = done.is_error;
                 }
-                n00n_agent::AgentEvent::Error { message }
+                AgentEvent::Error { message }
                     if self.sessions[idx]
                         .app
                         .state
@@ -2116,7 +2116,7 @@ impl<'t> EventLoop<'t> {
             }
         }
         let consumed_run_delivery = match &envelope.event {
-            n00n_agent::AgentEvent::QueueItemConsumed {
+            AgentEvent::QueueItemConsumed {
                 run_delivery: Some(delivery),
                 ..
             } => Some(delivery.clone()),
@@ -2134,7 +2134,7 @@ impl<'t> EventLoop<'t> {
             .managed_run_id
             .and_then(|_| canonical_run_projection(&envelope.event, direct_bootstrap_failed));
         let compaction_revision = match &envelope.event {
-            n00n_agent::AgentEvent::CompactionDone { state_revision } => *state_revision,
+            AgentEvent::CompactionDone { state_revision } => *state_revision,
             _ => None,
         };
         if let Some(revision) = compaction_revision
@@ -2161,10 +2161,10 @@ impl<'t> EventLoop<'t> {
         }
         let capture = matches!(
             &envelope.event,
-            n00n_agent::AgentEvent::Done { .. }
-                | n00n_agent::AgentEvent::Error { .. }
-                | n00n_agent::AgentEvent::AutoCompactFailed { .. }
-                | n00n_agent::AgentEvent::CompactionDone { .. }
+            AgentEvent::Done { .. }
+                | AgentEvent::Error { .. }
+                | AgentEvent::AutoCompactFailed { .. }
+                | AgentEvent::CompactionDone { .. }
         );
         let terminal = matches!(
             lifecycle,
@@ -2249,11 +2249,7 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn acknowledge_consumed_run_delivery(
-        &mut self,
-        idx: usize,
-        delivery: n00n_agent::ControlDeliveryMetadata,
-    ) {
+    fn acknowledge_consumed_run_delivery(&mut self, idx: usize, delivery: ControlDeliveryMetadata) {
         let stored = StoredControlDelivery {
             delivery_id: delivery.delivery_id.clone(),
             child_run_id: delivery.child_run_id,
@@ -2270,7 +2266,7 @@ impl<'t> EventLoop<'t> {
             warn!(delivery_id = %delivery.delivery_id, %error, "failed to record consumed parent delivery");
             return;
         }
-        let delivery_id = match delivery.delivery_id.parse::<n00n_runs::DeliveryId>() {
+        let delivery_id = match delivery.delivery_id.parse::<DeliveryId>() {
             Ok(delivery_id) => delivery_id,
             Err(error) => {
                 warn!(delivery_id = %delivery.delivery_id, %error, "invalid consumed parent delivery id");
@@ -2890,7 +2886,7 @@ impl<'t> EventLoop<'t> {
     fn handle_parent_run_delivery(
         &mut self,
         delivery: &ParentOutboxRecord,
-        reply_tx: flume::Sender<Result<ParentInsertResult, RunAdapterError>>,
+        reply_tx: Sender<Result<ParentInsertResult, RunAdapterError>>,
     ) {
         let parent_id = match parse_session_id(&delivery.parent_session_id) {
             Ok(parent_id) => parent_id,
@@ -2939,7 +2935,7 @@ impl<'t> EventLoop<'t> {
                         text,
                         images: Vec::new(),
                         control: true,
-                        run_delivery: Some(n00n_agent::ControlDeliveryMetadata {
+                        run_delivery: Some(ControlDeliveryMetadata {
                             delivery_id: metadata.delivery_id.clone(),
                             child_run_id: metadata.child_run_id.clone(),
                             source_revision: metadata.source_revision,
@@ -3104,11 +3100,7 @@ impl<'t> EventLoop<'t> {
     /// other request is answered synchronously by the event loop, which owns
     /// the live runtimes.
     #[allow(clippy::too_many_lines)]
-    fn handle_session_request(
-        &mut self,
-        req: SessionRequest,
-        reply_tx: flume::Sender<SessionReply>,
-    ) {
+    fn handle_session_request(&mut self, req: SessionRequest, reply_tx: Sender<SessionReply>) {
         match req {
             SessionRequest::List => {
                 let storage = self.ctx.storage.clone();
@@ -4487,7 +4479,7 @@ fn startup_provider_with(
 }
 
 #[allow(clippy::manual_ok_err)]
-fn try_recv_input(rx: &flume::Receiver<Event>) -> Option<Event> {
+fn try_recv_input(rx: &Receiver<Event>) -> Option<Event> {
     match rx.try_recv() {
         Ok(event) => Some(event),
         Err(flume::TryRecvError::Empty | flume::TryRecvError::Disconnected) => None,
@@ -4582,15 +4574,15 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        COALESCE_BUDGET, CompactionPersistStage, DELETE_UI_ONLY_ERR, DIRECT_OUTPUT_MAX_BYTES,
-        DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET, MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg,
-        PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction, ReapCandidate, RetentionBudget,
-        RunTransitionWriter, SessionStatus, TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT,
-        aggregate_scroll, attention_message, authorize_ui_delete, begin_state_capture,
-        bounded_direct_output, cancel_stored_session, canonical_run_projection,
-        capture_revision_matches, coalesce_drag, complete_model_fetch_with,
-        direct_paused_team_payload, draw_then_post_terminal, handle_input_bounded,
-        initial_state_revision, merge_compaction_metadata, merge_model_batch,
+        COALESCE_BUDGET, CanonicalRunProjection, CompactionPersistStage, DELETE_UI_ONLY_ERR,
+        DIRECT_OUTPUT_MAX_BYTES, DRAIN_BUDGET, DrainScheduler, HANDLE_INPUT_BUDGET,
+        MAX_COMPACTION_CHECKPOINT_ATTEMPTS, Msg, PAUSED_TEAM_RUN_ID_MAX_BYTES, PendingCompaction,
+        ReapCandidate, RetentionBudget, RunProjectionTracker, RunTransitionWriter, SessionStatus,
+        TEAM_TOOL_NAME, TERMINAL_CHECKPOINT_TIMEOUT, aggregate_scroll, attention_message,
+        authorize_ui_delete, begin_state_capture, bounded_direct_output, cancel_stored_session,
+        canonical_run_projection, capture_revision_matches, coalesce_drag,
+        complete_model_fetch_with, direct_paused_team_payload, draw_then_post_terminal,
+        handle_input_bounded, initial_state_revision, merge_compaction_metadata, merge_model_batch,
         outer_compaction_state_revision, paused_team_payload, paused_team_run,
         prepare_compaction_checkpoint, projected_session_lifecycle, publish_model_refresh,
         resolve_model_selection, resume_state_snapshot, select_reapable_sessions,
@@ -4598,15 +4590,22 @@ mod tests {
         startup_provider_with, take_painted_submissions, try_recv_input,
         validated_paused_team_payload, window_title,
     };
+    use crate::storage_writer::StorageWriter;
     use crate::{AppSession, agent::ModelSlot, components::Status};
     use arc_swap::{ArcSwap, ArcSwapOption};
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use n00n_agent::{AgentConfig, AgentEvent, Envelope};
+    use n00n_config::ToolKey;
     use n00n_providers::{
         AgentError, ContentBlock, Message, Model, ModelCatalog, ModelCatalogError, Role,
+        TokenUsage,
         provider::{ModelBatch, unconfigured_provider},
+    };
+    use n00n_runs::{
+        ExecutionBackend, NewRunSpec, OutcomeStatus, ProjectKey, RunEventPayload, RunKind,
+        RunLifecycle, RunService, RunStore, TransitionRequest, WaitReason, WaitReasonCode,
     };
     use n00n_storage::{
         StateDir,
@@ -4628,6 +4627,7 @@ mod tests {
         collections::HashSet,
         io,
         sync::{Arc, Mutex},
+        time::Duration,
     };
     use tempfile::TempDir;
     use test_case::test_case;
@@ -4814,7 +4814,7 @@ mod tests {
     fn compaction_checkpoint_persists_exact_outer_revision_and_latest_state() {
         let temp = TempDir::new().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let mut session = AppSession::new("model", "/project");
         session.transcript = vec![compaction_entry(Vec::new(), 7)];
         let mut previous = StoredSessionStateSnapshot::new(4);
@@ -4870,7 +4870,7 @@ mod tests {
     fn failed_compaction_capture_leaves_prior_durable_checkpoint_authoritative() {
         let temp = TempDir::new().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let mut session = AppSession::new("model", "/project");
         let first = StoredSessionStateSnapshot::new(1);
         session
@@ -4924,7 +4924,7 @@ mod tests {
     fn recursive_compactions_persist_two_exact_state_revisions() {
         let temp = TempDir::new().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let mut session = AppSession::new("model", "/project");
         session.transcript = vec![compaction_entry(Vec::new(), 3)];
         prepare_compaction_checkpoint(None, &mut session, 3).unwrap();
@@ -5070,7 +5070,7 @@ mod tests {
     fn prepared_root_and_child_checkpoints_are_idempotent_across_retry() {
         let temp = TempDir::new().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let mut root = AppSession::new("model", "/project");
         let mut child = AppSession::new("model", "/project");
         child.meta.root_session_id = Some(root.id);
@@ -5823,28 +5823,28 @@ mod tests {
     #[test]
     fn canonical_transition_writer_serializes_runtime_and_terminal_updates() {
         let temp = TempDir::new().expect("temporary state directory");
-        let store = n00n_runs::RunStore::open_path(
+        let store = RunStore::open_path(
             temp.path().join("runs.sqlite3"),
-            n00n_runs::ProjectKey::new("/project").expect("project key"),
-            std::time::Duration::from_millis(50),
+            ProjectKey::new("/project").expect("project key"),
+            Duration::from_millis(50),
         )
         .expect("run store");
-        let service = Arc::new(n00n_runs::RunService::new(store));
-        let queued = smol::block_on(service.create_run(n00n_runs::NewRunSpec::new(
-            n00n_runs::RunKind::Task,
-            n00n_runs::ExecutionBackend::TuiSession,
+        let service = Arc::new(RunService::new(store));
+        let queued = smol::block_on(service.create_run(NewRunSpec::new(
+            RunKind::Task,
+            ExecutionBackend::TuiSession,
             "task",
         )))
         .expect("queued run");
-        let starting = smol::block_on(service.transition(n00n_runs::TransitionRequest {
+        let starting = smol::block_on(service.transition(TransitionRequest {
             run_id: queued.run_id,
             expected_revision: queued.revision,
             owner: None,
-            target: n00n_runs::RunLifecycle::Starting,
+            target: RunLifecycle::Starting,
             wait_reason: None,
             outcome: None,
             event_type: "starting".to_owned(),
-            event: n00n_runs::RunEventPayload::empty(),
+            event: RunEventPayload::empty(),
             operation_id: "starting".to_owned(),
             progress: false,
         }))
@@ -5852,8 +5852,8 @@ mod tests {
         let writer = RunTransitionWriter::spawn(Arc::clone(&service));
         writer.project(
             starting.run_id,
-            super::CanonicalRunProjection {
-                target: n00n_runs::RunLifecycle::Running,
+            CanonicalRunProjection {
+                target: RunLifecycle::Running,
                 wait_reason: None,
                 outcome: None,
                 event_type: "running",
@@ -5863,14 +5863,14 @@ mod tests {
         let running = smol::block_on(service.wait_for_revision(
             starting.run_id,
             starting.revision,
-            std::time::Duration::from_secs(1),
+            Duration::from_secs(1),
         ))
         .expect("running update")
         .run;
-        assert_eq!(running.lifecycle, n00n_runs::RunLifecycle::Running);
+        assert_eq!(running.lifecycle, RunLifecycle::Running);
 
         let done = AgentEvent::Done {
-            usage: n00n_providers::TokenUsage::default(),
+            usage: TokenUsage::default(),
             num_turns: 1,
             stop_reason: None,
             fusion: None,
@@ -5882,17 +5882,17 @@ mod tests {
         let terminal = smol::block_on(service.wait_for_revision(
             running.run_id,
             running.revision,
-            std::time::Duration::from_secs(1),
+            Duration::from_secs(1),
         ))
         .expect("terminal update")
         .run;
-        assert_eq!(terminal.lifecycle, n00n_runs::RunLifecycle::Succeeded);
+        assert_eq!(terminal.lifecycle, RunLifecycle::Succeeded);
     }
 
     #[test]
     fn direct_bootstrap_error_remains_failed_when_agent_done_arrives() {
-        let event = n00n_agent::AgentEvent::Done {
-            usage: n00n_providers::TokenUsage::default(),
+        let event = AgentEvent::Done {
+            usage: TokenUsage::default(),
             num_turns: 1,
             stop_reason: None,
             fusion: None,
@@ -5907,36 +5907,33 @@ mod tests {
             Some(StoredSessionLifecycle::Succeeded)
         );
         let failed = canonical_run_projection(&event, true).expect("terminal projection");
-        assert_eq!(failed.target, n00n_runs::RunLifecycle::Failed);
+        assert_eq!(failed.target, RunLifecycle::Failed);
         assert_eq!(
             failed.outcome.expect("terminal outcome").status,
-            n00n_runs::OutcomeStatus::Failed
+            OutcomeStatus::Failed
         );
     }
 
     #[test_case(
-        &AgentEvent::PermissionRequest { id: "permission".to_owned(), tool: n00n_config::ToolKey::native("bash"), scopes: Vec::new() },
-        n00n_runs::WaitReasonCode::Permission;
+        &AgentEvent::PermissionRequest { id: "permission".to_owned(), tool: ToolKey::native("bash"), scopes: Vec::new() },
+        WaitReasonCode::Permission;
         "permission wait"
     )]
     #[test_case(
         &AgentEvent::AuthRequired,
-        n00n_runs::WaitReasonCode::Authentication;
+        WaitReasonCode::Authentication;
         "authentication wait"
     )]
-    fn canonical_waiting_projection_has_typed_reason(
-        event: &AgentEvent,
-        expected: n00n_runs::WaitReasonCode,
-    ) {
+    fn canonical_waiting_projection_has_typed_reason(event: &AgentEvent, expected: WaitReasonCode) {
         let projection = canonical_run_projection(event, false).expect("waiting projection");
-        assert_eq!(projection.target, n00n_runs::RunLifecycle::WaitingInput);
+        assert_eq!(projection.target, RunLifecycle::WaitingInput);
         assert_eq!(projection.wait_reason.expect("wait reason").code, expected);
         assert!(projection.outcome.is_none());
     }
 
-    fn running_projection() -> super::CanonicalRunProjection {
-        super::CanonicalRunProjection {
-            target: n00n_runs::RunLifecycle::Running,
+    fn running_projection() -> CanonicalRunProjection {
+        CanonicalRunProjection {
+            target: RunLifecycle::Running,
             wait_reason: None,
             outcome: None,
             event_type: "running",
@@ -5944,10 +5941,10 @@ mod tests {
         }
     }
 
-    fn waiting_projection(code: n00n_runs::WaitReasonCode) -> super::CanonicalRunProjection {
-        super::CanonicalRunProjection {
-            target: n00n_runs::RunLifecycle::WaitingInput,
-            wait_reason: Some(n00n_runs::WaitReason {
+    fn waiting_projection(code: WaitReasonCode) -> CanonicalRunProjection {
+        CanonicalRunProjection {
+            target: RunLifecycle::WaitingInput,
+            wait_reason: Some(WaitReason {
                 code,
                 summary: "waiting".to_owned(),
             }),
@@ -5957,19 +5954,17 @@ mod tests {
         }
     }
 
-    fn succeeded_projection() -> super::CanonicalRunProjection {
+    fn succeeded_projection() -> CanonicalRunProjection {
         super::terminal_run_projection(
-            n00n_runs::RunLifecycle::Succeeded,
-            n00n_runs::OutcomeStatus::Succeeded,
+            RunLifecycle::Succeeded,
+            OutcomeStatus::Succeeded,
             "succeeded",
             "succeeded",
         )
     }
 
-    fn admitted_targets(
-        projections: Vec<super::CanonicalRunProjection>,
-    ) -> Vec<n00n_runs::RunLifecycle> {
-        let mut tracker = super::RunProjectionTracker::default();
+    fn admitted_targets(projections: Vec<CanonicalRunProjection>) -> Vec<RunLifecycle> {
+        let mut tracker = RunProjectionTracker::default();
         projections
             .into_iter()
             .filter_map(|projection| tracker.admit(projection))
@@ -5985,24 +5980,24 @@ mod tests {
             running_projection(),
         ]);
 
-        assert_eq!(admitted, vec![n00n_runs::RunLifecycle::Running]);
+        assert_eq!(admitted, vec![RunLifecycle::Running]);
     }
 
     #[test]
     fn run_projection_tracker_admits_changed_wait_reasons() {
         let admitted = admitted_targets(vec![
-            waiting_projection(n00n_runs::WaitReasonCode::Permission),
-            waiting_projection(n00n_runs::WaitReasonCode::Permission),
-            waiting_projection(n00n_runs::WaitReasonCode::Authentication),
+            waiting_projection(WaitReasonCode::Permission),
+            waiting_projection(WaitReasonCode::Permission),
+            waiting_projection(WaitReasonCode::Authentication),
             running_projection(),
         ]);
 
         assert_eq!(
             admitted,
             vec![
-                n00n_runs::RunLifecycle::WaitingInput,
-                n00n_runs::RunLifecycle::WaitingInput,
-                n00n_runs::RunLifecycle::Running,
+                RunLifecycle::WaitingInput,
+                RunLifecycle::WaitingInput,
+                RunLifecycle::Running,
             ]
         );
     }
@@ -6018,21 +6013,18 @@ mod tests {
 
         assert_eq!(
             admitted,
-            vec![
-                n00n_runs::RunLifecycle::Running,
-                n00n_runs::RunLifecycle::Succeeded,
-            ]
+            vec![RunLifecycle::Running, RunLifecycle::Succeeded,]
         );
     }
 
-    #[test_case(None, &[n00n_runs::RunLifecycle::Cancelling, n00n_runs::RunLifecycle::Cancelled]; "cancel before any projection")]
-    #[test_case(Some(running_projection), &[n00n_runs::RunLifecycle::Cancelling, n00n_runs::RunLifecycle::Cancelled]; "cancel running run")]
+    #[test_case(None, &[RunLifecycle::Cancelling, RunLifecycle::Cancelled]; "cancel before any projection")]
+    #[test_case(Some(running_projection), &[RunLifecycle::Cancelling, RunLifecycle::Cancelled]; "cancel running run")]
     #[test_case(Some(succeeded_projection), &[]; "cancel after success is ignored")]
     fn run_projection_tracker_cancel_goes_through_cancelling(
-        prior: Option<fn() -> super::CanonicalRunProjection>,
-        expected: &[n00n_runs::RunLifecycle],
+        prior: Option<fn() -> CanonicalRunProjection>,
+        expected: &[RunLifecycle],
     ) {
-        let mut tracker = super::RunProjectionTracker::default();
+        let mut tracker = RunProjectionTracker::default();
         if let Some(prior) = prior {
             assert!(tracker.admit(prior()).is_some());
         }
@@ -6045,7 +6037,7 @@ mod tests {
 
         assert_eq!(targets, expected);
         let cancelled_done = AgentEvent::Done {
-            usage: n00n_providers::TokenUsage::default(),
+            usage: TokenUsage::default(),
             num_turns: 0,
             stop_reason: None,
             fusion: None,
@@ -6055,13 +6047,13 @@ mod tests {
         assert!(tracker.admit(late_success).is_none());
     }
 
-    #[test_case(false, Some(n00n_runs::RunLifecycle::Interrupted); "interrupt live run")]
+    #[test_case(false, Some(RunLifecycle::Interrupted); "interrupt live run")]
     #[test_case(true, None; "interrupt after cancel is ignored")]
     fn run_projection_tracker_interrupts_unfinished_runs_once(
         cancelled: bool,
-        expected: Option<n00n_runs::RunLifecycle>,
+        expected: Option<RunLifecycle>,
     ) {
-        let mut tracker = super::RunProjectionTracker::default();
+        let mut tracker = RunProjectionTracker::default();
         assert!(tracker.admit(running_projection()).is_some());
         if cancelled {
             assert_eq!(tracker.cancel().len(), 2);
@@ -6073,46 +6065,46 @@ mod tests {
         assert!(tracker.interrupt().is_none());
     }
 
-    #[test_case(n00n_runs::RunLifecycle::Cancelled, n00n_runs::OutcomeStatus::Cancelled; "cancel")]
-    #[test_case(n00n_runs::RunLifecycle::Interrupted, n00n_runs::OutcomeStatus::Interrupted; "interrupt")]
+    #[test_case(RunLifecycle::Cancelled, OutcomeStatus::Cancelled; "cancel")]
+    #[test_case(RunLifecycle::Interrupted, OutcomeStatus::Interrupted; "interrupt")]
     fn canonical_writer_shutdown_flushes_cancel_and_interrupt(
-        expected: n00n_runs::RunLifecycle,
-        status: n00n_runs::OutcomeStatus,
+        expected: RunLifecycle,
+        status: OutcomeStatus,
     ) {
         let temp = TempDir::new().expect("temporary state directory");
-        let store = n00n_runs::RunStore::open_path(
+        let store = RunStore::open_path(
             temp.path().join("runs.sqlite3"),
-            n00n_runs::ProjectKey::new("/project").expect("project key"),
-            std::time::Duration::from_millis(50),
+            ProjectKey::new("/project").expect("project key"),
+            Duration::from_millis(50),
         )
         .expect("run store");
-        let service = Arc::new(n00n_runs::RunService::new(store));
-        let queued = smol::block_on(service.create_run(n00n_runs::NewRunSpec::new(
-            n00n_runs::RunKind::Task,
-            n00n_runs::ExecutionBackend::TuiSession,
+        let service = Arc::new(RunService::new(store));
+        let queued = smol::block_on(service.create_run(NewRunSpec::new(
+            RunKind::Task,
+            ExecutionBackend::TuiSession,
             "task",
         )))
         .expect("queued run");
-        let starting = smol::block_on(service.transition(n00n_runs::TransitionRequest {
+        let starting = smol::block_on(service.transition(TransitionRequest {
             run_id: queued.run_id,
             expected_revision: queued.revision,
             owner: None,
-            target: n00n_runs::RunLifecycle::Starting,
+            target: RunLifecycle::Starting,
             wait_reason: None,
             outcome: None,
             event_type: "starting".to_owned(),
-            event: n00n_runs::RunEventPayload::empty(),
+            event: RunEventPayload::empty(),
             operation_id: "starting".to_owned(),
             progress: false,
         }))
         .expect("starting run");
         let writer = RunTransitionWriter::spawn(Arc::clone(&service));
-        let mut tracker = super::RunProjectionTracker::default();
+        let mut tracker = RunProjectionTracker::default();
         let mut projections = tracker
             .admit(running_projection())
             .into_iter()
             .collect::<Vec<_>>();
-        if expected == n00n_runs::RunLifecycle::Cancelled {
+        if expected == RunLifecycle::Cancelled {
             projections.extend(tracker.cancel());
         } else {
             projections.extend(tracker.interrupt());
@@ -6121,7 +6113,7 @@ mod tests {
             writer.project(starting.run_id, projection);
         }
 
-        writer.shutdown(std::time::Duration::from_secs(5));
+        writer.shutdown(Duration::from_secs(5));
 
         let run = smol::block_on(service.get_run(starting.run_id)).expect("stored run");
         assert_eq!(run.lifecycle, expected);
@@ -6203,7 +6195,7 @@ mod tests {
     fn stored_session_load_prefers_queued_snapshot_over_disk() {
         let temp = TempDir::new().unwrap();
         let dir = StateDir::from_path(temp.path().to_path_buf());
-        let writer = crate::storage_writer::StorageWriter::new(dir.clone()).unwrap();
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let mut session = AppSession::new("model", "/project");
         session.title = "durable".into();
         writer

@@ -3,7 +3,7 @@
 //! discard stale results.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -49,14 +49,14 @@ impl RenderIdentity {
         *self
             .latest_job
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     fn is_latest(&self, worker: usize, id: u64) -> bool {
         *self
             .latest_job
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             == Some(JobKey { worker, id })
     }
 }
@@ -133,7 +133,7 @@ impl RenderWorker {
         let mut latest_job = identity
             .latest_job
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         let previous = latest_job.replace(JobKey {
             worker: worker_key(&self.inner),
             id,
