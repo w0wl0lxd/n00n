@@ -1305,6 +1305,15 @@ impl<'h> Agent<'h> {
             if matches!(error, AgentError::Cancelled) {
                 return Err(error);
             }
+            if projected_context_size < self.model.context_window {
+                warn!(
+                    error = %error,
+                    context_size = projected_context_size,
+                    context_window = self.model.context_window,
+                    "auto-compaction failed but projected context still fits within the model's hard limit; continuing without compaction"
+                );
+                return Ok(false);
+            }
             warn!(error = %error, "auto-compaction failed");
             return Err(error);
         }
@@ -3823,6 +3832,54 @@ mod tests {
                 )),
                 expected,
             );
+        });
+    }
+
+    #[test]
+    fn try_auto_compact_swallows_error_when_projected_context_still_fits() {
+        smol::block_on(async {
+            const COMPACTION_CHECKPOINT_FAILURE: &str = "disk full";
+            let mut history = History::new(vec![Message::user("go".into())]);
+            let (agent, event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut agent =
+                agent.with_compaction_checkpoint(|_, _| Err(COMPACTION_CHECKPOINT_FAILURE.into()));
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+            // Inside the compaction buffer (170_000 triggers is_overflow at 15%)
+            // but well below the model's hard 200_000-token context window.
+            agent.context_size = 170_000;
+
+            let result = agent.try_auto_compact(0).await.unwrap();
+
+            assert!(!result, "auto-compact should report no compaction happened");
+            assert!(has_event(&drain_events(&event_rx), |e| matches!(
+                e,
+                AgentEvent::AutoCompactFailed { error } if error.contains(COMPACTION_CHECKPOINT_FAILURE)
+            )));
+        });
+    }
+
+    #[test]
+    fn try_auto_compact_propagates_error_when_projected_context_exceeds_hard_limit() {
+        smol::block_on(async {
+            const COMPACTION_CHECKPOINT_FAILURE: &str = "disk full";
+            let mut history = History::new(vec![Message::user("go".into())]);
+            let (agent, _event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut agent =
+                agent.with_compaction_checkpoint(|_, _| Err(COMPACTION_CHECKPOINT_FAILURE.into()));
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+            // At the model's hard context window: continuing without
+            // compaction would exceed it, so the error must propagate.
+            agent.context_size = 200_000;
+
+            let error = agent.try_auto_compact(0).await.unwrap_err();
+
+            assert!(error.to_string().contains(COMPACTION_CHECKPOINT_FAILURE));
         });
     }
 

@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use n00n_providers::provider::Provider;
 use n00n_providers::retry::{MAX_RETRIES, RetryState};
 use n00n_providers::{Message, Model, ProviderEvent, RequestOptions, StreamResponse, System};
@@ -9,6 +12,15 @@ use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender};
 
 const PROVIDER_EVENT_QUEUE_CAPACITY: usize = 256;
+
+/// Caller must keep the returned `Task`; dropping it cancels the watcher,
+/// `.detach()` would leak it past the caller's scope.
+fn spawn_cancel_flag_watcher(cancel: CancelToken, flag: Arc<AtomicBool>) -> smol::Task<()> {
+    smol::spawn(async move {
+        cancel.cancelled().await;
+        flag.store(true, Ordering::Release);
+    })
+}
 
 pub(crate) struct StreamContext<'a> {
     pub provider: &'a dyn Provider,
@@ -64,17 +76,10 @@ pub(crate) async fn stream_with_retry(
     let messages = n00n_providers::adapt_files_for_model(ctx.model, &messages);
     let messages = &*messages;
     let mut retry = RetryState::new();
-    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    {
-        let flag = std::sync::Arc::clone(&cancel_flag);
-        let cancel = ctx.cancel.clone();
-        smol::spawn(async move {
-            cancel.cancelled().await;
-            flag.store(true, std::sync::atomic::Ordering::Release);
-        })
-        .detach();
-    }
-    opts.cancel_flag = Some(std::sync::Arc::clone(&cancel_flag));
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let _cancel_flag_watcher =
+        spawn_cancel_flag_watcher(ctx.cancel.clone(), Arc::clone(&cancel_flag));
+    opts.cancel_flag = Some(Arc::clone(&cancel_flag));
     loop {
         let (ptx, prx) = flume::bounded(PROVIDER_EVENT_QUEUE_CAPACITY);
         let forwarder = smol::spawn({
@@ -143,7 +148,9 @@ pub(crate) async fn stream_with_retry(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use n00n_providers::provider::BoxFuture;
 
@@ -313,6 +320,48 @@ mod tests {
             drop(provider_tx);
 
             assert!(!forward_provider_events(provider_rx, &event_tx).await);
+        });
+    }
+
+    #[test]
+    fn cancel_flag_watcher_sets_flag_when_cancelled_before_drop() {
+        smol::block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+            let (trigger, token) = CancelToken::new();
+            let watcher = spawn_cancel_flag_watcher(token, Arc::clone(&flag));
+
+            trigger.cancel();
+            watcher.await;
+
+            assert!(flag.load(Ordering::Acquire));
+        });
+    }
+
+    #[test]
+    fn dropping_cancel_flag_watcher_releases_it_without_cancellation() {
+        smol::block_on(async {
+            const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+            let flag = Arc::new(AtomicBool::new(false));
+            let (_trigger, token) = CancelToken::new();
+            let watcher = spawn_cancel_flag_watcher(token, Arc::clone(&flag));
+
+            drop(watcher);
+            let released = futures_lite::future::or(
+                async {
+                    while Arc::strong_count(&flag) > 1 {
+                        futures_lite::future::yield_now().await;
+                    }
+                    true
+                },
+                async {
+                    smol::Timer::after(RELEASE_TIMEOUT).await;
+                    false
+                },
+            )
+            .await;
+
+            assert!(released, "a dropped watcher must not outlive its caller");
+            assert!(!flag.load(Ordering::Acquire));
         });
     }
 }
