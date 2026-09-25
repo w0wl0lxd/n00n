@@ -302,7 +302,11 @@ mod tests {
     #[test]
     fn empty_object_renders_no_lines() {
         let view = render(&json!({}));
-        assert!(view.lines.is_empty());
+        assert!(
+            view.lines.is_empty(),
+            "expected empty, got {:?}",
+            view.lines
+        );
         assert_eq!(view.hidden, 0);
     }
 

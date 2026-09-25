@@ -1326,6 +1326,9 @@ pub struct RequestOptions {
     /// present and this flag is set.
     pub idempotency_supported: bool,
     pub hosted_tool_search: Option<HostedToolSearch>,
+    /// Stable seed for the prompt-cache shard. Subagent sessions pass the root
+    /// session id so sibling requests share one warm cache bucket.
+    pub cache_shard_key: Option<String>,
 }
 
 impl Default for RequestOptions {
@@ -1342,6 +1345,7 @@ impl Default for RequestOptions {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cache_shard_key: None,
         }
     }
 }
@@ -1387,6 +1391,7 @@ impl RequestOptions {
             idempotency_key: self.idempotency_key,
             idempotency_supported: self.idempotency_supported,
             hosted_tool_search: self.hosted_tool_search,
+            cache_shard_key: self.cache_shard_key,
         }
     }
 }
@@ -1630,7 +1635,11 @@ mod tests {
             &dialect::TENSORX,
         ];
         for d in all {
-            assert!(!d.supported.is_empty());
+            assert!(
+                !d.supported.is_empty(),
+                "expected non-empty, got {:?}",
+                d.supported
+            );
             for pair in d.supported.windows(2) {
                 assert!(pair[0] < pair[1], "supported must be strictly ascending");
             }
@@ -1903,6 +1912,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cache_shard_key: None,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1922,6 +1932,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cache_shard_key: None,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -2052,6 +2063,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cache_shard_key: None,
         };
         let clamped = opts.clamped(&model);
         assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));

@@ -815,7 +815,11 @@ mod tests {
 
     #[test]
     fn render_empty_input_yields_no_lines() {
-        assert!(render("", TEST_WIDTH).is_empty());
+        let n00n_empty_check_54 = render("", TEST_WIDTH);
+        assert!(
+            n00n_empty_check_54.is_empty(),
+            "expected empty, got {n00n_empty_check_54:?}"
+        );
     }
 
     #[test]
@@ -881,7 +885,10 @@ mod tests {
     fn render_code_block_emits_code_bar_then_highlight_tokens() {
         let lines = render("```rust\nfn x() {}\n```", TEST_WIDTH);
         let code_lines: Vec<_> = lines.iter().filter(|l| l.kind == LineKind::Code).collect();
-        assert!(!code_lines.is_empty());
+        assert!(
+            !code_lines.is_empty(),
+            "expected non-empty, got {code_lines:?}"
+        );
         assert_eq!(code_lines[0].spans[0].style, StyleToken::CodeBar);
         assert!(
             code_lines[0]
@@ -1192,7 +1199,7 @@ mod tests {
     #[test]
     fn render_leading_newlines_are_stripped() {
         let lines = render("\n\n\nhello", TEST_WIDTH);
-        assert!(!lines.is_empty());
+        assert!(!lines.is_empty(), "expected non-empty, got {lines:?}");
         assert_eq!(find_span(&lines, "hello").unwrap().text, "hello");
     }
 

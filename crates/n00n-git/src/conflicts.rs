@@ -785,7 +785,11 @@ mod tests {
         let options = ConflictsOptions::default();
         let result = find(root, &options).unwrap();
 
-        assert!(!result.files.is_empty());
+        assert!(
+            !result.files.is_empty(),
+            "expected non-empty, got {:?}",
+            result.files
+        );
         let file = result
             .files
             .iter()
