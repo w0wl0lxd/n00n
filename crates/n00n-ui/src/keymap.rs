@@ -732,13 +732,19 @@ pub static BINDINGS: &[(KeybindContext, &[KeyBinding])] = &[
 /// One stroke→action claim in the effective map. `from_user` marks claims
 /// written by `keymap.toml`; during the merge a user claim may displace a
 /// default claim on the same stroke but never an earlier user claim.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct EffectiveBinding {
     stroke: KeyStroke,
     action: KeyAction,
     platform: Platform,
     from_user: bool,
 }
+
+/// `(context, action)` pairs that must keep at least one effective stroke.
+const PROTECTED_ACTIONS: &[(KeybindContext, KeyAction)] = &[
+    (KeybindContext::General, KeyAction::QuitOrCancel),
+    (KeybindContext::Streaming, KeyAction::CancelAgent),
+];
 
 /// `BINDINGS` merged with the user's `keymap.toml` overrides, built once
 /// per UI generation and held by `App`. [`Self::resolve`] walks the
@@ -810,6 +816,35 @@ impl EffectiveKeymap {
                     }),
                 }
             }
+        }
+        for &(ctx, action) in PROTECTED_ACTIONS {
+            let Some((_, bindings)) = contexts.iter_mut().find(|(c, _)| *c == ctx) else {
+                continue;
+            };
+            if bindings.iter().any(|b| b.action == action) {
+                continue;
+            }
+            let defaults = BINDINGS
+                .iter()
+                .find(|(c, _)| *c == ctx)
+                .into_iter()
+                .flat_map(|(_, bs)| bs.iter())
+                .filter(|b| b.action == action);
+            for default in defaults {
+                bindings.push(EffectiveBinding {
+                    stroke: KeyStroke::normalize_parts(
+                        default.stroke.code,
+                        default.stroke.modifiers,
+                    ),
+                    action,
+                    platform: default.platform,
+                    from_user: false,
+                });
+            }
+            warnings.push(KeymapWarning::ProtectedAction {
+                context: ctx.name(),
+                action: file::action_name(action),
+            });
         }
         (Self { contexts }, warnings)
     }

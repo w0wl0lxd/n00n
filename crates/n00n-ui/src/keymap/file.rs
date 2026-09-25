@@ -22,7 +22,9 @@
 //! Strokes are claimed in file order: a user stroke displaces a default
 //! binding on the same key (warning) but loses to an earlier user claim
 //! (warning). `ctrl-z` and the `suspend` action are reserved — suspend is
-//! handled before keymap resolution. Only contexts dispatching through
+//! handled before keymap resolution. `general.quit` and `streaming.cancel`
+//! can be remapped but never left with zero strokes; if a file would empty
+//! one, its default is restored (warning). Only contexts dispatching through
 //! `keymap` are writable: `general`, `editing`, `streaming`,
 //! `subagent_chat`, `history_search`. Overlay surfaces (pickers, modals,
 //! forms) own their keys and are rejected with a warning. Lua
@@ -207,6 +209,12 @@ pub enum KeymapWarning {
         previous: &'static str,
         action: &'static str,
     },
+    /// `quit`/`cancel` would end up with zero effective strokes; the
+    /// compiled-in default is restored instead.
+    ProtectedAction {
+        context: &'static str,
+        action: &'static str,
+    },
 }
 
 impl fmt::Display for KeymapWarning {
@@ -274,6 +282,10 @@ impl fmt::Display for KeymapWarning {
             } => write!(
                 f,
                 "'[{context}]': '{key}' moved from '{previous}' to '{action}'"
+            ),
+            Self::ProtectedAction { context, action } => write!(
+                f,
+                "'[{context}] {action}': cannot be left with no key bound, keeping the default"
             ),
         }
     }
@@ -544,6 +556,12 @@ pub(crate) fn action_name(action: KeyAction) -> &'static str {
 mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
+    use test_case::test_case;
+
+    const GENERAL: &str = "general";
+    const STREAMING: &str = "streaming";
+    const QUIT: &str = "quit";
+    const CANCEL: &str = "cancel";
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -1012,7 +1030,15 @@ mod tests {
         let (user, warnings) = parse_ok("[general]\nquit = \"ctrl-z\"\nsuspend = \"ctrl-x\"");
         assert_eq!(warnings.len(), 2);
         let (map, warnings) = EffectiveKeymap::build(&user);
-        assert!(warnings.is_empty(), "{warnings:?}");
+        // quit's only stroke was the reserved ctrl-z, so it would have ended
+        // with zero effective strokes; its default is restored instead.
+        assert_eq!(
+            warnings,
+            vec![KeymapWarning::ProtectedAction {
+                context: GENERAL,
+                action: QUIT,
+            }]
+        );
         let stack = [KeybindContext::General];
         // The default ctrl-z → Suspend claim stays (handle_key intercepts
         // it before resolution anyway); the file cannot move it to ctrl-x.
@@ -1025,6 +1051,62 @@ mod tests {
         assert_eq!(
             map.resolve(&stack, key(KeyCode::Char('x'), KeyModifiers::CONTROL)),
             None
+        );
+        assert_eq!(
+            map.resolve(&stack, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(KeyAction::QuitOrCancel)
+        );
+    }
+
+    #[test_case(
+        "[general]\nquit = []",
+        KeybindContext::General,
+        GENERAL,
+        QUIT,
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+        KeyAction::QuitOrCancel;
+        "unbinding quit keeps the default"
+    )]
+    #[test_case(
+        "[streaming]\ncancel = []",
+        KeybindContext::Streaming,
+        STREAMING,
+        CANCEL,
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+        KeyAction::CancelAgent;
+        "unbinding cancel keeps the default"
+    )]
+    #[test_case(
+        "[general]\nquit = [\"f0\", \"f13\"]",
+        KeybindContext::General,
+        GENERAL,
+        QUIT,
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+        KeyAction::QuitOrCancel;
+        "all invalid keys for quit keeps the default"
+    )]
+    fn protected_action_keeps_default_when_left_unbound(
+        source: &str,
+        stack_ctx: KeybindContext,
+        context: &'static str,
+        action: &'static str,
+        default_code: KeyCode,
+        default_mods: KeyModifiers,
+        expected_action: KeyAction,
+    ) {
+        let (user, _) = parse_ok(source);
+        let (map, warnings) = EffectiveKeymap::build(&user);
+        assert!(
+            warnings.contains(&KeymapWarning::ProtectedAction { context, action }),
+            "{warnings:?}"
+        );
+        let stack = [stack_ctx];
+        assert_eq!(
+            map.resolve(&stack, key(default_code, default_mods)),
+            Some(expected_action)
         );
     }
 
