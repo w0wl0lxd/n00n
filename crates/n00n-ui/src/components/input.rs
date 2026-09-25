@@ -80,6 +80,9 @@ pub struct InputBox {
     placeholder_hint: &'static str,
     placeholder_index: usize,
     pending_images: Vec<ImageSource>,
+    /// Bumped whenever the composer is drained, so an image load started
+    /// before a submit or discard cannot attach to the next message.
+    generation: u64,
     max_input_lines: u16,
     last_total_vl: u16,
     last_content_height: u16,
@@ -181,6 +184,7 @@ impl InputBox {
             placeholder_hint: PLACEHOLDER_SUGGESTIONS[0],
             placeholder_index: 0,
             pending_images: Vec::new(),
+            generation: 0,
             max_input_lines: MAX_INPUT_LINES,
             last_total_vl: 1,
             last_content_height: 1,
@@ -274,6 +278,7 @@ impl InputBox {
     }
 
     pub fn discard(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.pending_images.clear();
         self.history_index = None;
         self.draft.clear();
@@ -285,6 +290,10 @@ impl InputBox {
 
     pub fn is_empty(&self) -> bool {
         self.buffer.value().trim().is_empty() && self.pending_images.is_empty()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn attach_image(&mut self, source: ImageSource) {

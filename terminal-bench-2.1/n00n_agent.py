@@ -195,6 +195,8 @@ class N00nAgent(BaseInstalledAgent):
     _UPLOAD_TIMEOUT_SEC = 120
     _INSTALL_TIMEOUT_SEC = 180
     _SETUP_TIMEOUT_SEC = 60
+    _AUTH_DIR = "/opt/n00n/.local/state/n00n/auth"
+    _AGENT_OWNER_MARKER = "/opt/n00n/.local/state/.n00n-agent-owner"
 
     async def _timed_upload(
         self,
@@ -337,8 +339,8 @@ class N00nAgent(BaseInstalledAgent):
                         command=(
                             "if [ -d /mnt/n00n-auth ] && [ -n "
                             '"$(ls -A /mnt/n00n-auth 2>/dev/null)" ]; then '
-                            "mkdir -p /opt/n00n/.local/state/n00n/auth && "
-                            "cp -r /mnt/n00n-auth/. /opt/n00n/.local/state/n00n/auth/; "
+                            f"mkdir -p {self._AUTH_DIR} && "
+                            f"cp -r /mnt/n00n-auth/. {self._AUTH_DIR}/; "
                             "fi"
                         ),
                         timeout_sec=self._INSTALL_TIMEOUT_SEC,
@@ -415,6 +417,7 @@ class N00nAgent(BaseInstalledAgent):
             timeout_sec=self._SETUP_TIMEOUT_SEC,
             label="prepare XDG dirs",
         )
+        await self._restrict_auth_to_agent(environment)
 
         # Only replace the bundled /opt/n00n/bin/devin when the matching
         # devin-real binary was unpacked beside it. System /mnt installs do not
@@ -461,6 +464,36 @@ class N00nAgent(BaseInstalledAgent):
             "n00n install complete",
             extra={"duration_sec": round(elapsed, 3)},
         )
+
+    async def _restrict_auth_to_agent(self, environment: BaseEnvironment) -> None:
+        """Give mounted credentials back to the agent user with private modes.
+
+        The XDG step above makes /opt/n00n/.local world-writable, which would
+        expose the copied auth tree to every user in the container. Harbor
+        does not expose the agent uid, so the agent user creates a marker file
+        and root copies its owner onto the auth tree.
+        """
+        await self._timed_exec(
+            self.exec_as_agent,
+            environment,
+            command=f"touch {self._AGENT_OWNER_MARKER}",
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="create agent owner marker",
+        )
+        result = await self._timed_exec(
+            self.exec_as_root,
+            environment,
+            command=(
+                f"if [ -d {self._AUTH_DIR} ]; then "
+                f'chown -R "$(stat -c %u:%g {self._AGENT_OWNER_MARKER})" '
+                f"{self._AUTH_DIR} && chmod -R u=rwX,go= {self._AUTH_DIR}; "
+                f"fi && rm -f {self._AGENT_OWNER_MARKER}"
+            ),
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="restrict auth permissions",
+        )
+        if result.return_code != 0:
+            raise RuntimeError("failed to restrict mounted auth permissions")
 
     async def _write_devin_config(
         self, environment: BaseEnvironment, windsurf_api_key: str

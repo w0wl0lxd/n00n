@@ -60,7 +60,8 @@ impl ToolInvocation for ToolSearchInvocation {
                     json!({
                         "name": result.name,
                         "namespace": result.namespace,
-                        "description": result.description
+                        "description": result.description,
+                        "input_schema": result.input_schema
                     })
                 })
                 .collect();
@@ -85,11 +86,15 @@ impl ToolInvocation for ToolSearchInvocation {
                                 Some(tool_description) => tool_description,
                                 None => description.clone(),
                             };
-                            json!({
+                            let mut item = json!({
                                 "name": name,
                                 "namespace": "mcp",
                                 "description": tool_description
-                            })
+                            });
+                            if let Some(schema) = mcp.tool_input_schema(&name) {
+                                item["input_schema"] = schema;
+                            }
+                            item
                         }),
                 );
             }
@@ -109,7 +114,7 @@ impl crate::tools::registry::Tool for ToolSearch {
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
-        "Search deferred built-in and MCP tools by name or description when the needed capability is absent. Loaded tools become callable on the next turn. Do not use this when a loaded sibling already matches the task.".into()
+        "Search deferred built-in and MCP tools by name or description when the needed capability is absent. Results include each tool's input schema so found tools are callable immediately. Do not use this when a loaded sibling already matches the task.".into()
     }
 
     fn schema(&self) -> Value {
@@ -186,6 +191,19 @@ impl ToolInvocation for LoadNamespaceInvocation {
             let tools = ctx
                 .registry
                 .deferred_namespace_tools(&self.namespace, &description_ctx);
+            // Schemas ride in the result so loaded tools are callable
+            // immediately, even where the wire list stays frozen.
+            let tools: Vec<Value> = tools
+                .iter()
+                .map(|name| {
+                    let mut item = json!({ "name": name });
+                    if let Some(entry) = ctx.registry.get(name) {
+                        item["input_schema"] =
+                            crate::tools::schema::sanitize_tool_input_schema(entry.tool.schema());
+                    }
+                    item
+                })
+                .collect();
             let output = json!({
                 "namespace": self.namespace,
                 "tools": tools

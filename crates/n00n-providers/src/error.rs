@@ -164,12 +164,26 @@ impl AgentError {
         }
     }
 
+    /// Output already reached the caller, so a resend would duplicate it.
+    fn emitted_output(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestSent {
+                metadata: Some(RequestDeliveryMetadata {
+                    emitted_event: true,
+                    ..
+                }),
+                ..
+            }
+        )
+    }
+
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         if self.is_context_overflow() {
             return false;
         }
-        if self.is_server_overloaded() {
+        if self.is_server_overloaded() && !self.emitted_output() {
             return true;
         }
         match self {
@@ -210,7 +224,7 @@ impl AgentError {
     /// request may have been accepted, `RequestSent` is normally non-retryable to
     /// prevent an automatic duplicate request, but a `server_is_overloaded` message
     /// inside `RequestSent` is still retryable so capacity errors can back off and
-    /// resubmit.
+    /// resubmit, unless output was already emitted.
     #[must_use]
     pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
         let emitted_or_accepted = metadata

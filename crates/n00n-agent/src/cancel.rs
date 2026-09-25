@@ -246,6 +246,7 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     #[test]
     fn trigger_wakes_token() {
@@ -269,37 +270,54 @@ mod tests {
         });
     }
 
-    #[test]
-    fn child_of_cancelled_parent_is_cancelled() {
-        smol::block_on(async {
-            let (parent_trigger, parent_token) = CancelToken::new();
-            parent_trigger.cancel();
-            let (_child_trigger, child_token) = parent_token.child();
-            assert!(child_token.is_cancelled());
-            child_token.cancelled().await;
-        });
-    }
-
-    #[test]
-    fn grandchild_is_cancelled_by_root() {
+    #[test_case(1, true ; "child_created_after_parent_cancel")]
+    #[test_case(1, false ; "child_created_before_parent_cancel")]
+    #[test_case(2, true ; "grandchild_created_after_root_cancel")]
+    #[test_case(2, false ; "grandchild_created_before_root_cancel")]
+    fn descendants_are_cancelled_by_root(depth: usize, cancel_first: bool) {
         smol::block_on(async {
             let (root_trigger, root_token) = CancelToken::new();
-            let (_child_trigger, child_token) = root_token.child();
-            let (_grandchild_trigger, grandchild_token) = child_token.child();
-            root_trigger.cancel();
-            grandchild_token.cancelled().await;
-            assert!(grandchild_token.is_cancelled());
-            assert!(child_token.is_cancelled());
+            let pending_trigger = if cancel_first {
+                root_trigger.cancel();
+                None
+            } else {
+                Some(root_trigger)
+            };
+            let mut triggers = Vec::with_capacity(depth);
+            let mut descendants = Vec::with_capacity(depth);
+            let mut parent = root_token;
+            for _ in 0..depth {
+                let (trigger, token) = parent.child();
+                triggers.push(trigger);
+                descendants.push(token.clone());
+                parent = token;
+            }
+            if let Some(trigger) = pending_trigger {
+                trigger.cancel();
+            }
+            parent.cancelled().await;
+            for (level, token) in descendants.iter().enumerate() {
+                assert!(
+                    token.is_cancelled(),
+                    "descendant at level {level} not cancelled"
+                );
+            }
         });
     }
 
-    #[test]
-    fn dropping_child_handles_releases_child_state() {
+    #[test_case(true ; "trigger_dropped_first")]
+    #[test_case(false ; "token_dropped_first")]
+    fn dropping_child_handles_releases_child_state(trigger_first: bool) {
         let (_parent_trigger, parent_token) = CancelToken::new();
         let (child_trigger, child_token) = parent_token.child();
         let child_shared = Arc::downgrade(&child_token.0);
-        drop(child_trigger);
-        drop(child_token);
+        if trigger_first {
+            drop(child_trigger);
+            drop(child_token);
+        } else {
+            drop(child_token);
+            drop(child_trigger);
+        }
         assert!(
             child_shared.upgrade().is_none(),
             "child cancellation state outlived every child handle"

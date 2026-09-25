@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path};
 
@@ -19,6 +20,7 @@ pub fn collect_chunks(repo: &Path) -> Result<Vec<Chunk>, Error> {
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
+        .filter_entry(|entry| entry.depth() == 0 || !is_state_directory(entry.file_name()))
         .build();
 
     for entry in walker {
@@ -56,10 +58,10 @@ fn should_skip(relative: &Path) -> bool {
     let Some(name) = relative.file_name().and_then(|n| n.to_str()) else {
         return true;
     };
-    if relative.components().any(|component| {
-        matches!(component, Component::Normal(part)
-            if part.to_str().is_some_and(|part| STATE_DIRECTORIES.contains(&part)))
-    }) {
+    if relative
+        .components()
+        .any(|component| matches!(component, Component::Normal(part) if is_state_directory(part)))
+    {
         return true;
     }
     if name.starts_with('.') && name != ENV_EXAMPLE_FILE {
@@ -88,13 +90,27 @@ fn should_skip(relative: &Path) -> bool {
     )
 }
 
+fn is_state_directory(name: &OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|name| STATE_DIRECTORIES.contains(&name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{collect_chunks, should_skip};
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use tempfile::tempdir;
     use test_case::test_case;
+
+    const SOURCE_FILE: &str = "lib.rs";
+    const SOURCE_TEXT: &str = "fn indexed_symbol() {}";
+    #[cfg(unix)]
+    const UNREADABLE_MODE: u32 = 0o000;
+    #[cfg(unix)]
+    const RESTORED_MODE: u32 = 0o755;
 
     #[test_case(".github/workflows/rust.yml", false ; "tracked_ci_workflow")]
     #[test_case(".cargo/config.toml", false ; "tracked_cargo_config")]
@@ -135,7 +151,7 @@ mod tests {
             r#"{"index_format_version":7}"#,
         )
         .expect("write");
-        fs::write(root.join("lib.rs"), "fn indexed_symbol() {}").expect("write");
+        fs::write(root.join(SOURCE_FILE), SOURCE_TEXT).expect("write");
 
         let chunks = collect_chunks(root).expect("collect");
 
@@ -148,8 +164,27 @@ mod tests {
             "index state must not be indexed: {indexed:?}"
         );
         assert!(
-            indexed.contains(&"lib.rs"),
+            indexed.contains(&SOURCE_FILE),
             "source file missing: {indexed:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_chunks_does_not_descend_into_state_directories() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let locked = root.join(".n00n").join("locked");
+        fs::create_dir_all(&locked).expect("mkdir");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(UNREADABLE_MODE))
+            .expect("lock state directory");
+        fs::write(root.join(SOURCE_FILE), SOURCE_TEXT).expect("write");
+
+        let result = collect_chunks(root);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(RESTORED_MODE))
+            .expect("unlock state directory");
+
+        let chunks = result.expect("state directories must be pruned before descent");
+        assert!(chunks.iter().any(|chunk| chunk.file_path == SOURCE_FILE));
     }
 }

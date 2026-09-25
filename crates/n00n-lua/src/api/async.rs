@@ -704,8 +704,9 @@ mod tests {
         });
     }
 
-    #[test]
-    fn join_with_zero_max_jobs_still_runs_every_function() {
+    #[test_case("0", 2 ; "zero_max_jobs")]
+    #[test_case("2.5", 3 ; "fractional_max_jobs")]
+    fn join_with_invalid_max_jobs_still_runs_every_function(max_jobs: &str, fn_count: i64) {
         smol::block_on(async {
             let (lua, _tbl) = setup();
             // Replace the async primitives the join choreography calls: `run`
@@ -729,62 +730,22 @@ mod tests {
             .exec()
             .unwrap();
             let runs: i64 = lua
-                .load(
+                .load(format!(
                     r"
-                    async_tbl.join(0, {
-                        function() end,
-                        function() end,
-                    })
+                    local fns = {{}}
+                    for i = 1, {fn_count} do
+                        fns[i] = function() end
+                    end
+                    async_tbl.join({max_jobs}, fns)
                     return runs
-                    ",
-                )
+                    "
+                ))
                 .eval_async()
                 .await
                 .unwrap_or_else(|error| {
-                    panic!("join(0, fns) never completes: {error}");
+                    panic!("join({max_jobs}, fns) never completes: {error}");
                 });
-            assert_eq!(runs, 2, "every function must run exactly once");
-        });
-    }
-
-    #[test]
-    fn join_with_fractional_max_jobs_still_runs_every_function() {
-        smol::block_on(async {
-            let (lua, _tbl) = setup();
-            lua.load(
-                r"
-                runs = 0
-                async_tbl.run = function(work, on_finish)
-                    runs = runs + 1
-                    work()
-                    on_finish()
-                end
-                async_tbl.await = function(_, producer)
-                    local finished = false
-                    producer(function() finished = true end)
-                    assert(finished, 'join never reached on_finish')
-                end
-                ",
-            )
-            .exec()
-            .unwrap();
-            let runs: i64 = lua
-                .load(
-                    r"
-                    async_tbl.join(2.5, {
-                        function() end,
-                        function() end,
-                        function() end,
-                    })
-                    return runs
-                    ",
-                )
-                .eval_async()
-                .await
-                .unwrap_or_else(|error| {
-                    panic!("join(2.5, fns) never completes: {error}");
-                });
-            assert_eq!(runs, 3, "every function must run exactly once");
+            assert_eq!(runs, fn_count, "every function must run exactly once");
         });
     }
 }

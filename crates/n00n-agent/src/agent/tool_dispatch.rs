@@ -2003,12 +2003,14 @@ mod tests {
 
     /// Tool arguments come from the model, so byte 200 can fall inside a
     /// multi-byte char. Slicing there panicked before the permission prompt.
-    #[test]
-    fn mcp_permission_scope_preview_does_not_split_a_multibyte_char() {
+    #[test_case("é" ; "two_byte_char")]
+    #[test_case("€" ; "three_byte_char")]
+    #[test_case("\u{1F600}" ; "four_byte_char")]
+    fn mcp_permission_scope_preview_does_not_split_a_multibyte_char(multibyte: &str) {
         smol::block_on(async {
             let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             let input = serde_json::json!({
-                "text": format!("{}{}", "b".repeat(190), "é".repeat(10)),
+                "text": format!("{}{}", "b".repeat(190), multibyte.repeat(10)),
             });
             let json = input.to_string();
             assert!(json.len() > 200, "fixture must pass 200 bytes");

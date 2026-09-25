@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -18,7 +18,23 @@ const MAX_TIMEOUT_MS: u64 = 300_000;
 /// Serializes the read-modify-write of `mcp.toml` inside this process. Toggles
 /// are persisted from detached tasks, so two quick toggles otherwise race:
 /// both read the same file and the last writer silently drops the other change.
-static PERSIST_LOCK: Mutex<()> = Mutex::new(());
+/// It also hands out tickets and remembers the last ticket written per file and
+/// server, because the lock alone does not keep the toggle order.
+static PERSIST_STATE: Mutex<PersistState> = Mutex::new(PersistState {
+    next_ticket: 0,
+    written: BTreeMap::new(),
+});
+
+struct PersistState {
+    next_ticket: u64,
+    written: BTreeMap<(PathBuf, String), u64>,
+}
+
+fn lock_persist_state() -> MutexGuard<'static, PersistState> {
+    PERSIST_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Debug, Clone)]
 pub enum McpConfigError {
@@ -340,18 +356,44 @@ fn load_config_inner(
     (merged, errors)
 }
 
+/// Orders persisted toggles. Take it when the toggle is handled, before the
+/// persist task is spawned, so the file keeps the latest toggle.
+#[derive(Debug, Clone, Copy)]
+pub struct PersistTicket(u64);
+
+#[must_use]
+pub fn persist_ticket() -> PersistTicket {
+    let mut state = lock_persist_state();
+    let ticket = state.next_ticket;
+    state.next_ticket = ticket.wrapping_add(1);
+    PersistTicket(ticket)
+}
+
 /// Persists the enabled/disabled state of an MCP server to the config file.
+/// Skips the write when a toggle with a newer ticket for the same server and
+/// file was already written.
 ///
 /// # Errors
 /// Returns an error if the config file cannot be read, parsed, or written.
-pub fn persist_enabled(
+pub fn persist_enabled_ordered(
     config_path: &Path,
     server_name: &str,
     enabled: bool,
+    ticket: PersistTicket,
 ) -> Result<(), McpError> {
-    let _guard = PERSIST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = lock_persist_state();
+    let key = (config_path.to_path_buf(), server_name.to_owned());
+    if let Some(&latest) = state.written.get(&key)
+        && latest > ticket.0
+    {
+        tracing::debug!(
+            path = %config_path.display(),
+            server = server_name,
+            enabled,
+            "skipped stale MCP toggle; a newer toggle is already persisted"
+        );
+        return Ok(());
+    }
     let content = match fs::read_to_string(config_path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -384,6 +426,7 @@ pub fn persist_enabled(
     }
     fs::write(config_path, doc.to_string())
         .map_err(|e| McpError::Config(format!("cannot write {}: {e}", config_path.display())))?;
+    state.written.insert(key, ticket.0);
     Ok(())
 }
 fn read_config(path: &Path) -> Result<Option<McpConfig>, McpConfigError> {
@@ -424,8 +467,14 @@ fn read_config(path: &Path) -> Result<Option<McpConfig>, McpConfigError> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+    use std::sync::{Arc, Barrier};
+
     use super::*;
     use test_case::test_case;
+
+    const TOGGLED_SERVERS: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
+    const CONCURRENT_TOGGLE_ROUNDS: usize = 4;
 
     fn stdio_raw(cmd: &[&str]) -> RawServerConfig {
         RawServerConfig {
@@ -607,7 +656,7 @@ command = ["project"]
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.toml");
 
-        persist_enabled(&path, "srv", false).unwrap();
+        persist_enabled_ordered(&path, "srv", false, persist_ticket()).unwrap();
         let doc: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
 
@@ -620,7 +669,7 @@ enabled = true
 "#,
         )
         .unwrap();
-        persist_enabled(&path, "srv", false).unwrap();
+        persist_enabled_ordered(&path, "srv", false, persist_ticket()).unwrap();
         let doc: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
         assert!(doc["mcp"]["srv"]["command"].is_array());
@@ -631,19 +680,36 @@ enabled = true
     /// concurrently. Each one reads the file, edits its own server, and writes
     /// the whole document back; without serialization the later writer drops
     /// the earlier writer's change.
-    #[test]
-    fn concurrent_toggles_do_not_lose_updates() {
-        use std::sync::{Arc, Barrier};
+    /// Persist tasks run detached on the blocking pool and the lock is not
+    /// FIFO, so a later toggle can reach the file first. The older write must
+    /// not overwrite it.
+    #[test_case(true, false ; "disable_then_enable")]
+    #[test_case(false, true ; "enable_then_disable")]
+    fn stale_toggle_does_not_overwrite_newer_toggle(older: bool, newer: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MCP_CONFIG_FILE);
+        let older_ticket = persist_ticket();
+        let newer_ticket = persist_ticket();
 
-        use std::fmt::Write as _;
+        persist_enabled_ordered(&path, TOGGLED_SERVERS[0], newer, newer_ticket).unwrap();
+        persist_enabled_ordered(&path, TOGGLED_SERVERS[0], older, older_ticket).unwrap();
 
-        const SERVERS: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
+        let doc: DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            doc["mcp"][TOGGLED_SERVERS[0]]["enabled"].as_bool(),
+            Some(newer)
+        );
+    }
 
-        for round in 0..4 {
+    #[test_case(2 ; "two_servers")]
+    #[test_case(4 ; "four_servers")]
+    fn concurrent_toggles_do_not_lose_updates(server_count: usize) {
+        let servers = &TOGGLED_SERVERS[..server_count];
+        for round in 0..CONCURRENT_TOGGLE_ROUNDS {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("mcp.toml");
             let mut seed = String::new();
-            for server in SERVERS {
+            for server in servers {
                 let _ = write!(
                     seed,
                     "[mcp.{server}]\ncommand = [\"echo\"]\nenabled = false\n\n"
@@ -651,15 +717,15 @@ enabled = true
             }
             fs::write(&path, seed).unwrap();
 
-            let barrier = Arc::new(Barrier::new(SERVERS.len()));
-            let handles: Vec<_> = SERVERS
+            let barrier = Arc::new(Barrier::new(servers.len()));
+            let handles: Vec<_> = servers
                 .iter()
-                .map(|server| {
+                .map(|&server| {
                     let path = path.clone();
                     let barrier = Arc::clone(&barrier);
                     std::thread::spawn(move || {
                         barrier.wait();
-                        persist_enabled(&path, server, true)
+                        persist_enabled_ordered(&path, server, true, persist_ticket())
                     })
                 })
                 .collect();
@@ -668,7 +734,7 @@ enabled = true
             }
 
             let doc: DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
-            for server in SERVERS {
+            for server in servers {
                 assert_eq!(
                     doc["mcp"][server]["enabled"].as_bool(),
                     Some(true),
