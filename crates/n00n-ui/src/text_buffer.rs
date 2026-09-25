@@ -540,6 +540,27 @@ impl TextBuffer {
         step(self);
     }
 
+    /// Remove the char span `[char_start, char_end)` from line `y`, as one
+    /// standalone undo step. Used to evict a whole token (e.g. a paste
+    /// chip) atomically instead of through single-char edits.
+    pub fn remove_range(&mut self, y: usize, char_start: usize, char_end: usize) {
+        if char_start >= char_end || y >= self.lines.len() {
+            return;
+        }
+        self.record(EditKind::Other);
+        let byte_start = Self::char_to_byte(&self.lines[y], char_start);
+        let byte_end = Self::char_to_byte(&self.lines[y], char_end);
+        self.lines[y].replace_range(byte_start..byte_end, "");
+        if self.cursor_y == y {
+            let removed = char_end - char_start;
+            if self.raw_x >= char_end {
+                self.raw_x -= removed;
+            } else if self.raw_x > char_start {
+                self.raw_x = char_start;
+            }
+        }
+    }
+
     fn step_word_left(&mut self) {
         let x = self.x();
         if x == 0 {

@@ -400,29 +400,42 @@ impl QueueReceiver {
     }
 }
 
+fn next_dispatchable_index(items: &VecDeque<QueueItem>, point: InterruptPoint) -> Option<usize> {
+    items.iter().enumerate().find_map(|(index, item)| {
+        if !item.is_ready() || items.iter().take(index).any(QueueItem::blocks_dispatch) {
+            return None;
+        }
+        match item {
+            QueueItem::Message { delivery, .. } => match delivery {
+                Delivery::TurnEnd => None,
+                Delivery::Steering => {
+                    matches!(point, InterruptPoint::ToolComplete | InterruptPoint::Safe)
+                        .then_some(index)
+                }
+                Delivery::Immediate => Some(index),
+            },
+            QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
+            QueueItem::DirectTool { .. } => None,
+        }
+    })
+}
+
 impl InterruptSource for QueueReceiver {
     fn poll(&self, point: InterruptPoint) -> Option<ExtractedCommand> {
         let mut items = lock(&self.items);
-        let index = items.iter().enumerate().find_map(|(index, item)| {
-            if !item.is_ready() || items.iter().take(index).any(QueueItem::blocks_dispatch) {
-                return None;
-            }
-            match item {
-                QueueItem::Message { delivery, .. } => match delivery {
-                    Delivery::TurnEnd => None,
-                    Delivery::Steering => {
-                        matches!(point, InterruptPoint::ToolComplete | InterruptPoint::Safe)
-                            .then_some(index)
-                    }
-                    Delivery::Immediate => Some(index),
-                },
-                QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
-                QueueItem::DirectTool { .. } => None,
-            }
-        })?;
+        let index = next_dispatchable_index(&items, point)?;
         items
             .remove(index)
             .and_then(QueueItem::into_extracted_command)
+    }
+
+    fn peek_pending_image_count(&self, point: InterruptPoint) -> usize {
+        let items = lock(&self.items);
+        let index = next_dispatchable_index(&items, point);
+        index.map_or(0, |index| match &items[index] {
+            QueueItem::Message { image_count, .. } => *image_count,
+            QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => 0,
+        })
     }
 }
 
@@ -454,6 +467,31 @@ mod tests {
             ready: Arc::new(AtomicBool::new(true)),
             displayed,
             delivery: Delivery::TurnEnd,
+        }
+    }
+
+    fn queued_image(delivery: Delivery, image_count: usize) -> QueueItem {
+        QueueItem::Message {
+            text: "img".into(),
+            image_count,
+            input: AgentInput {
+                message: "img".into(),
+                mode: AgentMode::default(),
+                images: Vec::new(),
+                preamble: Vec::new(),
+                thinking: ThinkingConfig::default(),
+                fast: false,
+                workflow: false,
+                control: false,
+                prompt: None,
+                plan_path: None,
+            },
+            run_id: 0,
+            submission_id: 0,
+            pre_dispatch_gate: Arc::new(PreDispatchGate::new()),
+            ready: Arc::new(AtomicBool::new(true)),
+            displayed: false,
+            delivery,
         }
     }
 
@@ -529,6 +567,33 @@ mod tests {
         );
     }
 
+    #[test_case(Delivery::Immediate, InterruptPoint::Safe,         3, 3 ; "immediate_visible_at_safe")]
+    #[test_case(Delivery::Steering,  InterruptPoint::ToolComplete, 2, 2 ; "steering_visible_at_tool_complete")]
+    #[test_case(Delivery::Steering,  InterruptPoint::Safe,         2, 2 ; "steering_visible_at_safe")]
+    #[test_case(Delivery::TurnEnd,   InterruptPoint::Safe,         4, 0 ; "turn_end_not_dispatchable")]
+    fn peek_pending_image_count_matches_poll_selection(
+        delivery: Delivery,
+        point: InterruptPoint,
+        image_count: usize,
+        expected: usize,
+    ) {
+        let (tx, rx) = queue();
+        tx.push(queued_image(delivery, image_count));
+
+        assert_eq!(rx.peek_pending_image_count(point), expected);
+    }
+
+    #[test]
+    fn peek_pending_image_count_does_not_consume_the_item() {
+        let (tx, rx) = queue();
+        tx.push(queued_image(Delivery::Immediate, 2));
+
+        assert_eq!(rx.peek_pending_image_count(InterruptPoint::Safe), 2);
+        assert_eq!(rx.peek_pending_image_count(InterruptPoint::Safe), 2);
+        assert!(rx.poll(InterruptPoint::Safe).is_some());
+        assert_eq!(rx.peek_pending_image_count(InterruptPoint::Safe), 0);
+    }
+
     #[test]
     fn stale_drain_generation_is_rejected_after_new_work() {
         let (tx, rx) = queue();
@@ -567,7 +632,12 @@ mod tests {
             tx.direct_tools(),
             vec![("task".into(), serde_json::json!({"prompt": "ship"}))]
         );
-        assert!(tx.queued_inputs().is_empty());
+        let n00n_empty_check_70 = tx.queued_inputs();
+        assert!(
+            n00n_empty_check_70.is_empty(),
+            "expected empty, got {}",
+            n00n_empty_check_70.len()
+        );
     }
 
     fn assert_single_wake(rx: &QueueReceiver) {
