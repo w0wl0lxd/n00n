@@ -904,8 +904,8 @@ impl RunStore {
         let limit = usize_to_i64(policy.max_rows)?;
         let outbox_rows = transaction
             .execute(
-                "DELETE FROM parent_outbox WHERE delivery_id IN (SELECT delivery_id FROM parent_outbox WHERE state IN ('delivered','acknowledged','dead_letter') AND created_at < ?1 ORDER BY created_at LIMIT ?2)",
-                params![policy.finalized_outbox_before, limit],
+                "DELETE FROM parent_outbox WHERE delivery_id IN (SELECT o.delivery_id FROM parent_outbox o JOIN runs r ON r.run_id = o.child_run_id JOIN run_chains c ON c.chain_id = r.chain_id WHERE c.project_key = ?1 AND o.state IN ('acknowledged','dead_letter') AND o.created_at < ?2 ORDER BY o.created_at LIMIT ?3)",
+                params![self.inner.project_key.as_str(), policy.finalized_outbox_before, limit],
             )
             .map_err(RunStoreError::database)?;
         let runs = transaction
@@ -993,7 +993,7 @@ impl RunStore {
         }
         let connection = self.connection()?;
         let mut statement = connection
-            .prepare("SELECT o.delivery_id, o.source_event_id, o.child_run_id, o.parent_session_id, o.payload_json, o.state, o.attempt_count, o.next_attempt_at, o.created_at, o.delivered_at, o.acknowledged_at, o.dead_letter_reason FROM parent_outbox o JOIN runs r ON r.run_id = o.child_run_id JOIN run_chains c ON c.chain_id = r.chain_id WHERE c.project_key = ?1 AND o.state IN ('pending', 'delivered') AND (o.state = 'delivered' OR o.next_attempt_at IS NULL OR o.next_attempt_at <= ?2) ORDER BY CASE o.state WHEN 'pending' THEN 0 ELSE 1 END, o.created_at LIMIT ?3")
+            .prepare("SELECT o.delivery_id, o.source_event_id, o.child_run_id, o.parent_session_id, o.payload_json, o.state, o.attempt_count, o.next_attempt_at, o.created_at, o.delivered_at, o.acknowledged_at, o.dead_letter_reason FROM parent_outbox o JOIN runs r ON r.run_id = o.child_run_id JOIN run_chains c ON c.chain_id = r.chain_id WHERE c.project_key = ?1 AND o.state IN ('pending', 'delivered') AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?2) ORDER BY CASE o.state WHEN 'pending' THEN 0 ELSE 1 END, o.created_at LIMIT ?3")
             .map_err(RunStoreError::database)?;
         let rows = statement
             .query_map(
@@ -1643,6 +1643,7 @@ mod tests {
     use serde_json::Value;
     use std::thread;
     use tempfile::TempDir;
+    use test_case::test_case;
 
     #[derive(Clone, Default, Deserialize, Serialize)]
     struct TestMessage(String);
@@ -1959,6 +1960,95 @@ mod tests {
             .unwrap();
         assert_eq!(report.runs, 0);
         assert_eq!(store.get_run(terminal.run_id).unwrap(), terminal);
+    }
+
+    const RETENTION_ALL: RetentionPolicy = RetentionPolicy {
+        terminal_before: i64::MAX,
+        finalized_outbox_before: i64::MAX,
+        shutdown_host_before: i64::MAX,
+        max_rows: 10,
+    };
+
+    fn outbox_state(store: &RunStore, delivery_id: DeliveryId) -> Option<String> {
+        store
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM parent_outbox WHERE delivery_id = ?1",
+                [delivery_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    #[test_case("acknowledged", false ; "acknowledged_is_pruned")]
+    #[test_case("dead_letter", false ; "dead_letter_is_pruned")]
+    #[test_case("delivered", true ; "unacknowledged_delivered_is_kept")]
+    fn retention_prunes_only_this_projects_finalized_outbox(state: &str, own_kept: bool) {
+        let temp = TempDir::new().unwrap();
+        let own = store(&temp, "/project-a");
+        let foreign = store(&temp, "/project-b");
+        let mut deliveries = Vec::new();
+        for store in [&own, &foreign] {
+            let run = store.create_run(&spec(None, true)).unwrap();
+            store
+                .transition(&request(&run, None, RunLifecycle::Cancelled, "cancel"))
+                .unwrap();
+            let delivery = store.pending_outbox(i64::MAX, 10).unwrap().remove(0);
+            match state {
+                "acknowledged" => store.acknowledge_outbox(delivery.delivery_id, 1).unwrap(),
+                "dead_letter" => store
+                    .dead_letter_outbox(delivery.delivery_id, "gone", 1)
+                    .unwrap(),
+                _ => store
+                    .mark_outbox_delivered(delivery.delivery_id, 1)
+                    .unwrap(),
+            }
+            deliveries.push(delivery.delivery_id);
+        }
+
+        let report = own.compact(&RETENTION_ALL).unwrap();
+
+        assert_eq!(report.outbox_rows, usize::from(!own_kept));
+        assert_eq!(outbox_state(&own, deliveries[0]).is_some(), own_kept);
+        assert_eq!(
+            outbox_state(&foreign, deliveries[1]).as_deref(),
+            Some(state),
+            "compact must not touch another project's outbox"
+        );
+    }
+
+    #[test_case(19, 0 ; "before_backoff_deadline")]
+    #[test_case(20, 1 ; "at_backoff_deadline")]
+    fn delivered_row_retry_honors_backoff(now: i64, expected: usize) {
+        let temp = TempDir::new().unwrap();
+        let store = store(&temp, "/project");
+        let run = store.create_run(&spec(None, true)).unwrap();
+        store
+            .transition(&request(&run, None, RunLifecycle::Cancelled, "cancel"))
+            .unwrap();
+        let delivery = store.pending_outbox(i64::MAX, 10).unwrap().remove(0);
+        store
+            .mark_outbox_delivered(delivery.delivery_id, 10)
+            .unwrap();
+        store.retry_outbox(delivery.delivery_id, 20).unwrap();
+
+        assert_eq!(store.dispatchable_outbox(now, 10).unwrap().len(), expected);
+    }
+
+    #[test_case(true ; "same_operation_id_in_two_projects")]
+    fn operation_ids_are_scoped_to_the_project(_case: bool) {
+        let temp = TempDir::new().unwrap();
+        let first = store(&temp, "/project-a");
+        let second = store(&temp, "/project-b");
+        for store in [&first, &second] {
+            let run = store.create_run(&spec(None, false)).unwrap();
+            let updated = store
+                .transition(&request(&run, None, RunLifecycle::Starting, "shared-op"))
+                .unwrap();
+            assert_eq!(updated.lifecycle, RunLifecycle::Starting);
+        }
     }
 
     #[test]

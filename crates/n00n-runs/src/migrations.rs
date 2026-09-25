@@ -62,12 +62,14 @@ CREATE TABLE run_events (
     revision INTEGER NOT NULL,
     type TEXT NOT NULL,
     payload_json TEXT NOT NULL,
-    operation_id TEXT NOT NULL UNIQUE,
+    operation_id TEXT NOT NULL,
     operation_fingerprint TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    UNIQUE(run_id, revision)
+    UNIQUE(run_id, revision),
+    UNIQUE(run_id, operation_id)
 ) STRICT;
 CREATE INDEX run_events_run_revision ON run_events(run_id, revision);
+CREATE INDEX run_events_operation ON run_events(operation_id);
 CREATE TABLE parent_outbox (
     delivery_id TEXT PRIMARY KEY,
     source_event_id TEXT NOT NULL UNIQUE REFERENCES run_events(event_id) ON DELETE RESTRICT,
@@ -86,14 +88,17 @@ CREATE INDEX parent_outbox_pending ON parent_outbox(state, next_attempt_at, crea
 ";
 
 pub(crate) fn migrate(connection: &mut Connection, now: i64) -> Result<(), RunStoreError> {
-    migrate_inner(connection, now, false)
+    migrate_inner(connection, now, false, || Ok(()))
 }
 
-fn migrate_inner(
-    connection: &mut Connection,
-    now: i64,
-    inject_failure: bool,
-) -> Result<(), RunStoreError> {
+/// Outcome of inspecting the schema before (or after) taking the write lock.
+#[derive(Debug, PartialEq, Eq)]
+enum SchemaState {
+    Current,
+    Empty,
+}
+
+fn inspect_schema(connection: &Connection) -> Result<SchemaState, RunStoreError> {
     let application_id: i64 = connection
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .map_err(RunStoreError::database)?;
@@ -110,19 +115,38 @@ fn migrate_inner(
             "database schema version {version} is newer than supported version {SCHEMA_VERSION}"
         )));
     }
-    if version == 0 && has_run_tables(connection)? {
+    if version == SCHEMA_VERSION {
+        verify_schema(connection)?;
+        return Ok(SchemaState::Current);
+    }
+    if has_run_tables(connection)? {
         return Err(RunStoreError::IncompatibleSchema(
             "run tables exist without a recognized schema version".to_owned(),
         ));
     }
-    if version == SCHEMA_VERSION {
-        verify_schema(connection)?;
+    Ok(SchemaState::Empty)
+}
+
+/// `before_lock` runs between the unlocked fast-path check and the write
+/// lock; tests use it to let a concurrent process migrate first.
+fn migrate_inner(
+    connection: &mut Connection,
+    now: i64,
+    inject_failure: bool,
+    before_lock: impl FnOnce() -> Result<(), RunStoreError>,
+) -> Result<(), RunStoreError> {
+    if inspect_schema(connection)? == SchemaState::Current {
         return Ok(());
     }
-
+    before_lock()?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(RunStoreError::database)?;
+    // Another process may have migrated between the unlocked check and the
+    // write lock; re-inspect under the lock before creating any table.
+    if inspect_schema(&transaction)? == SchemaState::Current {
+        return transaction.commit().map_err(RunStoreError::database);
+    }
     transaction
         .execute_batch(SCHEMA_V1)
         .map_err(RunStoreError::database)?;
@@ -183,12 +207,16 @@ fn verify_schema(connection: &Connection) -> Result<(), RunStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Connection, RunStoreError, SchemaState, has_run_tables, inspect_schema, migrate,
+        migrate_inner,
+    };
+    use test_case::test_case;
 
     #[test]
     fn failed_migration_rolls_back_all_schema_changes() {
         let mut connection = Connection::open_in_memory().unwrap();
-        let error = migrate_inner(&mut connection, 1, true).unwrap_err();
+        let error = migrate_inner(&mut connection, 1, true, || Ok(())).unwrap_err();
         assert!(matches!(error, RunStoreError::MigrationFailed(_)));
         assert!(!has_run_tables(&connection).unwrap());
         let version: i64 = connection
@@ -213,5 +241,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(columns, 1);
+    }
+
+    #[test_case(true ; "concurrent_process_migrates_first")]
+    #[test_case(false ; "no_concurrent_migration")]
+    fn migration_rechecks_version_under_the_write_lock(concurrent: bool) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("runs.sqlite3");
+        let mut first = Connection::open(&path).unwrap();
+        let other_path = path.clone();
+        migrate_inner(&mut first, 1, false, move || {
+            if concurrent {
+                let mut other = Connection::open(&other_path).unwrap();
+                migrate(&mut other, 1).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(inspect_schema(&first).unwrap(), SchemaState::Current);
+        let applied: i64 = first
+            .query_row("SELECT count(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(applied, 1);
     }
 }
