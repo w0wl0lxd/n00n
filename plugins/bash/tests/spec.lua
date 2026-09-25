@@ -111,6 +111,28 @@ case("ls_recursive_short_option_cluster_needs_an_output_cap", function()
   has(command_guard.broad_bash_command_reason("ls -laR /tmp"), "recursive ls without output cap")
 end)
 
+-- A short option that takes an argument consumes the rest of its cluster:
+-- `journalctl -unginx.service` is `-u nginx.service`, not a `-n` line bound.
+-- Option letters are case-sensitive: `du -D` dereferences, it is not `-d`.
+
+case("journalctl_attached_unit_argument_is_not_a_line_bound", function()
+  has(command_guard.broad_bash_command_reason("journalctl -unginx.service"), "journalctl without tail line bound")
+  eq(command_guard.broad_bash_command_reason("journalctl -unginx.service -n 50"), nil)
+  eq(command_guard.broad_bash_command_reason("journalctl -fn20"), nil)
+end)
+
+case("git_log_attached_pickaxe_argument_is_not_a_count_bound", function()
+  has(command_guard.broad_bash_command_reason("git log -Sfunction"), "history without a max count")
+end)
+
+case("du_uppercase_dereference_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("du -D ."), "du without depth/summarize bound")
+end)
+
+case("tree_attached_pattern_argument_is_not_a_depth_bound", function()
+  has(command_guard.broad_bash_command_reason("tree -IL ."), "tree without depth bound")
+end)
+
 case("ls_lowercase_r_reverse_is_not_recursive", function()
   eq(command_guard.broad_bash_command_reason("ls -r ."), nil)
 end)
