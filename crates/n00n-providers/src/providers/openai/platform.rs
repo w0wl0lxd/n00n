@@ -6088,7 +6088,11 @@ mod tests {
         let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
         let usage: ProviderUsage = parsed.into();
         assert_eq!(usage.plan.as_deref(), Some("prolite"));
-        assert!(usage.limits.is_empty());
+        assert!(
+            usage.limits.is_empty(),
+            "expected empty, got {:?}",
+            usage.limits
+        );
     }
 
     #[test_case(Some(18_000), Some("5h"))]

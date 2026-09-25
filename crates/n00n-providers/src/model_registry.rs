@@ -495,7 +495,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(TIERS_FILE);
 
-        assert!(read_overrides(&path).is_empty());
+        let n00n_empty_check_55 = read_overrides(&path);
+        assert!(
+            n00n_empty_check_55.is_empty(),
+            "expected empty, got {n00n_empty_check_55:?}"
+        );
 
         let mut m = BTreeMap::new();
         m.insert(ModelTier::Strong, "ollama/qwen3".into());
@@ -510,7 +514,11 @@ mod tests {
     #[test]
     fn persistence_handles_missing_or_invalid_input() {
         let tmp = TempDir::new().unwrap();
-        assert!(read_overrides(&tmp.path().join("does-not-exist")).is_empty());
+        let n00n_empty_check_56 = read_overrides(&tmp.path().join("does-not-exist"));
+        assert!(
+            n00n_empty_check_56.is_empty(),
+            "expected empty, got {n00n_empty_check_56:?}"
+        );
 
         for bad in [
             b"".as_slice(),
@@ -519,7 +527,11 @@ mod tests {
         ] {
             let path = tmp.path().join(TIERS_FILE);
             std::fs::write(&path, bad).unwrap();
-            assert!(read_overrides(&path).is_empty());
+            let n00n_empty_check_57 = read_overrides(&path);
+            assert!(
+                n00n_empty_check_57.is_empty(),
+                "expected empty, got {n00n_empty_check_57:?}"
+            );
         }
     }
 
@@ -528,7 +540,11 @@ mod tests {
         let mut reg = make_map(&[(ModelTier::Strong, "ollama/a")], &[]);
         reg.unset("ollama/a", ModelTier::Strong);
         assert!(!reg.has_override("ollama/a", ModelTier::Strong));
-        assert!(reg.overrides.is_empty());
+        assert!(
+            reg.overrides.is_empty(),
+            "expected empty, got {:?}",
+            reg.overrides
+        );
     }
 
     #[test]
@@ -586,7 +602,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(THINKING_FILE);
 
-        assert!(read_thinking(&path).is_empty());
+        let n00n_empty_check_58 = read_thinking(&path);
+        assert!(
+            n00n_empty_check_58.is_empty(),
+            "expected empty, got {n00n_empty_check_58:?}"
+        );
 
         let mut m = BTreeMap::new();
         m.insert(
@@ -607,7 +627,11 @@ mod tests {
     #[test]
     fn thinking_memory_handles_missing_or_invalid_input() {
         let tmp = TempDir::new().unwrap();
-        assert!(read_thinking(&tmp.path().join("does-not-exist")).is_empty());
+        let n00n_empty_check_59 = read_thinking(&tmp.path().join("does-not-exist"));
+        assert!(
+            n00n_empty_check_59.is_empty(),
+            "expected empty, got {n00n_empty_check_59:?}"
+        );
 
         for bad in [
             b"".as_slice(),
@@ -616,7 +640,11 @@ mod tests {
         ] {
             let path = tmp.path().join(THINKING_FILE);
             std::fs::write(&path, bad).unwrap();
-            assert!(read_thinking(&path).is_empty());
+            let n00n_empty_check_60 = read_thinking(&path);
+            assert!(
+                n00n_empty_check_60.is_empty(),
+                "expected empty, got {n00n_empty_check_60:?}"
+            );
         }
     }
 

@@ -983,7 +983,11 @@ mod tests {
         assert_eq!(providers[0].display_name, "Test");
         assert_eq!(providers[0].base, ProviderKind::Anthropic);
         assert!(providers[0].has_auth);
-        assert!(providers[0].models.is_empty());
+        assert!(
+            providers[0].models.is_empty(),
+            "expected empty, got {} models",
+            providers[0].models.len()
+        );
     }
 
     #[cfg(unix)]
@@ -993,7 +997,12 @@ mod tests {
     fn discover_skips_invalid(name: &str, info_json: &str) {
         let tmp = TempDir::new().unwrap();
         write_script(tmp.path(), name, info_json);
-        assert!(discover_in(tmp.path()).is_empty());
+        let n00n_empty_check_64 = discover_in(tmp.path());
+        assert!(
+            n00n_empty_check_64.is_empty(),
+            "expected empty, got {} entries",
+            n00n_empty_check_64.len()
+        );
     }
 
     #[cfg(unix)]

@@ -810,7 +810,11 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "hello world");
         assert_eq!(spans[0].kind, SpanKind::Text);
-        assert!(spans[0].emphasis.is_empty());
+        assert!(
+            spans[0].emphasis.is_empty(),
+            "expected empty, got {:?}",
+            spans[0].emphasis
+        );
     }
 
     #[test]
@@ -818,7 +822,11 @@ mod tests {
         let spans = parse_inline("a **b** c");
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].text, "a ");
-        assert!(spans[0].emphasis.is_empty());
+        assert!(
+            spans[0].emphasis.is_empty(),
+            "expected empty, got {:?}",
+            spans[0].emphasis
+        );
         assert_eq!(spans[1].text, "b");
         assert_eq!(spans[1].emphasis, Emphasis::BOLD);
         assert_eq!(spans[2].text, " c");
@@ -844,7 +852,11 @@ mod tests {
         let spans = parse_inline("a `b()` c");
         assert_eq!(spans[1].kind, SpanKind::Code);
         assert_eq!(spans[1].text, "b()");
-        assert!(spans[1].emphasis.is_empty());
+        assert!(
+            spans[1].emphasis.is_empty(),
+            "expected empty, got {:?}",
+            spans[1].emphasis
+        );
     }
 
     #[test]
@@ -992,7 +1004,11 @@ mod tests {
 
     #[test]
     fn parse_inline_empty_input_returns_empty() {
-        assert!(parse_inline("").is_empty());
+        let n00n_empty_check_45 = parse_inline("");
+        assert!(
+            n00n_empty_check_45.is_empty(),
+            "expected empty, got {n00n_empty_check_45:?}"
+        );
     }
 
     #[test]
@@ -1027,62 +1043,72 @@ mod tests {
 
     #[test]
     fn emphasis_is_empty_returns_true_only_when_no_flags_set() {
-        assert!(Emphasis::default().is_empty());
+        let n00n_empty_check_46 = Emphasis::default();
         assert!(
-            Emphasis {
-                bold: false,
-                italic: false,
-                strike: false,
-                underline: false,
-            }
-            .is_empty()
+            n00n_empty_check_46.is_empty(),
+            "expected empty, got {n00n_empty_check_46:?}"
+        );
+        let n00n_empty_check_47 = Emphasis {
+            bold: false,
+            italic: false,
+            strike: false,
+            underline: false,
+        };
+        assert!(
+            n00n_empty_check_47.is_empty(),
+            "expected empty, got {n00n_empty_check_47:?}"
         );
 
+        let n00n_empty_check_48 = Emphasis {
+            bold: true,
+            italic: false,
+            strike: false,
+            underline: false,
+        };
         assert!(
-            !Emphasis {
-                bold: true,
-                italic: false,
-                strike: false,
-                underline: false,
-            }
-            .is_empty()
+            !n00n_empty_check_48.is_empty(),
+            "expected non-empty, got {n00n_empty_check_48:?}"
         );
+        let n00n_empty_check_49 = Emphasis {
+            bold: false,
+            italic: true,
+            strike: false,
+            underline: false,
+        };
         assert!(
-            !Emphasis {
-                bold: false,
-                italic: true,
-                strike: false,
-                underline: false,
-            }
-            .is_empty()
+            !n00n_empty_check_49.is_empty(),
+            "expected non-empty, got {n00n_empty_check_49:?}"
         );
+        let n00n_empty_check_50 = Emphasis {
+            bold: false,
+            italic: false,
+            strike: true,
+            underline: false,
+        };
         assert!(
-            !Emphasis {
-                bold: false,
-                italic: false,
-                strike: true,
-                underline: false,
-            }
-            .is_empty()
+            !n00n_empty_check_50.is_empty(),
+            "expected non-empty, got {n00n_empty_check_50:?}"
         );
+        let n00n_empty_check_51 = Emphasis {
+            bold: false,
+            italic: false,
+            strike: false,
+            underline: true,
+        };
         assert!(
-            !Emphasis {
-                bold: false,
-                italic: false,
-                strike: false,
-                underline: true,
-            }
-            .is_empty()
+            !n00n_empty_check_51.is_empty(),
+            "expected non-empty, got {n00n_empty_check_51:?}"
         );
 
+        let n00n_empty_check_52 = Emphasis {
+            bold: true,
+            italic: true,
+            strike: true,
+            underline: true,
+        };
         assert!(
-            !Emphasis {
-                bold: true,
-                italic: true,
-                strike: true,
-                underline: true,
-            }
-            .is_empty()
+            !n00n_empty_check_52.is_empty(),
+            "expected non-empty, got {n00n_empty_check_52:?}"
         );
     }
 
@@ -1094,8 +1120,16 @@ mod tests {
         );
         let e = Emphasis::BOLD_ITALIC;
         assert_eq!(e.merge(Emphasis::default()), e);
-        assert!(Emphasis::default().is_empty());
-        assert!(!Emphasis::BOLD.is_empty());
+        let n00n_empty_check_53 = Emphasis::default();
+        assert!(
+            n00n_empty_check_53.is_empty(),
+            "expected empty, got {n00n_empty_check_53:?}"
+        );
+        assert!(
+            !Emphasis::BOLD.is_empty(),
+            "expected non-empty, got {:?}",
+            Emphasis::BOLD
+        );
     }
 
     #[test]
@@ -1218,7 +1252,11 @@ mod tests {
         let spans = parse_inline("foo_bar_baz");
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "foo_bar_baz");
-        assert!(spans[0].emphasis.is_empty());
+        assert!(
+            spans[0].emphasis.is_empty(),
+            "expected empty, got {:?}",
+            spans[0].emphasis
+        );
     }
 
     #[test]
@@ -1228,7 +1266,11 @@ mod tests {
         let spans = parse_inline("a*b*c");
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "a*b*c");
-        assert!(spans[0].emphasis.is_empty());
+        assert!(
+            spans[0].emphasis.is_empty(),
+            "expected empty, got {:?}",
+            spans[0].emphasis
+        );
     }
 
     #[test_case("~not~"; "single_tildes")]
@@ -1256,7 +1298,11 @@ mod tests {
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[1].kind, SpanKind::Code);
         assert_eq!(spans[1].text, "x|y*z");
-        assert!(spans[1].emphasis.is_empty());
+        assert!(
+            spans[1].emphasis.is_empty(),
+            "expected empty, got {:?}",
+            spans[1].emphasis
+        );
     }
 
     #[test]

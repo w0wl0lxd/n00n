@@ -168,7 +168,7 @@ mod tests {
         }
         let token = super::super::auth::read_ide_access_token().expect("IDE token");
         let models = fetch_usable_models(&token).expect("GetUsableModels");
-        assert!(!models.is_empty());
+        assert!(!models.is_empty(), "expected non-empty, got {models:?}");
         assert!(models.iter().any(|model| {
             model.model_id == "default"
                 && model.display_model_id == "auto"

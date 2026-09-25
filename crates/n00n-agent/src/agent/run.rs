@@ -2685,8 +2685,16 @@ mod tests {
                 .active_tools
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert!(active.names.is_empty());
-            assert!(active.namespaces.is_empty());
+            assert!(
+                active.names.is_empty(),
+                "expected empty, got {:?}",
+                active.names
+            );
+            assert!(
+                active.namespaces.is_empty(),
+                "expected empty, got {:?}",
+                active.namespaces
+            );
         }
     }
 

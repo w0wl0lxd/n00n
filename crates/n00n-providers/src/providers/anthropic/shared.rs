@@ -984,6 +984,11 @@ mod tests {
             control: false,
         }];
 
-        assert!(build_wire_messages(&messages, 0).is_empty());
+        let n00n_empty_check_61 = build_wire_messages(&messages, 0);
+        assert!(
+            n00n_empty_check_61.is_empty(),
+            "expected empty, got {} messages",
+            n00n_empty_check_61.len()
+        );
     }
 }

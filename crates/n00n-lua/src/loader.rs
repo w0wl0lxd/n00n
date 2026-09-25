@@ -1272,7 +1272,11 @@ mod tests {
 
         drop(host);
         let slots = handle.collect_prompt_slots();
-        assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+        let n00n_empty_check_29 = contents(&slots, PromptId::System, Slot::ToolUsage);
+        assert!(
+            n00n_empty_check_29.is_empty(),
+            "expected empty, got {n00n_empty_check_29:?}"
+        );
     }
 
     #[test]
@@ -1845,7 +1849,11 @@ mod tests {
             contents(&slots, PromptId::General, Slot::ToolUsage),
             ["from_cb"]
         );
-        assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+        let n00n_empty_check_30 = contents(&slots, PromptId::System, Slot::ToolUsage);
+        assert!(
+            n00n_empty_check_30.is_empty(),
+            "expected empty, got {n00n_empty_check_30:?}"
+        );
     }
 
     #[test]
@@ -1859,7 +1867,11 @@ mod tests {
             })
             "#,
         );
-        assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+        let n00n_empty_check_31 = contents(&slots, PromptId::System, Slot::ToolUsage);
+        assert!(
+            n00n_empty_check_31.is_empty(),
+            "expected empty, got {n00n_empty_check_31:?}"
+        );
     }
 
     /// A hint with no `prompt` is a default: it lands on every prompt that has the slot.
@@ -1898,7 +1910,11 @@ mod tests {
                 ["follow conventions"]
             );
         }
-        assert!(contents(&slots, PromptId::Research, Slot::Conventions).is_empty());
+        let n00n_empty_check_32 = contents(&slots, PromptId::Research, Slot::Conventions);
+        assert!(
+            n00n_empty_check_32.is_empty(),
+            "expected empty, got {n00n_empty_check_32:?}"
+        );
     }
 
     /// Targeting a prompt that does not have the slot quietly drops the hint.
@@ -1940,7 +1956,11 @@ mod tests {
             contents(&slots, PromptId::Research, Slot::ToolUsage),
             [CONTENT]
         );
-        assert!(contents(&slots, PromptId::General, Slot::ToolUsage).is_empty());
+        let n00n_empty_check_33 = contents(&slots, PromptId::General, Slot::ToolUsage);
+        assert!(
+            n00n_empty_check_33.is_empty(),
+            "expected empty, got {n00n_empty_check_33:?}"
+        );
     }
 
     #[test_case(())]
@@ -2039,8 +2059,16 @@ mod tests {
 
         host.unload("multi").unwrap();
         let slots = handle.collect_prompt_slots();
-        assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
-        assert!(contents(&slots, PromptId::System, Slot::Conventions).is_empty());
+        let n00n_empty_check_34 = contents(&slots, PromptId::System, Slot::ToolUsage);
+        assert!(
+            n00n_empty_check_34.is_empty(),
+            "expected empty, got {n00n_empty_check_34:?}"
+        );
+        let n00n_empty_check_35 = contents(&slots, PromptId::System, Slot::Conventions);
+        assert!(
+            n00n_empty_check_35.is_empty(),
+            "expected empty, got {n00n_empty_check_35:?}"
+        );
     }
 
     #[test_case(r#"{ slot = "nonexistent", content = "x" }"# ; "invalid_slot")]
@@ -2071,8 +2099,16 @@ mod tests {
             contents(&slots, PromptId::System, Slot::Identity),
             ["Custom identity"]
         );
-        assert!(contents(&slots, PromptId::Research, Slot::Identity).is_empty());
-        assert!(contents(&slots, PromptId::General, Slot::Identity).is_empty());
+        let n00n_empty_check_36 = contents(&slots, PromptId::Research, Slot::Identity);
+        assert!(
+            n00n_empty_check_36.is_empty(),
+            "expected empty, got {n00n_empty_check_36:?}"
+        );
+        let n00n_empty_check_37 = contents(&slots, PromptId::General, Slot::Identity);
+        assert!(
+            n00n_empty_check_37.is_empty(),
+            "expected empty, got {n00n_empty_check_37:?}"
+        );
     }
 
     #[test]
@@ -2090,8 +2126,16 @@ mod tests {
             contents(&slots, PromptId::System, Slot::Tone),
             ["Custom tone"]
         );
-        assert!(contents(&slots, PromptId::Research, Slot::Tone).is_empty());
-        assert!(contents(&slots, PromptId::General, Slot::Tone).is_empty());
+        let n00n_empty_check_38 = contents(&slots, PromptId::Research, Slot::Tone);
+        assert!(
+            n00n_empty_check_38.is_empty(),
+            "expected empty, got {n00n_empty_check_38:?}"
+        );
+        let n00n_empty_check_39 = contents(&slots, PromptId::General, Slot::Tone);
+        assert!(
+            n00n_empty_check_39.is_empty(),
+            "expected empty, got {n00n_empty_check_39:?}"
+        );
     }
 
     #[test]
@@ -2172,7 +2216,11 @@ mod tests {
             contents(&slots, PromptId::General, Slot::ToolUsage),
             ["General hint"]
         );
-        assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+        let n00n_empty_check_40 = contents(&slots, PromptId::System, Slot::ToolUsage);
+        assert!(
+            n00n_empty_check_40.is_empty(),
+            "expected empty, got {n00n_empty_check_40:?}"
+        );
     }
 
     #[test]

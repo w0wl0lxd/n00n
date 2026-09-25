@@ -1814,7 +1814,11 @@ mod tests {
             Some(vec!["srv__dangerous".into(), "srv__dangerous".into()]),
         );
 
-        assert!(parent.disabled_tools.is_empty());
+        assert!(
+            parent.disabled_tools.is_empty(),
+            "expected empty, got {:?}",
+            parent.disabled_tools
+        );
         assert_eq!(child.disabled_tools, ["srv__dangerous"]);
     }
 
@@ -1895,7 +1899,11 @@ mod tests {
         assert_eq!(state.activities.len(), 1);
         assert_eq!(state.activities[0].message.as_deref(), Some("cargo test"));
         assert_eq!(state.activities[0].status, ActivityStatus::Error);
-        assert!(state.active_activity_counts.is_empty());
+        assert!(
+            state.active_activity_counts.is_empty(),
+            "expected empty, got {:?}",
+            state.active_activity_counts
+        );
     }
 
     #[test]
@@ -1916,7 +1924,11 @@ mod tests {
         assert_eq!(state.activities[0].status, ActivityStatus::Success);
         assert_eq!(state.activities[1].message.as_deref(), Some("second"));
         assert_eq!(state.activities[1].status, ActivityStatus::Error);
-        assert!(state.active_activity_counts.is_empty());
+        assert!(
+            state.active_activity_counts.is_empty(),
+            "expected empty, got {:?}",
+            state.active_activity_counts
+        );
     }
 
     #[test]
@@ -2285,7 +2297,11 @@ mod tests {
         };
 
         assert_eq!(input.message, "steer");
-        assert!(input.images.is_empty());
+        assert!(
+            input.images.is_empty(),
+            "expected empty, got {:?}",
+            input.images
+        );
         assert!(matches!(input.thinking, ThinkingConfig::Budget(1234)));
         assert!(input.fast);
         assert!(
@@ -2307,7 +2323,11 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(state.current.as_deref(), Some("read"));
             assert_eq!(state.completed_count, 0);
-            assert!(state.recent.is_empty());
+            assert!(
+                state.recent.is_empty(),
+                "expected empty, got {:?}",
+                state.recent
+            );
         }
 
         progress.record_done(&progress_done("a", false));

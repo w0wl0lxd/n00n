@@ -1201,7 +1201,12 @@ mod tests {
             .register_many([(first, lua_source("a")), (second, lua_source("b"))])
             .expect_err("alias collision must reject the whole batch");
         assert!(matches!(err, RegistryError::NameConflict { name, .. } if name == "read"));
-        assert!(reg.snapshot().is_empty());
+        let n00n_empty_check_12 = reg.snapshot();
+        assert!(
+            n00n_empty_check_12.is_empty(),
+            "expected empty, got {} entries",
+            n00n_empty_check_12.len()
+        );
     }
 
     #[test]
@@ -1610,8 +1615,16 @@ mod tests {
             workflow: false,
         };
 
-        assert!(reg.search("  ", &ctx, 5).is_empty());
-        assert!(reg.search("tool", &ctx, 0).is_empty());
+        let n00n_empty_check_13 = reg.search("  ", &ctx, 5);
+        assert!(
+            n00n_empty_check_13.is_empty(),
+            "expected empty, got {n00n_empty_check_13:?}"
+        );
+        let n00n_empty_check_14 = reg.search("tool", &ctx, 0);
+        assert!(
+            n00n_empty_check_14.is_empty(),
+            "expected empty, got {n00n_empty_check_14:?}"
+        );
     }
 
     #[test]
