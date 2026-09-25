@@ -261,7 +261,12 @@ pub(crate) fn set_window_title(title: &str) -> Result<(), String> {
 /// Emits the attention signal selected by `ui.notifications`. The bell
 /// goes raw because tmux surfaces it as a window bell on its own; the
 /// OSC 9 desktop-notification body takes the mux passthrough so it can
-/// reach the outer terminal.
+/// reach the outer terminal, but tmux only forwards it when the user
+/// has set `allow-passthrough on` (off by default since tmux 3.3) —
+/// without that, `osc9` silently produces no notification while `all`
+/// still falls back to the bell. `write_sequence` cannot detect this:
+/// tmux consumes the DCS passthrough locally and never reports whether
+/// it was forwarded, so there is no signal here to fall back on.
 pub(crate) fn notify(mode: UiNotifications, message: &str) -> Result<(), String> {
     let Some(sequence) = notification_sequence(mode, message, &TerminalMux::detect()) else {
         return Ok(());

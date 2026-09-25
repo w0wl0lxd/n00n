@@ -174,6 +174,14 @@ fn attention_message(
     }
 }
 
+/// A session's status edge needs an attention signal unless the user is
+/// already looking at it: the terminal is focused and it is the session
+/// shown. A backgrounded session (not `focused`) always signals, since
+/// its edge cannot otherwise be seen.
+fn should_signal_attention(term_focused: bool, focused: usize, session: usize) -> bool {
+    !term_focused || session != focused
+}
+
 /// `n00n: <title>` with a state marker while the session works or waits
 /// on input; bare `n00n` while it sits idle on an unnamed session.
 fn window_title(session_title: &str, status: SessionStatus) -> String {
@@ -863,8 +871,10 @@ pub(crate) struct EventLoop<'t> {
     /// buffer on every idle tick. Resize also sets it.
     dirty: bool,
     /// Terminal focus reported via `Event::FocusGained`/`FocusLost` (mode
-    /// ?1004). Starts pessimistic: terminals without focus reporting always
-    /// notify, matching every other agent TUI.
+    /// ?1004), which reports only changes, never the state at startup.
+    /// Starts optimistic (focused): a launch-time false negative is
+    /// cheaper than notifying a user who is already looking. Unaffected:
+    /// a non-focused session in a multi-session run always notifies.
     term_focused: bool,
     /// Last title written to the terminal, so OSC 2 is only re-emitted when
     /// the focused session's title or status actually changes.
@@ -1354,7 +1364,7 @@ impl<'t> EventLoop<'t> {
             model_refresh_generation: bg.generation,
             _model_fetch_task: bg.task,
             dirty: true,
-            term_focused: false,
+            term_focused: true,
             emitted_title: String::new(),
         })
     }
@@ -2322,10 +2332,7 @@ impl<'t> EventLoop<'t> {
             }
             let previous = rt.last_status;
             rt.last_status = status;
-            // The attention signal is redundant while the user is already
-            // looking at the session that changed; a backgrounded session's
-            // edge always signals because it cannot be seen otherwise.
-            if (!term_focused || i != focused)
+            if should_signal_attention(term_focused, focused, i)
                 && let Some(message) = attention_message(
                     previous,
                     status,
@@ -3734,8 +3741,8 @@ mod tests {
         initial_state_revision, merge_compaction_metadata, merge_model_batch,
         outer_compaction_state_revision, paused_team_payload, paused_team_run,
         prepare_compaction_checkpoint, publish_model_refresh, resolve_model_selection,
-        resume_state_snapshot, should_save_periodically, startup_login_completed,
-        startup_provider_with, take_painted_submissions, try_recv_input,
+        resume_state_snapshot, should_save_periodically, should_signal_attention,
+        startup_login_completed, startup_provider_with, take_painted_submissions, try_recv_input,
         validated_paused_team_payload, window_title,
     };
     use crate::{AppSession, agent::ModelSlot, components::Status};
@@ -3847,6 +3854,22 @@ mod tests {
         expected: Option<&'static str>,
     ) {
         assert_eq!(attention_message(previous, next, failed), expected);
+    }
+
+    #[test_case(true, 0, 0, false ; "focused_session_focused_terminal_is_quiet")]
+    #[test_case(false, 0, 0, true ; "focused_session_unfocused_terminal_signals")]
+    #[test_case(true, 0, 1, true ; "background_session_still_signals_even_when_focused")]
+    #[test_case(false, 0, 1, true ; "background_session_signals_when_unfocused")]
+    fn should_signal_attention_covers_focus_and_backgrounding(
+        term_focused: bool,
+        focused: usize,
+        session: usize,
+        expected: bool,
+    ) {
+        assert_eq!(
+            should_signal_attention(term_focused, focused, session),
+            expected
+        );
     }
 
     #[test]

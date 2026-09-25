@@ -1100,7 +1100,7 @@ pub struct UiConfig {
         default = "UiNotifications::default()",
         ty = "off | bell | osc9 | all",
         default_doc = "\"bell\"",
-        desc = "Attention signal when a turn ends or input is required while the terminal is unfocused. \"bell\" rings the terminal bell, \"osc9\" emits a desktop-notification escape, \"all\" emits both. Set N00N_NOTIFICATIONS to override the file value"
+        desc = "Attention signal when a turn ends or input is required while the terminal is unfocused, or (regardless of terminal focus) for a background session other than the one currently shown. \"bell\" rings the terminal bell, \"osc9\" emits a desktop-notification escape, \"all\" emits both. Under tmux, \"osc9\" and \"all\" need `set -g allow-passthrough on` in tmux.conf (off by default since tmux 3.3), or the desktop notification is dropped silently; the bell in \"all\" still rings either way. Set N00N_NOTIFICATIONS to override the file value"
     )]
     pub notifications: UiNotifications,
 
