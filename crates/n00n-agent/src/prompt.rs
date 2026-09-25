@@ -39,6 +39,12 @@ const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 /// At `CHARS_PER_TOKEN=4` (`scripts/tool_token_analysis.py`) this is ~512 tokens. Capped by truncating oldest `pending` first, keeping `in_progress`.
 /// History injection via `compaction_state` would still be dynamic tail and lose visibility after `History` truncation; `System` Dynamic preserves visibility and survives compaction via plugin state.
 const MAX_AFTER_INSTRUCTIONS_BYTES: usize = 2048;
+/// Minimum bytes reserved per retained todo line when the header text alone
+/// would otherwise consume the whole `AfterInstructions` budget. Must exceed
+/// the smallest possible shrunk encoding (`{"status":"in_progress","content":"..."}`,
+/// ~42 bytes for the longest status name) so `shrink_todo_line` never sees an
+/// `avail` of zero purely because of header size.
+const MIN_RESERVED_TODO_BYTES: usize = 64;
 
 /// Singleton: alphabetically last plugin wins, discarding all prior content
 /// and built-in defaults.  Used for slots with opinionated defaults where
@@ -236,7 +242,7 @@ fn cap_after_instructions(content: String) -> String {
         }
         header_end = idx + 1;
     }
-    let header = lines[..header_end].join("\n");
+    let mut header = lines[..header_end].join("\n");
     let mut entries: Vec<(String, String)> = Vec::new();
     for line in &lines[header_end..] {
         if line.trim().is_empty() {
@@ -309,6 +315,18 @@ fn cap_after_instructions(content: String) -> String {
             total = total.saturating_sub(entries[idx].0.len() + 1);
             keep[idx] = false;
             fallback_pos += 1;
+        }
+    }
+    // Trim the header first so it absorbs overflow instead of starving the
+    // shrink loop's `avail` down to zero for the surviving (in_progress) todos.
+    let kept_count = keep.iter().filter(|&&k| k).count();
+    if kept_count > 0 && total > MAX_AFTER_INSTRUCTIONS_BYTES {
+        let reserve = (kept_count * MIN_RESERVED_TODO_BYTES).min(MAX_AFTER_INSTRUCTIONS_BYTES);
+        let header_budget = MAX_AFTER_INSTRUCTIONS_BYTES.saturating_sub(reserve);
+        if header.len() > header_budget {
+            let boundary = header.floor_char_boundary(header_budget);
+            total = total.saturating_sub(header.len() - boundary);
+            header.truncate(boundary);
         }
     }
     if total > MAX_AFTER_INSTRUCTIONS_BYTES {
@@ -904,6 +922,31 @@ mod tests {
             "len={}",
             out.len()
         );
+    }
+
+    #[test_case(0 ; "no_pending_alongside_oversized_header")]
+    #[test_case(1 ; "with_a_pending_entry_to_drop_first")]
+    fn todo_cap_header_overflow_trims_header_not_in_progress(pending_entries: usize) {
+        let header = "h".repeat(MAX_AFTER_INSTRUCTIONS_BYTES * 2);
+        let mut content = format!("# Current todos\n{header}\n");
+        for _ in 0..pending_entries {
+            content.push_str(&todo_line("pending", "drop me"));
+            content.push('\n');
+        }
+        content.push_str(&todo_line("in_progress", "keep me"));
+        let out = cap_after_instructions(content);
+        assert!(
+            out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES,
+            "len={}",
+            out.len()
+        );
+        let line = out
+            .lines()
+            .find(|l| l.trim_start().starts_with('{'))
+            .expect("in_progress todo line must remain");
+        let decoded: serde_json::Value =
+            serde_json::from_str(line).expect("retained line must stay valid JSON");
+        assert_eq!(decoded["status"], "in_progress");
     }
 
     #[test]
