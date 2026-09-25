@@ -7,7 +7,8 @@ use n00n_agent::{ImageMediaType, ImageSource};
 use super::App;
 
 pub(super) const IMAGE_LOADING_MSG: &str = "Wait for image loading to finish before sending";
-const IMAGE_LOAD_DISCONNECTED_MSG: &str = "Image loader disconnected before returning a result";
+pub(super) const IMAGE_LOAD_DISCONNECTED_MSG: &str =
+    "Image loader disconnected before returning a result";
 const IMAGE_NOT_SUPPORTED_MSG: &str = "Model does not support image input";
 
 impl App {
