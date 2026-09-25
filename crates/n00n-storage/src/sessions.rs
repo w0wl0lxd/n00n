@@ -209,6 +209,8 @@ pub struct StoredControlDelivery {
     pub delivery_id: String,
     pub child_run_id: String,
     pub source_revision: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub acknowledged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1434,10 +1436,11 @@ impl SessionMeta {
             .any(|delivery| delivery.delivery_id == delivery_id)
     }
 
-    /// Records a consumed control delivery for crash-safe idempotency.
+    /// Records a consumed control delivery for crash-safe idempotency. At
+    /// capacity, the oldest acknowledged entry is evicted to make room.
     ///
     /// # Errors
-    /// Returns an error when the bounded ledger is full.
+    /// Returns an error when the bounded ledger is full and no entry is acknowledged.
     pub fn record_consumed_run_delivery(
         &mut self,
         delivery: StoredControlDelivery,
@@ -1446,10 +1449,31 @@ impl SessionMeta {
             return Ok(());
         }
         if self.consumed_run_deliveries.len() >= MAX_CONTROL_DELIVERY_RECORDS {
-            return Err(SessionError::ControlDeliveryCapacity);
+            let oldest_acknowledged = self
+                .consumed_run_deliveries
+                .iter()
+                .position(|consumed| consumed.acknowledged)
+                .ok_or(SessionError::ControlDeliveryCapacity)?;
+            self.consumed_run_deliveries.remove(oldest_acknowledged);
         }
         self.consumed_run_deliveries.push(delivery);
         Ok(())
+    }
+
+    /// Marks a consumed delivery as acknowledged, making it evictable when the
+    /// ledger is full. Returns whether the entry exists.
+    pub fn mark_run_delivery_acknowledged(&mut self, delivery_id: &str) -> bool {
+        match self
+            .consumed_run_deliveries
+            .iter_mut()
+            .find(|consumed| consumed.delivery_id == delivery_id)
+        {
+            Some(consumed) => {
+                consumed.acknowledged = true;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Stores a compaction checkpoint and prunes the oldest checkpoints to remain within bounds.
@@ -2899,6 +2923,19 @@ impl SessionLog {
     }
 }
 
+/// Borrowing twin of [`LogRecord::Meta`]: serializes to the same bytes, so a
+/// meta record that fits never clones a potentially large `SessionMeta`.
+#[derive(Serialize)]
+#[serde(tag = "t", rename = "meta")]
+struct MetaRecordRef<'a, U> {
+    title: &'a str,
+    token_usage: &'a U,
+    updated_at: u64,
+    log_appends: u64,
+    #[serde(flatten)]
+    meta: &'a SessionMeta,
+}
+
 fn meta_record_bytes<M, U, T>(
     session: &Session<M, U, T>,
     log_appends: u64,
@@ -2906,72 +2943,92 @@ fn meta_record_bytes<M, U, T>(
     line_bytes: usize,
 ) -> Result<Vec<u8>, SessionError>
 where
-    M: Serialize + Clone,
     U: Serialize,
-    T: Serialize,
 {
-    let mut meta = session.meta.clone();
-    loop {
-        let mut buf = Vec::new();
-        let mut limited = RecordLimitWriter {
-            writer: &mut buf,
-            written: 0,
-            limit: line_bytes,
-            exceeded: false,
-        };
-        let result = serde_json::to_writer(
-            &mut limited,
-            &LogRecord::<M, &U, &T>::Meta {
-                title: session.title.clone(),
-                token_usage: &session.token_usage,
-                updated_at: session.updated_at,
-                log_appends,
-                transcript: None,
-                meta: meta.clone(),
-            },
-        );
-        if limited.exceeded {
-            // Recovery fields are unbounded; a meta record that can never fit
-            // must not wedge every later save. Shed them before failing: the
-            // plugin snapshot first, then the queued/subagent resume state.
-            if meta.state_snapshot.is_some() {
-                warn!(
-                    session_id = %session.id,
-                    "session meta record exceeds the record limit; dropping plugin state snapshot"
-                );
-                meta.state_snapshot = None;
-                continue;
-            }
-            let shed = !meta.queued_submissions.is_empty()
-                || !meta.queued_messages.is_empty()
-                || !meta.queued_direct_tools.is_empty()
-                || !meta.consumed_run_deliveries.is_empty()
-                || !meta.subagents.is_empty()
-                || meta.direct_paused_team.is_some()
-                || meta.direct_output.is_some();
-            if shed {
-                warn!(
-                    session_id = %session.id,
-                    "session meta record exceeds the record limit; dropping queued and subagent state"
-                );
-                meta.queued_submissions.clear();
-                meta.queued_messages.clear();
-                meta.queued_direct_tools.clear();
-                meta.consumed_run_deliveries.clear();
-                meta.subagents.clear();
-                meta.direct_paused_team = None;
-                meta.direct_output = None;
-                continue;
-            }
-            return Err(SessionError::RecordTooLarge {
-                path: path.display().to_string(),
-                limit: line_bytes,
-            });
-        }
-        result.map_err(StorageError::from)?;
-        buf.push(b'\n');
+    if let Some(buf) = serialize_meta_record(session, &session.meta, log_appends, line_bytes)? {
         return Ok(buf);
     }
+    let mut meta = session.meta.clone();
+    while shed_meta_recovery_state(&mut meta, session.id) {
+        if let Some(buf) = serialize_meta_record(session, &meta, log_appends, line_bytes)? {
+            return Ok(buf);
+        }
+    }
+    Err(SessionError::RecordTooLarge {
+        path: path.display().to_string(),
+        limit: line_bytes,
+    })
+}
+
+/// Returns `None` when the record exceeds `line_bytes`.
+fn serialize_meta_record<M, U, T>(
+    session: &Session<M, U, T>,
+    meta: &SessionMeta,
+    log_appends: u64,
+    line_bytes: usize,
+) -> Result<Option<Vec<u8>>, SessionError>
+where
+    U: Serialize,
+{
+    let mut buf = Vec::new();
+    let mut limited = RecordLimitWriter {
+        writer: &mut buf,
+        written: 0,
+        limit: line_bytes,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(
+        &mut limited,
+        &MetaRecordRef {
+            title: &session.title,
+            token_usage: &session.token_usage,
+            updated_at: session.updated_at,
+            log_appends,
+            meta,
+        },
+    );
+    if limited.exceeded {
+        return Ok(None);
+    }
+    result.map_err(StorageError::from)?;
+    buf.push(b'\n');
+    Ok(Some(buf))
+}
+
+/// Recovery fields are unbounded; a meta record that can never fit must not
+/// wedge every later save. Sheds the plugin snapshot first, then the
+/// queued/subagent resume state. The consumed-delivery ledger is bounded and
+/// is the crash-safe dedup record, so it is always kept. Returns whether
+/// anything was shed.
+fn shed_meta_recovery_state(meta: &mut SessionMeta, session_id: n00nId) -> bool {
+    if meta.state_snapshot.is_some() {
+        warn!(
+            session_id = %session_id,
+            "session meta record exceeds the record limit; dropping plugin state snapshot"
+        );
+        meta.state_snapshot = None;
+        return true;
+    }
+    let has_resume_state = !meta.queued_submissions.is_empty()
+        || !meta.queued_messages.is_empty()
+        || !meta.queued_direct_tools.is_empty()
+        || !meta.subagents.is_empty()
+        || meta.direct_paused_team.is_some()
+        || meta.direct_output.is_some();
+    if !has_resume_state {
+        return false;
+    }
+    warn!(
+        session_id = %session_id,
+        "session meta record exceeds the record limit; dropping queued and subagent state"
+    );
+    meta.queued_submissions.clear();
+    meta.queued_messages.clear();
+    meta.queued_direct_tools.clear();
+    meta.subagents.clear();
+    meta.direct_paused_team = None;
+    meta.direct_output = None;
+    true
 }
 
 /// Appends one record, writing an `Oversized` tombstone in its place when it
@@ -4986,7 +5043,8 @@ where
 /// transcript content, provider payloads, or tool output to the run migration.
 ///
 /// # Errors
-/// Returns a typed storage/session error if a candidate session cannot be read safely.
+/// Returns a typed storage error if the sessions directory cannot be listed.
+/// Unreadable or unsupported candidate files are skipped with a warning.
 pub fn scan_legacy_child_sessions(
     project_cwd: &str,
     state_dir: &StateDir,
@@ -4997,7 +5055,8 @@ pub fn scan_legacy_child_sessions(
 /// Variant of [`scan_legacy_child_sessions`] for an explicit sessions directory.
 ///
 /// # Errors
-/// Returns a typed storage/session error if a candidate session cannot be read safely.
+/// Returns a typed storage error if the sessions directory cannot be listed.
+/// Unreadable or unsupported candidate files are skipped with a warning.
 pub fn scan_legacy_child_sessions_in(
     project_cwd: &str,
     sessions_dir: &Path,
@@ -5011,8 +5070,14 @@ pub fn scan_legacy_child_sessions_in(
     };
     let mut sessions = Vec::new();
     for path in entries {
-        if let Some(session) = scan_legacy_metadata_at(&path, project_cwd)? {
-            sessions.push(session);
+        match scan_legacy_metadata_at(&path, project_cwd) {
+            Ok(Some(session)) => sessions.push(session),
+            Ok(None) => {}
+            Err(error) => warn!(
+                path = %path.display(),
+                error_kind = session_error_kind(&error),
+                "skipping unreadable legacy session during child-session scan"
+            ),
         }
     }
     sessions.sort_unstable_by_key(|session| (session.created_at, *session.session_id.as_bytes()));
@@ -5047,14 +5112,14 @@ fn scan_legacy_metadata_at(
                 created_at,
                 parent_id,
             } => {
+                if cwd != project_cwd {
+                    return Ok(None);
+                }
                 if !is_supported_log_format(v) {
                     return Err(SessionError::VersionMismatch {
                         found: v,
                         expected: LOG_FORMAT_VERSION,
                     });
-                }
-                if cwd != project_cwd {
-                    return Ok(None);
                 }
                 let Some(parent_id) = parent_id else {
                     return Ok(None);
@@ -5096,6 +5161,28 @@ fn scan_legacy_metadata_at(
         }
     }
     metadata.ok_or(SessionError::UnknownRecord).map(Some)
+}
+
+/// Content-free label for logging a [`SessionError`]; its `Display` can echo
+/// record fragments from untrusted session files.
+fn session_error_kind(error: &SessionError) -> &'static str {
+    match error {
+        SessionError::Storage(StorageError::Io(_)) => "io",
+        SessionError::Storage(StorageError::Json(_)) => "json",
+        SessionError::Storage(_) => "storage",
+        SessionError::VersionMismatch { .. } => "version_mismatch",
+        SessionError::IdMismatch { .. } => "id_mismatch",
+        SessionError::CorruptHeaderId { .. } => "corrupt_header_id",
+        SessionError::CursorAhead { .. } => "cursor_ahead",
+        SessionError::RecordTooLarge { .. } | SessionError::RecordTooLargeWrite { .. } => {
+            "record_too_large"
+        }
+        SessionError::DecoderWindowLimitExceeded { .. } => "decoder_window_limit",
+        SessionError::DecodedBudgetExceeded { .. } => "decoded_budget",
+        SessionError::UnknownRecord => "unknown_record",
+        SessionError::ControlDeliveryCapacity => "control_delivery_capacity",
+        SessionError::ConcurrentModification { .. } => "concurrent_modification",
+    }
 }
 
 fn session_entries(dir: &Path) -> Result<Vec<PathBuf>, StorageError> {
@@ -5660,6 +5747,10 @@ mod tests {
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
+        MAX_SESSION_RECORD_BYTES, StoredSessionStateSnapshot, meta_record_bytes,
+        scan_legacy_child_sessions_in, scan_legacy_metadata_at,
+    };
+    use super::{
         MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
         TRANSCRIPT_COMPACTION_START_RECORD_TYPE, TRANSCRIPT_RECORD_TYPE,
         flatten_deepest_compaction, transcript_compaction_depth,
@@ -5678,7 +5769,7 @@ mod tests {
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
     use std::io::{Read, Write};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use test_case::test_case;
@@ -6280,13 +6371,14 @@ mod tests {
                     ..
                 }]
             ),
-            "outer compaction was closed early: {:?}",
-            loaded.transcript
+            "outer compaction was closed early: {} root entries",
+            loaded.transcript.len()
         );
         let n00n_empty_check_68 = super::active_messages_from_transcript(&loaded.transcript);
         assert!(
             n00n_empty_check_68.is_empty(),
-            "expected empty, got {n00n_empty_check_68:?}"
+            "expected empty, got {} messages",
+            n00n_empty_check_68.len()
         );
     }
 
@@ -6425,8 +6517,8 @@ mod tests {
 
         assert!(
             holds_live_text(&loaded.transcript),
-            "the nested entry must load: {:?}",
-            loaded.transcript
+            "the nested entry must load: {} root entries",
+            loaded.transcript.len()
         );
         assert_eq!(
             transcript_compaction_depth(&loaded.transcript),
@@ -6464,8 +6556,8 @@ mod tests {
         );
         assert!(
             !holds_live_text(&loaded.transcript),
-            "the unreadable record cannot have loaded: {:?}",
-            loaded.transcript
+            "the unreadable record cannot have loaded: {} root entries",
+            loaded.transcript.len()
         );
     }
 
@@ -7160,8 +7252,8 @@ mod tests {
         assert!(loaded.meta.state_snapshot.is_none());
         assert!(
             loaded.meta.queued_messages.is_empty(),
-            "expected empty, got {:?}",
-            loaded.meta.queued_messages
+            "expected empty, got {} entries",
+            loaded.meta.queued_messages.len()
         );
     }
     #[test]
@@ -7788,8 +7880,8 @@ mod tests {
         assert_eq!(loaded.messages.len(), 8);
         assert!(
             loaded.subagent_messages.is_empty(),
-            "expected empty, got {:?}",
-            loaded.subagent_messages
+            "expected empty, got {} entries",
+            loaded.subagent_messages.len()
         );
     }
 
@@ -10054,39 +10146,242 @@ mod tests {
         );
         assert!(
             loaded.tool_outputs.is_empty(),
-            "expected empty, got {:?}",
-            loaded.tool_outputs
+            "expected empty, got {} entries",
+            loaded.tool_outputs.len()
         );
+    }
+
+    const PROJECT_CWD: &str = "/project";
+    const UNSUPPORTED_LOG_VERSION: u32 = 999;
+
+    fn consumed_delivery(delivery_id: &str) -> StoredControlDelivery {
+        StoredControlDelivery {
+            delivery_id: delivery_id.to_owned(),
+            child_run_id: "run-1".to_owned(),
+            source_revision: 2,
+            acknowledged: false,
+        }
+    }
+
+    fn full_delivery_ledger() -> SessionMeta {
+        let mut meta = SessionMeta::default();
+        for index in 1..=MAX_CONTROL_DELIVERY_RECORDS {
+            meta.record_consumed_run_delivery(consumed_delivery(&format!("delivery-{index}")))
+                .unwrap();
+        }
+        meta
     }
 
     #[test]
     fn run_delivery_ledger_is_idempotent_and_bounded() {
-        let delivery = StoredControlDelivery {
-            delivery_id: "delivery-1".to_owned(),
-            child_run_id: "run-1".to_owned(),
-            source_revision: 2,
-        };
         let mut meta = SessionMeta::default();
-        meta.record_consumed_run_delivery(delivery.clone()).unwrap();
-        meta.record_consumed_run_delivery(delivery).unwrap();
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
         assert_eq!(meta.consumed_run_deliveries.len(), 1);
         assert!(meta.contains_run_delivery("delivery-1"));
 
-        for index in 2..=MAX_CONTROL_DELIVERY_RECORDS {
-            meta.record_consumed_run_delivery(StoredControlDelivery {
-                delivery_id: format!("delivery-{index}"),
-                child_run_id: "run-1".to_owned(),
-                source_revision: 2,
-            })
-            .unwrap();
-        }
+        let mut meta = full_delivery_ledger();
         assert!(matches!(
-            meta.record_consumed_run_delivery(StoredControlDelivery {
-                delivery_id: "overflow".to_owned(),
-                child_run_id: "run-1".to_owned(),
-                source_revision: 2,
-            }),
+            meta.record_consumed_run_delivery(consumed_delivery("overflow")),
             Err(SessionError::ControlDeliveryCapacity)
+        ));
+        assert_eq!(
+            meta.consumed_run_deliveries.len(),
+            MAX_CONTROL_DELIVERY_RECORDS
+        );
+        assert!(!meta.has_consumed_run_delivery("overflow"));
+    }
+
+    #[test]
+    fn full_run_delivery_ledger_evicts_only_the_oldest_acknowledged_entry() {
+        let mut meta = full_delivery_ledger();
+        assert!(meta.mark_run_delivery_acknowledged("delivery-7"));
+        assert!(meta.mark_run_delivery_acknowledged("delivery-9"));
+
+        meta.record_consumed_run_delivery(consumed_delivery("overflow"))
+            .unwrap();
+
+        assert_eq!(
+            meta.consumed_run_deliveries.len(),
+            MAX_CONTROL_DELIVERY_RECORDS
+        );
+        assert!(!meta.has_consumed_run_delivery("delivery-7"));
+        assert!(meta.has_consumed_run_delivery("delivery-9"));
+        assert!(meta.has_consumed_run_delivery("delivery-1"));
+        assert!(meta.has_consumed_run_delivery("overflow"));
+    }
+
+    #[test]
+    fn marking_an_unknown_run_delivery_acknowledged_reports_absence() {
+        let mut meta = SessionMeta::default();
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
+
+        assert!(!meta.mark_run_delivery_acknowledged("missing"));
+        assert!(!meta.consumed_run_deliveries[0].acknowledged);
+    }
+
+    #[test_case(r#"{"delivery_id":"d","child_run_id":"r","source_revision":2}"#, false ; "legacy record without acknowledged")]
+    #[test_case(r#"{"delivery_id":"d","child_run_id":"r","source_revision":2,"acknowledged":true}"#, true ; "acknowledged record")]
+    fn control_delivery_round_trips_acknowledged_flag(json: &str, acknowledged: bool) {
+        let delivery: StoredControlDelivery = serde_json::from_str(json).unwrap();
+
+        assert_eq!(delivery.acknowledged, acknowledged);
+        assert_eq!(serde_json::to_string(&delivery).unwrap(), json);
+    }
+
+    fn meta_with_recovery_state() -> SessionMeta {
+        let mut meta = SessionMeta {
+            parent_id: Some(n00nId::generate()),
+            queued_messages: vec!["queued".to_owned()],
+            consumed_run_deliveries: vec![consumed_delivery("delivery-1")],
+            direct_output: Some("output".to_owned()),
+            state_snapshot: Some(StoredSessionStateSnapshot::new(3)),
+            revision: 7,
+            ..SessionMeta::default()
+        };
+        meta.usage_by_model
+            .insert("model".to_owned(), StoredTokenUsage::default());
+        meta
+    }
+
+    #[test_case(SessionMeta::default() ; "default meta")]
+    #[test_case(meta_with_recovery_state() ; "populated meta")]
+    fn borrowed_meta_record_matches_owned_log_record_bytes(meta: SessionMeta) {
+        let mut session: TestSession = Session::new("m", PROJECT_CWD);
+        session.title = "title".to_owned();
+        session.updated_at = 42;
+        session.meta = meta;
+        let log_appends = 5;
+        let mut owned = serde_json::to_vec(&LogRecord::<Value, &Value, &Value>::Meta {
+            title: session.title.clone(),
+            token_usage: &session.token_usage,
+            updated_at: session.updated_at,
+            log_appends,
+            transcript: None,
+            meta: session.meta.clone(),
+        })
+        .unwrap();
+        owned.push(b'\n');
+
+        let borrowed = meta_record_bytes(
+            &session,
+            log_appends,
+            Path::new(PROJECT_CWD),
+            MAX_SESSION_RECORD_BYTES,
+        )
+        .unwrap();
+
+        assert_eq!(borrowed, owned);
+    }
+
+    #[test]
+    fn oversized_meta_record_keeps_consumed_run_delivery_ledger() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", PROJECT_CWD);
+        session.meta.queued_messages = vec!["q".repeat(8 * 1_024)];
+        session.meta.consumed_run_deliveries = vec![
+            consumed_delivery("delivery-1"),
+            consumed_delivery("delivery-2"),
+        ];
+        let limits = DecodeLimits::new(1_024, 128 * 1_024, 27);
+
+        drop(SessionLog::create_with_limits(dir, &session, limits).unwrap());
+        let (loaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+
+        assert!(
+            loaded.meta.queued_messages.is_empty(),
+            "expected empty, got {} entries",
+            loaded.meta.queued_messages.len()
+        );
+        assert_eq!(
+            loaded.meta.consumed_run_deliveries,
+            session.meta.consumed_run_deliveries
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum BadLegacyFile {
+        CorruptFrame,
+        NonJsonRecord,
+        UnsupportedVersion,
+    }
+
+    fn legacy_header(cwd: &str, version: u32) -> String {
+        let header = serde_json::json!({
+            "t": "header",
+            "v": version,
+            "id": n00nId::generate(),
+            "cwd": cwd,
+            "created_at": 1,
+            "parent_id": n00nId::generate(),
+        });
+        format!("{header}\n")
+    }
+
+    fn plant_encoded_session_file(dir: &Path, records: &[u8]) -> PathBuf {
+        let path = jsonl_path(dir, n00nId::generate());
+        let mut file = File::create(&path).unwrap();
+        encode_frame(&mut file, records).unwrap();
+        path
+    }
+
+    fn plant_bad_legacy_file(dir: &Path, kind: BadLegacyFile) {
+        match kind {
+            BadLegacyFile::CorruptFrame => fs::write(
+                jsonl_path(dir, n00nId::generate()),
+                [0x28, 0xb5, 0x2f, 0xfd, 0xff, 0xff, 0xff, 0xff],
+            )
+            .unwrap(),
+            BadLegacyFile::NonJsonRecord => {
+                plant_encoded_session_file(dir, b"not json\n");
+            }
+            BadLegacyFile::UnsupportedVersion => {
+                plant_encoded_session_file(
+                    dir,
+                    legacy_header(PROJECT_CWD, UNSUPPORTED_LOG_VERSION).as_bytes(),
+                );
+            }
+        }
+    }
+
+    #[test_case(BadLegacyFile::CorruptFrame ; "corrupt frame")]
+    #[test_case(BadLegacyFile::NonJsonRecord ; "non json record")]
+    #[test_case(BadLegacyFile::UnsupportedVersion ; "unsupported version")]
+    fn legacy_child_scan_skips_bad_file_and_keeps_valid_session(kind: BadLegacyFile) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", PROJECT_CWD);
+        session.meta.parent_id = Some(n00nId::generate());
+        drop(SessionLog::create(dir, &session).unwrap());
+        plant_bad_legacy_file(dir, kind);
+
+        let scanned = scan_legacy_child_sessions_in(PROJECT_CWD, dir).unwrap();
+
+        assert_eq!(
+            scanned
+                .iter()
+                .map(|metadata| metadata.session_id)
+                .collect::<Vec<_>>(),
+            [session.id]
+        );
+    }
+
+    #[test]
+    fn legacy_metadata_scan_ignores_foreign_project_before_version_check() {
+        let tmp = TempDir::new().unwrap();
+        let path = plant_encoded_session_file(
+            tmp.path(),
+            legacy_header("/other", UNSUPPORTED_LOG_VERSION).as_bytes(),
+        );
+
+        assert!(matches!(
+            scan_legacy_metadata_at(&path, PROJECT_CWD),
+            Ok(None)
         ));
     }
 }
