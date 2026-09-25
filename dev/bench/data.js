@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790309106151,
+  "lastUpdate": 1790311441092,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -26333,6 +26333,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 186663,
             "range": "± 3957",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8446a413e69797ffdd120c1b47885d5598d22289",
+          "message": "Merge pull request #510 from w0wl0lxd/fix/prompt-cache-affinity\n\nfix: preserve OpenAI prompt-cache affinity across tool discovery and slot timeouts",
+          "timestamp": "2026-09-25T00:28:28-04:00",
+          "tree_id": "622f429f4c4fea499d01ec3ad0b14e78519cd513",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/8446a413e69797ffdd120c1b47885d5598d22289"
+        },
+        "date": 1790311439518,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6724413,
+            "range": "± 198469",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220148,
+            "range": "± 8027",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2216643,
+            "range": "± 12650",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8132999,
+            "range": "± 22336",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4396024,
+            "range": "± 21351",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4365673,
+            "range": "± 26466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 581130,
+            "range": "± 28339",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 190957,
+            "range": "± 202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191587,
+            "range": "± 542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1036623,
+            "range": "± 13151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 587297,
+            "range": "± 3528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 587847,
+            "range": "± 6297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 54827,
+            "range": "± 5187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 172828,
+            "range": "± 16561",
             "unit": "ns/iter"
           }
         ]
