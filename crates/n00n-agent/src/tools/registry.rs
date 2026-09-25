@@ -31,6 +31,9 @@ const NAMESPACE_TOKEN_SCORE: u32 = 80;
 const SCHEMA_TOKEN_SCORE: u32 = 30;
 const DESCRIPTION_TOKEN_SCORE: u32 = 10;
 const SEARCH_DESCRIPTION_LIMIT: usize = 120;
+/// Catch-all namespace for deferred tools that do not declare one. Without
+/// this they would be invisible to hosted tool search and unreachable.
+const DEFAULT_DEFERRED_NAMESPACE: &str = "general";
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -738,7 +741,17 @@ impl ToolRegistry {
             let aliases = entry.tool.aliases();
             let aliases_lower: Vec<String> =
                 aliases.iter().map(|alias| alias.to_lowercase()).collect();
-            let namespace_lower = entry.namespace.as_deref().map(str::to_lowercase);
+            // Namespace-less entries are advertised under the catch-all
+            // namespace (see `deferred_definitions`), so search must resolve
+            // to the same effective namespace or "general" queries would
+            // never find them.
+            let namespace_lower = Some(
+                entry
+                    .namespace
+                    .as_deref()
+                    .map_or_else(|| DEFAULT_DEFERRED_NAMESPACE, |namespace| namespace)
+                    .to_lowercase(),
+            );
             let description = vars.apply(&entry.tool.description(ctx)).into_owned();
             let description_lower = description.to_lowercase();
             let schema_lower = entry.tool.schema().to_string().to_lowercase();
@@ -819,7 +832,12 @@ impl ToolRegistry {
         let mut names: Vec<String> = snapshot
             .iter()
             .filter(|entry| entry.defer_loading)
-            .filter(|entry| entry.namespace.as_deref() == Some(namespace))
+            .filter(|entry| {
+                entry.namespace.as_deref().map_or_else(
+                    || DEFAULT_DEFERRED_NAMESPACE,
+                    |entry_namespace| entry_namespace,
+                ) == namespace
+            })
             .filter(|entry| entry.tool.audience().contains(ctx.audience))
             .filter(|entry| ctx.filter.matches(entry.name()))
             .map(|entry| entry.name().to_owned())
@@ -983,10 +1001,6 @@ impl RegistrySnapshot {
         self.0.is_empty()
     }
 }
-
-/// Catch-all namespace for deferred tools that do not declare one. Without
-/// this they would be invisible to hosted tool search and unreachable.
-const DEFAULT_DEFERRED_NAMESPACE: &str = "general";
 
 #[derive(Debug, Clone)]
 pub struct ToolSearchResult {
@@ -1530,6 +1544,59 @@ mod tests {
         assert_eq!(
             reg.deferred_namespace_tools("test", &ctx),
             vec!["visible_tool"]
+        );
+    }
+
+    #[test]
+    fn search_finds_unnamespaced_tool_under_catchall_namespace() {
+        let reg = ToolRegistry::new();
+        reg.register(
+            &deferred_mock("unnamespaced_tool", &[], ToolAudience::MAIN, None),
+            &lua_source("p"),
+        )
+        .unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        // Advertised via `deferred_definitions` under DEFAULT_DEFERRED_NAMESPACE,
+        // so searching that namespace must surface it too.
+        let results = reg.search(DEFAULT_DEFERRED_NAMESPACE, &ctx, 5);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unnamespaced_tool"]
+        );
+    }
+
+    #[test]
+    fn deferred_namespace_tools_returns_unnamespaced_tools_for_catchall() {
+        let reg = ToolRegistry::new();
+        reg.register(
+            &deferred_mock("unnamespaced_tool", &[], ToolAudience::MAIN, None),
+            &lua_source("p"),
+        )
+        .unwrap();
+        reg.register(
+            &deferred_mock("namespaced_tool", &[], ToolAudience::MAIN, Some("web")),
+            &lua_source("p"),
+        )
+        .unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        assert_eq!(
+            reg.deferred_namespace_tools(DEFAULT_DEFERRED_NAMESPACE, &ctx),
+            vec!["unnamespaced_tool"]
         );
     }
 
