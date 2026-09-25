@@ -8,20 +8,39 @@ local function trim(s)
   return s:match("^%s*(.-)%s*$")
 end
 
--- Short options cluster in one word: `du -sh` sets -s, `ls -lR` sets -R,
--- and `tree -L2` sets -L. Match a single-letter option anywhere after the
--- leading dash, not only as a word of its own.
-local function has_clustered_short_option(command, option)
+-- Short options that consume an argument, per command, from each tool's
+-- --help. In a cluster the first of these takes the rest of the word as its
+-- argument, so no later letter in that word is an option.
+local JOURNALCTL_ARGUMENT_OPTIONS = "DFMSTUbcginoptu"
+local LOCATE_ARGUMENT_OPTIONS = "dln"
+local DU_ARGUMENT_OPTIONS = "BXdt"
+local LS_ARGUMENT_OPTIONS = "ITw"
+local TREE_ARGUMENT_OPTIONS = "HILPTo"
+local GIT_HISTORY_ARGUMENT_OPTIONS = "BCGLMOSUln"
+
+-- Short options cluster in one word: `du -sh` sets -s and -h, and `tree -L2`
+-- sets -L with argument 2. Scan each cluster letter by letter and stop at the
+-- first argument-taking option: `journalctl -unginx.service` is
+-- `-u nginx.service`, not a `-n` bound.
+local function has_clustered_short_option(command, option, argument_options)
   local letter = option:sub(2)
   for word in command:gmatch("%S+") do
-    if word:sub(1, 1) == "-" and word:sub(1, 2) ~= "--" and word:find(letter, 2, true) then
-      return true
+    if word:sub(1, 1) == "-" and word:sub(2, 2) ~= "-" then
+      for index = 2, #word do
+        local current = word:sub(index, index)
+        if current == letter then
+          return true
+        end
+        if argument_options:find(current, 1, true) then
+          break
+        end
+      end
     end
   end
   return false
 end
 
-function M.has_option(command, option)
+function M.has_option(command, option, argument_options)
   if command == option then
     return true
   end
@@ -43,8 +62,8 @@ function M.has_option(command, option)
     return true
   end
 
-  if #option == 2 and option:sub(1, 1) == "-" then
-    return has_clustered_short_option(command, option)
+  if argument_options and #option == 2 and option:sub(1, 1) == "-" then
+    return has_clustered_short_option(command, option, argument_options)
   end
 
   return false
@@ -68,7 +87,7 @@ end
 -- `git log`/`reflog`/`rev-list` accept a count bound as `-n <N>`, `-n<N>`
 -- (attached), `--max-count=<N>`, or the bare `-<N>` shorthand.
 function M.has_git_history_bound(command)
-  if has_option(command, "-n") or has_option(command, "--max-count") then
+  if has_option(command, "-n", GIT_HISTORY_ARGUMENT_OPTIONS) or has_option(command, "--max-count") then
     return true
   end
   for word in command:gmatch("%S+") do
@@ -221,14 +240,14 @@ function M.broad_bash_command_reason(command)
   end
 
   if cmd == "locate" and not has_output_cap(context) then
-    if has_option(normalized, "-l") or has_option(normalized, "--limit") then
+    if has_option(executable_command, "-l", LOCATE_ARGUMENT_OPTIONS) or has_option(normalized, "--limit") then
       return nil
     end
     return "locate without output limit (use -l/--limit, or pipe through head/tail)"
   end
 
   if cmd == "journalctl" and not has_output_cap(context) then
-    if has_option(normalized, "-n") or has_option(normalized, "--lines") then
+    if has_option(executable_command, "-n", JOURNALCTL_ARGUMENT_OPTIONS) or has_option(normalized, "--lines") then
       return nil
     end
     return "journalctl without tail line bound (use -n/--lines, or pipe through head/tail)"
@@ -250,7 +269,7 @@ function M.broad_bash_command_reason(command)
 
   if
     cmd == "ls"
-    and (has_option(normalized, "--recursive") or has_option(executable_command, "-R"))
+    and (has_option(normalized, "--recursive") or has_option(executable_command, "-R", LS_ARGUMENT_OPTIONS))
     and not has_output_cap(context)
   then
     return "recursive ls without output cap (pipe through head/tail)"
@@ -258,9 +277,9 @@ function M.broad_bash_command_reason(command)
 
   if cmd == "du" and not has_output_cap(context) then
     if
-      not has_option(normalized, "-d")
+      not has_option(executable_command, "-d", DU_ARGUMENT_OPTIONS)
       and not has_option(normalized, "--max-depth")
-      and not has_option(normalized, "-s")
+      and not has_option(executable_command, "-s", DU_ARGUMENT_OPTIONS)
       and not has_option(normalized, "--summarize")
     then
       return "du without depth/summarize bound (use -d/--max-depth or -s/--summarize, or pipe through head/tail)"
@@ -268,7 +287,9 @@ function M.broad_bash_command_reason(command)
   end
 
   if cmd == "tree" and not has_output_cap(context) then
-    if not has_option(executable_command, "-L") and not has_option(normalized, "--max-depth") then
+    if
+      not has_option(executable_command, "-L", TREE_ARGUMENT_OPTIONS) and not has_option(normalized, "--max-depth")
+    then
       return "tree without depth bound (use -L, or pipe through head/tail)"
     end
   end
@@ -279,7 +300,7 @@ function M.broad_bash_command_reason(command)
     local subcommand = subcommand_index and words[subcommand_index]:lower()
     if subcommand and not has_output_cap(context) then
       if subcommand == "log" or subcommand == "reflog" or subcommand == "rev-list" then
-        if M.has_git_history_bound(normalized) then
+        if M.has_git_history_bound(executable_command) then
           return nil
         end
         return subcommand .. " history without a max count (use -n<N>, --max-count=<N>, or -<N>)"

@@ -8,6 +8,7 @@ use crate::chunk::{Chunk, chunk_file};
 
 const MAX_FILE_BYTES: u64 = 1_048_576;
 const ENV_EXAMPLE_FILE: &str = ".env.example";
+const STATE_DIRECTORIES: [&str; 5] = [".git", ".hg", ".jj", ".n00n", ".svn"];
 
 pub fn collect_chunks(repo: &Path) -> Result<Vec<Chunk>, Error> {
     let repo = repo.canonicalize().map_err(Error::from)?;
@@ -48,15 +49,16 @@ pub fn collect_chunks(repo: &Path) -> Result<Vec<Chunk>, Error> {
     Ok(chunks)
 }
 
-/// Skips hidden files and anything inside a hidden directory, so state
-/// directories such as `.n00n/` and `.git/` never index themselves.
+/// Skips hidden files and anything inside a generated state directory such
+/// as `.n00n/` or `.git/`. Other hidden directories (`.github/`, `.cargo/`)
+/// hold tracked source and configuration, so they stay indexed.
 fn should_skip(relative: &Path) -> bool {
     let Some(name) = relative.file_name().and_then(|n| n.to_str()) else {
         return true;
     };
     if relative.components().any(|component| {
         matches!(component, Component::Normal(part)
-            if part.to_str().is_some_and(|part| part.starts_with('.') && part != ENV_EXAMPLE_FILE))
+            if part.to_str().is_some_and(|part| STATE_DIRECTORIES.contains(&part)))
     }) {
         return true;
     }
@@ -88,10 +90,24 @@ fn should_skip(relative: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_chunks;
+    use super::{collect_chunks, should_skip};
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
+    use test_case::test_case;
+
+    #[test_case(".github/workflows/rust.yml", false ; "tracked_ci_workflow")]
+    #[test_case(".cargo/config.toml", false ; "tracked_cargo_config")]
+    #[test_case("src/a.rs", false ; "plain_source")]
+    #[test_case(".env.example", false ; "env_example")]
+    #[test_case(".n00n/search/meta.json", true ; "n00n_state")]
+    #[test_case(".git/config", true ; "git_state")]
+    #[test_case("vendor/lib/.git/config", true ; "nested_git_state")]
+    #[test_case(".env", true ; "hidden_file")]
+    #[test_case("assets/logo.png", true ; "binary_extension")]
+    fn should_skip_only_state_directories_and_hidden_files(path: &str, skipped: bool) {
+        assert_eq!(should_skip(Path::new(path)), skipped);
+    }
 
     #[test]
     fn collect_chunks_indexes_text_files() {
