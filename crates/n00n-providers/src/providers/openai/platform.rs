@@ -421,11 +421,13 @@ impl CachePrefixFingerprint {
         &self.prefix_hash
     }
 
-    fn prompt_cache_key(&self, session_id: Option<&SessionRef>) -> String {
+    fn prompt_cache_key(&self, session_id: Option<&SessionRef>, shard_key: Option<&str>) -> String {
         let prefix_hash = self.prefix_hash();
-        let shard = session_id.map_or(0, |session_id| {
-            Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
-                % PROMPT_CACHE_SHARDS
+        let shard_seed = shard_key
+            .map(str::to_owned)
+            .or_else(|| session_id.map(|id| canonical_session_key(id).to_string()));
+        let shard = shard_seed.map_or(0, |seed| {
+            Sha256::digest(seed.as_bytes())[0] % PROMPT_CACHE_SHARDS
         });
         format!("n00n-{prefix_hash}-s{shard}")
     }
@@ -1723,7 +1725,8 @@ impl OpenAi {
         }
         self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
             .await;
-        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
+        let prompt_cache_key =
+            fingerprint.prompt_cache_key(session_id, opts.cache_shard_key.as_deref());
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -2085,7 +2088,8 @@ impl OpenAi {
         // reuse a store=false response ID safely, so every turn sends full history.
         let opts = clamp_responses_cache_breakpoints(model, opts);
         let fingerprint = CachePrefixFingerprint::new(&model.id, system, tools_hash);
-        let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
+        let prompt_cache_key =
+            fingerprint.prompt_cache_key(session_id, opts.cache_shard_key.as_deref());
         let body = super::responses::build_body(
             model,
             messages,
@@ -2477,7 +2481,8 @@ impl Provider for OpenAi {
 
             // Fallback to Chat Completions
             let fingerprint = CachePrefixFingerprint::new(&model.id, &prefixed_system, &tools_hash);
-            let prompt_cache_key = fingerprint.prompt_cache_key(session_id);
+            let prompt_cache_key =
+                fingerprint.prompt_cache_key(session_id, opts.cache_shard_key.as_deref());
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -4485,7 +4490,7 @@ mod tests {
         let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
         let system = System::from("stable instructions");
         let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash);
-        let key = fingerprint.prompt_cache_key(None);
+        let key = fingerprint.prompt_cache_key(None, None);
         let system_text = system.to_string();
         let mut legacy_digest = Sha256::new();
         legacy_digest.update("gpt-5.6".len().to_le_bytes());
@@ -4501,7 +4506,7 @@ mod tests {
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &system, &tools_hash)
         );
-        assert_eq!(key, fingerprint.prompt_cache_key(None));
+        assert_eq!(key, fingerprint.prompt_cache_key(None, None));
         assert_ne!(
             fingerprint,
             CachePrefixFingerprint::new("gpt-5.6", &System::from("changed"), &tools_hash)
@@ -4539,8 +4544,36 @@ mod tests {
         assert_eq!(first.system_hash, second.system_hash);
         assert_eq!(empty.prefix_hash(), first.prefix_hash());
         assert_eq!(first.prefix_hash(), second.prefix_hash());
-        assert_eq!(empty.prompt_cache_key(None), first.prompt_cache_key(None));
-        assert_eq!(first.prompt_cache_key(None), second.prompt_cache_key(None));
+        assert_eq!(
+            empty.prompt_cache_key(None, None),
+            first.prompt_cache_key(None, None)
+        );
+        assert_eq!(
+            first.prompt_cache_key(None, None),
+            second.prompt_cache_key(None, None)
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_shards_by_explicit_seed() {
+        let system = System::from("stable instructions");
+        let fingerprint = CachePrefixFingerprint::new("gpt-5.6", &system, TOOLS_HASH);
+        let parent: SessionRef = "01965087-4c71-7f00-8000-000000000001".parse().unwrap();
+        let child: SessionRef = "01965087-4c71-7f00-8000-000000000002".parse().unwrap();
+        let parent_seed = parent.id().to_string();
+
+        // Child sessions seeded by the root session share the parent's shard.
+        assert_eq!(
+            fingerprint.prompt_cache_key(Some(&child), Some(&parent_seed)),
+            fingerprint.prompt_cache_key(Some(&parent), None)
+        );
+        // The seed is the shard source: an explicit seed of the child's own id
+        // reproduces the unseeded child key.
+        let child_seed = child.id().to_string();
+        assert_eq!(
+            fingerprint.prompt_cache_key(None, Some(&child_seed)),
+            fingerprint.prompt_cache_key(Some(&child), None)
+        );
     }
 
     #[test]
@@ -4569,8 +4602,8 @@ mod tests {
 
         assert_ne!(legacy.as_str(), canonical.as_str());
         assert_eq!(
-            fingerprint.prompt_cache_key(Some(&legacy)),
-            fingerprint.prompt_cache_key(Some(&canonical))
+            fingerprint.prompt_cache_key(Some(&legacy), None),
+            fingerprint.prompt_cache_key(Some(&canonical), None)
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
