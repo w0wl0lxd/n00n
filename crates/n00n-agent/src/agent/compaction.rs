@@ -1139,7 +1139,7 @@ mod tests {
             Message::user("keep me".into()),
         ];
         truncate_oldest_round(&mut messages);
-        assert!(!messages.is_empty());
+        assert!(!messages.is_empty(), "expected non-empty, got {messages:?}");
         assert!(matches!(messages[0].role, Role::User));
     }
 

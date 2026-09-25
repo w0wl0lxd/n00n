@@ -13,6 +13,9 @@ regexes = [
   # Feature/version date identifiers, e.g. "oauth-2025-04-20" or
   # "interleaved-thinking-2025-05-14". Not credentials.
   '''(oauth|interleaved-thinking)-\d{4}-\d{2}-\d{2}''',
+  # Fake OAuth tokens in the removed subprojects' test fixtures.
+  '''copilot_xyz789''',
+  '''gho_abc123xyz''',
 ]
 
 [[allowlists]]
@@ -23,3 +26,15 @@ regexes = [
   '''eyJhbGciOiJIUzI1Ni''',
   '''AIzaSyD0123456789abcdefghijklmnopqrstuv''',
 ]
+
+# Scoped to the Stripe rule instead of a global [[allowlists]] entry: gitleaks
+# `dir` scans skip every global-allowlist path outright and ignore `condition`,
+# which would hide any other secret in this file.
+[[rules]]
+id = "stripe-access-token"
+
+[[rules.allowlists]]
+description = "Synthetic Stripe test key in the Lua secret-check spec"
+condition = "AND"
+paths = ['''plugins/lib/tests/spec\.lua''']
+regexes = ['''^sk_test_abcdefghijklmnopqrstuvwxyz$''']

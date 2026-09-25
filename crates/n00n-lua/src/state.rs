@@ -67,6 +67,10 @@ impl PluginStateIdentity {
         self.session_id == self.root_session_id
     }
 
+    pub(crate) fn matches_owner(&self, owner: n00nId) -> bool {
+        self.session_id == owner || self.root_session_id == owner
+    }
+
     fn scope_identity(&self, scope: PluginStateScope) -> Self {
         match scope {
             PluginStateScope::Session => self.clone(),

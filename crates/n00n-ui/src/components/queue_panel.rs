@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 const ELLIPSIS: &str = "...";
 const QUEUE_LABEL: &str = " Queue ";
@@ -75,15 +76,28 @@ fn truncate_line(
     hint: (&'static str, &'static str, &'static str),
 ) -> Line<'static> {
     let hint_style = theme::current().tool_dim;
-    let hint_len = hint.0.len() + hint.1.len() + hint.2.len();
+    let hint_len = UnicodeWidthStr::width(hint.0)
+        + UnicodeWidthStr::width(hint.1)
+        + UnicodeWidthStr::width(hint.2);
     let available = max_width.saturating_sub(hint_len);
 
-    let (text_span, ellipsis) = if text.len() <= available {
+    let (text_span, ellipsis) = if text.width() <= available {
         (Span::styled(text.to_string(), style), None)
     } else {
-        let truncated_len = text.floor_char_boundary(available.saturating_sub(ELLIPSIS.len()));
+        let target = available.saturating_sub(UnicodeWidthStr::width(ELLIPSIS));
+        let mut width = 0;
+        // Whole grapheme clusters only: summing per-char widths splits a ZWJ
+        // emoji sequence, which the string width counts as one glyph.
+        let truncated: String = Span::raw(text)
+            .styled_graphemes(style)
+            .map(|grapheme| grapheme.symbol)
+            .take_while(|symbol| {
+                width += symbol.width();
+                width <= target
+            })
+            .collect();
         (
-            Span::styled(text[..truncated_len].to_string(), style),
+            Span::styled(truncated, style),
             Some(Span::styled(ELLIPSIS, hint_style)),
         )
     };
@@ -129,8 +143,11 @@ mod tests {
     #[test_case("abcdefghij", 7, NO_HINT, &["abcd", ELLIPSIS]                             ; "no_hint_truncated")]
     #[test_case("abcde", 5, NO_HINT, &["abcde"]                                           ; "no_hint_exact_width")]
     #[test_case("abcdef", 2, NO_HINT, &[ELLIPSIS]                                     ; "no_hint_tiny_width")]
-    #[test_case("●abc", 5, NO_HINT, &[ELLIPSIS]                                       ; "no_hint_multibyte_narrow")]
-    #[test_case("●●●", 8, NO_HINT, &["●", ELLIPSIS]                                      ; "no_hint_multibyte_fits_one")]
+    #[test_case("●abc", 5, NO_HINT, &["●abc"]                                        ; "no_hint_multibyte_fits_exactly")]
+    #[test_case("●●●", 8, NO_HINT, &["●●●"]                                          ; "no_hint_multibyte_fits")]
+    #[test_case("ab日本cd", 6, NO_HINT, &["ab", ELLIPSIS]                             ; "no_hint_cjk_truncated")]
+    #[test_case("\u{1F469}\u{200D}\u{1F4BB}abcdef", 5, NO_HINT, &["\u{1F469}\u{200D}\u{1F4BB}", ELLIPSIS] ; "no_hint_zwj_emoji_kept_whole")]
+    #[test_case("\u{1F469}\u{200D}\u{1F4BB}abcdef", 4, NO_HINT, &[ELLIPSIS]                    ; "no_hint_zwj_emoji_dropped_whole")]
     #[test_case("hello", 20, HINT, &["hello", HINT_STR]                                   ; "hint_short")]
     #[test_case("abcdefghijklmnopqrstuvwxyz", 18, HINT, &["abcdefgh", ELLIPSIS, HINT_STR]  ; "hint_truncated")]
     #[test_case("ab", 9, HINT, &["ab", HINT_STR]                                          ; "hint_exact_fit")]

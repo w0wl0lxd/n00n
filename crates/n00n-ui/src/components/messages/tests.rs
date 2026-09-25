@@ -213,7 +213,11 @@ fn tool_start_flushes_streaming_text() {
 
     panel.tool_start(start("t1", "read"));
 
-    assert!(panel.streaming_text.is_empty());
+    assert!(
+        panel.streaming_text.is_empty(),
+        "expected empty, got {:?}",
+        panel.streaming_text
+    );
     assert_eq!(panel.messages[0].role, DisplayRole::Assistant);
     assert!(matches!(panel.messages[1].role, DisplayRole::Tool(_)));
 }
@@ -223,10 +227,18 @@ fn thinking_delta_separate_from_text() {
     let mut panel = test_panel();
     panel.thinking_delta("reasoning");
     assert_eq!(panel.streaming_thinking, "reasoning");
-    assert!(panel.streaming_text.is_empty());
+    assert!(
+        panel.streaming_text.is_empty(),
+        "expected empty, got {:?}",
+        panel.streaming_text
+    );
 
     panel.text_delta("output");
-    assert!(panel.streaming_thinking.is_empty());
+    assert!(
+        panel.streaming_thinking.is_empty(),
+        "expected empty, got {:?}",
+        panel.streaming_thinking
+    );
     assert_eq!(panel.streaming_text, "output");
     assert_eq!(panel.messages[0].role, DisplayRole::Thinking);
     assert_eq!(panel.messages[0].text, "reasoning");
@@ -380,7 +392,7 @@ fn jump_to_bottom_popup_appears_when_scrolled_up() {
     assert_eq!(popup.height, JUMP_TO_BOTTOM_POPUP_HEIGHT);
     let text = buffer_text(&terminal);
     assert!(text.contains(JUMP_TO_BOTTOM_TEXT));
-    assert!(text.contains(key::SCROLL_BOTTOM.label));
+    assert!(text.contains(key::CHAT_SCROLL_BOTTOM.label));
     let buffer = terminal.backend().buffer();
     assert_eq!(buffer.cell((popup.x, popup.y)).unwrap().symbol(), "╭");
     assert_eq!(
@@ -417,7 +429,11 @@ fn unknown_tool_id_is_noop() {
         annotation: None,
         written_path: None,
     });
-    assert!(panel.messages.is_empty());
+    assert!(
+        panel.messages.is_empty(),
+        "expected empty, got {:?}",
+        panel.messages
+    );
 }
 
 #[test]
@@ -1093,8 +1109,16 @@ fn stream_reset_clears_streaming_and_fails_tools() {
 
     panel.stream_reset();
 
-    assert!(panel.streaming_thinking.is_empty());
-    assert!(panel.streaming_text.is_empty());
+    assert!(
+        panel.streaming_thinking.is_empty(),
+        "expected empty, got {:?}",
+        panel.streaming_thinking
+    );
+    assert!(
+        panel.streaming_text.is_empty(),
+        "expected empty, got {:?}",
+        panel.streaming_text
+    );
     assert_eq!(panel.in_progress_count(), 0);
     assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
 }
@@ -1109,8 +1133,16 @@ fn failed_compaction_clears_the_partially_streamed_summary() {
 
     assert!(panel.fail_pending_compaction("stream ended early"));
 
-    assert!(panel.streaming_thinking.is_empty());
-    assert!(panel.streaming_text.is_empty());
+    assert!(
+        panel.streaming_thinking.is_empty(),
+        "expected empty, got {:?}",
+        panel.streaming_thinking
+    );
+    assert!(
+        panel.streaming_text.is_empty(),
+        "expected empty, got {:?}",
+        panel.streaming_text
+    );
     assert!(!panel.thinking_collapsed);
     assert!(panel.thinking_started.is_none());
 }
@@ -1775,7 +1807,11 @@ fn snapshot_tool_native_truncation_expands_but_snapshot_row_routes_lua() {
         u16::try_from(truncation_line).unwrap_or_else(|_| u16::MAX),
         area
     ));
-    assert!(panel.lua_clicks.is_empty());
+    assert!(
+        panel.lua_clicks.is_empty(),
+        "expected empty, got {:?}",
+        panel.lua_clicks
+    );
     assert!(!seg_text(&panel, "t1").contains("›"));
 
     render(&mut panel, 80, 240);
@@ -1866,7 +1902,11 @@ fn handle_click_on_running_tool_forwards_live_without_recording() {
     render(&mut panel, 80, 24);
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.handle_click(area.y, area));
-    assert!(panel.lua_clicks.is_empty());
+    assert!(
+        panel.lua_clicks.is_empty(),
+        "expected empty, got {:?}",
+        panel.lua_clicks
+    );
     assert!(
         !panel.auto_scroll,
         "clicking a running tool should pause auto-scroll"

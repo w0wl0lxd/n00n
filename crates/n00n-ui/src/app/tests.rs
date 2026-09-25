@@ -1,9 +1,10 @@
+use super::image_paste::{IMAGE_LOAD_DISCONNECTED_MSG, IMAGE_STALE_MSG};
 use super::session::message_tool_use_ids;
 use super::*;
 use crate::agent::{Delivery, shared_queue};
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
-use crate::components::keybindings::{KeybindContext, key as kb};
+use crate::components::keybindings::{Bind, KeybindContext, key as kb};
 use crate::components::{ExitRequest, key, test_model};
 use crate::selection::{SelectableZone, SelectionState, SelectionZone};
 use arc_swap::ArcSwap;
@@ -11,9 +12,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventK
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_agent::{
-    ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
-    McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
-    ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ExtractedCommand, ImageMediaType, ImageSource, InterruptPoint, InterruptSource,
+    McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader,
+    ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
@@ -33,6 +34,8 @@ use test_case::test_case;
 
 const PROVIDER_FAILED_ERR: &str = "provider failed";
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const IMAGE_FILE_URL: &str = "file:///tmp/nonexistent.png";
+const IMAGE_ABSOLUTE_PATH: &str = "/tmp/nonexistent.png";
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone {
@@ -75,6 +78,7 @@ fn build_app_with_session(
         mcp_config_errors: McpConfigErrors::new(PathBuf::new()),
         lua_command_reader: LuaCommandReader::empty(),
         keymap_reader: KeymapReader::empty(),
+        effective_keymap: Arc::new(EffectiveKeymap::default()),
         hint_reader: HintReader::empty(),
         storage_writer: writer,
         ui_config: UiConfig::default(),
@@ -237,7 +241,11 @@ fn typing_and_submit() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(matches!(&actions[0], Action::SendMessage(s) if s.input.message == "hi"));
     assert_eq!(app.status, Status::Streaming);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     // Regression check: the bubble has to be on screen the same frame we
     // submit, otherwise it briefly sits one row too high before snapping down.
     assert_eq!(
@@ -385,7 +393,11 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
         Status::Error { message, .. } if message == PERSISTENCE_FAILURE_MSG
     ));
     assert_eq!(app.main_chat().last_message_text(), PERSISTENCE_FAILURE_MSG);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     assert_eq!(app.queue.text_messages(), vec!["queued after failure"]);
     assert_eq!(submission_id, dispatch.submission_id);
 }
@@ -406,7 +418,11 @@ fn escape_before_dispatch_restores_text_and_exact_images_once() {
 
     let cancel_actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
-    assert!(cancel_actions.is_empty());
+    assert!(
+        cancel_actions.is_empty(),
+        "expected empty, got {}",
+        cancel_actions.len()
+    );
     assert!(gate.is_cancelled());
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.main_chat().message_count(), 0);
@@ -418,11 +434,15 @@ fn escape_before_dispatch_restores_text_and_exact_images_once() {
 
     app.handle_submission_persistence_failure(dispatch);
     assert_eq!(app.main_chat().message_count(), 0);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
 }
 
 #[test]
-fn committed_submission_keeps_double_escape_cancellation() {
+fn committed_submission_esc_cancels_agent() {
     let mut app = test_app();
     install_manual_submission_clock(&mut app);
     let actions = type_and_submit(&mut app, "sent");
@@ -431,13 +451,10 @@ fn committed_submission_keeps_double_escape_cancellation() {
     };
     assert!(dispatch.gate.try_commit());
 
-    let first = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(first.is_empty());
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(matches!(&actions[..], [Action::CancelAgent { .. }]));
     assert!(app.input_box.is_empty());
-    assert_eq!(app.main_chat().last_message_text(), "sent");
-
-    let second = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(matches!(&second[..], [Action::CancelAgent { .. }]));
+    assert_eq!(app.main_chat().last_message_text(), "Cancelled.");
 }
 
 #[test]
@@ -452,7 +469,11 @@ fn shell_preamble_restores_once_on_cancel_and_resubmits_once() {
     };
     assert!(app.stage_submission_preamble(&mut dispatch));
     assert_eq!(dispatch.input.preamble.len(), 1);
-    assert!(app.shell.drain_results().is_empty());
+    let n00n_empty_check_71 = app.shell.drain_results();
+    assert!(
+        n00n_empty_check_71.is_empty(),
+        "expected empty, got {n00n_empty_check_71:?}"
+    );
 
     app.update(Msg::Key(key(KeyCode::Esc)));
     let restored_preamble = app.shell.drain_results();
@@ -467,7 +488,11 @@ fn shell_preamble_restores_once_on_cancel_and_resubmits_once() {
     assert!(app.stage_submission_preamble(&mut dispatch));
     assert_eq!(dispatch.input.preamble.len(), 1);
     assert_eq!(dispatch.input.preamble[0].user_text(), Some("shell output"));
-    assert!(app.shell.drain_results().is_empty());
+    let n00n_empty_check_72 = app.shell.drain_results();
+    assert!(
+        n00n_empty_check_72.is_empty(),
+        "expected empty, got {n00n_empty_check_72:?}"
+    );
 
     app.handle_submission_persistence_failure(&dispatch);
     let restored_after_failure = app.shell.drain_results();
@@ -505,11 +530,15 @@ fn escape_during_mcp_error_restores_and_resubmits_exactly_once() {
     };
     assert!(app.stage_submission_preamble(&mut retry));
     assert_eq!(retry.input.preamble.len(), 1);
-    assert!(app.shell.drain_results().is_empty());
+    let n00n_empty_check_73 = app.shell.drain_results();
+    assert!(
+        n00n_empty_check_73.is_empty(),
+        "expected empty, got {n00n_empty_check_73:?}"
+    );
 }
 
 #[test]
-fn expired_escape_window_does_not_restore_without_sleeping() {
+fn expired_escape_window_esc_cancels_agent() {
     let mut app = test_app();
     let clock = install_manual_submission_clock(&mut app);
     type_and_submit(&mut app, "too late");
@@ -517,10 +546,10 @@ fn expired_escape_window_does_not_restore_without_sleeping() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
-    assert!(actions.is_empty());
+    assert!(matches!(&actions[..], [Action::CancelAgent { .. }]));
     assert!(app.input_box.is_empty());
-    assert_eq!(app.main_chat().last_message_text(), "too late");
-    assert_eq!(app.status, Status::Streaming);
+    assert_eq!(app.main_chat().last_message_text(), "Cancelled.");
+    assert_eq!(app.status, Status::Idle);
 }
 
 #[test]
@@ -537,15 +566,16 @@ fn escape_at_submission_window_boundary_restores() {
 }
 
 #[test]
-fn escape_one_millisecond_after_submission_window_does_not_restore() {
+fn escape_after_submission_window_cancels_agent() {
     let mut app = test_app();
     let clock = install_manual_submission_clock(&mut app);
     type_and_submit(&mut app, "after boundary");
     clock.advance(SUBMISSION_ESCAPE_WINDOW + Duration::from_millis(1));
 
-    app.update(Msg::Key(key(KeyCode::Esc)));
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
-    assert_eq!(app.status, Status::Streaming);
+    assert!(matches!(&actions[..], [Action::CancelAgent { .. }]));
+    assert_eq!(app.status, Status::Idle);
     assert!(app.input_box.is_empty());
 }
 
@@ -565,9 +595,13 @@ fn ctrl_c_clears_nonempty_input(setup: fn(&mut App)) {
     let mut app = test_app();
     setup(&mut app);
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.exit_request, ExitRequest::None);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
 }
 
 #[test]
@@ -576,7 +610,7 @@ fn ctrl_c_quits_when_input_empty() {
     app.status = Status::Idle;
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::Success);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
 }
 
 #[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None }, ExitRequest::Success ; "done_exits_success")]
@@ -683,12 +717,84 @@ fn paste_normalizes_line_endings(input: &str, expected: &str) {
     assert_eq!(app.input_box.buffer.value(), expected);
 }
 
+#[test_case(Status::Idle; "idle")]
+#[test_case(Status::Streaming; "streaming")]
+fn image_load_completion_allows_submission_with_image(status: Status) {
+    let mut app = test_app();
+    app.status = status;
+    let (tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    app.update(Msg::Paste("describe image".into()));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
+    app.poll_image_paste();
+    assert!(app.image_paste_rx.is_empty());
+    let Some(submission) = app.input_box.submit() else {
+        panic!("expected submission");
+    };
+    assert_eq!(submission.text, "describe image");
+    assert_eq!(submission.images.len(), 1);
+}
+
+#[test_case(KeyCode::Enter; "enter")]
+#[test_case(KeyCode::Tab; "queued_tab")]
+fn pending_image_load_blocks_submission(submit_key: KeyCode) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    app.update(Msg::Paste("describe image".into()));
+    assert!(app.update(Msg::Key(key(submit_key))).is_empty());
+    assert_eq!(app.input_box.buffer.value(), "describe image");
+}
+
+#[test_case(KeyCode::Enter, KeyModifiers::SHIFT, "describe image\n"; "shift_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::ALT, "describe image\n"; "alt_enter_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::CONTROL, "describe image\n"; "ctrl_enter_inserts_newline")]
+#[test_case(KeyCode::Char('j'), KeyModifiers::CONTROL, "describe image\n"; "ctrl_j_inserts_newline")]
+#[test_case(KeyCode::Enter, KeyModifiers::NONE, "describe image"; "plain_enter_still_blocked")]
+fn pending_image_load_does_not_swallow_newline_keys(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    expected: &str,
+) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    let (_tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    app.update(Msg::Paste("describe image".into()));
+    let newline_key = KeyEvent {
+        code,
+        modifiers,
+        kind: crossterm::event::KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    app.update(Msg::Key(newline_key));
+    assert_eq!(app.input_box.buffer.value(), expected);
+}
+
+#[test]
+fn image_path_paste_preserves_original_text() {
+    const TEXT: &str = "describe\nfile:///tmp/nonexistent.png\nplease";
+    let mut app = test_app();
+    app.update(Msg::Paste(TEXT.into()));
+    assert_eq!(app.input_box.buffer.value(), TEXT);
+}
+
 #[test]
 fn paste_file_path_triggers_image_load() {
     let mut app = test_app();
     app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
-    assert!(!app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), "");
+    assert!(
+        !app.image_paste_rx.is_empty(),
+        "expected non-empty, got {:?}",
+        app.image_paste_rx
+    );
+    assert_eq!(app.input_box.buffer.value(), "file:///tmp/nonexistent.png");
 }
 
 #[test]
@@ -701,8 +807,85 @@ fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     assert_eq!(app.image_paste_rx.len(), 2);
     assert_eq!(
         app.input_box.buffer.value(),
-        "Please compare these:\nThanks"
+        "Please compare these:\nfile:///tmp/first.png\nfile:///tmp/second.jpg\nThanks"
     );
+}
+
+#[test_case(IMAGE_FILE_URL      ; "file_url")]
+#[test_case(IMAGE_ABSOLUTE_PATH ; "absolute_path")]
+fn unsupported_image_path_paste_preserves_text(text: &str) {
+    let mut app = test_app();
+    app.state.model.supports_vision_override = Some(false);
+    app.update(Msg::Paste(text.into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), text);
+}
+
+#[test_case(IMAGE_FILE_URL      ; "file_url")]
+#[test_case(IMAGE_ABSOLUTE_PATH ; "absolute_path")]
+fn image_path_paste_in_search_does_not_load_image(text: &str) {
+    let mut app = test_app();
+    app.update(Msg::Key(kb::SEARCH.to_key_event()));
+    assert!(app.search_modal.is_open());
+
+    app.update(Msg::Paste(text.into()));
+
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), "");
+    assert_eq!(app.search_modal.query_text(), text);
+}
+
+#[test_case(None,                   IMAGE_LOAD_DISCONNECTED_MSG ; "disconnected_loader")]
+#[test_case(Some("file unavailable"), "file unavailable"    ; "failed_load")]
+fn finished_image_load_preserves_text_and_unblocks_submission(
+    error: Option<&str>,
+    expected_reason: &str,
+) {
+    let mut app = test_app();
+    app.input_box.set_input(IMAGE_FILE_URL);
+    let (tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    match error {
+        Some(error) => tx.send(Err(error.into())).unwrap(),
+        None => drop(tx),
+    }
+
+    app.poll_image_paste();
+
+    assert!(
+        app.image_paste_rx.is_empty(),
+        "a finished loader must not stay parked in the pending list"
+    );
+    assert_eq!(app.input_box.buffer.value(), IMAGE_FILE_URL);
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!("Image paste failed: {expected_reason}")
+    );
+}
+
+#[test]
+fn image_loaded_after_composer_discarded_is_not_attached() {
+    const TEXT: &str = "describe this";
+    let mut app = test_app();
+    app.input_box.set_input(TEXT);
+    let (tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+
+    app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(app.input_box.is_empty(), "Ctrl+C must discard the composer");
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
+    app.poll_image_paste();
+
+    assert!(app.image_paste_rx.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "an image that finished loading after the composer was drained must not ride on the next message"
+    );
+    assert_eq!(app.status_bar.flash_text().unwrap(), IMAGE_STALE_MSG);
 }
 
 #[test]
@@ -711,15 +894,25 @@ fn busy_enter_queues_steering_and_second_chord_promotes_latest() {
     type_and_submit(&mut app, "first");
 
     app.input_box.set_input("steer one");
-    assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
+    let n00n_empty_check_74 = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        n00n_empty_check_74.is_empty(),
+        "expected empty, got {}",
+        n00n_empty_check_74.len()
+    );
     app.input_box.set_input("steer two");
-    assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
+    let n00n_empty_check_75 = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        n00n_empty_check_75.is_empty(),
+        "expected empty, got {}",
+        n00n_empty_check_75.len()
+    );
     assert_eq!(app.queue.len(), 2);
-    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
-    assert_eq!(app.queue.panel_entries()[1].text, "↪ steer two");
+    assert_eq!(app.queue.panel_entries()[0].text, "\u{21AA} steer one");
+    assert_eq!(app.queue.panel_entries()[1].text, "\u{21AA} steer two");
 
     app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
+    assert_eq!(app.queue.panel_entries()[0].text, "\u{21AA} steer one");
     assert_eq!(app.queue.panel_entries()[1].text, "↯ steer two");
 }
 
@@ -773,7 +966,11 @@ fn queue_item_consumed_pushes_deferred_user_message() {
 fn cancel_clears_queue() {
     let mut app = app_with_queued_message();
     cancel_app(&mut app);
-    assert!(app.queue.is_empty());
+    assert!(
+        app.queue.is_empty(),
+        "expected empty, got {}",
+        app.queue.len()
+    );
 }
 
 #[test_case("/compact" ; "slash_command")]
@@ -916,11 +1113,19 @@ fn reset_session_clears_plan() {
     assert_eq!(app.chats[0].context_size, 0);
     assert_eq!(app.state.mode, Mode::Build);
     assert_eq!(app.state.plan, PlanState::None);
-    assert!(app.queue.is_empty());
+    assert!(
+        app.queue.is_empty(),
+        "expected empty, got {}",
+        app.queue.len()
+    );
     assert_eq!(app.chats.len(), 1);
     assert_eq!(app.chats[0].name, "Main");
     assert_eq!(app.active_chat, 0);
-    assert!(app.chat_index.is_empty());
+    assert!(
+        app.chat_index.is_empty(),
+        "expected empty, got {:?}",
+        app.chat_index
+    );
     assert!(app.queue.focus().is_none());
     assert!(!app.help_modal.is_open());
     assert!(!app.btw_modal.is_open());
@@ -1303,7 +1508,11 @@ fn cancel_resets_all_chats_and_indices() {
     cancel_app(&mut app);
     assert_eq!(app.chats[0].in_progress_count(), 0);
     assert_eq!(app.chats[1].in_progress_count(), 0);
-    assert!(app.chat_index.is_empty());
+    assert!(
+        app.chat_index.is_empty(),
+        "expected empty, got {:?}",
+        app.chat_index
+    );
 }
 
 fn finish_subagent(app: &mut App, id: &str, is_error: bool) {
@@ -1717,12 +1926,306 @@ fn at_mention_does_not_open_mid_word() {
 }
 
 #[test]
-fn ctrl_s_file_picker_unaffected_by_at_mention_flag() {
+fn ctrl_s_stashes_and_restores_draft() {
     let mut app = test_app();
+    for c in "draft".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+
+    app.update(Msg::Key(kb::STASH.to_key_event()));
+    assert!(app.input_box.is_empty());
+    assert_eq!(app.status_bar.flash_text(), Some(STASH_DRAFT_MSG));
+
+    app.update(Msg::Key(kb::STASH.to_key_event()));
+    assert_eq!(app.input_box.buffer.value(), "draft");
+    assert_eq!(app.status_bar.flash_text(), Some(STASH_RESTORE_MSG));
+}
+
+#[test]
+fn ctrl_d_flashes_then_exits_on_second_press() {
+    let mut app = test_app();
+    let actions = app.update(Msg::Key(kb::DELETE.to_key_event()));
+    assert!(actions.is_empty());
+    assert_eq!(
+        app.status_bar.flash_text(),
+        Some("Press Ctrl+D again to exit")
+    );
+    assert_eq!(app.exit_request, ExitRequest::None);
+
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+    assert_eq!(app.exit_request, ExitRequest::Success);
+}
+
+#[test]
+fn ctrl_d_deletes_char_forward_with_text() {
+    let mut app = test_app();
+    for c in "ab".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(key(KeyCode::Home)));
+
+    let actions = app.update(Msg::Key(kb::DELETE.to_key_event()));
+    assert!(actions.is_empty());
+    assert_eq!(app.input_box.buffer.value(), "b");
+    assert_eq!(app.exit_request, ExitRequest::None);
+}
+
+#[test]
+fn ctrl_d_twice_does_not_discard_image_only_draft() {
+    let mut app = test_app();
+    with_image(&mut app);
+
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+
+    assert_eq!(
+        app.exit_request,
+        ExitRequest::None,
+        "an image-only draft is not empty and must not be discarded by Ctrl+D"
+    );
+    assert!(!app.input_box.is_empty());
+}
+
+#[test]
+fn unbound_ctrl_chords_never_insert_text() {
+    let mut app = test_app();
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('m'),
+        KeyModifiers::CONTROL,
+    )));
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn ctrl_r_history_search_end_to_end() {
+    let mut app = test_app();
+    type_and_submit(&mut app, "first prompt");
+    type_and_submit(&mut app, "second prompt");
+
+    app.update(Msg::Key(kb::HISTORY_SEARCH.to_key_event()));
+    assert!(app.input_box.history_search_active());
+
+    for c in "fir".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    assert_eq!(app.input_box.buffer.value(), "first prompt");
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.input_box.history_search_active());
+    assert_eq!(app.input_box.buffer.value(), "first prompt");
+}
+
+#[test]
+fn ctrl_c_during_history_search_aborts_search_not_app() {
+    let mut app = test_app();
+    for c in "wip".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(kb::HISTORY_SEARCH.to_key_event()));
+    assert!(app.input_box.history_search_active());
+
+    let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(!app.input_box.history_search_active());
+    assert_eq!(app.input_box.buffer.value(), "wip");
+    assert_eq!(app.exit_request, ExitRequest::None);
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::CancelAgent { .. }))
+    );
+}
+
+#[test]
+fn ctrl_c_during_search_while_streaming_keeps_agent() {
+    let mut app = streaming_app_without_queue();
+    app.update(Msg::Key(kb::HISTORY_SEARCH.to_key_event()));
+    assert!(app.input_box.history_search_active());
+
+    let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(!app.input_box.history_search_active());
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::CancelAgent { .. })),
+        "Ctrl+C must abort the search, not the running agent"
+    );
+    assert_eq!(app.status, Status::Streaming);
+}
+
+#[test]
+fn kitty_shifted_codepoint_still_matches_shifted_binds() {
+    // REPORT_ALTERNATE_KEYS folds Shift into the codepoint and clears the
+    // flag: Alt+Shift+G arrives as Char('G')+ALT, Ctrl+Shift+C as
+    // Char('C')+CONTROL. Both must resolve to the shifted binding.
+    let mut app = test_app();
+    app.active_chat().enable_auto_scroll();
+    app.update(Msg::Key(kb::CHAT_SCROLL_TOP.to_key_event()));
+    assert!(!app.chats[0].auto_scroll());
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('G'),
+        KeyModifiers::ALT,
+    )));
+    assert!(
+        app.chats[0].auto_scroll(),
+        "Alt+Shift+G (folded) should jump to bottom"
+    );
+
+    for c in "hi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('C'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.input_box.buffer.value(), "hi");
+    assert_eq!(app.exit_request, ExitRequest::None);
+}
+
+#[test]
+fn super_enter_submits_like_plain_enter() {
+    let mut app = test_app();
+    for c in "hi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER)));
+    assert_eq!(
+        app.input_box.buffer.value(),
+        "",
+        "Super+Enter should submit"
+    );
+}
+
+#[test]
+fn ctrl_d_arm_resets_when_typing_between_presses() {
+    let mut app = test_app();
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+    assert_eq!(
+        app.status_bar.flash_text(),
+        Some("Press Ctrl+D again to exit")
+    );
+    // Intervening real input must disarm the double-press window.
     app.update(Msg::Key(key(KeyCode::Char('x'))));
-    app.update(Msg::Key(kb::FILE_PICKER.to_key_event()));
-    assert!(app.file_picker.is_open());
-    assert_eq!(app.input_box.buffer.value(), "x");
+    app.update(Msg::Key(key(KeyCode::Backspace)));
+    app.update(Msg::Key(kb::DELETE.to_key_event()));
+    assert_eq!(
+        app.exit_request,
+        ExitRequest::None,
+        "intervening typing must reset the Ctrl+D exit arm"
+    );
+}
+
+#[test]
+fn ctrl_underscore_undoes_composer_edit() {
+    let mut app = test_app();
+    for c in "hi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('_'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn shift_enter_inserts_newline() {
+    let mut app = test_app();
+    for c in "ab".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+    assert_eq!(app.input_box.buffer.value(), "ab\n");
+}
+
+#[test]
+fn shift_arrows_select_then_typing_replaces() {
+    let mut app = test_app();
+    for c in "hell".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
+    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("ll"));
+
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(app.input_box.buffer.value(), "heX");
+    assert!(app.input_box.buffer.selected_text().is_none());
+}
+
+#[test]
+fn ctrl_shift_arrows_select_words() {
+    let mut app = test_app();
+    for c in "foo bar".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Left,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("bar"));
+}
+
+#[test]
+fn ctrl_shift_a_selects_all_input() {
+    let mut app = test_app();
+    for c in "draft".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert_eq!(
+        app.input_box.buffer.selected_text().as_deref(),
+        Some("draft")
+    );
+
+    // Folded codepoint shape (Kitty REPORT_ALTERNATE_KEYS): 'A'+CONTROL.
+    app.input_box.buffer.clear();
+    for c in "xy".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('A'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("xy"));
+}
+
+#[test]
+fn plain_arrow_after_selection_clears_it() {
+    let mut app = test_app();
+    for c in "hi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
+    assert!(app.input_box.buffer.selected_text().is_some());
+    app.update(Msg::Key(key(KeyCode::Right)));
+    assert!(app.input_box.buffer.selected_text().is_none());
+}
+
+#[test]
+fn copy_selection_prefers_composer_selection() {
+    let mut app = test_app();
+    for c in "hi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    // The composer path copies directly — it must not arm the mouse
+    // scrape-and-copy machinery.
+    assert!(app.selection_state.is_none());
+    assert_eq!(app.input_box.buffer.value(), "hi");
 }
 
 #[test]
@@ -1740,7 +2243,7 @@ fn compact_during_streaming_queues_item() {
     app.run_id = 1;
 
     let actions = app.execute_command(cmd("/compact"));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.queue.len(), 1);
     assert_eq!(app.queue.panel_entries()[0].text, "/compact");
 }
@@ -1787,9 +2290,9 @@ fn scroll_outside_msg_area_ignored() {
 fn scroll_shortcuts_toggle_auto_scroll() {
     let mut app = test_app();
     app.active_chat().enable_auto_scroll();
-    app.update(Msg::Key(kb::SCROLL_TOP.to_key_event()));
+    app.update(Msg::Key(kb::CHAT_SCROLL_TOP.to_key_event()));
     assert!(!app.chats[0].auto_scroll());
-    app.update(Msg::Key(kb::SCROLL_BOTTOM.to_key_event()));
+    app.update(Msg::Key(kb::CHAT_SCROLL_BOTTOM.to_key_event()));
     assert!(app.chats[0].auto_scroll());
 }
 
@@ -1874,7 +2377,7 @@ fn mouse_up_clears_edge_scroll() {
 }
 
 #[test]
-fn double_esc_cancels_flushes_and_fails_tools() {
+fn esc_cancels_flushes_and_fails_tools() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -1895,10 +2398,6 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     }
     render_chat(&mut app, 0, Rect::new(0, 0, 80, 20));
 
-    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(actions.is_empty());
-
-    app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(matches!(&actions[0], Action::CancelAgent { .. }));
     assert_eq!(app.status, Status::Idle);
@@ -2233,7 +2732,11 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
 
     assert_eq!(app.queue.text_messages(), ["queued", "original", "after"]);
     assert!(app.queue.editing().is_none());
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     let queued = app.queue.queued_inputs();
     let (input, delivery) = &queued[1];
     assert_eq!(input.message, "original");
@@ -2242,6 +2745,47 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
     assert_eq!(input.images.len(), 1);
     assert_eq!(input.images[0].media_type, ImageMediaType::Png);
     assert_eq!(&*input.images[0].data, "b3JpZ2luYWw=");
+}
+
+#[test]
+fn esc_cancels_queue_edit_and_restores_original_message() {
+    let mut app = app_with_queued_message();
+    app.queue.set_focus_at(0);
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.queue.editing().is_some());
+    assert_eq!(app.input_box.buffer.value(), "queued");
+    app.status = Status::Idle;
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(app.queue.editing().is_none());
+    assert_eq!(app.queue.text_messages(), ["queued"]);
+    assert!(app.input_box.is_empty());
+    assert!(
+        app.last_esc.is_none(),
+        "cancelling a queue edit must not arm the rewind double-press"
+    );
+}
+
+#[test]
+fn esc_during_streaming_cancels_queue_edit_and_restores_original_message() {
+    let mut app = app_with_queued_message();
+    app.queue.set_focus_at(0);
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.queue.editing().is_some());
+    assert_eq!(app.input_box.buffer.value(), "queued");
+    assert_eq!(app.status, Status::Streaming);
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(app.queue.editing().is_none());
+    assert_eq!(app.queue.text_messages(), ["queued"]);
+    assert!(app.input_box.is_empty());
+    assert_eq!(
+        app.status,
+        Status::Streaming,
+        "cancelling a queue edit must not also cancel the run"
+    );
 }
 
 #[test]
@@ -2502,7 +3046,7 @@ fn submit_exit_quits() {
         control: false,
     });
     assert_eq!(app.exit_request, ExitRequest::Success);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
 }
 
 #[test]
@@ -2626,7 +3170,11 @@ fn save_session_syncs_ephemeral_content_into_meta() {
     let mut queued = app_with_queued_message();
     queued.save_session();
     let session = &queued.state.session;
-    assert!(session.messages.is_empty());
+    assert!(
+        session.messages.is_empty(),
+        "expected empty, got {:?}",
+        session.messages
+    );
     assert!(session.meta.input_draft.is_none());
     assert_eq!(session.meta.mode, Some(StoredMode::Build));
     assert_eq!(session.meta.queued_messages, vec!["queued".to_string()]);
@@ -2850,7 +3398,7 @@ fn reload_persists_session_with_content_to_disk() {
         .push(Message::user("hello".into()));
     let actions = app.execute_command(cmd("/reload"));
     assert_eq!(app.exit_request, ExitRequest::Reload);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     let id = app.state.session.id;
     drain_writer(app, writer);
 
@@ -2936,14 +3484,22 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
         images: edited.images,
         control: edited.control,
     });
-    assert!(app.queue.text_messages().is_empty());
+    let n00n_empty_check_76 = app.queue.text_messages();
+    assert!(
+        n00n_empty_check_76.is_empty(),
+        "expected empty, got {n00n_empty_check_76:?}"
+    );
 
     app.update(agent_msg(AgentEvent::Error {
         message: PROVIDER_FAILED_ERR.into(),
     }));
 
     assert_eq!(app.queue.text_messages(), vec!["queued through turn error"]);
-    assert!(app.input_box.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "expected empty, got {}",
+        app.input_box.buffer.value()
+    );
     app.save_session();
     let session_id = app.state.session.id;
     drain_writer(app, writer);
@@ -3231,7 +3787,7 @@ fn cd_command_behavior() {
 fn typed_slash_command_executes() {
     let mut app = test_app();
     let actions = type_and_submit(&mut app, "/help");
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(app.help_modal.is_open());
 }
 
@@ -3434,7 +3990,11 @@ fn rewind_to_first_turn_clears_everything() {
     };
     let actions = app.rewind_to(&entry);
 
-    assert!(app.state.session.messages.is_empty());
+    assert!(
+        app.state.session.messages.is_empty(),
+        "expected empty, got {:?}",
+        app.state.session.messages
+    );
     assert!(!app.state.session.tool_outputs.contains_key("tool-1"));
     assert_eq!(app.state.token_usage.input, 500);
     assert_eq!(app.state.token_usage.output, 200);
@@ -3528,7 +4088,7 @@ fn auth_retry_sends_empty_answer(submit: fn(&mut App) -> Vec<Action>) {
     ));
 
     let actions = submit(&mut app);
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.pending_input, PendingInput::None);
     assert_eq!(rx.try_recv().unwrap(), "");
 }
@@ -3544,7 +4104,7 @@ fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     app.update(Msg::Key(key(KeyCode::Char('i'))));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     let prompt = prompt_rx.try_recv().unwrap();
     assert_eq!(prompt.text, "hi");
     assert_eq!(app.chats[1].last_message_text(), "hi");
@@ -3649,7 +4209,7 @@ fn expanded_subagent_chat_sends_typed_steering() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     let prompt = prompt_rx.try_recv().unwrap();
     assert_eq!(prompt.text, "expand");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
@@ -3657,15 +4217,16 @@ fn expanded_subagent_chat_sends_typed_steering() {
 }
 
 #[test]
-fn typing_steering_clears_pending_subagent_cancel() {
+fn esc_in_subagent_cancels_then_returns_to_main() {
     let (mut app, _prompt_rx) = app_with_steerable_subagent("child-a");
-    app.update(Msg::Key(key(KeyCode::Esc)));
-    app.update(Msg::Key(key(KeyCode::Char('e'))));
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(matches!(&actions[..], [Action::CancelSubagent { .. }]));
+    assert!(app.chats[1].is_finished());
 
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(actions.is_empty());
-    assert!(!app.chats[1].is_finished());
+    assert_eq!(app.active_chat, 0);
 }
 
 #[test]
@@ -3686,7 +4247,7 @@ fn left_in_expanded_subagent_chat_returns_to_main_without_cancelling() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Left)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.active_chat, 0);
     assert!(!app.chats[1].is_finished());
     assert!(prompt_rx.try_recv().is_err());
@@ -3734,7 +4295,7 @@ fn auth_retry_in_subagent_routes_to_subagent_channel() {
     ));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(app.pending_input, PendingInput::None);
     assert_eq!(sub_rx.try_recv().unwrap(), "");
     assert!(main_rx.try_recv().is_err());
@@ -3874,7 +4435,7 @@ fn open_editor(plan: PlanState, expect_flash: bool) {
     app.state.plan = plan;
     let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
     if expect_flash {
-        assert!(actions.is_empty());
+        assert!(actions.is_empty(), "expected empty, got {}", actions.len());
         assert_eq!(app.status_bar.flash_text().unwrap(), FLASH_NO_PLAN);
         assert!(!app.plan_form.is_visible());
     } else {
@@ -3885,10 +4446,19 @@ fn open_editor(plan: PlanState, expect_flash: bool) {
 }
 
 #[test]
-fn alt_o_opens_editor_for_input() {
+fn edit_input_opens_editor_for_input() {
     let mut app = test_app();
     app.input_box.buffer.insert_text("hello");
     let actions = app.update(Msg::Key(kb::EDIT_INPUT.to_key_event()));
+    assert!(matches!(&actions[..], [Action::EditInputInEditor]));
+}
+
+#[test]
+fn alt_o_alias_opens_editor_for_input() {
+    let mut app = test_app();
+    app.input_box.buffer.insert_text("hello");
+    let alt_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT);
+    let actions = app.update(Msg::Key(alt_o));
     assert!(matches!(&actions[..], [Action::EditInputInEditor]));
 }
 
@@ -3899,7 +4469,7 @@ fn btw_empty_flashes_error() {
         name: "/btw".into(),
         args: String::new(),
     });
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(
         app.status_bar.flash_text().unwrap(),
         "Usage: /btw <question>"
@@ -3924,12 +4494,12 @@ fn btw_modal_key_routing_and_animation() {
     assert!(app.btw_modal.is_animating());
 
     let actions = app.update(Msg::Key(key(KeyCode::Char('x'))));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(app.btw_modal.is_open());
     assert_eq!(app.input_box.buffer.value(), "");
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(!app.btw_modal.is_open());
     assert!(!app.btw_modal.is_animating());
 }
@@ -3980,7 +4550,11 @@ fn stale_terminal_event_after_cancel_saves_session(event: AgentEvent) {
     let old_run_id = app.run_id;
     cancel_app(&mut app);
     assert_ne!(app.run_id, old_run_id);
-    assert!(app.state.session.messages.is_empty());
+    assert!(
+        app.state.session.messages.is_empty(),
+        "expected empty, got {:?}",
+        app.state.session.messages
+    );
 
     app.update(agent_msg_with_run_id(event, old_run_id));
     assert_eq!(app.state.session.messages.len(), 2);
@@ -4001,7 +4575,11 @@ fn stale_non_terminal_event_does_not_save_session() {
         })),
         old_run_id,
     ));
-    assert!(app.state.session.messages.is_empty());
+    assert!(
+        app.state.session.messages.is_empty(),
+        "expected empty, got {:?}",
+        app.state.session.messages
+    );
 }
 
 #[test]
@@ -4162,7 +4740,11 @@ fn clear_and_implement_defers_submission_until_new_session() {
         pending.message.text,
         implement_msg(PlanForm::new().parallel())
     );
-    assert!(app.queue.is_empty());
+    assert!(
+        app.queue.is_empty(),
+        "expected empty, got {}",
+        app.queue.len()
+    );
     assert_eq!(app.main_chat().message_count(), 0);
 }
 
@@ -4219,7 +4801,7 @@ fn rewrite_does_not_reopen_after_dismiss() {
 }
 
 #[test]
-fn ctrl_t_toggles_plan_form_in_plan_mode() {
+fn plan_toggle_toggles_plan_form_in_plan_mode() {
     let mut app = plan_app();
     assert!(app.plan_form.is_visible());
 
@@ -4231,7 +4813,7 @@ fn ctrl_t_toggles_plan_form_in_plan_mode() {
 }
 
 #[test]
-fn ctrl_t_noop_when_plan_not_ready() {
+fn plan_toggle_noop_when_plan_not_ready() {
     let mut app = test_app();
     app.state.mode = Mode::Plan;
     app.state.plan = PlanState::Drafting(PathBuf::from("test-plan.md"));
@@ -4259,7 +4841,7 @@ fn override_shadows_builtin_ctrl_when_no_overlay_open() {
 
     let actions = app.update(Msg::Key(kb::HELP.to_key_event()));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(
         !app.help_modal.is_open(),
         "override must consume the key before the built-in HELP handler runs"
@@ -4283,11 +4865,53 @@ fn override_shadows_quit_builtin() {
 
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(
         app.exit_request,
         ExitRequest::None,
         "override must consume Ctrl+C before the built-in quit handler runs"
+    );
+}
+
+#[test]
+fn override_matches_shifted_key_in_both_terminal_shapes() {
+    // Lua spells shift two ways: `<C-T>` stores Char('T')+CONTROL (shift in
+    // the codepoint), `<C-S-t>` stores Char('t')+CONTROL|SHIFT. Kitty
+    // REPORT_ALTERNATE_KEYS also delivers the folded shape, so dispatch
+    // must normalize both sides or shifted Lua binds go dead there.
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::Char('T'),
+        modifiers: KeyModifiers::CONTROL,
+        desc: "plugin shifted override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 7,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = test_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+
+    // Folded shape: shifted codepoint, SHIFT flag cleared.
+    let actions = app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('T'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(actions.is_empty());
+    assert!(
+        probe.try_recv().is_some(),
+        "folded <C-T> event must reach the Lua keybind callback"
+    );
+
+    // Flagged shape: lowercase + explicit SHIFT, same binding.
+    let actions = app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('t'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert!(actions.is_empty());
+    assert!(
+        probe.try_recv().is_some(),
+        "flagged Ctrl+Shift+T event must reach the Lua keybind callback"
     );
 }
 
@@ -4309,7 +4933,7 @@ fn override_shadows_tab_mode_toggle() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Tab)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert_eq!(
         app.state.mode, initial_mode,
         "override must consume Tab before the built-in mode toggle runs"
@@ -4333,7 +4957,7 @@ fn override_shadows_esc_builtin() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(
         app.last_esc.is_none(),
         "override must consume Esc before the built-in esc handler runs"
@@ -4388,6 +5012,67 @@ fn overlay_wins_over_override_when_plan_form_open() {
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
     assert!(!app.plan_form.is_visible());
+}
+
+#[test_case(kb::PLAN_TOGGLE ; "ctrl_t")]
+fn plan_toggle_beats_override_when_form_hidden(toggle: Bind) {
+    let entry = n00n_lua::KeymapEntry {
+        key: toggle.code,
+        modifiers: toggle.modifiers,
+        desc: "plugin plan override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 2,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+    assert!(app.plan_form.is_visible());
+
+    app.update(Msg::Key(toggle.to_key_event()));
+    assert!(!app.plan_form.is_visible(), "first press hides the form");
+
+    app.update(Msg::Key(toggle.to_key_event()));
+
+    assert!(
+        app.plan_form.is_visible(),
+        "Ctrl+T must reopen the plan form even when a plugin overrides it"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not run when the plan toggle wins"
+    );
+}
+
+#[test_case(kb::OPEN_EDITOR ; "ctrl_o")]
+fn open_editor_beats_override_in_plan_mode(open_editor: Bind) {
+    let entry = n00n_lua::KeymapEntry {
+        key: open_editor.code,
+        modifiers: open_editor.modifiers,
+        desc: "plugin open editor override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 12,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(!app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(open_editor.to_key_event()));
+
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "Ctrl+O must open the approved plan even when a plugin overrides it"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not run when open-editor wins"
+    );
 }
 
 #[test]
@@ -4467,6 +5152,133 @@ fn streaming_cancel_wins_over_esc_override() {
     assert_eq!(app.status, Status::Idle);
 }
 
+/// Build a test app whose effective keymap merges `keymap.toml` contents
+/// over the compiled-in defaults. Fixtures should be clean: parse and
+/// merge warnings fail the test.
+fn app_with_keymap(source: &str) -> App {
+    let (user, parse_warnings) = crate::keymap::file::parse(source, Path::new("test.toml"));
+    assert!(parse_warnings.is_empty(), "{parse_warnings:?}");
+    let (effective, merge_warnings) = EffectiveKeymap::build(&user);
+    assert!(merge_warnings.is_empty(), "{merge_warnings:?}");
+    let mut app = test_app();
+    app.effective_keymap = Arc::new(effective);
+    app
+}
+
+#[test]
+fn user_keymap_rebound_key_dispatches_action() {
+    let mut app = app_with_keymap("[general]\nhelp = \"f2\"");
+    assert!(!app.help_modal.is_open());
+
+    press(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+
+    assert!(app.help_modal.is_open());
+}
+
+#[test]
+fn user_keymap_replaced_key_no_longer_dispatches() {
+    let mut app = app_with_keymap("[general]\nhelp = \"f2\"");
+
+    press(&mut app, KeyCode::Char('h'), KeyModifiers::CONTROL);
+
+    assert!(
+        !app.help_modal.is_open(),
+        "ctrl-h must be dead once help is rebound to f2"
+    );
+}
+
+#[test]
+fn user_keymap_empty_list_unbinds() {
+    let mut app = app_with_keymap("[general]\ntasks = []");
+
+    press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+
+    assert!(
+        !app.task_picker.is_open(),
+        "ctrl-t must be dead once tasks is unbound"
+    );
+}
+
+#[test]
+fn lua_override_still_shadows_user_keymap() {
+    let mut app = app_with_keymap("[general]\nhelp = \"f2\"");
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::F(2),
+        modifiers: KeyModifiers::NONE,
+        desc: "plugin f2 override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 10,
+    };
+    app.keymap_reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+
+    let actions = app.update(Msg::Key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)));
+
+    assert!(actions.is_empty());
+    assert!(
+        !app.help_modal.is_open(),
+        "a Lua bind must shadow the user keymap, not just the defaults"
+    );
+}
+
+#[test]
+fn streaming_stop_key_follows_user_rebind() {
+    // `quit` moved to ctrl-x: during streaming the new key keeps the
+    // bypass-Lua privilege that protects the interrupt, and a Lua bind on
+    // it must not swallow the cancel.
+    let mut app = app_with_keymap("[general]\nquit = \"ctrl-x\"");
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::Char('x'),
+        modifiers: KeyModifiers::CONTROL,
+        desc: "plugin ctrl-x override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 11,
+    };
+    app.keymap_reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    let actions = app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL,
+    )));
+
+    assert!(
+        matches!(&actions[0], Action::CancelAgent { .. }),
+        "a rebound quit key must still cancel the stream over a Lua bind"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn suspend_stays_reserved_with_user_keymap() {
+    // `suspend` and `ctrl-z` are rejected at parse time, so the file can
+    // never shadow the suspend check in handle_key.
+    let (user, warnings) = crate::keymap::file::parse(
+        "[general]\nsuspend = \"ctrl-x\"\nquit = \"ctrl-z\"",
+        Path::new("test.toml"),
+    );
+    assert_eq!(warnings.len(), 2);
+    let (effective, _) = EffectiveKeymap::build(&user);
+    let mut app = test_app();
+    app.effective_keymap = Arc::new(effective);
+
+    let actions = press(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    assert!(
+        actions.is_empty(),
+        "suspend was rejected, ctrl-x is unbound"
+    );
+
+    let actions = press(&mut app, kb::SUSPEND.code, kb::SUSPEND.modifiers);
+    assert!(
+        actions.iter().any(|a| matches!(a, Action::Suspend)),
+        "ctrl-z must still suspend"
+    );
+}
+
 #[test]
 fn reset_session_closes_plan_form() {
     let mut app = plan_app();
@@ -4485,7 +5297,7 @@ fn ctrl_c_closes_overlay_instead_of_quitting() {
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::None);
     assert!(!app.help_modal.is_open());
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
 }
 
 #[test]
@@ -4858,7 +5670,22 @@ fn ctrl_c_denies_permission_prompt() {
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::None);
     assert!(!app.permission_prompt.is_open());
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
+}
+
+#[test]
+fn esc_denies_permission_prompt() {
+    let mut app = test_app();
+    app.permission_prompt.open(
+        n00n_config::ToolKey::native("bash"),
+        vec!["execute".into()],
+        None,
+    );
+    assert!(app.permission_prompt.is_open());
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(!app.permission_prompt.is_open());
+    assert_eq!(app.exit_request, ExitRequest::None);
 }
 
 const TEST_AREA: Rect = Rect {
@@ -4899,7 +5726,7 @@ fn focused_lua_window_receives_app_key_input() {
 
     let actions = app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
 
-    assert!(actions.is_empty());
+    assert!(actions.is_empty(), "expected empty, got {}", actions.len());
     assert!(matches!(
         event_rx.recv_timeout(Duration::from_secs(1)),
         Ok(n00n_lua::WinEvent::Key { key }) if key == "enter"
@@ -5029,9 +5856,8 @@ fn app_with_active_subagent() -> App {
 }
 
 #[test]
-fn double_esc_in_subagent_cancels_subagent() {
+fn esc_in_subagent_cancels_subagent() {
     let mut app = app_with_active_subagent();
-    app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(actions.len(), 1);
     assert!(matches!(
@@ -5043,23 +5869,9 @@ fn double_esc_in_subagent_cancels_subagent() {
 }
 
 #[test]
-fn single_or_stale_esc_in_subagent_flashes() {
-    let mut app = app_with_active_subagent();
-    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(actions.is_empty());
-    assert_eq!(app.status_bar.flash_text().unwrap(), FLASH_CANCEL);
-
-    app.last_esc = Some(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
-    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(actions.is_empty());
-    assert!(!app.chats[1].is_finished());
-}
-
-#[test]
 fn esc_in_main_chat_with_active_subagent_no_cancel() {
     let mut app = app_with_subagent();
     assert_eq!(app.active_chat, 0);
-    app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(actions.len(), 1);
     assert!(matches!(&actions[0], Action::CancelAgent { .. }));
@@ -5069,10 +5881,13 @@ fn esc_in_main_chat_with_active_subagent_no_cancel() {
 #[test]
 fn cancel_subagent_removes_answer_sender() {
     let (mut app, _sub_rx, _main_rx) = app_with_subagent_tx("task1");
-    assert!(!app.subagent_answers.is_empty());
+    assert!(
+        !app.subagent_answers.is_empty(),
+        "expected non-empty, got {:?}",
+        app.subagent_answers
+    );
     app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
     assert_eq!(app.active_chat, 1);
-    app.last_esc = Some(Instant::now());
     app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(!app.subagent_answers.contains_key("task1"));
 }
@@ -5087,7 +5902,6 @@ fn multiple_subagents_cancel_one_other_unaffected() {
     assert_eq!(app.chats.len(), 3);
 
     app.active_chat = app.chat_index["task2"];
-    app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
     assert_eq!(actions.len(), 1);
@@ -5101,18 +5915,17 @@ fn multiple_subagents_cancel_one_other_unaffected() {
 }
 
 #[test]
-fn double_esc_in_finished_subagent_noop() {
+fn esc_in_finished_subagent_returns_to_main() {
     let mut app = app_with_active_subagent();
     finish_subagent_task(&mut app, false);
-    app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(actions.is_empty());
+    assert_eq!(app.active_chat, 0);
 }
 
 #[test]
 fn subagent_cancel_then_navigate_back_main_unaffected() {
     let mut app = app_with_active_subagent();
-    app.last_esc = Some(Instant::now());
     app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(app.chats[1].is_finished());
 
@@ -5499,7 +6312,7 @@ fn retention_never_evicts_records_the_writer_has_not_persisted() {
                     .map(|(id, _, _)| id.to_owned())
                     .collect()
             });
-    assert!(!eviction.is_empty());
+    assert!(!eviction.is_empty(), "expected non-empty, got {eviction:?}");
     app.storage_writer
         .retain_durable(app.state.session.id, &mut eviction);
 

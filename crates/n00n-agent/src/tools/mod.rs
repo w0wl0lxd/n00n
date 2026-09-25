@@ -1085,7 +1085,7 @@ mod tests {
         let mut params = grep::GrepParams::new("zzzznotfound".into());
         params.path = Some(dir_str);
         let (_, entries) = grep::grep_search(&params).unwrap();
-        assert!(entries.is_empty());
+        assert!(entries.is_empty(), "expected empty, got {entries:?}");
     }
 
     #[test]

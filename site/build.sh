@@ -50,7 +50,7 @@ cd ..
 BASE_URL="https://github.com/w0wl0lxd/n00n"
 
 body() {
-  awk '/^\+\+\+$/{c++; next} c>=2' "$1"
+  awk '/^\+\+\+$/{c++; next} c>=2 && $0 != "{% raw %}" && $0 != "{% endraw %}"' "$1"
 }
 
 first_paragraph() {

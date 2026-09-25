@@ -53,6 +53,7 @@ pub const DEFAULT_SNAPSHOT_TIMEOUT_SECS: u64 = 2;
 pub const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
 pub const DEFAULT_MAX_LOG_FILES: u32 = 10;
 pub const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
+const BYTES_PER_MB: u64 = 1024 * 1024;
 
 pub const MIN_OUTPUT_BYTES: usize = 1024;
 pub const MIN_OUTPUT_LINES: usize = 10;
@@ -205,6 +206,8 @@ pub enum ConfigError {
         value: u64,
         max: u64,
     },
+    #[error("invalid config: storage.max_log_bytes_mb = {value} is too large")]
+    LogBytesTooLarge { value: u64 },
     #[error("invalid config: always_thinking: {0}")]
     Thinking(#[from] ThinkingParseError),
     #[error("invalid config: agent.fusion.sidekick_thinking: {0}")]
@@ -347,7 +350,7 @@ impl RawConfig {
             agent: AgentConfig::from_file(self.agent.clone(), no_rtk, disabled_tools),
             provider: ProviderConfig::from_file(self.provider),
             search: SearchConfig::from_file(&self.search),
-            storage: StorageConfig::from_file(&self.storage),
+            storage: StorageConfig::from_file(&self.storage)?,
             permissions: PermissionsConfig::default(),
             project_trusted: false,
             plugins: PluginsConfig::from_plugins(&self.plugins),
@@ -398,6 +401,8 @@ pub struct UiFileConfig {
     pub theme: Option<String>,
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
+    pub notifications: Option<UiNotifications>,
+    pub terminal_title: Option<bool>,
 }
 
 impl UiFileConfig {
@@ -414,7 +419,9 @@ impl UiFileConfig {
             mouse_scroll_lines,
             show_thinking,
             theme,
-            max_input_lines
+            max_input_lines,
+            notifications,
+            terminal_title
         );
         match (self.tool_output_lines.as_mut(), overlay.tool_output_lines) {
             (Some(base), Some(over)) => base.merge(&over),
@@ -742,6 +749,15 @@ impl<'de> Deserialize<'de> for PermissionsFileConfig {
                 } else {
                     tools.insert(k.clone(), tp);
                 }
+            } else {
+                // A malformed allow/deny value must never be dropped silently:
+                // a lost deny rule fails open. Warn with the key only, never the
+                // value, because this file can hold credential-shaped strings.
+                tracing::warn!(
+                    key = k.as_str(),
+                    "skipping unparseable permissions tool section; expected allow/deny \
+                     of true, false, a scope string, or a scope array"
+                );
             }
         }
 
@@ -766,6 +782,7 @@ struct ToolPermissions {
 enum ScopeSet {
     All(bool),
     Scopes(Vec<String>),
+    One(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1016,6 +1033,43 @@ pub struct Config {
     pub plugins: PluginsConfig,
 }
 
+/// How n00n asks for the user's attention when a turn ends or a prompt
+/// needs input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiNotifications {
+    /// Emit nothing.
+    Off,
+    /// Ring the terminal bell (BEL). tmux surfaces it as a window bell, so
+    /// it also works across muxes.
+    #[default]
+    Bell,
+    /// Emit an OSC 9 desktop notification (kitty, wezterm, iTerm2); silent
+    /// where unsupported.
+    Osc9,
+    /// Ring the bell and emit OSC 9.
+    All,
+}
+
+/// Rejected `ui.notifications` / `N00N_NOTIFICATIONS` value.
+#[derive(Debug, Error)]
+#[error("invalid notification mode {0:?}; expected \"off\", \"bell\", \"osc9\", or \"all\"")]
+pub struct InvalidNotificationMode(String);
+
+impl std::str::FromStr for UiNotifications {
+    type Err = InvalidNotificationMode;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "off" => Ok(Self::Off),
+            "bell" => Ok(Self::Bell),
+            "osc9" => Ok(Self::Osc9),
+            "all" => Ok(Self::All),
+            other => Err(InvalidNotificationMode(other.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, ConfigSection)]
 #[config(section = "ui")]
 pub struct UiConfig {
@@ -1055,6 +1109,20 @@ pub struct UiConfig {
     )]
     pub show_thinking: bool,
 
+    #[config(
+        default = "UiNotifications::default()",
+        ty = "off | bell | osc9 | all",
+        default_doc = "\"bell\"",
+        desc = "Attention signal when a turn ends or input is required while the terminal is unfocused, or (regardless of terminal focus) for a background session other than the one currently shown. \"bell\" rings the terminal bell, \"osc9\" emits a desktop-notification escape, \"all\" emits both. Under tmux, \"osc9\" and \"all\" need `set -g allow-passthrough on` in tmux.conf (off by default since tmux 3.3), or the desktop notification is dropped silently; the bell in \"all\" still rings either way. Set N00N_NOTIFICATIONS to override the file value"
+    )]
+    pub notifications: UiNotifications,
+
+    #[config(
+        default = true,
+        desc = "Set the terminal window title to the focused session title and state (OSC 2); the previous title is restored on exit where the terminal supports the title stack"
+    )]
+    pub terminal_title: bool,
+
     #[config(skip, default = "None")]
     pub theme: Option<String>,
 
@@ -1064,6 +1132,34 @@ pub struct UiConfig {
 
 /// Name of the environment variable that overrides `ui.reduced_motion`.
 pub const REDUCED_MOTION_ENV: &str = "N00N_REDUCED_MOTION";
+
+/// Name of the environment variable that overrides `ui.notifications`.
+pub const NOTIFICATIONS_ENV: &str = "N00N_NOTIFICATIONS";
+
+/// `Some` when the environment gives a definite mode, `None` to fall
+/// through to the file config. Invalid values are rejected loudly and fall
+/// through rather than silently disabling notifications.
+fn notifications_from_env(
+    get: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> Option<UiNotifications> {
+    match get(NOTIFICATIONS_ENV) {
+        Ok(value) => match value.parse() {
+            Ok(mode) => Some(mode),
+            Err(error) => {
+                warn!(variable = NOTIFICATIONS_ENV, %error, "ignoring environment override");
+                None
+            }
+        },
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            warn!(
+                variable = NOTIFICATIONS_ENV,
+                "ignoring environment override that is not valid UTF-8"
+            );
+            None
+        }
+    }
+}
 
 /// `Some` when the environment gives a definite answer, `None` to fall through
 /// to the file config.
@@ -1102,7 +1198,7 @@ impl UiConfig {
     ) -> Self {
         Self {
             splash_animation: f.splash_animation.is_none_or(|v| v),
-            reduced_motion: reduced_motion_from_env(get_env)
+            reduced_motion: reduced_motion_from_env(&get_env)
                 .unwrap_or_else(|| f.reduced_motion.is_some_and(|v| v)),
             mascot: f.mascot.is_none_or(|v| v),
             scrollbar: f.scrollbar.is_none_or(|v| v),
@@ -1117,6 +1213,9 @@ impl UiConfig {
                 .unwrap_or_else(|| DEFAULT_MOUSE_SCROLL_LINES),
             max_input_lines: f.max_input_lines.unwrap_or_else(|| DEFAULT_MAX_INPUT_LINES),
             show_thinking: f.show_thinking.unwrap_or_else(|| true),
+            notifications: notifications_from_env(&get_env)
+                .unwrap_or_else(|| f.notifications.unwrap_or_else(UiNotifications::default)),
+            terminal_title: f.terminal_title.is_none_or(|v| v),
             theme: f.theme,
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }
@@ -1616,13 +1715,16 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
-    fn from_file(f: &StorageFileConfig) -> Self {
-        Self {
-            max_log_bytes: f
-                .max_log_bytes_mb
-                .unwrap_or_else(|| DEFAULT_MAX_LOG_BYTES_MB)
-                * 1024
-                * 1024,
+    fn from_file(f: &StorageFileConfig) -> Result<Self, ConfigError> {
+        let max_log_bytes_mb = f
+            .max_log_bytes_mb
+            .unwrap_or_else(|| DEFAULT_MAX_LOG_BYTES_MB);
+        Ok(Self {
+            max_log_bytes: max_log_bytes_mb.checked_mul(BYTES_PER_MB).ok_or(
+                ConfigError::LogBytesTooLarge {
+                    value: max_log_bytes_mb,
+                },
+            )?,
             max_log_files: f.max_log_files.unwrap_or_else(|| DEFAULT_MAX_LOG_FILES),
             input_history_size: f
                 .input_history_size
@@ -1637,7 +1739,7 @@ impl StorageConfig {
                 f.snapshot_timeout_secs
                     .unwrap_or_else(|| DEFAULT_SNAPSHOT_TIMEOUT_SECS),
             ),
-        }
+        })
     }
 
     /// The in-memory ceiling a live session enforces after each durable write.
@@ -1750,6 +1852,11 @@ fn push_rules(
                     });
                 }
             }
+            ScopeSet::One(scope) => rules.push(PermissionRule {
+                tool: ToolKey::native(tool),
+                scope: Some(scope.clone()),
+                effect,
+            }),
             ScopeSet::All(false) => {}
         }
     }
@@ -2057,12 +2164,17 @@ fn config_search_dirs(global: Option<&Path>) -> Vec<PathBuf> {
 }
 
 #[allow(unsafe_code)]
-fn load_env_files_with_global(cwd: &Path, global: Option<&Path>) {
+fn load_env_files_with_global(cwd: &Path, global: Option<&Path>, project_trusted: bool) {
     let mut vars = HashMap::new();
     if let Some(path) = global {
         collect_env_vars(&path.join(".env"), &mut vars);
     }
-    collect_env_vars(&cwd.join(PROJECT_DIR).join(".env"), &mut vars);
+    // Project `.env` is untrusted project configuration: it can set `PATH`,
+    // `BASH_ENV`, proxy or TLS variables for every child process. Load it only
+    // after the operator opts in with `--trust-project`.
+    if project_trusted {
+        collect_env_vars(&cwd.join(PROJECT_DIR).join(".env"), &mut vars);
+    }
 
     for (key, value) in vars {
         if std::env::var_os(&key).is_none() {
@@ -2081,8 +2193,8 @@ fn collect_env_vars(path: &Path, vars: &mut HashMap<String, String>) {
     }
 }
 
-pub fn load_env_files(cwd: &Path) {
-    load_env_files_with_global(cwd, global_dir().as_deref());
+pub fn load_env_files(cwd: &Path, project_trusted: bool) {
+    load_env_files_with_global(cwd, global_dir().as_deref(), project_trusted);
 }
 
 /// Error message shown when no Bash-compatible runtime is found on Windows.
@@ -2501,6 +2613,9 @@ mod tests {
     use tempfile::TempDir;
     use test_case::test_case;
 
+    const ENV_GLOBAL_VALUE: &str = "global";
+    const ENV_PROJECT_VALUE: &str = "project";
+
     fn plugin_enabled(enabled: bool) -> PluginFileConfig {
         PluginFileConfig {
             enabled: Some(enabled),
@@ -2638,19 +2753,29 @@ mod tests {
     }
 
     /// A fake environment holding exactly one variable, so these tests never
-    /// depend on the ambient environment of whoever runs them.
-    fn env_with(value: Option<&str>) -> impl Fn(&str) -> Result<String, std::env::VarError> + '_ {
+    /// depend on the ambient environment of whoever runs them. Every other
+    /// variable reports `NotPresent`.
+    fn env_with<'v>(
+        name: &'static str,
+        value: Option<&'v str>,
+    ) -> impl Fn(&str) -> Result<String, std::env::VarError> + 'v {
         move |var| {
-            assert_eq!(var, REDUCED_MOTION_ENV, "only this variable is read");
-            value
-                .map(ToOwned::to_owned)
-                .ok_or(std::env::VarError::NotPresent)
+            if var == name {
+                value
+                    .map(ToOwned::to_owned)
+                    .ok_or(std::env::VarError::NotPresent)
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
         }
     }
 
     #[test]
     fn reduced_motion_defaults_off_and_reads_the_file_value() {
-        let default = UiConfig::from_file_with_env(UiFileConfig::default(), env_with(None));
+        let default = UiConfig::from_file_with_env(
+            UiFileConfig::default(),
+            env_with(REDUCED_MOTION_ENV, None),
+        );
         assert!(!default.reduced_motion, "default is full motion");
 
         let opted_in = UiConfig::from_file_with_env(
@@ -2658,7 +2783,7 @@ mod tests {
                 reduced_motion: Some(true),
                 ..Default::default()
             },
-            env_with(None),
+            env_with(REDUCED_MOTION_ENV, None),
         );
         assert!(opted_in.reduced_motion, "file value is honoured");
     }
@@ -2672,7 +2797,7 @@ mod tests {
                         reduced_motion: file,
                         ..Default::default()
                     },
-                    env_with(Some(raw)),
+                    env_with(REDUCED_MOTION_ENV, Some(raw)),
                 );
                 assert_eq!(
                     ui.reduced_motion, want,
@@ -2684,7 +2809,10 @@ mod tests {
 
     #[test]
     fn reduced_motion_unset_env_falls_through_to_the_file() {
-        assert_eq!(reduced_motion_from_env(env_with(None)), None);
+        assert_eq!(
+            reduced_motion_from_env(env_with(REDUCED_MOTION_ENV, None)),
+            None
+        );
     }
 
     #[test]
@@ -2701,6 +2829,113 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(base.reduced_motion, Some(false), "overlay wins");
+    }
+
+    #[test]
+    fn notifications_default_is_bell_and_reads_the_file_value() {
+        let default = UiConfig::from_file_with_env(
+            UiFileConfig::default(),
+            env_with(NOTIFICATIONS_ENV, None),
+        );
+        assert_eq!(default.notifications, UiNotifications::Bell);
+
+        let opted_in = UiConfig::from_file_with_env(
+            UiFileConfig {
+                notifications: Some(UiNotifications::Osc9),
+                ..Default::default()
+            },
+            env_with(NOTIFICATIONS_ENV, None),
+        );
+        assert_eq!(opted_in.notifications, UiNotifications::Osc9);
+    }
+
+    #[test]
+    fn notifications_env_override_beats_the_file() {
+        for (raw, want) in [
+            ("off", UiNotifications::Off),
+            ("bell", UiNotifications::Bell),
+            ("osc9", UiNotifications::Osc9),
+            ("all", UiNotifications::All),
+        ] {
+            for file in [None, Some(UiNotifications::All)] {
+                let ui = UiConfig::from_file_with_env(
+                    UiFileConfig {
+                        notifications: file,
+                        ..Default::default()
+                    },
+                    env_with(NOTIFICATIONS_ENV, Some(raw)),
+                );
+                assert_eq!(
+                    ui.notifications, want,
+                    "{NOTIFICATIONS_ENV}={raw:?} must beat file {file:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn notifications_env_invalid_falls_through_to_the_file() {
+        let ui = UiConfig::from_file_with_env(
+            UiFileConfig {
+                notifications: Some(UiNotifications::Off),
+                ..Default::default()
+            },
+            env_with(NOTIFICATIONS_ENV, Some("loud")),
+        );
+        assert_eq!(
+            ui.notifications,
+            UiNotifications::Off,
+            "invalid env value is ignored, not silently applied"
+        );
+        assert_eq!(
+            notifications_from_env(env_with(NOTIFICATIONS_ENV, None)),
+            None
+        );
+    }
+
+    #[test_case("off", UiNotifications::Off ; "off")]
+    #[test_case("bell", UiNotifications::Bell ; "bell")]
+    #[test_case("osc9", UiNotifications::Osc9 ; "osc9")]
+    #[test_case("all", UiNotifications::All ; "all")]
+    fn notifications_deserialize(value: &str, expected: UiNotifications) {
+        let raw: RawConfig =
+            toml::from_str(&format!("[ui]\nnotifications = \"{value}\"\n")).unwrap();
+        assert_eq!(raw.ui.notifications, Some(expected));
+    }
+
+    #[test]
+    fn notifications_reject_unknown_mode() {
+        let result: Result<RawConfig, _> = toml::from_str("[ui]\nnotifications = \"loud\"\n");
+        assert!(result.is_err(), "unknown mode should be rejected");
+    }
+
+    #[test]
+    fn terminal_title_defaults_on_and_deserializes() {
+        let config = RawConfig::default().into_config(false).unwrap();
+        assert!(config.ui.terminal_title);
+
+        let raw: RawConfig = toml::from_str("[ui]\nterminal_title = false\n").unwrap();
+        assert_eq!(raw.ui.terminal_title, Some(false));
+    }
+
+    #[test]
+    fn notification_fields_merge_like_the_other_ui_flags() {
+        let mut base = UiFileConfig {
+            notifications: Some(UiNotifications::Off),
+            terminal_title: Some(false),
+            ..Default::default()
+        };
+        base.merge(UiFileConfig::default());
+        assert_eq!(base.notifications, Some(UiNotifications::Off));
+        assert_eq!(base.terminal_title, Some(false));
+
+        base.merge(UiFileConfig {
+            notifications: Some(UiNotifications::All),
+            terminal_title: Some(true),
+            ..Default::default()
+        });
+        assert_eq!(base.notifications, Some(UiNotifications::All));
+        assert_eq!(base.terminal_title, Some(true));
     }
 
     #[test]
@@ -3067,6 +3302,26 @@ mod tests {
         ));
     }
 
+    #[test_case(3, Some(3 * BYTES_PER_MB) ; "converts_to_bytes")]
+    #[test_case(u64::MAX, None ; "overflow_is_a_config_error")]
+    fn max_log_bytes_mb_conversion(max_log_bytes_mb: u64, expected_bytes: Option<u64>) {
+        let mut raw = RawConfig::default();
+        raw.storage.max_log_bytes_mb = Some(max_log_bytes_mb);
+
+        let max_log_bytes = raw
+            .into_config(false)
+            .map(|config| config.storage.max_log_bytes);
+        match (max_log_bytes, expected_bytes) {
+            (Ok(actual), Some(bytes)) => assert_eq!(actual, bytes),
+            (Err(ConfigError::LogBytesTooLarge { value }), None) => {
+                assert_eq!(value, max_log_bytes_mb);
+            }
+            (result, expected) => panic!(
+                "max_log_bytes_mb = {max_log_bytes_mb}: expected {expected:?}, got {result:?}"
+            ),
+        }
+    }
+
     #[test_case(false, DefaultEffect::Prompt ; "untrusted_project_ignored")]
     #[test_case(true, DefaultEffect::Deny ; "trusted_project_loaded")]
     fn project_permissions_respect_trust(project_trusted: bool, expected_default: DefaultEffect) {
@@ -3099,6 +3354,28 @@ mod tests {
         assert_eq!(perms.rules[1].effect, Effect::Allow);
         assert_eq!(perms.rules[1].tool, ToolKey::native("bash"));
         assert_eq!(perms.rules[1].scope.as_deref(), Some("cargo *"));
+    }
+
+    #[test_case("\"rm -rf /\"" ; "scalar_is_coerced_not_dropped")]
+    #[test_case("[\"rm -rf /\"]" ; "array_is_kept")]
+    fn tool_scope_value_becomes_deny_rule(deny_value: &str) {
+        let dir = TempDir::new().unwrap();
+        let global = global_config_dir(dir.path());
+        write_global_permissions(
+            dir.path(),
+            &format!("default = \"allow\"\n\n[bash]\ndeny = {deny_value}\n"),
+        );
+
+        let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global), true);
+        assert!(
+            perms.rules.iter().any(|r| {
+                r.tool == ToolKey::native("bash")
+                    && r.effect == Effect::Deny
+                    && r.scope.as_deref() == Some("rm -rf /")
+            }),
+            "deny = {deny_value} must become one bash deny scope instead of being dropped: {:?}",
+            perms.rules
+        );
     }
 
     #[test]
@@ -3213,7 +3490,11 @@ mod tests {
         let global = global_config_dir(dir.path());
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global), true);
         assert_eq!(perms.default, DefaultEffect::Prompt);
-        assert!(perms.rules.is_empty());
+        assert!(
+            perms.rules.is_empty(),
+            "expected empty, got {:?}",
+            perms.rules
+        );
     }
 
     #[test]
@@ -3391,7 +3672,7 @@ mod tests {
             std::env::set_var(PROCESS_WINS, "process");
         }
 
-        load_env_files_with_global(dir.path(), Some(&global));
+        load_env_files_with_global(dir.path(), Some(&global), true);
 
         assert_eq!(std::env::var(GLOBAL_ONLY).unwrap(), "global");
         assert_eq!(std::env::var(PROJECT_SHADOWS).unwrap(), "project");
@@ -3403,6 +3684,73 @@ mod tests {
             std::env::remove_var(GLOBAL_ONLY);
             std::env::remove_var(PROJECT_SHADOWS);
             std::env::remove_var(PROCESS_WINS);
+        }
+    }
+
+    #[test_case(
+        false,
+        ("TEST_N00N_UNTRUSTED_PROJECT_ENV_PROJECT", "TEST_N00N_UNTRUSTED_PROJECT_ENV_GLOBAL"),
+        None,
+        ENV_GLOBAL_VALUE ;
+        "untrusted_project_env_is_never_applied"
+    )]
+    #[test_case(
+        true,
+        ("TEST_N00N_TRUSTED_PROJECT_ENV_PROJECT", "TEST_N00N_TRUSTED_PROJECT_ENV_GLOBAL"),
+        Some(ENV_PROJECT_VALUE),
+        ENV_PROJECT_VALUE ;
+        "trusted_project_env_is_applied"
+    )]
+    #[allow(unsafe_code)]
+    fn project_env_respects_trust(
+        project_trusted: bool,
+        (project_only, global_only): (&str, &str),
+        expected_project_only: Option<&str>,
+        expected_global_only: &str,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let global = global_config_dir(dir.path());
+        fs::create_dir_all(&global).unwrap();
+        fs::write(
+            global.join(".env"),
+            format!("{global_only}={ENV_GLOBAL_VALUE}"),
+        )
+        .unwrap();
+
+        let n00n_dir = dir.path().join(PROJECT_DIR);
+        fs::create_dir_all(&n00n_dir).unwrap();
+        fs::write(
+            n00n_dir.join(".env"),
+            format!("{project_only}={ENV_PROJECT_VALUE}\n{global_only}={ENV_PROJECT_VALUE}"),
+        )
+        .unwrap();
+
+        // SAFETY: each case uses its own variable names; process env is the
+        // observable side effect under test.
+        unsafe {
+            std::env::remove_var(project_only);
+            std::env::remove_var(global_only);
+        }
+
+        load_env_files_with_global(dir.path(), Some(&global), project_trusted);
+
+        assert_eq!(
+            std::env::var_os(project_only)
+                .map(|value| value.into_string().unwrap())
+                .as_deref(),
+            expected_project_only,
+            "project .env must set process environment variables only when trusted"
+        );
+        assert_eq!(
+            std::env::var(global_only).unwrap(),
+            expected_global_only,
+            "project .env may shadow the global .env only when trusted"
+        );
+
+        // SAFETY: cleanup of the variables set earlier in this test.
+        unsafe {
+            std::env::remove_var(project_only);
+            std::env::remove_var(global_only);
         }
     }
 
@@ -3707,7 +4055,11 @@ mod tests {
             config.plugins.opts["edit"]["edit_lines"],
             serde_json::json!(true)
         );
-        assert!(config.agent.disabled_tools.is_empty());
+        assert!(
+            config.agent.disabled_tools.is_empty(),
+            "expected empty, got {:?}",
+            config.agent.disabled_tools
+        );
     }
 
     #[test]
@@ -3908,8 +4260,16 @@ mod tests {
         let global = global_config_dir(dir.path());
         write_global_permissions(dir.path(), "[\"\"]\ndefault = \"allow\"\nallow = [\"x\"]\n");
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global), true);
-        assert!(perms.rules.is_empty());
-        assert!(perms.tool_defaults.is_empty());
+        assert!(
+            perms.rules.is_empty(),
+            "expected empty, got {:?}",
+            perms.rules
+        );
+        assert!(
+            perms.tool_defaults.is_empty(),
+            "expected empty, got {:?}",
+            perms.tool_defaults
+        );
     }
 
     #[cfg(unix)]

@@ -17,10 +17,11 @@
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       packageName = cargoToml.package.name;
       version = cargoToml.workspace.package.version;
+      # nixpkgs unstable (26.11+) dropped x86_64-darwin, so that system is
+      # omitted; its flake outputs would throw during evaluation.
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       forEachSystem =

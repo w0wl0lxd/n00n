@@ -25,6 +25,7 @@ const HINT_DENY_ROW: &[(&str, &str)] = &[
     ("n", "Deny"),
     ("d", "Deny-always (project)"),
     ("D", "Deny-always (all)"),
+    ("Esc", "Deny"),
 ];
 
 const CONFIRM_ALLOW_PROJECT_HINTS: &[(&str, &str)] = &[
@@ -99,7 +100,7 @@ pub enum PermissionPrompt {
         subagent_id: Option<String>,
         allow_scopes: Vec<String>,
         state: PromptState,
-        buffer: TextBuffer,
+        buffer: Box<TextBuffer>,
     },
 }
 
@@ -135,7 +136,7 @@ impl PermissionPrompt {
             subagent_id,
             allow_scopes,
             state: PromptState::Normal,
-            buffer: TextBuffer::new(""),
+            buffer: Box::new(TextBuffer::new("")),
         };
     }
 
@@ -164,7 +165,7 @@ impl PermissionPrompt {
                     }
                 }
                 KeyCode::Esc => {
-                    *buffer = TextBuffer::new("");
+                    **buffer = TextBuffer::new("");
                     *state = PromptState::Normal;
                     None
                 }
@@ -223,6 +224,7 @@ impl PermissionPrompt {
                 *state = PromptState::ConfirmAllowSession;
                 None
             }
+            KeyCode::Esc => Some(PermissionAnswer::Deny),
             _ => None,
         }
     }
@@ -387,6 +389,27 @@ mod tests {
     }
 
     #[test]
+    fn esc_denies_in_normal_state() {
+        let mut prompt = open_prompt();
+        assert_eq!(
+            prompt.handle_key(key(KeyCode::Esc)),
+            Some(PermissionAnswer::Deny)
+        );
+    }
+
+    #[test]
+    fn esc_in_confirm_state_backs_out_not_denies() {
+        let mut prompt = open_prompt();
+        prompt.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(prompt.handle_key(key(KeyCode::Esc)), None);
+        if let PermissionPrompt::Open { state, .. } = &prompt {
+            assert_eq!(*state, PromptState::Normal);
+        } else {
+            panic!("expected Open");
+        }
+    }
+
+    #[test]
     fn n_goes_to_deny_editing() {
         let mut prompt = open_prompt();
         assert_eq!(prompt.handle_key(key(KeyCode::Char('n'))), None);
@@ -405,7 +428,11 @@ mod tests {
         assert_eq!(prompt.handle_key(key(KeyCode::Esc)), None);
         if let PermissionPrompt::Open { state, buffer, .. } = &prompt {
             assert_eq!(*state, PromptState::Normal);
-            assert!(buffer.value().is_empty());
+            let n00n_empty_check_79 = buffer.value();
+            assert!(
+                n00n_empty_check_79.is_empty(),
+                "expected empty, got {n00n_empty_check_79:?}"
+            );
         } else {
             panic!("expected Open");
         }

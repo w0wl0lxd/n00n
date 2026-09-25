@@ -181,7 +181,7 @@ mod tests {
             "destructive confirmation requires interactive stdin; rerun with --no-confirm to proceed"
         );
         assert_eq!(input.position(), 0);
-        assert!(prompt.is_empty());
+        assert!(prompt.is_empty(), "expected empty, got {prompt:?}");
     }
 
     #[test]

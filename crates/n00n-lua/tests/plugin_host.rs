@@ -7590,7 +7590,12 @@ fn bundled_todo_focus_uses_persisted_session_state() {
     let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
     ctx.identity = Some(background.clone());
     smol::block_on(invocation.execute(&ctx)).output.unwrap();
-    assert!(host.hint_reader().load().entries.is_empty());
+    let n00n_empty_check_44 = host.hint_reader().load();
+    assert!(
+        n00n_empty_check_44.entries.is_empty(),
+        "expected empty, got {:?}",
+        n00n_empty_check_44.entries
+    );
 
     let snapshot = handle.capture_state(&background, 1).unwrap();
     handle.fire_autocmd(
@@ -8126,6 +8131,30 @@ fn job_callbacks_fire_while_command_handler_parked() {
         .recv_timeout(Duration::from_secs(5))
         .expect("job callbacks starved while command handler was parked");
     assert!(matches!(action, n00n_lua::UiAction::Flash(msg) if msg == "job:hi"));
+}
+
+#[test]
+fn ui_notify_forwards_message_to_the_event_loop() {
+    let host = PluginHost::new(fresh_registry()).unwrap();
+    host.load_source(
+        "p",
+        r#"
+        n00n.api.register_command({
+            name = "/ping",
+            description = "sends a notification",
+            handler = function() n00n.ui.notify("turn done") end,
+        })
+        "#,
+    )
+    .unwrap();
+    let rx = host.ui_action_rx().unwrap();
+    let handle = host.event_handle().unwrap();
+    handle.run_command(Arc::from("p"), Arc::from("/ping"), String::new(), None);
+
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("n00n.ui.notify did not reach the UI action channel");
+    assert!(matches!(action, n00n_lua::UiAction::Notify(msg) if msg == "turn done"));
 }
 
 #[test]

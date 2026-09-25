@@ -465,6 +465,7 @@ pub enum UiAction {
         close_requested: Arc<AtomicBool>,
     },
     Flash(String),
+    Notify(String),
     OpenEditor {
         path: PathBuf,
         reply_tx: flume::Sender<i32>,
@@ -672,7 +673,12 @@ mod tests {
     #[test]
     fn hint_snapshot_publish_and_read() {
         let (writer, reader) = HintWriter::new();
-        assert!(reader.load().entries.is_empty());
+        let n00n_empty_check_28 = reader.load();
+        assert!(
+            n00n_empty_check_28.entries.is_empty(),
+            "expected empty, got {:?}",
+            n00n_empty_check_28.entries
+        );
 
         writer.publish(vec![(
             Arc::from("plugA"),

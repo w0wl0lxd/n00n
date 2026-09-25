@@ -1717,7 +1717,11 @@ mod tests {
         let mut events = Vec::new();
         store.kill(id, Some(FOREIGN_TASK_ID), TEST_PLUGIN);
         store.drain_events(&owner, &mut events);
-        assert!(events.is_empty());
+        assert!(
+            events.is_empty(),
+            "expected empty, got {} events",
+            events.len()
+        );
 
         store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
         store.kill(id, Some(OWNER_TASK_ID), TEST_PLUGIN);
@@ -1786,7 +1790,11 @@ mod tests {
         ];
 
         assert!(deliver_task_job_events(&lua, &mut events).is_err());
-        assert!(events.is_empty());
+        assert!(
+            events.is_empty(),
+            "expected empty, got {} events",
+            events.len()
+        );
         assert!(lua.globals().get::<bool>("later_callback_fired").unwrap());
         assert!(with_jobs(&lua, |store| store.is_empty(&owner)));
     }

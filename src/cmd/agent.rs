@@ -391,7 +391,7 @@ fn prepare_agent_env(opts: &AgentRunOptions<'_>) -> Result<PreparedEnv> {
     n00n_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-    load_env_files(&cwd);
+    load_env_files(&cwd, opts.project_trusted);
 
     let mut plugin_host =
         PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !opts.no_jit)
@@ -1694,7 +1694,7 @@ mod tests {
 
             collect_owned_run_events(&event_rx, 7, &output_tx).await;
 
-            assert!(event_rx.is_empty());
+            assert!(event_rx.is_empty(), "expected empty, got {event_rx:?}");
         });
     }
 
@@ -1811,7 +1811,7 @@ mod tests {
         let _agents_dir = state_dir.ensure_subdir(AGENTS_SUBDIR).unwrap();
 
         let states = list_agent_states(&state_dir).unwrap();
-        assert!(states.is_empty());
+        assert!(states.is_empty(), "expected empty, got {states:?}");
     }
 
     #[test]

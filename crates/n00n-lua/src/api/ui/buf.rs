@@ -519,7 +519,9 @@ fn hex_color((r, g, b): (u8, u8, u8)) -> String {
 
 fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
     let s = s.strip_prefix('#')?;
-    if s.len() != 6 {
+    // Hex digits are ASCII; a byte-length check alone lets a multi-byte
+    // character straddle a slice boundary and panic below.
+    if s.len() != 6 || !s.is_ascii() {
         return None;
     }
     let r = u8::from_str_radix(&s[0..2], 16).ok()?;
@@ -596,6 +598,7 @@ mod tests {
     #[test_case("#ff00",   None                 ; "too_short")]
     #[test_case("#ff000000", None               ; "too_long_8_digits")]
     #[test_case("",        None                 ; "empty_string")]
+    #[test_case("#\u{1F600}12", None                 ; "multibyte_char_straddles_hex_boundary")]
     fn hex_color_parsing(input: &str, expected: Option<(u8, u8, u8)>) {
         assert_eq!(parse_hex_color(input), expected);
     }
@@ -646,7 +649,11 @@ mod tests {
         let lua = test_lua();
         let t = lua.create_table().unwrap();
         let line = parse_line(&LuaValue::Table(t)).unwrap();
-        assert!(line.spans.is_empty());
+        assert!(
+            line.spans.is_empty(),
+            "expected empty, got {:?}",
+            line.spans
+        );
     }
 
     #[test]
@@ -879,7 +886,11 @@ mod tests {
                 ..InlineStyle::default()
             })
         );
-        assert!(lines[3].spans.is_empty());
+        assert!(
+            lines[3].spans.is_empty(),
+            "expected empty, got {:?}",
+            lines[3].spans
+        );
     }
 
     #[test]

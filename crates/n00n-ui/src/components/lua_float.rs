@@ -1202,7 +1202,7 @@ mod tests {
         relay.join().unwrap();
 
         assert!(close_requested.load(Ordering::Acquire));
-        assert!(command_rx.is_empty());
+        assert!(command_rx.is_empty(), "expected empty, got {command_rx:?}");
     }
 
     #[test]

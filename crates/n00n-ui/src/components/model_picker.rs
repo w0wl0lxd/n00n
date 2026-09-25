@@ -398,7 +398,11 @@ mod tests {
         let entry = parse_model_entry("anthropic/claude-sonnet-4-20250514").unwrap();
         assert_eq!(entry.id, "claude-sonnet-4-20250514");
         assert_eq!(entry.provider_display, "Anthropic");
-        assert!(!entry.detail.is_empty());
+        assert!(
+            !entry.detail.is_empty(),
+            "expected non-empty, got {:?}",
+            entry.detail
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::must_use_candidate)]
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -299,8 +300,9 @@ impl Client {
             index.update(repo, |_| {}).map_err(map_search_err)?;
         }
 
+        let indexed_path = repo_relative_path(repo, file_path)?;
         let results = index
-            .find_related(file_path, line)
+            .find_related(&indexed_path, line)
             .map_err(map_search_err)?;
         Ok(format_results(
             &results
@@ -442,6 +444,32 @@ fn format_results(results: &[SearchResult]) -> String {
         .join("\n\n")
 }
 
+/// The index stores paths relative to the canonical repo root, so an absolute
+/// `file_path` is resolved and made relative before lookup.
+fn repo_relative_path(repo: &Path, file_path: &str) -> Result<String, SembleError> {
+    if !Path::new(file_path).is_absolute() {
+        return Ok(file_path.to_owned());
+    }
+    let canonical_repo = canonicalize(repo)?;
+    let canonical_file = canonicalize(Path::new(file_path))?;
+    let relative =
+        canonical_file
+            .strip_prefix(&canonical_repo)
+            .map_err(|_| SembleError::PathOutsideRepo {
+                path: file_path.to_owned(),
+                repo: canonical_repo.display().to_string(),
+            })?;
+    Ok(relative.to_string_lossy().into_owned())
+}
+
+fn canonicalize(path: &Path) -> Result<PathBuf, SembleError> {
+    path.canonicalize()
+        .map_err(|source| SembleError::ResolvePath {
+            path: path.display().to_string(),
+            source,
+        })
+}
+
 fn map_search_err(error: SearchError) -> SembleError {
     match error {
         SearchError::NotSupported => SembleError::Cli {
@@ -458,13 +486,22 @@ pub enum SembleError {
 
     #[error("semble error: {message}")]
     Cli { message: String },
+
+    #[error("file path {path} is outside repository {repo}")]
+    PathOutsideRepo { path: String, repo: String },
+
+    #[error("cannot resolve path {path}: {source}")]
+    ResolvePath { path: String, source: io::Error },
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Client, FindRelatedRequest, Mode, SearchRequest};
+    use super::{Client, FindRelatedRequest, Mode, SearchRequest, SembleError};
     use std::fs;
     use tempfile::tempdir;
+
+    const ANCHOR_FILE: &str = "anchor.rs";
+    const ANCHOR_SOURCE: &str = "fn anchor() {}\n\nfn distant_symbol() {}";
 
     #[test]
     fn search_indexes_and_returns_bm25_results() {
@@ -529,6 +566,41 @@ mod tests {
         })
         .expect("find_related");
         assert!(output.contains("a.rs"));
+    }
+
+    #[test]
+    fn find_related_accepts_absolute_path_inside_repo() {
+        let repo = tempdir().expect("tempdir");
+        let root = repo.path();
+        fs::write(root.join(ANCHOR_FILE), ANCHOR_SOURCE).expect("write");
+        let absolute = root.join(ANCHOR_FILE);
+
+        let output = Client::find_related(&FindRelatedRequest {
+            repo: root,
+            file_path: absolute.to_str().expect("utf-8 temp path"),
+            line: 1,
+            top_k: Some(2),
+        })
+        .expect("find_related");
+        assert!(output.contains(ANCHOR_FILE));
+    }
+
+    #[test]
+    fn find_related_rejects_absolute_path_outside_repo() {
+        let repo = tempdir().expect("tempdir");
+        let outside = tempdir().expect("tempdir");
+        fs::write(repo.path().join(ANCHOR_FILE), ANCHOR_SOURCE).expect("write");
+        let foreign = outside.path().join(ANCHOR_FILE);
+        fs::write(&foreign, ANCHOR_SOURCE).expect("write");
+
+        let error = Client::find_related(&FindRelatedRequest {
+            repo: repo.path(),
+            file_path: foreign.to_str().expect("utf-8 temp path"),
+            line: 1,
+            top_k: Some(2),
+        })
+        .expect_err("outside path must be rejected");
+        assert!(matches!(error, SembleError::PathOutsideRepo { .. }));
     }
 
     // T072: Test for upstream CLI wrapper
