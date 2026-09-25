@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
@@ -483,6 +484,7 @@ impl<'h> Agent<'h> {
             openai_prompt_cache_mode: None,
             protect_history_replay,
             allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
@@ -675,6 +677,11 @@ impl<'h> Agent<'h> {
         }
         let mut opts = self.opts.clone();
         opts.allow_history_replay = self.permissions.is_yolo();
+        let approved_history_replay_flag = Arc::new(AtomicBool::new(false));
+        opts.allow_history_replay_live = Some(history_replay_live_check(
+            Arc::clone(&self.permissions),
+            Arc::clone(&approved_history_replay_flag),
+        ));
         let mut approved_history_replay = false;
         let mut approved_ambiguous_replay = false;
         let response = loop {
@@ -683,6 +690,7 @@ impl<'h> Agent<'h> {
                     self.approve_history_replay(reason).await?;
                     approved_history_replay = true;
                     opts.allow_history_replay = true;
+                    approved_history_replay_flag.store(true, Ordering::Relaxed);
                 }
                 Err(error @ AgentError::RequestSent { .. }) if !approved_ambiguous_replay => {
                     let metadata = match &error {
@@ -1488,6 +1496,15 @@ fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) ->
     format!(
         "Replay one provider request ({phase}; response ID {response_id}; output {output}). This may duplicate output or charges"
     )
+}
+
+/// Live YOLO check for `RequestOptions::allow_history_replay_live`; an
+/// explicit approval this turn stays sticky even if YOLO is toggled off after.
+fn history_replay_live_check(
+    permissions: Arc<PermissionManager>,
+    approved_this_turn: Arc<AtomicBool>,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    Arc::new(move || permissions.is_yolo() || approved_this_turn.load(Ordering::Relaxed))
 }
 
 fn history_replay_scope(
