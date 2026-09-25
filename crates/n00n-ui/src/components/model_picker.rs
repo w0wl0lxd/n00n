@@ -156,7 +156,15 @@ impl ModelPicker {
         }
         drop(guard);
         self.dirty = false;
-        let (entries, idx) = self.load_entries();
+        let highlighted_spec = self.picker.selected_item().map(|e| e.spec.clone());
+        let (entries, current_idx) = self.load_entries();
+        let idx = match highlighted_spec
+            .as_deref()
+            .and_then(|spec| entries.iter().position(|e| e.spec == spec))
+        {
+            Some(preserved) => preserved,
+            None => current_idx,
+        };
         self.picker.replace_items(entries);
         self.picker.select(idx);
     }
@@ -405,6 +413,27 @@ mod tests {
         let action = p.handle_key(kb::THINKING_ALT.to_key_event());
         assert!(matches!(action, ModelPickerAction::CycleThinking(_)));
         assert!(p.is_open());
+    }
+
+    #[test]
+    fn thinking_cycle_preserves_highlighted_selection_across_refresh() {
+        let mut p = ModelPicker::new(test_models());
+        p.open("anthropic/claude-sonnet-4-20250514");
+
+        p.handle_key(key(KeyCode::Down));
+        let action = p.handle_key(kb::THINKING_ALT.to_key_event());
+        assert!(
+            matches!(action, ModelPickerAction::CycleThinking(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
+            "Alt+T should target the highlighted non-current model"
+        );
+
+        p.try_refresh();
+
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
+            "highlight should stay on the model that was cycled, not jump back to current"
+        );
     }
 
     #[test_case(key(KeyCode::Char('!')),           ModelTier::Strong     ; "legacy_bang_strong")]
