@@ -540,6 +540,12 @@ fn full_history_replay_required(
         && !allow_history_replay
 }
 
+/// Callers must pass `opts.history_replay_allowed()`, not the attempt-scoped
+/// `allow_history_replay` flag, which `run_codex_attempt` pins to `true`.
+fn full_history_send_allowed(protect_history_replay: bool, history_replay_allowed: bool) -> bool {
+    !protect_history_replay || history_replay_allowed
+}
+
 fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAttemptError {
     super::websocket::WebSocketAttemptError::transport(
         error,
@@ -1741,7 +1747,10 @@ impl OpenAi {
         let mut full_history_body = None;
         let full_history_fallback_available = previous_response_id.is_some()
             && !persist_response_chain
-            && (!opts.protect_history_replay || opts.allow_history_replay);
+            && full_history_send_allowed(
+                opts.protect_history_replay,
+                opts.history_replay_allowed(),
+            );
         log_responses_request(
             "websocket",
             &body,
@@ -1791,8 +1800,10 @@ impl OpenAi {
                 Ok((response_id, response)) => (response_id, response, true),
                 Err(error) if should_fallback_to_http(&error) => {
                     if previous_response_id.is_some()
-                        && opts.protect_history_replay
-                        && !opts.allow_history_replay
+                        && !full_history_send_allowed(
+                            opts.protect_history_replay,
+                            opts.history_replay_allowed(),
+                        )
                     {
                         return self
                             .finish_codex_attempt(
@@ -2424,7 +2435,7 @@ impl Provider for OpenAi {
                     return attempt.result;
                 }
 
-                if opts.protect_history_replay && !opts.allow_history_replay {
+                if opts.protect_history_replay && !opts.history_replay_allowed() {
                     return Err(AgentError::HistoryReplayRequired {
                         reason: HistoryReplayReason::ContinuationNotFound,
                     });
@@ -5635,6 +5646,132 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::large_futures)]
+    #[allow(clippy::too_many_lines)]
+    fn stale_previous_response_id_requires_approval_when_live_check_denies_replay() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let live_allow = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let server_live_allow = Arc::clone(&live_allow);
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let Some(Ok(WsMessage::Text(first))) = socket.next().await else {
+                    panic!("expected initial response.create");
+                };
+                let first: Value = serde_json::from_str(&first).unwrap();
+                assert!(first.get("previous_response_id").is_none());
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "response.completed",
+                            "response": {"id": "resp_stale", "status": "completed"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+
+                let Some(Ok(WsMessage::Ping(payload))) = socket.next().await else {
+                    panic!("expected continuation preflight ping");
+                };
+                socket.send(WsMessage::Pong(payload)).await.unwrap();
+                let Some(Ok(WsMessage::Text(continuation))) = socket.next().await else {
+                    panic!("expected continuation response.create");
+                };
+                let continuation: Value = serde_json::from_str(&continuation).unwrap();
+                assert_eq!(continuation["previous_response_id"], "resp_stale");
+                // Simulates YOLO being disabled mid-turn, after `opts.allow_history_replay`
+                // was already snapshotted true, but before the fallback decision runs.
+                server_live_allow.store(false, Ordering::Relaxed);
+                socket
+                    .send(WsMessage::Text(
+                        serde_json::json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "code": "previous_response_not_found",
+                                "message": "Previous response not found"
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            });
+
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let provider = OpenAi::with_auth_options(
+                Arc::new(Mutex::new(auth)),
+                crate::providers::Timeouts {
+                    connect: Duration::from_secs(2),
+                    stream: Duration::from_secs(2),
+                    low_speed: Duration::from_secs(2),
+                },
+                OpenAiOptions::codex(),
+            )
+            .unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
+            let tools = serde_json::json!([]);
+            let session = SessionRef::generate();
+            let (event_tx, _) = flume::unbounded();
+            let first_messages = [Message::user("hello".into())];
+            provider
+                .stream_message(
+                    &model,
+                    &first_messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    RequestOptions::default(),
+                    Some(&session),
+                )
+                .await
+                .unwrap();
+
+            let messages = [
+                Message::user("hello".into()),
+                assistant("hi"),
+                Message::user("what next".into()),
+            ];
+            let request_live_allow = Arc::clone(&live_allow);
+            let opts = RequestOptions {
+                protect_history_replay: true,
+                allow_history_replay: true,
+                allow_history_replay_live: Some(Arc::new(move || {
+                    request_live_allow.load(Ordering::Relaxed)
+                })),
+                ..Default::default()
+            };
+            let result = provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::from(""),
+                    &tools,
+                    &event_tx,
+                    opts,
+                    Some(&session),
+                )
+                .await;
+            server.await;
+
+            assert!(matches!(
+                result,
+                Err(AgentError::HistoryReplayRequired {
+                    reason: HistoryReplayReason::ContinuationNotFound
+                })
+            ));
+        });
+    }
+
+    #[test]
     fn full_history_replay_requires_explicit_approval() {
         assert!(full_history_replay_required(None, 2, true, false));
         assert!(!full_history_replay_required(None, 2, false, false));
@@ -5646,6 +5783,20 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test_case(false, false, true  ; "protection_disabled_always_allows")]
+    #[test_case(true,  true,  true  ; "protection_enabled_live_check_allows")]
+    #[test_case(true,  false, false ; "protection_enabled_live_check_denies")]
+    fn full_history_send_allowed_follows_live_check_not_stale_flag(
+        protect_history_replay: bool,
+        history_replay_allowed: bool,
+        expected: bool,
+    ) {
+        assert_eq!(
+            full_history_send_allowed(protect_history_replay, history_replay_allowed),
+            expected
+        );
     }
 
     #[test]

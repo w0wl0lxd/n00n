@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
@@ -137,9 +138,31 @@ pub fn resolve_compaction_model(
             openai_options,
         )
     {
+        // Compaction budgeting (target/budget/remaining) must never exceed the
+        // main chat model's context window: the retained transcript is fed back
+        // to that model, and the summarizer request must fit the compaction
+        // model's own window. The minimum satisfies both constraints. Only
+        // pricing and streaming use the compaction model's other fields.
+        m.context_window =
+            effective_compaction_context_window(m.context_window, model.context_window);
         return (Arc::from(p), m);
     }
     (Arc::clone(provider), model.clone())
+}
+
+/// Caps the compaction model's context window at the main model's, without
+/// letting a zero (undiscovered) window on either side collapse the budget
+/// to zero. A `0` means "unknown", not "no capacity": falling through to
+/// `min` when the compaction model reports `0` would zero out the whole
+/// compaction budget even though the main model's window is known and
+/// nonzero.
+#[must_use]
+fn effective_compaction_context_window(compaction_window: u32, main_window: u32) -> u32 {
+    match (compaction_window, main_window) {
+        (0, main) => main,
+        (compaction, 0) => compaction,
+        (compaction, main) => compaction.min(main),
+    }
 }
 
 enum TurnOutcome {
@@ -479,7 +502,8 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             openai_prompt_cache_mode: None,
             protect_history_replay,
-            allow_history_replay: self.permissions.is_yolo(),
+            allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
@@ -596,12 +620,13 @@ impl<'h> Agent<'h> {
 
     /// History replay resends the full transcript. In YOLO mode this is
     /// auto-approved because the cost is bounded and the operation is idempotent.
-    /// The flag `allow_history_replay` is set from `is_yolo()` at `run()` start and
-    /// flipped after an explicit approval, so this bypasses the permission prompt
-    /// only when that flag or YOLO is set. Ambiguous replay intentionally does
-    /// NOT auto-approve in YOLO — it may duplicate provider charges/output.
+    /// YOLO is checked live so a mid-run toggle takes effect immediately; the
+    /// per-request `allow_history_replay` flag is recomputed from `is_yolo()`
+    /// each turn and flipped after an explicit approval. Ambiguous replay
+    /// intentionally does NOT auto-approve in YOLO — it may duplicate provider
+    /// charges/output.
     async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
-        if self.opts.allow_history_replay || self.permissions.is_yolo() {
+        if self.permissions.is_yolo() {
             return Ok(());
         }
         let scope = history_replay_scope(
@@ -676,6 +701,12 @@ impl<'h> Agent<'h> {
             return Err(AgentError::Cancelled);
         }
         let mut opts = self.opts.clone();
+        opts.allow_history_replay = self.permissions.is_yolo();
+        let approved_history_replay_flag = Arc::new(AtomicBool::new(false));
+        opts.allow_history_replay_live = Some(history_replay_live_check(
+            Arc::clone(&self.permissions),
+            Arc::clone(&approved_history_replay_flag),
+        ));
         let mut approved_history_replay = false;
         let mut approved_ambiguous_replay = false;
         let response = loop {
@@ -684,6 +715,7 @@ impl<'h> Agent<'h> {
                     self.approve_history_replay(reason).await?;
                     approved_history_replay = true;
                     opts.allow_history_replay = true;
+                    approved_history_replay_flag.store(true, Ordering::Relaxed);
                 }
                 Err(error @ AgentError::RequestSent { .. }) if !approved_ambiguous_replay => {
                     let metadata = match &error {
@@ -1321,19 +1353,12 @@ impl<'h> Agent<'h> {
             return Err(AgentError::Cancelled);
         }
         self.event_tx.send(AgentEvent::AutoCompacting)?;
-        let (compact_provider, mut compact_model) = resolve_compaction_model(
+        let (compact_provider, compact_model) = resolve_compaction_model(
             &self.provider,
             &self.model,
             self.timeouts,
             self.openai_options.clone(),
         );
-        // Budgeting (target/budget/remaining) must use the main chat model's
-        // context window, not the compaction model's window which may differ
-        // (e.g. a cheaper compaction tier with a larger window would otherwise
-        // under-truncate, or a smaller window would over-truncate). Only pricing
-        // and streaming should use the compaction model.
-        let main_context_window = self.model.context_window;
-        compact_model.context_window = main_context_window;
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         #[cfg(test)]
         let run_hooks = matches!(self.test_compaction_hooks, TestCompactionHooks::Enabled);
@@ -1528,6 +1553,15 @@ fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) ->
     format!(
         "Replay one provider request ({phase}; response ID {response_id}; output {output}). This may duplicate output or charges"
     )
+}
+
+/// Live YOLO check for `RequestOptions::allow_history_replay_live`; an
+/// explicit approval this turn stays sticky even if YOLO is toggled off after.
+fn history_replay_live_check(
+    permissions: Arc<PermissionManager>,
+    approved_this_turn: Arc<AtomicBool>,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    Arc::new(move || permissions.is_yolo() || approved_this_turn.load(Ordering::Relaxed))
 }
 
 fn history_replay_scope(
@@ -3034,6 +3068,22 @@ mod tests {
         model.context_window = context_window;
         model.max_output_tokens = Some(max_output_tokens);
         model
+    }
+
+    #[test_case(0,       200_000, 200_000 ; "zero_compaction_window_falls_back_to_main")]
+    #[test_case(50_000,  0,       50_000  ; "zero_main_window_keeps_compaction_window")]
+    #[test_case(0,       0,       0       ; "both_zero_stays_zero")]
+    #[test_case(80_000,  200_000, 80_000  ; "smaller_compaction_window_wins")]
+    #[test_case(200_000, 80_000,  80_000  ; "smaller_main_window_wins")]
+    fn effective_compaction_context_window_never_zeros_out_a_known_budget(
+        compaction_window: u32,
+        main_window: u32,
+        expected: u32,
+    ) {
+        assert_eq!(
+            effective_compaction_context_window(compaction_window, main_window),
+            expected
+        );
     }
 
     #[track_caller]

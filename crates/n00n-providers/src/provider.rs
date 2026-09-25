@@ -407,6 +407,17 @@ pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provi
     from_model_with_openai_options(model, timeouts, OpenAiOptions::default())
 }
 
+/// Applies the same thinking-capability override `Provider::adjust_model` would,
+/// without an authenticated provider instance (unlike `from_model`, which needs
+/// one and fails without credentials).
+pub fn adjust_thinking_capability(model: &mut Model) {
+    match ProviderKind::from_str(&model.provider) {
+        Ok(ProviderKind::Mistral) => crate::providers::mistral::adjust_model(model),
+        Ok(ProviderKind::Zai) => crate::providers::zai::adjust_model(model),
+        _ => {}
+    }
+}
+
 /// Create a provider for a resolved model with OpenAI-compatible options.
 ///
 /// # Errors

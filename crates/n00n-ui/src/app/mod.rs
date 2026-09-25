@@ -64,6 +64,7 @@ use n00n_agent::{
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::model_registry::{model_registry, set_thinking_and_persist};
+use n00n_providers::provider::adjust_thinking_capability;
 use n00n_providers::{Effort, Message, Model, ModelPricing, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
@@ -502,6 +503,44 @@ impl App {
         self.flash(format!("Thinking: {next}"));
     }
 
+    /// Cycle the remembered thinking level for `spec` (the model highlighted in
+    /// the picker, which may differ from the session model). The session
+    /// thinking is updated only when the highlighted model is the current one.
+    fn cycle_remembered_thinking(&mut self, spec: &str) {
+        let is_current = self.state.model.spec() == spec;
+        let supports = if is_current {
+            self.state.model.supports_thinking()
+        } else {
+            Model::from_spec(spec).is_ok_and(|mut m| {
+                adjust_thinking_capability(&mut m);
+                m.supports_thinking()
+            })
+        };
+        if !supports {
+            self.flash("Thinking requires a model that supports it".into());
+            return;
+        }
+        let current: ThinkingConfig = if is_current {
+            self.state.thinking
+        } else {
+            model_registry()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remembered_thinking(spec)
+                .map_or(ThinkingConfig::Off, Into::into)
+        };
+        let idx = THINKING_CYCLE
+            .iter()
+            .position(|&c| c == current)
+            .unwrap_or_else(|| 0);
+        let next = THINKING_CYCLE[(idx + 1) % THINKING_CYCLE.len()];
+        set_thinking_and_persist(spec.to_owned(), next.into(), &self.storage);
+        if is_current {
+            self.state.thinking = next;
+        }
+        self.flash(format!("Thinking: {next}"));
+    }
+
     pub(crate) fn record_recent_model(&mut self, spec: &str) {
         let recents = n00n_storage::model::push_recent(&self.storage, spec);
         self.model_picker.set_recents(recents);
@@ -901,8 +940,8 @@ impl App {
                 ModelPickerAction::UnassignTier(spec, tier) => {
                     vec![Action::UnassignTier(spec, tier)]
                 }
-                ModelPickerAction::CycleThinking => {
-                    self.cycle_thinking();
+                ModelPickerAction::CycleThinking(spec) => {
+                    self.cycle_remembered_thinking(&spec);
                     vec![]
                 }
                 ModelPickerAction::Close => {
