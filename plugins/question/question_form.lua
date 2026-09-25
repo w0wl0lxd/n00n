@@ -512,11 +512,12 @@ local function render_selecting(state, width)
       opt.description,
       usable
     )
+    local opt_rows_start = #lines
     for _, row in ipairs(opt_rows) do
       lines[#lines + 1] = row
     end
     if is_cur then
-      focus_row = #lines
+      focus_row = opt_rows_start + 1
     end
 
     if i < #opts then
@@ -551,12 +552,13 @@ local function render_selecting(state, width)
       custom_desc,
       usable
     )
+    local custom_rows_start = #lines
     for _, row in ipairs(custom_rows) do
       lines[#lines + 1] = row
     end
 
     if custom_cur then
-      focus_row = #lines
+      focus_row = custom_rows_start + 1
     end
   end
 
