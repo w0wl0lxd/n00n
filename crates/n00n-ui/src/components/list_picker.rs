@@ -276,24 +276,23 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     /// Selects the first item matching `predicate`, resolved through the
-    /// active filter. Unlike `select`, whose argument indexes `items`
-    /// directly, this stays correct when a search has narrowed `filtered`.
-    // clippy would rewrite this to the workspace's banned `Option::unwrap_or`;
-    // the None arm is a named fallback, not a silent default.
-    #[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
-    pub fn select_by(&mut self, predicate: impl Fn(&T) -> bool) {
-        if let Some(s) = self.state.as_mut() {
-            let position = match s
-                .filtered
-                .iter()
-                .position(|&raw_idx| predicate(&s.items[raw_idx]))
-            {
-                Some(matched) => matched,
-                None => 0,
-            };
-            s.selected = position.min(s.filtered.len().saturating_sub(1));
-            s.ensure_visible();
-        }
+    /// active filter. Returns `false` and leaves the selection untouched on
+    /// no match, so callers can chain a named fallback.
+    #[must_use]
+    pub fn select_by(&mut self, predicate: impl Fn(&T) -> bool) -> bool {
+        let Some(s) = self.state.as_mut() else {
+            return false;
+        };
+        let Some(position) = s
+            .filtered
+            .iter()
+            .position(|&raw_idx| predicate(&s.items[raw_idx]))
+        else {
+            return false;
+        };
+        s.selected = position;
+        s.ensure_visible();
+        true
     }
 
     pub fn set_error_text(&mut self, text: Option<String>) {
@@ -980,9 +979,19 @@ mod tests {
 
         // "Alpha" sits at raw index 2 but filtered position 0; a raw-index
         // `select(2)` would clamp into filtered position 1 ("Alphorn").
-        p.select_by(|e| e.label == "Alpha");
+        assert!(p.select_by(|e| e.label == "Alpha"));
         let s = ready_state(&p);
         assert_eq!(s.filtered[s.selected], 2);
+    }
+
+    #[test]
+    fn select_by_returns_false_and_keeps_selection_when_nothing_matches() {
+        let mut p = ListPicker::new();
+        p.open(entries(&["Zulu", "Yankee", "Alpha"]), " Test ");
+        ready_state_mut(&mut p).selected = 1;
+
+        assert!(!p.select_by(|e| e.label == "Missing"));
+        assert_eq!(ready_state(&p).selected, 1);
     }
 
     #[test]

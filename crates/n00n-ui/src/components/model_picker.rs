@@ -157,10 +157,18 @@ impl ModelPicker {
         drop(guard);
         self.dirty = false;
         let highlighted_spec = self.picker.selected_item().map(|e| e.spec.clone());
-        let (entries, _current_idx) = self.load_entries();
-        let target_spec = highlighted_spec.unwrap_or_else(|| self.current_spec.clone());
+        let (entries, _) = self.load_entries();
         self.picker.replace_items(entries);
-        self.picker.select_by(|e| e.spec == target_spec);
+        let restored_highlighted = match highlighted_spec {
+            Some(spec) => self.picker.select_by(|e| e.spec == spec),
+            None => false,
+        };
+        if !restored_highlighted {
+            let current_spec = self.current_spec.clone();
+            // Neither match is guaranteed to exist; a miss here keeps
+            // whatever `replace_items` already clamped the selection to.
+            let _restored_current = self.picker.select_by(|e| e.spec == current_spec);
+        }
     }
 
     fn load_entries(&mut self) -> (Vec<ModelEntry>, usize) {
@@ -431,6 +439,37 @@ mod tests {
         assert!(
             matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
             "highlight should stay on the model that was cycled, not jump back to current"
+        );
+    }
+
+    #[test]
+    fn refresh_falls_back_to_current_model_when_highlighted_model_is_removed() {
+        let models = Arc::new(ArcSwapOption::empty());
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+            "zai/glm-5".into(),
+        ])));
+        let mut p = ModelPicker::new(Arc::clone(&models));
+        p.open("anthropic/claude-opus-4-6-20260101");
+
+        p.handle_key(key(KeyCode::Down));
+        let highlighted = p.handle_key(kb::THINKING_ALT.to_key_event());
+        assert!(
+            matches!(highlighted, ModelPickerAction::CycleThinking(ref s) if s == "zai/glm-5"),
+            "test setup: expected glm-5 highlighted before refresh"
+        );
+
+        models.store(Some(Arc::new(vec![
+            "anthropic/claude-sonnet-4-20250514".into(),
+            "anthropic/claude-opus-4-6-20260101".into(),
+        ])));
+        p.try_refresh();
+
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-opus-4-6-20260101"),
+            "a vanished highlight should fall back to the current model, not the first entry"
         );
     }
 
