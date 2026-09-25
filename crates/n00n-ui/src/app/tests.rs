@@ -823,6 +823,13 @@ fn disconnected_image_load_is_removed() {
     drop(tx);
     app.poll_image_paste();
     assert!(app.image_paste_rx.is_empty());
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!(
+            "Image paste failed: {}",
+            image_paste::IMAGE_LOAD_DISCONNECTED_MSG
+        )
+    );
 }
 
 #[test]
