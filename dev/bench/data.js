@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790328024098,
+  "lastUpdate": 1790330365145,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -26657,6 +26657,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 134807,
             "range": "± 13132",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f4ead4bca61b7c17e721ea4e28b18c07f1c6e21e",
+          "message": "Merge pull request #513 from w0wl0lxd/feat/keyboard-selection\n\nfeat(ui): composer shift-selection + input-surface cleanup",
+          "timestamp": "2026-09-25T05:43:58-04:00",
+          "tree_id": "138eede316fa6a61cc87b563904a0957efb3510a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f4ead4bca61b7c17e721ea4e28b18c07f1c6e21e"
+        },
+        "date": 1790330363169,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6732365,
+            "range": "± 264953",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221841,
+            "range": "± 40845",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2221065,
+            "range": "± 22564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7980183,
+            "range": "± 95497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4322298,
+            "range": "± 24963",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4286467,
+            "range": "± 141230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583265,
+            "range": "± 1822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192227,
+            "range": "± 773",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192220,
+            "range": "± 256",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041859,
+            "range": "± 11872",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588466,
+            "range": "± 1883",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588294,
+            "range": "± 2336",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 51030,
+            "range": "± 4857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 160387,
+            "range": "± 14933",
             "unit": "ns/iter"
           }
         ]
