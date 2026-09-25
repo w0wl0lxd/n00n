@@ -296,11 +296,37 @@ function M.broad_bash_command_reason(command)
   return nil
 end
 
--- True when the command contains a newline that bash treats as a command
--- separator (i.e. outside quotes). `split_shell_words` folds such newlines
--- into ordinary whitespace, so any caller that re-joins the words with spaces
--- must bail instead of silently merging two commands into one.
-function M.has_unquoted_newline(command)
+local COMMAND_SEPARATORS = { ["\n"] = true, [";"] = true, ["&"] = true, ["|"] = true }
+
+-- `2>&1`, `&>file`, `<&3` and `>|file` are redirections, not separators.
+local function is_command_separator(command, index)
+  local char = command:sub(index, index)
+  if not COMMAND_SEPARATORS[char] then
+    return false
+  end
+  local previous = command:sub(index - 1, index - 1)
+  local following = command:sub(index + 1, index + 1)
+  if char == "&" then
+    return previous ~= ">" and previous ~= "<" and following ~= ">"
+  end
+  if char == "|" then
+    return previous ~= ">"
+  end
+  return true
+end
+
+-- Split a command at unquoted separators (newline, `;`, `&`, `|` and their
+-- doubled forms) into `command` and `separator` parts that concatenate back
+-- to the input byte for byte. From an unquoted heredoc (`<<`) on, the rest is
+-- one `verbatim` part: its body lines are data, not commands.
+function M.split_command_segments(command)
+  local parts = {}
+  local start = 1
+  local function push(kind, stop)
+    parts[#parts + 1] = { kind = kind, text = command:sub(start, stop) }
+    start = stop + 1
+  end
+
   local quote
   local index = 1
   while index <= #command do
@@ -315,12 +341,24 @@ function M.has_unquoted_newline(command)
       quote = char
     elseif char == "\\" then
       index = index + 1
-    elseif char == "\n" then
-      return true
+    elseif command:sub(index, index + 1) == "<<" then
+      push("verbatim", #command)
+      return parts
+    elseif is_command_separator(command, index) then
+      push("command", index - 1)
+      local stop = index
+      while stop < #command and is_command_separator(command, stop + 1) do
+        stop = stop + 1
+      end
+      push("separator", stop)
+      index = stop
     end
     index = index + 1
   end
-  return false
+  if start <= #command then
+    push("command", #command)
+  end
+  return parts
 end
 
 local GIT_SANITIZE_SUBCOMMANDS = {
@@ -349,23 +387,16 @@ local function force_git_flag(words, subcommand_index, positive, negative)
   end
 end
 
--- Harden git commands against repo-config injection of external diff drivers
--- and text conversion filters. Inserts `--no-optional-locks` (prevents write
--- locks), `--no-ext-diff` and `--no-textconv` for subcommands that may run
--- repo-configured commands (diff, show, log).
-function M.sanitize_git_command(command)
-  local trimmed = trim(command)
-  if not trimmed:lower():match("^git%s") then
-    return command
-  end
-  if M.has_unquoted_newline(trimmed) then
-    -- Rebuilding the command from words would replace the newline separator
-    -- with a plain space, turning the second command into arguments of the
-    -- first. Leave compound commands to the shell untouched.
+-- Harden one git command against repo-config injection of external diff
+-- drivers and text conversion filters. Inserts `--no-optional-locks` (prevents
+-- write locks), `--no-ext-diff` and `--no-textconv` for subcommands that may
+-- run repo-configured commands (diff, show, log).
+local function sanitize_git_segment(command)
+  if not command:lower():match("^git%s") then
     return command
   end
 
-  local words = split_shell_words(trimmed)
+  local words = split_shell_words(command)
   if #words < 2 or words[1]:lower() ~= "git" then
     return command
   end
@@ -416,6 +447,22 @@ function M.sanitize_git_command(command)
   end
 
   return table.concat(words, " ")
+end
+
+-- Sanitize every git command in a compound command. Rebuilding words across
+-- a separator would merge two commands into one, so each segment is hardened
+-- on its own and the separators are kept as written.
+function M.sanitize_git_command(command)
+  local rebuilt = {}
+  for _, part in ipairs(M.split_command_segments(command)) do
+    if part.kind == "command" then
+      local leading, body, trailing = part.text:match("^(%s*)(.-)(%s*)$")
+      rebuilt[#rebuilt + 1] = leading .. sanitize_git_segment(body) .. trailing
+    else
+      rebuilt[#rebuilt + 1] = part.text
+    end
+  end
+  return table.concat(rebuilt)
 end
 
 return M

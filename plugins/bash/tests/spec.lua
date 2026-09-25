@@ -123,19 +123,40 @@ end)
 -- output_collector: the LLM-facing accumulator must stay bounded while
 -- streaming, not just at the final truncate() call.
 
--- sanitize_git_command: the newline separator must survive. Re-joining the
--- split words with spaces used to turn `git status\nrm x` into one git
--- invocation with `rm x` as arguments.
+-- sanitize_git_command: separators must survive, and every git segment must
+-- be hardened. Re-joining the split words with spaces used to turn
+-- `git status\nrm x` into one git invocation with `rm x` as arguments, and
+-- skipping multi-line commands let `git diff` run repo textconv filters.
+
+local function sanitized(command)
+  return command_guard.sanitize_git_command(command)
+end
 
 case("sanitize_git_preserves_newline_separated_commands", function()
-  local command = "git status\nrm x"
-  eq(command_guard.sanitize_git_command(command), command)
+  eq(sanitized("git status\nrm x"), sanitized("git status") .. "\nrm x")
 end)
 
-case("sanitize_git_preserves_second_command", function()
-  local sanitized = command_guard.sanitize_git_command("git status\ngit diff")
-  has(sanitized, "\n")
-  has(sanitized, "git diff")
+case("sanitize_git_hardens_every_newline_separated_git_segment", function()
+  eq(sanitized("git diff\nprintf x"), sanitized("git diff") .. "\nprintf x")
+  eq(sanitized("printf x\ngit diff"), "printf x\n" .. sanitized("git diff"))
+  eq(sanitized("git status\ngit show HEAD"), sanitized("git status") .. "\n" .. sanitized("git show HEAD"))
+end)
+
+case("sanitize_git_hardens_git_segments_after_control_operators", function()
+  eq(sanitized("git status && git diff"), sanitized("git status") .. " && " .. sanitized("git diff"))
+  eq(sanitized("cd sub; git log -p"), "cd sub; " .. sanitized("git log -p"))
+  eq(sanitized("true || git show"), "true || " .. sanitized("git show"))
+end)
+
+case("sanitize_git_keeps_redirections_and_pipes_intact", function()
+  eq(sanitized("git diff 2>&1 | head -n 5"), sanitized("git diff 2>&1") .. " | head -n 5")
+  has(sanitized("git diff 2>&1"), "--no-textconv")
+  has(sanitized("git diff 2>&1"), " 2>&1")
+end)
+
+case("sanitize_git_leaves_heredoc_bodies_untouched", function()
+  local body = "<<EOF\ngit diff\nEOF"
+  eq(sanitized("cat " .. body), "cat " .. body)
 end)
 
 case("sanitize_git_keeps_semicolon_separators", function()
@@ -175,10 +196,12 @@ case("sanitize_git_leaves_status_alone", function()
   eq(sanitized:find("--no-textconv", 1, true), nil)
 end)
 
-case("has_unquoted_newline_ignores_quoted_newlines", function()
-  eq(command_guard.has_unquoted_newline("git status\nrm x"), true)
-  eq(command_guard.has_unquoted_newline('git commit -m "a\nb"'), false)
-  eq(command_guard.has_unquoted_newline("git status"), false)
+case("split_command_segments_ignores_quoted_separators", function()
+  local parts = command_guard.split_command_segments('git commit -m "a\nb; c"\nrm x')
+  eq(#parts, 3)
+  eq(parts[1].text, 'git commit -m "a\nb; c"')
+  eq(parts[2].kind, "separator")
+  eq(parts[3].text, "rm x")
 end)
 
 case("output_collector_caps_stored_bytes_while_streaming", function()
