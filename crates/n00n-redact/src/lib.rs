@@ -443,7 +443,7 @@ mod tests {
     use test_case::test_case;
 
     #[test_case("stripe_live", concat!("sk_live_", "51H8xYzAbCdEfGhIjKlMnOpQrStUvWxYz0123456789") ; "stripe_live_key")]
-    #[test_case("stripe_test", "sk_test_51H8xYzAbCdEfGhIjKlMnOpQrStUvWxYz0123456789" ; "stripe_test_key")]
+    #[test_case("stripe_test", concat!("sk_test_", "51H8xYzAbCdEfGhIjKlMnOpQrStUvWxYz0123456789") ; "stripe_test_key")]
     #[test_case("huggingface", "hf_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij" ; "huggingface_token")]
     #[test_case("npm", "npm_abcdefghijklmnopqrstuvwxyz0123456789ABCD" ; "npm_token")]
     #[test_case("pypi", "pypi-AgEIcHlwaS5vcmcCJGFiY2RlZmdoaWprbG1ub3A" ; "pypi_token")]
