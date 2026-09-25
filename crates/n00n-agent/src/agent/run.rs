@@ -494,7 +494,7 @@ impl<'h> Agent<'h> {
         }
 
         let result = async {
-            self.try_auto_compact().await?;
+            self.try_auto_compact(0).await?;
             self.run_loop().await
         }
         .await;
@@ -819,19 +819,25 @@ impl<'h> Agent<'h> {
                     &self.history.as_slice()[self.history.len().saturating_sub(1)..],
                     &self.model.id,
                 ));
-                self.try_auto_compact().await?;
+                self.try_auto_compact(0).await?;
                 return Ok(TurnOutcome::Continue);
             }
         }
 
-        if self.try_auto_compact().await?
-            || self
-                .handle_queued_commands(if has_tools {
-                    InterruptPoint::ToolComplete
-                } else {
-                    InterruptPoint::Safe
-                })
-                .await?
+        let queue_point = if has_tools {
+            InterruptPoint::ToolComplete
+        } else {
+            InterruptPoint::Safe
+        };
+        let pending_image_tokens = self.interrupt_source.as_ref().map_or(0, |source| {
+            u32_from_usize_saturating(
+                source
+                    .peek_pending_image_count(queue_point)
+                    .saturating_mul(IMAGE_TOKEN_ESTIMATE),
+            )
+        });
+        if self.try_auto_compact(pending_image_tokens).await?
+            || self.handle_queued_commands(queue_point).await?
         {
             return Ok(TurnOutcome::Continue);
         }
@@ -1217,11 +1223,12 @@ impl<'h> Agent<'h> {
         dirty
     }
 
-    async fn try_auto_compact(&mut self) -> Result<bool, AgentError> {
+    async fn try_auto_compact(&mut self, extra_pending_tokens: u32) -> Result<bool, AgentError> {
+        let projected_context_size = self.context_size.saturating_add(extra_pending_tokens);
         if !self.auto_compact
             || !compaction::is_overflow(
                 &TokenUsage {
-                    input: self.context_size,
+                    input: projected_context_size,
                     ..Default::default()
                 },
                 &self.model,
@@ -1230,7 +1237,7 @@ impl<'h> Agent<'h> {
         {
             return Ok(false);
         }
-        info!(context_size = self.context_size, "auto-compacting");
+        info!(context_size = projected_context_size, "auto-compacting");
         if let Err(error) = self.do_compact_with_status().await {
             if matches!(error, AgentError::Cancelled) {
                 return Err(error);
@@ -1413,6 +1420,7 @@ impl<'h> Agent<'h> {
                         images: input.images.clone(),
                         control: input.control,
                     })?;
+                    let appended_start = self.history.len();
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
                     }
@@ -1421,18 +1429,28 @@ impl<'h> Agent<'h> {
                         state.set_request_kind(crate::fusion::classify_delegation(&input.message));
                     }
                     let display = input.message;
-                    if input.control {
+                    let mut message = if input.control {
                         let wrapped = format!(
                             "<control-interrupt>\nA control message was sent to this session. Address it and continue.\n\n{display}\n</control-interrupt>"
                         );
-                        self.history
-                            .push(Message::control_display(wrapped, display));
+                        Message::control_display(wrapped, display)
                     } else {
                         let wrapped = format!(
                             "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
                         );
-                        self.history.push(Message::user_display(wrapped, display));
-                    }
+                        Message::user_display(wrapped, display)
+                    };
+                    message.content.extend(
+                        input
+                            .images
+                            .into_iter()
+                            .map(|source| ContentBlock::Image { source }),
+                    );
+                    self.history.push(message);
+                    self.context_size = self.context_size.saturating_add(estimate_message_tokens(
+                        &self.history.as_slice()[appended_start..],
+                        &self.model.id,
+                    ));
                 }
                 ExtractedCommand::Compact(_) => {
                     self.do_compact_with_status().await?;
@@ -3326,6 +3344,39 @@ mod tests {
         });
     }
 
+    #[test_case("", false; "image_only")]
+    #[test_case("describe", false; "text_and_image")]
+    #[test_case("", true; "control_image_only")]
+    fn queued_interrupt_preserves_images(text: &str, control: bool) {
+        smol::block_on(async {
+            let mut input = default_input();
+            input.message = text.into();
+            input.control = control;
+            let image = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+            input.images = vec![image.clone()];
+            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent = agent.with_interrupt_source(source);
+            agent
+                .handle_queued_commands(InterruptPoint::Safe)
+                .await
+                .unwrap();
+            let context_size = agent.context_size;
+            let model_id = agent.model.id.clone();
+            let message = history.as_slice().last().unwrap();
+            assert_eq!(message.display_text.as_deref(), Some(text));
+            assert_eq!(message.control, control);
+            assert!(message.content.iter().any(|block| matches!(block,
+                ContentBlock::Image { source } if source.data == image.data && source.media_type == image.media_type)));
+            assert_eq!(
+                context_size,
+                estimate_message_tokens(std::slice::from_ref(message), &model_id),
+            );
+            assert!(context_size >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE));
+        });
+    }
+
     #[test_case(Some(true),  false, true,  true  ; "after_tool_use_turn")]
     #[test_case(Some(false), false, true,  true  ; "after_text_only_turn")]
     #[test_case(Some(false), true,  true,  true  ; "control_after_text_only_turn")]
@@ -3433,10 +3484,17 @@ mod tests {
         });
     }
 
-    #[test_case(true,  170_000, true  ; "enabled_and_over_threshold")]
-    #[test_case(true,  150_000, false ; "enabled_but_below_threshold")]
-    #[test_case(false, 170_000, false ; "disabled_even_over_threshold")]
-    fn try_auto_compact_behavior(enabled: bool, context_size: u32, expected: bool) {
+    #[test_case(true,  170_000, 0,      true  ; "enabled_and_over_threshold")]
+    #[test_case(true,  150_000, 0,      false ; "enabled_but_below_threshold")]
+    #[test_case(false, 170_000, 0,      false ; "disabled_even_over_threshold")]
+    #[test_case(true,  150_000, 15_000, true  ; "pending_tokens_push_over_threshold")]
+    #[test_case(true,  150_000, 5_000,  false ; "pending_tokens_still_under_threshold")]
+    fn try_auto_compact_behavior(
+        enabled: bool,
+        context_size: u32,
+        extra_pending_tokens: u32,
+        expected: bool,
+    ) {
         smol::block_on(async {
             let responses = if expected {
                 vec![text_response(StopReason::EndTurn)]
@@ -3448,7 +3506,7 @@ mod tests {
             agent.model = Arc::new(small_context_model(200_000, 8_192));
             agent.auto_compact = enabled;
             agent.context_size = context_size;
-            let result = agent.try_auto_compact().await.unwrap();
+            let result = agent.try_auto_compact(extra_pending_tokens).await.unwrap();
 
             assert_eq!(result, expected);
             drop(agent);
