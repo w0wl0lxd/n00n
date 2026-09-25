@@ -3608,6 +3608,10 @@ pub fn spawn(
                             let _ = reply.send(res);
                         }
                         Request::CollectPromptSlots { identity, reply } => {
+                            if reply.is_disconnected() {
+                                tracing::debug!("skipping abandoned plugin prompt slot request");
+                                continue;
+                            }
                             let slots = rt.collect_prompt_slots(identity.as_ref()).await;
                             let _ = reply.send(slots);
                         }
@@ -3650,6 +3654,10 @@ pub fn spawn(
                             revision,
                             reply,
                         } => {
+                            if reply.is_disconnected() {
+                                tracing::debug!("skipping abandoned plugin state capture");
+                                continue;
+                            }
                             if drain_runtime(
                                 &rt,
                                 &ex,
@@ -3663,6 +3671,10 @@ pub fn spawn(
                             .await
                             {
                                 break;
+                            }
+                            if reply.is_disconnected() {
+                                tracing::debug!("skipping plugin state capture abandoned during drain");
+                                continue;
                             }
                             let result = rt
                                 .state
