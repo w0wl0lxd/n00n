@@ -5,8 +5,8 @@
     "cache_prefix": {
       "name": "cache_prefix",
       "tool_count": 22,
-      "bytes": 20346,
-      "tokens": 4942
+      "bytes": 20347,
+      "tokens": 4943
     },
     "deferred_catalog_payload": {
       "name": "deferred_catalog_payload",
@@ -64,8 +64,8 @@
     },
     "system_prompt": {
       "name": "system_prompt",
-      "bytes": 4080,
-      "tokens": 880
+      "bytes": 4127,
+      "tokens": 894
     }
   },
   "tools": [

@@ -6323,9 +6323,8 @@ fn plugin_state_capture_waits_for_inflight_handler_callbacks() {
 fn abandoned_state_capture_releases_the_runtime_drain() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let gate_dir = std::env::temp_dir().join(format!("n00n-drain-{}", std::process::id()));
-    std::fs::create_dir_all(&gate_dir).unwrap();
-    let gate = gate_dir.join("release");
+    let gate_dir = tempfile::TempDir::new().unwrap();
+    let gate = gate_dir.path().join("release");
     let source = format!(
         r#"
         n00n.api.register_tool({{
@@ -6385,7 +6384,6 @@ fn abandoned_state_capture_releases_the_runtime_drain() {
 
     std::fs::write(&gate, b"release").unwrap();
     assert_eq!(worker.join().unwrap().output.unwrap().as_text(), "released");
-    std::fs::remove_dir_all(&gate_dir).unwrap();
 }
 
 #[test]

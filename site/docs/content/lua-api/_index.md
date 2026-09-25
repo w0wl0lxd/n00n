@@ -74,7 +74,7 @@ a string belongs.
 | [`n00n.keymap`](#n00n-keymap) | Key mappings, modeled after `vim.keymap`. |
 | [`n00n.log`](#n00n-log) | Structured logging for plugins. |
 | [`n00n.net`](#n00n-net) | HTTP client for fetching web content. |
-| [`n00n.run`](#n00n-run) |  |
+| [`n00n.run`](#n00n-run) | Trusted background runs backed by child TUI sessions. |
 | [`n00n.search`](#n00n-search) | Native, keyless extraction of bounded public web content. |
 | [`n00n.session`](#n00n-session) | Host session primitives. |
 | [`n00n.text`](#n00n-text) | Text transformation utilities. |
@@ -2872,6 +2872,15 @@ end
 
 
 ## n00n.run {#n00n-run}
+
+Trusted background runs backed by child TUI sessions.
+
+Starts a task-kind run under the calling session's lineage, so it
+shows up as a child TUI session with its own run lifecycle.
+
+```lua
+local run, err = n00n.run.start({ kind = "task", tool = "run_task", title = "build" })
+```
 
 ---
 

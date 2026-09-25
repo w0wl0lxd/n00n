@@ -55,6 +55,11 @@ const SCENARIO_PROMPT_ERROR: &str = "prompt_error";
 const SCENARIO_RAISE: &str = "raise";
 const SCENARIO_SLOW: &str = "slow";
 
+const BACKGROUND_RUN_ID: &str = "run-1";
+const BACKGROUND_CHAIN_ID: &str = "chain-1";
+const BACKGROUND_SESSION_ID: &str = "session-1";
+const BACKGROUND_LIFECYCLE: &str = "starting";
+
 /// Stubs keyed by `opts.name` (the task's `description`). `n00n.json` and
 /// `n00n.async` stay real so schema validation and semaphore behavior are tested.
 const STUB_PRELUDE: &str = r#"
@@ -77,6 +82,19 @@ n00n.async.semaphore = function(n)
         end,
       }
     end,
+  }
+end
+
+-- Stub: the real n00n.run.start needs a trusted session context and a live
+-- TUI event loop, neither of which exists in this harness. The plugin's own
+-- job here is just forwarding the returned identity into its JSON output.
+n00n.run.start = function(opts)
+  recorder.run_start_opts = opts
+  return {
+    run_id = "@BACKGROUND_RUN_ID@",
+    chain_id = "@BACKGROUND_CHAIN_ID@",
+    session_id = "@BACKGROUND_SESSION_ID@",
+    lifecycle = "@BACKGROUND_LIFECYCLE@",
   }
 end
 
@@ -224,6 +242,10 @@ fn load_task_host() -> (Arc<ToolRegistry>, PluginHost) {
         .replace("@PLAIN_TEXT@", PLAIN_TEXT)
         .replace("@PROMPT_ERR@", PROMPT_ERR_MSG)
         .replace("@RAISE_MSG@", RAISE_MSG)
+        .replace("@BACKGROUND_RUN_ID@", BACKGROUND_RUN_ID)
+        .replace("@BACKGROUND_CHAIN_ID@", BACKGROUND_CHAIN_ID)
+        .replace("@BACKGROUND_SESSION_ID@", BACKGROUND_SESSION_ID)
+        .replace("@BACKGROUND_LIFECYCLE@", BACKGROUND_LIFECYCLE)
         .replace(
             "@SLOW_CMD@",
             if cfg!(windows) {
@@ -311,6 +333,19 @@ fn multi_error_schema() -> Value {
         },
         "required": ["a", "b", "c", "d"],
     })
+}
+
+#[test]
+fn background_run_reports_session_id_as_agent_id() {
+    let (reg, _host) = load_task_host();
+    let mut input = task_input(SCENARIO_PLAIN, None);
+    input["background"] = json!(true);
+    let out = exec_tool(&reg, TASK_TOOL, input).expect("background task failed");
+    let status: Value = serde_json::from_str(&out).expect("background output not json");
+    assert_eq!(status["run_id"], json!(BACKGROUND_RUN_ID));
+    assert_eq!(status["chain_id"], json!(BACKGROUND_CHAIN_ID));
+    assert_eq!(status["agent_id"], json!(BACKGROUND_SESSION_ID));
+    assert_eq!(status["lifecycle"], json!(BACKGROUND_LIFECYCLE));
 }
 
 #[test_case::test_case(json!({"subagent_type": "bogus"}), UNKNOWN_SUBAGENT_ERR ; "unknown_subagent_type")]

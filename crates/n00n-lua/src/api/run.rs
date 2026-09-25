@@ -183,6 +183,14 @@ async fn start(
 }
 
 lua_table! {
+    /// Trusted background runs backed by child TUI sessions.
+    ///
+    /// Starts a task-kind run under the calling session's lineage, so it
+    /// shows up as a child TUI session with its own run lifecycle.
+    ///
+    /// ```lua
+    /// local run, err = n00n.run.start({ kind = "task", tool = "run_task", title = "build" })
+    /// ```
     "n00n.run" => pub(crate) fn create_run_table(tx: Option<flume::Sender<UiAction>>),
     DOCS [start(tx)]
 }

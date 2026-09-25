@@ -95,6 +95,7 @@ local function handler(input, ctx)
     local output, output_err = n00n.json.encode({
       run_id = run.run_id,
       chain_id = run.chain_id,
+      agent_id = run.session_id,
       lifecycle = run.lifecycle,
     })
     if output_err then
