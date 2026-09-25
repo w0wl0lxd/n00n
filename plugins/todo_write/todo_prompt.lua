@@ -18,6 +18,23 @@ local function compact_text(value)
   return (value or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
 end
 
+-- Longest prefix of {s} that is at most {max_bytes} bytes and still valid
+-- UTF-8. Cutting mid-sequence would make n00n.json.encode return nil and
+-- silently drop the whole entry instead of truncating it.
+local function utf8_prefix(s, max_bytes)
+  if max_bytes <= 0 then
+    return ""
+  end
+  if max_bytes >= #s then
+    return s
+  end
+  local cut = utf8.offset(s, 0, max_bytes + 1)
+  if not cut or cut <= 1 then
+    return ""
+  end
+  return s:sub(1, cut - 1)
+end
+
 function TodoPrompt.prompt_todo_line(item)
   if type(item) ~= "table" or type(item.status) ~= "string" or not VALID_STATUS[item.status] then
     return nil
@@ -43,14 +60,14 @@ local function shrink_line(line, avail)
       return nil
     end
     if #decoded.content > max_content then
-      decoded.content = decoded.content:sub(1, max_content) .. "..."
+      decoded.content = utf8_prefix(decoded.content, max_content) .. "..."
     end
     return n00n.json.encode(decoded)
   end
   if avail < 4 then
     return nil
   end
-  return line:sub(1, avail - 3) .. "..."
+  return utf8_prefix(line, avail - 3) .. "..."
 end
 
 function TodoPrompt.truncate_entries(raw_entries, budget)

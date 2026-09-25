@@ -85,6 +85,12 @@ impl SearchModal {
         self.open
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub fn query_text(&self) -> String {
+        self.search.value()
+    }
+
     pub fn handle_paste(&mut self, text: &str) {
         self.search.insert_text(text);
     }

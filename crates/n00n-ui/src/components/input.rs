@@ -23,7 +23,6 @@ use super::{apply_scroll_delta, visual_line_count};
 use crate::selection::LineBreaks;
 
 const MAX_INPUT_LINES: u16 = 20;
-const CHEVRON: &str = super::CHEVRON;
 const NEWLINE_PAD: &str = "  ";
 const PREFIX_WIDTH: u16 = 2;
 const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
@@ -116,6 +115,9 @@ pub struct InputBox {
     placeholder_hint: &'static str,
     placeholder_index: usize,
     pending_images: Vec<ImageSource>,
+    /// Bumped whenever the composer is drained, so an image load started
+    /// before a submit or discard cannot attach to the next message.
+    generation: u64,
     max_input_lines: u16,
     last_total_vl: u16,
     last_content_height: u16,
@@ -208,6 +210,44 @@ impl InputBox {
             }
             KeyAction::LineEnd => {
                 self.buffer.move_end();
+                false
+            }
+            KeyAction::SelectCharLeft => {
+                self.buffer.select_left();
+                false
+            }
+            KeyAction::SelectCharRight => {
+                self.buffer.select_right();
+                false
+            }
+            KeyAction::SelectWordLeft => {
+                self.buffer.select_word_left();
+                false
+            }
+            KeyAction::SelectWordRight => {
+                self.buffer.select_word_right();
+                false
+            }
+            KeyAction::SelectLineStart => {
+                self.buffer.select_home();
+                false
+            }
+            KeyAction::SelectLineEnd => {
+                self.buffer.select_end();
+                false
+            }
+            // Shift+Up/Down select within the buffer only — they must not
+            // touch history navigation the way plain arrows do.
+            KeyAction::SelectUp => {
+                self.buffer.select_up();
+                false
+            }
+            KeyAction::SelectDown => {
+                self.buffer.select_down();
+                false
+            }
+            KeyAction::SelectAll => {
+                self.buffer.select_all();
                 false
             }
             KeyAction::DeleteCharBack => {
@@ -520,6 +560,7 @@ impl InputBox {
             placeholder_hint: PLACEHOLDER_SUGGESTIONS[0],
             placeholder_index: 0,
             pending_images: Vec::new(),
+            generation: 0,
             max_input_lines: MAX_INPUT_LINES,
             last_total_vl: 1,
             last_content_height: 1,
@@ -530,17 +571,15 @@ impl InputBox {
         self.max_input_lines = cast::u32_to_u16(max.clamp(1, u32::from(u16::MAX) - 2));
     }
 
+    /// Buffer text for clipboard copies. The `❯ `/indent prefixes are
+    /// render chrome, not content — a full-input copy must not include them.
     pub fn copy_text(&self) -> String {
-        self.buffer
-            .lines()
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let prefix = if i == 0 { CHEVRON } else { NEWLINE_PAD };
-                format!("{prefix}{l}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.buffer.value()
+    }
+
+    /// Text inside the keyboard selection, if one is active.
+    pub fn selected_text(&self) -> Option<String> {
+        self.buffer.selected_text()
     }
 
     pub fn line_breaks(&self, content_width: u16) -> LineBreaks {
@@ -613,6 +652,7 @@ impl InputBox {
     }
 
     pub fn discard(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.pending_images.clear();
         self.pastes.clear();
         self.history_index = None;
@@ -626,6 +666,10 @@ impl InputBox {
 
     pub fn is_empty(&self) -> bool {
         self.buffer.value().trim().is_empty() && self.pending_images.is_empty()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn attach_image(&mut self, source: ImageSource) {
@@ -765,12 +809,21 @@ impl InputBox {
         } else {
             let cursor_y = self.buffer.y();
             let cursor_x = self.buffer.x();
+            let selection = focused.then(|| self.buffer.selection()).flatten();
             self.buffer
                 .lines()
                 .iter()
                 .enumerate()
                 .flat_map(|(i, line)| {
                     let is_cursor_line = i == cursor_y && focused;
+                    let line_sel = selection.and_then(|((sy, sx), (ey, ex))| {
+                        if i < sy || i > ey {
+                            return None;
+                        }
+                        let start = if i == sy { sx } else { 0 };
+                        let end = if i == ey { ex } else { line.chars().count() };
+                        (start < end).then_some((start, end))
+                    });
                     let shell_spans = if i == 0 {
                         shell_highlight_spans(line)
                     } else {
@@ -783,6 +836,7 @@ impl InputBox {
                         cursor_x,
                         i == 0,
                         shell_spans.as_deref(),
+                        line_sel,
                     )
                 })
                 .collect()
@@ -867,6 +921,7 @@ fn effective_width(content_width: usize) -> usize {
     content_width.saturating_sub(PREFIX_WIDTH as usize)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn wrap_line(
     line: &str,
     ew: usize,
@@ -874,6 +929,7 @@ fn wrap_line(
     cursor_x: usize,
     is_first_line: bool,
     shell_spans: Option<&[Span<'static>]>,
+    sel: Option<(usize, usize)>,
 ) -> Vec<Line<'static>> {
     let chars: Vec<char> = line.chars().collect();
     let widths: Vec<usize> = chars
@@ -919,6 +975,13 @@ fn wrap_line(
                 let chunk_text: String = chars[start..end].iter().collect();
                 vec![Span::raw(chunk_text)]
             };
+            // Intersect this row's char window with the line's selected range.
+            let row_sel = sel.and_then(|(s, e)| {
+                let lo = s.clamp(start, end);
+                let hi = e.clamp(start, end);
+                (lo < hi).then_some((lo - start, hi - start))
+            });
+            let chunk_spans = apply_selection(chunk_spans, row_sel);
 
             if is_cursor_line && cursor_x >= start && cursor_x <= end {
                 let local_cursor = cursor_x.saturating_sub(start);
@@ -1003,6 +1066,39 @@ fn overlay_cursor(spans: Vec<Span<'static>>, cursor_char_pos: usize) -> Vec<Span
     }
     if !cursor_placed {
         result.push(Span::styled(" ", Style::new().reversed()));
+    }
+    result
+}
+
+/// Add REVERSED to the chars in `[start, end)` (offsets into the text covered
+/// by `spans`) — the same technique the cursor overlay uses, over a range.
+fn apply_selection(spans: Vec<Span<'static>>, sel: Option<(usize, usize)>) -> Vec<Span<'static>> {
+    let Some((start, end)) = sel else {
+        return spans;
+    };
+    let mut result = Vec::with_capacity(spans.len() + 2);
+    let mut pos = 0usize;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        let span_end = pos + span_len;
+        let lo = start.clamp(pos, span_end).saturating_sub(pos);
+        let hi = end.clamp(pos, span_end).saturating_sub(pos);
+        if lo >= hi {
+            result.push(span);
+        } else {
+            let mut chars = span.content.chars();
+            let before: String = chars.by_ref().take(lo).collect();
+            let mid: String = chars.by_ref().take(hi - lo).collect();
+            let after: String = chars.collect();
+            if !before.is_empty() {
+                result.push(Span::styled(before, span.style));
+            }
+            result.push(Span::styled(mid, span.style.reversed()));
+            if !after.is_empty() {
+                result.push(Span::styled(after, span.style));
+            }
+        }
+        pos = span_end;
     }
     result
 }
@@ -1345,15 +1441,15 @@ mod tests {
     }
 
     #[test]
-    fn copy_text_includes_prefix() {
+    fn copy_text_excludes_prompt_prefix() {
         let input = InputBox::new(InputHistory::default());
-        assert_eq!(input.copy_text(), CHEVRON);
+        assert_eq!(input.copy_text(), "");
 
         let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "line1");
         input.buffer.add_line();
         type_text(&mut input, "line2");
-        assert_eq!(input.copy_text(), "❯ line1\n  line2");
+        assert_eq!(input.copy_text(), "line1\nline2");
     }
 
     #[test]
@@ -1845,5 +1941,62 @@ mod tests {
             KeyModifiers::CONTROL | KeyModifiers::ALT,
         ));
         assert_eq!(input.history_search_query(), Some("\\"));
+    }
+
+    #[test]
+    fn edit_action_select_then_type_replaces() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "hell");
+        input.edit_action(KeyAction::SelectCharLeft);
+        input.edit_action(KeyAction::SelectCharLeft);
+        assert_eq!(input.selected_text().as_deref(), Some("ll"));
+
+        let action = input.edit_action(KeyAction::DeleteCharBack);
+        assert!(matches!(action, InputAction::PaletteSync(_)));
+        assert_eq!(input.buffer.value(), "he");
+        assert!(input.selected_text().is_none());
+    }
+
+    #[test]
+    fn edit_action_select_all() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "ab");
+        input.buffer.add_line();
+        type_text(&mut input, "cd");
+        input.edit_action(KeyAction::SelectAll);
+        assert_eq!(input.selected_text().as_deref(), Some("ab\ncd"));
+    }
+
+    #[test]
+    fn plain_move_action_drops_selection() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "hello");
+        input.edit_action(KeyAction::SelectCharLeft);
+        assert!(input.selected_text().is_some());
+        input.edit_action(KeyAction::CharLeft);
+        assert!(input.selected_text().is_none());
+    }
+
+    #[test]
+    fn selection_renders_reversed() {
+        use ratatui::style::Modifier;
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "hello");
+        input.edit_action(KeyAction::SelectCharLeft);
+        input.edit_action(KeyAction::SelectCharLeft);
+        let terminal = render_input(&mut input, 20, 5);
+        let buf = terminal.backend().buffer();
+        let reversed: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .filter(|pos| {
+                buf.cell(*pos)
+                    .is_some_and(|c| c.style().add_modifier.contains(Modifier::REVERSED))
+            })
+            .filter_map(|pos| Some(buf.cell(pos)?.symbol().to_string()))
+            .collect();
+        assert!(
+            reversed.contains('l') && reversed.contains('o'),
+            "selected chars should render reversed: {reversed:?}"
+        );
     }
 }

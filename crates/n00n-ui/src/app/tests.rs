@@ -1,9 +1,10 @@
+use super::image_paste::{IMAGE_LOAD_DISCONNECTED_MSG, IMAGE_STALE_MSG};
 use super::session::message_tool_use_ids;
 use super::*;
 use crate::agent::{Delivery, shared_queue};
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
-use crate::components::keybindings::{KeybindContext, key as kb};
+use crate::components::keybindings::{Bind, KeybindContext, key as kb};
 use crate::components::{ExitRequest, key, test_model};
 use crate::selection::{SelectableZone, SelectionState, SelectionZone};
 use arc_swap::ArcSwap;
@@ -11,9 +12,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventK
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::tools::{SessionIdentity, ToolRegistry};
 use n00n_agent::{
-    ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
-    McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
-    ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ExtractedCommand, ImageMediaType, ImageSource, InterruptPoint, InterruptSource,
+    McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader,
+    ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader, PluginHost};
@@ -33,6 +34,8 @@ use test_case::test_case;
 
 const PROVIDER_FAILED_ERR: &str = "provider failed";
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const IMAGE_FILE_URL: &str = "file:///tmp/nonexistent.png";
+const IMAGE_ABSOLUTE_PATH: &str = "/tmp/nonexistent.png";
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone {
@@ -720,7 +723,7 @@ fn image_load_completion_allows_submission_with_image(status: Status) {
     let mut app = test_app();
     app.status = status;
     let (tx, rx) = flume::bounded(1);
-    app.image_paste_rx.push(rx);
+    app.track_image_load(rx);
     app.update(Msg::Paste("describe image".into()));
     app.update(Msg::Key(key(KeyCode::Enter)));
     tx.send(Ok(ImageSource::new(
@@ -737,41 +740,13 @@ fn image_load_completion_allows_submission_with_image(status: Status) {
     assert_eq!(submission.images.len(), 1);
 }
 
-#[test]
-fn unsupported_image_path_paste_preserves_text() {
-    const TEXT: &str = "file:///tmp/nonexistent.png";
-    let mut app = test_app();
-    app.state.model.supports_vision_override = Some(false);
-    app.update(Msg::Paste(TEXT.into()));
-    assert!(app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), TEXT);
-}
-
-#[test]
-fn failed_image_load_preserves_text_and_unblocks_submission() {
-    const TEXT: &str = "file:///tmp/nonexistent.png";
-    const ERROR: &str = "file unavailable";
-    let mut app = test_app();
-    app.input_box.set_input(TEXT);
-    let (tx, rx) = flume::bounded(1);
-    app.image_paste_rx.push(rx);
-    tx.send(Err(ERROR.into())).unwrap();
-    app.poll_image_paste();
-    assert!(app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), TEXT);
-    assert_eq!(
-        app.status_bar.flash_text().unwrap(),
-        format!("Image paste failed: {ERROR}")
-    );
-}
-
 #[test_case(KeyCode::Enter; "enter")]
 #[test_case(KeyCode::Tab; "queued_tab")]
 fn pending_image_load_blocks_submission(submit_key: KeyCode) {
     let mut app = test_app();
     app.status = Status::Streaming;
     let (_tx, rx) = flume::bounded(1);
-    app.image_paste_rx.push(rx);
+    app.track_image_load(rx);
     app.update(Msg::Paste("describe image".into()));
     assert!(app.update(Msg::Key(key(submit_key))).is_empty());
     assert_eq!(app.input_box.buffer.value(), "describe image");
@@ -790,7 +765,7 @@ fn pending_image_load_does_not_swallow_newline_keys(
     let mut app = test_app();
     app.status = Status::Streaming;
     let (_tx, rx) = flume::bounded(1);
-    app.image_paste_rx.push(rx);
+    app.track_image_load(rx);
     app.update(Msg::Paste("describe image".into()));
     let newline_key = KeyEvent {
         code,
@@ -800,32 +775,6 @@ fn pending_image_load_does_not_swallow_newline_keys(
     };
     app.update(Msg::Key(newline_key));
     assert_eq!(app.input_box.buffer.value(), expected);
-}
-
-#[test]
-fn disconnected_image_load_is_removed() {
-    let mut app = test_app();
-    let (tx, rx) = flume::bounded(1);
-    app.image_paste_rx.push(rx);
-    drop(tx);
-    app.poll_image_paste();
-    assert!(app.image_paste_rx.is_empty());
-    assert_eq!(
-        app.status_bar.flash_text().unwrap(),
-        format!(
-            "Image paste failed: {}",
-            image_paste::IMAGE_LOAD_DISCONNECTED_MSG
-        )
-    );
-}
-
-#[test]
-fn image_path_paste_in_search_does_not_load_image() {
-    let mut app = test_app();
-    app.update(Msg::Key(kb::SEARCH.to_key_event()));
-    app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
-    assert!(app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), "");
 }
 
 #[test]
@@ -862,6 +811,83 @@ fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     );
 }
 
+#[test_case(IMAGE_FILE_URL      ; "file_url")]
+#[test_case(IMAGE_ABSOLUTE_PATH ; "absolute_path")]
+fn unsupported_image_path_paste_preserves_text(text: &str) {
+    let mut app = test_app();
+    app.state.model.supports_vision_override = Some(false);
+    app.update(Msg::Paste(text.into()));
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), text);
+}
+
+#[test_case(IMAGE_FILE_URL      ; "file_url")]
+#[test_case(IMAGE_ABSOLUTE_PATH ; "absolute_path")]
+fn image_path_paste_in_search_does_not_load_image(text: &str) {
+    let mut app = test_app();
+    app.update(Msg::Key(kb::SEARCH.to_key_event()));
+    assert!(app.search_modal.is_open());
+
+    app.update(Msg::Paste(text.into()));
+
+    assert!(app.image_paste_rx.is_empty());
+    assert_eq!(app.input_box.buffer.value(), "");
+    assert_eq!(app.search_modal.query_text(), text);
+}
+
+#[test_case(None,                   IMAGE_LOAD_DISCONNECTED_MSG ; "disconnected_loader")]
+#[test_case(Some("file unavailable"), "file unavailable"    ; "failed_load")]
+fn finished_image_load_preserves_text_and_unblocks_submission(
+    error: Option<&str>,
+    expected_reason: &str,
+) {
+    let mut app = test_app();
+    app.input_box.set_input(IMAGE_FILE_URL);
+    let (tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+    match error {
+        Some(error) => tx.send(Err(error.into())).unwrap(),
+        None => drop(tx),
+    }
+
+    app.poll_image_paste();
+
+    assert!(
+        app.image_paste_rx.is_empty(),
+        "a finished loader must not stay parked in the pending list"
+    );
+    assert_eq!(app.input_box.buffer.value(), IMAGE_FILE_URL);
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!("Image paste failed: {expected_reason}")
+    );
+}
+
+#[test]
+fn image_loaded_after_composer_discarded_is_not_attached() {
+    const TEXT: &str = "describe this";
+    let mut app = test_app();
+    app.input_box.set_input(TEXT);
+    let (tx, rx) = flume::bounded(1);
+    app.track_image_load(rx);
+
+    app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(app.input_box.is_empty(), "Ctrl+C must discard the composer");
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
+    app.poll_image_paste();
+
+    assert!(app.image_paste_rx.is_empty());
+    assert!(
+        app.input_box.is_empty(),
+        "an image that finished loading after the composer was drained must not ride on the next message"
+    );
+    assert_eq!(app.status_bar.flash_text().unwrap(), IMAGE_STALE_MSG);
+}
+
 #[test]
 fn busy_enter_queues_steering_and_second_chord_promotes_latest() {
     let mut app = test_app();
@@ -882,11 +908,11 @@ fn busy_enter_queues_steering_and_second_chord_promotes_latest() {
         n00n_empty_check_75.len()
     );
     assert_eq!(app.queue.len(), 2);
-    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
-    assert_eq!(app.queue.panel_entries()[1].text, "↪ steer two");
+    assert_eq!(app.queue.panel_entries()[0].text, "\u{21AA} steer one");
+    assert_eq!(app.queue.panel_entries()[1].text, "\u{21AA} steer two");
 
     app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
+    assert_eq!(app.queue.panel_entries()[0].text, "\u{21AA} steer one");
     assert_eq!(app.queue.panel_entries()[1].text, "↯ steer two");
 }
 
@@ -2116,6 +2142,93 @@ fn shift_enter_inserts_newline() {
 }
 
 #[test]
+fn shift_arrows_select_then_typing_replaces() {
+    let mut app = test_app();
+    for c in "hell".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
+    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("ll"));
+
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(app.input_box.buffer.value(), "heX");
+    assert!(app.input_box.buffer.selected_text().is_none());
+}
+
+#[test]
+fn ctrl_shift_arrows_select_words() {
+    let mut app = test_app();
+    for c in "foo bar".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Left,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("bar"));
+}
+
+#[test]
+fn ctrl_shift_a_selects_all_input() {
+    let mut app = test_app();
+    for c in "draft".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert_eq!(
+        app.input_box.buffer.selected_text().as_deref(),
+        Some("draft")
+    );
+
+    // Folded codepoint shape (Kitty REPORT_ALTERNATE_KEYS): 'A'+CONTROL.
+    app.input_box.buffer.clear();
+    for c in "xy".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('A'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.input_box.buffer.selected_text().as_deref(), Some("xy"));
+}
+
+#[test]
+fn plain_arrow_after_selection_clears_it() {
+    let mut app = test_app();
+    for c in "hi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
+    assert!(app.input_box.buffer.selected_text().is_some());
+    app.update(Msg::Key(key(KeyCode::Right)));
+    assert!(app.input_box.buffer.selected_text().is_none());
+}
+
+#[test]
+fn copy_selection_prefers_composer_selection() {
+    let mut app = test_app();
+    for c in "hi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    // The composer path copies directly — it must not arm the mouse
+    // scrape-and-copy machinery.
+    assert!(app.selection_state.is_none());
+    assert_eq!(app.input_box.buffer.value(), "hi");
+}
+
+#[test]
 fn compact_command_sets_streaming() {
     let mut app = test_app();
     let actions = app.execute_command(cmd("/compact"));
@@ -2632,6 +2745,47 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
     assert_eq!(input.images.len(), 1);
     assert_eq!(input.images[0].media_type, ImageMediaType::Png);
     assert_eq!(&*input.images[0].data, "b3JpZ2luYWw=");
+}
+
+#[test]
+fn esc_cancels_queue_edit_and_restores_original_message() {
+    let mut app = app_with_queued_message();
+    app.queue.set_focus_at(0);
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.queue.editing().is_some());
+    assert_eq!(app.input_box.buffer.value(), "queued");
+    app.status = Status::Idle;
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(app.queue.editing().is_none());
+    assert_eq!(app.queue.text_messages(), ["queued"]);
+    assert!(app.input_box.is_empty());
+    assert!(
+        app.last_esc.is_none(),
+        "cancelling a queue edit must not arm the rewind double-press"
+    );
+}
+
+#[test]
+fn esc_during_streaming_cancels_queue_edit_and_restores_original_message() {
+    let mut app = app_with_queued_message();
+    app.queue.set_focus_at(0);
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.queue.editing().is_some());
+    assert_eq!(app.input_box.buffer.value(), "queued");
+    assert_eq!(app.status, Status::Streaming);
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(app.queue.editing().is_none());
+    assert_eq!(app.queue.text_messages(), ["queued"]);
+    assert!(app.input_box.is_empty());
+    assert_eq!(
+        app.status,
+        Status::Streaming,
+        "cancelling a queue edit must not also cancel the run"
+    );
 }
 
 #[test]
@@ -4860,6 +5014,67 @@ fn overlay_wins_over_override_when_plan_form_open() {
     assert!(!app.plan_form.is_visible());
 }
 
+#[test_case(kb::PLAN_TOGGLE ; "ctrl_t")]
+fn plan_toggle_beats_override_when_form_hidden(toggle: Bind) {
+    let entry = n00n_lua::KeymapEntry {
+        key: toggle.code,
+        modifiers: toggle.modifiers,
+        desc: "plugin plan override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 2,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+    assert!(app.plan_form.is_visible());
+
+    app.update(Msg::Key(toggle.to_key_event()));
+    assert!(!app.plan_form.is_visible(), "first press hides the form");
+
+    app.update(Msg::Key(toggle.to_key_event()));
+
+    assert!(
+        app.plan_form.is_visible(),
+        "Ctrl+T must reopen the plan form even when a plugin overrides it"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not run when the plan toggle wins"
+    );
+}
+
+#[test_case(kb::OPEN_EDITOR ; "ctrl_o")]
+fn open_editor_beats_override_in_plan_mode(open_editor: Bind) {
+    let entry = n00n_lua::KeymapEntry {
+        key: open_editor.code,
+        modifiers: open_editor.modifiers,
+        desc: "plugin open editor override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 12,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(!app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(open_editor.to_key_event()));
+
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "Ctrl+O must open the approved plan even when a plugin overrides it"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not run when open-editor wins"
+    );
+}
+
 #[test]
 fn streaming_cancel_wins_over_quit_override() {
     let entry = n00n_lua::KeymapEntry {
@@ -5424,6 +5639,21 @@ fn ctrl_c_denies_permission_prompt() {
     assert_eq!(app.exit_request, ExitRequest::None);
     assert!(!app.permission_prompt.is_open());
     assert!(actions.is_empty(), "expected empty, got {}", actions.len());
+}
+
+#[test]
+fn esc_denies_permission_prompt() {
+    let mut app = test_app();
+    app.permission_prompt.open(
+        n00n_config::ToolKey::native("bash"),
+        vec!["execute".into()],
+        None,
+    );
+    assert!(app.permission_prompt.is_open());
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(!app.permission_prompt.is_open());
+    assert_eq!(app.exit_request, ExitRequest::None);
 }
 
 const TEST_AREA: Rect = Rect {

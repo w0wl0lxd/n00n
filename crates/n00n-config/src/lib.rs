@@ -53,6 +53,7 @@ pub const DEFAULT_SNAPSHOT_TIMEOUT_SECS: u64 = 2;
 pub const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
 pub const DEFAULT_MAX_LOG_FILES: u32 = 10;
 pub const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
+const BYTES_PER_MB: u64 = 1024 * 1024;
 
 pub const MIN_OUTPUT_BYTES: usize = 1024;
 pub const MIN_OUTPUT_LINES: usize = 10;
@@ -205,6 +206,8 @@ pub enum ConfigError {
         value: u64,
         max: u64,
     },
+    #[error("invalid config: storage.max_log_bytes_mb = {value} is too large")]
+    LogBytesTooLarge { value: u64 },
     #[error("invalid config: always_thinking: {0}")]
     Thinking(#[from] ThinkingParseError),
     #[error("invalid config: agent.fusion.sidekick_thinking: {0}")]
@@ -347,7 +350,7 @@ impl RawConfig {
             agent: AgentConfig::from_file(self.agent.clone(), no_rtk, disabled_tools),
             provider: ProviderConfig::from_file(self.provider),
             search: SearchConfig::from_file(&self.search),
-            storage: StorageConfig::from_file(&self.storage),
+            storage: StorageConfig::from_file(&self.storage)?,
             permissions: PermissionsConfig::default(),
             project_trusted: false,
             plugins: PluginsConfig::from_plugins(&self.plugins),
@@ -742,6 +745,15 @@ impl<'de> Deserialize<'de> for PermissionsFileConfig {
                 } else {
                     tools.insert(k.clone(), tp);
                 }
+            } else {
+                // A malformed allow/deny value must never be dropped silently:
+                // a lost deny rule fails open. Warn with the key only, never the
+                // value, because this file can hold credential-shaped strings.
+                tracing::warn!(
+                    key = k.as_str(),
+                    "skipping unparseable permissions tool section; expected allow/deny \
+                     of true, false, a scope string, or a scope array"
+                );
             }
         }
 
@@ -766,6 +778,7 @@ struct ToolPermissions {
 enum ScopeSet {
     All(bool),
     Scopes(Vec<String>),
+    One(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1616,13 +1629,16 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
-    fn from_file(f: &StorageFileConfig) -> Self {
-        Self {
-            max_log_bytes: f
-                .max_log_bytes_mb
-                .unwrap_or_else(|| DEFAULT_MAX_LOG_BYTES_MB)
-                * 1024
-                * 1024,
+    fn from_file(f: &StorageFileConfig) -> Result<Self, ConfigError> {
+        let max_log_bytes_mb = f
+            .max_log_bytes_mb
+            .unwrap_or_else(|| DEFAULT_MAX_LOG_BYTES_MB);
+        Ok(Self {
+            max_log_bytes: max_log_bytes_mb.checked_mul(BYTES_PER_MB).ok_or(
+                ConfigError::LogBytesTooLarge {
+                    value: max_log_bytes_mb,
+                },
+            )?,
             max_log_files: f.max_log_files.unwrap_or_else(|| DEFAULT_MAX_LOG_FILES),
             input_history_size: f
                 .input_history_size
@@ -1637,7 +1653,7 @@ impl StorageConfig {
                 f.snapshot_timeout_secs
                     .unwrap_or_else(|| DEFAULT_SNAPSHOT_TIMEOUT_SECS),
             ),
-        }
+        })
     }
 
     /// The in-memory ceiling a live session enforces after each durable write.
@@ -1750,6 +1766,11 @@ fn push_rules(
                     });
                 }
             }
+            ScopeSet::One(scope) => rules.push(PermissionRule {
+                tool: ToolKey::native(tool),
+                scope: Some(scope.clone()),
+                effect,
+            }),
             ScopeSet::All(false) => {}
         }
     }
@@ -2057,12 +2078,17 @@ fn config_search_dirs(global: Option<&Path>) -> Vec<PathBuf> {
 }
 
 #[allow(unsafe_code)]
-fn load_env_files_with_global(cwd: &Path, global: Option<&Path>) {
+fn load_env_files_with_global(cwd: &Path, global: Option<&Path>, project_trusted: bool) {
     let mut vars = HashMap::new();
     if let Some(path) = global {
         collect_env_vars(&path.join(".env"), &mut vars);
     }
-    collect_env_vars(&cwd.join(PROJECT_DIR).join(".env"), &mut vars);
+    // Project `.env` is untrusted project configuration: it can set `PATH`,
+    // `BASH_ENV`, proxy or TLS variables for every child process. Load it only
+    // after the operator opts in with `--trust-project`.
+    if project_trusted {
+        collect_env_vars(&cwd.join(PROJECT_DIR).join(".env"), &mut vars);
+    }
 
     for (key, value) in vars {
         if std::env::var_os(&key).is_none() {
@@ -2081,8 +2107,8 @@ fn collect_env_vars(path: &Path, vars: &mut HashMap<String, String>) {
     }
 }
 
-pub fn load_env_files(cwd: &Path) {
-    load_env_files_with_global(cwd, global_dir().as_deref());
+pub fn load_env_files(cwd: &Path, project_trusted: bool) {
+    load_env_files_with_global(cwd, global_dir().as_deref(), project_trusted);
 }
 
 /// Error message shown when no Bash-compatible runtime is found on Windows.
@@ -2500,6 +2526,9 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use test_case::test_case;
+
+    const ENV_GLOBAL_VALUE: &str = "global";
+    const ENV_PROJECT_VALUE: &str = "project";
 
     fn plugin_enabled(enabled: bool) -> PluginFileConfig {
         PluginFileConfig {
@@ -3067,6 +3096,26 @@ mod tests {
         ));
     }
 
+    #[test_case(3, Some(3 * BYTES_PER_MB) ; "converts_to_bytes")]
+    #[test_case(u64::MAX, None ; "overflow_is_a_config_error")]
+    fn max_log_bytes_mb_conversion(max_log_bytes_mb: u64, expected_bytes: Option<u64>) {
+        let mut raw = RawConfig::default();
+        raw.storage.max_log_bytes_mb = Some(max_log_bytes_mb);
+
+        let max_log_bytes = raw
+            .into_config(false)
+            .map(|config| config.storage.max_log_bytes);
+        match (max_log_bytes, expected_bytes) {
+            (Ok(actual), Some(bytes)) => assert_eq!(actual, bytes),
+            (Err(ConfigError::LogBytesTooLarge { value }), None) => {
+                assert_eq!(value, max_log_bytes_mb);
+            }
+            (result, expected) => panic!(
+                "max_log_bytes_mb = {max_log_bytes_mb}: expected {expected:?}, got {result:?}"
+            ),
+        }
+    }
+
     #[test_case(false, DefaultEffect::Prompt ; "untrusted_project_ignored")]
     #[test_case(true, DefaultEffect::Deny ; "trusted_project_loaded")]
     fn project_permissions_respect_trust(project_trusted: bool, expected_default: DefaultEffect) {
@@ -3099,6 +3148,28 @@ mod tests {
         assert_eq!(perms.rules[1].effect, Effect::Allow);
         assert_eq!(perms.rules[1].tool, ToolKey::native("bash"));
         assert_eq!(perms.rules[1].scope.as_deref(), Some("cargo *"));
+    }
+
+    #[test_case("\"rm -rf /\"" ; "scalar_is_coerced_not_dropped")]
+    #[test_case("[\"rm -rf /\"]" ; "array_is_kept")]
+    fn tool_scope_value_becomes_deny_rule(deny_value: &str) {
+        let dir = TempDir::new().unwrap();
+        let global = global_config_dir(dir.path());
+        write_global_permissions(
+            dir.path(),
+            &format!("default = \"allow\"\n\n[bash]\ndeny = {deny_value}\n"),
+        );
+
+        let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global), true);
+        assert!(
+            perms.rules.iter().any(|r| {
+                r.tool == ToolKey::native("bash")
+                    && r.effect == Effect::Deny
+                    && r.scope.as_deref() == Some("rm -rf /")
+            }),
+            "deny = {deny_value} must become one bash deny scope instead of being dropped: {:?}",
+            perms.rules
+        );
     }
 
     #[test]
@@ -3395,7 +3466,7 @@ mod tests {
             std::env::set_var(PROCESS_WINS, "process");
         }
 
-        load_env_files_with_global(dir.path(), Some(&global));
+        load_env_files_with_global(dir.path(), Some(&global), true);
 
         assert_eq!(std::env::var(GLOBAL_ONLY).unwrap(), "global");
         assert_eq!(std::env::var(PROJECT_SHADOWS).unwrap(), "project");
@@ -3407,6 +3478,73 @@ mod tests {
             std::env::remove_var(GLOBAL_ONLY);
             std::env::remove_var(PROJECT_SHADOWS);
             std::env::remove_var(PROCESS_WINS);
+        }
+    }
+
+    #[test_case(
+        false,
+        ("TEST_N00N_UNTRUSTED_PROJECT_ENV_PROJECT", "TEST_N00N_UNTRUSTED_PROJECT_ENV_GLOBAL"),
+        None,
+        ENV_GLOBAL_VALUE ;
+        "untrusted_project_env_is_never_applied"
+    )]
+    #[test_case(
+        true,
+        ("TEST_N00N_TRUSTED_PROJECT_ENV_PROJECT", "TEST_N00N_TRUSTED_PROJECT_ENV_GLOBAL"),
+        Some(ENV_PROJECT_VALUE),
+        ENV_PROJECT_VALUE ;
+        "trusted_project_env_is_applied"
+    )]
+    #[allow(unsafe_code)]
+    fn project_env_respects_trust(
+        project_trusted: bool,
+        (project_only, global_only): (&str, &str),
+        expected_project_only: Option<&str>,
+        expected_global_only: &str,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let global = global_config_dir(dir.path());
+        fs::create_dir_all(&global).unwrap();
+        fs::write(
+            global.join(".env"),
+            format!("{global_only}={ENV_GLOBAL_VALUE}"),
+        )
+        .unwrap();
+
+        let n00n_dir = dir.path().join(PROJECT_DIR);
+        fs::create_dir_all(&n00n_dir).unwrap();
+        fs::write(
+            n00n_dir.join(".env"),
+            format!("{project_only}={ENV_PROJECT_VALUE}\n{global_only}={ENV_PROJECT_VALUE}"),
+        )
+        .unwrap();
+
+        // SAFETY: each case uses its own variable names; process env is the
+        // observable side effect under test.
+        unsafe {
+            std::env::remove_var(project_only);
+            std::env::remove_var(global_only);
+        }
+
+        load_env_files_with_global(dir.path(), Some(&global), project_trusted);
+
+        assert_eq!(
+            std::env::var_os(project_only)
+                .map(|value| value.into_string().unwrap())
+                .as_deref(),
+            expected_project_only,
+            "project .env must set process environment variables only when trusted"
+        );
+        assert_eq!(
+            std::env::var(global_only).unwrap(),
+            expected_global_only,
+            "project .env may shadow the global .env only when trusted"
+        );
+
+        // SAFETY: cleanup of the variables set earlier in this test.
+        unsafe {
+            std::env::remove_var(project_only);
+            std::env::remove_var(global_only);
         }
     }
 

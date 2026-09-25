@@ -69,6 +69,8 @@ pub enum StorageError {
     Json(#[from] serde_json::Error),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("invalid storage file name: {0:?}")]
+    InvalidFileName(String),
     #[error("slug collision after max attempts")]
     SlugCollision,
     #[error("toon error: {0}")]

@@ -762,7 +762,7 @@ pub fn models() {
 
 pub fn index(path: &str, no_plugins: bool, no_jit: bool, project_trusted: bool) -> Result<()> {
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-    load_env_files(&cwd);
+    load_env_files(&cwd, project_trusted);
 
     let mut host = if no_plugins {
         PluginHost::disabled()
@@ -861,7 +861,7 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
     }
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-    load_env_files(&cwd);
+    load_env_files(&cwd, flags.project_trusted);
 
     let vars = template::env_vars();
     let reg = ToolRegistry::global_arc();

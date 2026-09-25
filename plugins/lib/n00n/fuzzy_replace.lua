@@ -469,6 +469,9 @@ local REPLACERS = { exact, line_trimmed, block_anchor, whitespace_normalized, in
 local LATE_REPLACERS = { trimmed_boundary, context_aware }
 
 local function replace_all_occurrences(content, matched, replacement)
+  if matched == "" then
+    return content
+  end
   local result = {}
   local pos = 1
   while true do
@@ -496,14 +499,18 @@ function M.replace(content, old_string, new_string, replace_all)
 
   local function try_match(candidates, replacement)
     for _, matched in ipairs(candidates) do
-      local first = content:find(matched, 1, true)
-      if first then
-        any_found = true
-        if replace_all then
-          return replace_all_occurrences(content, matched, replacement)
-        end
-        if not content:find(matched, first + #matched, true) then
-          return content:sub(1, first - 1) .. replacement .. content:sub(first + #matched)
+      -- A fuzzy pass can normalize an all-whitespace old_string down to "",
+      -- which would match at every byte; treat it as no match.
+      if matched ~= "" then
+        local first = content:find(matched, 1, true)
+        if first then
+          any_found = true
+          if replace_all then
+            return replace_all_occurrences(content, matched, replacement)
+          end
+          if not content:find(matched, first + #matched, true) then
+            return content:sub(1, first - 1) .. replacement .. content:sub(first + #matched)
+          end
         end
       end
     end

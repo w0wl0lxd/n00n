@@ -1,4 +1,4 @@
-"""Generate crates/n00n-providers/src/providers/cursor_models.rs from cursor-agent --list-models.
+"""Generate crates/n00n-providers/src/providers/cursor/models_data.rs from cursor-agent --list-models.
 
 Usage:
     cursor-agent --list-models > /tmp/cursor-models.txt
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OUT = REPO_ROOT / "crates" / "n00n-providers" / "src" / "providers" / "cursor_models.rs"
+OUT = REPO_ROOT / "crates" / "n00n-providers" / "src" / "providers" / "cursor" / "models_data.rs"
 MODELS_TXT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/cursor-models.txt")
 
 # (input_price, output_price, tier, context_window, max_output_tokens)
@@ -112,6 +112,7 @@ def main():
         out.append(f"        tier: crate::model::ModelTier::{tier},\n")
         out.append(f"        family: crate::model::ModelFamily::{family(model_id)},\n")
         out.append("        vision: false,\n")
+        out.append("        files: false,\n")
         out.append(f"        default: {'true' if is_default else 'false'},\n")
         out.append("        pricing: crate::model::ModelPricing {\n")
         out.append(f"            input: {inp},\n")

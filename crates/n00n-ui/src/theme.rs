@@ -440,7 +440,9 @@ fn helix_to_textmate_scope(key: &str) -> &str {
 
 fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
     let hex = s.strip_prefix('#')?;
-    if hex.len() != 6 {
+    // Hex digits are ASCII; a byte-length check alone lets a multi-byte
+    // character straddle a slice boundary and panic below.
+    if hex.len() != 6 || !hex.is_ascii() {
         return None;
     }
     let Ok(r) = u8::from_str_radix(&hex[0..2], 16) else {
@@ -962,6 +964,24 @@ mod tests {
         assert_eq!(t.code_gutter.fg, Some(Color::Rgb(0xff, 0xb8, 0x6c)));
         assert_eq!(t.list_marker.fg, Some(Color::Rgb(0x8b, 0xe9, 0xfd)));
         assert_eq!(t.bold.fg, Some(Color::Rgb(0xff, 0xb8, 0x6c)));
+    }
+
+    // Each value has six bytes after '#', so only the ASCII check stops a
+    // byte slice from splitting a multibyte character.
+    #[test_case("#\u{1F600}12" ; "four_byte_char_at_start")]
+    #[test_case("#1\u{1F600}2" ; "four_byte_char_straddles_red_green")]
+    #[test_case("#12\u{1F600}" ; "four_byte_char_at_end")]
+    #[test_case("#\u{20AC}123" ; "three_byte_char_straddles_red_green")]
+    #[test_case("#123\u{E9}5" ; "two_byte_char_straddles_green_blue")]
+    #[test_case("#1234\u{E9}" ; "two_byte_char_in_blue")]
+    fn parse_hex_rgb_rejects_multibyte_values(value: &str) {
+        assert_eq!(
+            value.len(),
+            "#rrggbb".len(),
+            "case must have six bytes after the hash"
+        );
+        assert_eq!(parse_hex_rgb(value), None);
+        assert_eq!(parse_hex(value), None);
     }
 
     #[test]
