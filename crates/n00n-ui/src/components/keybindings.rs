@@ -226,6 +226,7 @@ impl KeybindContext {
             Self::CommandPalette => "command_palette",
             Self::Search => "search",
             Self::FilePicker => "file_picker",
+            Self::McpPicker => "mcp_picker",
         }
     }
 
