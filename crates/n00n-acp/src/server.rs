@@ -82,6 +82,13 @@ impl Server {
     }
 }
 
+fn write_frame(handle: &mut impl Write, msg: &Value) -> std::io::Result<()> {
+    let frame = serde_json::to_vec(msg).map_err(std::io::Error::other)?;
+    handle.write_all(&frame)?;
+    handle.write_all(b"\n")?;
+    handle.flush()
+}
+
 /// Runs the ACP server.
 ///
 /// # Errors
@@ -93,9 +100,8 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         let stdout = std::io::stdout();
         while let Ok(msg) = out_rx.recv_async().await {
             let mut handle = stdout.lock();
-            if serde_json::to_writer(&mut handle, &msg).is_ok() {
-                let _ = handle.write_all(b"\n");
-                let _ = handle.flush();
+            if let Err(error) = write_frame(&mut handle, &msg) {
+                warn!(error = %error, "failed to write ACP response to stdout");
             }
         }
     });
@@ -822,6 +828,47 @@ mod tests {
         assert!(request_id(&json!([])).is_err());
         assert!(request_id(&json!(true)).is_err());
         assert!(request_id(&json!(18_446_744_073_709_551_615_u64)).is_err());
+    }
+
+    #[test]
+    fn write_frame_emits_one_newline_terminated_message() {
+        let mut out = Vec::new();
+        write_frame(&mut out, &json!({"jsonrpc": "2.0", "id": 1})).unwrap();
+        assert!(out.ends_with(b"\n"));
+        let value: Value = serde_json::from_slice(&out[..out.len() - 1]).unwrap();
+        assert_eq!(value["id"], 1);
+    }
+
+    #[test]
+    fn write_frame_reports_stdout_failure() {
+        struct FailAfter {
+            written: usize,
+            limit: usize,
+        }
+        impl std::io::Write for FailAfter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.written >= self.limit {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "stdout closed",
+                    ));
+                }
+                let written = buf.len().min(self.limit - self.written);
+                self.written += written;
+                Ok(written)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut out = FailAfter {
+            written: 0,
+            limit: 3,
+        };
+        let error = write_frame(&mut out, &json!({"jsonrpc": "2.0", "id": 1})).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(out.written, 3);
     }
 
     #[test]

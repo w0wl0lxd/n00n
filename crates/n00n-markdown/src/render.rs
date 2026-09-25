@@ -399,16 +399,27 @@ fn ensure_blank_line(lines: &mut Vec<Line>) {
     }
 }
 
+/// Largest char-boundary index of `text` whose slice reports `width() <= max_width`.
+///
+/// `UnicodeWidthChar` and `UnicodeWidthStr` disagree for control characters and
+/// emoji presentation sequences, so the candidate is re-measured with the same
+/// `UnicodeWidthStr::width` that consumers use. Without that, a line can take
+/// more cells than its remaining budget and the subtraction underflows.
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
+    let mut end = 0;
     for (i, ch) in text.char_indices() {
         let cw = UnicodeWidthChar::width(ch).unwrap_or_else(|| 0);
         if width + cw > max_width {
-            return i;
+            break;
         }
         width += cw;
+        end = i + ch.len_utf8();
     }
-    text.len()
+    while end > 0 && text[..end].width() > max_width {
+        end = text[..end].char_indices().next_back().map_or(0, |(i, _)| i);
+    }
+    end
 }
 
 fn wrap_code_lines(lines: &mut Vec<Line>, start: usize, width: u16) {
@@ -574,7 +585,9 @@ fn wrap_spans(spans: Vec<Span>, max_width: usize) -> Vec<Vec<Span>> {
                 style.clone(),
                 emphasis,
             ));
-            remaining -= text[..take].width();
+            // `take` can stop before `fits`, so guard against a prefix measuring
+            // wider than the clamped candidate.
+            remaining = remaining.saturating_sub(text[..take].width());
             text = &text[skip..];
             if take < fits && !text.is_empty() {
                 result.push(mem::take(&mut current));
@@ -1127,6 +1140,28 @@ mod tests {
     }
 
     #[test]
+    fn paragraph_wrapping_never_underflows_on_tabs() {
+        let input = "\t tabs \t everywhere \t".repeat(30);
+        let lines = render(&input, 40);
+        assert!(lines.iter().all(|l| l.width() <= 40), "line overflow");
+    }
+
+    #[test]
+    fn paragraph_wrapping_never_underflows_on_emoji_presentation() {
+        for (input, width) in [
+            ("\u{2764}\u{FE0F}", 1u16),
+            ("a\u{2764}\u{FE0F}b", 3),
+            ("\u{00A9}\u{FE0F}", 1),
+        ] {
+            let lines = render(input, width);
+            assert!(
+                lines.iter().all(|l| l.width() <= width as usize),
+                "line overflow for {input:?} at width {width}"
+            );
+        }
+    }
+
+    #[test]
     fn paragraph_wrapping_preserves_all_content() {
         const INPUT: &str = "The **quick** brown _fox_ jumps over the `lazy` dog repeatedly";
         let lines = render(INPUT, 20);
@@ -1194,6 +1229,50 @@ mod tests {
             .collect();
         assert_eq!(reassembled, long_word);
         assert!(wrapped.iter().all(|row| spans_width(row) <= 10));
+    }
+
+    #[test]
+    fn arbitrary_unicode_never_overflows_the_wrap_budget() {
+        const POOL: &[char] = &[
+            '\t',
+            '\r',
+            '\u{0}',
+            'a',
+            ' ',
+            '\u{301}',
+            '\u{200d}',
+            '\u{fe00}',
+            '\u{fe0f}',
+            '\u{20e3}',
+            '\u{fe01}',
+            '\u{2764}',
+            '\u{a9}',
+            '1',
+            '\u{2019}',
+            '\u{5d0}',
+            '\u{644}',
+            '\u{627}',
+            '\u{1f1fa}',
+            '\u{1f1f8}',
+            '\u{5e2}',
+            '\u{338}',
+            '\u{300}',
+            '幅',
+            '\u{1F642}',
+        ];
+        let mut rng = fastrand::Rng::with_seed(0x00C0_FFEE);
+        for _ in 0..400 {
+            let len = rng.usize(0..80);
+            let text: String = (0..len).map(|_| POOL[rng.usize(..POOL.len())]).collect();
+            for width in [2u16, 3, 8, 40] {
+                for line in render(&text, width) {
+                    assert!(
+                        line.width() <= width as usize,
+                        "overflow at width {width} for {text:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

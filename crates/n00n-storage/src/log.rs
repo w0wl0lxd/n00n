@@ -115,7 +115,7 @@ impl RotatingFileWriter {
         let needs_rotate = true;
 
         if needs_rotate {
-            let last = self.max_files - 1;
+            let last = self.max_files.saturating_sub(1);
             match fs::remove_file(file_path(&self.dir, last)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -220,6 +220,21 @@ mod tests {
         w.flush().unwrap();
 
         assert!(!file_path(tmp.path(), TEST_MAX_FILES).exists());
+    }
+
+    #[test]
+    fn zero_max_files_rotates_without_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut w = RotatingFileWriter::with_limits(tmp.path(), TEST_MAX_BYTES, 0).unwrap();
+
+        let filler = "x".repeat(usize::try_from(TEST_MAX_BYTES).unwrap());
+        w.write_all(filler.as_bytes()).unwrap();
+        w.flush().unwrap();
+        w.write_all(b"after").unwrap();
+        w.flush().unwrap();
+
+        let current = fs::read_to_string(file_path(tmp.path(), 0)).unwrap();
+        assert_eq!(current, "after");
     }
 
     #[test]

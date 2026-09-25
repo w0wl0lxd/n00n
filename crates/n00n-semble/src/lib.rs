@@ -20,6 +20,27 @@ fn resolve_top_k(top_k: Option<usize>) -> usize {
     }
 }
 
+/// Whether `repo` is authorized by the comma-separated `N00N_SEMBLE_ALLOWED_REMOTE_REPOS`
+/// value. Entries are URL prefixes that must end on a path boundary, so
+/// `https://github.com/trusted` authorizes `.../trusted/repo` but never
+/// `.../trusted-evil/...` or `https://github.com.attacker.example/...`.
+/// Blank entries and the bare `*` wildcard are handled explicitly: a trailing
+/// comma must never turn the allowlist into a no-op.
+fn remote_url_allowed(allowed: &str, repo: &str) -> bool {
+    if allowed == "*" {
+        return true;
+    }
+    allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|prefix| !prefix.is_empty())
+        .any(|prefix| {
+            repo.strip_prefix(prefix).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with('/') || prefix.ends_with('/')
+            })
+        })
+}
+
 pub struct Client;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,18 +225,12 @@ impl Client {
                 }
             };
 
-            if allowed != "*" {
-                let allowed_prefixes: Vec<&str> = allowed.split(',').map(str::trim).collect();
-                let is_allowed = allowed_prefixes
-                    .iter()
-                    .any(|prefix| repo.starts_with(prefix));
-                if !is_allowed {
-                    return Err(SembleError::Cli {
-                        message: format!(
-                            "remote repository URL '{repo}' is not in the allowed list (N00N_SEMBLE_ALLOWED_REMOTE_REPOS={allowed})"
-                        ),
-                    });
-                }
+            if !remote_url_allowed(&allowed, repo) {
+                return Err(SembleError::Cli {
+                    message: format!(
+                        "remote repository URL '{repo}' is not in the allowed list (N00N_SEMBLE_ALLOWED_REMOTE_REPOS={allowed})"
+                    ),
+                });
             }
 
             let temp_dir = tempfile::tempdir().map_err(|e| SembleError::Cli {
@@ -496,12 +511,91 @@ pub enum SembleError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Client, FindRelatedRequest, Mode, SearchRequest, SembleError};
+    use super::{Client, FindRelatedRequest, Mode, SearchRequest, SembleError, remote_url_allowed};
     use std::fs;
     use tempfile::tempdir;
 
     const ANCHOR_FILE: &str = "anchor.rs";
     const ANCHOR_SOURCE: &str = "fn anchor() {}\n\nfn distant_symbol() {}";
+
+    #[test]
+    fn remote_url_allowlist_enforces_url_boundaries() {
+        let cases: &[(&str, &str, bool, &str)] = &[
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/repo",
+                true,
+                "org prefix allows repo",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted",
+                true,
+                "exact match",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted-evil/repo",
+                false,
+                "org prefix must not match a sibling name",
+            ),
+            (
+                "https://github.com",
+                "https://github.com.evil.example/repo",
+                false,
+                "host prefix must not match a suffix domain",
+            ),
+            (
+                "https://github.com/trusted/",
+                "https://github.com/trusted/repo",
+                true,
+                "trailing-slash prefix allows repo",
+            ),
+            (
+                "https://github.com/trusted/",
+                "https://github.com/trusted-evil/repo",
+                false,
+                "trailing-slash prefix must not match a sibling",
+            ),
+            (
+                "https://github.com/trusted,",
+                "https://github.com/evil/repo",
+                false,
+                "empty list entry must not allow everything",
+            ),
+            (
+                "  ,  ",
+                "https://github.com/evil/repo",
+                false,
+                "blank list entries must not allow everything",
+            ),
+            (
+                "*",
+                "https://anything.example/repo",
+                true,
+                "wildcard allows everything",
+            ),
+            (
+                "https://github.com/a,https://gitlab.com/b",
+                "https://gitlab.com/b/repo",
+                true,
+                "second entry allows",
+            ),
+            (
+                "https://github.com/a,https://gitlab.com/b",
+                "https://gitlab.com/bad/repo",
+                false,
+                "second entry keeps its boundary",
+            ),
+        ];
+        for (allowed, repo, expected, case) in cases {
+            assert_eq!(
+                remote_url_allowed(allowed, repo),
+                *expected,
+                "{case}: allowed={allowed:?} repo={repo:?}"
+            );
+        }
+    }
 
     #[test]
     fn search_indexes_and_returns_bm25_results() {

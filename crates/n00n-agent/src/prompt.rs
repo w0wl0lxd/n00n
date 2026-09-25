@@ -236,7 +236,12 @@ fn cap_after_instructions(content: String) -> String {
         }
         header_end = idx + 1;
     }
-    let header = lines[..header_end].join("\n");
+    let mut header = lines[..header_end].join("\n");
+    if header.len() > MAX_AFTER_INSTRUCTIONS_BYTES {
+        // The header is free-form instruction text, not JSON, so a partial cut
+        // is safe here; todo lines below must stay whole.
+        header = crate::tools::truncate_output(&header, usize::MAX, MAX_AFTER_INSTRUCTIONS_BYTES);
+    }
     let mut entries: Vec<(String, String)> = Vec::new();
     for line in &lines[header_end..] {
         if line.trim().is_empty() {
@@ -890,6 +895,21 @@ mod tests {
         assert!(
             out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES,
             "len={}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn todo_cap_truncates_oversized_header() {
+        let header = "h".repeat(MAX_AFTER_INSTRUCTIONS_BYTES * 2);
+        let content = format!(
+            "# Current todos\n{header}\n{}",
+            todo_line("in_progress", "task")
+        );
+        let out = cap_after_instructions(content);
+        assert!(
+            out.len() <= MAX_AFTER_INSTRUCTIONS_BYTES,
+            "header alone exceeds the cap: len={}",
             out.len()
         );
     }

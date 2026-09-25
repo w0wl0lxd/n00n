@@ -1930,6 +1930,45 @@ case("secret_check_flags_rsa_private_key", function()
   eq(ok, false)
 end)
 
+case("checkpoint_load_rejects_path_traversal_ids", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_read = n00n.fs.read
+  local read_path
+  n00n.fs.read = function(path)
+    read_path = path
+    return n00n.json.encode({ state_snapshot = { leaked = true } })
+  end
+
+  local loaded, err = checkpoint.load("traversal-run", "../../../../../secret")
+
+  n00n.fs.read = old_read
+  eq(loaded, nil, "a traversal checkpoint_id must not be read")
+  assert(err and err:find("invalid checkpoint_id", 1, true), "expected validation error, got: " .. tostring(err))
+  eq(read_path, nil, "no filesystem read may happen for a rejected id")
+end)
+
+case("checkpoint_prune_rejects_path_traversal_ids", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_list = checkpoint.list
+  local old_rm = n00n.fs.rm
+  local rm_path
+  checkpoint.list = function()
+    return { { checkpoint_id = "../../../../outside", timestamp = 1 } }
+  end
+  n00n.fs.rm = function(path)
+    rm_path = path
+    return true
+  end
+
+  local ok, err = checkpoint.prune("traversal-run", 0)
+
+  checkpoint.list = old_list
+  n00n.fs.rm = old_rm
+  eq(ok, nil, "a traversal checkpoint_id must not be removed")
+  assert(err and err:find("invalid checkpoint_id", 1, true), "expected validation error, got: " .. tostring(err))
+  eq(rm_path, nil, "no remove may happen for a rejected id")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

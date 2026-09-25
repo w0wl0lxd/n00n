@@ -1,6 +1,41 @@
 local M = {}
 
+local utf8_prefix = require("n00n.utf8").prefix
+
 local DEFAULT_PREVIEW_LINES = 40
+
+local function sanitize_log_text(text)
+  return (tostring(text):gsub("%c", "?"))
+end
+
+--- Read a skill file as UTF-8 text. Returns the content; nil and nil when the
+--- file does not exist; or nil and a reason when it exists but cannot be read
+--- (n00n.fs.read throws for invalid UTF-8). Untrusted project skill files
+--- must never sink discovery.
+function M.read_skill_file(path)
+  local ok, content, read_error = pcall(n00n.fs.read, path)
+  if ok and type(content) == "string" then
+    return content, nil
+  end
+  if not n00n.fs.metadata(path) then
+    return nil, nil
+  end
+  if not ok then
+    return nil, tostring(content)
+  end
+  return nil, tostring(read_error)
+end
+
+--- Read a skill file for discovery. A file that exists but cannot be read is
+--- skipped with a sanitized warning, so a broken skill is not mistaken for a
+--- missing one.
+function M.load_skill_file(path)
+  local content, reason = M.read_skill_file(path)
+  if reason then
+    n00n.log.warn("skipping unreadable skill file " .. sanitize_log_text(path) .. ": " .. sanitize_log_text(reason))
+  end
+  return content
+end
 
 local function normalize_string_list(values)
   if values == nil then
@@ -73,7 +108,12 @@ function M.skill_fingerprint(path)
   if not meta then
     return nil
   end
-  local content = n00n.fs.read(path) or ""
+  local content = M.read_skill_file(path)
+  if content == nil then
+    -- A file that cannot be read as UTF-8 is not a skill body; returning no
+    -- fingerprint keeps it out of discovery instead of erroring every caller.
+    return nil
+  end
   local digest = "0"
   local ok, hash = pcall(function()
     return n00n.workflow.hash(content)
@@ -264,9 +304,9 @@ function M.read_skill_body(skill)
   if not skill.location or skill.location:sub(1, 8) == "builtin:" then
     return nil, "skill body unavailable"
   end
-  local raw = n00n.fs.read(skill.location)
+  local raw, reason = M.read_skill_file(skill.location)
   if not raw then
-    return nil, "failed to read skill file"
+    return nil, "failed to read skill file: " .. sanitize_log_text(reason or "file not found")
   end
   local _, body = M.parse_frontmatter(raw)
   if not body or #body == 0 then
@@ -567,7 +607,7 @@ function M.build_skill_list(skills, ranked)
       desc = "[manual-only] " .. desc
     end
     if #desc > 120 then
-      desc = desc:sub(1, 117) .. "..."
+      desc = utf8_prefix(desc, 117) .. "..."
     end
     local prefix = ""
     if score and score > 0 then

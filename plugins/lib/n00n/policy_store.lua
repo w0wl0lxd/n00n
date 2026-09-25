@@ -24,7 +24,10 @@ local function validate_array(values, label, validate_value)
   return true
 end
 
-local function validate_policies(policies)
+--- Validate a policy document. The write path must pass this so a saved
+--- store stays readable by `load`; otherwise every later evaluation fails
+--- closed with "policy unavailable".
+function M.validate(policies)
   if type(policies) ~= "table" or type(policies.rules) ~= "table" then
     return nil, "policy document must be an object with a rules array"
   end
@@ -110,7 +113,7 @@ function M.load(path)
   if not decoded then
     return nil, "invalid policy JSON: " .. tostring(decode_err)
   end
-  local policies, validation_err = validate_policies(decoded)
+  local policies, validation_err = M.validate(decoded)
   if not policies then
     return nil, "invalid policy JSON: " .. validation_err
   end

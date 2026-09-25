@@ -326,4 +326,250 @@ function M.broad_bash_command_reason(command)
   return nil
 end
 
+local COMMAND_SEPARATORS = { ["\n"] = true, [";"] = true, ["&"] = true, ["|"] = true }
+
+-- `2>&1`, `&>file`, `<&3` and `>|file` are redirections, not separators.
+local function is_command_separator(command, index)
+  local char = command:sub(index, index)
+  if not COMMAND_SEPARATORS[char] then
+    return false
+  end
+  local previous = command:sub(index - 1, index - 1)
+  local following = command:sub(index + 1, index + 1)
+  if char == "&" then
+    return previous ~= ">" and previous ~= "<" and following ~= ">"
+  end
+  if char == "|" then
+    return previous ~= ">"
+  end
+  return true
+end
+
+local HEREDOC_OPERATOR = "<<"
+local HERE_STRING_OPERATOR = "<<<"
+local HEREDOC_WORD_END = "[%s;&|<>()]"
+
+-- Read the heredoc delimiter word that starts at or after `index`. Returns
+-- the quote-removed delimiter and the index of the word's last byte.
+local function read_heredoc_delimiter(command, index)
+  while command:sub(index, index):match("[ \t]") do
+    index = index + 1
+  end
+  local start = index
+  local quote
+  while index <= #command do
+    local char = command:sub(index, index)
+    if quote then
+      if char == quote then
+        quote = nil
+      end
+    elseif char == "'" or char == '"' then
+      quote = char
+    elseif char == "\\" then
+      index = index + 1
+    elseif char:match(HEREDOC_WORD_END) then
+      break
+    end
+    index = index + 1
+  end
+  local delimiter = command:sub(start, index - 1):gsub("[\"'\\]", "")
+  return delimiter, index - 1
+end
+
+-- Return the index of the last byte of the heredoc body that starts at
+-- `start`, including its closing delimiter line. An unterminated body runs to
+-- the end of the command, as in bash.
+local function heredoc_body_end(command, start, heredoc)
+  local line_start = start
+  while line_start <= #command do
+    local newline = command:find("\n", line_start, true)
+    local line_end = newline and newline - 1 or #command
+    local line = command:sub(line_start, line_end)
+    if heredoc.strip_tabs then
+      line = line:gsub("^\t+", "")
+    end
+    if line == heredoc.delimiter or not newline then
+      return line_end
+    end
+    line_start = newline + 1
+  end
+  return #command
+end
+
+-- Split a command at unquoted separators (newline, `;`, `&`, `|` and their
+-- doubled forms) into `command` and `separator` parts that concatenate back
+-- to the input byte for byte. Heredoc bodies, from the newline after the
+-- `<<` operator through the closing delimiter line, are `verbatim` parts:
+-- their lines are data, not commands. The command that owns the heredoc and
+-- the commands after its delimiter are still split normally.
+function M.split_command_segments(command)
+  local parts = {}
+  local start = 1
+  local function push(kind, stop)
+    parts[#parts + 1] = { kind = kind, text = command:sub(start, stop) }
+    start = stop + 1
+  end
+
+  local pending_heredocs = {}
+  local quote
+  local index = 1
+  while index <= #command do
+    local char = command:sub(index, index)
+    if quote then
+      if char == quote then
+        quote = nil
+      elseif char == "\\" and quote == '"' then
+        index = index + 1
+      end
+    elseif char == "'" or char == '"' then
+      quote = char
+    elseif char == "\\" then
+      index = index + 1
+    elseif command:sub(index, index + #HERE_STRING_OPERATOR - 1) == HERE_STRING_OPERATOR then
+      index = index + #HERE_STRING_OPERATOR - 1
+    elseif command:sub(index, index + #HEREDOC_OPERATOR - 1) == HEREDOC_OPERATOR then
+      local word_start = index + #HEREDOC_OPERATOR
+      local strip_tabs = command:sub(word_start, word_start) == "-"
+      if strip_tabs then
+        word_start = word_start + 1
+      end
+      local delimiter, word_end = read_heredoc_delimiter(command, word_start)
+      pending_heredocs[#pending_heredocs + 1] = { delimiter = delimiter, strip_tabs = strip_tabs }
+      index = word_end
+    elseif char == "\n" and #pending_heredocs > 0 then
+      push("command", index - 1)
+      push("separator", index)
+      local body_end = index
+      for _, heredoc in ipairs(pending_heredocs) do
+        if body_end + 1 > #command then
+          break
+        end
+        body_end = heredoc_body_end(command, body_end + 1, heredoc)
+      end
+      pending_heredocs = {}
+      if body_end > index then
+        push("verbatim", body_end)
+      end
+      index = body_end
+    elseif is_command_separator(command, index) then
+      push("command", index - 1)
+      local stop = index
+      while stop < #command and is_command_separator(command, stop + 1) do
+        stop = stop + 1
+      end
+      push("separator", stop)
+      index = stop
+    end
+    index = index + 1
+  end
+  if start <= #command then
+    push("command", #command)
+  end
+  return parts
+end
+
+local GIT_SANITIZE_SUBCOMMANDS = {
+  diff = true,
+  show = true,
+  log = true,
+}
+
+-- Force `negative` and drop any explicit `positive` opt-in for a subcommand.
+-- Removing the opt-in keeps a later `negative` from being overridden by it.
+local function force_git_flag(words, subcommand_index, positive, negative)
+  local present = false
+  local index = subcommand_index + 1
+  while index <= #words do
+    if words[index] == negative then
+      present = true
+      index = index + 1
+    elseif words[index] == positive then
+      table.remove(words, index)
+    else
+      index = index + 1
+    end
+  end
+  if not present then
+    table.insert(words, subcommand_index + 1, negative)
+  end
+end
+
+-- Harden one git command against repo-config injection of external diff
+-- drivers and text conversion filters. Inserts `--no-optional-locks` (prevents
+-- write locks), `--no-ext-diff` and `--no-textconv` for subcommands that may
+-- run repo-configured commands (diff, show, log).
+local function sanitize_git_segment(command)
+  if not command:lower():match("^git%s") then
+    return command
+  end
+
+  local words = split_shell_words(command)
+  if #words < 2 or words[1]:lower() ~= "git" then
+    return command
+  end
+
+  -- Strip any -c core.fsmonitor=... override and force it to false. A repo or
+  -- parent config with core.fsmonitor set to a command can execute code during
+  -- git status/diff/log; this disables it without trusting the environment.
+  local i = 2
+  while i <= #words do
+    if words[i] == "-c" and words[i + 1] then
+      local value = words[i + 1]:lower()
+      if value:sub(1, #"core.fsmonitor") == "core.fsmonitor" then
+        table.remove(words, i)
+        table.remove(words, i)
+      else
+        i = i + 2
+      end
+    else
+      i = i + 1
+    end
+  end
+  table.insert(words, 2, "-c")
+  table.insert(words, 3, "core.fsmonitor=false")
+
+  local subcommand_index = git_subcommand_index(words, 2)
+  local option_end = subcommand_index and subcommand_index - 1 or #words
+  local has_optional_locks = false
+  for i = 2, option_end do
+    if words[i] == "--no-optional-locks" then
+      has_optional_locks = true
+      break
+    end
+  end
+
+  if not has_optional_locks then
+    table.insert(words, 2, "--no-optional-locks")
+    if subcommand_index then
+      subcommand_index = subcommand_index + 1
+    end
+  end
+
+  if subcommand_index then
+    local subcommand = words[subcommand_index]:lower()
+    if GIT_SANITIZE_SUBCOMMANDS[subcommand] then
+      force_git_flag(words, subcommand_index, "--ext-diff", "--no-ext-diff")
+      force_git_flag(words, subcommand_index, "--textconv", "--no-textconv")
+    end
+  end
+
+  return table.concat(words, " ")
+end
+
+-- Sanitize every git command in a compound command. Rebuilding words across
+-- a separator would merge two commands into one, so each segment is hardened
+-- on its own and the separators are kept as written.
+function M.sanitize_git_command(command)
+  local rebuilt = {}
+  for _, part in ipairs(M.split_command_segments(command)) do
+    if part.kind == "command" then
+      local leading, body, trailing = part.text:match("^(%s*)(.-)(%s*)$")
+      rebuilt[#rebuilt + 1] = leading .. sanitize_git_segment(body) .. trailing
+    else
+      rebuilt[#rebuilt + 1] = part.text
+    end
+  end
+  return table.concat(rebuilt)
+end
+
 return M
