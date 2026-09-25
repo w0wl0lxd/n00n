@@ -980,9 +980,17 @@ mod tests {
         }"#;
         let provider: CatalogProvider = serde_json::from_str(json).unwrap();
         assert_eq!(provider.name, "Minimal");
-        assert!(provider.env.is_empty());
+        assert!(
+            provider.env.is_empty(),
+            "expected empty, got {:?}",
+            provider.env
+        );
         assert!(provider.api.is_none());
-        assert!(provider.models.is_empty());
+        assert!(
+            provider.models.is_empty(),
+            "expected empty, got {} models",
+            provider.models.len()
+        );
     }
 
     #[test]
@@ -1540,7 +1548,11 @@ mod tests {
         );
 
         let result = CatalogData::from_index(providers, true, &state_dir);
-        assert!(result.providers.is_empty());
+        assert!(
+            result.providers.is_empty(),
+            "expected empty, got {:?}",
+            result.providers
+        );
     }
 
     #[test]

@@ -295,7 +295,7 @@ mod tests {
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
         let backend = WorkerBackend::new(tmp.path());
         let agents = backend.list().map_err(|e| e.to_string())?;
-        assert!(agents.is_empty());
+        assert!(agents.is_empty(), "expected empty, got {agents:?}");
         Ok(())
     }
 

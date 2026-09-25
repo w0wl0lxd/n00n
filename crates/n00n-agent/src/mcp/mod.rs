@@ -2386,7 +2386,11 @@ mod tests {
         let nested = session.fresh();
         let mut tools = json!([]);
         nested.extend_tools(&mut tools);
-        assert!(tool_names(&tools).is_empty());
+        let n00n_empty_check_7 = tool_names(&tools);
+        assert!(
+            n00n_empty_check_7.is_empty(),
+            "expected empty, got {n00n_empty_check_7:?}"
+        );
         assert!(
             nested
                 .search_tools("tool")
@@ -2396,7 +2400,11 @@ mod tests {
 
         nested.mark_loaded(TOOL_NAME);
         nested.extend_tools(&mut tools);
-        assert!(tool_names(&tools).is_empty());
+        let n00n_empty_check_8 = tool_names(&tools);
+        assert!(
+            n00n_empty_check_8.is_empty(),
+            "expected empty, got {n00n_empty_check_8:?}"
+        );
     }
 
     #[test]
@@ -2562,8 +2570,16 @@ mod tests {
 
             let entry = &inner.entries[0];
             assert_eq!(t.shutdowns(), 1);
-            assert!(entry.tools.is_empty());
-            assert!(entry.prompts.is_empty());
+            assert!(
+                entry.tools.is_empty(),
+                "expected empty, got {} tools",
+                entry.tools.len()
+            );
+            assert!(
+                entry.prompts.is_empty(),
+                "expected empty, got {} prompts",
+                entry.prompts.len()
+            );
             assert!(entry.transport.is_none());
             assert!(matches!(entry.status, McpServerStatus::Failed(_)));
         });
@@ -2673,13 +2689,21 @@ mod tests {
 
             let entry = &inner.entries[0];
             assert_eq!(t.shutdowns(), 1);
-            assert!(entry.tools.is_empty());
+            assert!(
+                entry.tools.is_empty(),
+                "expected empty, got {} tools",
+                entry.tools.len()
+            );
             assert!(entry.transport.is_none());
             assert_eq!(entry.status, McpServerStatus::Disabled);
             assert!(!handle.has_tool(TOOL_NAME));
             let mut tools = json!([]);
             handle.extend_tools(&mut tools);
-            assert!(tools.as_array().unwrap().is_empty());
+            let n00n_empty_check_9 = tools.as_array().unwrap();
+            assert!(
+                n00n_empty_check_9.is_empty(),
+                "expected empty, got {n00n_empty_check_9:?}"
+            );
         });
     }
 

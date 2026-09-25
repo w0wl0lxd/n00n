@@ -338,10 +338,11 @@ mod tests {
     #[test]
     fn load_instructions_empty_when_no_files() {
         let dir = tempfile::tempdir().unwrap();
+        let n00n_empty_check_4 =
+            load_instructions_with_home(dir.path().to_str().unwrap(), None, None).text;
         assert!(
-            load_instructions_with_home(dir.path().to_str().unwrap(), None, None)
-                .text
-                .is_empty()
+            n00n_empty_check_4.is_empty(),
+            "expected empty, got {n00n_empty_check_4:?}"
         );
     }
 
@@ -349,10 +350,11 @@ mod tests {
     fn load_instructions_empty_when_home_has_no_global_file() {
         let cwd = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
+        let n00n_empty_check_5 =
+            load_instructions_with_home(cwd.path().to_str().unwrap(), Some(home.path()), None).text;
         assert!(
-            load_instructions_with_home(cwd.path().to_str().unwrap(), Some(home.path()), None)
-                .text
-                .is_empty()
+            n00n_empty_check_5.is_empty(),
+            "expected empty, got {n00n_empty_check_5:?}"
         );
     }
 

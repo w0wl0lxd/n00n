@@ -2079,7 +2079,11 @@ mod tests {
         };
         let scopes = smol::block_on(inv.permission_scopes()).expect("should fallback");
         assert!(scopes.force_prompt);
-        assert!(!scopes.scopes.is_empty());
+        assert!(
+            !scopes.scopes.is_empty(),
+            "expected non-empty, got {:?}",
+            scopes.scopes
+        );
 
         // Callback returns None → fallback to force_prompt
         let (tx2, rx2) = flume::bounded(1);

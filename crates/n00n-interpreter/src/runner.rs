@@ -356,7 +356,11 @@ mod tests {
     fn simple_expression() {
         let result = run("2 + 3", &empty_tools(), None, default_limits()).unwrap();
         assert_eq!(result.output, Some(json!(5)));
-        assert!(result.stdout.is_empty());
+        assert!(
+            result.stdout.is_empty(),
+            "expected empty, got {:?}",
+            result.stdout
+        );
     }
 
     #[test]

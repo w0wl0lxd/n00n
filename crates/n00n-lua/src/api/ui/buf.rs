@@ -646,7 +646,11 @@ mod tests {
         let lua = test_lua();
         let t = lua.create_table().unwrap();
         let line = parse_line(&LuaValue::Table(t)).unwrap();
-        assert!(line.spans.is_empty());
+        assert!(
+            line.spans.is_empty(),
+            "expected empty, got {:?}",
+            line.spans
+        );
     }
 
     #[test]
@@ -879,7 +883,11 @@ mod tests {
                 ..InlineStyle::default()
             })
         );
-        assert!(lines[3].spans.is_empty());
+        assert!(
+            lines[3].spans.is_empty(),
+            "expected empty, got {:?}",
+            lines[3].spans
+        );
     }
 
     #[test]
