@@ -2718,7 +2718,8 @@ fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
         && (normalized.starts_with("previous_response_not_found:")
             // The API rejects a dead chain with `Invalid 'previous_response_id'`;
             // replaying without the id is the right recovery either way.
-            || normalized.contains("previous_response_id")
+            || (normalized.contains("previous_response_id")
+                && (normalized.contains("invalid") || normalized.contains("not found")))
             || normalized.contains("previous response") && normalized.contains("not found"))
     {
         return true;
@@ -5879,6 +5880,33 @@ mod tests {
             false,
             false,
         )));
+    }
+
+    #[test_case("Invalid `previous_response_id`.", true ; "invalid_previous_response_id")]
+    #[test_case(
+        "Invalid 'previous_response_id': 'resp_1' not found.",
+        true ; "invalid_previous_response_id_not_found"
+    )]
+    #[test_case(
+        "previous_response_id is required when store is true",
+        false ; "previous_response_id_mentioned_without_invalid_or_not_found"
+    )]
+    #[test_case(
+        "unrelated validation error about previous_response_id formatting",
+        false ; "previous_response_id_mentioned_in_unrelated_error"
+    )]
+    fn is_missing_previous_response_status_400_message_matching(message: &str, expected: bool) {
+        let attempt = CodexAttempt {
+            previous_response_id: Some("resp_1".into()),
+            emitted_event: false,
+            definitive_rejection: true,
+            delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
+            result: Err(AgentError::Api {
+                status: 400,
+                message: message.into(),
+            }),
+        };
+        assert_eq!(is_missing_previous_response(&attempt), expected);
     }
 
     #[test]
