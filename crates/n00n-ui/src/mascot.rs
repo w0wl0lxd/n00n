@@ -118,18 +118,16 @@ impl Mascot {
         };
         let frame = &cache.frames[blink_index(blink_for_frame(self.frame))];
         let (shift_x, shift_y) = sprite_shift(area, self.mouse_col, self.mouse_row, self.frame);
-        let buf_width = usize::from(buf.area().width);
-
         for row in 0..usize::from(area.height) {
             let y = area.y + usize_to_u16(row);
-            let row_offset = usize::from(y) * buf_width + usize::from(area.x);
             let virtual_top = i32::from(usize_to_u16(row)) * 2;
             let virtual_bottom = virtual_top.saturating_add(1);
             for col in 0..usize::from(area.width) {
                 let virtual_x = i32::from(usize_to_u16(col));
                 let top = sample(cache, frame, virtual_x - shift_x, virtual_top - shift_y);
                 let bottom = sample(cache, frame, virtual_x - shift_x, virtual_bottom - shift_y);
-                if let Some(cell) = buf.content.get_mut(row_offset + col) {
+                let x = area.x + usize_to_u16(col);
+                if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_symbol("▀")
                         .set_fg(Color::Rgb(top[0], top[1], top[2]))
                         .set_bg(Color::Rgb(bottom[0], bottom[1], bottom[2]));
@@ -326,6 +324,7 @@ fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
 mod tests {
     use super::*;
     use crate::theme;
+    use test_case::test_case;
 
     fn accent() -> Color {
         Color::Rgb(120, 160, 255)
@@ -349,10 +348,10 @@ mod tests {
         mascot.render(area, &mut buf, &theme, accent());
     }
 
-    #[test]
-    fn render_fills_large_area() {
+    #[test_case(Rect::new(0, 0, 80, 45); "buffer at origin")]
+    #[test_case(Rect::new(7, 3, 80, 45); "buffer with offset origin")]
+    fn render_fills_area_relative_to_buffer_origin(area: Rect) {
         let mut mascot = Mascot::new(true);
-        let area = Rect::new(0, 0, 80, 45);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
         mascot.render(area, &mut buf, &theme, accent());
