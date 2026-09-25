@@ -1429,6 +1429,7 @@ impl std::fmt::Debug for RequestOptions {
             .field("idempotency_key", &self.idempotency_key)
             .field("idempotency_supported", &self.idempotency_supported)
             .field("hosted_tool_search", &self.hosted_tool_search)
+            .field("cache_shard_key", &self.cache_shard_key)
             .finish()
     }
 }
@@ -1974,6 +1975,48 @@ mod tests {
             cache_shard_key: None,
         };
         assert!(!opts.clamped(&model).fast);
+    }
+
+    #[test]
+    fn request_options_clamped_preserves_cache_shard_key() {
+        let model = clamp_test_model(crate::provider::ProviderKind::Anthropic);
+        let opts = RequestOptions {
+            thinking: ThinkingConfig::Off,
+            fast: false,
+            message_cache_breakpoints: 2,
+            openai_prompt_cache_mode: None,
+            protect_history_replay: false,
+            allow_history_replay: false,
+            allow_history_replay_live: None,
+            safety_identifier: None,
+            moderation: false,
+            idempotency_key: None,
+            idempotency_supported: false,
+            hosted_tool_search: None,
+            cache_shard_key: Some("root-session-id".to_string()),
+        };
+        assert_eq!(
+            opts.clamped(&model).cache_shard_key.as_deref(),
+            Some("root-session-id")
+        );
+    }
+
+    #[test_case(Some("shard-1".to_string()) ; "present")]
+    #[test_case(None ; "absent")]
+    fn request_options_debug_includes_cache_shard_key(cache_shard_key: Option<String>) {
+        let opts = RequestOptions {
+            cache_shard_key: cache_shard_key.clone(),
+            ..RequestOptions::default()
+        };
+        let debug = format!("{opts:?}");
+        assert!(
+            debug.contains("cache_shard_key"),
+            "Debug output must list cache_shard_key: {debug}"
+        );
+        match cache_shard_key {
+            Some(key) => assert!(debug.contains(&key), "Debug output missing value: {debug}"),
+            None => assert!(debug.contains("cache_shard_key: None"), "{debug}"),
+        }
     }
 
     #[test_case("",         ThinkingConfig::Off,      Ok(ThinkingConfig::Adaptive)  ; "toggle_on")]
