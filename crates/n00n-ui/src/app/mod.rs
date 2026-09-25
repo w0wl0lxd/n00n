@@ -289,7 +289,7 @@ pub struct App {
     pub(crate) shared_transcript: Option<n00n_agent::SharedTranscript>,
     pub(crate) btw_system: Option<Arc<ArcSwap<System>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
-    pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
+    pub(crate) image_paste_rx: Vec<image_paste::ImageLoad>,
     storage_writer: Arc<StorageWriter>,
     pending_save: bool,
     last_save_flush: Option<Instant>,

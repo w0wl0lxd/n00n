@@ -1,9 +1,10 @@
+use super::image_paste::{IMAGE_LOADER_GONE_MSG, IMAGE_STALE_MSG};
 use super::session::message_tool_use_ids;
 use super::*;
 use crate::agent::{Delivery, shared_queue};
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
-use crate::components::keybindings::{KeybindContext, key as kb};
+use crate::components::keybindings::{Bind, KeybindContext, key as kb};
 use crate::components::{ExitRequest, key, test_model};
 use crate::selection::{SelectableZone, SelectionState, SelectionZone};
 use arc_swap::ArcSwap;
@@ -33,6 +34,8 @@ use test_case::test_case;
 
 const PROVIDER_FAILED_ERR: &str = "provider failed";
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const IMAGE_FILE_URL: &str = "file:///tmp/nonexistent.png";
+const IMAGE_ABSOLUTE_PATH: &str = "/tmp/nonexistent.png";
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone {
@@ -753,63 +756,82 @@ fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     );
 }
 
-#[test]
-fn unsupported_image_path_paste_preserves_text() {
-    const TEXT: &str = "file:///tmp/nonexistent.png";
+#[test_case(IMAGE_FILE_URL      ; "file_url")]
+#[test_case(IMAGE_ABSOLUTE_PATH ; "absolute_path")]
+fn unsupported_image_path_paste_preserves_text(text: &str) {
     let mut app = test_app();
     app.state.model.supports_vision_override = Some(false);
-    app.update(Msg::Paste(TEXT.into()));
+    app.update(Msg::Paste(text.into()));
     assert!(app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), TEXT);
+    assert_eq!(app.input_box.buffer.value(), text);
 }
 
-#[test]
-fn image_path_paste_in_search_does_not_load_image() {
-    const TEXT: &str = "file:///tmp/nonexistent.png";
+#[test_case(IMAGE_FILE_URL      ; "file_url")]
+#[test_case(IMAGE_ABSOLUTE_PATH ; "absolute_path")]
+fn image_path_paste_in_search_does_not_load_image(text: &str) {
     let mut app = test_app();
     app.update(Msg::Key(kb::SEARCH.to_key_event()));
     assert!(app.search_modal.is_open());
 
-    app.update(Msg::Paste(TEXT.into()));
+    app.update(Msg::Paste(text.into()));
 
     assert!(app.image_paste_rx.is_empty());
     assert_eq!(app.input_box.buffer.value(), "");
-    assert_eq!(app.search_modal.query_text(), TEXT);
+    assert_eq!(app.search_modal.query_text(), text);
 }
 
-#[test]
-fn disconnected_image_load_is_removed() {
+#[test_case(None,                   IMAGE_LOADER_GONE_MSG ; "disconnected_loader")]
+#[test_case(Some("file unavailable"), "file unavailable"    ; "failed_load")]
+fn finished_image_load_preserves_text_and_unblocks_submission(
+    error: Option<&str>,
+    expected_reason: &str,
+) {
     let mut app = test_app();
+    app.input_box.set_input(IMAGE_FILE_URL);
     let (tx, rx) = flume::bounded(1);
-    app.image_paste_rx.push(rx);
-    drop(tx);
+    app.track_image_load(rx);
+    match error {
+        Some(error) => tx.send(Err(error.into())).unwrap(),
+        None => drop(tx),
+    }
 
     app.poll_image_paste();
 
     assert!(
         app.image_paste_rx.is_empty(),
-        "a disconnected loader must not stay parked in the pending list"
+        "a finished loader must not stay parked in the pending list"
+    );
+    assert_eq!(app.input_box.buffer.value(), IMAGE_FILE_URL);
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        format!("Image paste failed: {expected_reason}")
     );
 }
 
-#[test]
-fn failed_image_load_preserves_text_and_unblocks_submission() {
-    const TEXT: &str = "file:///tmp/nonexistent.png";
-    const ERROR: &str = "file unavailable";
+#[test_case(key(KeyCode::Enter)      ; "enter_submits")]
+#[test_case(kb::QUIT.to_key_event() ; "ctrl_c_discards")]
+fn image_loaded_after_composer_drained_is_not_attached(drain: KeyEvent) {
+    const TEXT: &str = "describe this";
     let mut app = test_app();
     app.input_box.set_input(TEXT);
     let (tx, rx) = flume::bounded(1);
-    app.image_paste_rx.push(rx);
-    tx.send(Err(ERROR.into())).unwrap();
+    app.track_image_load(rx);
 
+    app.update(Msg::Key(drain));
+    assert!(app.input_box.is_empty(), "the key must drain the composer");
+    tx.send(Ok(ImageSource::new(
+        ImageMediaType::Png,
+        Arc::from("dGVzdA=="),
+    )))
+    .unwrap();
     app.poll_image_paste();
 
     assert!(app.image_paste_rx.is_empty());
-    assert_eq!(app.input_box.buffer.value(), TEXT);
-    assert_eq!(
-        app.status_bar.flash_text().unwrap(),
-        format!("Image paste failed: {ERROR}")
+    assert!(
+        app.input_box.is_empty(),
+        "an image that finished loading after the composer was drained must not ride on the next message"
     );
+    assert_eq!(app.status_bar.flash_text().unwrap(), IMAGE_STALE_MSG);
 }
 
 #[test]
@@ -4555,11 +4577,11 @@ fn overlay_wins_over_override_when_plan_form_open() {
     assert!(!app.plan_form.is_visible());
 }
 
-#[test]
-fn plan_toggle_beats_override_when_form_hidden() {
+#[test_case(kb::PLAN_TOGGLE ; "ctrl_t")]
+fn plan_toggle_beats_override_when_form_hidden(toggle: Bind) {
     let entry = n00n_lua::KeymapEntry {
-        key: kb::PLAN_TOGGLE.code,
-        modifiers: kb::PLAN_TOGGLE.modifiers,
+        key: toggle.code,
+        modifiers: toggle.modifiers,
         desc: "plugin plan override".into(),
         plugin: std::sync::Arc::from("test-plugin"),
         id: 2,
@@ -4571,10 +4593,10 @@ fn plan_toggle_beats_override_when_form_hidden() {
     app.keymap_reader = reader;
     assert!(app.plan_form.is_visible());
 
-    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    app.update(Msg::Key(toggle.to_key_event()));
     assert!(!app.plan_form.is_visible(), "first press hides the form");
 
-    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    app.update(Msg::Key(toggle.to_key_event()));
 
     assert!(
         app.plan_form.is_visible(),
@@ -4586,11 +4608,11 @@ fn plan_toggle_beats_override_when_form_hidden() {
     );
 }
 
-#[test]
-fn open_editor_beats_override_in_plan_mode() {
+#[test_case(kb::OPEN_EDITOR ; "ctrl_o")]
+fn open_editor_beats_override_in_plan_mode(open_editor: Bind) {
     let entry = n00n_lua::KeymapEntry {
-        key: kb::OPEN_EDITOR.code,
-        modifiers: kb::OPEN_EDITOR.modifiers,
+        key: open_editor.code,
+        modifiers: open_editor.modifiers,
         desc: "plugin open editor override".into(),
         plugin: std::sync::Arc::from("test-plugin"),
         id: 12,
@@ -4604,7 +4626,7 @@ fn open_editor_beats_override_in_plan_mode() {
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
     assert!(!app.plan_form.is_visible());
 
-    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    let actions = app.update(Msg::Key(open_editor.to_key_event()));
 
     assert!(
         matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),

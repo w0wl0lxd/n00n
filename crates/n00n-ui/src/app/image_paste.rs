@@ -7,7 +7,18 @@ use n00n_agent::{ImageMediaType, ImageSource};
 use super::App;
 
 const IMAGE_NOT_SUPPORTED_MSG: &str = "Model does not support image input";
-const IMAGE_LOADER_GONE_MSG: &str = "Image loader stopped before returning a result";
+pub(super) const IMAGE_LOADER_GONE_MSG: &str = "Image loader stopped before returning a result";
+pub(super) const IMAGE_STALE_MSG: &str =
+    "Image finished loading after the message left; not attached";
+
+type ImageLoadResult = Result<ImageSource, String>;
+
+/// A running image load, tagged with the composer generation it belongs to.
+#[derive(Debug)]
+pub(crate) struct ImageLoad {
+    rx: flume::Receiver<ImageLoadResult>,
+    generation: u64,
+}
 
 impl App {
     pub(super) fn start_file_image_paste(&mut self, path: PathBuf, media_type: ImageMediaType) {
@@ -30,20 +41,27 @@ impl App {
     fn spawn_image_load(
         &mut self,
         flash: String,
-        f: impl FnOnce() -> Result<ImageSource, String> + Send + 'static,
+        f: impl FnOnce() -> ImageLoadResult + Send + 'static,
     ) {
         let (tx, rx) = flume::bounded(1);
         thread::spawn(move || {
             let _ = tx.send(f());
         });
-        self.image_paste_rx.push(rx);
+        self.track_image_load(rx);
         self.status_bar.flash(flash);
+    }
+
+    pub(super) fn track_image_load(&mut self, rx: flume::Receiver<ImageLoadResult>) {
+        self.image_paste_rx.push(ImageLoad {
+            rx,
+            generation: self.input_box.generation(),
+        });
     }
 
     pub fn poll_image_paste(&mut self) {
         let mut i = 0;
         while i < self.image_paste_rx.len() {
-            let result = match self.image_paste_rx[i].try_recv() {
+            let result = match self.image_paste_rx[i].rx.try_recv() {
                 Ok(result) => result,
                 Err(flume::TryRecvError::Empty) => {
                     i += 1;
@@ -51,8 +69,11 @@ impl App {
                 }
                 Err(flume::TryRecvError::Disconnected) => Err(IMAGE_LOADER_GONE_MSG.to_owned()),
             };
-            self.image_paste_rx.remove(i);
+            let load = self.image_paste_rx.remove(i);
             match result {
+                Ok(_) if load.generation != self.input_box.generation() => {
+                    self.status_bar.flash(IMAGE_STALE_MSG.into());
+                }
                 Ok(source) => {
                     if self.state.model.supports_vision() {
                         self.input_box.attach_image(source);

@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 const ELLIPSIS: &str = "...";
 const QUEUE_LABEL: &str = " Queue ";
@@ -86,17 +86,18 @@ fn truncate_line(
     } else {
         let target = available.saturating_sub(UnicodeWidthStr::width(ELLIPSIS));
         let mut width = 0;
-        let mut end = 0;
-        for (idx, ch) in text.char_indices() {
-            let ch_width = ch.width().unwrap_or_else(|| 1);
-            if width + ch_width > target {
-                break;
-            }
-            width += ch_width;
-            end = idx + ch.len_utf8();
-        }
+        // Whole grapheme clusters only: summing per-char widths splits a ZWJ
+        // emoji sequence, which the string width counts as one glyph.
+        let truncated: String = Span::raw(text)
+            .styled_graphemes(style)
+            .map(|grapheme| grapheme.symbol)
+            .take_while(|symbol| {
+                width += symbol.width();
+                width <= target
+            })
+            .collect();
         (
-            Span::styled(text[..end].to_string(), style),
+            Span::styled(truncated, style),
             Some(Span::styled(ELLIPSIS, hint_style)),
         )
     };
@@ -145,6 +146,8 @@ mod tests {
     #[test_case("●abc", 5, NO_HINT, &["●abc"]                                        ; "no_hint_multibyte_fits_exactly")]
     #[test_case("●●●", 8, NO_HINT, &["●●●"]                                          ; "no_hint_multibyte_fits")]
     #[test_case("ab日本cd", 6, NO_HINT, &["ab", ELLIPSIS]                             ; "no_hint_cjk_truncated")]
+    #[test_case("\u{1F469}\u{200D}\u{1F4BB}abcdef", 5, NO_HINT, &["\u{1F469}\u{200D}\u{1F4BB}", ELLIPSIS] ; "no_hint_zwj_emoji_kept_whole")]
+    #[test_case("\u{1F469}\u{200D}\u{1F4BB}abcdef", 4, NO_HINT, &[ELLIPSIS]                    ; "no_hint_zwj_emoji_dropped_whole")]
     #[test_case("hello", 20, HINT, &["hello", HINT_STR]                                   ; "hint_short")]
     #[test_case("abcdefghijklmnopqrstuvwxyz", 18, HINT, &["abcdefgh", ELLIPSIS, HINT_STR]  ; "hint_truncated")]
     #[test_case("ab", 9, HINT, &["ab", HINT_STR]                                          ; "hint_exact_fit")]
