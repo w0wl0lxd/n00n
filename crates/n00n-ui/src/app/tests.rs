@@ -1907,11 +1907,11 @@ fn ctrl_s_stashes_and_restores_draft() {
 
     app.update(Msg::Key(kb::STASH.to_key_event()));
     assert!(app.input_box.is_empty());
-    assert_eq!(app.status_bar.flash_text(), Some("Draft stashed"));
+    assert_eq!(app.status_bar.flash_text(), Some(STASH_DRAFT_MSG));
 
     app.update(Msg::Key(kb::STASH.to_key_event()));
     assert_eq!(app.input_box.buffer.value(), "draft");
-    assert_eq!(app.status_bar.flash_text(), Some("Draft restored"));
+    assert_eq!(app.status_bar.flash_text(), Some(STASH_RESTORE_MSG));
 }
 
 #[test]

@@ -107,6 +107,10 @@ const THINKING_CYCLE: [ThinkingConfig; 8] = [
 ];
 const WORKFLOW_ON_MSG: &str = "Workflow mode: on";
 const WORKFLOW_OFF_MSG: &str = "Workflow mode: off";
+const STASH_DRAFT_MSG: &str = "Draft stashed";
+const STASH_RESTORE_MSG: &str = "Draft restored";
+const STASH_EMPTY_MSG: &str = "Nothing to stash";
+const STASH_OCCUPIED_MSG: &str = "Stash already occupied — restore it first";
 const IMPLEMENT_MSG_PREFIX: &str = "Implement the plan";
 const IMPLEMENT_PARALLEL_HINT: &str = "Use batch+task to parallelize, assign each subagent a separate module and restrict its tests to that module to avoid interference.";
 
@@ -1231,17 +1235,15 @@ impl App {
             }
             KeyAction::StashToggle => {
                 match self.input_box.stash_toggle() {
-                    StashOutcome::Stashed => self.status_bar.flash("Draft stashed".into()),
+                    StashOutcome::Stashed => self.status_bar.flash(STASH_DRAFT_MSG.into()),
                     StashOutcome::Restored => {
                         self.command_palette.sync(&self.input_box.buffer.value());
-                        self.status_bar.flash("Draft restored".into());
+                        self.status_bar.flash(STASH_RESTORE_MSG.into());
                     }
                     StashOutcome::NothingToStash => {
-                        self.status_bar.flash("Nothing to stash".into());
+                        self.status_bar.flash(STASH_EMPTY_MSG.into());
                     }
-                    StashOutcome::Occupied => self
-                        .status_bar
-                        .flash("Stash already occupied — restore it first".into()),
+                    StashOutcome::Occupied => self.status_bar.flash(STASH_OCCUPIED_MSG.into()),
                 }
                 vec![]
             }

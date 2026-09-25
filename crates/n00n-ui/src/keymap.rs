@@ -471,6 +471,11 @@ pub static BINDINGS: &[(KeybindContext, &[KeyBinding])] = &[
                 "Undo last edit"
             ),
             bind!(ctrl!('-'), KeyAction::Undo, None, "Undo last edit"),
+            // Legacy (non-Kitty-protocol) terminals report Ctrl+_ as byte
+            // 0x1F, which crossterm's non-Kitty parser decodes as
+            // `Char('7')+CONTROL` (bytes 0x1C..=0x1F map to '4'..='7').
+            // Without this, Undo is unreachable outside the Kitty protocol.
+            bind!(ctrl!('7'), KeyAction::Undo, None, "Undo last edit"),
             bind!(
                 ctrl_shift!('z'),
                 KeyAction::Redo,
@@ -739,6 +744,7 @@ pub fn reaches_composer(key: &KeyEvent) -> bool {
 mod tests {
     use super::*;
     use crossterm::event::KeyEventKind;
+    use test_case::test_case;
 
     /// Strokes allowed to shadow between `Editing` and `General` (both are
     /// always on the context stack together). Empty: no intentional overlap.
@@ -910,6 +916,19 @@ mod tests {
         assert_eq!(
             resolve(&stack, key(KeyCode::Char('d'), KeyModifiers::ALT)),
             Some(KeyAction::ScrollHalfDown)
+        );
+    }
+
+    #[test_case('_' ; "kitty_underscore")]
+    #[test_case('-' ; "plain_hyphen")]
+    #[test_case('7' ; "legacy_non_kitty_byte_0x1f")]
+    fn undo_resolves_on_every_terminal_encoding(c: char) {
+        let stack = [KeybindContext::Editing, KeybindContext::General];
+        assert_eq!(
+            resolve(&stack, key(KeyCode::Char(c), KeyModifiers::CONTROL)),
+            Some(KeyAction::Undo),
+            "Ctrl+{c} must resolve to Undo — legacy (non-Kitty) terminals report \
+             Ctrl+_ as byte 0x1F, which crossterm decodes as Char('7')+CONTROL"
         );
     }
 
