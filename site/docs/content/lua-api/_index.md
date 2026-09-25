@@ -4595,6 +4595,8 @@ notify fires even while the terminal is focused.
 
 - `{msg}` (`string`) Notification text.
 
+**Returns:** (`boolean`, `string?`) true on success, or false and an error message.
+
 **Example:**
 
 ```lua
