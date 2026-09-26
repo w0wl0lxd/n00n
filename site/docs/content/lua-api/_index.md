@@ -4860,7 +4860,7 @@ Updates the window layout on the fly. Only the fields you include in
 - `{opts}` (`table`) Partial float config. Accepted fields:
   - `title` (`string`) border title text.
   - `title_pos` (`string`) title alignment, "left", "center", or "right".
-  - `footer` (`table`) key-hint pairs `{{key, label}, ...}` shown in the bottom border.
+  - `footer` (`table`) key-hint pairs `{{key, label}, ...}` shown in the bottom border; `{}` clears it.
   - `border` (`string`) "rounded", "single", "double", or "none".
   - `anchor` (`string`) corner origin, "NW", "NE", "SW", or "SE".
   - `width` (`integer|string`) new width; integer or "N%".
@@ -6112,6 +6112,10 @@ function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 ### `require("n00n.policy_store")`
 
 ```lua
+--- Validate a policy document. The write path must pass this so a saved
+--- store stays readable by `load`; otherwise every later evaluation fails
+--- closed with "policy unavailable".
+function M.validate(policies)
 function M.load(path)
 ```
 
@@ -6386,6 +6390,39 @@ function ToolView.restore(output, opts)
 function M.normalize(result)
 function M.add(total, value)
 function M.price(model_spec, result)
+```
+
+### `require("n00n.utf8")`
+
+```lua
+-- UTF-8 boundary helpers for byte-budgeted strings.
+local M = {}
+
+--- Longest prefix of {s} that is at most {max_bytes} bytes and still valid
+--- UTF-8. Cutting mid-sequence turns the whole string into invalid data:
+--- JSON encoding and tool-result conversion reject it instead of truncating.
+--- An invalid byte anywhere in {s} is also cut away, so the result is always
+--- valid UTF-8 even when the caller supplies malformed input.
+function M.prefix(s, max_bytes)
+  if max_bytes <= 0 then
+    return ""
+  end
+
+  local valid_len, invalid_at = utf8.len(s)
+  local valid_bytes = valid_len and #s or (invalid_at - 1)
+
+  if max_bytes >= valid_bytes then
+    return s:sub(1, valid_bytes)
+  end
+
+  local cut = utf8.offset(s, 0, max_bytes + 1)
+  if not cut or cut <= 1 then
+    return ""
+  end
+  return s:sub(1, cut - 1)
+end
+
+return M
 ```
 
 ### `require("n00n.web_backend")`

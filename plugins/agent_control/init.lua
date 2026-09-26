@@ -4,7 +4,6 @@
 
 local helpers = require("agent_control_helpers")
 local policy_store = require("n00n.policy_store")
-local validate_id = helpers.validate_id
 local agent_line = helpers.agent_line
 
 local ok, memory_helpers = pcall(require, "memory.memory_helpers")
@@ -75,6 +74,10 @@ local function save_policies(policies)
   if not dir then
     return nil, err
   end
+  local valid, validate_err = policy_store.validate(policies)
+  if not valid then
+    return nil, "refusing to write an unreadable policy store: " .. tostring(validate_err)
+  end
   local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
   if not mkdir_ok then
     return nil, "mkdir error: " .. tostring(mkdir_err)
@@ -92,25 +95,9 @@ local function save_policies(policies)
 end
 
 local function policy_set(rule)
-  if not rule.id or rule.id == "" then
-    return nil, "rule.id is required"
-  end
-  local vok, vid = validate_id(rule.id)
-  if not vok then
-    return nil, "rule.id: " .. vid
-  end
-  if not rule.scope or type(rule.scope) ~= "table" then
-    return nil, "rule.scope is required"
-  end
-  local scope_ok, scope_err = helpers.policy_scope_keys(rule)
-  if not scope_ok then
-    return nil, scope_err
-  end
-  if not rule.priority then
-    return nil, "rule.priority is required"
-  end
-  if rule.restricted_tools and rule.allowed_tools then
-    return nil, "restricted_tools and allowed_tools are mutually exclusive"
+  local rule_ok, rule_err = helpers.validate_rule(rule)
+  if not rule_ok then
+    return nil, rule_err
   end
   local policies, load_err = load_policies()
   if not policies then

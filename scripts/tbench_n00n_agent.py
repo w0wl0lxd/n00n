@@ -99,11 +99,13 @@ def parse_stream_json(log_text: str) -> tuple[dict, dict[int, dict], list[dict]]
             turn_usage[idx] = usage
             for block in content:
                 if block.get("type") == "tool_use":
-                    tool_calls.append({
-                        "turn": idx,
-                        "name": block.get("name"),
-                        "input": block.get("input", {}),
-                    })
+                    tool_calls.append(
+                        {
+                            "turn": idx,
+                            "name": block.get("name"),
+                            "input": block.get("input", {}),
+                        }
+                    )
 
         elif msg_type == "result":
             session_id = msg.get("session_id", session_id)
@@ -164,7 +166,7 @@ class n00nAgent(BaseInstalledAgent):
         await self.exec_as_agent(
             environment,
             command=(
-                f"n00n --print --yolo --verbose --output-format stream-json --model {self.model_name} "
+                f"n00n --print --yolo --verbose --output-format stream-json --model {shlex.quote(self.model_name)} "
                 f"-- {escaped} 2>&1 </dev/null | tee {AGENT_LOG_PATH}"
             ),
         )

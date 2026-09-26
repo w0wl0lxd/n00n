@@ -105,6 +105,11 @@ function M.load(run_id, checkpoint_id)
     return nil, err
   end
 
+  local id_ok, id_err = validate_id(checkpoint_id)
+  if not id_ok then
+    return nil, "invalid checkpoint_id: " .. id_err
+  end
+
   local path = n00n.fs.joinpath(dir, checkpoint_id .. ".json")
   local content, read_err = n00n.fs.read(path)
   if not content then
@@ -210,6 +215,15 @@ function M.prune(run_id, keep_n)
   local to_remove = {}
   for i = keep_n + 1, #checkpoints do
     to_remove[#to_remove + 1] = checkpoints[i].checkpoint_id
+  end
+
+  -- ids come from on-disk checkpoint files; validate every id in the batch
+  -- before removing any of them, so a malformed id never leaves a partial prune
+  for _, ckpt_id in ipairs(to_remove) do
+    local id_ok, id_err = validate_id(ckpt_id)
+    if not id_ok then
+      return nil, "invalid checkpoint_id: " .. id_err
+    end
   end
 
   for _, ckpt_id in ipairs(to_remove) do

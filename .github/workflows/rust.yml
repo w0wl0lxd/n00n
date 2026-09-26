@@ -33,7 +33,7 @@ jobs:
         with:
           filters: |
             code:
-              - "Cargo.toml"
+              - "**/Cargo.toml"
               - "Cargo.lock"
               - "src/**"
               - "crates/n00n-*/src/**"
@@ -41,12 +41,15 @@ jobs:
               - "crates/n00n-*/benches/**"
               - "crates/n00n-*/baselines/**"
               - "crates/n00n-*/examples/**"
+              - "crates/n00n-*/build.rs"
               - "plugins/**"
               - "justfile"
               - "rust-toolchain.toml"
               - "clippy.toml"
               - "deny.toml"
               - "codecov.yml"
+              - ".cargo/**"
+              - ".config/nextest.toml"
               - ".github/workflows/rust.yml"
               - ".github/workflows/security.yml"
   fmt:

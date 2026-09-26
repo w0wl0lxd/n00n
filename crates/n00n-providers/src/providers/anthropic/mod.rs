@@ -5,6 +5,7 @@
 pub(crate) mod bedrock;
 pub(crate) mod shared;
 
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -30,6 +31,8 @@ const API_VERSION: &str = "2023-06-01";
 const API_ORIGIN: &str = "https://api.anthropic.com";
 const MESSAGES_PATH: &str = "/v1/messages";
 const MODELS_PATH: &str = "/v1/models?limit=1000";
+const MODELS_CURSOR_REPEATED: &str =
+    "Anthropic model list pagination cursor repeated a previous value";
 const USAGE_PATH: &str = "/api/oauth/usage";
 const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -344,6 +347,7 @@ impl Anthropic {
     async fn do_list_models(&self) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
         let mut models = Vec::new();
         let mut after_id: Option<String> = None;
+        let mut seen_cursors: HashSet<String> = HashSet::new();
 
         loop {
             let mut path = MODELS_PATH.to_string();
@@ -373,7 +377,16 @@ impl Anthropic {
             if !page.has_more {
                 break;
             }
-            after_id = page.last_id;
+            let Some(next_cursor) = page.last_id else {
+                return Err(AgentError::api(
+                    502,
+                    "Anthropic model list returned has_more without a last_id cursor",
+                ));
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                return Err(AgentError::api(502, MODELS_CURSOR_REPEATED));
+            }
+            after_id = Some(next_cursor);
         }
 
         models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -953,6 +966,117 @@ data: {\"type\":\"message_stop\"}\n";
                 "claude-opus-4-8-1m".to_string(),
             ]
         );
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn list_models_rejects_pagination_without_a_cursor() {
+        smol::block_on(async {
+            use smol::io::{AsyncReadExt, AsyncWriteExt};
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&requests);
+            let server = smol::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).await.unwrap();
+                    assert_ne!(read, 0);
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                counter.fetch_add(1, Ordering::Relaxed);
+                let body = r#"{"data":[{"id":"claude-opus-4-6","max_input_tokens":200000}],"has_more":true,"last_id":null}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+            });
+
+            let auth = Arc::new(Mutex::new(crate::providers::ResolvedAuth {
+                base_url: Some(format!("http://{address}")),
+                headers: Vec::new(),
+            }));
+            let provider =
+                Anthropic::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+            let error = provider.list_models().await.unwrap_err();
+            server.await;
+
+            assert_eq!(
+                requests.load(Ordering::Relaxed),
+                1,
+                "a page without a cursor must not be re-requested"
+            );
+            assert!(
+                error.to_string().contains("cursor"),
+                "unexpected error: {error:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn list_models_rejects_a_cursor_cycle() {
+        smol::block_on(async {
+            use smol::io::{AsyncReadExt, AsyncWriteExt};
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            // Pages alternate last_id A, B, A: never an immediate repeat, but a
+            // cycle that would otherwise loop forever.
+            let pages = [
+                r#"{"data":[],"has_more":true,"last_id":"A"}"#,
+                r#"{"data":[],"has_more":true,"last_id":"B"}"#,
+                r#"{"data":[],"has_more":true,"last_id":"A"}"#,
+            ];
+
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&requests);
+            let server = smol::spawn(async move {
+                for body in pages {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut chunk = [0_u8; 1024];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read = stream.read(&mut chunk).await.unwrap();
+                        assert_ne!(read, 0);
+                        request.extend_from_slice(&chunk[..read]);
+                    }
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.flush().await.unwrap();
+                }
+            });
+
+            let auth = Arc::new(Mutex::new(crate::providers::ResolvedAuth {
+                base_url: Some(format!("http://{address}")),
+                headers: Vec::new(),
+            }));
+            let provider =
+                Anthropic::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+            let error = provider.list_models().await.unwrap_err();
+            server.await;
+
+            assert_eq!(
+                requests.load(Ordering::Relaxed),
+                3,
+                "the cycle must be caught on the repeated cursor, not looped forever"
+            );
+            assert!(
+                error.to_string().contains(MODELS_CURSOR_REPEATED),
+                "unexpected error: {error:?}"
+            );
+        });
     }
 
     #[test]

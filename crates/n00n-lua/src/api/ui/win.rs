@@ -5,10 +5,11 @@ use std::time::Duration;
 use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_class, lua_fn};
 
-use super::{parse_footer, try_parse_dimension};
-use crate::api::util::command::{
-    Anchor, Border, FloatConfigPatch, Split, TitlePos, WinCommand, WinEvent,
+use super::{
+    FOOTER_FIELD, anchor_value, border_value, optional_bool, optional_field, parse_footer,
+    split_value, title_pos_value, try_parse_dimension,
 };
+use crate::api::util::command::{FloatConfigPatch, WinCommand, WinEvent};
 use crate::docs::{FnDoc, ParamDoc};
 
 /// All mutable state is in `Cell`s so every Lua method takes a shared
@@ -189,7 +190,7 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
 /// @param opts table Partial float config. Accepted fields:
 ///   - title (string): border title text.
 ///   - title_pos (string): title alignment, "left", "center", or "right".
-///   - footer (table): key-hint pairs `{{key, label}, ...}` shown in the bottom border.
+///   - footer (table): key-hint pairs `{{key, label}, ...}` shown in the bottom border; `{}` clears it.
 ///   - border (string): "rounded", "single", "double", or "none".
 ///   - anchor (string): corner origin, "NW", "NE", "SW", or "SE".
 ///   - width (integer|string): new width; integer or "N%".
@@ -207,41 +208,32 @@ fn set_config(_lua: &Lua, this: &WinHandle, opts: Table) -> LuaResult<()> {
     if this.closed.load(Ordering::Acquire) {
         return Ok(());
     }
-    let mut patch = FloatConfigPatch::default();
-    if let Ok(t) = opts.get::<String>("title") {
-        patch.title = Some(t);
-    }
-    if let Ok(f) = parse_footer(&opts)
-        && !f.is_empty()
-    {
-        patch.footer = Some(f);
-    }
-    if let Ok(b) = opts.get::<String>("border") {
-        patch.border = Some(Border::parse(&b));
-    }
-    if let Ok(tp) = opts.get::<String>("title_pos") {
-        patch.title_pos = Some(TitlePos::parse(&tp));
-    }
-    if let Ok(a) = opts.get::<String>("anchor") {
-        patch.anchor = Some(Anchor::parse(&a));
-    }
-    if let Ok(z) = opts.get::<u16>("zindex") {
-        patch.zindex = Some(z);
-    }
-    if let Ok(cl) = opts.get::<bool>("cursor_line") {
-        patch.cursor_line = Some(cl);
-    }
-    if let Ok(rt) = opts.get::<usize>("reserved_top") {
-        patch.reserved_top = Some(rt);
-    }
-    if let Ok(s) = opts.get::<String>("split") {
-        patch.split = Some(Split::parse(&s));
-    }
-    if let Ok(o) = opts.get::<u16>("order") {
-        patch.order = Some(o);
-    }
-    patch.width = try_parse_dimension(&opts, "width");
-    patch.height = try_parse_dimension(&opts, "height");
+    let patch = FloatConfigPatch {
+        title: optional_field(&opts, "title")?,
+        footer: opts
+            .contains_key(FOOTER_FIELD)?
+            .then(|| parse_footer(&opts))
+            .transpose()?,
+        border: optional_field::<String>(&opts, "border")?
+            .map(|value| border_value(&value))
+            .transpose()?,
+        title_pos: optional_field::<String>(&opts, "title_pos")?
+            .map(|value| title_pos_value(&value))
+            .transpose()?,
+        anchor: optional_field::<String>(&opts, "anchor")?
+            .map(|value| anchor_value(&value))
+            .transpose()?,
+        split: optional_field::<String>(&opts, "split")?
+            .map(|value| split_value(&value))
+            .transpose()?,
+        zindex: optional_field(&opts, "zindex")?,
+        cursor_line: optional_bool(&opts, "cursor_line")?,
+        reserved_top: optional_field(&opts, "reserved_top")?,
+        order: optional_field(&opts, "order")?,
+        width: try_parse_dimension(&opts, "width")?,
+        height: try_parse_dimension(&opts, "height")?,
+        ..FloatConfigPatch::default()
+    };
     this.send(WinCommand::SetConfig(patch));
     Ok(())
 }
@@ -364,7 +356,11 @@ lua_class! {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
+
+    const CURSOR_LINE_FIELD: &str = "cursor_line";
 
     fn make_channels() -> (
         flume::Sender<WinEvent>,
@@ -473,6 +469,46 @@ mod tests {
             assert_eq!(recv_task.await.unwrap(), "key");
         }));
         assert!(matches!(cmd_rx.try_recv(), Ok(WinCommand::SetCursor(2))));
+    }
+
+    #[test_case("\"no\"" ; "string")]
+    #[test_case("0" ; "number")]
+    #[test_case("{}" ; "table")]
+    fn set_config_rejects_non_boolean_cursor_line(value: &str) {
+        let lua = mlua::Lua::new();
+        let (_event_tx, cmd_rx, handle) = make_channels();
+        lua.globals().set("win", handle).unwrap();
+
+        let error = lua
+            .load(format!("win:set_config({{ cursor_line = {value} }})"))
+            .exec()
+            .unwrap_err();
+
+        assert!(error.to_string().contains(CURSOR_LINE_FIELD), "{error}");
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a rejected patch must not be sent"
+        );
+    }
+
+    #[test_case("{ title = \"t\" }", None ; "absent_footer_keeps_current")]
+    #[test_case("{ footer = {} }", Some(Vec::new()) ; "empty_footer_clears")]
+    #[test_case(
+        "{ footer = { { \"q\", \"quit\" } } }",
+        Some(vec![("q".to_owned(), "quit".to_owned())]) ;
+        "footer_entries_replace"
+    )]
+    fn set_config_footer_patch(opts: &str, expected: Option<Vec<(String, String)>>) {
+        let lua = mlua::Lua::new();
+        let (_event_tx, cmd_rx, handle) = make_channels();
+        lua.globals().set("win", handle).unwrap();
+
+        lua.load(format!("win:set_config({opts})")).exec().unwrap();
+
+        let Ok(WinCommand::SetConfig(patch)) = cmd_rx.try_recv() else {
+            panic!("set_config must send one SetConfig patch");
+        };
+        assert_eq!(patch.footer, expected);
     }
 
     #[test]

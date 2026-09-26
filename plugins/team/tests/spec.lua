@@ -598,6 +598,72 @@ case("quorum_all_reject_rejected", function()
   assert(v.accepted == false, "all reject -> not accepted")
 end)
 
+case("quorum_negated_approval_is_not_approval", function()
+  local quorum = require("quorum")
+  local old_resolve = n00n.agent.resolve_model
+  local old_session = n00n.agent.session
+  local old_cost = n00n.agent.usage_cost
+  n00n.agent.resolve_model = function()
+    return { spec = "mock-model" }, nil
+  end
+  n00n.agent.usage_cost = function()
+    return 0.0, nil
+  end
+  n00n.agent.session = function()
+    return {
+      prompt = function()
+        return {
+          text = "Blocking issue: SQL injection.\nNOT APPROVED: the artifact is unsafe",
+        }
+      end,
+      close = function() end,
+    },
+      nil
+  end
+
+  local ok, v = pcall(function()
+    return quorum.validate({}, "artifact", { n = 1 })
+  end)
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.session = old_session
+  n00n.agent.usage_cost = old_cost
+
+  assert(ok, "quorum.validate should not error: " .. tostring(v))
+  assert(v.accepted == false, "a NOT APPROVED verdict must not count as approval")
+end)
+
+case("quorum_approval_last_line_is_approval", function()
+  local quorum = require("quorum")
+  local old_resolve = n00n.agent.resolve_model
+  local old_session = n00n.agent.session
+  local old_cost = n00n.agent.usage_cost
+  n00n.agent.resolve_model = function()
+    return { spec = "mock-model" }, nil
+  end
+  n00n.agent.usage_cost = function()
+    return 0.0, nil
+  end
+  n00n.agent.session = function()
+    return {
+      prompt = function()
+        return { text = "No blocking issues found.\nAPPROVED" }
+      end,
+      close = function() end,
+    },
+      nil
+  end
+
+  local ok, v = pcall(function()
+    return quorum.validate({}, "artifact", { n = 1 })
+  end)
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.session = old_session
+  n00n.agent.usage_cost = old_cost
+
+  assert(ok, "quorum.validate should not error: " .. tostring(v))
+  assert(v.accepted == true, "a final APPROVED line must still count as approval")
+end)
+
 case("quorum_same_tier_downweights_confidence", function()
   local quorum = require("quorum")
   local restore = stub_agent(true)

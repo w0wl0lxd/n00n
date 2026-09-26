@@ -7,6 +7,7 @@ use std::time::Duration;
 use humantime::format_duration;
 use mlua::{Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_fn, lua_table};
+use tracing::{debug, warn};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::api::util::command::{
@@ -35,6 +36,10 @@ const DEFAULT_BORDER: Border = Border::Rounded;
 const DEFAULT_TITLE_POS: TitlePos = TitlePos::Left;
 const DEFAULT_SPLIT: Split = Split::None;
 const DEFAULT_FOOTER_LABEL: &str = "";
+const UI_CHANNEL_CLOSED: &str = "ui reply channel closed";
+const UI_DISPATCH_FAILED: &str = "ui action channel full or closed";
+const HINT_LABEL_ERROR: &str = "status hint label must be a string";
+pub(crate) const FOOTER_FIELD: &str = "footer";
 
 use crate::runtime::with_task_bufs;
 use win::WinHandle;
@@ -80,9 +85,14 @@ fn publish_hint_snapshot(lua: &Lua) {
 }
 
 pub(crate) fn parse_footer(tbl: &Table) -> LuaResult<Vec<(String, String)>> {
-    let footer_tbl: Table = match tbl.get("footer") {
-        Ok(t) => t,
-        Err(_) => return Ok(Vec::new()),
+    let footer_tbl = match tbl.get::<mlua::Value>(FOOTER_FIELD)? {
+        mlua::Value::Nil => return Ok(Vec::new()),
+        mlua::Value::Table(t) => t,
+        _ => {
+            return Err(mlua::Error::runtime(
+                "option 'footer' must be a table of {key, label} pairs",
+            ));
+        }
     };
     footer_tbl
         .sequence_values::<Table>()
@@ -144,14 +154,16 @@ fn theme_color(lua: &Lua, name: String) -> LuaResult<mlua::Value> {
 /// end
 #[lua_fn]
 async fn highlight(lua: Lua, code: String, lang: String, opts: Option<Table>) -> LuaResult<Table> {
-    let independent = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("independent").ok())
-        .unwrap_or_else(|| DEFAULT_INDEPENDENT);
-    let prefix = opts
-        .as_ref()
-        .and_then(|t| t.get::<String>("prefix").ok())
-        .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
+    let independent = match &opts {
+        Some(t) => optional_bool(t, "independent")?,
+        None => None,
+    }
+    .unwrap_or_else(|| DEFAULT_INDEPENDENT);
+    let prefix = match &opts {
+        Some(t) => optional_field::<String>(t, "prefix")?,
+        None => None,
+    }
+    .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
     let segments = smol::unblock(move || {
         if independent {
             n00n_highlight::highlight_lines_independent(&lang, &code)
@@ -208,7 +220,7 @@ fn humantime(_lua: &Lua, secs: u64) -> LuaResult<String> {
 #[lua_fn]
 fn terminal_size(lua: &Lua) -> LuaResult<Table> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or_else(|error| {
-        tracing::debug!(%error, "terminal size unavailable; returning default");
+        debug!(%error, "terminal size unavailable; returning default");
         DEFAULT_TERM_SIZE
     });
     let tbl = lua.create_table()?;
@@ -329,12 +341,19 @@ async fn open_editor(
         })
         .is_err()
     {
+        warn!(
+            reason = UI_DISPATCH_FAILED,
+            "open_editor: ui unavailable; returning dispatch failure"
+        );
         return Ok(EDITOR_DISPATCH_FAILED);
     }
-    Ok(reply_rx
-        .recv_async()
-        .await
-        .unwrap_or_else(|_| EDITOR_DISPATCH_FAILED))
+    Ok(reply_rx.recv_async().await.unwrap_or_else(|_| {
+        warn!(
+            reason = UI_CHANNEL_CLOSED,
+            "open_editor: ui unavailable; returning dispatch failure"
+        );
+        EDITOR_DISPATCH_FAILED
+    }))
 }
 
 /// Opens n00n's native model discovery picker and waits for a selection.
@@ -356,9 +375,20 @@ async fn pick_model(
         .try_send(UiAction::PickModel { current, reply_tx })
         .is_err()
     {
+        warn!(
+            reason = UI_DISPATCH_FAILED,
+            "pick_model: ui unavailable; returning nil"
+        );
         return Ok(None);
     }
-    Ok(reply_rx.recv_async().await.ok().flatten())
+    let Ok(selection) = reply_rx.recv_async().await else {
+        warn!(
+            reason = UI_CHANNEL_CLOSED,
+            "pick_model: ui unavailable; returning nil"
+        );
+        return Ok(None);
+    };
+    Ok(selection)
 }
 
 /// Opens a floating or split window that displays the contents of {buf}.
@@ -408,36 +438,27 @@ fn open_win(
             .bufs
             .detach_handlers(&buf_handle.buf);
     }
-    let title: String = opts
-        .get("title")
-        .unwrap_or_else(|_| DEFAULT_TITLE.to_string());
-    let cursor_line: bool = opts
-        .get("cursor_line")
-        .unwrap_or_else(|_| DEFAULT_CURSOR_LINE);
+    let title: String =
+        optional_field(&opts, "title")?.unwrap_or_else(|| DEFAULT_TITLE.to_string());
+    let cursor_line = optional_bool(&opts, "cursor_line")?.unwrap_or_else(|| DEFAULT_CURSOR_LINE);
     let footer = parse_footer(&opts)?;
-    let reserved_bottom: usize = opts
-        .get("reserved_bottom")
-        .unwrap_or_else(|_| DEFAULT_RESERVED_BOTTOM);
-    let reserved_top: usize = opts
-        .get("reserved_top")
-        .unwrap_or_else(|_| DEFAULT_RESERVED_TOP);
-    let focus: bool = opts
-        .get::<Option<bool>>("focus")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| DEFAULT_FOCUS);
-    let zindex: u16 = opts.get("zindex").unwrap_or_else(|_| DEFAULT_ZINDEX);
+    let reserved_bottom: usize =
+        optional_field(&opts, "reserved_bottom")?.unwrap_or_else(|| DEFAULT_RESERVED_BOTTOM);
+    let reserved_top: usize =
+        optional_field(&opts, "reserved_top")?.unwrap_or_else(|| DEFAULT_RESERVED_TOP);
+    let focus = optional_bool(&opts, "focus")?.unwrap_or_else(|| DEFAULT_FOCUS);
+    let zindex: u16 = optional_field(&opts, "zindex")?.unwrap_or_else(|| DEFAULT_ZINDEX);
 
-    let width = parse_dimension(&opts, "width", Dimension::Percent(60));
-    let height = parse_dimension(&opts, "height", Dimension::Percent(70));
-    let row: Option<i16> = opts.get("row").ok();
-    let col: Option<i16> = opts.get("col").ok();
-    let anchor = parse_anchor(&opts);
-    let border = parse_border(&opts);
-    let title_pos = parse_title_pos(&opts);
-    let split = parse_split(&opts);
-    let order: u16 = opts.get("order").unwrap_or_else(|_| DEFAULT_ORDER);
-    let visible: bool = opts.get("visible").unwrap_or_else(|_| DEFAULT_VISIBLE);
+    let width = parse_dimension(&opts, "width", Dimension::Percent(60))?;
+    let height = parse_dimension(&opts, "height", Dimension::Percent(70))?;
+    let row: Option<i16> = optional_field(&opts, "row")?;
+    let col: Option<i16> = optional_field(&opts, "col")?;
+    let anchor = parse_anchor(&opts)?;
+    let border = parse_border(&opts)?;
+    let title_pos = parse_title_pos(&opts)?;
+    let split = parse_split(&opts)?;
+    let order: u16 = optional_field(&opts, "order")?.unwrap_or_else(|| DEFAULT_ORDER);
+    let visible = optional_bool(&opts, "visible")?.unwrap_or_else(|| DEFAULT_VISIBLE);
 
     let config = FloatConfig {
         width,
@@ -458,7 +479,10 @@ fn open_win(
         visible,
     };
 
-    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or_else(|_| DEFAULT_TERM_SIZE);
+    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or_else(|error| {
+        debug!(%error, "open_win: terminal size unavailable; sizing against default");
+        DEFAULT_TERM_SIZE
+    });
     let border_chrome = match config.border {
         Border::None => 0,
         _ => 2,
@@ -565,8 +589,11 @@ pub(crate) fn create_ui_table(
                             Ok((
                                 entry.get::<String>(1)?,
                                 entry
-                                    .get::<String>(2)
-                                    .unwrap_or_else(|_| DEFAULT_FOOTER_LABEL.to_string()),
+                                    .get::<Option<String>>(2)
+                                    .map_err(|error| {
+                                        mlua::Error::runtime(format!("{HINT_LABEL_ERROR}: {error}"))
+                                    })?
+                                    .unwrap_or_else(|| DEFAULT_FOOTER_LABEL.to_string()),
                             ))
                         })
                         .collect::<LuaResult<_>>()?;
@@ -588,41 +615,137 @@ pub(crate) fn create_ui_table(
     Ok(t)
 }
 
-pub(crate) fn try_parse_dimension(tbl: &Table, key: &str) -> Option<Dimension> {
-    if let Ok(s) = tbl.get::<String>(key)
-        && let Some(pct) = s.strip_suffix('%')
-        && let Ok(v) = pct.parse::<u16>()
-    {
-        return Some(Dimension::Percent(v));
+/// Reads an optional option field. A present-but-wrong-typed value is a
+/// programmer error and must not be silently treated as absent.
+pub(crate) fn optional_field<T: mlua::FromLua>(tbl: &Table, field: &str) -> LuaResult<Option<T>> {
+    if matches!(tbl.get::<mlua::Value>(field)?, mlua::Value::Nil) {
+        return Ok(None);
     }
-    if let Ok(v) = tbl.get::<u16>(key) {
-        return Some(Dimension::Abs(v));
+    tbl.get::<T>(field).map(Some).map_err(|error| {
+        mlua::Error::runtime(format!("option '{field}' has an invalid value: {error}"))
+    })
+}
+
+/// Reads an optional boolean field. mlua converts every non-nil value to
+/// `true`, so `optional_field::<bool>` would accept `"no"` or `0` silently.
+pub(crate) fn optional_bool(tbl: &Table, field: &str) -> LuaResult<Option<bool>> {
+    match tbl.get::<mlua::Value>(field)? {
+        mlua::Value::Nil => Ok(None),
+        mlua::Value::Boolean(value) => Ok(Some(value)),
+        other => Err(mlua::Error::runtime(format!(
+            "option '{field}' must be a boolean, got {}",
+            other.type_name()
+        ))),
     }
-    None
 }
 
-pub(crate) fn parse_dimension(tbl: &Table, key: &str, default: Dimension) -> Dimension {
-    try_parse_dimension(tbl, key).unwrap_or_else(|| default)
+fn invalid_dimension(key: &str) -> mlua::Error {
+    mlua::Error::runtime(format!(
+        "option '{key}' must be an integer or a percentage string like \"80%\""
+    ))
 }
 
-fn parse_anchor(tbl: &Table) -> Anchor {
-    tbl.get::<String>("anchor")
-        .map_or_else(|_| DEFAULT_ANCHOR, |s| Anchor::parse(&s))
+pub(crate) fn try_parse_dimension(tbl: &Table, key: &str) -> LuaResult<Option<Dimension>> {
+    match tbl.get::<mlua::Value>(key)? {
+        mlua::Value::Nil => Ok(None),
+        mlua::Value::String(text) => {
+            let text = text.to_str()?;
+            let Some(percent) = text.strip_suffix('%') else {
+                return Err(invalid_dimension(key));
+            };
+            let Ok(value) = percent.parse::<u16>() else {
+                return Err(invalid_dimension(key));
+            };
+            Ok(Some(Dimension::Percent(value)))
+        }
+        mlua::Value::Integer(_) | mlua::Value::Number(_) => tbl
+            .get::<u16>(key)
+            .map(|value| Some(Dimension::Abs(value)))
+            .map_err(|_| invalid_dimension(key)),
+        _ => Err(invalid_dimension(key)),
+    }
 }
 
-fn parse_split(tbl: &Table) -> Split {
-    tbl.get::<String>("split")
-        .map_or_else(|_| DEFAULT_SPLIT, |s| Split::parse(&s))
+pub(crate) fn parse_dimension(tbl: &Table, key: &str, default: Dimension) -> LuaResult<Dimension> {
+    Ok(try_parse_dimension(tbl, key)?.unwrap_or_else(|| default))
 }
 
-fn parse_border(tbl: &Table) -> Border {
-    tbl.get::<String>("border")
-        .map_or_else(|_| DEFAULT_BORDER, |s| Border::parse(&s))
+fn unsupported_value(field: &str, value: &str, expected: &str) -> mlua::Error {
+    mlua::Error::runtime(format!(
+        "option '{field}' has unsupported value {value:?}; expected {expected}"
+    ))
 }
 
-fn parse_title_pos(tbl: &Table) -> TitlePos {
-    tbl.get::<String>("title_pos")
-        .map_or_else(|_| DEFAULT_TITLE_POS, |s| TitlePos::parse(&s))
+pub(crate) fn anchor_value(value: &str) -> LuaResult<Anchor> {
+    match value {
+        "NW" | "NE" | "SW" | "SE" => Ok(Anchor::parse(value)),
+        _ => Err(unsupported_value(
+            "anchor",
+            value,
+            "\"NW\", \"NE\", \"SW\", or \"SE\"",
+        )),
+    }
+}
+
+pub(crate) fn border_value(value: &str) -> LuaResult<Border> {
+    match value {
+        "none" | "single" | "double" | "rounded" => Ok(Border::parse(value)),
+        _ => Err(unsupported_value(
+            "border",
+            value,
+            "\"none\", \"single\", \"double\", or \"rounded\"",
+        )),
+    }
+}
+
+pub(crate) fn split_value(value: &str) -> LuaResult<Split> {
+    match value {
+        "" | "above" | "below" | "left" | "right" | "panel" => Ok(Split::parse(value)),
+        _ => Err(unsupported_value(
+            "split",
+            value,
+            "\"above\", \"below\", \"left\", \"right\", or \"panel\"",
+        )),
+    }
+}
+
+pub(crate) fn title_pos_value(value: &str) -> LuaResult<TitlePos> {
+    match value {
+        "left" | "center" | "right" => Ok(TitlePos::parse(value)),
+        _ => Err(unsupported_value(
+            "title_pos",
+            value,
+            "\"left\", \"center\", or \"right\"",
+        )),
+    }
+}
+
+fn parse_anchor(tbl: &Table) -> LuaResult<Anchor> {
+    match optional_field::<String>(tbl, "anchor")? {
+        Some(value) => anchor_value(&value),
+        None => Ok(DEFAULT_ANCHOR),
+    }
+}
+
+fn parse_split(tbl: &Table) -> LuaResult<Split> {
+    match optional_field::<String>(tbl, "split")? {
+        Some(value) => split_value(&value),
+        None => Ok(DEFAULT_SPLIT),
+    }
+}
+
+fn parse_border(tbl: &Table) -> LuaResult<Border> {
+    match optional_field::<String>(tbl, "border")? {
+        Some(value) => border_value(&value),
+        None => Ok(DEFAULT_BORDER),
+    }
+}
+
+fn parse_title_pos(tbl: &Table) -> LuaResult<TitlePos> {
+    match optional_field::<String>(tbl, "title_pos")? {
+        Some(value) => title_pos_value(&value),
+        None => Ok(DEFAULT_TITLE_POS),
+    }
 }
 
 fn segments_to_lua_lines(
@@ -753,7 +876,10 @@ mod tests {
     use test_case::test_case;
 
     const MISSING_KEY: &str = "missing";
+    const INDEPENDENT_FIELD: &str = "independent";
+    const PREFIX_FIELD: &str = "prefix";
     const ORANGE_HEX: &str = "#ff8000";
+    const TEST_PLUGIN: &str = "test";
 
     fn footer_entry(lua: &Lua, key: &str, label: &str) -> Table {
         let t = lua.create_table().unwrap();
@@ -794,15 +920,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_footer_non_table_value_returns_empty() {
+    fn parse_footer_non_table_value_errors() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("footer", "not a table").unwrap();
-        let n00n_empty_check_25 = parse_footer(&tbl).unwrap();
-        assert!(
-            n00n_empty_check_25.is_empty(),
-            "expected empty, got {n00n_empty_check_25:?}"
-        );
+        let error = parse_footer(&tbl).unwrap_err();
+        assert!(error.to_string().contains("footer"), "{error}");
     }
 
     #[test]
@@ -858,7 +981,10 @@ mod tests {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("width", 42u16).unwrap();
-        assert_eq!(try_parse_dimension(&tbl, "width"), Some(Dimension::Abs(42)));
+        assert_eq!(
+            try_parse_dimension(&tbl, "width").unwrap(),
+            Some(Dimension::Abs(42))
+        );
     }
 
     #[test_case("0%", Dimension::Percent(0) ; "zero_percent")]
@@ -869,30 +995,43 @@ mod tests {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("width", input).unwrap();
-        assert_eq!(try_parse_dimension(&tbl, "width"), Some(expected));
+        assert_eq!(try_parse_dimension(&tbl, "width").unwrap(), Some(expected));
     }
 
     #[test]
     fn try_parse_dimension_missing_key_is_none() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
-        assert!(try_parse_dimension(&tbl, MISSING_KEY).is_none());
+        assert!(try_parse_dimension(&tbl, MISSING_KEY).unwrap().is_none());
     }
 
     #[test]
-    fn try_parse_dimension_non_numeric_string_is_none() {
+    fn try_parse_dimension_non_numeric_string_errors() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("width", "abc").unwrap();
-        assert!(try_parse_dimension(&tbl, "width").is_none());
+        let error = try_parse_dimension(&tbl, "width").unwrap_err();
+        assert!(error.to_string().contains("width"), "{error}");
     }
 
     #[test]
-    fn try_parse_dimension_malformed_percent_is_none() {
+    fn try_parse_dimension_malformed_percent_errors() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("width", "xx%").unwrap();
-        assert!(try_parse_dimension(&tbl, "width").is_none());
+        assert!(try_parse_dimension(&tbl, "width").is_err());
+    }
+
+    #[test]
+    fn try_parse_dimension_wrong_type_errors() {
+        let lua = Lua::new();
+        let tbl = lua.create_table().unwrap();
+        tbl.raw_set("width", true).unwrap();
+        let error = try_parse_dimension(&tbl, "width").unwrap_err();
+        assert!(
+            error.to_string().contains("width"),
+            "wrong-typed width must not silently fall back to the default: {error}"
+        );
     }
 
     #[test]
@@ -900,65 +1039,116 @@ mod tests {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         let default = Dimension::Percent(60);
-        assert_eq!(parse_dimension(&tbl, MISSING_KEY, default), default);
+        assert_eq!(
+            parse_dimension(&tbl, MISSING_KEY, default).unwrap(),
+            default
+        );
     }
 
     #[test]
-    fn parse_dimension_invalid_value_uses_default() {
+    fn parse_dimension_invalid_value_errors() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("width", "garbage").unwrap();
-        let default = Dimension::Abs(80);
-        assert_eq!(parse_dimension(&tbl, "width", default), default);
+        let error = parse_dimension(&tbl, "width", Dimension::Abs(80)).unwrap_err();
+        assert!(error.to_string().contains("width"), "{error}");
     }
 
     #[test_case("NW", Anchor::NW ; "nw")]
     #[test_case("NE", Anchor::NE ; "ne")]
     #[test_case("SW", Anchor::SW ; "sw")]
     #[test_case("SE", Anchor::SE ; "se")]
-    #[test_case("garbage", Anchor::NW ; "invalid_falls_back_to_default")]
     fn parse_anchor_cases(input: &str, expected: Anchor) {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("anchor", input).unwrap();
-        assert_eq!(parse_anchor(&tbl), expected);
+        assert_eq!(parse_anchor(&tbl).unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_anchor_rejects_unknown_and_wrong_typed_values() {
+        let lua = Lua::new();
+        let unknown = lua.create_table().unwrap();
+        unknown.raw_set("anchor", "garbage").unwrap();
+        assert!(parse_anchor(&unknown).is_err());
+
+        let wrong_type = lua.create_table().unwrap();
+        wrong_type.raw_set("anchor", 42).unwrap();
+        assert!(parse_anchor(&wrong_type).is_err());
     }
 
     #[test]
     fn parse_anchor_missing_uses_default() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
-        assert_eq!(parse_anchor(&tbl), Anchor::default());
+        assert_eq!(parse_anchor(&tbl).unwrap(), Anchor::default());
     }
 
     #[test_case("none", Border::None ; "none")]
     #[test_case("single", Border::Single ; "single")]
     #[test_case("double", Border::Double ; "double")]
     #[test_case("rounded", Border::Rounded ; "rounded")]
-    #[test_case("garbage", Border::Rounded ; "invalid_falls_back_to_default")]
     fn parse_border_cases(input: &str, expected: Border) {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("border", input).unwrap();
-        assert_eq!(parse_border(&tbl), expected);
+        assert_eq!(parse_border(&tbl).unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_border_rejects_unknown_and_wrong_typed_values() {
+        let lua = Lua::new();
+        let unknown = lua.create_table().unwrap();
+        unknown.raw_set("border", "wavy").unwrap();
+        assert!(parse_border(&unknown).is_err());
+
+        let wrong_type = lua.create_table().unwrap();
+        wrong_type.raw_set("border", false).unwrap();
+        assert!(parse_border(&wrong_type).is_err());
     }
 
     #[test]
     fn parse_border_missing_uses_default() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
-        assert_eq!(parse_border(&tbl), Border::default());
+        assert_eq!(parse_border(&tbl).unwrap(), Border::default());
     }
 
     #[test_case("left", TitlePos::Left ; "left")]
     #[test_case("center", TitlePos::Center ; "center")]
     #[test_case("right", TitlePos::Right ; "right")]
-    #[test_case("garbage", TitlePos::Left ; "invalid_falls_back_to_default")]
     fn parse_title_pos_cases(input: &str, expected: TitlePos) {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set("title_pos", input).unwrap();
-        assert_eq!(parse_title_pos(&tbl), expected);
+        assert_eq!(parse_title_pos(&tbl).unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_title_pos_rejects_unknown_values() {
+        let lua = Lua::new();
+        let tbl = lua.create_table().unwrap();
+        tbl.raw_set("title_pos", "middle").unwrap();
+        assert!(parse_title_pos(&tbl).is_err());
+    }
+
+    #[test]
+    fn parse_split_accepts_off_and_rejects_unknown_values() {
+        let lua = Lua::new();
+        let off = lua.create_table().unwrap();
+        off.raw_set("split", "").unwrap();
+        assert_eq!(parse_split(&off).unwrap(), Split::None);
+
+        let unknown = lua.create_table().unwrap();
+        unknown.raw_set("split", "sideways").unwrap();
+        assert!(parse_split(&unknown).is_err());
+    }
+
+    #[test]
+    fn parse_split_missing_uses_default() {
+        let lua = Lua::new();
+        let tbl = lua.create_table().unwrap();
+        assert_eq!(parse_split(&tbl).unwrap(), Split::default());
     }
 
     fn seg(text: &str, bold: bool) -> StyledSegment {
@@ -1479,6 +1669,102 @@ mod tests {
         let r: Table = f.call(("", 0usize)).unwrap();
         assert_eq!(r.get::<String>("head").unwrap(), "");
         assert_eq!(r.get::<String>("tail").unwrap(), "");
+    }
+
+    #[test_case("focus", "\"no\"" ; "focus_string")]
+    #[test_case("visible", "0" ; "visible_number")]
+    #[test_case("cursor_line", "{}" ; "cursor_line_table")]
+    fn open_win_rejects_non_boolean_flags(field: &str, value: &str) {
+        let lua = Lua::new();
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let ui = create_ui_table(&lua, Some(tx), Arc::from(TEST_PLUGIN)).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+        lua.globals()
+            .set("buf", buf::BufferStore::new().create())
+            .unwrap();
+
+        let error = lua
+            .load(format!("ui.open_win(buf, {{ {field} = {value} }})"))
+            .exec()
+            .unwrap_err();
+
+        assert!(error.to_string().contains(field), "{error}");
+        assert!(rx.try_recv().is_err(), "a rejected window must not open");
+    }
+
+    #[test_case("\"no\"" ; "string")]
+    #[test_case("0" ; "number")]
+    #[test_case("{}" ; "table")]
+    fn highlight_rejects_non_boolean_independent(value: &str) {
+        let lua = Lua::new();
+        lua.globals().set("ui", ui_table(&lua)).unwrap();
+
+        let error = smol::block_on(
+            lua.load(format!(
+                "return ui.highlight(\"fn main() {{}}\", \"rust\", {{ independent = {value} }})"
+            ))
+            .exec_async(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(INDEPENDENT_FIELD), "{error}");
+    }
+
+    #[test_case("{}" ; "table")]
+    #[test_case("true" ; "boolean")]
+    fn highlight_rejects_non_string_prefix(value: &str) {
+        let lua = Lua::new();
+        lua.globals().set("ui", ui_table(&lua)).unwrap();
+
+        let error = smol::block_on(
+            lua.load(format!(
+                "return ui.highlight(\"fn main() {{}}\", \"rust\", {{ prefix = {value} }})"
+            ))
+            .exec_async(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(PREFIX_FIELD), "{error}");
+    }
+
+    #[test]
+    fn highlight_accepts_number_prefix() {
+        let lua = Lua::new();
+        lua.globals().set("ui", ui_table(&lua)).unwrap();
+
+        let lines: Table = smol::block_on(
+            lua.load("return ui.highlight(\"x\", \"rust\", { prefix = 1 })")
+                .eval_async(),
+        )
+        .unwrap();
+
+        assert_eq!(lines.len().unwrap(), 1);
+    }
+
+    #[test_case("{}" ; "table")]
+    #[test_case("true" ; "boolean")]
+    fn set_status_hint_rejects_non_string_label(value: &str) {
+        let lua = Lua::new();
+        let ui = create_ui_table(&lua, None, Arc::from(TEST_PLUGIN)).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+
+        let error = lua
+            .load(format!("ui.set_status_hint({{ {{ \"k\", {value} }} }})"))
+            .exec()
+            .unwrap_err();
+
+        assert!(error.to_string().contains(HINT_LABEL_ERROR), "{error}");
+    }
+
+    #[test]
+    fn set_status_hint_accepts_missing_label() {
+        let lua = Lua::new();
+        let ui = create_ui_table(&lua, None, Arc::from(TEST_PLUGIN)).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+
+        lua.load("ui.set_status_hint({ { \"k\" } })")
+            .exec()
+            .unwrap();
     }
 
     #[test]

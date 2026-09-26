@@ -9,6 +9,7 @@ local git_subcommand = command_guard.git_subcommand
 local git_uses_machine_format = command_guard.git_uses_machine_format
 local strip_leading_assignments = command_guard.strip_leading_assignments
 local broad_bash_command_reason = command_guard.broad_bash_command_reason
+local sanitize_git_command = command_guard.sanitize_git_command
 
 local RTK_REWRITE_TIMEOUT_MS = 10000
 local RTK_UNSUPPORTED_FLAGS = {
@@ -275,89 +276,6 @@ local function normalize_command(command)
     return "head -" .. n .. rest
   end
   return command
-end
-
-local GIT_SANITIZE_SUBCOMMANDS = {
-  diff = true,
-  show = true,
-  log = true,
-}
-
--- Harden git commands against repo-config injection of external diff/pagers.
--- Inserts `--no-optional-locks` (prevents write locks) and `--no-ext-diff`
--- for subcommands that may invoke an external diff driver.
-local function sanitize_git_command(command)
-  local trimmed = trim(command)
-  if not trimmed:lower():match("^git%s") then
-    return command
-  end
-
-  local words = split_shell_words(trimmed)
-  if #words < 2 or words[1]:lower() ~= "git" then
-    return command
-  end
-
-  -- Strip any -c core.fsmonitor=... override and force it to false. A repo or
-  -- parent config with core.fsmonitor set to a command can execute code during
-  -- git status/diff/log; this disables it without trusting the environment.
-  local i = 2
-  while i <= #words do
-    if words[i] == "-c" and words[i + 1] then
-      local value = words[i + 1]:lower()
-      if value:sub(1, #"core.fsmonitor") == "core.fsmonitor" then
-        table.remove(words, i)
-        table.remove(words, i)
-      else
-        i = i + 2
-      end
-    else
-      i = i + 1
-    end
-  end
-  table.insert(words, 2, "-c")
-  table.insert(words, 3, "core.fsmonitor=false")
-
-  local subcommand_index = git_subcommand_index(words, 2)
-  local option_end = subcommand_index and subcommand_index - 1 or #words
-  local has_optional_locks = false
-  for i = 2, option_end do
-    if words[i] == "--no-optional-locks" then
-      has_optional_locks = true
-      break
-    end
-  end
-
-  if not has_optional_locks then
-    table.insert(words, 2, "--no-optional-locks")
-    if subcommand_index then
-      subcommand_index = subcommand_index + 1
-    end
-  end
-
-  if subcommand_index then
-    local subcommand = words[subcommand_index]:lower()
-    if GIT_SANITIZE_SUBCOMMANDS[subcommand] then
-      local has_no_ext_diff = false
-      local i = subcommand_index + 1
-      while i <= #words do
-        if words[i] == "--no-ext-diff" then
-          has_no_ext_diff = true
-          i = i + 1
-        elseif words[i] == "--ext-diff" then
-          -- Remove an explicit --ext-diff so the later --no-ext-diff cannot be
-          -- overridden by it.
-          table.remove(words, i)
-        else
-          i = i + 1
-        end
-      end
-      if not has_no_ext_diff then
-        table.insert(words, subcommand_index + 1, "--no-ext-diff")
-      end
-    end
-  end
-
-  return table.concat(words, " ")
 end
 
 rtk_rewrite = function(command, ctx)

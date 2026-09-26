@@ -12,12 +12,58 @@ use n00n_search::{
 
 const SEMBLE_BINARY: &str = "semble";
 const DEFAULT_TOP_K: usize = 5;
+const ENCODED_DOT: &str = "%2e";
+const CURRENT_SEGMENT: &str = ".";
+const PARENT_SEGMENT: &str = "..";
+const URL_PATH_END: &[char] = &['?', '#'];
+const URL_PATH_SEPARATORS: &[char] = &['/', '\\'];
 
 fn resolve_top_k(top_k: Option<usize>) -> usize {
     match top_k {
         Some(value) if value > 0 => value,
         _ => DEFAULT_TOP_K,
     }
+}
+
+/// Whether `repo` is authorized by the comma-separated `N00N_SEMBLE_ALLOWED_REMOTE_REPOS`
+/// value. Entries are URL prefixes that must end on a path boundary, so
+/// `https://github.com/trusted` authorizes `.../trusted/repo` but never
+/// `.../trusted-evil/...` or `https://github.com.attacker.example/...`.
+/// Blank entries and the bare `*` wildcard are handled explicitly: a trailing
+/// comma must never turn the allowlist into a no-op. URLs with dot segments are
+/// always rejected: libcurl collapses `/../` before the request, so a prefix
+/// match on the raw text would authorize paths outside the prefix.
+fn remote_url_allowed(allowed: &str, repo: &str) -> bool {
+    if has_dot_segment(repo) {
+        return false;
+    }
+    if allowed == "*" {
+        return true;
+    }
+    allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|prefix| !prefix.is_empty())
+        .any(|prefix| {
+            repo.strip_prefix(prefix).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with('/') || prefix.ends_with('/')
+            })
+        })
+}
+
+/// Whether the path of `url` holds a `.` or `..` segment, including the
+/// percent-encoded `%2e` forms that URL normalization also collapses.
+fn has_dot_segment(url: &str) -> bool {
+    let path = match url.find(URL_PATH_END) {
+        Some(end) => &url[..end],
+        None => url,
+    };
+    path.split(URL_PATH_SEPARATORS).any(|segment| {
+        let decoded = segment
+            .to_ascii_lowercase()
+            .replace(ENCODED_DOT, CURRENT_SEGMENT);
+        decoded == CURRENT_SEGMENT || decoded == PARENT_SEGMENT
+    })
 }
 
 pub struct Client;
@@ -204,18 +250,12 @@ impl Client {
                 }
             };
 
-            if allowed != "*" {
-                let allowed_prefixes: Vec<&str> = allowed.split(',').map(str::trim).collect();
-                let is_allowed = allowed_prefixes
-                    .iter()
-                    .any(|prefix| repo.starts_with(prefix));
-                if !is_allowed {
-                    return Err(SembleError::Cli {
-                        message: format!(
-                            "remote repository URL '{repo}' is not in the allowed list (N00N_SEMBLE_ALLOWED_REMOTE_REPOS={allowed})"
-                        ),
-                    });
-                }
+            if !remote_url_allowed(&allowed, repo) {
+                return Err(SembleError::Cli {
+                    message: format!(
+                        "remote repository URL '{repo}' is not in the allowed list (N00N_SEMBLE_ALLOWED_REMOTE_REPOS={allowed})"
+                    ),
+                });
             }
 
             let temp_dir = tempfile::tempdir().map_err(|e| SembleError::Cli {
@@ -496,12 +536,145 @@ pub enum SembleError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Client, FindRelatedRequest, Mode, SearchRequest, SembleError};
+    use super::{Client, FindRelatedRequest, Mode, SearchRequest, SembleError, remote_url_allowed};
     use std::fs;
     use tempfile::tempdir;
 
     const ANCHOR_FILE: &str = "anchor.rs";
     const ANCHOR_SOURCE: &str = "fn anchor() {}\n\nfn distant_symbol() {}";
+
+    #[test]
+    fn remote_url_allowlist_enforces_url_boundaries() {
+        let cases: &[(&str, &str, bool, &str)] = &[
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/repo",
+                true,
+                "org prefix allows repo",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted",
+                true,
+                "exact match",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted-evil/repo",
+                false,
+                "org prefix must not match a sibling name",
+            ),
+            (
+                "https://github.com",
+                "https://github.com.evil.example/repo",
+                false,
+                "host prefix must not match a suffix domain",
+            ),
+            (
+                "https://github.com/trusted/",
+                "https://github.com/trusted/repo",
+                true,
+                "trailing-slash prefix allows repo",
+            ),
+            (
+                "https://github.com/trusted/",
+                "https://github.com/trusted-evil/repo",
+                false,
+                "trailing-slash prefix must not match a sibling",
+            ),
+            (
+                "https://github.com/trusted,",
+                "https://github.com/evil/repo",
+                false,
+                "empty list entry must not allow everything",
+            ),
+            (
+                "  ,  ",
+                "https://github.com/evil/repo",
+                false,
+                "blank list entries must not allow everything",
+            ),
+            (
+                "*",
+                "https://anything.example/repo",
+                true,
+                "wildcard allows everything",
+            ),
+            (
+                "https://github.com/a,https://gitlab.com/b",
+                "https://gitlab.com/b/repo",
+                true,
+                "second entry allows",
+            ),
+            (
+                "https://github.com/a,https://gitlab.com/b",
+                "https://gitlab.com/bad/repo",
+                false,
+                "second entry keeps its boundary",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/../evil",
+                false,
+                "dot-dot segment must not escape the prefix",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/..",
+                false,
+                "trailing dot-dot segment must not escape the prefix",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/./repo",
+                false,
+                "single-dot segment is rejected",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/%2e%2e/evil",
+                false,
+                "percent-encoded dot-dot segment is rejected",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/.%2E/evil",
+                false,
+                "mixed-case partially encoded dot-dot segment is rejected",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/..\\evil",
+                false,
+                "backslash-separated dot-dot segment is rejected",
+            ),
+            (
+                "*",
+                "https://github.com/trusted/../evil",
+                false,
+                "wildcard does not admit dot segments",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/repo.git",
+                true,
+                "dots inside a segment are allowed",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/repo?ref=../x",
+                true,
+                "dots in the query are not path segments",
+            ),
+        ];
+        for (allowed, repo, expected, case) in cases {
+            assert_eq!(
+                remote_url_allowed(allowed, repo),
+                *expected,
+                "{case}: allowed={allowed:?} repo={repo:?}"
+            );
+        }
+    }
 
     #[test]
     fn search_indexes_and_returns_bm25_results() {

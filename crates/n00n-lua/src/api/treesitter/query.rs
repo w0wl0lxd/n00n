@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use include_dir::{Dir, include_dir};
-use mlua::{Lua, MultiValue, Value as LuaValue};
+use mlua::{FromLua, Lua, MultiValue, Value as LuaValue};
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use regex::Regex;
 use tree_sitter::{Query, QueryCursor, QueryPredicateArg, StreamingIterator};
@@ -14,6 +14,9 @@ use crate::language::Language;
 use super::node::LuaNode;
 
 static QUERIES: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/queries");
+const ROW_BOUND_ERROR: &str = "must be an integer from 0 to";
+const SHORT_SOURCE_ERROR: &str = "source is shorter than the node";
+const TEXT_PREDICATES: &[&str] = &["eq?", "match?", "lua-match?", "contains?", "any-of?"];
 
 #[allow(non_upper_case_globals)]
 const iter_captures__doc: FnDoc = FnDoc {
@@ -96,13 +99,13 @@ fn query_fields<F: mlua::UserDataFields<LuaQuery>>(fields: &mut F) {
 
 fn query_methods<M: mlua::UserDataMethods<LuaQuery>>(methods: &mut M) {
     methods.add_method("iter_captures", |lua, this, args: MultiValue| {
-        let parsed = IterArgs::parse(args, "iter_captures")?;
+        let parsed = IterArgs::parse(lua, args, "iter_captures")?;
         let results = collect_captures(&this.inner, &parsed, &this.regex_cache)?;
         stateful_iter(lua, results)
     });
 
     methods.add_method("iter_matches", |lua, this, args: MultiValue| {
-        let parsed = IterArgs::parse(args, "iter_matches")?;
+        let parsed = IterArgs::parse(lua, args, "iter_matches")?;
         let results = collect_matches(&this.inner, &parsed, &this.regex_cache)?;
         stateful_iter(lua, results)
     });
@@ -205,7 +208,7 @@ struct IterArgs {
 }
 
 impl IterArgs {
-    fn parse(args: MultiValue, fn_name: &str) -> mlua::Result<Self> {
+    fn parse(lua: &Lua, args: MultiValue, fn_name: &str) -> mlua::Result<Self> {
         let mut args_iter = args.into_iter();
 
         let node_ud = args_iter
@@ -222,8 +225,8 @@ impl IterArgs {
             })
             .ok_or_else(|| mlua::Error::runtime(format!("{fn_name}: expected source as arg 2")))?;
 
-        let start_row = args_iter.next().and_then(lua_to_usize);
-        let stop_row = args_iter.next().and_then(lua_to_usize);
+        let start_row = parse_row_arg(next_arg(&mut args_iter), lua, fn_name, "start_row")?;
+        let stop_row = parse_row_arg(next_arg(&mut args_iter), lua, fn_name, "stop_row")?;
 
         Ok(Self {
             lua_node: (*lua_node).clone(),
@@ -231,6 +234,35 @@ impl IterArgs {
             start_row,
             stop_row,
         })
+    }
+}
+
+fn next_arg(iter: &mut impl Iterator<Item = LuaValue>) -> LuaValue {
+    match iter.next() {
+        Some(value) => value,
+        None => LuaValue::Nil,
+    }
+}
+
+/// Row bounds are optional, but a present value must be an integer that
+/// tree-sitter can represent. mlua truncates fractional numbers and
+/// tree-sitter truncates rows to `u32`, and either would silently move the scan.
+fn parse_row_arg(
+    value: LuaValue,
+    lua: &Lua,
+    fn_name: &str,
+    name: &str,
+) -> mlua::Result<Option<usize>> {
+    let invalid =
+        || mlua::Error::runtime(format!("{fn_name}: {name} {ROW_BOUND_ERROR} {}", u32::MAX));
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Number(number) if number.fract() != 0.0 => Err(invalid()),
+        LuaValue::Integer(_) | LuaValue::Number(_) => {
+            let row = u32::from_lua(value, lua).map_err(|_| invalid())?;
+            usize::try_from(row).map(Some).map_err(|_| invalid())
+        }
+        _ => Err(invalid()),
     }
 }
 
@@ -307,17 +339,31 @@ fn stateful_iter<E: IterEntry>(lua: &mlua::Lua, results: Vec<E>) -> mlua::Result
 /// Returns `None` when the row range is empty. Tree-sitter reads a zero end
 /// point as unbounded and ignores an inverted range, so neither may reach it.
 fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> Option<QueryCursor> {
-    const NO_LIMIT: usize = usize::MAX;
+    const UNBOUNDED_END_ROW: usize = u32::MAX as usize;
     let mut cursor = QueryCursor::new();
     if start_row.is_some() || stop_row.is_some() {
         let start = start_row.unwrap_or_else(|| 0);
-        let end = stop_row.unwrap_or_else(|| NO_LIMIT);
+        let end = stop_row.unwrap_or_else(|| UNBOUNDED_END_ROW);
         if end <= start {
             return None;
         }
         cursor.set_point_range(tree_sitter::Point::new(start, 0)..tree_sitter::Point::new(end, 0));
     }
     Some(cursor)
+}
+
+/// Tree-sitter slices the source by node byte ranges for its built-in text
+/// predicates and panics when the source is shorter than the tree, so a
+/// mismatched source is rejected before any predicate runs.
+fn ensure_source_covers(node: tree_sitter::Node<'_>, source: &[u8]) -> mlua::Result<()> {
+    if node.end_byte() > source.len() {
+        return Err(mlua::Error::runtime(format!(
+            "{SHORT_SOURCE_ERROR} ({} bytes, node ends at byte {})",
+            source.len(),
+            node.end_byte()
+        )));
+    }
+    Ok(())
 }
 
 fn collect_captures(
@@ -332,6 +378,7 @@ fn collect_captures(
     let mut results = Vec::new();
 
     let node = args.lua_node.ts_node()?;
+    ensure_source_covers(node, source_bytes)?;
     let mut captures = cursor.captures(query, node, source_bytes);
     while let Some((m, capture_idx)) = captures.next() {
         let mut metadata = HashMap::new();
@@ -367,6 +414,7 @@ fn collect_matches(
     let mut results = Vec::new();
 
     let node = args.lua_node.ts_node()?;
+    ensure_source_covers(node, source_bytes)?;
     let mut matches = cursor.matches(query, node, source_bytes);
     while let Some(m) = matches.next() {
         let mut metadata = HashMap::new();
@@ -428,6 +476,15 @@ fn evaluate_predicates(
         let (mods, base_op) = parse_predicate_op(predicate.operator.as_ref());
         let args = &predicate.args;
 
+        if TEXT_PREDICATES.contains(&base_op) && has_unavailable_text(captures, source, args) {
+            tracing::debug!(
+                predicate = predicate.operator.as_ref(),
+                pattern_index,
+                "capture text unavailable in source; rejecting match"
+            );
+            return false;
+        }
+
         match base_op {
             "eq?" if eval_eq(captures, source, args, mods.any) == mods.negated => {
                 return false;
@@ -458,6 +515,21 @@ fn evaluate_predicates(
     true
 }
 
+/// Unreadable text is neither a match nor a non-match, so it must reject the
+/// predicate before negation can turn a failed comparison into success.
+fn has_unavailable_text(
+    captures: &[tree_sitter::QueryCapture<'_>],
+    source: &[u8],
+    args: &[QueryPredicateArg],
+) -> bool {
+    args.iter().any(|arg| match arg {
+        QueryPredicateArg::Capture(idx) => captures
+            .iter()
+            .any(|c| c.index == *idx && node_text(source, c.node).is_none()),
+        QueryPredicateArg::String(_) => false,
+    })
+}
+
 fn capture_text<'a>(
     captures: &[tree_sitter::QueryCapture<'_>],
     source: &'a [u8],
@@ -466,7 +538,19 @@ fn capture_text<'a>(
     captures
         .iter()
         .find(|c| c.index == idx)
-        .and_then(|c| std::str::from_utf8(&source[c.node.start_byte()..c.node.end_byte()]).ok())
+        .and_then(|c| node_text(source, c.node))
+}
+
+/// Slices a node's byte range out of a caller-supplied `source`. The source
+/// can be shorter than the tree, or split a multi-byte character, and both
+/// must fail the predicate instead of panicking on the slice.
+fn node_text<'a>(source: &'a [u8], node: tree_sitter::Node<'_>) -> Option<&'a str> {
+    let start = node.start_byte();
+    let end = node.end_byte();
+    if start > end || end > source.len() {
+        return None;
+    }
+    std::str::from_utf8(&source[start..end]).ok()
 }
 
 fn resolve_arg<'a>(
@@ -613,15 +697,6 @@ fn eval_set(args: &[QueryPredicateArg], metadata: &mut HashMap<String, String>) 
     metadata.insert(key.to_string(), value.to_string());
 }
 
-#[allow(clippy::cast_possible_truncation)]
-fn lua_to_usize(v: LuaValue) -> Option<usize> {
-    match v {
-        LuaValue::Integer(n) => usize::try_from(n).ok(),
-        LuaValue::Number(n) => usize::try_from(n as i64).ok(),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use test_case::test_case;
@@ -630,6 +705,10 @@ mod tests {
     use super::*;
 
     const SOURCE: &str = "let first = 1;\nlet second = 2;\nlet third = 3;\n";
+    /// Same byte length as `SPLIT_TARGET`, but a two-byte character straddles
+    /// the start of the `first` identifier, so its byte range is not UTF-8.
+    const SPLIT_TARGET: &str = "let first";
+    const SPLIT_REPLACEMENT: &str = "let\u{e9}irst";
 
     fn rust_node() -> LuaNode {
         let mut parser = Parser::new();
@@ -673,6 +752,145 @@ mod tests {
             captures.len(),
             expected,
             "the row range must bound the scan"
+        );
+    }
+
+    #[test]
+    fn node_text_rejects_ranges_outside_the_source() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::Rust.ts_language())
+            .expect("rust grammar loads");
+        let tree = parser.parse(SOURCE, None).expect("rust source parses");
+
+        assert!(node_text(b"", tree.root_node()).is_none());
+        assert_eq!(
+            node_text(SOURCE.as_bytes(), tree.root_node()).unwrap(),
+            SOURCE
+        );
+    }
+
+    #[test]
+    fn eq_predicate_with_mismatched_source_is_false_instead_of_panicking() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::Rust.ts_language())
+            .expect("rust grammar loads");
+        let tree = parser.parse(SOURCE, None).expect("rust source parses");
+        let captures = [tree_sitter::QueryCapture {
+            node: tree.root_node(),
+            index: 0,
+        }];
+        let args = [
+            QueryPredicateArg::Capture(0),
+            QueryPredicateArg::String("let".into()),
+        ];
+
+        assert!(!eval_eq(&captures, b"", &args, false));
+    }
+
+    #[test]
+    fn iter_args_reject_wrong_typed_row_bounds() {
+        let lua = Lua::new();
+        let args = MultiValue::from_iter([
+            LuaValue::UserData(lua.create_userdata(rust_node()).unwrap()),
+            LuaValue::String(lua.create_string(SOURCE).unwrap()),
+            LuaValue::Boolean(true),
+        ]);
+
+        let Err(error) = IterArgs::parse(&lua, args, "iter_captures") else {
+            panic!("a boolean start_row must not silently scan the whole tree");
+        };
+        assert!(error.to_string().contains("start_row"), "{error}");
+    }
+
+    #[test_case(LuaValue::Number(1.5) ; "fractional")]
+    #[test_case(LuaValue::Number(-0.5) ; "negative_fractional")]
+    #[test_case(LuaValue::Number(f64::NAN) ; "nan")]
+    #[test_case(LuaValue::Integer(i64::from(u32::MAX) + 1) ; "integer_above_u32_max")]
+    #[test_case(LuaValue::Number(f64::from(u32::MAX) + 1.0) ; "number_above_u32_max")]
+    fn iter_args_reject_unrepresentable_row_bounds(start_row: LuaValue) {
+        let lua = Lua::new();
+        let args = MultiValue::from_iter([
+            LuaValue::UserData(lua.create_userdata(rust_node()).unwrap()),
+            LuaValue::String(lua.create_string(SOURCE).unwrap()),
+            start_row,
+        ]);
+
+        let Err(error) = IterArgs::parse(&lua, args, "iter_captures") else {
+            panic!("a row bound tree-sitter cannot represent must be rejected");
+        };
+        assert!(error.to_string().contains(ROW_BOUND_ERROR), "{error}");
+    }
+
+    #[test_case(LuaValue::Number(1.0), 1 ; "integral_number")]
+    #[test_case(LuaValue::Integer(i64::from(u32::MAX)), u32::MAX as usize ; "u32_max")]
+    fn iter_args_accept_integral_row_bounds(start_row: LuaValue, expected: usize) {
+        let lua = Lua::new();
+        let args = MultiValue::from_iter([
+            LuaValue::UserData(lua.create_userdata(rust_node()).unwrap()),
+            LuaValue::String(lua.create_string(SOURCE).unwrap()),
+            start_row,
+        ]);
+
+        let parsed = IterArgs::parse(&lua, args, "iter_captures").unwrap();
+
+        assert_eq!(parsed.start_row, Some(expected));
+    }
+
+    #[test_case("((identifier) @id (#not-contains? @id \"zzz\"))" ; "not_contains")]
+    #[test_case("((identifier) @id (#not-lua-match? @id \"^zzz$\"))" ; "not_lua_match")]
+    fn negated_predicate_rejects_unavailable_capture_text(query_source: &str) {
+        let query = Query::new(&Language::Rust.ts_language(), query_source).unwrap();
+        let readable = row_args(None, None);
+        let split_first_identifier = IterArgs {
+            source: SOURCE.replacen(SPLIT_TARGET, SPLIT_REPLACEMENT, 1),
+            ..row_args(None, None)
+        };
+        assert_eq!(split_first_identifier.source.len(), SOURCE.len());
+
+        let with_text = collect_captures(&query, &readable, &empty_regex_cache()).unwrap();
+        let without_text =
+            collect_captures(&query, &split_first_identifier, &empty_regex_cache()).unwrap();
+
+        assert_eq!(
+            with_text.len(),
+            3,
+            "readable text must satisfy the negation"
+        );
+        assert_eq!(
+            without_text.len(),
+            2,
+            "unavailable capture text must not satisfy a negated predicate"
+        );
+    }
+
+    #[test_case("(identifier) @id" ; "no_predicate")]
+    #[test_case("((identifier) @id (#not-eq? @id \"zzz\"))" ; "not_eq")]
+    #[test_case("((identifier) @id (#not-match? @id \"^zzz$\"))" ; "not_match")]
+    #[test_case("((identifier) @id (#not-any-of? @id \"zzz\"))" ; "not_any_of")]
+    #[test_case("((identifier) @id (#not-contains? @id \"zzz\"))" ; "not_contains")]
+    fn source_shorter_than_node_is_rejected(query_source: &str) {
+        let query = Query::new(&Language::Rust.ts_language(), query_source).unwrap();
+        let truncated = IterArgs {
+            source: String::new(),
+            ..row_args(None, None)
+        };
+
+        let Err(captures_error) = collect_captures(&query, &truncated, &empty_regex_cache()) else {
+            panic!("captures over a truncated source must be rejected");
+        };
+        let Err(matches_error) = collect_matches(&query, &truncated, &empty_regex_cache()) else {
+            panic!("matches over a truncated source must be rejected");
+        };
+
+        assert!(
+            captures_error.to_string().contains(SHORT_SOURCE_ERROR),
+            "{captures_error}"
+        );
+        assert!(
+            matches_error.to_string().contains(SHORT_SOURCE_ERROR),
+            "{matches_error}"
         );
     }
 

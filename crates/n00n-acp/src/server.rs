@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{
@@ -14,7 +15,7 @@ use agent_client_protocol_schema::{
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
 };
-use color_eyre::eyre::Context;
+use color_eyre::eyre::{Context, eyre};
 use flume::{Receiver, Sender};
 use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
@@ -37,6 +38,7 @@ use crate::{AcpParams, methods, permissions, translate};
 
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
 const LINE_DELIMITER: u8 = b'\n';
+const OUTPUT_STOPPED: &str = "ACP stdout writer stopped";
 #[cfg(not(test))]
 const MAX_STDIN_FRAME_BYTES: usize = 10 * 1024 * 1024;
 #[cfg(test)]
@@ -82,37 +84,68 @@ impl Server {
     }
 }
 
+fn write_frame(handle: &mut impl Write, msg: &Value) -> std::io::Result<()> {
+    let mut frame = serde_json::to_vec(msg).map_err(std::io::Error::other)?;
+    frame.push(LINE_DELIMITER);
+    handle.write_all(&frame)?;
+    handle.flush()
+}
+
 /// Runs the ACP server.
 ///
 /// # Errors
-/// Returns an error if stdin reading fails or JSON parsing fails.
+/// Returns an error if stdin reading fails, JSON parsing fails, or stdout writing fails.
 pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
-    let (out_tx, out_rx) = flume::unbounded::<Value>();
+    let stdin = smol::Unblock::new(std::io::stdin());
+    let reader = smol::io::BufReader::new(stdin);
+    serve_io(&params, reader, std::io::stdout(), available_model_specs()).await
+}
 
-    let writer_task = smol::spawn(async move {
-        let stdout = std::io::stdout();
-        while let Ok(msg) = out_rx.recv_async().await {
-            let mut handle = stdout.lock();
-            if serde_json::to_writer(&mut handle, &msg).is_ok() {
-                let _ = handle.write_all(b"\n");
-                let _ = handle.flush();
-            }
-        }
-    });
+async fn serve_io<R, W>(
+    params: &AcpParams,
+    reader: R,
+    out: W,
+    model_specs: Vec<String>,
+) -> color_eyre::Result<()>
+where
+    R: smol::io::AsyncBufRead + Unpin,
+    W: Write + Send + 'static,
+{
+    let (out_tx, out_rx) = flume::unbounded::<Value>();
+    let (writer_alive_tx, writer_alive_rx) = flume::bounded::<Infallible>(0);
+    let writer_task = smol::spawn(write_frames(out_rx, out, writer_alive_tx));
 
     let server = Server {
         out_tx,
-        model_specs: available_model_specs(),
+        model_specs,
         session: None,
         next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
     };
 
-    let stdin = smol::Unblock::new(std::io::stdin());
-    let reader = smol::io::BufReader::new(stdin);
-    serve_reader(&params, reader, server).await?;
-    writer_task.await;
+    let read_outcome = serve_reader(params, reader, server, &writer_alive_rx).await;
+    writer_task.await.context("write ACP stdout")?;
+    read_outcome
+}
 
+/// Writes queued messages until the queue closes. The first failed frame ends
+/// the writer, because a partial frame leaves the ndjson stream unusable.
+/// Dropping `_alive` tells the reader loop that output has stopped.
+async fn write_frames<W: Write>(
+    out_rx: Receiver<Value>,
+    mut out: W,
+    _alive: Sender<Infallible>,
+) -> std::io::Result<()> {
+    while let Ok(msg) = out_rx.recv_async().await {
+        write_frame(&mut out, &msg)?;
+    }
     Ok(())
+}
+
+async fn output_stopped(writer_alive: &Receiver<Infallible>) -> color_eyre::Result<StdinFrame> {
+    match writer_alive.recv_async().await {
+        Ok(never) => match never {},
+        Err(flume::RecvError::Disconnected) => Err(eyre!(OUTPUT_STOPPED)),
+    }
 }
 
 async fn read_stdin_frame(
@@ -162,16 +195,23 @@ async fn serve_reader<R>(
     params: &AcpParams,
     mut reader: R,
     mut server: Server,
+    writer_alive: &Receiver<Infallible>,
 ) -> color_eyre::Result<()>
 where
     R: smol::io::AsyncBufRead + Unpin,
 {
-    loop {
-        let frame = read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
-            .await
-            .context("read stdin")?;
+    let outcome = loop {
+        let next_frame = smol::future::or(output_stopped(writer_alive), async {
+            read_stdin_frame(&mut reader, MAX_STDIN_FRAME_BYTES)
+                .await
+                .context("read stdin")
+        });
+        let frame = match next_frame.await {
+            Ok(frame) => frame,
+            Err(error) => break Err(error),
+        };
         let bytes = match frame {
-            StdinFrame::Eof => break,
+            StdinFrame::Eof => break Ok(()),
             StdinFrame::Line(bytes) => bytes,
             StdinFrame::Oversized { frame_bytes } => {
                 warn!(
@@ -228,10 +268,10 @@ where
         } else {
             server.respond(RequestId::Null, Err(AcpError::invalid_request()));
         }
-    }
+    };
 
     retire_session(&mut server).await;
-    Ok(())
+    outcome
 }
 
 fn parse_stdin_line(line: &[u8]) -> JsonResult<Value> {
@@ -766,6 +806,8 @@ fn json_str(e: &impl std::fmt::Display) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use n00n_providers::{ContentBlock as MsgBlock, Role, TokenUsage};
     use n00n_storage::StateDir;
     use n00n_storage::sessions::Session;
@@ -826,6 +868,47 @@ mod tests {
     }
 
     #[test]
+    fn write_frame_emits_one_newline_terminated_message() {
+        let mut out = Vec::new();
+        write_frame(&mut out, &json!({"jsonrpc": "2.0", "id": 1})).unwrap();
+        assert!(out.ends_with(b"\n"));
+        let value: Value = serde_json::from_slice(&out[..out.len() - 1]).unwrap();
+        assert_eq!(value["id"], 1);
+    }
+
+    #[test]
+    fn write_frame_reports_stdout_failure() {
+        struct FailAfter {
+            written: usize,
+            limit: usize,
+        }
+        impl std::io::Write for FailAfter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.written >= self.limit {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "stdout closed",
+                    ));
+                }
+                let written = buf.len().min(self.limit - self.written);
+                self.written += written;
+                Ok(written)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut out = FailAfter {
+            written: 0,
+            limit: 3,
+        };
+        let error = write_frame(&mut out, &json!({"jsonrpc": "2.0", "id": 1})).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(out.written, 3);
+    }
+
+    #[test]
     fn parse_params_handles_null_params() {
         let raw = json!({"id": 1, "method": "test", "params": null});
         let result: Result<String, _> = parse_params(&raw);
@@ -856,9 +939,78 @@ mod tests {
             session: None,
             next_outgoing_request_id: Arc::new(AtomicI64::new(FIRST_OUTGOING_REQUEST_ID)),
         };
+        let (_writer_alive_tx, writer_alive_rx) = flume::bounded(0);
         let reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
-        smol::block_on(serve_reader(&test_params(), reader, server)).expect("serve reader");
+        smol::block_on(serve_reader(
+            &test_params(),
+            reader,
+            server,
+            &writer_alive_rx,
+        ))
+        .expect("serve reader");
         out_rx.drain().collect()
+    }
+
+    const INITIALIZE_LINE: &[u8] =
+        b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\n";
+    const STDOUT_CLOSED: &str = "stdout closed";
+    const EXPECTED_BROKEN_PIPE: &str = "serve must fail with the writer's BrokenPipe error";
+
+    struct BrokenStdout {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl std::io::Write for BrokenStdout {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                STDOUT_CLOSED,
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn is_broken_pipe(error: &color_eyre::Report) -> bool {
+        error.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+        })
+    }
+
+    #[test]
+    fn serve_io_writes_nothing_after_first_output_failure() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let out = BrokenStdout {
+            attempts: Arc::clone(&attempts),
+        };
+        let input = [INITIALIZE_LINE, INITIALIZE_LINE].concat();
+        let reader = smol::io::BufReader::new(smol::io::Cursor::new(input));
+
+        let error = smol::block_on(serve_io(&test_params(), reader, out, Vec::new()))
+            .expect_err("output failure must fail serve");
+
+        assert!(is_broken_pipe(&error), "{}", EXPECTED_BROKEN_PIPE);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn serve_io_stops_reading_after_output_failure() {
+        let (pipe_reader, mut pipe_writer) = std::io::pipe().unwrap();
+        pipe_writer.write_all(INITIALIZE_LINE).unwrap();
+        let out = BrokenStdout {
+            attempts: Arc::new(AtomicUsize::new(0)),
+        };
+        let reader = smol::io::BufReader::new(smol::Unblock::new(pipe_reader));
+
+        let error = smol::block_on(serve_io(&test_params(), reader, out, Vec::new()))
+            .expect_err("output failure must stop serve while stdin stays open");
+
+        assert!(is_broken_pipe(&error), "{}", EXPECTED_BROKEN_PIPE);
+        drop(pipe_writer);
     }
 
     fn assert_initialize_processed(responses: &[Value]) {

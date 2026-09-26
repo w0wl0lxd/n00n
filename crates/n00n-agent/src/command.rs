@@ -108,7 +108,10 @@ fn discover_commands_inner(
         }
     }
 
-    for dir in find_project_ancestor_dirs(cwd) {
+    // Scan outermost project directories first so the nearest ancestor wins
+    // the same-name override.
+    let ancestors: Vec<_> = find_project_ancestor_dirs(cwd).collect();
+    for dir in ancestors.iter().rev() {
         for cmd_dir in PROJECT_COMMAND_DIRS {
             scan_command_dir(&dir.join(cmd_dir), &CommandScope::Project, &mut commands);
         }
@@ -291,6 +294,25 @@ mod tests {
         let commands = discover_commands_inner(dir.path(), None, None);
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "valid");
+    }
+
+    #[test]
+    fn nested_project_command_dir_prefers_nearest_ancestor() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        let nested = root.path().join("pkg");
+        for (dir, content) in [
+            (root.path().join(".n00n/commands"), "Root content"),
+            (nested.join(".n00n/commands"), "Nested content"),
+        ] {
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("review.md"), content).unwrap();
+        }
+
+        let commands = discover_commands_inner(&nested, None, None);
+        let review: Vec<_> = commands.iter().filter(|c| c.name == "review").collect();
+        assert_eq!(review.len(), 1);
+        assert_eq!(review[0].content, "Nested content");
     }
 
     #[test_case(

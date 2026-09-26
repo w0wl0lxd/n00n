@@ -64,4 +64,69 @@ function M.policy_scope_keys(rule)
   return true
 end
 
+local TOOL_LIST_FIELDS = { "restricted_tools", "allowed_tools" }
+
+local function validate_tool_list(rule, field)
+  local values = rule[field]
+  if values == nil then
+    return true
+  end
+  if type(values) ~= "table" then
+    return nil, field .. " must be an array"
+  end
+  local count = 0
+  for key in pairs(values) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      return nil, field .. " must be an array"
+    end
+    count = count + 1
+  end
+  for index = 1, count do
+    local value = rawget(values, index)
+    if type(value) ~= "string" or value == "" then
+      return nil, field .. " entries must be non-empty strings"
+    end
+  end
+  return true
+end
+
+--- Validate a rule before it is persisted. Must be no weaker than
+--- policy_store.validate: a rule accepted here has to stay readable by
+--- policy_store.load, or the whole store fails closed on the next read.
+function M.validate_rule(rule)
+  if type(rule) ~= "table" then
+    return nil, "rule must be an object"
+  end
+  local id_ok, id_err = M.validate_id(rule.id)
+  if not id_ok then
+    return nil, "rule.id: " .. id_err
+  end
+  local scope_ok, scope_err = M.policy_scope_keys(rule)
+  if not scope_ok then
+    return nil, scope_err
+  end
+  for _, field in ipairs({ "agent_id", "session_type", "tag" }) do
+    local value = rule.scope[field]
+    if value ~= nil and type(value) ~= "string" then
+      return nil, "rule.scope." .. field .. " must be a string"
+    end
+  end
+  if type(rule.priority) ~= "number" then
+    return nil, "rule.priority must be a number"
+  end
+  if rule.paused ~= nil and type(rule.paused) ~= "boolean" then
+    return nil, "rule.paused must be a boolean"
+  end
+  if rule.restricted_tools and rule.allowed_tools then
+    return nil, "restricted_tools and allowed_tools are mutually exclusive"
+  end
+  for _, field in ipairs(TOOL_LIST_FIELDS) do
+    local list_ok, list_err = validate_tool_list(rule, field)
+    if not list_ok then
+      return nil, list_err
+    end
+  end
+  return true
+end
+
 return M

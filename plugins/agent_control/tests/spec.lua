@@ -109,6 +109,48 @@ case("policy_store_treats_only_missing_file_as_empty", function()
   assert(n00n.fs.rm(policy_fixture, { recursive = true }))
 end)
 
+case("validate_rule_rejects_scope_the_store_cannot_read", function()
+  local ok, err = helpers.validate_rule({ id = "r1", scope = { tag = 5 }, priority = 1 })
+  eq(ok, nil)
+  assert(err:find("scope.tag must be a string", 1, true), err)
+end)
+
+case("validate_rule_rejects_priority_the_store_cannot_read", function()
+  local ok, err = helpers.validate_rule({ id = "r1", scope = { tag = "bg" }, priority = "high" })
+  eq(ok, nil)
+  assert(err:find("priority must be a number", 1, true), err)
+end)
+
+case("validate_rule_rejects_tool_lists_the_store_cannot_read", function()
+  local ok, err = helpers.validate_rule({ id = "r1", scope = { tag = "bg" }, priority = 1, allowed_tools = { 1 } })
+  eq(ok, nil)
+  assert(err:find("entries must be non-empty strings", 1, true), err)
+
+  local list_ok, list_err =
+    helpers.validate_rule({ id = "r1", scope = { tag = "bg" }, priority = 1, restricted_tools = { "" } })
+  eq(list_ok, nil)
+  assert(list_err:find("entries must be non-empty strings", 1, true), list_err)
+end)
+
+case("validate_rule_accepts_a_rule_the_store_reads_back", function()
+  local rule = { id = "r1", scope = { agent_id = "a1" }, priority = 2, restricted_tools = { "run_shell" } }
+  assert(helpers.validate_rule(rule))
+  assert(n00n.fs.mkdir(policy_fixture, { parents = true }))
+  local path = n00n.fs.joinpath(policy_fixture, "policy.json")
+  assert(n00n.fs.write(path, n00n.json.encode({ version = 1, rules = { rule } })))
+  local policies, err = policy_store.load(path)
+  assert(policies, err)
+  eq(#policies.rules, 1)
+end)
+
+case("policy_store_validate_matches_load", function()
+  local invalid = { version = 1, rules = { { id = "r", scope = { tag = 5 }, priority = 1 } } }
+  local ok, err = policy_store.validate(invalid)
+  eq(ok, nil)
+  assert(err:find("scope.tag must be a string", 1, true), err)
+  assert(policy_store.validate({ version = 1, rules = {} }))
+end)
+
 if #failures > 0 then
   error(table.concat(failures, "\n"))
 end
