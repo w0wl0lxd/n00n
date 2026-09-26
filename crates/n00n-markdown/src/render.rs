@@ -23,6 +23,9 @@ pub const TOOL_OUTPUT_MAX_LINE_BYTES: usize = 500;
 const HR_CHAR: char = '─';
 const MIN_COL_WIDTH: usize = 5;
 const LONG_LINE_SUFFIX: &str = "...";
+/// Chars on each side of a cut that `is_safe_cut` measures. Longer than any
+/// emoji ZWJ, keycap or tag sequence that `unicode-width` joins.
+const SAFE_CUT_WINDOW_CHARS: usize = 16;
 
 /// Semantic style token. Emphasis (bold/italic/strike/underline) lives on
 /// the `Span`, not here, so they compose independently.
@@ -399,27 +402,70 @@ fn ensure_blank_line(lines: &mut Vec<Line>) {
     }
 }
 
-/// Largest char-boundary index of `text` whose slice reports `width() <= max_width`.
+/// Whether cutting `text` at byte `end` keeps each side's display width.
+/// `unicode-width` measures emoji presentation, ZWJ, keycap and ligature
+/// sequences as a unit, so a cut inside one changes the concatenated width.
+/// A zero-width char (combining mark, selector, joiner) stays with its base.
+fn is_safe_cut(text: &str, end: usize) -> bool {
+    if end == 0 || end >= text.len() {
+        return true;
+    }
+    if text[end..]
+        .chars()
+        .next()
+        .is_some_and(|next| UnicodeWidthChar::width(next) == Some(0))
+    {
+        return false;
+    }
+    let start = match text[..end]
+        .char_indices()
+        .rev()
+        .nth(SAFE_CUT_WINDOW_CHARS - 1)
+    {
+        Some((index, _)) => index,
+        None => 0,
+    };
+    let stop = match text[end..].char_indices().nth(SAFE_CUT_WINDOW_CHARS) {
+        Some((index, _)) => end + index,
+        None => text.len(),
+    };
+    text[start..end].width() + text[end..stop].width() == text[start..stop].width()
+}
+
+/// Largest safe cut of `text` whose slice reports `width() <= max_width`.
 ///
-/// `UnicodeWidthChar` and `UnicodeWidthStr` disagree for control characters and
-/// emoji presentation sequences, so the candidate is re-measured with the same
-/// `UnicodeWidthStr::width` that consumers use. Without that, a line can take
-/// more cells than its remaining budget and the subtraction underflows.
+/// Only cuts that `is_safe_cut` accepts are candidates, so a display sequence
+/// is never split and the concatenated line measures what its spans add up
+/// to. Each segment between safe cuts is measured with the same
+/// `UnicodeWidthStr::width` that consumers use.
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
     let mut end = 0;
     for (i, ch) in text.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or_else(|| 0);
-        if width + cw > max_width {
+        let candidate = i + ch.len_utf8();
+        if !is_safe_cut(text, candidate) {
+            continue;
+        }
+        let candidate_width = width + text[end..candidate].width();
+        if candidate_width > max_width {
             break;
         }
-        width += cw;
-        end = i + ch.len_utf8();
-    }
-    while end > 0 && text[..end].width() > max_width {
-        end = text[..end].char_indices().next_back().map_or(0, |(i, _)| i);
+        width = candidate_width;
+        end = candidate;
     }
     end
+}
+
+/// End of the first display sequence of `text`: the unit placed alone on a
+/// line when even that does not fit the budget.
+fn first_sequence_end(text: &str) -> usize {
+    for (i, ch) in text.char_indices() {
+        let candidate = i + ch.len_utf8();
+        if is_safe_cut(text, candidate) {
+            return candidate;
+        }
+    }
+    text.len()
 }
 
 fn wrap_code_lines(lines: &mut Vec<Line>, start: usize, width: u16) {
@@ -468,13 +514,13 @@ fn split_line_with_bar(line: Line, width: usize) -> Vec<Line> {
                     remaining = cont_avail;
                     continue;
                 }
-                let ch_len = text.chars().next().map_or(1, char::len_utf8);
+                let sequence_len = first_sequence_end(text);
                 current_spans.push(Span::with_emphasis(
-                    text[..ch_len].to_owned(),
+                    text[..sequence_len].to_owned(),
                     style.clone(),
                     emphasis,
                 ));
-                text = &text[ch_len..];
+                text = &text[sequence_len..];
                 result.push(Line {
                     kind: LineKind::Code,
                     spans: mem::take(&mut current_spans),
@@ -559,13 +605,13 @@ fn wrap_spans(spans: Vec<Span>, max_width: usize) -> Vec<Vec<Span>> {
             let fits = fit_width(text, remaining);
             if fits == 0 {
                 if current.is_empty() {
-                    let ch_len = text.chars().next().map_or(1, char::len_utf8);
+                    let sequence_len = first_sequence_end(text);
                     current.push(Span::with_emphasis(
-                        text[..ch_len].to_owned(),
+                        text[..sequence_len].to_owned(),
                         style.clone(),
                         emphasis,
                     ));
-                    text = &text[ch_len..];
+                    text = &text[sequence_len..];
                 }
                 result.push(mem::take(&mut current));
                 remaining = max_width;
@@ -1146,18 +1192,60 @@ mod tests {
         assert!(lines.iter().all(|l| l.width() <= 40), "line overflow");
     }
 
-    #[test]
-    fn paragraph_wrapping_never_underflows_on_emoji_presentation() {
-        for (input, width) in [
-            ("\u{2764}\u{FE0F}", 1u16),
-            ("a\u{2764}\u{FE0F}b", 3),
-            ("\u{00A9}\u{FE0F}", 1),
-        ] {
-            let lines = render(input, width);
-            assert!(
-                lines.iter().all(|l| l.width() <= width as usize),
-                "line overflow for {input:?} at width {width}"
-            );
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// A line may exceed the budget only when its content is one display
+    /// sequence that cannot be cut without changing its width.
+    fn assert_line_fits(line: &Line, content_from: usize, width: usize, input: &str) {
+        let content: String = line.spans[content_from..]
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        let single_sequence = content
+            .char_indices()
+            .skip(1)
+            .all(|(i, _)| !is_safe_cut(&content, i));
+        assert!(
+            line_text(line).width() <= width || single_sequence,
+            "line {:?} overflows width {width} for {input:?}",
+            line_text(line)
+        );
+    }
+
+    #[test_case("\u{2764}\u{FE0F}", 1, &["\u{2764}\u{FE0F}"] ; "vs16_wider_than_width_stays_whole")]
+    #[test_case("a\u{2764}\u{FE0F}b", 2, &["a", "\u{2764}\u{FE0F}", "b"] ; "vs16_moves_to_next_line_whole")]
+    #[test_case("a\u{2764}\u{FE0F}b", 3, &["a\u{2764}\u{FE0F}", "b"] ; "vs16_fits_after_prefix")]
+    #[test_case("\u{00A9}\u{FE0F}", 1, &["\u{00A9}\u{FE0F}"] ; "vs16_on_text_default_base")]
+    #[test_case("x\u{1F469}\u{200D}\u{1F4BB}y", 2, &["x", "\u{1F469}\u{200D}\u{1F4BB}", "y"] ; "zwj_sequence_stays_whole")]
+    #[test_case("e\u{301}e\u{301}", 1, &["e\u{301}", "e\u{301}"] ; "combining_mark_stays_with_base")]
+    fn paragraph_wrapping_keeps_display_sequences_whole(
+        input: &str,
+        width: u16,
+        expected: &[&str],
+    ) {
+        let lines = render(input, width);
+        assert_eq!(lines_text(&lines), expected);
+        for line in &lines {
+            assert_line_fits(line, 0, usize::from(width), input);
+        }
+    }
+
+    #[test_case("\u{2764}\u{FE0F}\u{2764}\u{FE0F}\u{2764}\u{FE0F}", 4 ; "vs16_run")]
+    #[test_case("a\u{1F469}\u{200D}\u{1F4BB}b\u{1F469}\u{200D}\u{1F4BB}", 4 ; "zwj_run")]
+    fn code_wrapping_keeps_display_sequences_whole(code: &str, width: u16) {
+        let input = format!("```\n{code}\n```");
+        let lines = render(&input, width);
+        let code_lines: Vec<_> = lines.iter().filter(|l| l.kind == LineKind::Code).collect();
+        let content: String = code_lines
+            .iter()
+            .flat_map(|l| &l.spans[1..])
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(content, code, "wrapping must keep every byte");
+        for line in code_lines {
+            assert_line_fits(line, 1, usize::from(width), code);
         }
     }
 
@@ -1266,10 +1354,7 @@ mod tests {
             let text: String = (0..len).map(|_| POOL[rng.usize(..POOL.len())]).collect();
             for width in [2u16, 3, 8, 40] {
                 for line in render(&text, width) {
-                    assert!(
-                        line.width() <= width as usize,
-                        "overflow at width {width} for {text:?}"
-                    );
+                    assert_line_fits(&line, 0, usize::from(width), &text);
                 }
             }
         }
