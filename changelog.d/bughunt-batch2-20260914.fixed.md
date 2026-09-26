@@ -9,3 +9,8 @@
 - Fixed ACP stdout write errors being discarded (framing desync) and `find_related` missing anchors beyond the first 10,000 chunks.
 - Fixed Rust CI skipping crate manifests and build scripts, release checksums hashing a stale checksum file into itself, docs never building on pull requests, silent `$0` pricing for newer models, benchmark run dedupe dropping distinct runs, and an unquoted model argument in the Terminal-Bench wrapper.
 - Fixed git command sanitization skipping the command that owns a heredoc and every command after it, which let a repo `core.fsmonitor` hook run through `git status <<EOF`. Only the heredoc body is now kept as data.
+- Fixed git command sanitization missing a command on the line after a shell comment, window and highlight options accepting wrong types (for example `focus = "no"`), and tree-sitter row bounds that were silently truncated.
+- Fixed negated tree-sitter predicates matching capture text that could not be read, partial checkpoint prunes on a bad id, and `utf8.prefix` returning invalid UTF-8.
+- Fixed an Anthropic model-list loop on a repeating cursor, Gemini streams being retried after output when the stream broke or ended early, and log rotation removing the open log file when no backups are kept.
+- Fixed the session scan cache trusting Windows creation time as a file identity, the daemon dropping replies to requests it had already handled at shutdown, and the ACP server writing on after a failed stdout write.
+- Fixed the code highlighter reusing output for an edited line, markdown wrapping splitting emoji sequences, and dot segments bypassing the `n00n-semble` remote allowlist.
