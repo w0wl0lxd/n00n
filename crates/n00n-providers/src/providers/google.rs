@@ -469,6 +469,7 @@ impl Google {
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
         thinking: ThinkingConfig,
+        cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<StreamResponse, AgentError> {
         let body = Self::build_body(model, messages, system, tools, thinking);
         let url = self.stream_url(&model.id);
@@ -483,7 +484,7 @@ impl Google {
         let status = response.status().as_u16();
 
         if status == 200 {
-            parse_sse(response, event_tx, self.stream_timeout).await
+            parse_sse_with_cancel(response, event_tx, self.stream_timeout, cancel_flag).await
         } else {
             Err(AgentError::from_response(response).await)
         }
@@ -507,12 +508,28 @@ impl Provider for Google {
             // Caching requires a stable session key and a prefix worth caching.
             let Some(sid) = session_id else {
                 return self
-                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .do_stream(
+                        model,
+                        messages,
+                        system,
+                        tools,
+                        event_tx,
+                        opts.thinking,
+                        opts.cancel_flag.clone(),
+                    )
                     .await;
             };
             if current_message_count <= CACHE_PREFIX_LEN || !supports_explicit_cache(&model.id) {
                 return self
-                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .do_stream(
+                        model,
+                        messages,
+                        system,
+                        tools,
+                        event_tx,
+                        opts.thinking,
+                        opts.cancel_flag.clone(),
+                    )
                     .await;
             }
 
@@ -560,7 +577,15 @@ impl Provider for Google {
 
             if suppress_retry {
                 return self
-                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .do_stream(
+                        model,
+                        messages,
+                        system,
+                        tools,
+                        event_tx,
+                        opts.thinking,
+                        opts.cancel_flag.clone(),
+                    )
                     .await;
             }
 
@@ -615,6 +640,7 @@ impl Provider for Google {
                                         tools,
                                         event_tx,
                                         opts.thinking,
+                                        opts.cancel_flag.clone(),
                                     )
                                     .await;
                             }
@@ -636,19 +662,43 @@ impl Provider for Google {
                                 }
                             }
                             return self
-                                .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                                .do_stream(
+                                    model,
+                                    messages,
+                                    system,
+                                    tools,
+                                    event_tx,
+                                    opts.thinking,
+                                    opts.cancel_flag.clone(),
+                                )
                                 .await;
                         }
                     }
                 } else {
                     return self
-                        .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                        .do_stream(
+                            model,
+                            messages,
+                            system,
+                            tools,
+                            event_tx,
+                            opts.thinking,
+                            opts.cancel_flag.clone(),
+                        )
                         .await;
                 };
 
             if cached_content_name.is_empty() {
                 return self
-                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .do_stream(
+                        model,
+                        messages,
+                        system,
+                        tools,
+                        event_tx,
+                        opts.thinking,
+                        opts.cancel_flag.clone(),
+                    )
                     .await;
             }
 
@@ -676,8 +726,13 @@ impl Provider for Google {
             let status = response.status().as_u16();
 
             if status == 200 {
-                let mut stream_response =
-                    parse_sse(response, event_tx, self.stream_timeout).await?;
+                let mut stream_response = parse_sse_with_cancel(
+                    response,
+                    event_tx,
+                    self.stream_timeout,
+                    opts.cancel_flag.clone(),
+                )
+                .await?;
                 stream_response.usage.cache_creation = stream_response
                     .usage
                     .cache_creation
@@ -707,8 +762,16 @@ impl Provider for Google {
                         cache_state.remove(&session_key);
                     }
                 }
-                self.do_stream(model, messages, system, tools, event_tx, opts.thinking)
-                    .await
+                self.do_stream(
+                    model,
+                    messages,
+                    system,
+                    tools,
+                    event_tx,
+                    opts.thinking,
+                    opts.cancel_flag.clone(),
+                )
+                .await
             } else {
                 Err(AgentError::from_response(response).await)
             }
@@ -1027,13 +1090,26 @@ struct ApiModelInfo {
     supported_generation_methods: Vec<String>,
 }
 
+#[cfg(test)]
 async fn parse_sse(
     response: isahc::Response<isahc::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
+    parse_sse_with_cancel(response, event_tx, stream_timeout, None).await
+}
+
+async fn parse_sse_with_cancel(
+    response: isahc::Response<isahc::AsyncBody>,
+    event_tx: &Sender<ProviderEvent>,
+    stream_timeout: Duration,
+    cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<StreamResponse, AgentError> {
     let reader = BufReader::new(response.into_body());
     let mut stream = SseStream::new(reader, stream_timeout);
+    if let Some(flag) = cancel_flag {
+        stream.set_cancel_flag(flag);
+    }
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut usage = TokenUsage::default();

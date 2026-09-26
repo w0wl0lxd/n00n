@@ -314,6 +314,7 @@ impl Anthropic {
         event_tx: &Sender<ProviderEvent>,
         fast: bool,
         long_context: bool,
+        cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<StreamResponse, AgentError> {
         let json_body = serde_json::to_vec(body)?;
         let mut builder = self
@@ -334,7 +335,7 @@ impl Anthropic {
         let status = response.status().as_u16();
 
         if status == 200 {
-            parse_sse(response, event_tx, self.stream_timeout).await
+            parse_sse_with_cancel(response, event_tx, self.stream_timeout, cancel_flag).await
         } else {
             Err(AgentError::from_response(response).await)
         }
@@ -423,8 +424,14 @@ impl Provider for Anthropic {
             let long_context = model.id.ends_with(shared::LONG_CONTEXT_SUFFIX);
 
             debug!(model = %model.id, num_messages = messages.len(), thinking = ?opts.thinking, fast, long_context, "sending API request");
-            self.do_stream_request(&body, event_tx, fast, long_context)
-                .await
+            self.do_stream_request(
+                &body,
+                event_tx,
+                fast,
+                long_context,
+                opts.cancel_flag.clone(),
+            )
+            .await
         })
     }
 
@@ -497,8 +504,20 @@ pub(crate) async fn parse_sse(
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
+    parse_sse_with_cancel(response, event_tx, stream_timeout, None).await
+}
+
+pub(crate) async fn parse_sse_with_cancel(
+    response: isahc::Response<isahc::AsyncBody>,
+    event_tx: &Sender<ProviderEvent>,
+    stream_timeout: Duration,
+    cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<StreamResponse, AgentError> {
     let reader = BufReader::new(response.into_body());
     let mut stream = SseStream::new(reader, stream_timeout);
+    if let Some(flag) = cancel_flag {
+        stream.set_cancel_flag(flag);
+    }
     let mut parser = shared::EventParser::new();
 
     while let Some(event) = stream.next_event().await? {

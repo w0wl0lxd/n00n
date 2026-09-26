@@ -267,9 +267,10 @@ impl<'h> Agent<'h> {
             .identity
             .as_ref()
             .map(SessionIdentity::session_id)
-            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
-                Arc::<str>::from(id.to_string())
-            });
+            .map_or_else(
+                || params.registry.admission().new_scope(),
+                |id| Arc::<str>::from(id.to_string()),
+            );
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
         } else {
@@ -509,6 +510,7 @@ impl<'h> Agent<'h> {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             // Subagent runs share the root session's cache shard so sibling
             // bursts reuse one warm prefix bucket.
             cache_shard_key: self
@@ -1114,7 +1116,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             definitions.extend(mcp.deferred_definitions());
             definitions.sort_by(|left, right| {
                 left.namespace.cmp(&right.namespace).then_with(|| {
@@ -1208,7 +1212,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             if self.provider.supports_hosted_tool_search(&self.model) {
                 mcp.extend_tools_hosted(&mut tools);
             } else {
@@ -1299,11 +1305,17 @@ impl<'h> Agent<'h> {
             if matches!(error, AgentError::Cancelled) {
                 return Err(error);
             }
-            warn!(
-                error = %error,
-                "auto-compaction failed; continuing without compacting"
-            );
-            return Ok(false);
+            if projected_context_size < self.model.context_window {
+                warn!(
+                    error = %error,
+                    context_size = projected_context_size,
+                    context_window = self.model.context_window,
+                    "auto-compaction failed but projected context still fits within the model's hard limit; continuing without compaction"
+                );
+                return Ok(false);
+            }
+            warn!(error = %error, "auto-compaction failed");
+            return Err(error);
         }
         Ok(true)
     }
@@ -1469,6 +1481,7 @@ impl<'h> Agent<'h> {
                         image_count: input.images.len(),
                         images: input.images.clone(),
                         control: input.control,
+                        run_delivery: input.run_delivery.clone(),
                     })?;
                     let appended_start = self.history.len();
                     for msg in std::mem::take(&mut input.preamble) {
@@ -2910,6 +2923,7 @@ mod tests {
             control: false,
             prompt: None,
             plan_path: None,
+            run_delivery: None,
         }
     }
 
@@ -3617,7 +3631,8 @@ mod tests {
             input.control = control;
             let image = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
             input.images = vec![image.clone()];
-            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let source =
+                MockInterruptSource::new(vec![ExtractedCommand::Interrupt(Box::new(input), 0)]);
             let mut history = History::new(Vec::new());
             let (mut agent, _rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
             agent = agent.with_interrupt_source(source);
@@ -3640,6 +3655,42 @@ mod tests {
         });
     }
 
+    #[test]
+    fn queued_interrupt_emits_run_delivery_metadata() {
+        smol::block_on(async {
+            let mut input = default_input();
+            input.control = true;
+            input.run_delivery = Some(crate::ControlDeliveryMetadata {
+                delivery_id: "delivery-x".into(),
+                child_run_id: "run-42".into(),
+                source_revision: 5,
+            });
+            let source =
+                MockInterruptSource::new(vec![ExtractedCommand::Interrupt(Box::new(input), 0)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent = agent.with_interrupt_source(source);
+            agent
+                .handle_queued_commands(InterruptPoint::Safe)
+                .await
+                .unwrap();
+            let events = drain_events(&event_rx);
+            let Some(AgentEvent::QueueItemConsumed { run_delivery, .. }) = events
+                .iter()
+                .map(|envelope| &envelope.event)
+                .find(|event| matches!(event, AgentEvent::QueueItemConsumed { .. }))
+            else {
+                panic!("expected QueueItemConsumed");
+            };
+            let delivery = run_delivery
+                .as_ref()
+                .expect("run delivery metadata on consumed event");
+            assert_eq!(delivery.delivery_id, "delivery-x");
+            assert_eq!(delivery.child_run_id, "run-42");
+            assert_eq!(delivery.source_revision, 5);
+        });
+    }
+
     #[test_case(Some(true),  false, true,  true  ; "after_tool_use_turn")]
     #[test_case(Some(false), false, true,  true  ; "after_text_only_turn")]
     #[test_case(Some(false), true,  true,  true  ; "control_after_text_only_turn")]
@@ -3655,7 +3706,8 @@ mod tests {
                 let mut input = default_input();
                 input.control = control;
                 Some(MockInterruptSource::new(vec![ExtractedCommand::Interrupt(
-                    input, 0,
+                    Box::new(input),
+                    0,
                 )]))
             } else {
                 None
@@ -3780,6 +3832,54 @@ mod tests {
                 )),
                 expected,
             );
+        });
+    }
+
+    #[test]
+    fn try_auto_compact_swallows_error_when_projected_context_still_fits() {
+        smol::block_on(async {
+            const COMPACTION_CHECKPOINT_FAILURE: &str = "disk full";
+            let mut history = History::new(vec![Message::user("go".into())]);
+            let (agent, event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut agent =
+                agent.with_compaction_checkpoint(|_, _| Err(COMPACTION_CHECKPOINT_FAILURE.into()));
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+            // Inside the compaction buffer (170_000 triggers is_overflow at 15%)
+            // but well below the model's hard 200_000-token context window.
+            agent.context_size = 170_000;
+
+            let result = agent.try_auto_compact(0).await.unwrap();
+
+            assert!(!result, "auto-compact should report no compaction happened");
+            assert!(has_event(&drain_events(&event_rx), |e| matches!(
+                e,
+                AgentEvent::AutoCompactFailed { error } if error.contains(COMPACTION_CHECKPOINT_FAILURE)
+            )));
+        });
+    }
+
+    #[test]
+    fn try_auto_compact_propagates_error_when_projected_context_exceeds_hard_limit() {
+        smol::block_on(async {
+            const COMPACTION_CHECKPOINT_FAILURE: &str = "disk full";
+            let mut history = History::new(vec![Message::user("go".into())]);
+            let (agent, _event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut agent =
+                agent.with_compaction_checkpoint(|_, _| Err(COMPACTION_CHECKPOINT_FAILURE.into()));
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+            // At the model's hard context window: continuing without
+            // compaction would exceed it, so the error must propagate.
+            agent.context_size = 200_000;
+
+            let error = agent.try_auto_compact(0).await.unwrap_err();
+
+            assert!(error.to_string().contains(COMPACTION_CHECKPOINT_FAILURE));
         });
     }
 

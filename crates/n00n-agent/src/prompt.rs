@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn todo_cap_multibyte_four_byte_char_shrinks() {
-        let multibyte = "🙂".repeat(MAX_AFTER_INSTRUCTIONS_BYTES);
+        let multibyte = "\u{1F642}".repeat(MAX_AFTER_INSTRUCTIONS_BYTES);
         let content = format!("# Current todos\n{}", todo_line("in_progress", &multibyte));
         let out = cap_after_instructions(content);
         assert!(

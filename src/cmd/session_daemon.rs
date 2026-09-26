@@ -270,6 +270,7 @@ fn message_interactive(
             prompt: None,
             control: opts.control,
             plan_path,
+            run_delivery: None,
         })
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
     Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))

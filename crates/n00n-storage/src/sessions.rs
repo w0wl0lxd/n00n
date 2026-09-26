@@ -24,6 +24,7 @@ use crate::id::{n00nId, n00nIdParseError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::error::{Category as JsonCategory, Error as JsonError};
 use zstd::stream::{Decoder, Encoder};
 
 use crate::{
@@ -77,6 +78,7 @@ pub const OPENAI_RESPONSE_CHAIN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 pub const DEFAULT_MAX_RETAINED_TOOL_OUTPUTS: usize = 512;
 /// Subagent histories a live session keeps resident before the oldest are evicted.
 pub const DEFAULT_MAX_RETAINED_SUBAGENT_HISTORIES: usize = 32;
+pub const MAX_CONTROL_DELIVERY_RECORDS: usize = 1_024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -102,6 +104,8 @@ pub enum SessionError {
     DecodedBudgetExceeded { path: String, limit: usize },
     #[error("session log contains an unknown record type")]
     UnknownRecord,
+    #[error("session control-delivery ledger reached its bounded capacity")]
+    ControlDeliveryCapacity,
     #[error("session record exceeds the {maximum}-byte limit")]
     RecordTooLargeWrite { maximum: usize },
     #[error("session log changed concurrently: {path}")]
@@ -202,6 +206,15 @@ impl StoredSessionLifecycle {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredControlDelivery {
+    pub delivery_id: String,
+    pub child_run_id: String,
+    pub source_revision: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub acknowledged: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredQueuedMessage {
     pub text: String,
     pub images: Vec<StoredImageSource>,
@@ -222,6 +235,8 @@ pub struct StoredQueuedMessage {
     pub delivery: StoredDelivery,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<StoredMcpPrompt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_delivery: Option<StoredControlDelivery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1362,6 +1377,8 @@ pub struct SessionMeta {
     pub queued_submissions: Vec<StoredQueuedMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_direct_tools: Vec<StoredDirectTool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumed_run_deliveries: Vec<StoredControlDelivery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_output: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1403,6 +1420,63 @@ pub struct SessionMeta {
 }
 
 impl SessionMeta {
+    #[must_use]
+    pub fn contains_run_delivery(&self, delivery_id: &str) -> bool {
+        self.queued_submissions.iter().any(|submission| {
+            submission
+                .run_delivery
+                .as_ref()
+                .is_some_and(|delivery| delivery.delivery_id == delivery_id)
+        }) || self.has_consumed_run_delivery(delivery_id)
+    }
+
+    #[must_use]
+    pub fn has_consumed_run_delivery(&self, delivery_id: &str) -> bool {
+        self.consumed_run_deliveries
+            .iter()
+            .any(|delivery| delivery.delivery_id == delivery_id)
+    }
+
+    /// Records a consumed control delivery for crash-safe idempotency. At
+    /// capacity, the oldest acknowledged entry is evicted to make room.
+    ///
+    /// # Errors
+    /// Returns an error when the bounded ledger is full and no entry is acknowledged.
+    pub fn record_consumed_run_delivery(
+        &mut self,
+        delivery: StoredControlDelivery,
+    ) -> Result<(), SessionError> {
+        if self.has_consumed_run_delivery(&delivery.delivery_id) {
+            return Ok(());
+        }
+        if self.consumed_run_deliveries.len() >= MAX_CONTROL_DELIVERY_RECORDS {
+            let oldest_acknowledged = self
+                .consumed_run_deliveries
+                .iter()
+                .position(|consumed| consumed.acknowledged)
+                .ok_or(SessionError::ControlDeliveryCapacity)?;
+            self.consumed_run_deliveries.remove(oldest_acknowledged);
+        }
+        self.consumed_run_deliveries.push(delivery);
+        Ok(())
+    }
+
+    /// Marks a consumed delivery as acknowledged, making it evictable when the
+    /// ledger is full. Returns whether the entry exists.
+    pub fn mark_run_delivery_acknowledged(&mut self, delivery_id: &str) -> bool {
+        match self
+            .consumed_run_deliveries
+            .iter_mut()
+            .find(|consumed| consumed.delivery_id == delivery_id)
+        {
+            Some(consumed) => {
+                consumed.acknowledged = true;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Stores a compaction checkpoint and prunes the oldest checkpoints to remain within bounds.
     ///
     /// # Errors
@@ -1489,7 +1563,7 @@ fn fusion_usage_from_value(value: &serde_json::Value) -> Option<StoredFusionUsag
         Ok(usage) => Some(usage),
         Err(e) => {
             warn!(
-                error = %e,
+                error_kind = json_error_kind(&e),
                 value_type = %match value {
                     serde_json::Value::Object(_) => "object",
                     serde_json::Value::Array(_) => "array",
@@ -1651,6 +1725,52 @@ pub struct SessionSummary {
     pub cwd: String,
     #[serde(default)]
     pub model: String,
+}
+
+/// Minimal persisted metadata used to import legacy background child sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacySessionMetadata {
+    pub session_id: n00nId,
+    pub cwd: String,
+    pub title: String,
+    pub parent_id: n00nId,
+    pub root_session_id: Option<n00nId>,
+    pub lifecycle: StoredSessionLifecycle,
+    pub workflow: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "t")]
+enum LegacyMetadataRecord {
+    #[serde(rename = "header")]
+    Header {
+        v: u32,
+        id: n00nId,
+        cwd: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        created_at: u64,
+        #[serde(default)]
+        parent_id: Option<n00nId>,
+    },
+    #[serde(rename = "meta")]
+    Meta {
+        title: String,
+        updated_at: u64,
+        #[serde(default)]
+        parent_id: Option<n00nId>,
+        #[serde(default)]
+        root_session_id: Option<n00nId>,
+        #[serde(default)]
+        lifecycle: StoredSessionLifecycle,
+        #[serde(default)]
+        workflow: bool,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2131,6 +2251,13 @@ enum LogRecord<M, U, T> {
         #[serde(flatten)]
         meta: SessionMeta,
     },
+    /// Tombstone written in place of a record that exceeded the size limit, so
+    /// positional cursors stay aligned and the log stays appendable.
+    #[serde(rename = "oversized")]
+    Oversized {
+        #[serde(default)]
+        kind: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -2268,7 +2395,7 @@ impl SessionLog {
         let _lock = lock_session_in(dir, session.id)?;
         let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Self::cursor_from(dir, session, file, 0, decoded_bytes)
+        Self::cursor_from(dir, session, file, 0, decoded_bytes, limits)
     }
 
     /// # Errors
@@ -2324,7 +2451,7 @@ impl SessionLog {
             )
         };
         let appended_frames = if rewrite { 0 } else { log_appends };
-        let log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes)?;
+        let log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes, limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
         Ok((session, log))
     }
@@ -2374,7 +2501,14 @@ impl SessionLog {
             )
         };
         let appended_frames = if rewrite { 0 } else { log_appends };
-        let mut log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes)?;
+        let mut log = Self::cursor_from(
+            dir,
+            &session,
+            file,
+            appended_frames,
+            decoded_bytes,
+            DecodeLimits::LOAD,
+        )?;
         log.saved_tool_ids = index.tool_outputs;
         log.saved_sub_msg_counts = index.subagent_message_counts;
         update_cwd_index(dir, &session.cwd, session.id)?;
@@ -2449,18 +2583,19 @@ impl SessionLog {
             let mut new_tool_ids = Vec::new();
 
             for msg in &session.messages[self.saved_messages.len()..] {
-                append_record_with_limits(
+                append_record_or_tombstone::<_, &M, &U, &T>(
                     &mut buf,
                     &LogRecord::<&M, &U, &T>::Msg { d: msg },
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
+                    "msg",
                 )?;
             }
 
             for (id, output) in &session.tool_outputs {
                 if !self.saved_tool_ids.contains(id) {
-                    append_record_with_limits(
+                    append_record_or_tombstone::<_, &M, &U, &T>(
                         &mut buf,
                         &LogRecord::<&M, &U, &T>::Out {
                             id: id.clone(),
@@ -2469,6 +2604,7 @@ impl SessionLog {
                         &path,
                         &limits,
                         &mut next_decoded_bytes,
+                        "out",
                     )?;
                     new_tool_ids.push(id.clone());
                 }
@@ -2483,36 +2619,51 @@ impl SessionLog {
             )?;
 
             for entry in &session.transcript[self.saved_transcript.len()..] {
-                write_transcript_entry_with_limits(
+                let entry_start = buf.len();
+                let entry_decoded = next_decoded_bytes;
+                match write_transcript_entry_with_limits(
                     &mut buf,
                     entry,
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
-                )?;
+                ) {
+                    Err(SessionError::RecordTooLarge { .. }) => {
+                        buf.truncate(entry_start);
+                        next_decoded_bytes = entry_decoded;
+                        warn!(
+                            record_kind = "transcript",
+                            "session record exceeds the record limit; writing an oversized tombstone"
+                        );
+                        append_record_with_limits(
+                            &mut buf,
+                            &LogRecord::<&M, &U, &T>::Oversized {
+                                kind: "transcript".to_owned(),
+                            },
+                            &path,
+                            &limits,
+                            &mut next_decoded_bytes,
+                        )?;
+                    }
+                    result => result?,
+                }
             }
 
-            let current_meta = meta_record_bytes(session, self.appended_frames)?;
+            let current_meta =
+                meta_record_bytes(session, self.appended_frames, &path, limits.line_bytes)?;
             let meta_changed = current_meta != self.saved_meta;
             if buf.is_empty() && !meta_changed {
                 return Ok(None);
             }
 
             let next_log_appends = self.appended_frames + 1;
-            let mut persisted_meta = Vec::new();
-            append_record_with_limits(
-                &mut persisted_meta,
-                &LogRecord::<M, &U, &T>::Meta {
-                    title: session.title.clone(),
-                    token_usage: &session.token_usage,
-                    updated_at: session.updated_at,
-                    log_appends: next_log_appends,
-                    transcript: None,
-                    meta: session.meta.clone(),
-                },
+            let persisted_meta =
+                meta_record_bytes(session, next_log_appends, &path, limits.line_bytes)?;
+            account_record_bytes(
+                &mut next_decoded_bytes,
+                persisted_meta.len(),
                 &path,
                 &limits,
-                &mut next_decoded_bytes,
             )?;
             buf.extend_from_slice(&persisted_meta);
 
@@ -2597,7 +2748,7 @@ impl SessionLog {
                 .copied()
                 .unwrap_or_else(|| 0);
             for msg in &msgs[saved..] {
-                append_record_with_limits(
+                append_record_or_tombstone::<_, &M, &U, &T>(
                     buf,
                     &LogRecord::<&M, &U, &T>::SubMsg {
                         sub: sub_id.clone(),
@@ -2606,6 +2757,7 @@ impl SessionLog {
                     path,
                     limits,
                     decoded_bytes,
+                    "sub_msg",
                 )?;
             }
             if msgs.len() > saved {
@@ -2661,7 +2813,7 @@ impl SessionLog {
         self.require_same_id(session)?;
 
         let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
-        *self = Self::cursor_from(dir, session, file, 0, decoded_bytes)?;
+        *self = Self::cursor_from(dir, session, file, 0, decoded_bytes, limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
 
         Ok(())
@@ -2694,6 +2846,7 @@ impl SessionLog {
         file: File,
         appended_frames: u64,
         decoded_bytes: usize,
+        limits: DecodeLimits,
     ) -> Result<Self, SessionError>
     where
         M: Serialize + Clone,
@@ -2716,7 +2869,12 @@ impl SessionLog {
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
             appended_frames,
             saved_transcript_revision: session.transcript_revision,
-            saved_meta: meta_record_bytes(session, appended_frames)?,
+            saved_meta: meta_record_bytes(
+                session,
+                appended_frames,
+                &jsonl_path(dir, session.id),
+                limits.line_bytes,
+            )?,
             saved_title: session.title.clone(),
             decoded_bytes,
             file_revision,
@@ -2762,28 +2920,194 @@ impl SessionLog {
     }
 }
 
+/// Borrowing twin of [`LogRecord::Meta`]: serializes to the same bytes, so a
+/// meta record that fits never clones a potentially large `SessionMeta`.
+#[derive(Serialize)]
+#[serde(tag = "t", rename = "meta")]
+struct MetaRecordRef<'a, U> {
+    title: &'a str,
+    token_usage: &'a U,
+    updated_at: u64,
+    log_appends: u64,
+    #[serde(flatten)]
+    meta: &'a SessionMeta,
+}
+
 fn meta_record_bytes<M, U, T>(
     session: &Session<M, U, T>,
     log_appends: u64,
+    path: &Path,
+    line_bytes: usize,
 ) -> Result<Vec<u8>, SessionError>
 where
-    M: Serialize + Clone,
     U: Serialize,
-    T: Serialize,
+{
+    if let Some(buf) = serialize_meta_record(session, &session.meta, log_appends, line_bytes)? {
+        return Ok(buf);
+    }
+    let mut meta = session.meta.clone();
+    while shed_meta_recovery_state(&mut meta) {
+        if let Some(buf) = serialize_meta_record(session, &meta, log_appends, line_bytes)? {
+            return Ok(buf);
+        }
+    }
+    Err(SessionError::RecordTooLarge {
+        path: path.display().to_string(),
+        limit: line_bytes,
+    })
+}
+
+/// Returns `None` when the record exceeds `line_bytes`.
+fn serialize_meta_record<M, U, T>(
+    session: &Session<M, U, T>,
+    meta: &SessionMeta,
+    log_appends: u64,
+    line_bytes: usize,
+) -> Result<Option<Vec<u8>>, SessionError>
+where
+    U: Serialize,
 {
     let mut buf = Vec::new();
-    append_record(
-        &mut buf,
-        &LogRecord::<M, &U, &T>::Meta {
-            title: session.title.clone(),
+    let mut limited = RecordLimitWriter {
+        writer: &mut buf,
+        written: 0,
+        limit: line_bytes,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(
+        &mut limited,
+        &MetaRecordRef {
+            title: &session.title,
             token_usage: &session.token_usage,
             updated_at: session.updated_at,
             log_appends,
-            transcript: None,
-            meta: session.meta.clone(),
+            meta,
         },
-    )?;
-    Ok(buf)
+    );
+    if limited.exceeded {
+        return Ok(None);
+    }
+    result.map_err(StorageError::from)?;
+    buf.push(b'\n');
+    Ok(Some(buf))
+}
+
+/// Recovery fields are unbounded; a meta record that can never fit must not
+/// wedge every later save. Sheds the plugin snapshot first, then the
+/// queued/subagent resume state. The consumed-delivery ledger is bounded and
+/// is the crash-safe dedup record, so it is always kept. Returns whether
+/// anything was shed.
+fn shed_meta_recovery_state(meta: &mut SessionMeta) -> bool {
+    if meta.state_snapshot.is_some() {
+        warn!("session meta record exceeds the record limit; dropping plugin state snapshot");
+        meta.state_snapshot = None;
+        return true;
+    }
+    let has_resume_state = !meta.queued_submissions.is_empty()
+        || !meta.queued_messages.is_empty()
+        || !meta.queued_direct_tools.is_empty()
+        || !meta.subagents.is_empty()
+        || meta.direct_paused_team.is_some()
+        || meta.direct_output.is_some();
+    if !has_resume_state {
+        return false;
+    }
+    warn!("session meta record exceeds the record limit; dropping queued and subagent state");
+    meta.queued_submissions.clear();
+    meta.queued_messages.clear();
+    meta.queued_direct_tools.clear();
+    meta.subagents.clear();
+    meta.direct_paused_team = None;
+    meta.direct_output = None;
+    true
+}
+
+/// Appends one record, writing an `Oversized` tombstone in its place when it
+/// can never fit. The tombstone occupies the same sequence position, so
+/// cursors stay aligned and later saves keep appending.
+fn append_record_or_tombstone<R: Serialize, M, U, T>(
+    buf: &mut Vec<u8>,
+    record: &R,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+    record_kind: &'static str,
+) -> Result<(), SessionError>
+where
+    M: Serialize,
+    U: Serialize,
+    T: Serialize,
+{
+    match append_record_with_limits(buf, record, path, limits, decoded_bytes) {
+        Err(SessionError::RecordTooLarge { .. }) => {
+            warn!(
+                record_kind,
+                "session record exceeds the record limit; writing an oversized tombstone"
+            );
+            append_record_with_limits(
+                buf,
+                &LogRecord::<M, U, T>::Oversized {
+                    kind: record_kind.to_owned(),
+                },
+                path,
+                limits,
+                decoded_bytes,
+            )
+        }
+        result => result,
+    }
+}
+
+/// Serializes into a scratch buffer so a record that can never fit is
+/// tombstoned atomically instead of leaving partial bytes on `writer`. Used by
+/// the full-rewrite path, where retraction is impossible.
+fn write_or_tombstone_record<W: Write, R: Serialize, M, U, T>(
+    writer: &mut W,
+    record: &R,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+    record_kind: &'static str,
+) -> Result<(), SessionError>
+where
+    M: Serialize,
+    U: Serialize,
+    T: Serialize,
+{
+    let mut scratch = Vec::new();
+    match append_record_or_tombstone::<R, M, U, T>(
+        &mut scratch,
+        record,
+        path,
+        limits,
+        decoded_bytes,
+        record_kind,
+    ) {
+        Err(error) => Err(error),
+        Ok(()) => Ok(writer.write_all(&scratch).map_err(StorageError::from)?),
+    }
+}
+
+fn account_record_bytes(
+    decoded_bytes: &mut usize,
+    written: usize,
+    path: &Path,
+    limits: &DecodeLimits,
+) -> Result<(), SessionError> {
+    let Some(next_decoded_bytes) = decoded_bytes.checked_add(written) else {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    };
+    if next_decoded_bytes > limits.decoded_bytes {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    }
+    *decoded_bytes = next_decoded_bytes;
+    Ok(())
 }
 
 fn write_session_file_with_limits<M, U, T>(
@@ -2841,19 +3165,20 @@ where
         &mut decoded_bytes,
     )?;
     for msg in &session.messages {
-        write_record_with_limits(
+        write_or_tombstone_record::<_, _, &M, &U, &T>(
             writer,
             &LogRecord::<&M, &U, &T>::Msg { d: msg },
             path,
             limits,
             &mut decoded_bytes,
+            "msg",
         )?;
     }
     for (id, output) in &session.tool_outputs {
         if session.evicted_tool_outputs.contains(id) {
             continue;
         }
-        write_record_with_limits(
+        write_or_tombstone_record::<_, _, &M, &U, &T>(
             writer,
             &LogRecord::<&M, &U, &T>::Out {
                 id: id.clone(),
@@ -2862,6 +3187,7 @@ where
             path,
             limits,
             &mut decoded_bytes,
+            "out",
         )?;
     }
     for (sub_id, msgs) in &session.subagent_messages {
@@ -2869,7 +3195,7 @@ where
             continue;
         }
         for msg in msgs {
-            write_record_with_limits(
+            write_or_tombstone_record::<_, _, &M, &U, &T>(
                 writer,
                 &LogRecord::<&M, &U, &T>::SubMsg {
                     sub: sub_id.clone(),
@@ -2878,6 +3204,7 @@ where
                 path,
                 limits,
                 &mut decoded_bytes,
+                "sub_msg",
             )?;
         }
     }
@@ -2885,22 +3212,42 @@ where
         copy_evicted_records(writer, path, session, limits, &mut decoded_bytes)?;
     }
     for entry in &session.transcript {
-        write_transcript_entry_with_limits(writer, entry, path, limits, &mut decoded_bytes)?;
+        let mut scratch = Vec::new();
+        let entry_decoded = decoded_bytes;
+        match write_transcript_entry_with_limits(
+            &mut scratch,
+            entry,
+            path,
+            limits,
+            &mut decoded_bytes,
+        ) {
+            Err(SessionError::RecordTooLarge { .. }) => {
+                decoded_bytes = entry_decoded;
+                scratch.clear();
+                warn!(
+                    record_kind = "transcript",
+                    "session record exceeds the record limit; writing an oversized tombstone"
+                );
+                append_record_with_limits(
+                    &mut scratch,
+                    &LogRecord::<&M, &U, &T>::Oversized {
+                        kind: "transcript".to_owned(),
+                    },
+                    path,
+                    limits,
+                    &mut decoded_bytes,
+                )?;
+                writer.write_all(&scratch).map_err(StorageError::from)?;
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {
+                writer.write_all(&scratch).map_err(StorageError::from)?;
+            }
+        }
     }
-    write_record_with_limits(
-        writer,
-        &LogRecord::<M, &U, &T>::Meta {
-            title: session.title.clone(),
-            token_usage: &session.token_usage,
-            updated_at: session.updated_at,
-            log_appends: 0,
-            transcript: None,
-            meta: session.meta.clone(),
-        },
-        path,
-        limits,
-        &mut decoded_bytes,
-    )?;
+    let meta = meta_record_bytes(session, 0, path, limits.line_bytes)?;
+    account_record_bytes(&mut decoded_bytes, meta.len(), path, limits)?;
+    writer.write_all(&meta).map_err(StorageError::from)?;
     Ok(decoded_bytes)
 }
 
@@ -2964,7 +3311,6 @@ where
     if !source.exists() {
         warn!(
             path = %source.display(),
-            session_id = %session.id,
             evicted_tool_outputs = session.evicted_tool_outputs.len(),
             evicted_subagent_messages = session.evicted_subagent_messages.len(),
             "no previous session log to recover evicted records from",
@@ -2980,7 +3326,7 @@ where
                 Err(error) => {
                     warn!(
                         path = %source.display(),
-                        error = %error,
+                        error_kind = json_error_kind(&error),
                         record_len = line.len(),
                         "skipping unrecognized record while recovering evicted history",
                     );
@@ -3163,12 +3509,14 @@ fn append_record_with_limits<R: Serialize>(
     Ok(())
 }
 
+#[cfg(test)]
 struct BoundedRecordBuffer {
     bytes: Vec<u8>,
     limit: usize,
     exceeded: bool,
 }
 
+#[cfg(test)]
 impl BoundedRecordBuffer {
     fn new(limit: usize) -> Self {
         Self {
@@ -3179,6 +3527,7 @@ impl BoundedRecordBuffer {
     }
 }
 
+#[cfg(test)]
 impl Write for BoundedRecordBuffer {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let Some(next_len) = self.bytes.len().checked_add(bytes.len()) else {
@@ -3198,6 +3547,7 @@ impl Write for BoundedRecordBuffer {
     }
 }
 
+#[cfg(test)]
 fn append_record<W: Write, R: Serialize>(writer: &mut W, record: &R) -> Result<(), SessionError> {
     let mut encoded = BoundedRecordBuffer::new(MAX_SESSION_RECORD_BYTES.saturating_sub(1));
     if let Err(error) = serde_json::to_writer(&mut encoded, record) {
@@ -3514,7 +3864,7 @@ where
                         Err(tag_error) => {
                             warn!(
                                 path = %path.display(),
-                                tag_error = %tag_error,
+                                error_kind = json_error_kind(&tag_error),
                                 line = line_count,
                                 "failed to extract record tag from malformed JSONL line"
                             );
@@ -3530,7 +3880,7 @@ where
                     }
                     warn!(
                         path = %path.display(),
-                        error = %error,
+                        error_kind = json_error_kind(&error),
                         line = line_count,
                         record_tag = %record_tag,
                         record_len = line.len(),
@@ -3608,14 +3958,10 @@ where
     let hydrated_messages = if transcript_only {
         session.messages = active_messages_from_transcript(&session.transcript);
         if session.messages.is_empty() {
-            warn!(
-                session_id = %session.id,
-                "session transcript has no recoverable active provider messages"
-            );
+            warn!("session transcript has no recoverable active provider messages");
             false
         } else {
             warn!(
-                session_id = %session.id,
                 recovered_messages = session.messages.len(),
                 "recovered active provider messages from session transcript"
             );
@@ -3716,6 +4062,7 @@ where
             }
             builder.meta = m_meta;
         }
+        LogRecord::Oversized { .. } => {}
         LogRecord::Unknown => return Err(SessionError::UnknownRecord),
     }
     Ok(())
@@ -4668,6 +5015,180 @@ where
         parent_id: header.parent_id,
     })
 }
+/// Scans child-session metadata belonging to one trusted project cwd.
+///
+/// This intentionally returns only bounded session metadata. It does not expose prompts,
+/// transcript content, provider payloads, or tool output to the run migration.
+///
+/// # Errors
+/// Returns a typed storage error if the sessions directory cannot be listed.
+/// Unreadable or unsupported candidate files are skipped with a warning.
+pub fn scan_legacy_child_sessions(
+    project_cwd: &str,
+    state_dir: &StateDir,
+) -> Result<Vec<LegacySessionMetadata>, SessionError> {
+    scan_legacy_child_sessions_in(project_cwd, &state_dir.path().join(SESSIONS_DIR))
+}
+
+/// Variant of [`scan_legacy_child_sessions`] for an explicit sessions directory.
+///
+/// # Errors
+/// Returns a typed storage error if the sessions directory cannot be listed.
+/// Unreadable or unsupported candidate files are skipped with a warning.
+pub fn scan_legacy_child_sessions_in(
+    project_cwd: &str,
+    sessions_dir: &Path,
+) -> Result<Vec<LegacySessionMetadata>, SessionError> {
+    let entries = match session_entries(sessions_dir) {
+        Ok(entries) => entries,
+        Err(StorageError::Io(error)) if error.kind() == ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut sessions = Vec::new();
+    for path in entries {
+        match scan_legacy_metadata_at(&path, project_cwd) {
+            Ok(Some(session)) => sessions.push(session),
+            Ok(None) => {}
+            Err(error) => warn!(
+                path = %path.display(),
+                error_kind = session_error_kind(&error),
+                "skipping unreadable legacy session during child-session scan"
+            ),
+        }
+    }
+    sessions.sort_unstable_by_key(|session| (session.created_at, *session.session_id.as_bytes()));
+    Ok(sessions)
+}
+
+fn scan_legacy_metadata_at(
+    path: &Path,
+    project_cwd: &str,
+) -> Result<Option<LegacySessionMetadata>, SessionError> {
+    scan_legacy_metadata_with_limits(path, project_cwd, DecodeLimits::SCAN)
+}
+
+fn scan_legacy_metadata_with_limits(
+    path: &Path,
+    project_cwd: &str,
+    limits: DecodeLimits,
+) -> Result<Option<LegacySessionMetadata>, SessionError> {
+    let mut reader = BoundedZstdLines::open(path, 0, limits)?;
+    let mut metadata: Option<LegacySessionMetadata> = None;
+    loop {
+        let line = match reader.next(true) {
+            Ok(DecodedLine::Eof) => break,
+            Ok(DecodedLine::Oversized) => continue,
+            Ok(DecodedLine::Line(line)) => line,
+            Err(LineReadError::Io(_)) if metadata.is_some() => break,
+            Err(LineReadError::BudgetExceeded) if metadata.is_some() => {
+                warn!(
+                    limit = limits.decoded_bytes,
+                    "legacy session scan reached the decoded-byte limit; keeping metadata read so far"
+                );
+                break;
+            }
+            Err(error) => return Err(reader.limit_error(error)),
+        };
+        if line.is_empty() {
+            continue;
+        }
+        let record =
+            serde_json::from_str::<LegacyMetadataRecord>(&line).map_err(StorageError::from)?;
+        match record {
+            LegacyMetadataRecord::Header {
+                v,
+                id,
+                cwd,
+                title,
+                created_at,
+                parent_id,
+            } => {
+                if cwd != project_cwd {
+                    return Ok(None);
+                }
+                if !is_supported_log_format(v) {
+                    return Err(SessionError::VersionMismatch {
+                        found: v,
+                        expected: LOG_FORMAT_VERSION,
+                    });
+                }
+                let Some(parent_id) = parent_id else {
+                    return Ok(None);
+                };
+                metadata = Some(LegacySessionMetadata {
+                    session_id: id,
+                    cwd,
+                    title: match title {
+                        Some(title) => title,
+                        None => DEFAULT_TITLE.to_owned(),
+                    },
+                    parent_id,
+                    root_session_id: None,
+                    lifecycle: StoredSessionLifecycle::Idle,
+                    workflow: false,
+                    created_at,
+                    updated_at: created_at,
+                });
+            }
+            LegacyMetadataRecord::Meta {
+                title,
+                updated_at,
+                parent_id,
+                root_session_id,
+                lifecycle,
+                workflow,
+            } => {
+                let current = metadata.as_mut().ok_or(SessionError::UnknownRecord)?;
+                if let Some(parent_id) = parent_id {
+                    current.parent_id = parent_id;
+                }
+                current.title = title;
+                current.root_session_id = root_session_id;
+                current.lifecycle = lifecycle;
+                current.workflow = workflow;
+                current.updated_at = updated_at;
+            }
+            LegacyMetadataRecord::Other => {}
+        }
+    }
+    metadata.ok_or(SessionError::UnknownRecord).map(Some)
+}
+
+/// Content-free label for logging a [`JsonError`]; its `Display` can echo
+/// values from the record that failed to parse.
+fn json_error_kind(error: &JsonError) -> &'static str {
+    match error.classify() {
+        JsonCategory::Io => "io",
+        JsonCategory::Syntax => "syntax",
+        JsonCategory::Data => "data",
+        JsonCategory::Eof => "eof",
+    }
+}
+
+/// Content-free label for logging a [`SessionError`]; its `Display` can echo
+/// record fragments and session ids from untrusted session files.
+#[must_use]
+pub fn session_error_kind(error: &SessionError) -> &'static str {
+    match error {
+        SessionError::Storage(StorageError::Io(_)) => "io",
+        SessionError::Storage(StorageError::Json(_)) => "json",
+        SessionError::Storage(_) => "storage",
+        SessionError::VersionMismatch { .. } => "version_mismatch",
+        SessionError::IdMismatch { .. } => "id_mismatch",
+        SessionError::CorruptHeaderId { .. } => "corrupt_header_id",
+        SessionError::CursorAhead { .. } => "cursor_ahead",
+        SessionError::RecordTooLarge { .. } | SessionError::RecordTooLargeWrite { .. } => {
+            "record_too_large"
+        }
+        SessionError::DecoderWindowLimitExceeded { .. } => "decoder_window_limit",
+        SessionError::DecodedBudgetExceeded { .. } => "decoded_budget",
+        SessionError::UnknownRecord => "unknown_record",
+        SessionError::ControlDeliveryCapacity => "control_delivery_capacity",
+        SessionError::ConcurrentModification { .. } => "concurrent_modification",
+    }
+}
 
 fn session_entries(dir: &Path) -> Result<Vec<PathBuf>, StorageError> {
     Ok(fs::read_dir(dir)?
@@ -5076,7 +5597,7 @@ where
                 Ok(_) => {}
                 Err(error) => warn!(
                     path = %path.display(),
-                    error = %error,
+                    error_kind = json_error_kind(&error),
                     record_len = line.len(),
                     "skipping unrecognized record while loading subagent history",
                 ),
@@ -5108,7 +5629,7 @@ where
                 Ok(_) => {}
                 Err(error) => warn!(
                     path = %path.display(),
-                    error = %error,
+                    error_kind = json_error_kind(&error),
                     record_len = line.len(),
                     "skipping unrecognized record while loading tool outputs",
                 ),
@@ -5220,15 +5741,21 @@ mod tests {
     use super::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
     use super::{
         COMPRESS_LEVEL, CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord,
-        MAX_TITLE_LEN, PREVIOUS_LOG_FORMAT_VERSION, SESSION_VERSION, StoredDelivery,
-        StoredQueuedMessage, StoredSubagent, append_record, classify_and_display, encode_frame,
-        generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
+        MAX_CONTROL_DELIVERY_RECORDS, MAX_TITLE_LEN, PREVIOUS_LOG_FORMAT_VERSION, SESSION_VERSION,
+        SessionMeta, StoredControlDelivery, StoredDelivery, StoredQueuedMessage, StoredSubagent,
+        append_record, classify_and_display, encode_frame, generate_title, jsonl_path,
+        load_cwd_index, now_epoch, update_cwd_index,
     };
     use super::{
         DecodeLimits, SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError,
         StoredFusionUsage, StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
+    use super::{
+        MAX_SCAN_RECORD_BYTES, MAX_SESSION_RECORD_BYTES, MAX_ZSTD_WINDOW_LOG,
+        StoredSessionStateSnapshot, meta_record_bytes, scan_legacy_child_sessions_in,
+        scan_legacy_metadata_at, scan_legacy_metadata_with_limits,
+    };
     use super::{
         MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
         TRANSCRIPT_COMPACTION_START_RECORD_TYPE, TRANSCRIPT_RECORD_TYPE,
@@ -5248,7 +5775,7 @@ mod tests {
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
     use std::io::{Read, Write};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use test_case::test_case;
@@ -5850,14 +6377,10 @@ mod tests {
                     ..
                 }]
             ),
-            "outer compaction was closed early: {:?}",
-            loaded.transcript
+            "outer compaction was closed early"
         );
         let n00n_empty_check_68 = super::active_messages_from_transcript(&loaded.transcript);
-        assert!(
-            n00n_empty_check_68.is_empty(),
-            "expected empty, got {n00n_empty_check_68:?}"
-        );
+        assert!(n00n_empty_check_68.is_empty(), "expected empty");
     }
 
     /// `TranscriptEntry` is a recursive tree walked by recursive consumers, so
@@ -5995,8 +6518,7 @@ mod tests {
 
         assert!(
             holds_live_text(&loaded.transcript),
-            "the nested entry must load: {:?}",
-            loaded.transcript
+            "the nested entry must load"
         );
         assert_eq!(
             transcript_compaction_depth(&loaded.transcript),
@@ -6034,8 +6556,7 @@ mod tests {
         );
         assert!(
             !holds_live_text(&loaded.transcript),
-            "the unreadable record cannot have loaded: {:?}",
-            loaded.transcript
+            "the unreadable record cannot have loaded"
         );
     }
 
@@ -6684,6 +7205,52 @@ mod tests {
         ));
         assert_eq!(fs::read(&path).unwrap(), before);
     }
+
+    #[test]
+    fn oversized_records_are_dropped_instead_of_wedging_saves() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let limits = super::DecodeLimits::new(1_024, 128 * 1_024, 27);
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(Value::String("small".into()));
+        session.messages.push(Value::String("x".repeat(8 * 1_024)));
+        session.messages.push(Value::String("after".into()));
+
+        let mut log = SessionLog::create_with_limits(dir, &session, limits).unwrap();
+        session.messages.push(Value::String("appended".into()));
+        session.messages.push(Value::String("y".repeat(8 * 1_024)));
+        session.meta.revision = 1;
+        log.append_with_limits(&session, limits).unwrap();
+
+        let (reloaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+        assert_eq!(
+            reloaded.messages,
+            [
+                Value::String("small".into()),
+                Value::String("after".into()),
+                Value::String("appended".into()),
+            ]
+        );
+        assert_eq!(reloaded.meta.revision, 1);
+    }
+
+    #[test]
+    fn oversized_meta_record_sheds_recovery_state_instead_of_failing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.meta.queued_messages = vec!["q".repeat(8 * 1_024)];
+        session.meta.state_snapshot = Some(super::StoredSessionStateSnapshot::new(3));
+        let limits = super::DecodeLimits::new(1_024, 128 * 1_024, 27);
+
+        let log = SessionLog::create_with_limits(dir, &session, limits).unwrap();
+        drop(log);
+        let (loaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+        assert!(loaded.meta.state_snapshot.is_none());
+        assert!(loaded.meta.queued_messages.is_empty(), "expected empty");
+    }
     #[test]
     fn append_compacts_when_history_exhausts_decoded_budget() {
         let tmp = TempDir::new().unwrap();
@@ -7306,11 +7873,7 @@ mod tests {
 
         let loaded = TestSession::load_from(session.id, dir).unwrap();
         assert_eq!(loaded.messages.len(), 8);
-        assert!(
-            loaded.subagent_messages.is_empty(),
-            "expected empty, got {:?}",
-            loaded.subagent_messages
-        );
+        assert!(loaded.subagent_messages.is_empty(), "expected empty");
     }
 
     /// A rename with no new messages must survive restart, while a no-op
@@ -7375,11 +7938,7 @@ mod tests {
             SessionError::Storage(StorageError::NotFound(_))
         ));
         let n00n_empty_check_69 = TestSession::list_in("/project", dir).unwrap();
-        assert!(
-            n00n_empty_check_69.is_empty(),
-            "expected empty, got {} entries",
-            n00n_empty_check_69.len()
-        );
+        assert!(n00n_empty_check_69.is_empty(), "expected empty");
 
         let err = TestSession::delete_from(session.id, dir).unwrap_err();
         assert!(matches!(
@@ -9069,11 +9628,7 @@ mod tests {
         .unwrap();
 
         let list = TestSession::list_in("/project", dir).unwrap();
-        assert!(
-            list.is_empty(),
-            "expected empty, got {} entries",
-            list.len()
-        );
+        assert!(list.is_empty(), "expected empty");
     }
 
     #[test]
@@ -9572,10 +10127,293 @@ mod tests {
             loaded.subagent_messages.keys().collect::<Vec<_>>(),
             [&survivor]
         );
-        assert!(
-            loaded.tool_outputs.is_empty(),
-            "expected empty, got {:?}",
-            loaded.tool_outputs
+        assert!(loaded.tool_outputs.is_empty(), "expected empty");
+    }
+
+    const PROJECT_CWD: &str = "/project";
+    const UNSUPPORTED_LOG_VERSION: u32 = 999;
+    const LEGACY_PAD_BYTES: usize = 1_024;
+    const LEGACY_BUDGET_SLACK: usize = 16;
+
+    fn consumed_delivery(delivery_id: &str) -> StoredControlDelivery {
+        StoredControlDelivery {
+            delivery_id: delivery_id.to_owned(),
+            child_run_id: "run-1".to_owned(),
+            source_revision: 2,
+            acknowledged: false,
+        }
+    }
+
+    fn full_delivery_ledger() -> SessionMeta {
+        let mut meta = SessionMeta::default();
+        for index in 1..=MAX_CONTROL_DELIVERY_RECORDS {
+            meta.record_consumed_run_delivery(consumed_delivery(&format!("delivery-{index}")))
+                .unwrap();
+        }
+        meta
+    }
+
+    #[test]
+    fn run_delivery_ledger_is_idempotent_and_bounded() {
+        let mut meta = SessionMeta::default();
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
+        assert_eq!(meta.consumed_run_deliveries.len(), 1);
+        assert!(meta.contains_run_delivery("delivery-1"));
+
+        let mut meta = full_delivery_ledger();
+        assert!(matches!(
+            meta.record_consumed_run_delivery(consumed_delivery("overflow")),
+            Err(SessionError::ControlDeliveryCapacity)
+        ));
+        assert_eq!(
+            meta.consumed_run_deliveries.len(),
+            MAX_CONTROL_DELIVERY_RECORDS
         );
+        assert!(!meta.has_consumed_run_delivery("overflow"));
+    }
+
+    #[test]
+    fn full_run_delivery_ledger_evicts_only_the_oldest_acknowledged_entry() {
+        let mut meta = full_delivery_ledger();
+        assert!(meta.mark_run_delivery_acknowledged("delivery-7"));
+        assert!(meta.mark_run_delivery_acknowledged("delivery-9"));
+
+        meta.record_consumed_run_delivery(consumed_delivery("overflow"))
+            .unwrap();
+
+        assert_eq!(
+            meta.consumed_run_deliveries.len(),
+            MAX_CONTROL_DELIVERY_RECORDS
+        );
+        assert!(!meta.has_consumed_run_delivery("delivery-7"));
+        assert!(meta.has_consumed_run_delivery("delivery-9"));
+        assert!(meta.has_consumed_run_delivery("delivery-1"));
+        assert!(meta.has_consumed_run_delivery("overflow"));
+    }
+
+    #[test]
+    fn consumed_delivery_is_recorded_while_a_stale_queued_copy_remains() {
+        let mut meta = SessionMeta {
+            queued_submissions: vec![StoredQueuedMessage {
+                text: "control".to_owned(),
+                images: Vec::new(),
+                mode: None,
+                plan_path: None,
+                thinking: None,
+                fast: false,
+                workflow: false,
+                control: true,
+                delivery: StoredDelivery::default(),
+                prompt: None,
+                run_delivery: Some(consumed_delivery("delivery-1")),
+            }],
+            ..SessionMeta::default()
+        };
+
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
+
+        assert!(meta.has_consumed_run_delivery("delivery-1"));
+        assert!(meta.mark_run_delivery_acknowledged("delivery-1"));
+    }
+
+    #[test]
+    fn marking_an_unknown_run_delivery_acknowledged_reports_absence() {
+        let mut meta = SessionMeta::default();
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
+
+        assert!(!meta.mark_run_delivery_acknowledged("missing"));
+        assert!(!meta.consumed_run_deliveries[0].acknowledged);
+    }
+
+    #[test_case(r#"{"delivery_id":"d","child_run_id":"r","source_revision":2}"#, false ; "legacy record without acknowledged")]
+    #[test_case(r#"{"delivery_id":"d","child_run_id":"r","source_revision":2,"acknowledged":true}"#, true ; "acknowledged record")]
+    fn control_delivery_round_trips_acknowledged_flag(json: &str, acknowledged: bool) {
+        let delivery: StoredControlDelivery = serde_json::from_str(json).unwrap();
+
+        assert_eq!(delivery.acknowledged, acknowledged);
+        assert_eq!(serde_json::to_string(&delivery).unwrap(), json);
+    }
+
+    fn meta_with_recovery_state() -> SessionMeta {
+        let mut meta = SessionMeta {
+            parent_id: Some(n00nId::generate()),
+            queued_messages: vec!["queued".to_owned()],
+            consumed_run_deliveries: vec![consumed_delivery("delivery-1")],
+            direct_output: Some("output".to_owned()),
+            state_snapshot: Some(StoredSessionStateSnapshot::new(3)),
+            revision: 7,
+            ..SessionMeta::default()
+        };
+        meta.usage_by_model
+            .insert("model".to_owned(), StoredTokenUsage::default());
+        meta
+    }
+
+    #[test_case(SessionMeta::default() ; "default meta")]
+    #[test_case(meta_with_recovery_state() ; "populated meta")]
+    fn borrowed_meta_record_matches_owned_log_record_bytes(meta: SessionMeta) {
+        let mut session: TestSession = Session::new("m", PROJECT_CWD);
+        session.title = "title".to_owned();
+        session.updated_at = 42;
+        session.meta = meta;
+        let log_appends = 5;
+        let mut owned = serde_json::to_vec(&LogRecord::<Value, &Value, &Value>::Meta {
+            title: session.title.clone(),
+            token_usage: &session.token_usage,
+            updated_at: session.updated_at,
+            log_appends,
+            transcript: None,
+            meta: session.meta.clone(),
+        })
+        .unwrap();
+        owned.push(b'\n');
+
+        let borrowed = meta_record_bytes(
+            &session,
+            log_appends,
+            Path::new(PROJECT_CWD),
+            MAX_SESSION_RECORD_BYTES,
+        )
+        .unwrap();
+
+        assert_eq!(borrowed, owned);
+    }
+
+    #[test]
+    fn oversized_meta_record_keeps_consumed_run_delivery_ledger() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", PROJECT_CWD);
+        session.meta.queued_messages = vec!["q".repeat(8 * 1_024)];
+        session.meta.consumed_run_deliveries = vec![
+            consumed_delivery("delivery-1"),
+            consumed_delivery("delivery-2"),
+        ];
+        let limits = DecodeLimits::new(1_024, 128 * 1_024, 27);
+
+        drop(SessionLog::create_with_limits(dir, &session, limits).unwrap());
+        let (loaded, _) =
+            SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
+
+        assert!(loaded.meta.queued_messages.is_empty(), "expected empty");
+        assert_eq!(
+            loaded.meta.consumed_run_deliveries,
+            session.meta.consumed_run_deliveries
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum BadLegacyFile {
+        CorruptFrame,
+        NonJsonRecord,
+        UnsupportedVersion,
+    }
+
+    fn legacy_header(cwd: &str, version: u32) -> String {
+        let header = serde_json::json!({
+            "t": "header",
+            "v": version,
+            "id": n00nId::generate(),
+            "cwd": cwd,
+            "created_at": 1,
+            "parent_id": n00nId::generate(),
+        });
+        format!("{header}\n")
+    }
+
+    fn plant_encoded_session_file(dir: &Path, records: &[u8]) -> PathBuf {
+        let path = jsonl_path(dir, n00nId::generate());
+        let mut file = File::create(&path).unwrap();
+        encode_frame(&mut file, records).unwrap();
+        path
+    }
+
+    fn plant_bad_legacy_file(dir: &Path, kind: BadLegacyFile) {
+        match kind {
+            BadLegacyFile::CorruptFrame => fs::write(
+                jsonl_path(dir, n00nId::generate()),
+                [0x28, 0xb5, 0x2f, 0xfd, 0xff, 0xff, 0xff, 0xff],
+            )
+            .unwrap(),
+            BadLegacyFile::NonJsonRecord => {
+                plant_encoded_session_file(dir, b"not json\n");
+            }
+            BadLegacyFile::UnsupportedVersion => {
+                plant_encoded_session_file(
+                    dir,
+                    legacy_header(PROJECT_CWD, UNSUPPORTED_LOG_VERSION).as_bytes(),
+                );
+            }
+        }
+    }
+
+    #[test_case(BadLegacyFile::CorruptFrame ; "corrupt frame")]
+    #[test_case(BadLegacyFile::NonJsonRecord ; "non json record")]
+    #[test_case(BadLegacyFile::UnsupportedVersion ; "unsupported version")]
+    fn legacy_child_scan_skips_bad_file_and_keeps_valid_session(kind: BadLegacyFile) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", PROJECT_CWD);
+        session.meta.parent_id = Some(n00nId::generate());
+        drop(SessionLog::create(dir, &session).unwrap());
+        plant_bad_legacy_file(dir, kind);
+
+        let scanned = scan_legacy_child_sessions_in(PROJECT_CWD, dir).unwrap();
+
+        assert_eq!(
+            scanned
+                .iter()
+                .map(|metadata| metadata.session_id)
+                .collect::<Vec<_>>(),
+            [session.id]
+        );
+    }
+
+    #[test_case(true ; "limit reached after the header keeps metadata")]
+    #[test_case(false ; "limit reached before the header is an error")]
+    fn legacy_metadata_scan_at_decoded_limit(header_fits: bool) {
+        let tmp = TempDir::new().unwrap();
+        let header = legacy_header(PROJECT_CWD, LOG_FORMAT_VERSION);
+        let pad = format!(
+            "{}\n",
+            serde_json::json!({"t": "pad", "x": "p".repeat(LEGACY_PAD_BYTES)})
+        );
+        let path = plant_encoded_session_file(tmp.path(), format!("{header}{pad}").as_bytes());
+        let budget = if header_fits {
+            header.len() + LEGACY_BUDGET_SLACK
+        } else {
+            header.len() / 2
+        };
+        let limits = DecodeLimits::new(MAX_SCAN_RECORD_BYTES, budget, MAX_ZSTD_WINDOW_LOG);
+
+        let scanned = scan_legacy_metadata_with_limits(&path, PROJECT_CWD, limits);
+
+        if header_fits {
+            assert!(matches!(scanned, Ok(Some(ref metadata)) if metadata.cwd == PROJECT_CWD));
+        } else {
+            assert!(matches!(
+                scanned,
+                Err(SessionError::DecodedBudgetExceeded { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_metadata_scan_ignores_foreign_project_before_version_check() {
+        let tmp = TempDir::new().unwrap();
+        let path = plant_encoded_session_file(
+            tmp.path(),
+            legacy_header("/other", UNSUPPORTED_LOG_VERSION).as_bytes(),
+        );
+
+        assert!(matches!(
+            scan_legacy_metadata_at(&path, PROJECT_CWD),
+            Ok(None)
+        ));
     }
 }

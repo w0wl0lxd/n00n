@@ -3,7 +3,7 @@
 //! discard stale results.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -31,28 +31,38 @@ pub struct RenderResult {
     pub lines: Vec<Line<'static>>,
 }
 
-static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
+#[derive(Clone, PartialEq, Eq)]
+struct JobKey {
+    worker: usize,
+    id: u64,
+}
 
+/// Tracks the newest job per identity. Job ids are only unique within one
+/// worker, so the key also names the worker that issued the id.
 #[derive(Clone, Default)]
 pub struct RenderIdentity {
-    latest_job_id: Arc<Mutex<u64>>,
+    latest_job: Arc<Mutex<Option<JobKey>>>,
 }
 
 impl RenderIdentity {
     pub fn cancel(&self) {
         *self
-            .latest_job_id
+            .latest_job
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
-    fn is_latest(&self, id: u64) -> bool {
+    fn is_latest(&self, worker: usize, id: u64) -> bool {
         *self
-            .latest_job_id
+            .latest_job
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            == id
+            .unwrap_or_else(PoisonError::into_inner)
+            == Some(JobKey { worker, id })
     }
+}
+
+fn worker_key(inner: &PoolInner) -> usize {
+    std::ptr::from_ref(inner).addr()
 }
 
 struct PoolInner {
@@ -66,6 +76,7 @@ pub struct RenderWorker {
     job_tx: flume::Sender<RenderJob>,
     inner: Arc<PoolInner>,
     result_rx: flume::Receiver<RenderResult>,
+    next_job_id: Arc<AtomicU64>,
 }
 
 impl RenderWorker {
@@ -85,6 +96,7 @@ impl RenderWorker {
                 max_threads,
             }),
             result_rx,
+            next_job_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -117,12 +129,15 @@ impl RenderWorker {
         tool_output: Option<Arc<ToolOutput>>,
         limits: RenderLimits,
     ) -> (u64, bool) {
-        let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
-        let mut latest_job_id = identity
-            .latest_job_id
+        let id = self.next_job_id.fetch_add(1, Ordering::Relaxed);
+        let mut latest_job = identity
+            .latest_job
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous = std::mem::replace(&mut *latest_job_id, id);
+            .unwrap_or_else(PoisonError::into_inner);
+        let previous = latest_job.replace(JobKey {
+            worker: worker_key(&self.inner),
+            id,
+        });
         let queued = match self.job_tx.try_send(RenderJob {
             id,
             identity: identity.clone(),
@@ -138,9 +153,9 @@ impl RenderWorker {
             }
         };
         if !queued {
-            *latest_job_id = previous;
+            *latest_job = previous;
         }
-        drop(latest_job_id);
+        drop(latest_job);
         if queued {
             self.maybe_spawn_thread();
         }
@@ -182,6 +197,7 @@ impl RenderWorker {
                 max_threads: 1,
             }),
             result_rx,
+            next_job_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -236,7 +252,7 @@ fn worker_loop(inner: &PoolInner) {
             true,
             job.limits,
         );
-        if job.identity.is_latest(job.id) {
+        if job.identity.is_latest(worker_key(inner), job.id) {
             publish_result(
                 inner,
                 RenderResult {
@@ -251,7 +267,7 @@ fn worker_loop(inner: &PoolInner) {
 
 fn recv_current_job(inner: &PoolInner) -> Option<RenderJob> {
     while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
-        if job.identity.is_latest(job.id) {
+        if job.identity.is_latest(worker_key(inner), job.id) {
             return Some(job);
         }
     }
@@ -280,6 +296,7 @@ mod tests {
                 max_threads: max,
             }),
             result_rx,
+            next_job_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -327,7 +344,7 @@ mod tests {
         assert!(worker.send(None, None, limits).is_none());
         assert_eq!(worker.inner.job_rx.len(), JOB_QUEUE_CAPACITY);
         while let Ok(job) = worker.inner.job_rx.try_recv() {
-            assert!(job.identity.is_latest(job.id));
+            assert!(job.identity.is_latest(worker_key(&worker.inner), job.id));
         }
     }
 
@@ -352,7 +369,7 @@ mod tests {
         }
 
         assert!(worker.send_latest(&identity, None, None, limits).is_none());
-        assert!(identity.is_latest(queued));
+        assert!(identity.is_latest(worker_key(&worker.inner), queued));
     }
 
     #[test]
@@ -388,5 +405,27 @@ mod tests {
                 assert_eq!(result.id, expected_id);
             }
         });
+    }
+
+    #[test]
+    fn shared_identity_tracks_the_worker_that_issued_the_latest_job() {
+        let first = make_worker(1, 1);
+        let second = make_worker(1, 1);
+        let identity = RenderIdentity::default();
+        let limits = RenderLimits {
+            script: 1,
+            output: 1,
+            details: 1,
+        };
+        let superseded = first
+            .send_latest(&identity, None, None, limits)
+            .expect("first job queued");
+        let latest = second
+            .send_latest(&identity, None, None, limits)
+            .expect("second job queued");
+
+        assert_eq!(superseded, latest, "per-worker ids collide across workers");
+        assert!(!identity.is_latest(worker_key(&first.inner), superseded));
+        assert!(identity.is_latest(worker_key(&second.inner), latest));
     }
 }

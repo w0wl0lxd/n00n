@@ -41,7 +41,7 @@ impl FileReadTracker {
         if let Some(mtime) = get_mtime(&normalized) {
             self.0
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(|_| std::process::abort())
                 .insert(normalized, mtime);
         } else {
             warn!(
@@ -57,10 +57,7 @@ impl FileReadTracker {
     /// Returns an error if the file has been modified externally.
     pub fn check_before_edit(&self, path: &Path) -> Result<(), String> {
         let normalized = normalize_path(path);
-        let mut guard = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.0.lock().unwrap_or_else(|_| std::process::abort());
         let Some(&recorded) = guard.get(&normalized) else {
             return Ok(());
         };

@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 pub use n00n_storage::sessions::Effort;
 pub use n00n_storage::sessions::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
@@ -1330,6 +1331,10 @@ pub struct RequestOptions {
     /// present and this flag is set.
     pub idempotency_supported: bool,
     pub hosted_tool_search: Option<HostedToolSearch>,
+    /// Optional cooperative cancellation flag. When set, long-running stream
+    /// reads abort early with `Cancelled` instead of waiting for the next
+    /// timeout. The flag is set by the caller when user cancels.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
     /// Stable seed for the prompt-cache shard. Subagent sessions pass the root
     /// session id so sibling requests share one warm cache bucket.
     pub cache_shard_key: Option<String>,
@@ -1350,10 +1355,29 @@ impl Default for RequestOptions {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         }
     }
 }
+
+impl PartialEq for RequestOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.thinking == other.thinking
+            && self.fast == other.fast
+            && self.message_cache_breakpoints == other.message_cache_breakpoints
+            && self.openai_prompt_cache_mode == other.openai_prompt_cache_mode
+            && self.protect_history_replay == other.protect_history_replay
+            && self.allow_history_replay == other.allow_history_replay
+            && self.safety_identifier == other.safety_identifier
+            && self.moderation == other.moderation
+            && self.idempotency_key == other.idempotency_key
+            && self.idempotency_supported == other.idempotency_supported
+            && self.hosted_tool_search == other.hosted_tool_search
+    }
+}
+
+impl Eq for RequestOptions {}
 
 impl RequestOptions {
     /// Generates a client-side idempotency key for this request if one is not
@@ -1397,6 +1421,7 @@ impl RequestOptions {
             idempotency_key: self.idempotency_key,
             idempotency_supported: self.idempotency_supported,
             hosted_tool_search: self.hosted_tool_search,
+            cancel_flag: self.cancel_flag,
             cache_shard_key: self.cache_shard_key,
         }
     }
@@ -1430,6 +1455,7 @@ impl std::fmt::Debug for RequestOptions {
             .field("idempotency_supported", &self.idempotency_supported)
             .field("hosted_tool_search", &self.hosted_tool_search)
             .field("cache_shard_key", &self.cache_shard_key)
+            .field("cancel_flag", &self.cancel_flag)
             .finish()
     }
 }
@@ -1951,6 +1977,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
@@ -1972,6 +1999,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         };
         assert!(!opts.clamped(&model).fast);
@@ -1994,6 +2022,7 @@ mod tests {
             idempotency_supported: false,
             hosted_tool_search: None,
             cache_shard_key: Some("root-session-id".to_string()),
+            cancel_flag: None,
         };
         assert_eq!(
             opts.clamped(&model).cache_shard_key.as_deref(),
@@ -2017,6 +2046,17 @@ mod tests {
             Some(key) => assert!(debug.contains(&key), "Debug output missing value: {debug}"),
             None => assert!(debug.contains("cache_shard_key: None"), "{debug}"),
         }
+    }
+
+    #[test_case(None, "cancel_flag: None" ; "absent")]
+    #[test_case(Some(true), "cancel_flag: Some(true)" ; "set")]
+    fn request_options_debug_includes_cancel_flag(flag: Option<bool>, expected: &str) {
+        let opts = RequestOptions {
+            cancel_flag: flag.map(|value| Arc::new(AtomicBool::new(value))),
+            ..RequestOptions::default()
+        };
+        let debug = format!("{opts:?}");
+        assert!(debug.contains(expected), "{debug}");
     }
 
     #[test_case("",         ThinkingConfig::Off,      Ok(ThinkingConfig::Adaptive)  ; "toggle_on")]
@@ -2146,6 +2186,7 @@ mod tests {
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         };
         let clamped = opts.clamped(&model);

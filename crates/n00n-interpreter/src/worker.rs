@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::error::InterpreterError;
 use crate::runner::{self, AsyncResolver, PendingCall, ToolFn};
 
-const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartRequest {
@@ -134,6 +134,22 @@ impl<R: BufRead, W: Write> Bridge<R, W> {
     }
 }
 
+/// Discards bytes up to and including the next `\n`, without buffering them.
+fn skip_to_next_newline(reader: &mut impl BufRead) -> std::io::Result<()> {
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(());
+        }
+        if let Some(newline_pos) = buf.iter().position(|&byte| byte == b'\n') {
+            reader.consume(newline_pos + 1);
+            return Ok(());
+        }
+        let consumed = buf.len();
+        reader.consume(consumed);
+    }
+}
+
 fn read_request_frame(
     reader: &mut impl BufRead,
     max_bytes: usize,
@@ -142,13 +158,16 @@ fn read_request_frame(
     let read_limit = u64::try_from(max_bytes.saturating_add(2)).map_err(|error| {
         WorkerError::Protocol(format!("invalid interpreter worker frame limit: {error}"))
     })?;
-    let mut limited = std::io::Read::take(reader, read_limit);
-    let read = limited.read_line(&mut line)?;
+    let read = {
+        let mut limited = std::io::Read::take(&mut *reader, read_limit);
+        limited.read_line(&mut line)?
+    };
     if read == 0 {
         return Err(WorkerError::Protocol(
             "parent closed the protocol stream".into(),
         ));
     }
+    let line_ends_in_newline = line.ends_with('\n');
     let payload = match line.strip_suffix('\n') {
         Some(payload) => payload,
         None => &line,
@@ -158,6 +177,13 @@ fn read_request_frame(
         None => payload,
     };
     if payload.len() > max_bytes {
+        // The bounded read already consumed the whole oversized frame,
+        // including its delimiter, whenever it ends in a newline; only an
+        // unterminated read leaves the frame's remainder still on the
+        // stream and needing to be skipped.
+        if !line_ends_in_newline {
+            skip_to_next_newline(reader)?;
+        }
         return Err(WorkerError::Protocol(
             "interpreter worker request exceeded the frame limit".into(),
         ));
@@ -302,6 +328,55 @@ mod tests {
         frame.push(b'\n');
         let result = read_request_frame(&mut Cursor::new(frame), TEST_FRAME_LIMIT);
         assert_eq!(result.is_err(), expected_error);
+    }
+
+    #[test]
+    fn oversized_frame_at_exact_newline_boundary_preserves_next_frame() {
+        let oversized_request =
+            json!({"type": "call_results", "request_id": 1, "results": []}).to_string();
+        let padding = (TEST_FRAME_LIMIT + 1)
+            .checked_sub(oversized_request.len())
+            .unwrap();
+        let oversized_frame = format!("{oversized_request}{}", " ".repeat(padding));
+        assert_eq!(oversized_frame.len(), TEST_FRAME_LIMIT + 1);
+
+        let next_request = WorkerRequest::CallResults {
+            request_id: 7,
+            results: Vec::new(),
+        };
+        let mut stream = oversized_frame.into_bytes();
+        stream.push(b'\n');
+        stream.extend(framed_request(&next_request));
+        let mut cursor = Cursor::new(stream);
+
+        read_request_frame(&mut cursor, TEST_FRAME_LIMIT).unwrap_err();
+        let second = read_request_frame(&mut cursor, TEST_FRAME_LIMIT).unwrap();
+
+        assert!(matches!(
+            second,
+            WorkerRequest::CallResults { request_id: 7, .. }
+        ));
+    }
+
+    #[test]
+    fn oversized_frame_without_early_newline_skips_to_next_frame() {
+        let oversized_payload = "y".repeat(TEST_FRAME_LIMIT * 50);
+        let next_request = WorkerRequest::CallResults {
+            request_id: 3,
+            results: Vec::new(),
+        };
+        let mut stream = oversized_payload.into_bytes();
+        stream.push(b'\n');
+        stream.extend(framed_request(&next_request));
+        let mut cursor = Cursor::new(stream);
+
+        read_request_frame(&mut cursor, TEST_FRAME_LIMIT).unwrap_err();
+        let second = read_request_frame(&mut cursor, TEST_FRAME_LIMIT).unwrap();
+
+        assert!(matches!(
+            second,
+            WorkerRequest::CallResults { request_id: 3, .. }
+        ));
     }
 
     #[test]

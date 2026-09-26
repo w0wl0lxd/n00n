@@ -92,7 +92,10 @@ fn extract_default(desc: &str) -> (String, String) {
 }
 
 fn first_paragraph(desc: &str) -> &str {
-    desc.split("\n\n").next().unwrap_or(desc)
+    match desc.split("\n\n").next() {
+        Some(p) => p,
+        None => desc,
+    }
 }
 
 fn format_schema_type(schema: &Value, ty: &str) -> String {
@@ -134,11 +137,11 @@ fn extract_params(schema: &Value) -> Vec<Param> {
         Some(p) => p,
         None => return Vec::new(),
     };
-    let required: Vec<&str> = schema
-        .get("required")
-        .and_then(|r| r.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
+    let required: Vec<&str> = if let Some(arr) = schema.get("required").and_then(|r| r.as_array()) {
+        arr.iter().filter_map(|v| v.as_str()).collect()
+    } else {
+        Vec::new()
+    };
 
     let mut params = Vec::new();
     for (name, prop) in properties {
@@ -146,7 +149,7 @@ fn extract_params(schema: &Value) -> Vec<Param> {
         let raw_desc = prop
             .get("description")
             .and_then(|d| d.as_str())
-            .unwrap_or("");
+            .unwrap_or_else(|| "");
         let is_required = required.contains(&name.as_str());
         let (default, description) = extract_default(raw_desc);
         params.push(Param {
@@ -160,14 +163,14 @@ fn extract_params(schema: &Value) -> Vec<Param> {
     params
 }
 
-fn write_param_table(out: &mut String, params: &[Param]) {
+fn write_param_table(out: &mut String, params: &[Param]) -> std::fmt::Result {
     let has_defaults = params.iter().any(|p| !p.default.is_empty());
     let header = if has_defaults {
         "| Parameter | Type | Required | Default | Description |\n|-----------|------|----------|---------|-------------|"
     } else {
         "| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|"
     };
-    writeln!(out, "{header}").unwrap();
+    writeln!(out, "{header}")?;
     for p in params {
         let desc = p.description.replace('\n', "<br>");
         let required = if p.required { "yes" } else { "no" };
@@ -176,12 +179,12 @@ fn write_param_table(out: &mut String, params: &[Param]) {
                 out,
                 "| `{}` | {} | {} | {} | {} |",
                 p.name, p.ty, required, p.default, desc
-            )
-            .unwrap();
+            )?;
         } else {
-            writeln!(out, "| `{}` | {} | {} | {} |", p.name, p.ty, required, desc).unwrap();
+            writeln!(out, "| `{}` | {} | {} | {} |", p.name, p.ty, required, desc)?;
         }
     }
+    Ok(())
 }
 
 fn source_label(source: &ToolSource) -> &'static str {
@@ -191,26 +194,35 @@ fn source_label(source: &ToolSource) -> &'static str {
     }
 }
 
-fn write_tool_entry(out: &mut String, name: &str, info: &ToolInfo, opt_in: &HashSet<String>) {
+fn write_tool_entry(
+    out: &mut String,
+    name: &str,
+    info: &ToolInfo,
+    opt_in: &HashSet<String>,
+) -> std::fmt::Result {
     let description = info
         .def
         .get("description")
         .and_then(|d| d.as_str())
-        .unwrap_or("");
-    let schema = info.def.get("input_schema").cloned().unwrap_or(Value::Null);
+        .unwrap_or_else(|| "");
+    let schema = info
+        .def
+        .get("input_schema")
+        .cloned()
+        .unwrap_or_else(|| Value::Null);
     let params = extract_params(&schema);
     let summary = first_paragraph(description);
 
-    writeln!(out).unwrap();
+    writeln!(out)?;
     let mut badge_text = source_label(&info.source).to_string();
     if opt_in.contains(name) {
         badge_text.push_str(", opt-in");
     }
-    writeln!(out, "### `{name}` *({badge_text})*").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "{summary}").unwrap();
-    writeln!(out).unwrap();
-    write_param_table(out, &params);
+    writeln!(out, "### `{name}` *({badge_text})*")?;
+    writeln!(out)?;
+    writeln!(out, "{summary}")?;
+    writeln!(out)?;
+    write_param_table(out, &params)
 }
 
 /// Replace `target` with `placeholder`. Empty `target` is a no-op.
@@ -228,10 +240,13 @@ fn redact_path(input: &str, target: &str, placeholder: &str) -> String {
 /// machines and days. CWD is replaced before HOME so a cwd nested under ~
 /// doesn't get partially mangled.
 fn redact_env_and_dates(input: &str) -> String {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|c| c.to_str().map(str::to_owned))
-        .unwrap_or_default();
+    let cwd = match std::env::current_dir() {
+        Ok(c) => match c.to_str() {
+            Some(s) => s.to_owned(),
+            None => String::new(),
+        },
+        Err(_) => String::new(),
+    };
     let mut out = redact_path(input, &cwd, "<cwd>");
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
@@ -255,13 +270,14 @@ fn redact_def(def: &Value) -> Value {
     }
 }
 
-fn write_front_matter(out: &mut String) {
-    writeln!(out, "+++").unwrap();
-    writeln!(out, "title = \"Tools\"").unwrap();
-    writeln!(out, "weight = 3").unwrap();
-    writeln!(out, "[extra]").unwrap();
-    writeln!(out, "group = \"Reference\"").unwrap();
-    writeln!(out, "+++").unwrap();
+fn write_front_matter(out: &mut String) -> std::fmt::Result {
+    writeln!(out, "+++")?;
+    writeln!(out, "title = \"Tools\"")?;
+    writeln!(out, "weight = 3")?;
+    writeln!(out, "[extra]")?;
+    writeln!(out, "group = \"Reference\"")?;
+    writeln!(out, "+++")?;
+    Ok(())
 }
 
 fn collect_tool_info(
@@ -303,7 +319,7 @@ fn load_registry_with_builtins() -> (Arc<ToolRegistry>, HashSet<String>) {
     (registry, opt_in)
 }
 
-pub fn generate() -> String {
+pub fn generate() -> Result<String, std::fmt::Error> {
     let vars = Vars::new()
         .set("{cwd}", "<cwd>")
         .set("{platform}", "linux")
@@ -340,15 +356,14 @@ pub fn generate() -> String {
 
     let total = tools.len();
     let mut out = String::new();
-    write_front_matter(&mut out);
-    writeln!(out).unwrap();
-    writeln!(out, "# Tools").unwrap();
-    writeln!(out).unwrap();
+    write_front_matter(&mut out)?;
+    writeln!(out)?;
+    writeln!(out, "# Tools")?;
+    writeln!(out)?;
     writeln!(
         out,
         "n00n ships with {total} built-in tools. This is the full reference."
-    )
-    .unwrap();
+    )?;
 
     let mut rendered: HashSet<&str> = HashSet::new();
 
@@ -361,11 +376,11 @@ pub fn generate() -> String {
         if present.is_empty() {
             continue;
         }
-        writeln!(out).unwrap();
-        writeln!(out, "## {section_name}").unwrap();
+        writeln!(out)?;
+        writeln!(out, "## {section_name}")?;
         for name in present {
             let info = tools.get(name).expect("checked above");
-            write_tool_entry(&mut out, name, info, &opt_in);
+            write_tool_entry(&mut out, name, info, &opt_in)?;
             rendered.insert(name);
         }
     }
@@ -377,18 +392,18 @@ pub fn generate() -> String {
         .collect();
     leftovers.sort_unstable();
     if !leftovers.is_empty() {
-        writeln!(out).unwrap();
-        writeln!(out, "## Additional tools").unwrap();
+        writeln!(out)?;
+        writeln!(out, "## Additional tools")?;
         for name in leftovers {
             let info = tools.get(name).expect("checked above");
-            write_tool_entry(&mut out, name, info, &opt_in);
+            write_tool_entry(&mut out, name, info, &opt_in)?;
         }
     }
 
     if out.ends_with('\n') {
         out.pop();
     }
-    out
+    Ok(out)
 }
 
 static DATE_RE: std::sync::LazyLock<Regex> =

@@ -38,7 +38,7 @@ use crate::{AcpParams, methods, permissions, translate};
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
 const LINE_DELIMITER: u8 = b'\n';
 #[cfg(not(test))]
-const MAX_STDIN_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STDIN_FRAME_BYTES: usize = 10 * 1024 * 1024;
 #[cfg(test)]
 const MAX_STDIN_FRAME_BYTES: usize = 128;
 
@@ -442,6 +442,7 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         control: false,
         prompt: None,
         plan_path: session.plan_path.clone(),
+        run_delivery: None,
     };
 
     let mut pending = session

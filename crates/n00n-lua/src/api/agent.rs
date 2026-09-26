@@ -1399,7 +1399,7 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
     fn poll(&self, _: n00n_agent::InterruptPoint) -> Option<n00n_agent::ExtractedCommand> {
         self.rx.try_recv().ok().map(|prompt| {
             n00n_agent::ExtractedCommand::Interrupt(
-                AgentInput {
+                Box::new(AgentInput {
                     message: prompt.text,
                     mode: self.mode.clone(),
                     images: prompt.images,
@@ -1410,7 +1410,8 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
                     control: false,
                     prompt: None,
                     plan_path: self.mode.plan_path().map(std::path::PathBuf::from),
-                },
+                    run_delivery: None,
+                }),
                 0,
             )
         })
@@ -1526,6 +1527,7 @@ async fn prompt(
             control: false,
             prompt: None,
             plan_path: s.mode.plan_path().map(std::path::PathBuf::from),
+            run_delivery: None,
         };
         let barrier_target = s.progress.next_forwarder_barrier();
         let result = agent.run(input).await;

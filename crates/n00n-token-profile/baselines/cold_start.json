@@ -5,44 +5,44 @@
     "cache_prefix": {
       "name": "cache_prefix",
       "tool_count": 22,
-      "bytes": 20180,
-      "tokens": 4901
+      "bytes": 20347,
+      "tokens": 4943
     },
     "deferred_catalog_payload": {
       "name": "deferred_catalog_payload",
       "tool_count": 16,
-      "bytes": 18862,
-      "tokens": 4715
+      "bytes": 19033,
+      "tokens": 4758
     },
     "deferred_catalog_schemas": {
       "name": "deferred_catalog_schemas",
       "tool_count": 16,
-      "bytes": 14526,
-      "tokens": 3631
+      "bytes": 14544,
+      "tokens": 3636
     },
     "full_catalog_payload": {
       "name": "full_catalog_payload",
       "tool_count": 35,
-      "bytes": 32121,
-      "tokens": 8030
+      "bytes": 32292,
+      "tokens": 8073
     },
     "full_catalog_schemas": {
       "name": "full_catalog_schemas",
       "tool_count": 35,
-      "bytes": 22604,
-      "tokens": 5651
+      "bytes": 22622,
+      "tokens": 5655
     },
     "main_tools_payload": {
       "name": "main_tools_payload",
       "tool_count": 22,
-      "bytes": 16138,
-      "tokens": 4034
+      "bytes": 16305,
+      "tokens": 4076
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
       "tool_count": 22,
-      "bytes": 10276,
-      "tokens": 2569
+      "bytes": 10290,
+      "tokens": 2572
     },
     "mcp_above_threshold_payload": {
       "name": "mcp_above_threshold_payload",
@@ -80,8 +80,8 @@
       "name": "control_agent",
       "deferred": true,
       "initially_active": true,
-      "bytes": 1459,
-      "tokens": 319
+      "bytes": 1626,
+      "tokens": 352
     },
     {
       "name": "edit_file",
@@ -218,7 +218,7 @@
       "namespace": "orchestration",
       "deferred": true,
       "initially_active": false,
-      "bytes": 1325,
+      "bytes": 1329,
       "tokens": 283
     },
     {

@@ -808,9 +808,7 @@ mod tests {
                 &HashMap::new(),
                 Duration::from_secs(5),
                 Box::new(move |e| {
-                    *died_write
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+                    *died_write.lock().unwrap_or_else(|_| std::process::abort()) = Some(e);
                 }),
             )
             .unwrap();
@@ -828,7 +826,7 @@ mod tests {
             reader_task.await;
             assert!(
                 died.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(|_| std::process::abort())
                     .is_some()
             );
         });

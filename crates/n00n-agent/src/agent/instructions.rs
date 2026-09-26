@@ -36,10 +36,7 @@ impl LoadedInstructions {
 
     #[must_use]
     pub fn contains_or_insert(&self, path: PathBuf) -> bool {
-        let mut set = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut set = self.0.lock().unwrap_or_else(|_| std::process::abort());
         !set.insert(path)
     }
 }

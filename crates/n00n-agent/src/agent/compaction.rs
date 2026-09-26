@@ -142,6 +142,18 @@ pub(super) async fn compact_history(
             "pre-truncation dropped oldest rounds to fit context window"
         );
     }
+    while compaction_history
+        .first()
+        .is_some_and(|m| matches!(m.role, Role::Assistant))
+    {
+        if compaction_history.len() == 1 {
+            compaction_history.clear();
+            current_usage = 0;
+            break;
+        }
+        truncate_oldest_round(&mut compaction_history);
+        current_usage = estimate_message_tokens(&compaction_history, &model.id);
+    }
 
     // Recompute tier/budget/remaining after pre-truncation
     let remaining = context_window.saturating_sub(current_usage);

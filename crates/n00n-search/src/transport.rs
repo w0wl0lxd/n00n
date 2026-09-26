@@ -100,7 +100,8 @@ async fn resolve_and_validate(url: &ValidatedUrl) -> Result<Option<ResolveMap>, 
     let Some(host) = url.as_url().host_str() else {
         return Err(Error::validation("url", "host is required"));
     };
-    if host.parse::<IpAddr>().is_ok() {
+    if let Ok(address) = host.parse::<IpAddr>() {
+        url.validate_resolved_ip(address)?;
         return Ok(None);
     }
     let port = url

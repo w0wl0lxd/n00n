@@ -82,6 +82,13 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let tools = match tools {
+        Ok(tools) => tools,
+        Err(error) => {
+            eprintln!("Error generating tool docs: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let outputs = [
         (page_path("tools"), tools),
