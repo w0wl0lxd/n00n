@@ -12,6 +12,11 @@ use n00n_search::{
 
 const SEMBLE_BINARY: &str = "semble";
 const DEFAULT_TOP_K: usize = 5;
+const ENCODED_DOT: &str = "%2e";
+const CURRENT_SEGMENT: &str = ".";
+const PARENT_SEGMENT: &str = "..";
+const URL_PATH_END: &[char] = &['?', '#'];
+const URL_PATH_SEPARATORS: &[char] = &['/', '\\'];
 
 fn resolve_top_k(top_k: Option<usize>) -> usize {
     match top_k {
@@ -25,8 +30,13 @@ fn resolve_top_k(top_k: Option<usize>) -> usize {
 /// `https://github.com/trusted` authorizes `.../trusted/repo` but never
 /// `.../trusted-evil/...` or `https://github.com.attacker.example/...`.
 /// Blank entries and the bare `*` wildcard are handled explicitly: a trailing
-/// comma must never turn the allowlist into a no-op.
+/// comma must never turn the allowlist into a no-op. URLs with dot segments are
+/// always rejected: libcurl collapses `/../` before the request, so a prefix
+/// match on the raw text would authorize paths outside the prefix.
 fn remote_url_allowed(allowed: &str, repo: &str) -> bool {
+    if has_dot_segment(repo) {
+        return false;
+    }
     if allowed == "*" {
         return true;
     }
@@ -39,6 +49,21 @@ fn remote_url_allowed(allowed: &str, repo: &str) -> bool {
                 rest.is_empty() || rest.starts_with('/') || prefix.ends_with('/')
             })
         })
+}
+
+/// Whether the path of `url` holds a `.` or `..` segment, including the
+/// percent-encoded `%2e` forms that URL normalization also collapses.
+fn has_dot_segment(url: &str) -> bool {
+    let path = match url.find(URL_PATH_END) {
+        Some(end) => &url[..end],
+        None => url,
+    };
+    path.split(URL_PATH_SEPARATORS).any(|segment| {
+        let decoded = segment
+            .to_ascii_lowercase()
+            .replace(ENCODED_DOT, CURRENT_SEGMENT);
+        decoded == CURRENT_SEGMENT || decoded == PARENT_SEGMENT
+    })
 }
 
 pub struct Client;
@@ -586,6 +611,60 @@ mod tests {
                 "https://gitlab.com/bad/repo",
                 false,
                 "second entry keeps its boundary",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/../evil",
+                false,
+                "dot-dot segment must not escape the prefix",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/..",
+                false,
+                "trailing dot-dot segment must not escape the prefix",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/./repo",
+                false,
+                "single-dot segment is rejected",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/%2e%2e/evil",
+                false,
+                "percent-encoded dot-dot segment is rejected",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/.%2E/evil",
+                false,
+                "mixed-case partially encoded dot-dot segment is rejected",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/..\\evil",
+                false,
+                "backslash-separated dot-dot segment is rejected",
+            ),
+            (
+                "*",
+                "https://github.com/trusted/../evil",
+                false,
+                "wildcard does not admit dot segments",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/repo.git",
+                true,
+                "dots inside a segment are allowed",
+            ),
+            (
+                "https://github.com/trusted",
+                "https://github.com/trusted/repo?ref=../x",
+                true,
+                "dots in the query are not path segments",
             ),
         ];
         for (allowed, repo, expected, case) in cases {
