@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -47,6 +47,9 @@ const GRPC_DEADLINE_EXCEEDED: &str = "DEADLINE_EXCEEDED";
 const GRPC_UNAUTHENTICATED: &str = "UNAUTHENTICATED";
 const GRPC_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 const GRPC_NOT_FOUND: &str = "NOT_FOUND";
+const TOOL_USE_ID_KEY: &str = "toolUseId";
+const THOUGHT_SIGNATURE_KEY: &str = "thoughtSignature";
+const SYNTHETIC_ID_KEY: &str = "syntheticId";
 
 /// The generic per-model max, capped by Google's documented `thinkingBudget`
 /// hard limits per family.
@@ -858,25 +861,33 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
         .collect();
 
     let mut out: Vec<Value> = Vec::new();
+    let mut synthetic_ids: HashSet<&str> = HashSet::new();
 
     for msg in messages {
         // Gemini 3 returns a thought signature on function-call parts and
-        // rejects replays that omit it. The signature is carried on the
-        // adjacent `ProviderItem` so `ContentBlock::ToolUse` stays
-        // provider-neutral. Synthetic tool ids restart per response, so the
-        // lookup must not span messages.
-        let thought_signatures: HashMap<&str, &str> = msg
+        // rejects replays that omit it. The signature, and whether the call
+        // id was synthesized, ride on the adjacent `ProviderItem` so
+        // `ContentBlock::ToolUse` stays provider-neutral. Synthetic tool ids
+        // restart per response, so the lookup must not span messages.
+        let provider_items: HashMap<&str, &Value> = msg
             .content
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::ProviderItem { provider, data } if provider == PROVIDER_SLUG => {
-                    let tool_use_id = data.get("toolUseId")?.as_str()?;
-                    let signature = data.get("thoughtSignature")?.as_str()?;
-                    Some((tool_use_id, signature))
+                    Some((data.get(TOOL_USE_ID_KEY)?.as_str()?, data))
                 }
                 _ => None,
             })
             .collect();
+        // Tool results answer the calls of the message just before them.
+        let answered_synthetic_ids = std::mem::replace(
+            &mut synthetic_ids,
+            provider_items
+                .iter()
+                .filter(|(_, data)| has_synthetic_id(data))
+                .map(|(id, _)| *id)
+                .collect(),
+        );
 
         let role = match msg.role {
             Role::User => "user",
@@ -913,15 +924,23 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 | ContentBlock::NamespacedToolUse {
                     id, name, input, ..
                 } => {
+                    let item = provider_items.get(id.as_str());
                     let mut part = json!({
                         "functionCall": {
-                            "id": id,
                             "name": name,
                             "args": input,
                         }
                     });
-                    if let Some(signature) = thought_signatures.get(id.as_str()) {
-                        part["thoughtSignature"] = json!(signature);
+                    // Replay the part as Gemini sent it: a synthesized id is
+                    // for internal correlation only.
+                    if !item.is_some_and(|data| has_synthetic_id(data)) {
+                        part["functionCall"]["id"] = json!(id);
+                    }
+                    if let Some(signature) = item
+                        .and_then(|data| data.get(THOUGHT_SIGNATURE_KEY))
+                        .and_then(Value::as_str)
+                    {
+                        part[THOUGHT_SIGNATURE_KEY] = json!(signature);
                     }
                     parts.push(part);
                 }
@@ -944,13 +963,16 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                         .get(tool_use_id.as_str())
                         .copied()
                         .unwrap_or_else(|| "unknown");
-                    parts.push(json!({
+                    let mut part = json!({
                         "functionResponse": {
-                            "id": tool_use_id,
                             "name": name,
                             "response": response_val,
                         }
-                    }));
+                    });
+                    if !answered_synthetic_ids.contains(tool_use_id.as_str()) {
+                        part["functionResponse"]["id"] = json!(tool_use_id);
+                    }
+                    parts.push(part);
                 }
                 ContentBlock::Image { source } => {
                     let part = json!({
@@ -1114,6 +1136,10 @@ struct ApiModelInfo {
     supported_generation_methods: Vec<String>,
 }
 
+fn has_synthetic_id(data: &Value) -> bool {
+    matches!(data.get(SYNTHETIC_ID_KEY), Some(Value::Bool(true)))
+}
+
 fn delivery_metadata(emitted_event: bool) -> RequestDeliveryMetadata {
     let mut metadata = RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
     metadata.emitted_event = emitted_event;
@@ -1220,9 +1246,9 @@ async fn parse_sse_with_cancel(
                 if let Some(func_call) = part.function_call {
                     // Gemini's id is optional; when it is absent, synthesize a
                     // unique one: the same tool can run twice in one response.
-                    let id = match func_call.id {
-                        Some(id) if !id.is_empty() => id,
-                        _ => format!("call_{}_{}", func_call.name, tool_call_count),
+                    let (id, synthetic_id) = match func_call.id {
+                        Some(id) if !id.is_empty() => (id, false),
+                        _ => (format!("call_{}_{}", func_call.name, tool_call_count), true),
                     };
                     tool_call_count += 1;
                     let input = func_call.args.unwrap_or_else(Default::default);
@@ -1238,10 +1264,17 @@ async fn parse_sse_with_cancel(
                         name: func_call.name,
                         input,
                     });
-                    if let Some(signature) = part.thought_signature {
+                    if part.thought_signature.is_some() || synthetic_id {
+                        let mut data = json!({ TOOL_USE_ID_KEY: id });
+                        if let Some(signature) = part.thought_signature {
+                            data[THOUGHT_SIGNATURE_KEY] = json!(signature);
+                        }
+                        if synthetic_id {
+                            data[SYNTHETIC_ID_KEY] = json!(true);
+                        }
                         content_blocks.push(ContentBlock::ProviderItem {
                             provider: PROVIDER_SLUG.to_string(),
-                            data: json!({"thoughtSignature": signature, "toolUseId": id}),
+                            data,
                         });
                     }
                     stop_reason = Some(StopReason::ToolUse);
@@ -1794,6 +1827,39 @@ mod tests {
             replayed[0]["parts"][0]["thoughtSignature"], "sig-fc",
             "Gemini 3 rejects function-call replays that omit the thought signature"
         );
+    }
+
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}},\"thoughtSignature\":\"sig-fc\"}]},\"finishReason\":\"STOP\"}]}\n\n", None ; "signed_without_id")]
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"\",\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}},\"thoughtSignature\":\"sig-fc\"}]},\"finishReason\":\"STOP\"}]}\n\n", None ; "signed_with_empty_id")]
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]},\"finishReason\":\"STOP\"}]}\n\n", None ; "unsigned_without_id")]
+    #[test_case(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"fc_provider_1\",\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}},\"thoughtSignature\":\"sig-fc\"}]},\"finishReason\":\"STOP\"}]}\n\n", Some(PROVIDER_CALL_ID) ; "signed_with_provider_id")]
+    fn function_call_replay_sends_only_provider_ids(data: &[u8], replayed_id: Option<&str>) {
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let tool_use_id = result
+            .message
+            .tool_uses()
+            .map(|(id, _, _)| id.to_owned())
+            .next()
+            .unwrap();
+        let tool_result = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id,
+                content: "ok".into(),
+                is_error: false,
+            }],
+            ..Default::default()
+        };
+
+        let replayed = convert_messages(&[result.message, tool_result]);
+
+        let call = &replayed[0]["parts"][0]["functionCall"];
+        let response = &replayed[1]["parts"][0]["functionResponse"];
+        assert_eq!(call["name"], "bash");
+        assert_eq!(call.get("id").and_then(Value::as_str), replayed_id);
+        assert_eq!(response.get("id").and_then(Value::as_str), replayed_id);
     }
 
     #[test]
