@@ -263,10 +263,14 @@ mod tests {
         let filler = "x".repeat(usize::try_from(TEST_MAX_BYTES).unwrap());
         w1.write_all(filler.as_bytes()).unwrap();
         w1.flush().unwrap();
+        w2.write_all(filler.as_bytes()).unwrap();
+        w2.flush().unwrap();
         w1.write_all(b"from-w1").unwrap();
         w1.flush().unwrap();
         assert_eq!(fs::read_to_string(&primary).unwrap(), "from-w1");
 
+        // w2 still counts a full file, so it enters rotate() with a stale
+        // count and must not truncate w1's fresh write.
         w2.write_all(b"from-w2").unwrap();
         w2.flush().unwrap();
         assert_eq!(fs::read_to_string(&primary).unwrap(), "from-w1from-w2");
