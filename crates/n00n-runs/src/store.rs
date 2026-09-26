@@ -1939,7 +1939,7 @@ mod tests {
             Err(RunStoreError::NotFound(_))
         ));
         let pending = second.pending_outbox(i64::MAX, 10).unwrap();
-        assert!(pending.is_empty(), "expected empty, got {pending:?}");
+        assert!(pending.is_empty(), "expected empty");
     }
 
     #[test]

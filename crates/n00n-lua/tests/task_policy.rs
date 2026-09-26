@@ -344,7 +344,10 @@ fn background_run_reports_session_id_as_agent_id() {
     let status: Value = serde_json::from_str(&out).expect("background output not json");
     assert_eq!(status["run_id"], json!(BACKGROUND_RUN_ID));
     assert_eq!(status["chain_id"], json!(BACKGROUND_CHAIN_ID));
-    assert_eq!(status["agent_id"], json!(BACKGROUND_SESSION_ID));
+    assert!(
+        status["agent_id"] == json!(BACKGROUND_SESSION_ID),
+        "agent_id is not the background session id"
+    );
     assert_eq!(status["lifecycle"], json!(BACKGROUND_LIFECYCLE));
 }
 

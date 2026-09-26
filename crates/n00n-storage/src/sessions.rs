@@ -24,6 +24,7 @@ use crate::id::{n00nId, n00nIdParseError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::error::{Category as JsonCategory, Error as JsonError};
 use zstd::stream::{Decoder, Encoder};
 
 use crate::{
@@ -1562,7 +1563,7 @@ fn fusion_usage_from_value(value: &serde_json::Value) -> Option<StoredFusionUsag
         Ok(usage) => Some(usage),
         Err(e) => {
             warn!(
-                error = %e,
+                error_kind = json_error_kind(&e),
                 value_type = %match value {
                     serde_json::Value::Object(_) => "object",
                     serde_json::Value::Array(_) => "array",
@@ -2588,7 +2589,6 @@ impl SessionLog {
                     &path,
                     &limits,
                     &mut next_decoded_bytes,
-                    self.session_id,
                     "msg",
                 )?;
             }
@@ -2604,7 +2604,6 @@ impl SessionLog {
                         &path,
                         &limits,
                         &mut next_decoded_bytes,
-                        self.session_id,
                         "out",
                     )?;
                     new_tool_ids.push(id.clone());
@@ -2633,7 +2632,6 @@ impl SessionLog {
                         buf.truncate(entry_start);
                         next_decoded_bytes = entry_decoded;
                         warn!(
-                            session_id = %self.session_id,
                             record_kind = "transcript",
                             "session record exceeds the record limit; writing an oversized tombstone"
                         );
@@ -2759,7 +2757,6 @@ impl SessionLog {
                     path,
                     limits,
                     decoded_bytes,
-                    self.session_id,
                     "sub_msg",
                 )?;
             }
@@ -2949,7 +2946,7 @@ where
         return Ok(buf);
     }
     let mut meta = session.meta.clone();
-    while shed_meta_recovery_state(&mut meta, session.id) {
+    while shed_meta_recovery_state(&mut meta) {
         if let Some(buf) = serialize_meta_record(session, &meta, log_appends, line_bytes)? {
             return Ok(buf);
         }
@@ -3000,12 +2997,9 @@ where
 /// queued/subagent resume state. The consumed-delivery ledger is bounded and
 /// is the crash-safe dedup record, so it is always kept. Returns whether
 /// anything was shed.
-fn shed_meta_recovery_state(meta: &mut SessionMeta, session_id: n00nId) -> bool {
+fn shed_meta_recovery_state(meta: &mut SessionMeta) -> bool {
     if meta.state_snapshot.is_some() {
-        warn!(
-            session_id = %session_id,
-            "session meta record exceeds the record limit; dropping plugin state snapshot"
-        );
+        warn!("session meta record exceeds the record limit; dropping plugin state snapshot");
         meta.state_snapshot = None;
         return true;
     }
@@ -3018,10 +3012,7 @@ fn shed_meta_recovery_state(meta: &mut SessionMeta, session_id: n00nId) -> bool 
     if !has_resume_state {
         return false;
     }
-    warn!(
-        session_id = %session_id,
-        "session meta record exceeds the record limit; dropping queued and subagent state"
-    );
+    warn!("session meta record exceeds the record limit; dropping queued and subagent state");
     meta.queued_submissions.clear();
     meta.queued_messages.clear();
     meta.queued_direct_tools.clear();
@@ -3040,7 +3031,6 @@ fn append_record_or_tombstone<R: Serialize, M, U, T>(
     path: &Path,
     limits: &DecodeLimits,
     decoded_bytes: &mut usize,
-    session_id: n00nId,
     record_kind: &'static str,
 ) -> Result<(), SessionError>
 where
@@ -3051,7 +3041,6 @@ where
     match append_record_with_limits(buf, record, path, limits, decoded_bytes) {
         Err(SessionError::RecordTooLarge { .. }) => {
             warn!(
-                session_id = %session_id,
                 record_kind,
                 "session record exceeds the record limit; writing an oversized tombstone"
             );
@@ -3078,7 +3067,6 @@ fn write_or_tombstone_record<W: Write, R: Serialize, M, U, T>(
     path: &Path,
     limits: &DecodeLimits,
     decoded_bytes: &mut usize,
-    session_id: n00nId,
     record_kind: &'static str,
 ) -> Result<(), SessionError>
 where
@@ -3093,7 +3081,6 @@ where
         path,
         limits,
         decoded_bytes,
-        session_id,
         record_kind,
     ) {
         Err(error) => Err(error),
@@ -3184,7 +3171,6 @@ where
             path,
             limits,
             &mut decoded_bytes,
-            session.id,
             "msg",
         )?;
     }
@@ -3201,7 +3187,6 @@ where
             path,
             limits,
             &mut decoded_bytes,
-            session.id,
             "out",
         )?;
     }
@@ -3219,7 +3204,6 @@ where
                 path,
                 limits,
                 &mut decoded_bytes,
-                session.id,
                 "sub_msg",
             )?;
         }
@@ -3241,7 +3225,6 @@ where
                 decoded_bytes = entry_decoded;
                 scratch.clear();
                 warn!(
-                    session_id = %session.id,
                     record_kind = "transcript",
                     "session record exceeds the record limit; writing an oversized tombstone"
                 );
@@ -3328,7 +3311,6 @@ where
     if !source.exists() {
         warn!(
             path = %source.display(),
-            session_id = %session.id,
             evicted_tool_outputs = session.evicted_tool_outputs.len(),
             evicted_subagent_messages = session.evicted_subagent_messages.len(),
             "no previous session log to recover evicted records from",
@@ -3344,7 +3326,7 @@ where
                 Err(error) => {
                     warn!(
                         path = %source.display(),
-                        error = %error,
+                        error_kind = json_error_kind(&error),
                         record_len = line.len(),
                         "skipping unrecognized record while recovering evicted history",
                     );
@@ -3882,7 +3864,7 @@ where
                         Err(tag_error) => {
                             warn!(
                                 path = %path.display(),
-                                tag_error = %tag_error,
+                                error_kind = json_error_kind(&tag_error),
                                 line = line_count,
                                 "failed to extract record tag from malformed JSONL line"
                             );
@@ -3898,7 +3880,7 @@ where
                     }
                     warn!(
                         path = %path.display(),
-                        error = %error,
+                        error_kind = json_error_kind(&error),
                         line = line_count,
                         record_tag = %record_tag,
                         record_len = line.len(),
@@ -3976,14 +3958,10 @@ where
     let hydrated_messages = if transcript_only {
         session.messages = active_messages_from_transcript(&session.transcript);
         if session.messages.is_empty() {
-            warn!(
-                session_id = %session.id,
-                "session transcript has no recoverable active provider messages"
-            );
+            warn!("session transcript has no recoverable active provider messages");
             false
         } else {
             warn!(
-                session_id = %session.id,
                 recovered_messages = session.messages.len(),
                 "recovered active provider messages from session transcript"
             );
@@ -5178,9 +5156,21 @@ fn scan_legacy_metadata_with_limits(
     metadata.ok_or(SessionError::UnknownRecord).map(Some)
 }
 
+/// Content-free label for logging a [`JsonError`]; its `Display` can echo
+/// values from the record that failed to parse.
+fn json_error_kind(error: &JsonError) -> &'static str {
+    match error.classify() {
+        JsonCategory::Io => "io",
+        JsonCategory::Syntax => "syntax",
+        JsonCategory::Data => "data",
+        JsonCategory::Eof => "eof",
+    }
+}
+
 /// Content-free label for logging a [`SessionError`]; its `Display` can echo
-/// record fragments from untrusted session files.
-fn session_error_kind(error: &SessionError) -> &'static str {
+/// record fragments and session ids from untrusted session files.
+#[must_use]
+pub fn session_error_kind(error: &SessionError) -> &'static str {
     match error {
         SessionError::Storage(StorageError::Io(_)) => "io",
         SessionError::Storage(StorageError::Json(_)) => "json",
@@ -5607,7 +5597,7 @@ where
                 Ok(_) => {}
                 Err(error) => warn!(
                     path = %path.display(),
-                    error = %error,
+                    error_kind = json_error_kind(&error),
                     record_len = line.len(),
                     "skipping unrecognized record while loading subagent history",
                 ),
@@ -5639,7 +5629,7 @@ where
                 Ok(_) => {}
                 Err(error) => warn!(
                     path = %path.display(),
-                    error = %error,
+                    error_kind = json_error_kind(&error),
                     record_len = line.len(),
                     "skipping unrecognized record while loading tool outputs",
                 ),
@@ -6387,15 +6377,10 @@ mod tests {
                     ..
                 }]
             ),
-            "outer compaction was closed early: {} root entries",
-            loaded.transcript.len()
+            "outer compaction was closed early"
         );
         let n00n_empty_check_68 = super::active_messages_from_transcript(&loaded.transcript);
-        assert!(
-            n00n_empty_check_68.is_empty(),
-            "expected empty, got {} messages",
-            n00n_empty_check_68.len()
-        );
+        assert!(n00n_empty_check_68.is_empty(), "expected empty");
     }
 
     /// `TranscriptEntry` is a recursive tree walked by recursive consumers, so
@@ -6533,8 +6518,7 @@ mod tests {
 
         assert!(
             holds_live_text(&loaded.transcript),
-            "the nested entry must load: {} root entries",
-            loaded.transcript.len()
+            "the nested entry must load"
         );
         assert_eq!(
             transcript_compaction_depth(&loaded.transcript),
@@ -6572,8 +6556,7 @@ mod tests {
         );
         assert!(
             !holds_live_text(&loaded.transcript),
-            "the unreadable record cannot have loaded: {} root entries",
-            loaded.transcript.len()
+            "the unreadable record cannot have loaded"
         );
     }
 
@@ -7266,11 +7249,7 @@ mod tests {
         let (loaded, _) =
             SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
         assert!(loaded.meta.state_snapshot.is_none());
-        assert!(
-            loaded.meta.queued_messages.is_empty(),
-            "expected empty, got {} entries",
-            loaded.meta.queued_messages.len()
-        );
+        assert!(loaded.meta.queued_messages.is_empty(), "expected empty");
     }
     #[test]
     fn append_compacts_when_history_exhausts_decoded_budget() {
@@ -7894,11 +7873,7 @@ mod tests {
 
         let loaded = TestSession::load_from(session.id, dir).unwrap();
         assert_eq!(loaded.messages.len(), 8);
-        assert!(
-            loaded.subagent_messages.is_empty(),
-            "expected empty, got {} entries",
-            loaded.subagent_messages.len()
-        );
+        assert!(loaded.subagent_messages.is_empty(), "expected empty");
     }
 
     /// A rename with no new messages must survive restart, while a no-op
@@ -7963,11 +7938,7 @@ mod tests {
             SessionError::Storage(StorageError::NotFound(_))
         ));
         let n00n_empty_check_69 = TestSession::list_in("/project", dir).unwrap();
-        assert!(
-            n00n_empty_check_69.is_empty(),
-            "expected empty, got {} entries",
-            n00n_empty_check_69.len()
-        );
+        assert!(n00n_empty_check_69.is_empty(), "expected empty");
 
         let err = TestSession::delete_from(session.id, dir).unwrap_err();
         assert!(matches!(
@@ -9657,11 +9628,7 @@ mod tests {
         .unwrap();
 
         let list = TestSession::list_in("/project", dir).unwrap();
-        assert!(
-            list.is_empty(),
-            "expected empty, got {} entries",
-            list.len()
-        );
+        assert!(list.is_empty(), "expected empty");
     }
 
     #[test]
@@ -10160,11 +10127,7 @@ mod tests {
             loaded.subagent_messages.keys().collect::<Vec<_>>(),
             [&survivor]
         );
-        assert!(
-            loaded.tool_outputs.is_empty(),
-            "expected empty, got {} entries",
-            loaded.tool_outputs.len()
-        );
+        assert!(loaded.tool_outputs.is_empty(), "expected empty");
     }
 
     const PROJECT_CWD: &str = "/project";
@@ -10337,11 +10300,7 @@ mod tests {
         let (loaded, _) =
             SessionLog::open_with_limits::<Value, Value, Value>(dir, session.id, limits).unwrap();
 
-        assert!(
-            loaded.meta.queued_messages.is_empty(),
-            "expected empty, got {} entries",
-            loaded.meta.queued_messages.len()
-        );
+        assert!(loaded.meta.queued_messages.is_empty(), "expected empty");
         assert_eq!(
             loaded.meta.consumed_run_deliveries,
             session.meta.consumed_run_deliveries

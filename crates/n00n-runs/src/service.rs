@@ -675,16 +675,13 @@ mod tests {
         assert_eq!(second.delivered, 1);
         assert_eq!(inbox.logical_insertions.lock().unwrap().len(), 1);
         let pending = service.store().pending_outbox(i64::MAX, 10).unwrap();
-        assert!(pending.is_empty(), "expected empty, got {pending:?}");
+        assert!(pending.is_empty(), "expected empty");
 
         inbox.consumed.store(true, Ordering::SeqCst);
         let third = smol::block_on(service.dispatch_parent_outbox(&inbox, 16, 5, 10)).unwrap();
         assert_eq!(third.delivered, 1);
         let dispatchable = service.store().dispatchable_outbox(i64::MAX, 10).unwrap();
-        assert!(
-            dispatchable.is_empty(),
-            "expected empty, got {dispatchable:?}"
-        );
+        assert!(dispatchable.is_empty(), "expected empty");
     }
 
     #[test]
@@ -746,6 +743,6 @@ mod tests {
         let report = smol::block_on(service.dispatch_parent_outbox(&inbox, 10, 5, 10)).unwrap();
         assert_eq!(report.dead_lettered, 1);
         let pending = service.store().pending_outbox(i64::MAX, 10).unwrap();
-        assert!(pending.is_empty(), "expected empty, got {pending:?}");
+        assert!(pending.is_empty(), "expected empty");
     }
 }

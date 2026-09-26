@@ -51,7 +51,7 @@ use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{
     CompactionStateError, RetentionBudget, SessionError, StoredControlDelivery, StoredDelivery,
     StoredDirectTool, StoredQueuedMessage, StoredSessionLifecycle, StoredSessionStateSnapshot,
-    TranscriptEntry, normalize_title,
+    TranscriptEntry, normalize_title, session_error_kind,
 };
 use serde_json::{Value, json};
 use smol::{Task, Timer};
@@ -1132,7 +1132,10 @@ impl SpawnCtx {
             match load_stored_session(self, root_id) {
                 Ok(root) => Some(root),
                 Err(error) => {
-                    warn!(session_id = %session.id, %root_id, %error, "root session state unavailable; using child plugin state");
+                    warn!(
+                        error_kind = session_error_kind(&error),
+                        "root session state unavailable; using child plugin state"
+                    );
                     None
                 }
             }
@@ -2217,7 +2220,10 @@ impl<'t> EventLoop<'t> {
                 reapable: stored_session_is_reapable(&session),
             },
             Err(error) => {
-                warn!(session_id = %id, %error, "stored session unavailable; blocking reap of its ancestors");
+                warn!(
+                    error_kind = session_error_kind(&error),
+                    "stored session unavailable; blocking reap of its ancestors"
+                );
                 ReapCandidate {
                     id,
                     parent_id: self.lineage.parent_of(id),
@@ -2264,7 +2270,7 @@ impl<'t> EventLoop<'t> {
             .meta
             .record_consumed_run_delivery(stored)
         {
-            warn!(delivery_id = %delivery.delivery_id, %error, "failed to record consumed parent delivery");
+            warn!(delivery_id = %delivery.delivery_id, error_kind = session_error_kind(&error), "failed to record consumed parent delivery");
             return;
         }
         let delivery_id = match delivery.delivery_id.parse::<DeliveryId>() {
@@ -2306,7 +2312,7 @@ impl<'t> EventLoop<'t> {
                 .detach();
             }
             Err(error) => {
-                warn!(%delivery_id, %error, "failed to persist consumed parent delivery");
+                warn!(%delivery_id, error_kind = session_error_kind(&error), "failed to persist consumed parent delivery");
             }
         });
     }
@@ -2328,7 +2334,7 @@ impl<'t> EventLoop<'t> {
         let mut session = match load_stored_session(&self.ctx, session_id) {
             Ok(session) => session,
             Err(error) => {
-                warn!(%session_id, %delivery_id, %error, "failed to load session to record parent delivery acknowledgement");
+                warn!(%delivery_id, error_kind = session_error_kind(&error), "failed to load session to record parent delivery acknowledgement");
                 return;
             }
         };
@@ -2774,13 +2780,16 @@ impl<'t> EventLoop<'t> {
             }
         };
         if !capture_revision_matches(&snapshot, captured.revision) {
-            warn!(%root_id, expected = captured.revision, actual = ?snapshot.state_revision(), "root plugin state capture returned the wrong revision");
+            warn!(expected = captured.revision, actual = ?snapshot.state_revision(), "root plugin state capture returned the wrong revision");
             return;
         }
         let mut root = match load_stored_session(&self.ctx, root_id) {
             Ok(root) => root,
             Err(error) => {
-                warn!(%root_id, %error, "failed to load root for plugin state capture");
+                warn!(
+                    error_kind = session_error_kind(&error),
+                    "failed to load root for plugin state capture"
+                );
                 return;
             }
         };

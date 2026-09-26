@@ -729,7 +729,7 @@ mod tests {
             panic!("expected error without fallback");
         };
         assert!(err.to_string().contains("boom"));
-        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
+        assert!(warnings.is_empty(), "expected empty");
     }
 
     #[test]
@@ -768,7 +768,7 @@ mod tests {
         .unwrap();
 
         assert!(needs_login);
-        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
+        assert!(warnings.is_empty(), "expected empty");
         assert_eq!(model.tier, n00n_providers::model::ModelTier::Strong);
     }
 
@@ -787,7 +787,7 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("explicit provider unavailable"));
-        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
+        assert!(warnings.is_empty(), "expected empty");
     }
 
     #[test_case(true, false; "unusable store path disables background runs")]
@@ -808,8 +808,7 @@ mod tests {
                 .iter()
                 .any(|warning| warning.starts_with(RUN_STORE_DISABLED_WARNING)),
             blocked,
-            "unexpected startup warnings: {} entries",
-            warnings.len()
+            "unexpected startup warnings"
         );
     }
 }

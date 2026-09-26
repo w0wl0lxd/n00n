@@ -280,10 +280,7 @@ mod tests {
             };
             assert_eq!(caller_id.as_ref(), Some(&expected_caller));
             let managed_run_id = managed_run_id.to_string();
-            assert!(
-                !managed_run_id.is_empty(),
-                "expected non-empty, got {managed_run_id:?}"
-            );
+            assert!(!managed_run_id.is_empty(), "expected non-empty");
             assert_eq!(bootstrap.tool, "run_task");
             assert_eq!(
                 bootstrap.input,
@@ -314,8 +311,8 @@ mod tests {
         let run_id = result.get::<String>("run_id").unwrap();
         let chain_id = result.get::<String>("chain_id").unwrap();
         let session_id = result.get::<String>("session_id").unwrap();
-        assert!(!run_id.is_empty(), "expected non-empty, got {run_id:?}");
-        assert!(!chain_id.is_empty(), "expected non-empty, got {chain_id:?}");
+        assert!(!run_id.is_empty(), "expected non-empty");
+        assert!(!chain_id.is_empty(), "expected non-empty");
         assert_eq!(result.get::<String>("lifecycle").unwrap(), "starting");
         let record = smol::block_on(service.get_run(run_id.parse().unwrap())).unwrap();
         assert_eq!(record.backend, ExecutionBackend::TuiSession);
@@ -324,7 +321,10 @@ mod tests {
             record.parent_session_id.as_deref(),
             Some(caller.to_string().as_str())
         );
-        assert_eq!(record.session_id.as_deref(), Some(session_id.as_str()));
+        assert!(
+            record.session_id.as_deref() == Some(session_id.as_str()),
+            "run record points at a different session"
+        );
         assert_eq!(record.chain_id.to_string(), chain_id);
     }
 }
